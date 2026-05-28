@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronUp, ImageIcon, Search, Sparkles, X } from "lucide-react";
-import type { DragEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
+import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 
@@ -21,6 +21,7 @@ type TextMatch = {
 type MarkdownEditorProps = {
   formatting: boolean;
   imageConverting: boolean;
+  textScale?: number;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
@@ -191,6 +192,7 @@ function scrollTextareaToOffset(textarea: HTMLTextAreaElement, offset: number) {
 export function MarkdownEditor({
   formatting,
   imageConverting,
+  textScale = 1,
   textareaRef,
   value,
   onAiFormatSelection,
@@ -382,14 +384,14 @@ export function MarkdownEditor({
     await onInsertImageFile(imageFiles[0]);
   }
 
-  function handleEditorKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openFind();
     }
   }
 
-  function handleFindKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+  function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
       closeFind();
@@ -416,6 +418,10 @@ export function MarkdownEditor({
       <textarea
         ref={textareaRef}
         className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-zinc-200 bg-white p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
+        style={{
+          fontSize: `${0.875 * textScale}rem`,
+          lineHeight: `${1.5 * textScale}rem`,
+        }}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onContextMenu={openContextMenu}

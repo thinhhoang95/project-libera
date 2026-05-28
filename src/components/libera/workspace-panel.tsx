@@ -77,6 +77,7 @@ export function WorkspacePanel({
   onSetDraft,
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
+  const [markdownZoom, setMarkdownZoom] = useState(100);
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
 
   function fixActiveChatGptEquations() {
@@ -153,10 +154,12 @@ export function WorkspacePanel({
       {activeTab.file.fileType === "markdown" ? (
         <>
           <MarkdownToolbar
+            markdownZoom={markdownZoom}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertImage={onInsertImage}
+            onMarkdownZoomChange={setMarkdownZoom}
             onTogglePreviewFullscreen={() =>
               setPreviewFullscreen((current) => !current)
             }
@@ -173,6 +176,7 @@ export function WorkspacePanel({
               <MarkdownEditor
                 formatting={aiFormatting}
                 imageConverting={imageMarkdownConverting}
+                textScale={markdownZoom / 100}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}
@@ -185,6 +189,7 @@ export function WorkspacePanel({
               <MarkdownRenderer
                 content={activeTab.draft}
                 documentPath={activeTab.file.path}
+                textScale={markdownZoom / 100}
               />
             </article>
           </div>

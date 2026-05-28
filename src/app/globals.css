@@ -30,6 +30,7 @@ body {
   border-radius: 0.375rem;
   color: #27272a;
   display: inline-flex;
+  flex: 0 0 auto;
   font-size: 0.875rem;
   font-weight: 500;
   gap: 0.375rem;

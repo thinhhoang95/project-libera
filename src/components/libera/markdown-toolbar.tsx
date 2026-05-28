@@ -12,23 +12,28 @@ import {
   Sigma,
   Sparkles,
   Underline,
+  ZoomIn,
 } from "lucide-react";
 import { useRef } from "react";
 
 type MarkdownToolbarProps = {
+  markdownZoom: number;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
   onInsertImage: (file: File) => Promise<void>;
+  onMarkdownZoomChange: (zoom: number) => void;
   onTogglePreviewFullscreen: () => void;
   previewFullscreen: boolean;
 };
 
 export function MarkdownToolbar({
+  markdownZoom,
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
   onInsertImage,
+  onMarkdownZoomChange,
   onTogglePreviewFullscreen,
   previewFullscreen,
 }: MarkdownToolbarProps) {
@@ -49,7 +54,7 @@ export function MarkdownToolbar({
   }
 
   return (
-    <div className="flex flex-wrap gap-2 border-b border-zinc-200 bg-white px-4 py-2">
+    <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto border-b border-zinc-200 bg-white px-4 py-2 whitespace-nowrap">
       <input
         ref={imageInputRef}
         className="hidden"
@@ -113,6 +118,21 @@ export function MarkdownToolbar({
         <Sparkles aria-hidden className="h-4 w-4" />
         ChatGPT Eqfix
       </button>
+      <label className="inline-flex shrink-0 items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm font-medium text-zinc-700">
+        <ZoomIn aria-hidden className="h-4 w-4" />
+        <span>Zoom</span>
+        <input
+          className="h-2 w-32 accent-zinc-900"
+          type="range"
+          min="75"
+          max="150"
+          step="5"
+          value={markdownZoom}
+          aria-label="Rendered Markdown text zoom"
+          onChange={(event) => onMarkdownZoomChange(Number(event.target.value))}
+        />
+        <span className="min-w-10 text-right tabular-nums">{markdownZoom}%</span>
+      </label>
       <button
         className="toolbar-button"
         type="button"
