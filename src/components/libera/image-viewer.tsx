@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { PointerEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
+import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
 import {
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   MAX_TEXT_ANNOTATION_FONT_SIZE,
@@ -31,7 +33,10 @@ const SAVE_DEBOUNCE_MS = 350;
 type ImageViewerProps = {
   alt: string;
   filePath: string;
+  screenshotSnipping?: boolean;
   src?: string;
+  onCancelScreenshotSnip?: () => void;
+  onCompleteScreenshotSnip?: (file: File) => Promise<void>;
 };
 
 type ImageTool = "select" | "text";
@@ -45,8 +50,16 @@ function clampZoom(value: number) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 }
 
-export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
+export function ImageViewer({
+  alt,
+  filePath,
+  screenshotSnipping = false,
+  src,
+  onCancelScreenshotSnip,
+  onCompleteScreenshotSnip,
+}: ImageViewerProps) {
   const imageFrameRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
@@ -184,11 +197,19 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
+    if (screenshotSnipping) {
+      return;
+    }
+
     event.preventDefault();
     changeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (screenshotSnipping) {
+      return;
+    }
+
     if (tool === "text" || event.button !== 0) {
       return;
     }
@@ -199,6 +220,10 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (screenshotSnipping) {
+      return;
+    }
+
     if (!lastPointerRef.current) {
       return;
     }
@@ -306,6 +331,26 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
     return () => window.removeEventListener("keydown", handleDeleteKey);
   }, [deleteSelectedAnnotation, selectedAnnotationId]);
 
+  async function captureScreenshotSnip(rect: PdfAnnotationRect) {
+    const image = imageRef.current;
+
+    if (!image || !onCompleteScreenshotSnip) {
+      return;
+    }
+
+    try {
+      await onCompleteScreenshotSnip(
+        await imageElementRectToPngFile(image, rect, filePath),
+      );
+    } catch (captureError) {
+      setError(
+        captureError instanceof Error
+          ? captureError.message
+          : "Could not capture image screenshot.",
+      );
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-200">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2">
@@ -410,7 +455,13 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
 
       <div
         className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6 ${
-          tool === "text" ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : "cursor-grab"
+          screenshotSnipping
+            ? "cursor-crosshair"
+            : tool === "text"
+              ? "cursor-crosshair"
+              : isPanning
+                ? "cursor-grabbing"
+                : "cursor-grab"
         }`}
         onDoubleClick={resetView}
         onPointerCancel={handlePointerEnd}
@@ -433,6 +484,7 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
             <img
+              ref={imageRef}
               className="block max-h-[calc(100vh-236px)] max-w-full select-none rounded-md object-contain"
               src={src}
               alt={alt}
@@ -448,6 +500,12 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
               onExitTextEditing={() => setTool("select")}
               onSelectAnnotation={selectAnnotation}
               onUpdateAnnotation={updateTextAnnotation}
+            />
+            <ScreenshotSnipLayer
+              active={screenshotSnipping}
+              pageSize={imageSize}
+              onCancel={onCancelScreenshotSnip ?? (() => undefined)}
+              onCapture={captureScreenshotSnip}
             />
           </div>
         ) : (

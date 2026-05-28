@@ -11,6 +11,7 @@ import type {
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
 import type {
   MarkdownImageSelection,
+  MarkdownScreenshotSnipSession,
   NotebookDialogState,
   NotebookFormValues,
   NoteDialogState,
@@ -54,6 +55,31 @@ function imageAltText(name: string) {
   return name.replace(/\.[^.]+$/, "") || "image";
 }
 
+function clampTextOffset(value: number, textLength: number) {
+  return Math.max(0, Math.min(value, textLength));
+}
+
+function createMarkdownImageInsertion(
+  draft: string,
+  insertion: string,
+  selection: { start: number; end: number },
+) {
+  const start = clampTextOffset(selection.start, draft.length);
+  const end = clampTextOffset(Math.max(selection.start, selection.end), draft.length);
+  const prefix = start > 0 && !draft.slice(0, start).endsWith("\n") ? "\n" : "";
+  const suffix = draft.slice(end).startsWith("\n") ? "" : "\n";
+  const nextDraft = `${draft.slice(0, start)}${prefix}${insertion}${suffix}${draft.slice(
+    end,
+  )}`;
+  const nextSelectionStart = start + prefix.length;
+
+  return {
+    nextDraft,
+    nextSelectionEnd: nextSelectionStart + insertion.length,
+    nextSelectionStart,
+  };
+}
+
 const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
@@ -70,6 +96,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [busy, setBusy] = useState(false);
   const [aiFormatting, setAiFormatting] = useState(false);
   const [imageMarkdownConverting, setImageMarkdownConverting] = useState(false);
+  const [screenshotSnipSession, setScreenshotSnipSession] =
+    useState<MarkdownScreenshotSnipSession | null>(null);
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [notebookDialogSubmitting, setNotebookDialogSubmitting] = useState(false);
   const [noteDialog, setNoteDialog] = useState<NoteDialogState | null>(null);
@@ -92,6 +120,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const selectedNotebook = tree.notebooks.find(
     (notebook) => notebook.name === selectedNotebookName,
   );
+  const canStartScreenshotSnip =
+    activeTab?.file.fileType === "markdown" &&
+    tabs.some((tab) => tab.file.fileType === "image" || tab.file.fileType === "pdf");
 
   useEffect(() => {
     const animationFrame = window.requestAnimationFrame(() => {
@@ -300,6 +331,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }));
   }
 
+  function restoreMarkdownTextarea(options: {
+    scrollLeft?: number;
+    scrollTop?: number;
+    selectionEnd: number;
+    selectionStart: number;
+  }) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+
+        if (!textarea) {
+          return;
+        }
+
+        textarea.focus();
+        textarea.setSelectionRange(options.selectionStart, options.selectionEnd);
+
+        if (typeof options.scrollTop === "number") {
+          textarea.scrollTop = options.scrollTop;
+        }
+
+        if (typeof options.scrollLeft === "number") {
+          textarea.scrollLeft = options.scrollLeft;
+        }
+      });
+    });
+  }
+
   function insertMarkdown(before: string, after = "", placeholder = "text") {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
@@ -315,10 +374,41 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const nextSelectionEnd = nextSelectionStart + selectedText.length;
 
     setActiveDraft(nextDraft);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    restoreMarkdownTextarea({
+      selectionStart: nextSelectionStart,
+      selectionEnd: nextSelectionEnd,
     });
+  }
+
+  function insertMarkdownImageMarkupInTab(
+    tabId: string,
+    insertion: string,
+    selection?: { start: number; end: number },
+  ) {
+    const targetTab = tabs.find((tab) => tab.id === tabId);
+
+    if (!targetTab || targetTab.file.fileType !== "markdown") {
+      return null;
+    }
+
+    const textarea = tabId === activeTabId ? textareaRef.current : null;
+    const insertionState = createMarkdownImageInsertion(
+      targetTab.draft,
+      insertion,
+      selection ?? {
+        start: textarea?.selectionStart ?? targetTab.draft.length,
+        end: textarea?.selectionEnd ?? targetTab.draft.length,
+      },
+    );
+
+    updateTab(tabId, (tab) => ({
+      ...tab,
+      draft: insertionState.nextDraft,
+      status: insertionState.nextDraft === tab.saved ? "clean" : "dirty",
+      error: undefined,
+    }));
+
+    return insertionState;
   }
 
   function insertMarkdownImageMarkup(insertion: string) {
@@ -326,29 +416,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const tabId = activeTab.id;
-    const draft = activeTab.draft;
-    const textarea = textareaRef.current;
-    const start = textarea?.selectionStart ?? draft.length;
-    const end = textarea?.selectionEnd ?? draft.length;
-    const prefix = start > 0 && !draft.slice(0, start).endsWith("\n") ? "\n" : "";
-    const suffix = draft.slice(end).startsWith("\n") ? "" : "\n";
-    const nextDraft = `${draft.slice(0, start)}${prefix}${insertion}${suffix}${draft.slice(
-      end,
-    )}`;
-    const nextSelectionStart = start + prefix.length;
-    const nextSelectionEnd = nextSelectionStart + insertion.length;
+    const insertionState = insertMarkdownImageMarkupInTab(activeTab.id, insertion);
 
-    updateTab(tabId, (tab) => ({
-      ...tab,
-      draft: nextDraft,
-      status: nextDraft === tab.saved ? "clean" : "dirty",
-      error: undefined,
-    }));
+    if (!insertionState) {
+      return;
+    }
 
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    restoreMarkdownTextarea({
+      selectionStart: insertionState.nextSelectionStart,
+      selectionEnd: insertionState.nextSelectionEnd,
     });
   }
 
@@ -395,6 +471,152 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const rawUrl = `/api/files/raw/${encodeFilePath(file.path)}`;
     insertMarkdownImageMarkup(`![${imageAltText(file.name)}](${rawUrl})`);
+  }
+
+  function findNearestScreenshotSourceTab(markdownTabId: string) {
+    const markdownIndex = tabs.findIndex((tab) => tab.id === markdownTabId);
+
+    if (markdownIndex < 0) {
+      return undefined;
+    }
+
+    return tabs
+      .map((tab, index) => ({ index, tab }))
+      .filter(({ tab }) => tab.file.fileType === "image" || tab.file.fileType === "pdf")
+      .sort((left, right) => {
+        const leftDistance = Math.abs(left.index - markdownIndex);
+        const rightDistance = Math.abs(right.index - markdownIndex);
+
+        if (leftDistance !== rightDistance) {
+          return leftDistance - rightDistance;
+        }
+
+        return right.index - left.index;
+      })[0]?.tab;
+  }
+
+  function startScreenshotSnip() {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const sourceTab = findNearestScreenshotSourceTab(activeTab.id);
+
+    if (!sourceTab) {
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        status: "error",
+        error: "Open an image or PDF tab before using the snipping tool.",
+      }));
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const selectionStart = textarea?.selectionStart ?? activeTab.draft.length;
+    const selectionEnd = textarea?.selectionEnd ?? activeTab.draft.length;
+
+    setScreenshotSnipSession({
+      scrollLeft: textarea?.scrollLeft ?? 0,
+      scrollTop: textarea?.scrollTop ?? 0,
+      selectionEnd,
+      selectionStart,
+      sourceTabId: sourceTab.id,
+      targetTabId: activeTab.id,
+    });
+    setSelectedNotebookName(sourceTab.file.notebook);
+    recordFileInteraction(sourceTab.file);
+    setActiveTabId(sourceTab.id);
+  }
+
+  function cancelScreenshotSnip() {
+    const session = screenshotSnipSession;
+
+    if (!session) {
+      return;
+    }
+
+    const targetTab = tabs.find((tab) => tab.id === session.targetTabId);
+
+    setScreenshotSnipSession(null);
+
+    if (!targetTab) {
+      return;
+    }
+
+    setSelectedNotebookName(targetTab.file.notebook);
+    recordFileInteraction(targetTab.file);
+    setActiveTabId(targetTab.id);
+    restoreMarkdownTextarea({
+      scrollLeft: session.scrollLeft,
+      scrollTop: session.scrollTop,
+      selectionStart: session.selectionStart,
+      selectionEnd: session.selectionEnd,
+    });
+  }
+
+  async function completeScreenshotSnip(file: File) {
+    const session = screenshotSnipSession;
+
+    if (!session) {
+      return;
+    }
+
+    const targetTab = tabs.find((tab) => tab.id === session.targetTabId);
+
+    if (!targetTab || targetTab.file.fileType !== "markdown") {
+      setScreenshotSnipSession(null);
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("documentPath", targetTab.file.path);
+    formData.append("file", file);
+    updateTab(targetTab.id, (tab) => ({ ...tab, error: undefined }));
+
+    try {
+      const payload = await apiRequest<{ markdown: string }>("/api/markdown-assets", {
+        method: "POST",
+        body: formData,
+      });
+      const insertionState = insertMarkdownImageMarkupInTab(
+        targetTab.id,
+        payload.markdown,
+        {
+          start: session.selectionStart,
+          end: session.selectionEnd,
+        },
+      );
+
+      setScreenshotSnipSession(null);
+      setSelectedNotebookName(targetTab.file.notebook);
+      recordFileInteraction(targetTab.file);
+      setActiveTabId(targetTab.id);
+
+      if (insertionState) {
+        restoreMarkdownTextarea({
+          scrollLeft: session.scrollLeft,
+          scrollTop: session.scrollTop,
+          selectionStart: insertionState.nextSelectionStart,
+          selectionEnd: insertionState.nextSelectionEnd,
+        });
+      }
+    } catch (error) {
+      setScreenshotSnipSession(null);
+      updateTab(targetTab.id, (tab) => ({
+        ...tab,
+        status: "error",
+        error: error instanceof Error ? error.message : "Could not insert screenshot.",
+      }));
+      setSelectedNotebookName(targetTab.file.notebook);
+      recordFileInteraction(targetTab.file);
+      setActiveTabId(targetTab.id);
+      restoreMarkdownTextarea({
+        scrollLeft: session.scrollLeft,
+        scrollTop: session.scrollTop,
+        selectionStart: session.selectionStart,
+        selectionEnd: session.selectionEnd,
+      });
+    }
   }
 
   async function formatSelectionWithAi(selection: { start: number; end: number }) {
@@ -1255,6 +1477,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       authError,
       aiFormatting,
       busy,
+      canStartScreenshotSnip,
       expanded,
       firstNotebook,
       notebookDialog,
@@ -1265,6 +1488,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       password,
       query,
       fileInteractions,
+      screenshotSnipSession,
       searchResults,
       selectedNotebook,
       selectedNotebookName,
@@ -1282,6 +1506,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       closeNoteDialog,
       closeWorkspaceConfirmDialog,
       closeWorkspaceInputDialog,
+      cancelScreenshotSnip,
+      completeScreenshotSnip,
       copyFileFromPrompt,
       createFolderFromPrompt,
       createMarkdownFromPrompt,
@@ -1314,6 +1540,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId: activateTab,
       setPassword,
       setQuery,
+      startScreenshotSnip,
       swapTabs,
       startUpload,
       submitNotebookDialog,

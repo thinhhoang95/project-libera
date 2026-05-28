@@ -26,6 +26,11 @@ import type {
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import { apiRequest } from "@/components/libera/api-client";
 import {
+  canvasToPngBlob,
+  pngFileFromBlob,
+} from "@/components/libera/screenshot-capture";
+import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
+import {
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   MAX_TEXT_ANNOTATION_FONT_SIZE,
   MIN_TEXT_ANNOTATION_FONT_SIZE,
@@ -59,7 +64,10 @@ type PdfTool = "select" | "highlight" | "text";
 
 type PdfViewerProps = {
   filePath: string;
+  screenshotSnipping?: boolean;
   src?: string;
+  onCancelScreenshotSnip?: () => void;
+  onCompleteScreenshotSnip?: (file: File) => Promise<void>;
 };
 
 function intersectClientRect(rect: DOMRect, bounds: DOMRect) {
@@ -97,7 +105,13 @@ function renderCanvas(viewport: PageViewport, canvas: HTMLCanvasElement) {
   context.clearRect(0, 0, viewport.width, viewport.height);
 }
 
-export function PdfViewer({ filePath, src }: PdfViewerProps) {
+export function PdfViewer({
+  filePath,
+  screenshotSnipping = false,
+  src,
+  onCancelScreenshotSnip,
+  onCompleteScreenshotSnip,
+}: PdfViewerProps) {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageNumbers, setPageNumbers] = useState<number[]>([]);
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
@@ -227,6 +241,86 @@ export function PdfViewer({ filePath, src }: PdfViewerProps) {
 
   function changeZoom(delta: number) {
     setZoom((currentZoom) => clamp(currentZoom + delta, MIN_ZOOM, MAX_ZOOM));
+  }
+
+  async function captureScreenshotSnip(pageNumber: number, rect: PdfAnnotationRect) {
+    if (!pdfDocument || !onCompleteScreenshotSnip) {
+      return;
+    }
+
+    try {
+      const page = await pdfDocument.getPage(pageNumber);
+      const renderScale = Math.max(1, window.devicePixelRatio || 1);
+      const viewport = page.getViewport({ scale: renderScale });
+      const sourceCanvas = document.createElement("canvas");
+      const sourceContext = sourceCanvas.getContext("2d");
+
+      if (!sourceContext) {
+        throw new Error("Could not create screenshot canvas.");
+      }
+
+      sourceCanvas.width = Math.max(1, Math.ceil(viewport.width));
+      sourceCanvas.height = Math.max(1, Math.ceil(viewport.height));
+
+      await page.render({
+        canvasContext: sourceContext,
+        viewport,
+      }).promise;
+
+      const cropX = Math.min(
+        sourceCanvas.width - 1,
+        Math.round(rect.x * sourceCanvas.width),
+      );
+      const cropY = Math.min(
+        sourceCanvas.height - 1,
+        Math.round(rect.y * sourceCanvas.height),
+      );
+      const cropWidth = Math.max(
+        1,
+        Math.min(sourceCanvas.width - cropX, Math.round(rect.width * sourceCanvas.width)),
+      );
+      const cropHeight = Math.max(
+        1,
+        Math.min(
+          sourceCanvas.height - cropY,
+          Math.round(rect.height * sourceCanvas.height),
+        ),
+      );
+      const outputCanvas = document.createElement("canvas");
+      const outputContext = outputCanvas.getContext("2d");
+
+      if (!outputContext) {
+        throw new Error("Could not create screenshot canvas.");
+      }
+
+      outputCanvas.width = cropWidth;
+      outputCanvas.height = cropHeight;
+      outputContext.drawImage(
+        sourceCanvas,
+        cropX,
+        cropY,
+        cropWidth,
+        cropHeight,
+        0,
+        0,
+        cropWidth,
+        cropHeight,
+      );
+
+      await onCompleteScreenshotSnip(
+        pngFileFromBlob(
+          await canvasToPngBlob(outputCanvas),
+          filePath,
+          `pdf-page-${pageNumber}`,
+        ),
+      );
+    } catch (captureError) {
+      setError(
+        captureError instanceof Error
+          ? captureError.message
+          : "Could not capture PDF screenshot.",
+      );
+    }
   }
 
   function selectAnnotation(annotation: PdfAnnotation) {
@@ -466,11 +560,14 @@ export function PdfViewer({ filePath, src }: PdfViewerProps) {
                 pageNumber={pageNumber}
                 pdfDocument={pdfDocument}
                 selectedAnnotationId={selectedAnnotationId}
+                screenshotSnipping={screenshotSnipping}
                 tool={tool}
                 zoom={zoom}
                 onAddHighlight={addHighlight}
                 onAddTextAnnotation={addTextAnnotation}
+                onCancelScreenshotSnip={onCancelScreenshotSnip ?? (() => undefined)}
                 onExitTextEditing={() => setTool("select")}
+                onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
                 onUpdateTextAnnotation={updateTextAnnotation}
               />
@@ -487,11 +584,14 @@ function PdfPageView({
   pageNumber,
   pdfDocument,
   selectedAnnotationId,
+  screenshotSnipping,
   tool,
   zoom,
   onAddHighlight,
   onAddTextAnnotation,
+  onCancelScreenshotSnip,
   onExitTextEditing,
+  onScreenshotSnip,
   onSelectAnnotation,
   onUpdateTextAnnotation,
 }: {
@@ -499,11 +599,14 @@ function PdfPageView({
   pageNumber: number;
   pdfDocument: PDFDocumentProxy;
   selectedAnnotationId: string;
+  screenshotSnipping: boolean;
   tool: PdfTool;
   zoom: number;
   onAddHighlight: (pageNumber: number, rects: PdfAnnotationRect[]) => void;
   onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
+  onCancelScreenshotSnip: () => void;
   onExitTextEditing: () => void;
+  onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
   onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
 }) {
@@ -635,6 +738,13 @@ function PdfPageView({
           onExitTextEditing={onExitTextEditing}
           onSelectAnnotation={onSelectAnnotation}
           onUpdateAnnotation={onUpdateTextAnnotation}
+        />
+
+        <ScreenshotSnipLayer
+          active={screenshotSnipping}
+          pageSize={size}
+          onCancel={onCancelScreenshotSnip}
+          onCapture={(rect) => onScreenshotSnip(pageNumber, rect)}
         />
 
         {rendering ? (

@@ -10,6 +10,7 @@ import {
   List,
   Maximize2,
   Minimize2,
+  Scissors,
   Sigma,
   Sparkles,
   Underline,
@@ -18,23 +19,27 @@ import {
 import { useRef } from "react";
 
 type MarkdownToolbarProps = {
+  canStartScreenshotSnip: boolean;
   markdownZoom: number;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onMarkdownZoomChange: (zoom: number) => void;
+  onStartScreenshotSnip: () => void;
   onTogglePreviewFullscreen: () => void;
   previewFullscreen: boolean;
 };
 
 export function MarkdownToolbar({
+  canStartScreenshotSnip,
   markdownZoom,
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
   onInsertImage,
   onMarkdownZoomChange,
+  onStartScreenshotSnip,
   onTogglePreviewFullscreen,
   previewFullscreen,
 }: MarkdownToolbarProps) {
@@ -143,6 +148,20 @@ export function MarkdownToolbar({
         onClick={onInsertExistingImage}
       >
         <Images aria-hidden className="h-4 w-4" />
+      </button>
+      <button
+        aria-label="Snip from image or PDF tab"
+        className="toolbar-button disabled:cursor-not-allowed disabled:opacity-40"
+        title={
+          canStartScreenshotSnip
+            ? "Snip from image or PDF tab"
+            : "Open an image or PDF tab to snip"
+        }
+        type="button"
+        disabled={!canStartScreenshotSnip}
+        onClick={onStartScreenshotSnip}
+      >
+        <Scissors aria-hidden className="h-4 w-4" />
       </button>
       <button
         aria-label="Inline code"

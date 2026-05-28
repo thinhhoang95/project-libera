@@ -98,14 +98,18 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           <WorkspacePanel
             activeTab={workspace.activeTab}
             aiFormatting={workspace.aiFormatting}
+            canStartScreenshotSnip={workspace.canStartScreenshotSnip}
             firstNotebook={workspace.firstNotebook}
             imageMarkdownConverting={workspace.imageMarkdownConverting}
+            screenshotSnipSession={workspace.screenshotSnipSession}
             selectedNotebook={workspace.selectedNotebook}
             textareaRef={workspace.textareaRef}
             onAiFormatSelection={workspace.formatSelectionWithAi}
             onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
             onCreateMarkdown={workspace.createMarkdownFromPrompt}
             onCreateNotebook={workspace.openCreateNotebookDialog}
+            onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
+            onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
             onDeleteFile={workspace.deleteFileFromPrompt}
             onDownloadFile={workspace.downloadFile}
             onInsertExistingImage={workspace.insertExistingMarkdownImage}
@@ -116,6 +120,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
+            onStartScreenshotSnip={workspace.startScreenshotSnip}
           />
         </section>
       </div>

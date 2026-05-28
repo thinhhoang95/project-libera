@@ -116,15 +116,26 @@ export type MarkdownImageSelection = {
   start: number;
 };
 
+export type MarkdownScreenshotSnipSession = {
+  scrollLeft: number;
+  scrollTop: number;
+  selectionEnd: number;
+  selectionStart: number;
+  sourceTabId: string;
+  targetTabId: string;
+};
+
 export type LiberaWorkspace = {
   activeTab?: OpenTab;
   activeTabId: string;
   authError: string;
   aiFormatting: boolean;
   busy: boolean;
+  canStartScreenshotSnip: boolean;
   imageMarkdownConverting: boolean;
   expanded: Set<string>;
   firstNotebook: string;
+  screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   notebookDialog: NotebookDialogState | null;
   notebookDialogSubmitting: boolean;
   noteDialog: NoteDialogState | null;
@@ -149,6 +160,8 @@ export type LiberaWorkspace = {
   closeNoteDialog: () => void;
   closeWorkspaceConfirmDialog: () => void;
   closeWorkspaceInputDialog: () => void;
+  cancelScreenshotSnip: () => void;
+  completeScreenshotSnip: (file: File) => Promise<void>;
   createMarkdownFromPrompt: (notebook: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
@@ -181,6 +194,7 @@ export type LiberaWorkspace = {
   setActiveTabId: (tabId: string) => void;
   setPassword: (password: string) => void;
   setQuery: (query: string) => void;
+  startScreenshotSnip: () => void;
   swapTabs: (sourceTabId: string, targetTabId: string) => void;
   startUpload: (notebook: string) => void;
   submitNotebookDialog: (values: NotebookFormValues) => Promise<void>;

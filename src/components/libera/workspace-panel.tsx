@@ -23,7 +23,10 @@ import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
-import type { OpenTab } from "@/components/libera/types";
+import type {
+  MarkdownScreenshotSnipSession,
+  OpenTab,
+} from "@/components/libera/types";
 import {
   findMarkdownSourceElementForOffset,
   getMarkdownSourceOffsetAtPoint,
@@ -40,8 +43,10 @@ import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 type WorkspacePanelProps = {
   activeTab?: OpenTab;
   aiFormatting: boolean;
+  canStartScreenshotSnip: boolean;
   firstNotebook: string;
   imageMarkdownConverting: boolean;
+  screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   selectedNotebook?: LiberaNotebookNode;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
@@ -53,6 +58,8 @@ type WorkspacePanelProps = {
   }) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
+  onCancelScreenshotSnip: () => void;
+  onCompleteScreenshotSnip: (file: File) => Promise<void>;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
   onDownloadFile: (file: LiberaFileNode, content?: string) => void;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
@@ -63,6 +70,7 @@ type WorkspacePanelProps = {
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
+  onStartScreenshotSnip: () => void;
 };
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
@@ -205,14 +213,18 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
 export function WorkspacePanel({
   activeTab,
   aiFormatting,
+  canStartScreenshotSnip,
   firstNotebook,
   imageMarkdownConverting,
+  screenshotSnipSession,
   selectedNotebook,
   textareaRef,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onCreateMarkdown,
   onCreateNotebook,
+  onCancelScreenshotSnip,
+  onCompleteScreenshotSnip,
   onDeleteFile,
   onDownloadFile,
   onInsertExistingImage,
@@ -223,6 +235,7 @@ export function WorkspacePanel({
   onRenameFile,
   onSave,
   onSetDraft,
+  onStartScreenshotSnip,
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [markdownZoom, setMarkdownZoom] = useState(100);
@@ -618,12 +631,14 @@ export function WorkspacePanel({
       {activeTab.file.fileType === "markdown" ? (
         <>
           <MarkdownToolbar
+            canStartScreenshotSnip={canStartScreenshotSnip}
             markdownZoom={markdownZoom}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={setMarkdownZoom}
+            onStartScreenshotSnip={onStartScreenshotSnip}
             onTogglePreviewFullscreen={() =>
               setActivePreviewTabId((current) =>
                 current === activeTab.id ? null : activeTab.id,
@@ -705,9 +720,18 @@ export function WorkspacePanel({
           src={activeTab.rawUrl}
           alt={activeTab.file.name}
           filePath={activeTab.file.path}
+          screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+          onCancelScreenshotSnip={onCancelScreenshotSnip}
+          onCompleteScreenshotSnip={onCompleteScreenshotSnip}
         />
       ) : activeTab.file.fileType === "pdf" ? (
-        <PdfViewer src={activeTab.rawUrl} filePath={activeTab.file.path} />
+        <PdfViewer
+          src={activeTab.rawUrl}
+          filePath={activeTab.file.path}
+          screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+          onCancelScreenshotSnip={onCancelScreenshotSnip}
+          onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+        />
       ) : (
         <iframe
           className="min-h-0 flex-1 bg-white"
