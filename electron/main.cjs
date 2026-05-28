@@ -12,8 +12,13 @@ const SERVER_READY_TIMEOUT_MS = 90_000;
 const APP_DISPLAY_NAME = "Libera";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
 
-app.setName(APP_DISPLAY_NAME);
-app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
+function applyApplicationIdentity() {
+  app.setName(APP_DISPLAY_NAME);
+  process.title = APP_DISPLAY_NAME;
+  app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
+}
+
+applyApplicationIdentity();
 
 let activeSetupPromise = null;
 let activeSetupWindow = null;
@@ -261,6 +266,8 @@ async function openConfigurationWindow() {
 }
 
 function installApplicationMenu() {
+  applyApplicationIdentity();
+
   const isMac = process.platform === "darwin";
   const configurationMenuItem = {
     accelerator: "CmdOrCtrl+,",
@@ -297,6 +304,21 @@ function installApplicationMenu() {
       submenu: [
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
         isMac ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "pasteAndMatchStyle" },
+        { role: "delete" },
+        { type: "separator" },
+        { role: "selectAll" },
       ],
     },
     {
@@ -435,7 +457,9 @@ async function startNextServer(config) {
   if (useStandalone) {
     applyServerEnv(env);
     require(standaloneServer);
+    applyApplicationIdentity();
     await waitForServer(url);
+    applyApplicationIdentity();
 
     return url;
   }
@@ -500,6 +524,8 @@ async function createMainWindow(url) {
 
 async function bootstrap() {
   try {
+    applyApplicationIdentity();
+
     if (process.platform === "darwin") {
       app.dock.setIcon(getIconPath());
     }

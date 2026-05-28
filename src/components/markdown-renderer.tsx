@@ -98,6 +98,17 @@ function MarkdownRendererContent({
               {children}
             </p>
           ),
+          blockquote: ({ children, className, ...props }) => (
+            <blockquote
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-4 border-l-4 border-zinc-300 bg-zinc-50 py-3 pl-4 pr-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700 [&>p:last-child]:mb-0",
+                className,
+              )}
+            >
+              {children}
+            </blockquote>
+          ),
           ul: ({ children, className, ...props }) => (
             <ul
               {...markdownElementProps(props)}

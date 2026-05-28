@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent, RefObject } from "react";
+import type { DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
   BookPlus,
@@ -74,6 +74,11 @@ type NotebookSidebarProps = {
   onToggleCollapsed: () => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
+  onUploadFiles: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
 };
 
 type SidebarSortKey = "createdAt" | "updatedAt" | "interactedAt";
@@ -123,6 +128,41 @@ function parseSortPreference(input: unknown): SidebarSortPreference {
   }
 
   return DEFAULT_SIDEBAR_SORT;
+}
+
+function hasExternalFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes("Files");
+}
+
+function handleFileDragOverDirectory(
+  event: DragEvent<HTMLElement>,
+  draggingFile: LiberaFileNode | null,
+  destinationPath: string,
+  onSetDragOverPath: (path: string) => void,
+) {
+  if (!draggingFile) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "move";
+  onSetDragOverPath(destinationPath);
+}
+
+function handleFileDropOnDirectory(
+  event: DragEvent<HTMLElement>,
+  draggingFile: LiberaFileNode | null,
+  destinationPath: string,
+  onDropFile: (destinationPath: string) => Promise<void>,
+) {
+  if (!draggingFile) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  void onDropFile(destinationPath);
 }
 
 function dateValue(value: string | undefined) {
@@ -282,6 +322,7 @@ export function NotebookSidebar({
   onToggleCollapsed,
   onToggleNotebook,
   onUploadChange,
+  onUploadFiles,
 }: NotebookSidebarProps) {
   const [contextMenu, setContextMenu] = useState<{
     target: SidebarMenuTarget;
@@ -590,6 +631,7 @@ export function NotebookSidebar({
               onSetDraggingFile={setDraggingFile}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
+              onUploadFiles={onUploadFiles}
             />
           ))}
         </div>
@@ -643,6 +685,7 @@ function NotebookSection({
   onSetDraggingFile,
   onStartUpload,
   onToggleNotebook,
+  onUploadFiles,
 }: {
   activeTabId: string;
   dragOverPath: string;
@@ -664,8 +707,14 @@ function NotebookSection({
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onStartUpload: (notebook: string) => void;
   onToggleNotebook: (notebook: string) => void;
+  onUploadFiles: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
 }) {
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
+  const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const [actionMenuPosition, setActionMenuPosition] = useState<MenuPosition | null>(
     null,
   );
@@ -740,12 +789,36 @@ function NotebookSection({
   return (
     <section
       className={`rounded-md border ${
-        isSelected ? "border-teal-300 shadow-sm" : "border-zinc-200"
+        isSelected || isUploadTarget ? "border-teal-300 shadow-sm" : "border-zinc-200"
       }`}
+      onDragOver={(event) => {
+        if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        onSetDragOverPath(notebook.path);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          onSetDragOverPath("");
+        }
+      }}
+      onDrop={(event) => {
+        if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        onSetDragOverPath("");
+        void onUploadFiles(notebook.name, Array.from(event.dataTransfer.files));
+      }}
     >
       <div
         className={`flex items-center gap-2 border-b px-2 py-2 ${
-          isDragTarget || isSelected
+          isDragTarget || isUploadTarget || isSelected
             ? "border-teal-300 bg-teal-50"
             : "border-zinc-100"
         }`}
@@ -821,7 +894,25 @@ function NotebookSection({
         />
       ) : null}
       {isExpanded ? (
-        <div className="px-2 py-2">
+        <div
+          className={`px-2 py-2 ${isDragTarget ? "bg-teal-50/60" : ""}`}
+          onDragOver={(event) =>
+            handleFileDragOverDirectory(
+              event,
+              draggingFile,
+              notebook.path,
+              onSetDragOverPath,
+            )
+          }
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              onSetDragOverPath("");
+            }
+          }}
+          onDrop={(event) =>
+            handleFileDropOnDirectory(event, draggingFile, notebook.path, onDropFile)
+          }
+        >
           <div className="space-y-1">
             {notebook.children.map((node) => (
               <TreeNodeRow
@@ -838,6 +929,8 @@ function NotebookSection({
                 onSetDragOverPath={onSetDragOverPath}
                 onSetDraggingFile={onSetDraggingFile}
                 onTogglePath={onToggleNotebook}
+                onUploadFiles={onUploadFiles}
+                parentPath={notebook.path}
               />
             ))}
             {!notebook.children.length ? (
@@ -969,6 +1062,8 @@ function TreeNodeRow({
   onSetDragOverPath,
   onSetDraggingFile,
   onTogglePath,
+  onUploadFiles,
+  parentPath,
 }: {
   activeTabId: string;
   depth: number;
@@ -982,32 +1077,53 @@ function TreeNodeRow({
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onTogglePath: (path: string) => void;
+  onUploadFiles: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
+  parentPath: string;
 }) {
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
     const isDragTarget = draggingFile && dragOverPath === node.path;
+    const isUploadTarget = !draggingFile && dragOverPath === node.path;
 
     return (
       <div>
         <button
           className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-zinc-100 ${
-            isDragTarget ? "bg-teal-50 ring-1 ring-teal-300" : ""
+            isDragTarget || isUploadTarget ? "bg-teal-50 ring-1 ring-teal-300" : ""
           }`}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
           type="button"
           onClick={() => onTogglePath(node.path)}
           onContextMenu={(event) => onContextMenu(event, { kind: "folder", folder: node })}
           onDragOver={(event) => {
-            if (!draggingFile) {
+            if (!draggingFile && !hasExternalFiles(event.dataTransfer)) {
               return;
             }
 
             event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = draggingFile ? "move" : "copy";
             onSetDragOverPath(node.path);
           }}
           onDragLeave={() => onSetDragOverPath("")}
           onDrop={(event) => {
             event.preventDefault();
+            event.stopPropagation();
+
+            if (!draggingFile && hasExternalFiles(event.dataTransfer)) {
+              onSetDragOverPath("");
+              void onUploadFiles(
+                node.notebook,
+                Array.from(event.dataTransfer.files),
+                node.path,
+              );
+              return;
+            }
+
             onDropFile(node.path);
           }}
         >
@@ -1021,7 +1137,25 @@ function TreeNodeRow({
         </button>
 
         {isExpanded ? (
-          <div className="mt-1 space-y-1">
+          <div
+            className={`mt-1 space-y-1 ${isDragTarget ? "bg-teal-50/50" : ""}`}
+            onDragOver={(event) =>
+              handleFileDragOverDirectory(
+                event,
+                draggingFile,
+                node.path,
+                onSetDragOverPath,
+              )
+            }
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                onSetDragOverPath("");
+              }
+            }}
+            onDrop={(event) =>
+              handleFileDropOnDirectory(event, draggingFile, node.path, onDropFile)
+            }
+          >
             {node.children.map((child) => (
               <TreeNodeRow
                 key={child.path}
@@ -1037,6 +1171,8 @@ function TreeNodeRow({
                 onSetDragOverPath={onSetDragOverPath}
                 onSetDraggingFile={onSetDraggingFile}
                 onTogglePath={onTogglePath}
+                onUploadFiles={onUploadFiles}
+                parentPath={node.path}
               />
             ))}
           </div>
@@ -1055,6 +1191,18 @@ function TreeNodeRow({
       type="button"
       onClick={() => onOpenFile(node)}
       onContextMenu={(event) => onContextMenu(event, { kind: "file", file: node })}
+      onDragOver={(event) =>
+        handleFileDragOverDirectory(
+          event,
+          draggingFile,
+          parentPath,
+          onSetDragOverPath,
+        )
+      }
+      onDragLeave={() => onSetDragOverPath("")}
+      onDrop={(event) =>
+        handleFileDropOnDirectory(event, draggingFile, parentPath, onDropFile)
+      }
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("application/x-libera-file-path", node.path);

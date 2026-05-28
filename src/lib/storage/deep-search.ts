@@ -3,6 +3,7 @@ import {
   readPdfAnnotations,
 } from "@/lib/storage/annotations";
 import { readLiberaFile } from "@/lib/storage/files";
+import { readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { getTree } from "@/lib/storage/tree";
 import type {
   DeepSearchPayload,
@@ -152,6 +153,28 @@ export async function deepSearch(query: string): Promise<DeepSearchPayload> {
     }
 
     if (file.fileType === "pdf") {
+      try {
+        const textCache = await readPdfTextCache(file.path);
+
+        for (const page of textCache.pages) {
+          if (results.length >= MAX_DEEP_SEARCH_RESULTS) {
+            break;
+          }
+
+          pushTextResult(results, {
+            file,
+            id: `pdf-text:${file.path}:${page.pageNumber}`,
+            normalizedQuery,
+            pageNumber: page.pageNumber,
+            source: "pdf-text",
+            sourceLabel: `PDF text, page ${page.pageNumber}`,
+            text: page.text,
+          });
+        }
+      } catch {
+        // Keep search results available even if one PDF cannot be parsed.
+      }
+
       const payload = await readPdfAnnotations(file.path);
 
       for (const annotation of payload.annotations) {

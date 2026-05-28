@@ -23,6 +23,7 @@ import {
   nowIso,
   type AnnotationSurfaceSize,
 } from "@/components/libera/text-annotation-layer";
+import type { ImageTabViewState } from "@/components/libera/types";
 import type { ImageAnnotationsPayload, PdfAnnotationRect, PdfTextAnnotation } from "@/lib/types";
 
 const MIN_ZOOM = 0.25;
@@ -33,10 +34,12 @@ const SAVE_DEBOUNCE_MS = 350;
 type ImageViewerProps = {
   alt: string;
   filePath: string;
+  initialViewState?: ImageTabViewState;
   screenshotSnipping?: boolean;
   src?: string;
   onCancelScreenshotSnip?: () => void;
   onCompleteScreenshotSnip?: (file: File) => Promise<void>;
+  onViewStateChange?: (viewState: ImageTabViewState) => void;
 };
 
 type ImageTool = "select" | "text";
@@ -53,21 +56,30 @@ function clampZoom(value: number) {
 export function ImageViewer({
   alt,
   filePath,
+  initialViewState,
   screenshotSnipping = false,
   src,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
+  onViewStateChange,
 }: ImageViewerProps) {
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState("");
-  const [tool, setTool] = useState<ImageTool>("select");
-  const [zoom, setZoom] = useState(1);
-  const [fontSize, setFontSize] = useState(DEFAULT_TEXT_ANNOTATION_FONT_SIZE);
-  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(
+    initialViewState?.selectedAnnotationId ?? "",
+  );
+  const [tool, setTool] = useState<ImageTool>(initialViewState?.tool ?? "select");
+  const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
+  const [fontSize, setFontSize] = useState(
+    initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
+  );
+  const [pan, setPan] = useState<Point>({
+    x: initialViewState?.panX ?? 0,
+    y: initialViewState?.panY ?? 0,
+  });
   const [isPanning, setIsPanning] = useState(false);
   const [imageSize, setImageSize] = useState<AnnotationSurfaceSize>({ width: 0, height: 0 });
   const [error, setError] = useState("");
@@ -81,13 +93,16 @@ export function ImageViewer({
     [annotations, selectedAnnotationId],
   );
 
+  const updateViewState = useCallback((patch: ImageTabViewState) => {
+    onViewStateChange?.(patch);
+  }, [onViewStateChange]);
+
   useEffect(() => {
     let active = true;
 
     queueMicrotask(() => {
       if (active) {
         setError("");
-        setSelectedAnnotationId("");
       }
     });
 
@@ -190,10 +205,15 @@ export function ImageViewer({
     setZoom(1);
     setPan({ x: 0, y: 0 });
     lastPointerRef.current = null;
+    updateViewState({ panX: 0, panY: 0, zoom: 1 });
   }
 
   function changeZoom(delta: number) {
-    setZoom((currentZoom) => clampZoom(currentZoom + delta));
+    setZoom((currentZoom) => {
+      const nextZoom = clampZoom(currentZoom + delta);
+      updateViewState({ zoom: nextZoom });
+      return nextZoom;
+    });
   }
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
@@ -232,10 +252,14 @@ export function ImageViewer({
     const previousPoint = lastPointerRef.current;
     lastPointerRef.current = nextPoint;
 
-    setPan((currentPan) => ({
-      x: currentPan.x + nextPoint.x - previousPoint.x,
-      y: currentPan.y + nextPoint.y - previousPoint.y,
-    }));
+    setPan((currentPan) => {
+      const nextPan = {
+        x: currentPan.x + nextPoint.x - previousPoint.x,
+        y: currentPan.y + nextPoint.y - previousPoint.y,
+      };
+      updateViewState({ panX: nextPan.x, panY: nextPan.y });
+      return nextPan;
+    });
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
@@ -250,6 +274,10 @@ export function ImageViewer({
   function selectAnnotation(annotation: PdfTextAnnotation) {
     setSelectedAnnotationId(annotation.id);
     setFontSize(annotation.fontSize);
+    updateViewState({
+      fontSize: annotation.fontSize,
+      selectedAnnotationId: annotation.id,
+    });
   }
 
   function addTextAnnotation(rect: PdfAnnotationRect) {
@@ -266,6 +294,7 @@ export function ImageViewer({
     };
 
     setSelectedAnnotationId(annotation.id);
+    updateViewState({ selectedAnnotationId: annotation.id });
     saveAnnotations([...annotations, annotation]);
   }
 
@@ -288,6 +317,7 @@ export function ImageViewer({
       clamp(value, MIN_TEXT_ANNOTATION_FONT_SIZE, MAX_TEXT_ANNOTATION_FONT_SIZE),
     );
     setFontSize(nextFontSize);
+    updateViewState({ fontSize: nextFontSize });
 
     if (selectedAnnotation) {
       updateTextAnnotation(selectedAnnotation.id, { fontSize: nextFontSize });
@@ -303,7 +333,8 @@ export function ImageViewer({
       annotations.filter((annotation) => annotation.id !== selectedAnnotationId),
     );
     setSelectedAnnotationId("");
-  }, [annotations, saveAnnotations, selectedAnnotationId]);
+    updateViewState({ selectedAnnotationId: "" });
+  }, [annotations, saveAnnotations, selectedAnnotationId, updateViewState]);
 
   useEffect(() => {
     function handleDeleteKey(event: KeyboardEvent) {
@@ -363,7 +394,10 @@ export function ImageViewer({
                 : "border-zinc-300 hover:bg-zinc-50"
             }`}
             type="button"
-            onClick={() => setTool("select")}
+            onClick={() => {
+              setTool("select");
+              updateViewState({ tool: "select" });
+            }}
           >
             <MousePointer2 aria-hidden className="h-4 w-4" />
             Select
@@ -375,7 +409,10 @@ export function ImageViewer({
                 : "border-zinc-300 hover:bg-zinc-50"
             }`}
             type="button"
-            onClick={() => setTool("text")}
+            onClick={() => {
+              setTool("text");
+              updateViewState({ tool: "text" });
+            }}
           >
             <Type aria-hidden className="h-4 w-4" />
             Text
@@ -497,7 +534,10 @@ export function ImageViewer({
               pageSize={imageSize}
               selectedAnnotationId={selectedAnnotationId}
               onAddAnnotation={addTextAnnotation}
-              onExitTextEditing={() => setTool("select")}
+              onExitTextEditing={() => {
+                setTool("select");
+                updateViewState({ tool: "select" });
+              }}
               onSelectAnnotation={selectAnnotation}
               onUpdateAnnotation={updateTextAnnotation}
             />

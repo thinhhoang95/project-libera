@@ -91,6 +91,19 @@ export type ImageAnnotationsPayload = {
   annotations: PdfTextAnnotation[];
 };
 
+export type PdfTextPage = {
+  pageNumber: number;
+  text: string;
+};
+
+export type PdfTextCachePayload = {
+  path: string;
+  pdfUpdatedAt: string;
+  pdfSize: number;
+  generatedAt: string;
+  pages: PdfTextPage[];
+};
+
 export type MarkdownImageAssetPayload = {
   assetPath: string;
   markdown: string;
@@ -99,6 +112,7 @@ export type MarkdownImageAssetPayload = {
 
 export type DeepSearchResultSource =
   | "markdown"
+  | "pdf-text"
   | "pdf-annotation"
   | "image-annotation";
 

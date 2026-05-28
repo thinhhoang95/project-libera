@@ -17,8 +17,10 @@ export {
   writeUploadedFile,
 } from "@/lib/storage/files";
 export {
+  deleteMarkdownImageSource,
   getMarkdownImageAsset,
   getMarkdownImageAssetBySource,
+  pruneUnusedMarkdownImageAssets,
   writeMarkdownImageAsset,
 } from "@/lib/storage/markdown-assets";
 export {

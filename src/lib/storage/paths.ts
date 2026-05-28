@@ -8,6 +8,7 @@ import {
   MARKDOWN_ASSETS_DIR,
   NOTEBOOK_METADATA_FILE,
   PDF_ANNOTATIONS_SUFFIX,
+  PDF_TEXT_CACHE_DIR,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 
@@ -124,6 +125,43 @@ export function legacyPdfAnnotationsPath(notebook: string, name: string) {
   return targetPath;
 }
 
+export function pdfTextCachePath(notebook: string, pathParts: string[]) {
+  if (!pathParts.length) {
+    throw new StorageError("PDF cache path is invalid.");
+  }
+
+  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
+  const safePathParts = pathParts.map((part) =>
+    assertSafeUserSegment(part, "File path segment"),
+  );
+  const targetPath = path.join(
+    getAdminRoot(),
+    safeNotebook,
+    LIBERA_SYSTEM_DIR,
+    PDF_TEXT_CACHE_DIR,
+    ...safePathParts.slice(0, -1),
+    `${safePathParts.at(-1)}.json`,
+  );
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
+}
+
+export function pdfTextCacheDirectoryPath(notebook: string, pathParts: string[]) {
+  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
+  const safePathParts = pathParts.map((part) =>
+    assertSafeUserSegment(part, "Folder path segment"),
+  );
+  const targetPath = path.join(
+    getAdminRoot(),
+    safeNotebook,
+    LIBERA_SYSTEM_DIR,
+    PDF_TEXT_CACHE_DIR,
+    ...safePathParts,
+  );
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
+}
+
 export function imageAnnotationsPath(notebook: string, name: string) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safeName = assertSafeSegment(name, "File name");
@@ -153,12 +191,62 @@ export function legacyImageAnnotationsPath(notebook: string, name: string) {
 
 export function markdownAssetsDirectoryName(markdownName: string) {
   const stem = path.basename(markdownName, path.extname(markdownName));
-  const normalized = stem
+  return markdownAssetSafeSegment(stem, "note");
+}
+
+function markdownAssetSafeSegment(segment: string, fallback = "asset") {
+  const normalized = segment
     .trim()
     .replace(/[^a-z0-9._-]+/gi, "-")
     .replace(/^-+|-+$/g, "");
 
-  return normalized || "note";
+  return normalized || fallback;
+}
+
+export function markdownAssetsDirectoryPathFromParts(
+  notebook: string,
+  markdownPathParts: string[],
+) {
+  if (!markdownPathParts.length) {
+    throw new StorageError("Markdown asset path is invalid.");
+  }
+
+  const folderParts = markdownPathParts
+    .slice(0, -1)
+    .map((part) => markdownAssetSafeSegment(part));
+  const targetPath = path.join(
+    notebookPath(notebook),
+    MARKDOWN_ASSETS_DIR,
+    ...folderParts,
+    markdownAssetsDirectoryName(markdownPathParts.at(-1) ?? ""),
+  );
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
+}
+
+export function markdownAssetsDirectoryPathForDirectory(
+  notebook: string,
+  pathParts: string[],
+) {
+  const targetPath = path.join(
+    notebookPath(notebook),
+    MARKDOWN_ASSETS_DIR,
+    ...pathParts.map((part) => markdownAssetSafeSegment(part)),
+  );
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
+}
+
+export function markdownAssetsPathPrefix(markdownPathParts: string[]) {
+  if (!markdownPathParts.length) {
+    throw new StorageError("Markdown asset path is invalid.");
+  }
+
+  return [
+    MARKDOWN_ASSETS_DIR,
+    ...markdownPathParts.slice(0, -1).map((part) => markdownAssetSafeSegment(part)),
+    markdownAssetsDirectoryName(markdownPathParts.at(-1) ?? ""),
+  ].join("/");
 }
 
 export function markdownAssetsDirectoryPath(notebook: string, markdownName: string) {

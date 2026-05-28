@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const notebook = String(formData.get("notebook") ?? "");
+    const destinationPath = String(formData.get("destinationPath") ?? "");
     const files = formData.getAll("files").filter((item): item is File => item instanceof File);
 
     if (!files.length) {
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
     const uploaded = [];
 
     for (const file of files) {
-      uploaded.push(await writeUploadedFile(notebook, file));
+      uploaded.push(await writeUploadedFile(notebook, file, destinationPath));
     }
 
     return NextResponse.json({

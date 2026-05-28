@@ -15,15 +15,25 @@ import {
   pathExists,
 } from "@/lib/storage/fs-utils";
 import {
+  copyPdfTextCache,
+  deletePdfTextCache,
+  deletePdfTextCacheDirectory,
+  ensurePdfTextCache,
+  movePdfTextCache,
+  movePdfTextCacheDirectory,
+} from "@/lib/storage/pdf-text-cache";
+import { pruneUnusedMarkdownImageAssets } from "@/lib/storage/markdown-assets";
+import {
   assertSafeSegment,
   ensureAdminRoot,
-  filePath,
   filePathFromParts,
   imageAnnotationsPath,
   itemPath,
   legacyImageAnnotationsPath,
   legacyPdfAnnotationsPath,
   markdownAssetsDirectoryPath,
+  markdownAssetsDirectoryPathForDirectory,
+  markdownAssetsDirectoryPathFromParts,
   notebookPath,
   pdfAnnotationsPath,
   rawFileUrl,
@@ -40,6 +50,10 @@ export async function readLiberaFile(relativePath: string): Promise<LiberaFilePa
   const node = await getFileNode(notebook, pathParts);
 
   if (node.fileType !== "markdown") {
+    if (node.fileType === "pdf") {
+      await ensurePdfTextCache(relativePath).catch(() => undefined);
+    }
+
     return {
       file: node,
       rawUrl: rawFileUrl(node.path),
@@ -93,6 +107,7 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
   }
 
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
+  await pruneUnusedMarkdownImageAssets(relativePath, content);
 
   return readLiberaFile(relativePath);
 }
@@ -123,8 +138,10 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   await moveRelatedMetadata(
     current.notebook,
     current.name,
+    current.pathParts,
     safeNextNotebook,
     safeNextName,
+    nextParts,
     currentFileType,
     nextFileType,
   );
@@ -181,6 +198,17 @@ export async function renameFolder(relativePath: string, nextName: string) {
   }
 
   await rename(currentPath, nextPath);
+  await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
+    ...parentParts,
+    safeNextName,
+  ]);
+  await moveFileIfExists(
+    markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
+    markdownAssetsDirectoryPathForDirectory(current.notebook, [
+      ...parentParts,
+      safeNextName,
+    ]),
+  );
 
   return getTree();
 }
@@ -196,6 +224,11 @@ export async function deleteFolder(relativePath: string) {
   const targetPath = itemPath(current.notebook, current.pathParts);
   await assertDirectoryExists(targetPath, "Folder was not found.");
   await rm(targetPath, { recursive: true });
+  await deletePdfTextCacheDirectory(current.notebook, current.pathParts);
+  await rm(markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts), {
+    force: true,
+    recursive: true,
+  });
 
   return getTree();
 }
@@ -233,8 +266,10 @@ export async function moveFileToDirectory(
   await moveRelatedMetadata(
     current.notebook,
     current.name,
+    current.pathParts,
     destination.notebook,
     safeNextName,
+    nextParts,
     currentFileType,
     nextFileType,
   );
@@ -267,8 +302,10 @@ export async function copyFileToDirectory(
   await copyRelatedMetadata(
     current.notebook,
     current.name,
+    current.pathParts,
     destination.notebook,
     safeNextName,
+    nextParts,
     currentFileType,
   );
 
@@ -285,6 +322,7 @@ export async function deleteFile(relativePath: string) {
   if (fileType === "pdf") {
     await rm(pdfAnnotationsPath(notebook, name), { force: true });
     await rm(legacyPdfAnnotationsPath(notebook, name), { force: true });
+    await deletePdfTextCache(notebook, pathParts);
   }
 
   if (fileType === "image") {
@@ -293,6 +331,10 @@ export async function deleteFile(relativePath: string) {
   }
 
   if (fileType === "markdown") {
+    await rm(markdownAssetsDirectoryPathFromParts(notebook, pathParts), {
+      force: true,
+      recursive: true,
+    });
     await rm(markdownAssetsDirectoryPath(notebook, name), {
       force: true,
       recursive: true,
@@ -302,17 +344,25 @@ export async function deleteFile(relativePath: string) {
   return getTree();
 }
 
-export async function writeUploadedFile(notebook: string, upload: File) {
+export async function writeUploadedFile(
+  notebook: string,
+  upload: File,
+  destinationPath?: string,
+) {
   await ensureAdminRoot();
-  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
+  const destination = destinationPath?.trim()
+    ? splitDirectoryPath(destinationPath)
+    : { notebook: assertSafeSegment(notebook, "Notebook name"), pathParts: [] };
+  const safeNotebook = destination.notebook;
   const safeName = assertSafeSegment(upload.name, "File name");
   assertSupportedFileName(safeName);
 
-  if (!(await pathExists(notebookPath(safeNotebook)))) {
-    throw new StorageError("Notebook does not exist.", 404);
-  }
+  const destinationDirectoryPath = itemPath(safeNotebook, destination.pathParts);
 
-  const targetPath = filePath(safeNotebook, safeName);
+  await assertDirectoryExists(destinationDirectoryPath, "Destination folder was not found.");
+
+  const targetParts = [...destination.pathParts, safeName];
+  const targetPath = filePathFromParts(safeNotebook, targetParts);
 
   if (await pathExists(targetPath)) {
     throw new StorageError(`File already exists: ${safeName}`, 409);
@@ -320,7 +370,7 @@ export async function writeUploadedFile(notebook: string, upload: File) {
 
   await writeFile(targetPath, Buffer.from(await upload.arrayBuffer()));
 
-  return getFileNode(safeNotebook, safeName);
+  return getFileNode(safeNotebook, targetParts);
 }
 
 export async function getRawFile(relativePath: string) {
@@ -340,8 +390,10 @@ export async function getRawFile(relativePath: string) {
 async function moveRelatedMetadata(
   currentNotebook: string,
   currentName: string,
+  currentPathParts: string[],
   nextNotebook: string,
   nextName: string,
+  nextPathParts: string[],
   currentFileType: string,
   nextFileType: string,
 ) {
@@ -354,9 +406,16 @@ async function moveRelatedMetadata(
       legacyPdfAnnotationsPath(currentNotebook, currentName),
       pdfAnnotationsPath(nextNotebook, nextName),
     );
+    await movePdfTextCache(
+      currentNotebook,
+      currentPathParts,
+      nextNotebook,
+      nextPathParts,
+    );
   } else if (currentFileType === "pdf") {
     await rm(pdfAnnotationsPath(currentNotebook, currentName), { force: true });
     await rm(legacyPdfAnnotationsPath(currentNotebook, currentName), { force: true });
+    await deletePdfTextCache(currentNotebook, currentPathParts);
   }
 
   if (currentFileType === "image" && nextFileType === "image") {
@@ -374,12 +433,33 @@ async function moveRelatedMetadata(
   }
 
   if (currentFileType === "markdown" && nextFileType === "markdown") {
-    const currentAssetsPath = markdownAssetsDirectoryPath(currentNotebook, currentName);
-    const nextAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
+    const currentAssetsPath = markdownAssetsDirectoryPathFromParts(
+      currentNotebook,
+      currentPathParts,
+    );
+    const nextAssetsPath = markdownAssetsDirectoryPathFromParts(
+      nextNotebook,
+      nextPathParts,
+    );
 
     if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
       await ensureParentDirectory(nextAssetsPath);
       await rename(currentAssetsPath, nextAssetsPath);
+    }
+
+    const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
+      currentNotebook,
+      currentName,
+    );
+    const nextLegacyAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
+
+    if (
+      currentLegacyAssetsPath !== currentAssetsPath &&
+      (await pathExists(currentLegacyAssetsPath)) &&
+      !(await pathExists(nextLegacyAssetsPath))
+    ) {
+      await ensureParentDirectory(nextLegacyAssetsPath);
+      await rename(currentLegacyAssetsPath, nextLegacyAssetsPath);
     }
   }
 }
@@ -387,8 +467,10 @@ async function moveRelatedMetadata(
 async function copyRelatedMetadata(
   currentNotebook: string,
   currentName: string,
+  currentPathParts: string[],
   nextNotebook: string,
   nextName: string,
+  nextPathParts: string[],
   currentFileType: string,
 ) {
   if (currentFileType === "pdf") {
@@ -396,6 +478,7 @@ async function copyRelatedMetadata(
       pdfAnnotationsPath(currentNotebook, currentName),
       pdfAnnotationsPath(nextNotebook, nextName),
     );
+    await copyPdfTextCache(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
   }
 
   if (currentFileType === "image") {
@@ -406,11 +489,31 @@ async function copyRelatedMetadata(
   }
 
   if (currentFileType === "markdown") {
-    const currentAssetsPath = markdownAssetsDirectoryPath(currentNotebook, currentName);
-    const nextAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
+    const currentAssetsPath = markdownAssetsDirectoryPathFromParts(
+      currentNotebook,
+      currentPathParts,
+    );
+    const nextAssetsPath = markdownAssetsDirectoryPathFromParts(
+      nextNotebook,
+      nextPathParts,
+    );
 
     if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
       await cp(currentAssetsPath, nextAssetsPath, { recursive: true });
+    }
+
+    const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
+      currentNotebook,
+      currentName,
+    );
+    const nextLegacyAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
+
+    if (
+      currentLegacyAssetsPath !== currentAssetsPath &&
+      (await pathExists(currentLegacyAssetsPath)) &&
+      !(await pathExists(nextLegacyAssetsPath))
+    ) {
+      await cp(currentLegacyAssetsPath, nextLegacyAssetsPath, { recursive: true });
     }
   }
 }

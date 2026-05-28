@@ -17,6 +17,7 @@ import type {
   NoteDialogState,
   NoteFormValues,
   OpenTab,
+  OpenTabViewState,
   SearchResult,
   WorkspaceConfirmDialogState,
   WorkspaceInputDialogState,
@@ -57,6 +58,22 @@ function imageAltText(name: string) {
 
 function clampTextOffset(value: number, textLength: number) {
   return Math.max(0, Math.min(value, textLength));
+}
+
+function shallowEqualRecord(
+  left: object | undefined,
+  right: object | undefined,
+) {
+  const leftRecord = (left ?? {}) as Record<string, unknown>;
+  const rightRecord = (right ?? {}) as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => leftRecord[key] === rightRecord[key]);
 }
 
 function createMarkdownImageInsertion(
@@ -329,6 +346,40 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       status: value === tab.saved ? "clean" : "dirty",
       error: undefined,
     }));
+  }
+
+  function setActiveTabViewState(viewState: OpenTabViewState) {
+    if (!activeTab) {
+      return;
+    }
+
+    updateTab(activeTab.id, (tab) => {
+      const nextViewState: OpenTabViewState = {
+        ...tab.viewState,
+        image: viewState.image
+          ? { ...tab.viewState?.image, ...viewState.image }
+          : tab.viewState?.image,
+        markdown: viewState.markdown
+          ? { ...tab.viewState?.markdown, ...viewState.markdown }
+          : tab.viewState?.markdown,
+        pdf: viewState.pdf
+          ? { ...tab.viewState?.pdf, ...viewState.pdf }
+          : tab.viewState?.pdf,
+      };
+
+      if (
+        shallowEqualRecord(tab.viewState?.image, nextViewState.image) &&
+        shallowEqualRecord(tab.viewState?.markdown, nextViewState.markdown) &&
+        shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf)
+      ) {
+        return tab;
+      }
+
+      return {
+        ...tab,
+        viewState: nextViewState,
+      };
+    });
   }
 
   function restoreMarkdownTextarea(options: {
@@ -703,6 +754,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         status: nextDraft === tab.saved ? "clean" : "dirty",
         error: undefined,
       }));
+
+      void apiRequest<{ deleted: boolean }>("/api/markdown-assets", {
+        method: "DELETE",
+        body: JSON.stringify({
+          documentPath: activeTab.file.path,
+          imageSource: image.src,
+          nextMarkdown: nextDraft,
+        }),
+      })
+        .then((cleanup) => {
+          if (cleanup.deleted) {
+            void refreshTree(activeTab.file.notebook);
+          }
+        })
+        .catch(() => undefined);
 
       window.requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -1383,17 +1449,23 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
-  async function handleUploadChange() {
-    const files = uploadInputRef.current?.files;
-
-    if (!files?.length || !uploadNotebook) {
+  async function uploadFilesToNotebook(
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) {
+    if (!files.length) {
       return;
     }
 
     const formData = new FormData();
-    formData.append("notebook", uploadNotebook);
+    formData.append("notebook", notebook);
 
-    Array.from(files).forEach((file) => formData.append("files", file));
+    if (destinationPath) {
+      formData.append("destinationPath", destinationPath);
+    }
+
+    files.forEach((file) => formData.append("files", file));
 
     try {
       const payload = await apiRequest<{ tree: LiberaTree }>("/api/uploads", {
@@ -1401,9 +1473,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         body: formData,
       });
       setTree(payload.tree);
-      setExpanded((current) => new Set(current).add(uploadNotebook));
+      setExpanded((current) => {
+        const next = new Set(current).add(notebook);
+
+        if (destinationPath) {
+          next.add(destinationPath);
+        }
+
+        return next;
+      });
+      setSelectedNotebookName(notebook);
+      setWorkspaceError("");
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
+    }
+  }
+
+  async function handleUploadChange() {
+    const files = uploadInputRef.current?.files;
+
+    if (!files?.length || !uploadNotebook) {
+      return;
+    }
+
+    await uploadFilesToNotebook(uploadNotebook, Array.from(files));
+
+    if (uploadInputRef.current) {
+      uploadInputRef.current.value = "";
     }
   }
 
@@ -1521,6 +1617,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       handleLogin,
       handleLogout,
       handleUploadChange,
+      uploadFilesToNotebook,
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
@@ -1538,6 +1635,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectNotebook,
       setActiveDraft,
       setActiveTabId: activateTab,
+      setActiveTabViewState,
       setPassword,
       setQuery,
       startScreenshotSnip,

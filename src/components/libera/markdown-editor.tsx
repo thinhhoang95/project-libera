@@ -32,6 +32,7 @@ type MarkdownEditorProps = {
   onAiImageToMarkdown: (image: MarkdownImageSelection) => Promise<void>;
   onChange: (value: string) => void;
   onInsertImageFile: (file: File) => Promise<void>;
+  onSelectionChange?: (selection: { end: number; start: number }) => void;
 };
 
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
@@ -133,6 +134,7 @@ export function MarkdownEditor({
   onAiImageToMarkdown,
   onChange,
   onInsertImageFile,
+  onSelectionChange,
 }: MarkdownEditorProps) {
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [draggingImage, setDraggingImage] = useState(false);
@@ -325,6 +327,13 @@ export function MarkdownEditor({
     }
   }
 
+  function emitSelectionChange(textarea: HTMLTextAreaElement) {
+    onSelectionChange?.({
+      end: textarea.selectionEnd,
+      start: textarea.selectionStart,
+    });
+  }
+
   function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -357,6 +366,7 @@ export function MarkdownEditor({
           lineHeight: `${1.5 * textScale}rem`,
         }}
         value={value}
+        onBlur={(event) => emitSelectionChange(event.currentTarget)}
         onChange={(event) => onChange(event.target.value)}
         onContextMenu={openContextMenu}
         onDragLeave={handleDragLeave}

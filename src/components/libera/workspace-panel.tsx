@@ -14,6 +14,7 @@ import type {
   MutableRefObject,
   PointerEvent as ReactPointerEvent,
   RefObject,
+  UIEvent as ReactUIEvent,
 } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
@@ -24,8 +25,12 @@ import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import type {
+  ImageTabViewState,
+  MarkdownTabViewState,
   MarkdownScreenshotSnipSession,
   OpenTab,
+  OpenTabViewState,
+  PdfTabViewState,
 } from "@/components/libera/types";
 import {
   findMarkdownSourceElementForOffset,
@@ -70,6 +75,7 @@ type WorkspacePanelProps = {
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
+  onSetViewState: (viewState: OpenTabViewState) => void;
   onStartScreenshotSnip: () => void;
 };
 
@@ -235,10 +241,10 @@ export function WorkspacePanel({
   onRenameFile,
   onSave,
   onSetDraft,
+  onSetViewState,
   onStartScreenshotSnip,
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
-  const [markdownZoom, setMarkdownZoom] = useState(100);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
@@ -250,16 +256,49 @@ export function WorkspacePanel({
   const suppressEditorScrollTimeoutRef = useRef<number | null>(null);
   const suppressPreviewScrollRef = useRef(false);
   const suppressPreviewScrollTimeoutRef = useRef<number | null>(null);
+  const markdownRestoreViewStateRef = useRef<MarkdownTabViewState | undefined>(undefined);
   const activeFileType = activeTab?.file.fileType;
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
   const activeTabStatus = activeTab?.status;
   const activeTabId = activeTab?.id;
+  const activeMarkdownViewState =
+    activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
+  const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
+  const activePdfViewState =
+    activeTab?.file.fileType === "pdf" ? activeTab.viewState?.pdf : undefined;
+  const activeImageViewState =
+    activeTab?.file.fileType === "image" ? activeTab.viewState?.image : undefined;
   const previewMarkdownDraft = useDebouncedPreviewContent(
     activeMarkdownDraft,
     activeTabId,
   );
   const previewFullscreen =
     activeTab?.file.fileType === "markdown" && activePreviewTabId === activeTab.id;
+
+  const updateMarkdownViewState = useCallback(
+    (patch: MarkdownTabViewState) => {
+      onSetViewState({ markdown: patch });
+    },
+    [onSetViewState],
+  );
+
+  const updatePdfViewState = useCallback(
+    (patch: PdfTabViewState) => {
+      onSetViewState({ pdf: patch });
+    },
+    [onSetViewState],
+  );
+
+  const updateImageViewState = useCallback(
+    (patch: ImageTabViewState) => {
+      onSetViewState({ image: patch });
+    },
+    [onSetViewState],
+  );
+
+  useEffect(() => {
+    markdownRestoreViewStateRef.current = activeMarkdownViewState;
+  }, [activeMarkdownViewState]);
 
   const markScrollSuppressed = useCallback(
     (
@@ -343,12 +382,21 @@ export function WorkspacePanel({
       return;
     }
 
+    const editor = textarea;
+    const previewPane = preview;
+
     function handleEditorScroll() {
       if (suppressEditorScrollRef.current) {
         return;
       }
 
       syncMarkdownPreviewToTextarea();
+      updateMarkdownViewState({
+        editorScrollLeft: editor.scrollLeft,
+        editorScrollTop: editor.scrollTop,
+        previewScrollLeft: previewPane.scrollLeft,
+        previewScrollTop: previewPane.scrollTop,
+      });
     }
 
     function handlePreviewScroll() {
@@ -357,14 +405,20 @@ export function WorkspacePanel({
       }
 
       syncTextareaToMarkdownPreview();
+      updateMarkdownViewState({
+        editorScrollLeft: editor.scrollLeft,
+        editorScrollTop: editor.scrollTop,
+        previewScrollLeft: previewPane.scrollLeft,
+        previewScrollTop: previewPane.scrollTop,
+      });
     }
 
-    textarea.addEventListener("scroll", handleEditorScroll, { passive: true });
-    preview.addEventListener("scroll", handlePreviewScroll, { passive: true });
+    editor.addEventListener("scroll", handleEditorScroll, { passive: true });
+    previewPane.addEventListener("scroll", handlePreviewScroll, { passive: true });
 
     return () => {
-      textarea.removeEventListener("scroll", handleEditorScroll);
-      preview.removeEventListener("scroll", handlePreviewScroll);
+      editor.removeEventListener("scroll", handleEditorScroll);
+      previewPane.removeEventListener("scroll", handlePreviewScroll);
     };
   }, [
     activeFileType,
@@ -373,6 +427,7 @@ export function WorkspacePanel({
     syncMarkdownPreviewToTextarea,
     syncTextareaToMarkdownPreview,
     textareaRef,
+    updateMarkdownViewState,
   ]);
 
   useEffect(() => {
@@ -389,6 +444,48 @@ export function WorkspacePanel({
     previewMarkdownDraft,
     previewFullscreen,
     syncMarkdownPreviewToTextarea,
+  ]);
+
+  useEffect(() => {
+    if (activeFileType !== "markdown" || !activeTabId) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      const preview = markdownPreviewRef.current;
+      const viewState = markdownRestoreViewStateRef.current;
+
+      if (textarea && !previewFullscreen) {
+        textarea.scrollLeft = viewState?.editorScrollLeft ?? 0;
+        textarea.scrollTop = viewState?.editorScrollTop ?? 0;
+
+        const selectionStart = viewState?.selectionStart;
+        const selectionEnd = viewState?.selectionEnd;
+
+        if (
+          typeof selectionStart === "number" &&
+          typeof selectionEnd === "number"
+        ) {
+          textarea.setSelectionRange(
+            Math.max(0, Math.min(selectionStart, textarea.value.length)),
+            Math.max(0, Math.min(selectionEnd, textarea.value.length)),
+          );
+        }
+      }
+
+      if (preview) {
+        preview.scrollLeft = viewState?.previewScrollLeft ?? 0;
+        preview.scrollTop = viewState?.previewScrollTop ?? 0;
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    activeFileType,
+    activeTabId,
+    previewFullscreen,
+    textareaRef,
   ]);
 
   useEffect(() => {
@@ -447,6 +544,26 @@ export function WorkspacePanel({
 
     setMarkdownSplitPercent(clampedValue);
     window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+  }
+
+  function handleMarkdownZoomChange(value: number) {
+    updateMarkdownViewState({ zoom: value });
+  }
+
+  function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
+    updateMarkdownViewState({
+      selectionEnd: selection.end,
+      selectionStart: selection.start,
+    });
+  }
+
+  function handleMarkdownPreviewScroll(event: ReactUIEvent<HTMLElement>) {
+    const preview = event.currentTarget;
+
+    updateMarkdownViewState({
+      previewScrollLeft: preview.scrollLeft,
+      previewScrollTop: preview.scrollTop,
+    });
   }
 
   function updateMarkdownSplitFromPointer(clientX: number, clientY: number) {
@@ -637,7 +754,7 @@ export function WorkspacePanel({
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertImage={onInsertImage}
-            onMarkdownZoomChange={setMarkdownZoom}
+            onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={onStartScreenshotSnip}
             onTogglePreviewFullscreen={() =>
               setActivePreviewTabId((current) =>
@@ -647,7 +764,11 @@ export function WorkspacePanel({
             previewFullscreen={previewFullscreen}
           />
           {previewFullscreen ? (
-            <article className="min-h-0 flex-1 overflow-auto bg-white p-6">
+            <article
+              ref={markdownPreviewRef}
+              className="min-h-0 flex-1 overflow-auto bg-white p-6"
+              onScroll={handleMarkdownPreviewScroll}
+            >
               <MarkdownRenderer
                 content={activeTab.draft}
                 documentPath={activeTab.file.path}
@@ -676,6 +797,7 @@ export function WorkspacePanel({
                 onAiImageToMarkdown={onAiImageToMarkdown}
                 onChange={onSetDraft}
                 onInsertImageFile={onInsertImage}
+                onSelectionChange={handleMarkdownSelectionChange}
               />
               <div
                 aria-label="Resize Markdown editor and preview"
@@ -696,6 +818,7 @@ export function WorkspacePanel({
                 ref={markdownPreviewRef}
                 className="min-h-0 min-w-0 overflow-auto bg-white p-6"
                 onDoubleClick={handleMarkdownPreviewDoubleClick}
+                onScroll={handleMarkdownPreviewScroll}
               >
                 <MarkdownRenderer
                   content={previewMarkdownDraft}
@@ -720,15 +843,20 @@ export function WorkspacePanel({
           src={activeTab.rawUrl}
           alt={activeTab.file.name}
           filePath={activeTab.file.path}
+          initialViewState={activeImageViewState}
           screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+          onViewStateChange={updateImageViewState}
           onCancelScreenshotSnip={onCancelScreenshotSnip}
           onCompleteScreenshotSnip={onCompleteScreenshotSnip}
         />
       ) : activeTab.file.fileType === "pdf" ? (
         <PdfViewer
+          key={activeTab.id}
           src={activeTab.rawUrl}
           filePath={activeTab.file.path}
+          initialViewState={activePdfViewState}
           screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+          onViewStateChange={updatePdfViewState}
           onCancelScreenshotSnip={onCancelScreenshotSnip}
           onCompleteScreenshotSnip={onCompleteScreenshotSnip}
         />

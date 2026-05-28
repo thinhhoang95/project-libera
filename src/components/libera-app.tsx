@@ -77,6 +77,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
+          onUploadFiles={workspace.uploadFilesToNotebook}
         />
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -120,6 +121,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
+            onSetViewState={workspace.setActiveTabViewState}
             onStartScreenshotSnip={workspace.startScreenshotSnip}
           />
         </section>

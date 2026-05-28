@@ -14,6 +14,41 @@ export type OpenTab = {
   rawUrl?: string;
   status: "clean" | "dirty" | "saving" | "error";
   error?: string;
+  viewState?: OpenTabViewState;
+};
+
+export type MarkdownTabViewState = {
+  editorScrollLeft?: number;
+  editorScrollTop?: number;
+  previewScrollLeft?: number;
+  previewScrollTop?: number;
+  selectionEnd?: number;
+  selectionStart?: number;
+  zoom?: number;
+};
+
+export type PdfTabViewState = {
+  fontSize?: number;
+  scrollLeft?: number;
+  scrollTop?: number;
+  selectedAnnotationId?: string;
+  tool?: "select" | "highlight" | "text";
+  zoom?: number;
+};
+
+export type ImageTabViewState = {
+  fontSize?: number;
+  panX?: number;
+  panY?: number;
+  selectedAnnotationId?: string;
+  tool?: "select" | "text";
+  zoom?: number;
+};
+
+export type OpenTabViewState = {
+  image?: ImageTabViewState;
+  markdown?: MarkdownTabViewState;
+  pdf?: PdfTabViewState;
 };
 
 export type SearchResult =
@@ -175,6 +210,11 @@ export type LiberaWorkspace = {
   handleLogin: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   handleLogout: () => Promise<void>;
   handleUploadChange: () => Promise<void>;
+  uploadFilesToNotebook: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
   insertExistingMarkdownImage: (file: LiberaFileNode) => Promise<void>;
   insertMarkdownImage: (file: File) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
@@ -192,6 +232,7 @@ export type LiberaWorkspace = {
   selectNotebook: (notebook: string) => void;
   setActiveDraft: (value: string) => void;
   setActiveTabId: (tabId: string) => void;
+  setActiveTabViewState: (viewState: OpenTabViewState) => void;
   setPassword: (password: string) => void;
   setQuery: (query: string) => void;
   startScreenshotSnip: () => void;

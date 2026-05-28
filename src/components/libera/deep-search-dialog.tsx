@@ -77,7 +77,7 @@ export function DeepSearchDialog({
     <ModalDialog
       open
       title="Deep Search"
-      description="Search Markdown content and saved text annotations."
+      description="Search Markdown content, PDF text, and saved text annotations."
       panelClassName="max-w-2xl"
       onClose={onClose}
     >
@@ -90,7 +90,7 @@ export function DeepSearchDialog({
           <input
             className="h-10 w-full rounded-md border border-zinc-300 bg-white px-9 text-sm outline-none transition focus:border-zinc-950"
             value={query}
-            placeholder="Search Markdown and annotations"
+            placeholder="Search Markdown, PDFs, and annotations"
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
@@ -133,7 +133,7 @@ function DeepSearchResults({
   if (searching) {
     return (
       <div className="flex min-h-48 items-center justify-center text-sm text-zinc-500">
-        Searching content and annotations...
+        Searching content, PDFs, and annotations...
       </div>
     );
   }
@@ -149,7 +149,7 @@ function DeepSearchResults({
   if (!searchedQuery) {
     return (
       <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-zinc-500">
-        Enter a query to search Markdown files and saved annotations.
+        Enter a query to search Markdown files, PDFs, and saved annotations.
       </div>
     );
   }

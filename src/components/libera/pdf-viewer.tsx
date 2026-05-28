@@ -11,6 +11,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import {
+  type UIEvent as ReactUIEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -49,6 +50,7 @@ import type {
   PdfAnnotationsPayload,
   PdfTextAnnotation,
 } from "@/lib/types";
+import type { PdfTabViewState } from "@/components/libera/types";
 
 GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.mjs",
@@ -61,13 +63,19 @@ const ZOOM_STEP = 0.25;
 const HIGHLIGHT_COLOR = "#fde047";
 
 type PdfTool = "select" | "highlight" | "text";
+type PdfScrollPosition = {
+  scrollLeft: number;
+  scrollTop: number;
+};
 
 type PdfViewerProps = {
   filePath: string;
+  initialViewState?: PdfTabViewState;
   screenshotSnipping?: boolean;
   src?: string;
   onCancelScreenshotSnip?: () => void;
   onCompleteScreenshotSnip?: (file: File) => Promise<void>;
+  onViewStateChange?: (viewState: PdfTabViewState) => void;
 };
 
 function intersectClientRect(rect: DOMRect, bounds: DOMRect) {
@@ -107,18 +115,35 @@ function renderCanvas(viewport: PageViewport, canvas: HTMLCanvasElement) {
 
 export function PdfViewer({
   filePath,
+  initialViewState,
   screenshotSnipping = false,
   src,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
+  onViewStateChange,
 }: PdfViewerProps) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
+    scrollLeft: initialViewState?.scrollLeft ?? 0,
+    scrollTop: initialViewState?.scrollTop ?? 0,
+  });
+  const laidOutPageNumbersRef = useRef<Set<number>>(new Set());
+  const pendingScrollViewStateRef = useRef<PdfScrollPosition | null>(null);
+  const scrollViewStateFrameRef = useRef<number | null>(null);
+  const onViewStateChangeRef = useRef(onViewStateChange);
+  const initialViewStateRef = useRef(initialViewState);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pageNumbers, setPageNumbers] = useState<number[]>([]);
+  const [laidOutPageCount, setLaidOutPageCount] = useState(0);
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState("");
-  const [tool, setTool] = useState<PdfTool>("select");
-  const [zoom, setZoom] = useState(1);
-  const [fontSize, setFontSize] = useState(DEFAULT_TEXT_ANNOTATION_FONT_SIZE);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(
+    initialViewState?.selectedAnnotationId ?? "",
+  );
+  const [tool, setTool] = useState<PdfTool>(initialViewState?.tool ?? "select");
+  const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
+  const [fontSize, setFontSize] = useState(
+    initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -136,6 +161,66 @@ export function PdfViewer({
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
 
   useEffect(() => {
+    onViewStateChangeRef.current = onViewStateChange;
+  }, [onViewStateChange]);
+
+  useEffect(() => {
+    initialViewStateRef.current = initialViewState;
+  }, [initialViewState]);
+
+  const updateViewState = useCallback((patch: PdfTabViewState) => {
+    onViewStateChangeRef.current?.(patch);
+  }, []);
+
+  const flushPendingScrollViewState = useCallback(() => {
+    if (scrollViewStateFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollViewStateFrameRef.current);
+      scrollViewStateFrameRef.current = null;
+    }
+
+    if (!pendingScrollViewStateRef.current) {
+      return;
+    }
+
+    updateViewState(pendingScrollViewStateRef.current);
+    pendingScrollViewStateRef.current = null;
+  }, [updateViewState]);
+
+  const handleScroll = useCallback(
+    (event: ReactUIEvent<HTMLDivElement>) => {
+      pendingScrollViewStateRef.current = {
+        scrollLeft: event.currentTarget.scrollLeft,
+        scrollTop: event.currentTarget.scrollTop,
+      };
+
+      if (scrollViewStateFrameRef.current !== null) {
+        return;
+      }
+
+      scrollViewStateFrameRef.current = window.requestAnimationFrame(() => {
+        scrollViewStateFrameRef.current = null;
+
+        if (!pendingScrollViewStateRef.current) {
+          return;
+        }
+
+        updateViewState(pendingScrollViewStateRef.current);
+        pendingScrollViewStateRef.current = null;
+      });
+    },
+    [updateViewState],
+  );
+
+  const handlePageLayout = useCallback((pageNumber: number) => {
+    if (laidOutPageNumbersRef.current.has(pageNumber)) {
+      return;
+    }
+
+    laidOutPageNumbersRef.current.add(pageNumber);
+    setLaidOutPageCount(laidOutPageNumbersRef.current.size);
+  }, []);
+
+  useEffect(() => {
     let active = true;
     let loadedDocument: PDFDocumentProxy | null = null;
 
@@ -150,7 +235,13 @@ export function PdfViewer({
       setError("");
       setPdfDocument(null);
       setPageNumbers([]);
-      setSelectedAnnotationId("");
+      setLaidOutPageCount(0);
+      laidOutPageNumbersRef.current.clear();
+      const restoreViewState = initialViewStateRef.current;
+      pendingScrollRestoreRef.current = {
+        scrollLeft: restoreViewState?.scrollLeft ?? 0,
+        scrollTop: restoreViewState?.scrollTop ?? 0,
+      };
 
       try {
         const [pdfResponse, annotationsPayload] = await Promise.all([
@@ -203,6 +294,69 @@ export function PdfViewer({
     };
   }, [filePath, src]);
 
+  function resetPageLayoutTracking() {
+    laidOutPageNumbersRef.current.clear();
+    setLaidOutPageCount(0);
+  }
+
+  useEffect(() => {
+    const pendingScrollRestore = pendingScrollRestoreRef.current;
+
+    if (
+      loading ||
+      !pdfDocument ||
+      !pendingScrollRestore ||
+      !pageNumbers.length ||
+      laidOutPageCount === 0
+    ) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const scrollContainer = scrollContainerRef.current;
+
+      if (!scrollContainer || pendingScrollRestoreRef.current !== pendingScrollRestore) {
+        return;
+      }
+
+      const maxScrollLeft = Math.max(
+        0,
+        scrollContainer.scrollWidth - scrollContainer.clientWidth,
+      );
+      const maxScrollTop = Math.max(
+        0,
+        scrollContainer.scrollHeight - scrollContainer.clientHeight,
+      );
+      const allPagesLaidOut = laidOutPageCount >= pageNumbers.length;
+      const canRestoreHorizontal =
+        pendingScrollRestore.scrollLeft === 0 ||
+        maxScrollLeft >= pendingScrollRestore.scrollLeft ||
+        allPagesLaidOut;
+      const canRestoreVertical =
+        pendingScrollRestore.scrollTop === 0 ||
+        maxScrollTop >= pendingScrollRestore.scrollTop ||
+        allPagesLaidOut;
+
+      if (!canRestoreHorizontal || !canRestoreVertical) {
+        return;
+      }
+
+      scrollContainer.scrollLeft = Math.min(
+        pendingScrollRestore.scrollLeft,
+        maxScrollLeft,
+      );
+      scrollContainer.scrollTop = Math.min(
+        pendingScrollRestore.scrollTop,
+        maxScrollTop,
+      );
+      pendingScrollRestoreRef.current = null;
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [laidOutPageCount, loading, pageNumbers.length, pdfDocument]);
+
+  useEffect(() => flushPendingScrollViewState, [flushPendingScrollViewState]);
+
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
@@ -240,7 +394,15 @@ export function PdfViewer({
   );
 
   function changeZoom(delta: number) {
-    setZoom((currentZoom) => clamp(currentZoom + delta, MIN_ZOOM, MAX_ZOOM));
+    const nextZoom = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM);
+
+    if (nextZoom === zoom) {
+      return;
+    }
+
+    resetPageLayoutTracking();
+    setZoom(nextZoom);
+    updateViewState({ zoom: nextZoom });
   }
 
   async function captureScreenshotSnip(pageNumber: number, rect: PdfAnnotationRect) {
@@ -325,9 +487,11 @@ export function PdfViewer({
 
   function selectAnnotation(annotation: PdfAnnotation) {
     setSelectedAnnotationId(annotation.id);
+    updateViewState({ selectedAnnotationId: annotation.id });
 
     if (annotation.type === "text") {
       setFontSize(annotation.fontSize);
+      updateViewState({ fontSize: annotation.fontSize });
     }
   }
 
@@ -362,6 +526,7 @@ export function PdfViewer({
     };
 
     setSelectedAnnotationId(annotation.id);
+    updateViewState({ selectedAnnotationId: annotation.id });
     saveAnnotations([...annotations, annotation]);
   }
 
@@ -384,6 +549,7 @@ export function PdfViewer({
       clamp(value, MIN_TEXT_ANNOTATION_FONT_SIZE, MAX_TEXT_ANNOTATION_FONT_SIZE),
     );
     setFontSize(nextFontSize);
+    updateViewState({ fontSize: nextFontSize });
 
     if (selectedTextAnnotation) {
       updateTextAnnotation(selectedTextAnnotation.id, { fontSize: nextFontSize });
@@ -399,7 +565,8 @@ export function PdfViewer({
       annotations.filter((annotation) => annotation.id !== selectedAnnotationId),
     );
     setSelectedAnnotationId("");
-  }, [annotations, saveAnnotations, selectedAnnotationId]);
+    updateViewState({ selectedAnnotationId: "" });
+  }, [annotations, saveAnnotations, selectedAnnotationId, updateViewState]);
 
   useEffect(() => {
     function handleDeleteKey(event: KeyboardEvent) {
@@ -438,7 +605,10 @@ export function PdfViewer({
                 : "border-zinc-300 hover:bg-zinc-50"
             }`}
             type="button"
-            onClick={() => setTool("select")}
+            onClick={() => {
+              setTool("select");
+              updateViewState({ tool: "select" });
+            }}
           >
             <MousePointer2 aria-hidden className="h-4 w-4" />
             Select
@@ -450,7 +620,10 @@ export function PdfViewer({
                 : "border-zinc-300 hover:bg-zinc-50"
             }`}
             type="button"
-            onClick={() => setTool("highlight")}
+            onClick={() => {
+              setTool("highlight");
+              updateViewState({ tool: "highlight" });
+            }}
           >
             <Highlighter aria-hidden className="h-4 w-4" />
             Highlight
@@ -462,7 +635,10 @@ export function PdfViewer({
                 : "border-zinc-300 hover:bg-zinc-50"
             }`}
             type="button"
-            onClick={() => setTool("text")}
+            onClick={() => {
+              setTool("text");
+              updateViewState({ tool: "text" });
+            }}
           >
             <Type aria-hidden className="h-4 w-4" />
             Text
@@ -527,7 +703,14 @@ export function PdfViewer({
             aria-label="Reset zoom"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 hover:bg-zinc-50"
             type="button"
-            onClick={() => setZoom(1)}
+            onClick={() => {
+              if (zoom !== 1) {
+                resetPageLayoutTracking();
+              }
+
+              setZoom(1);
+              updateViewState({ zoom: 1 });
+            }}
             title="Reset zoom"
           >
             <RotateCcw aria-hidden className="h-4 w-4" />
@@ -541,7 +724,11 @@ export function PdfViewer({
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-6">
+      <div
+        ref={scrollContainerRef}
+        className="min-h-0 flex-1 overflow-auto px-4 py-6"
+        onScroll={handleScroll}
+      >
         {loading ? (
           <div className="flex min-h-80 items-center justify-center text-sm text-zinc-600">
             <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />
@@ -566,7 +753,11 @@ export function PdfViewer({
                 onAddHighlight={addHighlight}
                 onAddTextAnnotation={addTextAnnotation}
                 onCancelScreenshotSnip={onCancelScreenshotSnip ?? (() => undefined)}
-                onExitTextEditing={() => setTool("select")}
+                onExitTextEditing={() => {
+                  setTool("select");
+                  updateViewState({ tool: "select" });
+                }}
+                onPageLayout={handlePageLayout}
                 onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
                 onUpdateTextAnnotation={updateTextAnnotation}
@@ -591,6 +782,7 @@ function PdfPageView({
   onAddTextAnnotation,
   onCancelScreenshotSnip,
   onExitTextEditing,
+  onPageLayout,
   onScreenshotSnip,
   onSelectAnnotation,
   onUpdateTextAnnotation,
@@ -606,6 +798,7 @@ function PdfPageView({
   onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
   onCancelScreenshotSnip: () => void;
   onExitTextEditing: () => void;
+  onPageLayout: (pageNumber: number) => void;
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
   onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
@@ -615,6 +808,12 @@ function PdfPageView({
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<AnnotationSurfaceSize>({ width: 0, height: 0 });
   const [rendering, setRendering] = useState(true);
+
+  useEffect(() => {
+    if (size.width > 0 && size.height > 0) {
+      onPageLayout(pageNumber);
+    }
+  }, [onPageLayout, pageNumber, size.height, size.width]);
 
   useEffect(() => {
     let active = true;
