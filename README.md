@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Libera
+
+A liberal notetaking app built with Next.js, TypeScript, Tailwind CSS, filesystem storage, password authentication, and KaTeX-backed Markdown math rendering.
 
 ## Getting Started
 
-First, run the development server:
+Copy the example environment file and choose local settings:
+
+```bash
+cp .env.example .env.local
+```
+
+For development, the app accepts `LIBERA_DEV_PASSWORD` when `LIBERA_PASSWORD_HASH` is not set. The default development password is `libera`.
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) with your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The app uses the Next.js App Router in `src/app`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Storage
 
-## Learn More
+Libera stores files under `LIBERA_DATA_DIR`, with `./data/libera` as the local fallback. The single-admin master directory is:
 
-To learn more about Next.js, take a look at the following resources:
+```text
+${LIBERA_DATA_DIR}/users/admin
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Direct child folders are notebooks. Files inside notebooks currently support:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Markdown: `.md`, `.markdown`
+- Images: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`
+- PDFs: `.pdf`
 
-## Deploy on Vercel
+The API rejects unsafe paths that escape the admin master directory.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Math Rendering
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Markdown rendering is wired through:
+
+- `react-markdown`
+- `remark-math`
+- `rehype-katex`
+- `katex`
+
+Use `$...$` for inline math and `$$...$$` for block math.
+
+## Scripts
+
+```bash
+npm run dev
+npm run build
+npm run start
+npm run lint
+```
+
+## Tooling
+
+- Next.js
+- TypeScript
+- Tailwind CSS
+- ESLint
+
+## Password Hashes
+
+Production should set `LIBERA_PASSWORD_HASH` and `LIBERA_SESSION_SECRET`. Password hashes use:
+
+```text
+scrypt:<salt>:<hash>
+```
+
+You can generate one from the project with:
+
+```bash
+node -e "const { randomBytes, scryptSync } = require('crypto'); const password = process.argv[1]; const salt = randomBytes(16).toString('hex'); console.log(`scrypt:${salt}:${scryptSync(password, salt, 64).toString('hex')}`);" "your-password"
+```

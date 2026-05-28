@@ -20,8 +20,12 @@
 # production
 /build
 
+# local app data
+/data
+
 # misc
 .DS_Store
+._*
 *.pem
 
 # debug
