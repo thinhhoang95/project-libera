@@ -132,6 +132,6 @@ export function getSessionCookieOptions() {
     maxAge: SESSION_MAX_AGE_SECONDS,
     path: "/",
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" && process.env.LIBERA_ELECTRON !== "1",
   };
 }

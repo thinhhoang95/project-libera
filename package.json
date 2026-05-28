@@ -2,10 +2,16 @@
   "name": "project-libera",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "electron:dev": "cross-env LIBERA_ELECTRON_NEXT_MODE=dev electron .",
+    "electron:prepare-standalone": "node electron/prepare-standalone.cjs",
+    "electron:prepare-dist": "node electron/prepare-dist.cjs",
+    "electron:start": "npm run build && npm run electron:prepare-standalone && cross-env LIBERA_ELECTRON_NEXT_MODE=start electron .",
+    "electron:dist": "npm run build && npm run electron:prepare-standalone && npm run electron:prepare-dist && electron-builder --config electron-builder.json",
     "lint": "eslint"
   },
   "dependencies": {
@@ -25,6 +31,9 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "cross-env": "^7.0.3",
+    "electron": "^37.6.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",

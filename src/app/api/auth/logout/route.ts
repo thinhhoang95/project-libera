@@ -10,7 +10,7 @@ export async function POST() {
     maxAge: 0,
     path: "/",
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" && process.env.LIBERA_ELECTRON !== "1",
   });
 
   return response;

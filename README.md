@@ -56,7 +56,33 @@ npm run dev
 npm run build
 npm run start
 npm run lint
+npm run electron:dev
+npm run electron:start
+npm run electron:dist
 ```
+
+## Electron App
+
+Run the desktop app in development with:
+
+```bash
+npm run electron:dev
+```
+
+Electron development starts Next.js with webpack because Turbopack's persistent
+dev cache can fail on external macOS volumes that create `._*` sidecar files.
+
+Run it against a production Next.js build with:
+
+```bash
+npm run electron:start
+```
+
+On first launch, Electron requires a fixed `LIBERA_DATA_DIR`, an `OPENAI_API_KEY`,
+and an app password. These values are stored in the Electron user-data directory
+instead of `.env`, then injected into the local Next.js server at startup. The
+desktop shell clears the Libera session cookie on every launch, so the password
+login screen is shown each time the app starts.
 
 ## Tooling
 

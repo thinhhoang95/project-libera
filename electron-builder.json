@@ -1,0 +1,14 @@
+{
+  "appId": "com.libera.notes",
+  "productName": "Libera",
+  "asar": false,
+  "directories": {
+    "app": ".electron-build/app",
+    "output": "dist-electron"
+  },
+  "mac": {
+    "icon": "assets/libera-icon.icns",
+    "identity": null
+  },
+  "files": ["**/*"]
+}

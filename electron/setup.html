@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set Up Libera</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: #f4f4f5;
+        color: #18181b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #f4f4f5;
+      }
+
+      main {
+        display: flex;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+      }
+
+      form {
+        width: min(100%, 480px);
+        border: 1px solid #d4d4d8;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 28px;
+        box-shadow: 0 20px 40px rgb(24 24 27 / 0.08);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+        line-height: 1.2;
+      }
+
+      p {
+        margin: 0 0 24px;
+        color: #52525b;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      label {
+        display: block;
+        margin: 18px 0 8px;
+        color: #3f3f46;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid #d4d4d8;
+        border-radius: 6px;
+        color: #18181b;
+        font: inherit;
+        outline: none;
+        padding: 10px 12px;
+      }
+
+      input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgb(37 99 235 / 0.15);
+      }
+
+      .directory-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 6px;
+        background: #18181b;
+        color: white;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 650;
+        padding: 10px 14px;
+      }
+
+      button.secondary {
+        border: 1px solid #d4d4d8;
+        background: #ffffff;
+        color: #18181b;
+      }
+
+      button:disabled {
+        cursor: default;
+        opacity: 0.62;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 24px;
+      }
+
+      .error {
+        display: none;
+        margin: 18px 0 0;
+        border-radius: 6px;
+        background: #fef2f2;
+        color: #b91c1c;
+        padding: 10px 12px;
+      }
+
+      .locked {
+        color: #71717a;
+        font-size: 12px;
+        line-height: 1.4;
+        margin-top: 6px;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <form id="setup-form">
+        <h1>Set Up Libera</h1>
+        <p>
+          Choose the fixed local storage directory, enter the required API key, and
+          create the password used by the app login screen.
+        </p>
+
+        <label for="data-dir">Data directory</label>
+        <div class="directory-row">
+          <input id="data-dir" autocomplete="off" readonly required />
+          <button id="browse-button" class="secondary" type="button">Choose</button>
+        </div>
+
+        <label for="openai-api-key">OPENAI_API_KEY</label>
+        <input id="openai-api-key" autocomplete="off" spellcheck="false" type="password" />
+        <div id="api-key-locked" class="locked hidden">
+          An API key is already saved. Leave this field blank to keep it.
+        </div>
+
+        <div id="password-fields">
+          <label for="password">App password</label>
+          <input id="password" autocomplete="new-password" type="password" />
+
+          <label for="password-confirmation">Confirm app password</label>
+          <input id="password-confirmation" autocomplete="new-password" type="password" />
+        </div>
+        <div id="password-locked" class="locked hidden">
+          An app password is already configured. The login screen will ask for it every
+          time Libera starts.
+        </div>
+
+        <div id="error" class="error"></div>
+
+        <div class="actions">
+          <button id="save-button" type="submit">Start Libera</button>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      const form = document.querySelector("#setup-form");
+      const dataDirInput = document.querySelector("#data-dir");
+      const browseButton = document.querySelector("#browse-button");
+      const apiKeyInput = document.querySelector("#openai-api-key");
+      const apiKeyLocked = document.querySelector("#api-key-locked");
+      const passwordFields = document.querySelector("#password-fields");
+      const passwordLocked = document.querySelector("#password-locked");
+      const passwordInput = document.querySelector("#password");
+      const passwordConfirmationInput = document.querySelector("#password-confirmation");
+      const errorBox = document.querySelector("#error");
+      const saveButton = document.querySelector("#save-button");
+
+      function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = "block";
+      }
+
+      function clearError() {
+        errorBox.textContent = "";
+        errorBox.style.display = "none";
+      }
+
+      async function loadState() {
+        const state = await window.liberaSetup.getState();
+
+        dataDirInput.value = state.dataDir || "";
+
+        if (state.hasApiKey) {
+          apiKeyInput.placeholder = "Saved API key";
+          apiKeyLocked.classList.remove("hidden");
+        }
+
+        if (state.hasPasswordHash) {
+          passwordFields.classList.add("hidden");
+          passwordLocked.classList.remove("hidden");
+        }
+      }
+
+      browseButton.addEventListener("click", async () => {
+        clearError();
+        const directory = await window.liberaSetup.selectDataDir();
+
+        if (directory) {
+          dataDirInput.value = directory;
+        }
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        clearError();
+        saveButton.disabled = true;
+
+        try {
+          await window.liberaSetup.save({
+            dataDir: dataDirInput.value,
+            openaiApiKey: apiKeyInput.value,
+            password: passwordInput.value,
+            passwordConfirmation: passwordConfirmationInput.value,
+          });
+        } catch (error) {
+          showError(error.message || "Unable to save setup.");
+          saveButton.disabled = false;
+        }
+      });
+
+      loadState().catch((error) => {
+        showError(error.message || "Unable to load setup state.");
+      });
+    </script>
+  </body>
+</html>

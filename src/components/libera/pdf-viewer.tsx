@@ -335,7 +335,7 @@ export function PdfViewer({ filePath, src }: PdfViewerProps) {
 
   return (
     <div className="flex min-h-[calc(100vh-172px)] flex-1 flex-col bg-zinc-200">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2">
+      <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2 shadow-sm">
         <div className="flex min-w-0 items-center gap-1">
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
@@ -470,6 +470,7 @@ export function PdfViewer({ filePath, src }: PdfViewerProps) {
                 zoom={zoom}
                 onAddHighlight={addHighlight}
                 onAddTextAnnotation={addTextAnnotation}
+                onExitTextEditing={() => setTool("select")}
                 onSelectAnnotation={selectAnnotation}
                 onUpdateTextAnnotation={updateTextAnnotation}
               />
@@ -490,6 +491,7 @@ function PdfPageView({
   zoom,
   onAddHighlight,
   onAddTextAnnotation,
+  onExitTextEditing,
   onSelectAnnotation,
   onUpdateTextAnnotation,
 }: {
@@ -501,6 +503,7 @@ function PdfPageView({
   zoom: number;
   onAddHighlight: (pageNumber: number, rects: PdfAnnotationRect[]) => void;
   onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
+  onExitTextEditing: () => void;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
   onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
 }) {
@@ -629,6 +632,7 @@ function PdfPageView({
           selectedAnnotationId={selectedAnnotationId}
           textScale={zoom}
           onAddAnnotation={(rect) => onAddTextAnnotation(pageNumber, rect)}
+          onExitTextEditing={onExitTextEditing}
           onSelectAnnotation={onSelectAnnotation}
           onUpdateAnnotation={onUpdateTextAnnotation}
         />

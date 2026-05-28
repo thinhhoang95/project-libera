@@ -445,6 +445,7 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
               pageSize={imageSize}
               selectedAnnotationId={selectedAnnotationId}
               onAddAnnotation={addTextAnnotation}
+              onExitTextEditing={() => setTool("select")}
               onSelectAnnotation={selectAnnotation}
               onUpdateAnnotation={updateTextAnnotation}
             />
