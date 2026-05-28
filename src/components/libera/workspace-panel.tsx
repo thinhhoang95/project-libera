@@ -1,17 +1,22 @@
 import { BookPlus, FilePlus2, MoveRight, Pencil, Save, Trash2 } from "lucide-react";
 import type { RefObject } from "react";
+import { useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
+import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import type { OpenTab } from "@/components/libera/types";
+import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
   activeTab?: OpenTab;
   aiFormatting: boolean;
   firstNotebook: string;
   imageMarkdownConverting: boolean;
+  selectedNotebook?: LiberaNotebookNode;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
   onAiImageToMarkdown: (image: {
@@ -23,9 +28,11 @@ type WorkspacePanelProps = {
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
+  onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   onMoveFile: (tab: OpenTab) => Promise<void>;
+  onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
@@ -36,20 +43,35 @@ export function WorkspacePanel({
   aiFormatting,
   firstNotebook,
   imageMarkdownConverting,
+  selectedNotebook,
   textareaRef,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onCreateMarkdown,
   onCreateNotebook,
   onDeleteFile,
+  onInsertExistingImage,
   onInsertImage,
   onInsertMarkdown,
   onMoveFile,
+  onOpenFile,
   onRenameFile,
   onSave,
   onSetDraft,
 }: WorkspacePanelProps) {
+  const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
+
   if (!activeTab) {
+    if (selectedNotebook) {
+      return (
+        <NotebookHome
+          notebook={selectedNotebook}
+          onCreateMarkdown={onCreateMarkdown}
+          onOpenFile={onOpenFile}
+        />
+      );
+    }
+
     return (
       <div className="flex min-h-[calc(100vh-120px)] items-center justify-center px-6">
         <div className="max-w-md text-center">
@@ -99,7 +121,11 @@ export function WorkspacePanel({
 
       {activeTab.file.fileType === "markdown" ? (
         <>
-          <MarkdownToolbar onInsert={onInsertMarkdown} onInsertImage={onInsertImage} />
+          <MarkdownToolbar
+            onInsert={onInsertMarkdown}
+            onInsertExistingImage={() => setExistingImageDialogOpen(true)}
+            onInsertImage={onInsertImage}
+          />
           <div className="grid min-h-0 flex-1 lg:grid-cols-2">
             <MarkdownEditor
               formatting={aiFormatting}
@@ -109,6 +135,7 @@ export function WorkspacePanel({
               onAiFormatSelection={onAiFormatSelection}
               onAiImageToMarkdown={onAiImageToMarkdown}
               onChange={onSetDraft}
+              onInsertImageFile={onInsertImage}
             />
             <article className="overflow-auto bg-white p-6">
               <MarkdownRenderer
@@ -117,6 +144,15 @@ export function WorkspacePanel({
               />
             </article>
           </div>
+          <ExistingImageDialog
+            notebook={selectedNotebook}
+            open={existingImageDialogOpen}
+            onClose={() => setExistingImageDialogOpen(false)}
+            onSelect={async (file) => {
+              await onInsertExistingImage(file);
+              setExistingImageDialogOpen(false);
+            }}
+          />
         </>
       ) : activeTab.file.fileType === "image" ? (
         <ImageViewer

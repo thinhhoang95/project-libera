@@ -37,6 +37,78 @@ export type NotebookDialogState =
       error?: string;
     };
 
+export type NoteFormValues = {
+  name: string;
+};
+
+export type NoteDialogState = {
+  notebook: string;
+  error?: string;
+};
+
+export type WorkspaceInputDialogState =
+  | {
+      mode: "create-folder";
+      parentPath: string;
+      error?: string;
+    }
+  | {
+      mode: "copy-file";
+      file: LiberaFileNode;
+      error?: string;
+    }
+  | {
+      mode: "move-file";
+      file: LiberaFileNode;
+      error?: string;
+    }
+  | {
+      mode: "rename-file";
+      file: LiberaFileNode;
+      error?: string;
+    }
+  | {
+      mode: "rename-folder";
+      folder: LiberaFolderNode;
+      error?: string;
+    };
+
+export type WorkspaceInputDialogValues = {
+  destinationDirectory: string;
+  destinationName: string;
+  name: string;
+};
+
+export type WorkspaceConfirmDialogState =
+  | {
+      mode: "close-tab";
+      tabId: string;
+      fileName: string;
+    }
+  | {
+      mode: "delete-file";
+      file: LiberaFileNode;
+    }
+  | {
+      mode: "delete-folder";
+      folder: LiberaFolderNode;
+    }
+  | {
+      mode: "delete-notebook";
+      notebook: string;
+    }
+  | {
+      mode: "move-file-node";
+      destinationName: string;
+      destinationNotebook: string;
+      file: LiberaFileNode;
+    }
+  | {
+      mode: "move-file-folder";
+      destinationPath: string;
+      file: LiberaFileNode;
+    };
+
 export type MarkdownImageSelection = {
   alt: string;
   end: number;
@@ -55,16 +127,27 @@ export type LiberaWorkspace = {
   firstNotebook: string;
   notebookDialog: NotebookDialogState | null;
   notebookDialogSubmitting: boolean;
+  noteDialog: NoteDialogState | null;
+  noteDialogSubmitting: boolean;
   password: string;
   query: string;
   searchResults: SearchResult[];
+  selectedNotebook?: LiberaNotebookNode;
+  selectedNotebookName: string;
   tabs: OpenTab[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
+  workspaceConfirmDialog: WorkspaceConfirmDialogState | null;
+  workspaceConfirmDialogSubmitting: boolean;
+  workspaceInputDialog: WorkspaceInputDialogState | null;
+  workspaceInputDialogSubmitting: boolean;
   workspaceError: string;
   closeTab: (tabId: string) => void;
   closeNotebookDialog: () => void;
+  closeNoteDialog: () => void;
+  closeWorkspaceConfirmDialog: () => void;
+  closeWorkspaceInputDialog: () => void;
   createMarkdownFromPrompt: (notebook: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
@@ -77,6 +160,7 @@ export type LiberaWorkspace = {
   handleLogin: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   handleLogout: () => Promise<void>;
   handleUploadChange: () => Promise<void>;
+  insertExistingMarkdownImage: (file: LiberaFileNode) => Promise<void>;
   insertMarkdownImage: (file: File) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
@@ -90,11 +174,15 @@ export type LiberaWorkspace = {
   renameFileFromPrompt: (tab: OpenTab) => Promise<void>;
   saveActiveTab: () => Promise<void>;
   selectSearchResult: (result: SearchResult) => void;
+  selectNotebook: (notebook: string) => void;
   setActiveDraft: (value: string) => void;
   setActiveTabId: (tabId: string) => void;
   setPassword: (password: string) => void;
   setQuery: (query: string) => void;
   startUpload: (notebook: string) => void;
   submitNotebookDialog: (values: NotebookFormValues) => Promise<void>;
+  submitNoteDialog: (values: NoteFormValues) => Promise<void>;
+  submitWorkspaceConfirmDialog: () => Promise<void>;
+  submitWorkspaceInputDialog: (values: WorkspaceInputDialogValues) => Promise<void>;
   toggleNotebook: (notebook: string) => void;
 };

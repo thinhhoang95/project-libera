@@ -1,7 +1,7 @@
 "use client";
 
 import { ImageIcon, Sparkles } from "lucide-react";
-import type { MouseEvent, RefObject } from "react";
+import type { DragEvent, MouseEvent, RefObject } from "react";
 import { useEffect, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 
@@ -21,9 +21,11 @@ type MarkdownEditorProps = {
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
   onAiImageToMarkdown: (image: MarkdownImageSelection) => Promise<void>;
   onChange: (value: string) => void;
+  onInsertImageFile: (file: File) => Promise<void>;
 };
 
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
 
 function findMarkdownImageInText(
   value: string,
@@ -66,6 +68,87 @@ function findMarkdownImageInText(
   }
 }
 
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION_REGEX.test(file.name);
+}
+
+function hasImageDragItem(dataTransfer: DataTransfer) {
+  if (dataTransfer.files.length) {
+    return Array.from(dataTransfer.files).some(isImageFile);
+  }
+
+  return Array.from(dataTransfer.items).some(
+    (item) =>
+      item.kind === "file" &&
+      (item.type.startsWith("image/") || !item.type),
+  );
+}
+
+function getDroppedImageFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.files).filter(isImageFile);
+}
+
+function parsePixels(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getTextareaOffsetAtPoint(
+  textarea: HTMLTextAreaElement,
+  clientX: number,
+  clientY: number,
+) {
+  const styles = window.getComputedStyle(textarea);
+  const rect = textarea.getBoundingClientRect();
+  const paddingLeft = parsePixels(styles.paddingLeft);
+  const paddingRight = parsePixels(styles.paddingRight);
+  const paddingTop = parsePixels(styles.paddingTop);
+  const fontSize = parsePixels(styles.fontSize) || 14;
+  const lineHeight = parsePixels(styles.lineHeight) || fontSize * 1.5;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  const font = [
+    styles.fontStyle,
+    styles.fontVariant,
+    styles.fontWeight,
+    styles.fontSize,
+    styles.fontFamily,
+  ].join(" ");
+  if (context) {
+    context.font = font;
+  }
+
+  const charWidth = context ? context.measureText("M").width || fontSize * 0.6 : fontSize * 0.6;
+  const contentWidth = Math.max(1, textarea.clientWidth - paddingLeft - paddingRight);
+  const wrapColumn = Math.max(1, Math.floor(contentWidth / charWidth));
+  const targetLine = Math.max(
+    0,
+    Math.floor((clientY - rect.top - paddingTop + textarea.scrollTop) / lineHeight),
+  );
+  const targetColumn = Math.max(
+    0,
+    Math.round((clientX - rect.left - paddingLeft + textarea.scrollLeft) / charWidth),
+  );
+  const lines = textarea.value.split("\n");
+  let offset = 0;
+  let visualLine = 0;
+
+  for (const line of lines) {
+    const visualLineCount = Math.max(1, Math.ceil(Math.max(1, line.length) / wrapColumn));
+
+    if (targetLine < visualLine + visualLineCount) {
+      const wrappedLine = targetLine - visualLine;
+      const lineOffset = Math.min(line.length, wrappedLine * wrapColumn + targetColumn);
+      return offset + lineOffset;
+    }
+
+    offset += line.length + 1;
+    visualLine += visualLineCount;
+  }
+
+  return textarea.value.length;
+}
+
 export function MarkdownEditor({
   formatting,
   imageConverting,
@@ -74,8 +157,10 @@ export function MarkdownEditor({
   onAiFormatSelection,
   onAiImageToMarkdown,
   onChange,
+  onInsertImageFile,
 }: MarkdownEditorProps) {
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
+  const [draggingImage, setDraggingImage] = useState(false);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -155,6 +240,38 @@ export function MarkdownEditor({
     await onAiImageToMarkdown(image);
   }
 
+  function handleDragOver(event: DragEvent<HTMLTextAreaElement>) {
+    if (!hasImageDragItem(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDraggingImage(true);
+  }
+
+  function handleDragLeave() {
+    setDraggingImage(false);
+  }
+
+  async function handleDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const imageFiles = getDroppedImageFiles(event.dataTransfer);
+
+    if (!imageFiles.length) {
+      setDraggingImage(false);
+      return;
+    }
+
+    event.preventDefault();
+    setDraggingImage(false);
+    const textarea = event.currentTarget;
+    const dropOffset = getTextareaOffsetAtPoint(textarea, event.clientX, event.clientY);
+    textarea.focus();
+    textarea.setSelectionRange(dropOffset, dropOffset);
+
+    await onInsertImageFile(imageFiles[0]);
+  }
+
   return (
     <div className="relative min-h-[50vh] lg:min-h-0">
       <textarea
@@ -163,8 +280,17 @@ export function MarkdownEditor({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onContextMenu={openContextMenu}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={(event) => void handleDrop(event)}
         spellCheck={false}
       />
+
+      {draggingImage ? (
+        <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-md border-2 border-dashed border-zinc-400 bg-white/70 text-sm font-medium text-zinc-700">
+          Drop image to insert
+        </div>
+      ) : null}
 
       {contextMenu ? (
         <div

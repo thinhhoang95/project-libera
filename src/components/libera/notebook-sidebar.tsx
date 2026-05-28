@@ -31,6 +31,7 @@ type SidebarMenuTarget =
 type NotebookSidebarProps = {
   activeTabId: string;
   expanded: Set<string>;
+  selectedNotebookName: string;
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
@@ -46,6 +47,7 @@ type NotebookSidebarProps = {
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
+  onSelectNotebook: (notebook: string) => void;
   onStartUpload: (notebook: string) => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
@@ -54,6 +56,7 @@ type NotebookSidebarProps = {
 export function NotebookSidebar({
   activeTabId,
   expanded,
+  selectedNotebookName,
   tree,
   uploadInputRef,
   onCopyFile,
@@ -69,6 +72,7 @@ export function NotebookSidebar({
   onOpenFile,
   onRenameFolder,
   onRenameFile,
+  onSelectNotebook,
   onStartUpload,
   onToggleNotebook,
   onUploadChange,
@@ -172,6 +176,7 @@ export function NotebookSidebar({
               draggingFile={draggingFile}
               expanded={expanded}
               isExpanded={expanded.has(notebook.name)}
+              isSelected={selectedNotebookName === notebook.name}
               notebook={notebook}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
@@ -181,6 +186,7 @@ export function NotebookSidebar({
               onDownloadNotebook={onDownloadNotebook}
               onEditNotebook={onEditNotebook}
               onOpenFile={onOpenFile}
+              onSelectNotebook={onSelectNotebook}
               onSetDragOverPath={setDragOverPath}
               onSetDraggingFile={setDraggingFile}
               onStartUpload={onStartUpload}
@@ -214,6 +220,7 @@ function NotebookSection({
   draggingFile,
   expanded,
   isExpanded,
+  isSelected,
   notebook,
   onCreateFolder,
   onCreateMarkdown,
@@ -223,6 +230,7 @@ function NotebookSection({
   onDownloadNotebook,
   onEditNotebook,
   onOpenFile,
+  onSelectNotebook,
   onSetDragOverPath,
   onSetDraggingFile,
   onStartUpload,
@@ -233,6 +241,7 @@ function NotebookSection({
   draggingFile: LiberaFileNode | null;
   expanded: Set<string>;
   isExpanded: boolean;
+  isSelected: boolean;
   notebook: LiberaTree["notebooks"][number];
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
@@ -242,6 +251,7 @@ function NotebookSection({
   onDownloadNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onSelectNotebook: (notebook: string) => void;
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onStartUpload: (notebook: string) => void;
@@ -250,10 +260,16 @@ function NotebookSection({
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
 
   return (
-    <section className="rounded-md border border-zinc-200">
+    <section
+      className={`rounded-md border ${
+        isSelected ? "border-teal-300 shadow-sm" : "border-zinc-200"
+      }`}
+    >
       <div
         className={`flex items-center gap-2 border-b px-2 py-2 ${
-          isDragTarget ? "border-teal-300 bg-teal-50" : "border-zinc-100"
+          isDragTarget || isSelected
+            ? "border-teal-300 bg-teal-50"
+            : "border-zinc-100"
         }`}
         onDragOver={(event) => {
           if (!draggingFile) {
@@ -283,7 +299,7 @@ function NotebookSection({
         <button
           className="flex min-w-0 flex-1 items-center gap-2 truncate text-left text-sm font-medium"
           type="button"
-          onClick={() => onToggleNotebook(notebook.name)}
+          onClick={() => onSelectNotebook(notebook.name)}
         >
           <span
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sm"

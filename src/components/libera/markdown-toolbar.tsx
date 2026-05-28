@@ -14,10 +14,15 @@ import { useRef } from "react";
 
 type MarkdownToolbarProps = {
   onInsert: (before: string, after?: string, placeholder?: string) => void;
+  onInsertExistingImage: () => void;
   onInsertImage: (file: File) => Promise<void>;
 };
 
-export function MarkdownToolbar({ onInsert, onInsertImage }: MarkdownToolbarProps) {
+export function MarkdownToolbar({
+  onInsert,
+  onInsertExistingImage,
+  onInsertImage,
+}: MarkdownToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   async function handleImageChange() {
@@ -77,7 +82,15 @@ export function MarkdownToolbar({ onInsert, onInsertImage }: MarkdownToolbarProp
         onClick={() => imageInputRef.current?.click()}
       >
         <ImageIcon aria-hidden className="h-4 w-4" />
-        Image
+        Image from File
+      </button>
+      <button
+        className="toolbar-button"
+        type="button"
+        onClick={onInsertExistingImage}
+      >
+        <ImageIcon aria-hidden className="h-4 w-4" />
+        Image from Existing
       </button>
       <button className="toolbar-button" type="button" onClick={() => onInsert("`", "`", "code")}>
         <Code2 aria-hidden className="h-4 w-4" />

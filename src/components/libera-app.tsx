@@ -2,10 +2,13 @@
 
 import { AppHeader } from "@/components/libera/app-header";
 import { LoginScreen } from "@/components/libera/login-screen";
+import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
 import { NotebookSidebar } from "@/components/libera/notebook-sidebar";
 import { TabStrip } from "@/components/libera/tab-strip";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
+import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
+import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 
 type LiberaAppProps = {
@@ -41,6 +44,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
         <NotebookSidebar
           activeTabId={workspace.activeTabId}
           expanded={workspace.expanded}
+          selectedNotebookName={workspace.selectedNotebookName}
           tree={workspace.tree}
           uploadInputRef={workspace.uploadInputRef}
           onCopyFile={workspace.copyFileFromPrompt}
@@ -56,6 +60,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onOpenFile={workspace.openFile}
           onRenameFolder={workspace.renameFolderFromPrompt}
           onRenameFile={workspace.renameFileNodeFromPrompt}
+          onSelectNotebook={workspace.selectNotebook}
           onStartUpload={workspace.startUpload}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
@@ -80,15 +85,18 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             aiFormatting={workspace.aiFormatting}
             firstNotebook={workspace.firstNotebook}
             imageMarkdownConverting={workspace.imageMarkdownConverting}
+            selectedNotebook={workspace.selectedNotebook}
             textareaRef={workspace.textareaRef}
             onAiFormatSelection={workspace.formatSelectionWithAi}
             onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
             onCreateMarkdown={workspace.createMarkdownFromPrompt}
             onCreateNotebook={workspace.openCreateNotebookDialog}
             onDeleteFile={workspace.deleteFileFromPrompt}
+            onInsertExistingImage={workspace.insertExistingMarkdownImage}
             onInsertImage={workspace.insertMarkdownImage}
             onInsertMarkdown={workspace.insertMarkdown}
             onMoveFile={workspace.moveFileFromPrompt}
+            onOpenFile={workspace.openFile}
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
@@ -101,6 +109,24 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
         submitting={workspace.notebookDialogSubmitting}
         onClose={workspace.closeNotebookDialog}
         onSubmit={workspace.submitNotebookDialog}
+      />
+      <NoteDialog
+        dialog={workspace.noteDialog}
+        submitting={workspace.noteDialogSubmitting}
+        onClose={workspace.closeNoteDialog}
+        onSubmit={workspace.submitNoteDialog}
+      />
+      <WorkspaceInputDialog
+        dialog={workspace.workspaceInputDialog}
+        submitting={workspace.workspaceInputDialogSubmitting}
+        onClose={workspace.closeWorkspaceInputDialog}
+        onSubmit={workspace.submitWorkspaceInputDialog}
+      />
+      <WorkspaceConfirmDialog
+        dialog={workspace.workspaceConfirmDialog}
+        submitting={workspace.workspaceConfirmDialogSubmitting}
+        onClose={workspace.closeWorkspaceConfirmDialog}
+        onConfirm={workspace.submitWorkspaceConfirmDialog}
       />
     </main>
   );

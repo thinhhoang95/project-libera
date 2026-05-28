@@ -13,8 +13,13 @@ import type {
   MarkdownImageSelection,
   NotebookDialogState,
   NotebookFormValues,
+  NoteDialogState,
+  NoteFormValues,
   OpenTab,
   SearchResult,
+  WorkspaceConfirmDialogState,
+  WorkspaceInputDialogState,
+  WorkspaceInputDialogValues,
 } from "@/components/libera/types";
 
 function collectFileSearchResults(
@@ -45,12 +50,8 @@ function parentPathForFile(file: LiberaFileNode) {
   return parts.slice(0, -1).join("/") || file.notebook;
 }
 
-function suggestedCopyName(name: string) {
-  const extensionMatch = name.match(/(\.[^.]+)$/);
-  const extension = extensionMatch?.[1] ?? "";
-  const stem = extension ? name.slice(0, -extension.length) : name;
-
-  return `${stem} copy${extension}`;
+function imageAltText(name: string) {
+  return name.replace(/\.[^.]+$/, "") || "image";
 }
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
@@ -61,12 +62,23 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeTabId, setActiveTabId] = useState("");
+  const [selectedNotebookName, setSelectedNotebookName] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [aiFormatting, setAiFormatting] = useState(false);
   const [imageMarkdownConverting, setImageMarkdownConverting] = useState(false);
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [notebookDialogSubmitting, setNotebookDialogSubmitting] = useState(false);
+  const [noteDialog, setNoteDialog] = useState<NoteDialogState | null>(null);
+  const [noteDialogSubmitting, setNoteDialogSubmitting] = useState(false);
+  const [workspaceInputDialog, setWorkspaceInputDialog] =
+    useState<WorkspaceInputDialogState | null>(null);
+  const [workspaceInputDialogSubmitting, setWorkspaceInputDialogSubmitting] =
+    useState(false);
+  const [workspaceConfirmDialog, setWorkspaceConfirmDialog] =
+    useState<WorkspaceConfirmDialogState | null>(null);
+  const [workspaceConfirmDialogSubmitting, setWorkspaceConfirmDialogSubmitting] =
+    useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const [uploadNotebook, setUploadNotebook] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -74,6 +86,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const firstNotebook = tree.notebooks[0]?.name ?? "";
+  const selectedNotebook = tree.notebooks.find(
+    (notebook) => notebook.name === selectedNotebookName,
+  );
 
   const searchResults = useMemo<SearchResult[]>(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -102,6 +117,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function refreshTree(expandNotebook?: string) {
     const nextTree = await apiRequest<LiberaTree>("/api/tree");
     setTree(nextTree);
+    setSelectedNotebookName((current) => {
+      if (current && nextTree.notebooks.some((notebook) => notebook.name === current)) {
+        return current;
+      }
+
+      return nextTree.notebooks[0]?.name ?? "";
+    });
     setExpanded((current) => {
       const nextExpanded = new Set(current);
 
@@ -153,6 +175,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setTree(emptyTree());
     setTabs([]);
     setActiveTabId("");
+    setSelectedNotebookName("");
   }
 
   function updateTab(tabId: string, updater: (tab: OpenTab) => OpenTab) {
@@ -163,6 +186,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function openFile(file: LiberaFileNode) {
     setWorkspaceError("");
+    setSelectedNotebookName(file.notebook);
 
     if (tabs.some((tab) => tab.id === file.path)) {
       setActiveTabId(file.path);
@@ -192,15 +216,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function closeTab(tabId: string) {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab?.status === "dirty" && !window.confirm(`Close ${tab.file.name} without saving?`)) {
+    if (tab?.status === "dirty") {
+      setWorkspaceConfirmDialog({
+        mode: "close-tab",
+        tabId,
+        fileName: tab.file.name,
+      });
       return;
     }
+
+    closeTabWithoutConfirm(tabId);
+  }
+
+  function closeTabWithoutConfirm(tabId: string) {
+    const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
     setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== tabId));
 
     if (activeTabId === tabId) {
       const remainingTabs = tabs.filter((currentTab) => currentTab.id !== tabId);
-      setActiveTabId(remainingTabs.at(-1)?.id ?? "");
+      const nextActiveTab = remainingTabs.at(-1);
+      setActiveTabId(nextActiveTab?.id ?? "");
+
+      if (nextActiveTab) {
+        setSelectedNotebookName(nextActiveTab.file.notebook);
+      } else if (tab) {
+        setSelectedNotebookName(tab.file.notebook);
+      }
     }
   }
 
@@ -238,7 +280,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
-  async function insertMarkdownImage(file: File) {
+  function insertMarkdownImageMarkup(insertion: string) {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
     }
@@ -248,6 +290,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const textarea = textareaRef.current;
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
+    const prefix = start > 0 && !draft.slice(0, start).endsWith("\n") ? "\n" : "";
+    const suffix = draft.slice(end).startsWith("\n") ? "" : "\n";
+    const nextDraft = `${draft.slice(0, start)}${prefix}${insertion}${suffix}${draft.slice(
+      end,
+    )}`;
+    const nextSelectionStart = start + prefix.length;
+    const nextSelectionEnd = nextSelectionStart + insertion.length;
+
+    updateTab(tabId, (tab) => ({
+      ...tab,
+      draft: nextDraft,
+      status: nextDraft === tab.saved ? "clean" : "dirty",
+      error: undefined,
+    }));
+
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    });
+  }
+
+  async function insertMarkdownImage(file: File) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const tabId = activeTab.id;
     const formData = new FormData();
     formData.append("documentPath", activeTab.file.path);
     formData.append("file", file);
@@ -259,26 +328,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         body: formData,
       });
-      const insertion = payload.markdown;
-      const prefix = start > 0 && !draft.slice(0, start).endsWith("\n") ? "\n" : "";
-      const suffix = draft.slice(end).startsWith("\n") ? "" : "\n";
-      const nextDraft = `${draft.slice(0, start)}${prefix}${insertion}${suffix}${draft.slice(
-        end,
-      )}`;
-      const nextSelectionStart = start + prefix.length;
-      const nextSelectionEnd = nextSelectionStart + insertion.length;
-
-      updateTab(tabId, (tab) => ({
-        ...tab,
-        draft: nextDraft,
-        status: nextDraft === tab.saved ? "clean" : "dirty",
-        error: undefined,
-      }));
-
-      window.requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(nextSelectionStart, nextSelectionEnd);
-      });
+      insertMarkdownImageMarkup(payload.markdown);
     } catch (error) {
       updateTab(tabId, (tab) => ({
         ...tab,
@@ -286,6 +336,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         error: error instanceof Error ? error.message : "Could not insert image.",
       }));
     }
+  }
+
+  async function insertExistingMarkdownImage(file: LiberaFileNode) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    if (file.fileType !== "image") {
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        status: "error",
+        error: "Only image files can be inserted.",
+      }));
+      return;
+    }
+
+    const rawUrl = `/api/files/raw/${encodeFilePath(file.path)}`;
+    insertMarkdownImageMarkup(`![${imageAltText(file.name)}](${rawUrl})`);
   }
 
   async function formatSelectionWithAi(selection: { start: number; end: number }) {
@@ -432,8 +500,28 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNotebookDialog(null);
   }
 
+  function closeNoteDialog() {
+    setNoteDialog(null);
+  }
+
+  function closeWorkspaceInputDialog() {
+    setWorkspaceInputDialog(null);
+  }
+
+  function closeWorkspaceConfirmDialog() {
+    setWorkspaceConfirmDialog(null);
+  }
+
   function setNotebookDialogError(error: string) {
     setNotebookDialog((current) => (current ? { ...current, error } : current));
+  }
+
+  function setNoteDialogError(error: string) {
+    setNoteDialog((current) => (current ? { ...current, error } : current));
+  }
+
+  function setWorkspaceInputDialogError(error: string) {
+    setWorkspaceInputDialog((current) => (current ? { ...current, error } : current));
   }
 
   async function submitNotebookDialog(values: NotebookFormValues) {
@@ -457,6 +545,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           body: JSON.stringify(values),
         });
         setTree(nextTree);
+        setSelectedNotebookName(nextName);
+        setActiveTabId("");
         setExpanded((current) => new Set(current).add(nextName));
       } else {
         const previousName = notebookDialog.notebook.name;
@@ -474,6 +564,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           next.add(nextName);
           return next;
         });
+        setSelectedNotebookName((current) =>
+          current === previousName ? nextName : current,
+        );
         setTabs((currentTabs) =>
           currentTabs.map((tab) => {
             if (tab.file.notebook !== previousName) {
@@ -513,16 +606,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteNotebookFromPrompt(notebook: string) {
-    if (!window.confirm(`Delete notebook "${notebook}" and all files inside it?`)) {
-      return;
-    }
+    setWorkspaceConfirmDialog({ mode: "delete-notebook", notebook });
+  }
 
+  async function deleteNotebook(notebook: string) {
     try {
       const nextTree = await apiRequest<LiberaTree>(
         `/api/notebooks?path=${encodeURIComponent(notebook)}`,
         { method: "DELETE" },
       );
       setTree(nextTree);
+      setSelectedNotebookName((current) =>
+        current === notebook ? nextTree.notebooks[0]?.name ?? "" : current,
+      );
       setExpanded((current) => {
         const next = new Set(current);
         next.delete(notebook);
@@ -547,35 +643,50 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function createMarkdownFromPrompt(notebook: string) {
-    const name = window.prompt("Markdown file name", "Untitled.md");
+    setWorkspaceError("");
+    setSelectedNotebookName(notebook);
+    setNoteDialog({ notebook });
+  }
 
-    if (!name) {
+  async function submitNoteDialog(values: NoteFormValues) {
+    if (!noteDialog) {
       return;
     }
+
+    const name = values.name.trim();
+
+    if (!name) {
+      setNoteDialogError("Note name is required.");
+      return;
+    }
+
+    setNoteDialogSubmitting(true);
 
     try {
       const payload = await apiRequest<LiberaFilePayload>("/api/files", {
         method: "POST",
         body: JSON.stringify({
-          notebook,
+          notebook: noteDialog.notebook,
           name,
           content: `# ${name.replace(/\.(md|markdown)$/i, "")}\n`,
         }),
       });
-      await refreshTree(notebook);
+      await refreshTree(noteDialog.notebook);
+      setNoteDialog(null);
       await openFile(payload.file);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not create note.");
+      setNoteDialogError(error instanceof Error ? error.message : "Could not create note.");
+    } finally {
+      setNoteDialogSubmitting(false);
     }
   }
 
   async function createFolderFromPrompt(parentPath: string) {
-    const name = window.prompt("Folder name", "New folder");
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "create-folder", parentPath });
+  }
 
-    if (!name) {
-      return;
-    }
-
+  async function createFolder(parentPath: string, name: string) {
     try {
       const nextTree = await apiRequest<LiberaTree>("/api/folders", {
         method: "POST",
@@ -592,27 +703,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not create folder.");
+      throw new Error(error instanceof Error ? error.message : "Could not create folder.");
     }
   }
 
   async function copyFileFromPrompt(file: LiberaFileNode) {
-    const defaultDestination = parentPathForFile(file);
-    const destinationDirectory = window.prompt(
-      "Copy to notebook or folder path",
-      defaultDestination,
-    );
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "copy-file", file });
+  }
 
-    if (!destinationDirectory) {
-      return;
-    }
-
-    const destinationName = window.prompt("Copy file name", suggestedCopyName(file.name));
-
-    if (!destinationName) {
-      return;
-    }
-
+  async function copyFile(
+    file: LiberaFileNode,
+    destinationDirectory: string,
+    destinationName: string,
+  ) {
     try {
       const payload = await apiRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
@@ -631,54 +735,40 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not copy file.");
+      throw new Error(error instanceof Error ? error.message : "Could not copy file.");
     }
   }
 
   async function renameFileFromPrompt(tab: OpenTab) {
-    const name = window.prompt("New file name", tab.file.name);
-
-    if (!name || name === tab.file.name) {
-      return;
-    }
-
-    await moveFileNode(tab.file, tab.file.notebook, name);
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "rename-file", file: tab.file });
   }
 
   async function renameFileNodeFromPrompt(file: LiberaFileNode) {
-    const name = window.prompt("New file name", file.name);
-
-    if (!name || name === file.name) {
-      return;
-    }
-
-    await moveFileNode(file, file.notebook, name);
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "rename-file", file });
   }
 
   async function moveFileFromPrompt(tab: OpenTab) {
-    const destinationDirectory = window.prompt(
-      "Destination notebook or folder path",
-      parentPathForFile(tab.file),
-    );
-
-    if (!destinationDirectory) {
-      return;
-    }
-
-    await moveFileToFolder(tab.file, destinationDirectory);
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "move-file", file: tab.file });
   }
 
   async function moveFileNode(
     file: LiberaFileNode,
     destinationNotebook: string,
     destinationName: string,
+    options?: { skipDirtyCheck?: boolean },
   ) {
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
-    if (
-      openTab?.status === "dirty" &&
-      !window.confirm("Move this file without saving edits first?")
-    ) {
+    if (openTab?.status === "dirty" && !options?.skipDirtyCheck) {
+      setWorkspaceConfirmDialog({
+        mode: "move-file-node",
+        file,
+        destinationNotebook,
+        destinationName,
+      });
       return;
     }
 
@@ -711,7 +801,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
-  async function moveFileToFolder(file: LiberaFileNode, destinationPath: string) {
+  async function moveFileToFolder(
+    file: LiberaFileNode,
+    destinationPath: string,
+    options?: { skipDirtyCheck?: boolean },
+  ) {
     const normalizedDestination = destinationPath.trim();
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
@@ -719,10 +813,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    if (
-      openTab?.status === "dirty" &&
-      !window.confirm("Move this file without saving edits first?")
-    ) {
+    if (openTab?.status === "dirty" && !options?.skipDirtyCheck) {
+      setWorkspaceConfirmDialog({
+        mode: "move-file-folder",
+        file,
+        destinationPath: normalizedDestination,
+      });
       return;
     }
 
@@ -766,10 +862,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function deleteFileNodeFromPrompt(file: LiberaFileNode) {
-    if (!window.confirm(`Delete "${file.name}"?`)) {
-      return;
-    }
+    setWorkspaceConfirmDialog({ mode: "delete-file", file });
+  }
 
+  async function deleteFileNode(file: LiberaFileNode) {
     try {
       await apiRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}`, {
         method: "DELETE",
@@ -785,12 +881,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function renameFolderFromPrompt(folder: LiberaFolderNode) {
-    const name = window.prompt("New folder name", folder.name);
+    setWorkspaceError("");
+    setWorkspaceInputDialog({ mode: "rename-folder", folder });
+  }
 
-    if (!name || name === folder.name) {
-      return;
-    }
-
+  async function renameFolder(folder: LiberaFolderNode, name: string) {
     const parentPath = folder.path.split("/").slice(0, -1).join("/");
     const nextPath = `${parentPath}/${name}`;
 
@@ -839,15 +934,98 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           : current,
       );
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "Could not rename folder.");
+      throw new Error(error instanceof Error ? error.message : "Could not rename folder.");
+    }
+  }
+
+  async function submitWorkspaceInputDialog(values: WorkspaceInputDialogValues) {
+    if (!workspaceInputDialog) {
+      return;
+    }
+
+    setWorkspaceInputDialogSubmitting(true);
+
+    try {
+      if (workspaceInputDialog.mode === "create-folder") {
+        const name = values.name.trim();
+
+        if (!name) {
+          setWorkspaceInputDialogError("Folder name is required.");
+          return;
+        }
+
+        await createFolder(workspaceInputDialog.parentPath, name);
+      }
+
+      if (workspaceInputDialog.mode === "copy-file") {
+        const destinationDirectory = values.destinationDirectory.trim();
+        const destinationName = values.destinationName.trim();
+
+        if (!destinationDirectory) {
+          setWorkspaceInputDialogError("Destination path is required.");
+          return;
+        }
+
+        if (!destinationName) {
+          setWorkspaceInputDialogError("Copy file name is required.");
+          return;
+        }
+
+        await copyFile(workspaceInputDialog.file, destinationDirectory, destinationName);
+      }
+
+      if (workspaceInputDialog.mode === "move-file") {
+        const destinationDirectory = values.destinationDirectory.trim();
+
+        if (!destinationDirectory) {
+          setWorkspaceInputDialogError("Destination path is required.");
+          return;
+        }
+
+        await moveFileToFolder(workspaceInputDialog.file, destinationDirectory);
+      }
+
+      if (workspaceInputDialog.mode === "rename-file") {
+        const name = values.name.trim();
+
+        if (!name) {
+          setWorkspaceInputDialogError("File name is required.");
+          return;
+        }
+
+        if (name !== workspaceInputDialog.file.name) {
+          await moveFileNode(workspaceInputDialog.file, workspaceInputDialog.file.notebook, name);
+        }
+      }
+
+      if (workspaceInputDialog.mode === "rename-folder") {
+        const name = values.name.trim();
+
+        if (!name) {
+          setWorkspaceInputDialogError("Folder name is required.");
+          return;
+        }
+
+        if (name !== workspaceInputDialog.folder.name) {
+          await renameFolder(workspaceInputDialog.folder, name);
+        }
+      }
+
+      setWorkspaceInputDialog(null);
+    } catch (error) {
+      setWorkspaceInputDialogError(
+        error instanceof Error ? error.message : "Could not save changes.",
+      );
+    } finally {
+      setWorkspaceInputDialogSubmitting(false);
     }
   }
 
   async function deleteFolderFromPrompt(folder: LiberaFolderNode) {
-    if (!window.confirm(`Delete folder "${folder.name}" and everything inside it?`)) {
-      return;
-    }
+    setWorkspaceConfirmDialog({ mode: "delete-folder", folder });
+  }
 
+  async function deleteFolder(folder: LiberaFolderNode) {
     try {
       const nextTree = await apiRequest<LiberaTree>(
         `/api/folders?path=${encodeURIComponent(folder.path)}`,
@@ -865,6 +1043,53 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current.startsWith(`${folder.path}/`) ? "" : current));
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not delete folder.");
+    }
+  }
+
+  async function submitWorkspaceConfirmDialog() {
+    if (!workspaceConfirmDialog) {
+      return;
+    }
+
+    setWorkspaceConfirmDialogSubmitting(true);
+
+    try {
+      if (workspaceConfirmDialog.mode === "close-tab") {
+        closeTabWithoutConfirm(workspaceConfirmDialog.tabId);
+      }
+
+      if (workspaceConfirmDialog.mode === "delete-file") {
+        await deleteFileNode(workspaceConfirmDialog.file);
+      }
+
+      if (workspaceConfirmDialog.mode === "delete-folder") {
+        await deleteFolder(workspaceConfirmDialog.folder);
+      }
+
+      if (workspaceConfirmDialog.mode === "delete-notebook") {
+        await deleteNotebook(workspaceConfirmDialog.notebook);
+      }
+
+      if (workspaceConfirmDialog.mode === "move-file-node") {
+        await moveFileNode(
+          workspaceConfirmDialog.file,
+          workspaceConfirmDialog.destinationNotebook,
+          workspaceConfirmDialog.destinationName,
+          { skipDirtyCheck: true },
+        );
+      }
+
+      if (workspaceConfirmDialog.mode === "move-file-folder") {
+        await moveFileToFolder(
+          workspaceConfirmDialog.file,
+          workspaceConfirmDialog.destinationPath,
+          { skipDirtyCheck: true },
+        );
+      }
+
+      setWorkspaceConfirmDialog(null);
+    } finally {
+      setWorkspaceConfirmDialogSubmitting(false);
     }
   }
 
@@ -907,7 +1132,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     if (result.type === "file") {
       openFile(result.file);
+    } else {
+      selectNotebook(result.notebook);
     }
+  }
+
+  function selectNotebook(notebook: string) {
+    setSelectedNotebookName(notebook);
+    setActiveTabId("");
+    setExpanded((current) => new Set(current).add(notebook));
   }
 
   function toggleNotebook(notebook: string) {
@@ -922,6 +1155,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  function activateTab(tabId: string) {
+    const tab = tabs.find((currentTab) => currentTab.id === tabId);
+
+    if (tab) {
+      setSelectedNotebookName(tab.file.notebook);
+    }
+
+    setActiveTabId(tabId);
+  }
+
   return {
     authenticated,
     workspace: {
@@ -934,17 +1177,28 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       firstNotebook,
       notebookDialog,
       notebookDialogSubmitting,
+      noteDialog,
+      noteDialogSubmitting,
       imageMarkdownConverting,
       password,
       query,
       searchResults,
+      selectedNotebook,
+      selectedNotebookName,
       tabs,
       textareaRef,
       tree,
       uploadInputRef,
+      workspaceConfirmDialog,
+      workspaceConfirmDialogSubmitting,
+      workspaceInputDialog,
+      workspaceInputDialogSubmitting,
       workspaceError,
       closeTab,
       closeNotebookDialog,
+      closeNoteDialog,
+      closeWorkspaceConfirmDialog,
+      closeWorkspaceInputDialog,
       copyFileFromPrompt,
       createFolderFromPrompt,
       createMarkdownFromPrompt,
@@ -957,6 +1211,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       handleLogin,
       handleLogout,
       handleUploadChange,
+      insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
       moveFileFromPrompt,
@@ -970,12 +1225,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       renameFileFromPrompt,
       saveActiveTab,
       selectSearchResult,
+      selectNotebook,
       setActiveDraft,
-      setActiveTabId,
+      setActiveTabId: activateTab,
       setPassword,
       setQuery,
       startUpload,
       submitNotebookDialog,
+      submitNoteDialog,
+      submitWorkspaceConfirmDialog,
+      submitWorkspaceInputDialog,
       toggleNotebook,
     },
   };
