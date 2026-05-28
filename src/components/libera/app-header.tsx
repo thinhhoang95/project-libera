@@ -21,8 +21,7 @@ export function AppHeader({
     <header className="border-b border-zinc-200 bg-white px-5 py-3">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="text-sm font-medium text-zinc-500">Libera</p>
-          <h1 className="text-xl font-semibold tracking-tight">Liberal notetaking app</h1>
+          <h1 className="text-xl font-semibold tracking-tight">LiBERA</h1>
         </div>
         <div className="relative flex w-full max-w-xl items-center gap-2">
           <div className="relative min-w-0 flex-1">
