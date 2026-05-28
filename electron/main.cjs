@@ -10,6 +10,7 @@ const { spawn } = require("node:child_process");
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
 const APP_DISPLAY_NAME = "Libera";
+const THEME_PREFERENCES = new Set(["light", "dark"]);
 
 app.setName(APP_DISPLAY_NAME);
 app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
@@ -50,6 +51,10 @@ function readConfig() {
   } catch {
     return {};
   }
+}
+
+function normalizeThemePreference(themePreference) {
+  return THEME_PREFERENCES.has(themePreference) ? themePreference : "";
 }
 
 async function writeConfig(config) {
@@ -405,10 +410,12 @@ async function startNextServer(config) {
   const env = {
     ...process.env,
     HOSTNAME: "127.0.0.1",
+    LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
     LIBERA_PASSWORD_HASH: config.passwordHash,
     LIBERA_SESSION_SECRET: config.sessionSecret,
+    LIBERA_THEME: normalizeThemePreference(config.themePreference),
     NODE_ENV: mode === "dev" ? "development" : "production",
     OPENAI_API_KEY: config.openaiApiKey,
     PORT: String(port),

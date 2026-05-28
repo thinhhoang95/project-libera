@@ -10,10 +10,12 @@ import {
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  MutableRefObject,
   PointerEvent as ReactPointerEvent,
   RefObject,
 } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
@@ -22,6 +24,17 @@ import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import type { OpenTab } from "@/components/libera/types";
+import {
+  findMarkdownSourceElementForOffset,
+  getMarkdownSourceOffsetAtPoint,
+  getMarkdownSourceRange,
+  MARKDOWN_SOURCE_BLOCK_SELECTOR,
+  MARKDOWN_SOURCE_SELECTOR,
+} from "@/lib/markdown-source-map";
+import {
+  getTextareaVisibleStartOffset,
+  scrollTextareaToOffset,
+} from "@/lib/textarea-position";
 import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
@@ -53,6 +66,7 @@ type WorkspacePanelProps = {
 };
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
+const MARKDOWN_PREVIEW_RENDER_DELAY_MS = 250;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
 const MAX_MARKDOWN_SPLIT_PERCENT = 76;
 const MIN_MARKDOWN_SPLIT_PERCENT = 24;
@@ -69,6 +83,123 @@ function fixChatGptEquationBlocks(value: string) {
     /(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
     (_, prefix: string, equation: string) => `${prefix}$$\n${equation.trim()}\n$$`,
   );
+}
+
+function parseCssPixels(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getPreviewPadding(preview: HTMLElement) {
+  const styles = window.getComputedStyle(preview);
+
+  return {
+    left: parseCssPixels(styles.paddingLeft),
+    top: parseCssPixels(styles.paddingTop),
+  };
+}
+
+function findPreviewSourceElementAtY(
+  preview: HTMLElement,
+  clientY: number,
+  selector = MARKDOWN_SOURCE_BLOCK_SELECTOR,
+) {
+  const previewRect = preview.getBoundingClientRect();
+  const padding = getPreviewPadding(preview);
+  const clientX = Math.min(
+    previewRect.right - 1,
+    Math.max(previewRect.left + 1, previewRect.left + padding.left + 8),
+  );
+
+  for (const element of document.elementsFromPoint(clientX, clientY)) {
+    const sourceElement = element.closest(selector);
+
+    if (sourceElement instanceof HTMLElement && preview.contains(sourceElement)) {
+      return sourceElement;
+    }
+  }
+
+  const sourceElements = Array.from(preview.querySelectorAll<HTMLElement>(selector));
+  let previousElement: HTMLElement | null = null;
+
+  for (const sourceElement of sourceElements) {
+    const sourceRect = sourceElement.getBoundingClientRect();
+
+    if (sourceRect.bottom < clientY) {
+      previousElement = sourceElement;
+      continue;
+    }
+
+    return sourceElement;
+  }
+
+  return previousElement;
+}
+
+function getPreviewSourceOffsetAtY(preview: HTMLElement, clientY: number) {
+  const sourceElement = findPreviewSourceElementAtY(preview, clientY);
+
+  if (!sourceElement) {
+    return null;
+  }
+
+  return (
+    getMarkdownSourceOffsetAtPoint(sourceElement, clientY) ??
+    getMarkdownSourceRange(sourceElement)?.start ??
+    null
+  );
+}
+
+function getPreviewVisibleStartOffset(preview: HTMLElement) {
+  const previewRect = preview.getBoundingClientRect();
+  const padding = getPreviewPadding(preview);
+
+  return getPreviewSourceOffsetAtY(preview, previewRect.top + padding.top + 1);
+}
+
+function scrollPreviewToSourceOffset(preview: HTMLElement, offset: number) {
+  const sourceElement = findMarkdownSourceElementForOffset(preview, offset);
+  const sourceRange = getMarkdownSourceRange(sourceElement);
+
+  if (!sourceElement || !sourceRange) {
+    return;
+  }
+
+  const previewRect = preview.getBoundingClientRect();
+  const sourceRect = sourceElement.getBoundingClientRect();
+  const padding = getPreviewPadding(preview);
+  const sourceSpan = Math.max(1, sourceRange.end - sourceRange.start);
+  const progress = Math.min(
+    1,
+    Math.max(0, (offset - sourceRange.start) / sourceSpan),
+  );
+  const offsetWithinElement = sourceRect.height * progress;
+
+  preview.scrollTop = Math.max(
+    0,
+    preview.scrollTop + sourceRect.top - previewRect.top + offsetWithinElement - padding.top,
+  );
+}
+
+function useDebouncedPreviewContent(content: string, resetKey: string | undefined) {
+  const [previewContent, setPreviewContent] = useState(content);
+  const resetKeyRef = useRef(resetKey);
+
+  useEffect(() => {
+    if (resetKeyRef.current !== resetKey) {
+      resetKeyRef.current = resetKey;
+      setPreviewContent(content);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setPreviewContent(content);
+    }, MARKDOWN_PREVIEW_RENDER_DELAY_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [content, resetKey]);
+
+  return previewContent;
 }
 
 export function WorkspacePanel({
@@ -101,8 +232,78 @@ export function WorkspacePanel({
   );
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const markdownPreviewRef = useRef<HTMLElement | null>(null);
+  const suppressEditorScrollRef = useRef(false);
+  const suppressEditorScrollTimeoutRef = useRef<number | null>(null);
+  const suppressPreviewScrollRef = useRef(false);
+  const suppressPreviewScrollTimeoutRef = useRef<number | null>(null);
+  const activeFileType = activeTab?.file.fileType;
+  const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
+  const activeTabStatus = activeTab?.status;
+  const activeTabId = activeTab?.id;
+  const previewMarkdownDraft = useDebouncedPreviewContent(
+    activeMarkdownDraft,
+    activeTabId,
+  );
   const previewFullscreen =
     activeTab?.file.fileType === "markdown" && activePreviewTabId === activeTab.id;
+
+  const markScrollSuppressed = useCallback(
+    (
+      suppressedRef: MutableRefObject<boolean>,
+      timeoutRef: MutableRefObject<number | null>,
+    ) => {
+      suppressedRef.current = true;
+
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
+
+      timeoutRef.current = window.setTimeout(() => {
+        suppressedRef.current = false;
+        timeoutRef.current = null;
+      }, 80);
+    },
+    [],
+  );
+
+  const suppressEditorScroll = useCallback(() => {
+    markScrollSuppressed(suppressEditorScrollRef, suppressEditorScrollTimeoutRef);
+  }, [markScrollSuppressed]);
+
+  const suppressPreviewScroll = useCallback(() => {
+    markScrollSuppressed(suppressPreviewScrollRef, suppressPreviewScrollTimeoutRef);
+  }, [markScrollSuppressed]);
+
+  const syncMarkdownPreviewToTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    const preview = markdownPreviewRef.current;
+
+    if (!textarea || !preview) {
+      return;
+    }
+
+    suppressPreviewScroll();
+    scrollPreviewToSourceOffset(preview, getTextareaVisibleStartOffset(textarea));
+  }, [suppressPreviewScroll, textareaRef]);
+
+  const syncTextareaToMarkdownPreview = useCallback(() => {
+    const textarea = textareaRef.current;
+    const preview = markdownPreviewRef.current;
+
+    if (!textarea || !preview) {
+      return;
+    }
+
+    const sourceOffset = getPreviewVisibleStartOffset(preview);
+
+    if (sourceOffset === null) {
+      return;
+    }
+
+    suppressEditorScroll();
+    scrollTextareaToOffset(textarea, sourceOffset, { block: "start" });
+  }, [suppressEditorScroll, textareaRef]);
 
   useEffect(() => {
     const savedSplit = window.localStorage.getItem(MARKDOWN_SPLIT_STORAGE_KEY);
@@ -116,6 +317,66 @@ export function WorkspacePanel({
       return () => window.cancelAnimationFrame(animationFrame);
     }
   }, []);
+
+  useEffect(() => {
+    if (activeFileType !== "markdown" || !activeTabId || previewFullscreen) {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const preview = markdownPreviewRef.current;
+
+    if (!textarea || !preview) {
+      return;
+    }
+
+    function handleEditorScroll() {
+      if (suppressEditorScrollRef.current) {
+        return;
+      }
+
+      syncMarkdownPreviewToTextarea();
+    }
+
+    function handlePreviewScroll() {
+      if (suppressPreviewScrollRef.current) {
+        return;
+      }
+
+      syncTextareaToMarkdownPreview();
+    }
+
+    textarea.addEventListener("scroll", handleEditorScroll, { passive: true });
+    preview.addEventListener("scroll", handlePreviewScroll, { passive: true });
+
+    return () => {
+      textarea.removeEventListener("scroll", handleEditorScroll);
+      preview.removeEventListener("scroll", handlePreviewScroll);
+    };
+  }, [
+    activeFileType,
+    activeTabId,
+    previewFullscreen,
+    syncMarkdownPreviewToTextarea,
+    syncTextareaToMarkdownPreview,
+    textareaRef,
+  ]);
+
+  useEffect(() => {
+    if (activeFileType !== "markdown" || !activeTabId || previewFullscreen) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(syncMarkdownPreviewToTextarea);
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    activeFileType,
+    activeTabId,
+    previewMarkdownDraft,
+    previewFullscreen,
+    syncMarkdownPreviewToTextarea,
+  ]);
 
   useEffect(() => {
     if (!previewFullscreen) {
@@ -143,11 +404,9 @@ export function WorkspacePanel({
   }, [previewFullscreen, textareaRef]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.file.fileType !== "markdown") {
+    if (activeFileType !== "markdown" || !activeTabId) {
       return;
     }
-
-    const markdownTab = activeTab;
 
     function handleKeyDown(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
@@ -156,7 +415,7 @@ export function WorkspacePanel({
 
       event.preventDefault();
 
-      if (markdownTab.status === "saving" || markdownTab.status === "clean") {
+      if (activeTabStatus === "saving" || activeTabStatus === "clean") {
         return;
       }
 
@@ -168,7 +427,7 @@ export function WorkspacePanel({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeTab, onSave]);
+  }, [activeFileType, activeTabId, activeTabStatus, onSave]);
 
   function saveMarkdownSplitPercent(value: number) {
     const clampedValue = clampMarkdownSplitPercent(value);
@@ -250,6 +509,51 @@ export function WorkspacePanel({
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
+  }
+
+  function handleMarkdownPreviewDoubleClick(
+    event: ReactMouseEvent<HTMLElement>,
+  ) {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return;
+    }
+
+    const preview = event.currentTarget;
+    const clickedSourceElement =
+      event.target instanceof Element
+        ? event.target.closest(MARKDOWN_SOURCE_SELECTOR)
+        : null;
+    const sourceElement =
+      clickedSourceElement instanceof HTMLElement &&
+      preview.contains(clickedSourceElement)
+        ? clickedSourceElement
+        : findPreviewSourceElementAtY(
+            preview,
+            event.clientY,
+            MARKDOWN_SOURCE_SELECTOR,
+          );
+
+    if (!sourceElement) {
+      return;
+    }
+
+    const sourceOffset =
+      getMarkdownSourceOffsetAtPoint(sourceElement, event.clientY) ??
+      getMarkdownSourceRange(sourceElement)?.start;
+
+    if (sourceOffset === undefined) {
+      return;
+    }
+
+    const clampedOffset = Math.max(0, Math.min(sourceOffset, textarea.value.length));
+
+    event.preventDefault();
+    suppressEditorScroll();
+    textarea.focus();
+    textarea.setSelectionRange(clampedOffset, clampedOffset);
+    scrollTextareaToOffset(textarea, clampedOffset);
   }
 
   if (!activeTab) {
@@ -373,9 +677,13 @@ export function WorkspacePanel({
               >
                 <span className="h-1 w-10 rounded-full bg-zinc-400 transition group-hover:bg-zinc-700 group-focus-visible:bg-zinc-700 lg:h-10 lg:w-1" />
               </div>
-              <article className="min-h-0 min-w-0 overflow-auto bg-white p-6">
+              <article
+                ref={markdownPreviewRef}
+                className="min-h-0 min-w-0 overflow-auto bg-white p-6"
+                onDoubleClick={handleMarkdownPreviewDoubleClick}
+              >
                 <MarkdownRenderer
-                  content={activeTab.draft}
+                  content={previewMarkdownDraft}
                   documentPath={activeTab.file.path}
                   textScale={markdownZoom / 100}
                 />

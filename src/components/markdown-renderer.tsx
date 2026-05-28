@@ -1,10 +1,12 @@
 "use client";
 
 import type { CSSProperties } from "react";
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 
 type MarkdownRendererProps = {
   content: string;
@@ -36,7 +38,19 @@ function tableCellStyle(align: unknown): CSSProperties | undefined {
   return undefined;
 }
 
-export function MarkdownRenderer({
+function classNames(...classes: Array<string | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function markdownElementProps<T extends { node?: unknown }>(props: T) {
+  const { node, ...elementProps } = props;
+
+  void node;
+
+  return elementProps;
+}
+
+function MarkdownRendererContent({
   content,
   documentPath,
   textScale = 1,
@@ -48,72 +62,136 @@ export function MarkdownRenderer({
   return (
     <div style={scaledFontStyle}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkMarkdownSourceMap, remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          h1: ({ children }) => (
-            <h1 className="mb-4 text-[calc(1.875rem*var(--markdown-text-scale))] font-semibold tracking-tight text-zinc-950">
+          h1: ({ children, className, ...props }) => (
+            <h1
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-4 text-[calc(1.875rem*var(--markdown-text-scale))] font-semibold tracking-tight text-zinc-950",
+                className,
+              )}
+            >
               {children}
             </h1>
           ),
-          h2: ({ children }) => (
-            <h2 className="mb-3 mt-8 text-[calc(1.25rem*var(--markdown-text-scale))] font-semibold text-zinc-900">
+          h2: ({ children, className, ...props }) => (
+            <h2
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-3 mt-8 text-[calc(1.25rem*var(--markdown-text-scale))] font-semibold text-zinc-900",
+                className,
+              )}
+            >
               {children}
             </h2>
           ),
-          p: ({ children }) => (
-            <p className="mb-4 text-[calc(1rem*var(--markdown-text-scale))] leading-7 text-zinc-700">
+          p: ({ children, className, ...props }) => (
+            <p
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-4 text-[calc(1rem*var(--markdown-text-scale))] leading-7 text-zinc-700",
+                className,
+              )}
+            >
               {children}
             </p>
           ),
-          ul: ({ children }) => (
-            <ul className="mb-4 list-disc space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700">
+          ul: ({ children, className, ...props }) => (
+            <ul
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-4 list-disc space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700",
+                className,
+              )}
+            >
               {children}
             </ul>
           ),
-          ol: ({ children }) => (
-            <ol className="mb-4 list-decimal space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700">
+          ol: ({ children, className, ...props }) => (
+            <ol
+              {...markdownElementProps(props)}
+              className={classNames(
+                "mb-4 list-decimal space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700",
+                className,
+              )}
+            >
               {children}
             </ol>
           ),
-          code: ({ children }) => (
-            <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[calc(0.875rem*var(--markdown-text-scale))] text-zinc-900">
+          code: ({ children, className, ...props }) => (
+            <code
+              {...markdownElementProps(props)}
+              className={classNames(
+                "rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[calc(0.875rem*var(--markdown-text-scale))] text-zinc-900",
+                className,
+              )}
+            >
               {children}
             </code>
           ),
-          table: ({ children }) => (
+          table: ({ children, className, ...props }) => (
             <div className="mb-4 overflow-x-auto rounded-md border border-zinc-200">
-              <table className="w-full border-collapse text-left text-[calc(0.875rem*var(--markdown-text-scale))]">
+              <table
+                {...markdownElementProps(props)}
+                className={classNames(
+                  "w-full border-collapse text-left text-[calc(0.875rem*var(--markdown-text-scale))]",
+                  className,
+                )}
+              >
                 {children}
               </table>
             </div>
           ),
-          thead: ({ children }) => (
-            <thead className="bg-zinc-100 text-zinc-900">{children}</thead>
+          thead: ({ children, className, ...props }) => (
+            <thead
+              {...markdownElementProps(props)}
+              className={classNames("bg-zinc-100 text-zinc-900", className)}
+            >
+              {children}
+            </thead>
           ),
-          th: ({ align, children }) => (
+          th: ({ align, children, className, ...props }) => (
             <th
-              className="border-b border-r border-zinc-200 px-3 py-2 font-semibold last:border-r-0"
+              {...markdownElementProps(props)}
+              className={classNames(
+                "border-b border-r border-zinc-200 px-3 py-2 font-semibold last:border-r-0",
+                className,
+              )}
               style={tableCellStyle(align)}
             >
               {children}
             </th>
           ),
-          td: ({ align, children }) => (
+          td: ({ align, children, className, ...props }) => (
             <td
-              className="border-b border-r border-zinc-200 px-3 py-2 align-top text-zinc-700 last:border-r-0"
+              {...markdownElementProps(props)}
+              className={classNames(
+                "border-b border-r border-zinc-200 px-3 py-2 align-top text-zinc-700 last:border-r-0",
+                className,
+              )}
               style={tableCellStyle(align)}
             >
               {children}
             </td>
           ),
-          tr: ({ children }) => (
-            <tr className="last:[&>td]:border-b-0">{children}</tr>
+          tr: ({ children, className, ...props }) => (
+            <tr
+              {...markdownElementProps(props)}
+              className={classNames("last:[&>td]:border-b-0", className)}
+            >
+              {children}
+            </tr>
           ),
-          img: ({ alt, src }) => (
+          img: ({ alt, className, src, ...props }) => (
             // eslint-disable-next-line @next/next/no-img-element -- Markdown images may be authenticated local assets.
             <img
-              className="my-4 max-h-[560px] max-w-full rounded-md border border-zinc-200 object-contain"
+              {...markdownElementProps(props)}
+              className={classNames(
+                "my-4 max-h-[560px] max-w-full rounded-md border border-zinc-200 object-contain",
+                className,
+              )}
               src={resolveMarkdownImageSource(
                 typeof src === "string" ? src : undefined,
                 documentPath,
@@ -128,3 +206,6 @@ export function MarkdownRenderer({
     </div>
   );
 }
+
+export const MarkdownRenderer = memo(MarkdownRendererContent);
+MarkdownRenderer.displayName = "MarkdownRenderer";

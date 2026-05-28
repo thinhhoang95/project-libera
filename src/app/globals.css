@@ -142,7 +142,8 @@ body {
 
 .toolbar-button {
   align-items: center;
-  border: 1px solid #d4d4d8;
+  background: #f4f4f5;
+  border: 1px solid transparent;
   border-radius: 0.375rem;
   color: #27272a;
   display: inline-flex;
@@ -157,24 +158,70 @@ body {
 }
 
 .dark .toolbar-button {
-  background: #18181b;
-  border-color: #52525b;
+  background: #27272a;
+  border-color: transparent;
   color: #e4e4e7;
 }
 
 .toolbar-button:hover,
 .toolbar-button[aria-pressed="true"] {
-  background: #f4f4f5;
+  background: #e4e4e7;
 }
 
 .dark .toolbar-button:hover,
 .dark .toolbar-button[aria-pressed="true"] {
-  background: #27272a;
+  background: #3f3f46;
 }
 
 .toolbar-button:focus-visible {
   outline: 2px solid #18181b;
   outline-offset: 2px;
+}
+
+button.border {
+  background-color: #f4f4f5;
+  border-color: transparent;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+button.border:hover {
+  background-color: #e4e4e7;
+}
+
+button.border[class*="border-red"] {
+  background-color: #fef2f2;
+}
+
+button.border[class*="border-red"]:hover {
+  background-color: #fee2e2;
+}
+
+button.border[class*="border-white"] {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+button.border[class*="border-white"]:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+}
+
+.dark button.border {
+  background-color: #27272a;
+  border-color: transparent;
+}
+
+.dark button.border:hover {
+  background-color: #3f3f46;
+}
+
+.dark button.border[class*="border-red"] {
+  background-color: #450a0a;
+}
+
+.dark button.border[class*="border-red"]:hover {
+  background-color: #7f1d1d;
 }
 
 .markdown-split-grid {

@@ -4,6 +4,10 @@ import { ChevronDown, ChevronUp, ImageIcon, Search, Sparkles, X } from "lucide-r
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
+import {
+  getTextareaOffsetAtPoint,
+  scrollTextareaToOffset,
+} from "@/lib/textarea-position";
 
 type EditorContextMenuState = {
   image?: MarkdownImageSelection;
@@ -117,76 +121,6 @@ function hasImageDragItem(dataTransfer: DataTransfer) {
 
 function getDroppedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files).filter(isImageFile);
-}
-
-function parsePixels(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function getTextareaOffsetAtPoint(
-  textarea: HTMLTextAreaElement,
-  clientX: number,
-  clientY: number,
-) {
-  const styles = window.getComputedStyle(textarea);
-  const rect = textarea.getBoundingClientRect();
-  const paddingLeft = parsePixels(styles.paddingLeft);
-  const paddingRight = parsePixels(styles.paddingRight);
-  const paddingTop = parsePixels(styles.paddingTop);
-  const fontSize = parsePixels(styles.fontSize) || 14;
-  const lineHeight = parsePixels(styles.lineHeight) || fontSize * 1.5;
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-  const font = [
-    styles.fontStyle,
-    styles.fontVariant,
-    styles.fontWeight,
-    styles.fontSize,
-    styles.fontFamily,
-  ].join(" ");
-  if (context) {
-    context.font = font;
-  }
-
-  const charWidth = context ? context.measureText("M").width || fontSize * 0.6 : fontSize * 0.6;
-  const contentWidth = Math.max(1, textarea.clientWidth - paddingLeft - paddingRight);
-  const wrapColumn = Math.max(1, Math.floor(contentWidth / charWidth));
-  const targetLine = Math.max(
-    0,
-    Math.floor((clientY - rect.top - paddingTop + textarea.scrollTop) / lineHeight),
-  );
-  const targetColumn = Math.max(
-    0,
-    Math.round((clientX - rect.left - paddingLeft + textarea.scrollLeft) / charWidth),
-  );
-  const lines = textarea.value.split("\n");
-  let offset = 0;
-  let visualLine = 0;
-
-  for (const line of lines) {
-    const visualLineCount = Math.max(1, Math.ceil(Math.max(1, line.length) / wrapColumn));
-
-    if (targetLine < visualLine + visualLineCount) {
-      const wrappedLine = targetLine - visualLine;
-      const lineOffset = Math.min(line.length, wrappedLine * wrapColumn + targetColumn);
-      return offset + lineOffset;
-    }
-
-    offset += line.length + 1;
-    visualLine += visualLineCount;
-  }
-
-  return textarea.value.length;
-}
-
-function scrollTextareaToOffset(textarea: HTMLTextAreaElement, offset: number) {
-  const styles = window.getComputedStyle(textarea);
-  const fontSize = parsePixels(styles.fontSize) || 14;
-  const lineHeight = parsePixels(styles.lineHeight) || fontSize * 1.5;
-  const lineIndex = textarea.value.slice(0, offset).split("\n").length - 1;
-
-  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
 }
 
 export function MarkdownEditor({

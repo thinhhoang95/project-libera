@@ -1,15 +1,15 @@
 import { ChevronRight, Info, LogOut, Moon, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { apiRequest } from "@/components/libera/api-client";
 import { AboutDialog } from "@/components/libera/about-dialog";
-
-type ThemePreference = "light" | "dark";
+import type { ThemePreference } from "@/lib/theme";
+import { isThemePreference, THEME_STORAGE_KEY } from "@/lib/theme";
 
 type SidebarAppMenuProps = {
   collapsed?: boolean;
   onLogout: () => Promise<void>;
 };
 
-const THEME_STORAGE_KEY = "libera.theme";
 const MENU_GAP_PX = 8;
 const MENU_WIDTH_PX = 176;
 const MENU_WITH_SUBMENU_WIDTH_PX = 352;
@@ -26,9 +26,7 @@ function systemThemePreference(): ThemePreference {
 function storedThemePreference(): ThemePreference {
   const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
 
-  return savedTheme === "dark" || savedTheme === "light"
-    ? savedTheme
-    : systemThemePreference();
+  return isThemePreference(savedTheme) ? savedTheme : systemThemePreference();
 }
 
 function applyThemePreference(theme: ThemePreference) {
@@ -105,6 +103,10 @@ export function SidebarAppMenu({
     window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
     applyThemePreference(nextTheme);
     setTheme(nextTheme);
+    void apiRequest<{ theme: ThemePreference }>("/api/preferences/theme", {
+      body: JSON.stringify({ theme: nextTheme }),
+      method: "PATCH",
+    }).catch(() => null);
   }
 
   function toggleMenu() {
