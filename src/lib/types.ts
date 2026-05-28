@@ -36,6 +36,7 @@ export type LiberaFileNode = {
   path: string;
   notebook: string;
   fileType: LiberaFileType;
+  createdAt: string;
   size: number;
   updatedAt: string;
 };
@@ -45,6 +46,7 @@ export type LiberaFolderNode = {
   name: string;
   path: string;
   notebook: string;
+  createdAt: string;
   updatedAt: string;
   children: LiberaTreeNode[];
 };
@@ -93,6 +95,30 @@ export type MarkdownImageAssetPayload = {
   assetPath: string;
   markdown: string;
   rawUrl: string;
+};
+
+export type DeepSearchResultSource =
+  | "markdown"
+  | "pdf-annotation"
+  | "image-annotation";
+
+export type DeepSearchResult = {
+  id: string;
+  source: DeepSearchResultSource;
+  notebook: string;
+  file: LiberaFileNode;
+  title: string;
+  sourceLabel: string;
+  excerpt: string;
+  matchCount: number;
+  pageNumber?: number;
+  annotationId?: string;
+};
+
+export type DeepSearchPayload = {
+  query: string;
+  searchedFiles: number;
+  results: DeepSearchResult[];
 };
 
 export type ApiError = {

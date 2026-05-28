@@ -414,7 +414,7 @@ export function MarkdownEditor({
     : 0;
 
   return (
-    <div className="relative min-h-0 overflow-hidden">
+    <div className="relative min-h-0 min-w-0 overflow-hidden">
       <textarea
         ref={textareaRef}
         className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-zinc-200 bg-white p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"

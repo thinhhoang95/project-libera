@@ -50,6 +50,7 @@ async function main() {
     `${JSON.stringify(
       {
         name: "libera",
+        productName: "Libera",
         version: "0.1.0",
         private: true,
         main: "electron/main.cjs",

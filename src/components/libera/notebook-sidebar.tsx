@@ -1,23 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { MouseEvent, ReactNode, RefObject } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent, RefObject } from "react";
 import {
+  ArrowDownUp,
   BookPlus,
   ChevronDown,
   ChevronRight,
+  Check,
   Copy,
   Download,
   FilePlus2,
   Folder,
   FolderPlus,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
   Trash2,
   Upload,
 } from "lucide-react";
+import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
+import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
+import { SidebarSearch } from "@/components/libera/sidebar-search";
+import type { SearchResult } from "@/components/libera/types";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -30,10 +37,18 @@ type SidebarMenuTarget =
   | { kind: "file"; file: LiberaFileNode }
   | { kind: "folder"; folder: LiberaFolderNode };
 
+type MenuPosition = {
+  x: number;
+  y: number;
+};
+
 type NotebookSidebarProps = {
   activeTabId: string;
   collapsed: boolean;
   expanded: Set<string>;
+  fileInteractions: Record<string, string>;
+  query: string;
+  searchResults: SearchResult[];
   selectedNotebookName: string;
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
@@ -49,19 +64,199 @@ type NotebookSidebarProps = {
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onLogout: () => Promise<void>;
+  onQueryChange: (query: string) => void;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
+  onSelectSearchResult: (result: SearchResult) => void;
   onStartUpload: (notebook: string) => void;
   onToggleCollapsed: () => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
 };
 
+type SidebarSortKey = "createdAt" | "updatedAt" | "interactedAt";
+type SidebarSortDirection = "asc" | "desc";
+
+type SidebarSortPreference = {
+  key: SidebarSortKey;
+  direction: SidebarSortDirection;
+};
+
+const SIDEBAR_SORT_STORAGE_KEY = "libera.sidebarSort";
+const DEFAULT_SIDEBAR_SORT: SidebarSortPreference = {
+  key: "updatedAt",
+  direction: "desc",
+};
+
+const SORT_OPTIONS: Array<{
+  direction: SidebarSortDirection;
+  key: SidebarSortKey;
+  label: string;
+}> = [
+  { key: "createdAt", direction: "desc", label: "Date created, newest first" },
+  { key: "createdAt", direction: "asc", label: "Date created, oldest first" },
+  { key: "updatedAt", direction: "desc", label: "Last modified, newest first" },
+  { key: "updatedAt", direction: "asc", label: "Last modified, oldest first" },
+  { key: "interactedAt", direction: "desc", label: "Last interacted, newest first" },
+  { key: "interactedAt", direction: "asc", label: "Last interacted, oldest first" },
+];
+
+function parseSortPreference(input: unknown): SidebarSortPreference {
+  if (!input || typeof input !== "object") {
+    return DEFAULT_SIDEBAR_SORT;
+  }
+
+  const candidate = input as Partial<SidebarSortPreference>;
+
+  if (
+    (candidate.key === "createdAt" ||
+      candidate.key === "updatedAt" ||
+      candidate.key === "interactedAt") &&
+    (candidate.direction === "asc" || candidate.direction === "desc")
+  ) {
+    return {
+      key: candidate.key,
+      direction: candidate.direction,
+    };
+  }
+
+  return DEFAULT_SIDEBAR_SORT;
+}
+
+function dateValue(value: string | undefined) {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function latestNodeInteraction(
+  node: LiberaTreeNode,
+  fileInteractions: Record<string, string>,
+): number {
+  if (node.kind === "file") {
+    return dateValue(fileInteractions[node.path]);
+  }
+
+  return Math.max(0, ...node.children.map((child) => latestNodeInteraction(child, fileInteractions)));
+}
+
+function latestNotebookInteraction(
+  notebook: LiberaNotebookNode,
+  fileInteractions: Record<string, string>,
+) {
+  return Math.max(
+    0,
+    ...notebook.children.map((child) => latestNodeInteraction(child, fileInteractions)),
+  );
+}
+
+function nodeSortValue(
+  node: LiberaTreeNode,
+  sortPreference: SidebarSortPreference,
+  fileInteractions: Record<string, string>,
+) {
+  if (sortPreference.key === "interactedAt") {
+    return latestNodeInteraction(node, fileInteractions);
+  }
+
+  return dateValue(node[sortPreference.key]);
+}
+
+function notebookSortValue(
+  notebook: LiberaNotebookNode,
+  sortPreference: SidebarSortPreference,
+  fileInteractions: Record<string, string>,
+) {
+  if (sortPreference.key === "interactedAt") {
+    return latestNotebookInteraction(notebook, fileInteractions);
+  }
+
+  return dateValue(notebook[sortPreference.key]);
+}
+
+function compareSortValues(
+  leftValue: number,
+  rightValue: number,
+  direction: SidebarSortDirection,
+) {
+  const difference = leftValue - rightValue;
+
+  return direction === "asc" ? difference : -difference;
+}
+
+function sortTreeNodesForSidebar(
+  nodes: LiberaTreeNode[],
+  sortPreference: SidebarSortPreference,
+  fileInteractions: Record<string, string>,
+): LiberaTreeNode[] {
+  return nodes
+    .map((node) =>
+      node.kind === "folder"
+        ? {
+            ...node,
+            children: sortTreeNodesForSidebar(
+              node.children,
+              sortPreference,
+              fileInteractions,
+            ),
+          }
+        : node,
+    )
+    .sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === "folder" ? -1 : 1;
+      }
+
+      const sortComparison = compareSortValues(
+        nodeSortValue(left, sortPreference, fileInteractions),
+        nodeSortValue(right, sortPreference, fileInteractions),
+        sortPreference.direction,
+      );
+
+      return sortComparison || left.name.localeCompare(right.name);
+    });
+}
+
+function sortTreeForSidebar(
+  tree: LiberaTree,
+  sortPreference: SidebarSortPreference,
+  fileInteractions: Record<string, string>,
+): LiberaTree {
+  return {
+    ...tree,
+    notebooks: tree.notebooks
+      .map((notebook) => ({
+        ...notebook,
+        children: sortTreeNodesForSidebar(
+          notebook.children,
+          sortPreference,
+          fileInteractions,
+        ),
+      }))
+      .sort((left, right) => {
+        const sortComparison = compareSortValues(
+          notebookSortValue(left, sortPreference, fileInteractions),
+          notebookSortValue(right, sortPreference, fileInteractions),
+          sortPreference.direction,
+        );
+
+        return sortComparison || left.name.localeCompare(right.name);
+      }),
+  };
+}
+
 export function NotebookSidebar({
   activeTabId,
   collapsed,
   expanded,
+  fileInteractions,
+  query,
+  searchResults,
   selectedNotebookName,
   tree,
   uploadInputRef,
@@ -77,9 +272,12 @@ export function NotebookSidebar({
   onEditNotebook,
   onMoveFile,
   onOpenFile,
+  onLogout,
+  onQueryChange,
   onRenameFolder,
   onRenameFile,
   onSelectNotebook,
+  onSelectSearchResult,
   onStartUpload,
   onToggleCollapsed,
   onToggleNotebook,
@@ -92,6 +290,18 @@ export function NotebookSidebar({
   } | null>(null);
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
+  const [deepSearchQuery, setDeepSearchQuery] = useState("");
+  const [deepSearchOpen, setDeepSearchOpen] = useState(false);
+  const [sortMenuPosition, setSortMenuPosition] = useState<MenuPosition | null>(null);
+  const [sortPreference, setSortPreference] =
+    useState<SidebarSortPreference>(DEFAULT_SIDEBAR_SORT);
+  const sortMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sortMenuRef = useRef<HTMLDivElement | null>(null);
+  const sortMenuOpen = Boolean(sortMenuPosition);
+  const sortedTree = useMemo(
+    () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
+    [fileInteractions, sortPreference, tree],
+  );
 
   useEffect(() => {
     if (!contextMenu) {
@@ -123,6 +333,63 @@ export function NotebookSidebar({
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    const animationFrame = window.requestAnimationFrame(() => {
+      try {
+        setSortPreference(
+          parseSortPreference(
+            JSON.parse(window.localStorage.getItem(SIDEBAR_SORT_STORAGE_KEY) ?? "{}"),
+          ),
+        );
+      } catch {
+        setSortPreference(DEFAULT_SIDEBAR_SORT);
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, []);
+
+  useEffect(() => {
+    if (!sortMenuOpen) {
+      return;
+    }
+
+    function closeSortMenu() {
+      setSortMenuPosition(null);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+
+      if (
+        sortMenuRef.current?.contains(target) ||
+        sortMenuButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      closeSortMenu();
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeSortMenu();
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("scroll", closeSortMenu, true);
+    window.addEventListener("resize", closeSortMenu);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("scroll", closeSortMenu, true);
+      window.removeEventListener("resize", closeSortMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [sortMenuOpen]);
+
   function openContextMenu(event: MouseEvent, target: SidebarMenuTarget) {
     event.preventDefault();
     event.stopPropagation();
@@ -143,9 +410,42 @@ export function NotebookSidebar({
     setDragOverPath("");
   }
 
+  function openDeepSearch(searchQuery: string) {
+    setDeepSearchQuery(searchQuery);
+    setDeepSearchOpen(true);
+  }
+
+  function applySortPreference(nextSortPreference: SidebarSortPreference) {
+    setSortPreference(nextSortPreference);
+    setSortMenuPosition(null);
+    window.localStorage.setItem(
+      SIDEBAR_SORT_STORAGE_KEY,
+      JSON.stringify(nextSortPreference),
+    );
+  }
+
+  function toggleSortMenu(event: MouseEvent<HTMLButtonElement>) {
+    if (sortMenuPosition) {
+      setSortMenuPosition(null);
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 288;
+    const menuHeight = 288;
+    const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
+    const preferredY = rect.bottom + 8;
+    const y =
+      preferredY + menuHeight > window.innerHeight - 8
+        ? Math.max(8, rect.top - menuHeight - 8)
+        : preferredY;
+
+    setSortMenuPosition({ x, y });
+  }
+
   if (collapsed) {
     return (
-      <aside className="flex min-h-0 border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
+      <aside className="flex min-h-0 flex-col border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
         <div className="flex w-full justify-end px-3 py-3 lg:w-14 lg:justify-center">
           <button
             className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
@@ -157,12 +457,22 @@ export function NotebookSidebar({
             <PanelLeftOpen aria-hidden className="h-4 w-4" />
           </button>
         </div>
+        <div className="min-h-0 flex-1" />
+        <SidebarAppMenu collapsed onLogout={onLogout} />
       </aside>
     );
   }
 
   return (
     <aside className="flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-zinc-200 bg-white lg:max-h-none lg:border-b-0 lg:border-r">
+      <SidebarSearch
+        query={query}
+        searchResults={searchResults}
+        onDeepSearch={openDeepSearch}
+        onQueryChange={onQueryChange}
+        onSelectSearchResult={onSelectSearchResult}
+      />
+
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
           Notebooks
@@ -177,6 +487,58 @@ export function NotebookSidebar({
           >
             <PanelLeftClose aria-hidden className="h-4 w-4" />
           </button>
+          <div>
+            <button
+              ref={sortMenuButtonRef}
+              aria-expanded={sortMenuOpen}
+              aria-haspopup="menu"
+              aria-label="Sort notebooks and files"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+              title="Sort notebooks and files"
+              type="button"
+              onClick={toggleSortMenu}
+            >
+              <ArrowDownUp aria-hidden className="h-4 w-4" />
+            </button>
+            {sortMenuPosition ? (
+              <div
+                ref={sortMenuRef}
+                className="fixed z-50 w-[288px] overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+                role="menu"
+                style={{
+                  left: sortMenuPosition.x,
+                  top: sortMenuPosition.y,
+                }}
+              >
+                {SORT_OPTIONS.map((option) => {
+                  const selected =
+                    option.key === sortPreference.key &&
+                    option.direction === sortPreference.direction;
+
+                  return (
+                    <button
+                      key={`${option.key}:${option.direction}`}
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-zinc-100"
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      onClick={() =>
+                        applySortPreference({
+                          key: option.key,
+                          direction: option.direction,
+                        })
+                      }
+                    >
+                      <span>{option.label}</span>
+                      {selected ? (
+                        <Check aria-hidden className="h-4 w-4 text-zinc-500" />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
           <button
             className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium hover:bg-zinc-50"
             type="button"
@@ -198,14 +560,14 @@ export function NotebookSidebar({
       />
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
-        {!tree.notebooks.length ? (
+        {!sortedTree.notebooks.length ? (
           <div className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
             No notebooks yet.
           </div>
         ) : null}
 
         <div className="space-y-2">
-          {tree.notebooks.map((notebook) => (
+          {sortedTree.notebooks.map((notebook) => (
             <NotebookSection
               key={notebook.name}
               activeTabId={activeTabId}
@@ -248,6 +610,14 @@ export function NotebookSidebar({
           onRename={onRenameFile}
         />
       ) : null}
+      {deepSearchOpen ? (
+        <DeepSearchDialog
+          initialQuery={deepSearchQuery}
+          onClose={() => setDeepSearchOpen(false)}
+          onOpenFile={onOpenFile}
+        />
+      ) : null}
+      <SidebarAppMenu onLogout={onLogout} />
     </aside>
   );
 }
@@ -296,6 +666,76 @@ function NotebookSection({
   onToggleNotebook: (notebook: string) => void;
 }) {
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
+  const [actionMenuPosition, setActionMenuPosition] = useState<MenuPosition | null>(
+    null,
+  );
+  const actionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!actionMenuPosition) {
+      return;
+    }
+
+    function closeActionMenu() {
+      setActionMenuPosition(null);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+
+      if (
+        actionMenuRef.current?.contains(target) ||
+        actionMenuButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      closeActionMenu();
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeActionMenu();
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("scroll", closeActionMenu, true);
+    window.addEventListener("resize", closeActionMenu);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("scroll", closeActionMenu, true);
+      window.removeEventListener("resize", closeActionMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [actionMenuPosition]);
+
+  function toggleActionMenu(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+
+    if (actionMenuPosition) {
+      setActionMenuPosition(null);
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 184;
+    const menuHeight = 248;
+    const x = Math.max(
+      8,
+      Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+    );
+    const preferredY = rect.bottom + 6;
+    const y =
+      preferredY + menuHeight > window.innerHeight - 8
+        ? Math.max(8, rect.top - menuHeight - 6)
+        : preferredY;
+
+    setActionMenuPosition({ x, y });
+  }
 
   return (
     <section
@@ -352,40 +792,36 @@ function NotebookSection({
             </span>
           </span>
         </button>
+        <button
+          ref={actionMenuButtonRef}
+          aria-expanded={Boolean(actionMenuPosition)}
+          aria-haspopup="menu"
+          aria-label={`Notebook actions for ${notebook.name}`}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-100"
+          title="Notebook actions"
+          type="button"
+          onClick={toggleActionMenu}
+        >
+          <MoreHorizontal aria-hidden className="h-4 w-4" />
+        </button>
       </div>
+      {actionMenuPosition ? (
+        <NotebookActionsMenu
+          menuRef={actionMenuRef}
+          notebook={notebook}
+          x={actionMenuPosition.x}
+          y={actionMenuPosition.y}
+          onClose={() => setActionMenuPosition(null)}
+          onCreateFolder={onCreateFolder}
+          onCreateMarkdown={onCreateMarkdown}
+          onDeleteNotebook={onDeleteNotebook}
+          onDownloadNotebook={onDownloadNotebook}
+          onEditNotebook={onEditNotebook}
+          onStartUpload={onStartUpload}
+        />
+      ) : null}
       {isExpanded ? (
         <div className="px-2 py-2">
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            <NotebookActionButton onClick={() => onCreateMarkdown(notebook.name)}>
-              <FilePlus2 aria-hidden className="h-3.5 w-3.5" />
-              New note
-            </NotebookActionButton>
-            <NotebookActionButton onClick={() => onCreateFolder(notebook.path)}>
-              <FolderPlus aria-hidden className="h-3.5 w-3.5" />
-              New folder
-            </NotebookActionButton>
-            <NotebookActionButton onClick={() => onStartUpload(notebook.name)}>
-              <Upload aria-hidden className="h-3.5 w-3.5" />
-              Upload
-            </NotebookActionButton>
-            <NotebookActionButton onClick={() => onEditNotebook(notebook)}>
-              <Pencil aria-hidden className="h-3.5 w-3.5" />
-              Edit
-            </NotebookActionButton>
-            <NotebookActionButton onClick={() => onDownloadNotebook(notebook.name)}>
-              <Download aria-hidden className="h-3.5 w-3.5" />
-              Download
-            </NotebookActionButton>
-            <button
-              className="inline-flex items-center gap-1.5 rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
-              type="button"
-              onClick={() => onDeleteNotebook(notebook.name)}
-            >
-              <Trash2 aria-hidden className="h-3.5 w-3.5" />
-              Delete
-            </button>
-          </div>
-
           <div className="space-y-1">
             {notebook.children.map((node) => (
               <TreeNodeRow
@@ -411,6 +847,112 @@ function NotebookSection({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function NotebookActionsMenu({
+  menuRef,
+  notebook,
+  x,
+  y,
+  onClose,
+  onCreateFolder,
+  onCreateMarkdown,
+  onDeleteNotebook,
+  onDownloadNotebook,
+  onEditNotebook,
+  onStartUpload,
+}: {
+  menuRef: RefObject<HTMLDivElement | null>;
+  notebook: LiberaNotebookNode;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onCreateFolder: (parentPath: string) => Promise<void>;
+  onCreateMarkdown: (notebook: string) => Promise<void>;
+  onDeleteNotebook: (notebook: string) => Promise<void>;
+  onDownloadNotebook: (notebook: string) => void;
+  onEditNotebook: (notebook: LiberaNotebookNode) => void;
+  onStartUpload: (notebook: string) => void;
+}) {
+  async function runAction(action: () => void | Promise<void>) {
+    onClose();
+    await action();
+  }
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 w-[184px] overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+      style={{ left: x, top: y }}
+      role="menu"
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => runAction(() => onCreateMarkdown(notebook.name))}
+      >
+        <FilePlus2 aria-hidden className="h-4 w-4 text-zinc-500" />
+        New note
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => runAction(() => onCreateFolder(notebook.path))}
+      >
+        <FolderPlus aria-hidden className="h-4 w-4 text-zinc-500" />
+        New folder
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onClose();
+          onStartUpload(notebook.name);
+        }}
+      >
+        <Upload aria-hidden className="h-4 w-4 text-zinc-500" />
+        Upload
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onClose();
+          onEditNotebook(notebook);
+        }}
+      >
+        <Pencil aria-hidden className="h-4 w-4 text-zinc-500" />
+        Edit
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onClose();
+          onDownloadNotebook(notebook.name);
+        }}
+      >
+        <Download aria-hidden className="h-4 w-4 text-zinc-500" />
+        Download
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-700 hover:bg-red-50"
+        type="button"
+        role="menuitem"
+        onClick={() => runAction(() => onDeleteNotebook(notebook.name))}
+      >
+        <Trash2 aria-hidden className="h-4 w-4" />
+        Delete
+      </button>
+    </div>
   );
 }
 
@@ -644,23 +1186,5 @@ function SidebarContextMenu({
         </>
       )}
     </div>
-  );
-}
-
-function NotebookActionButton({
-  children,
-  onClick,
-}: {
-  children: ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className="inline-flex items-center gap-1.5 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50"
-      type="button"
-      onClick={onClick}
-    >
-      {children}
-    </button>
   );
 }

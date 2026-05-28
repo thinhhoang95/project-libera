@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session } = require("electron");
 const { randomBytes, scryptSync } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -9,7 +9,13 @@ const { spawn } = require("node:child_process");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
+const APP_DISPLAY_NAME = "Libera";
 
+app.setName(APP_DISPLAY_NAME);
+app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
+
+let activeSetupPromise = null;
+let activeSetupWindow = null;
 let nextProcess = null;
 let mainWindow = null;
 let isQuitting = false;
@@ -71,11 +77,19 @@ function isConfigComplete(config) {
 
 async function selectDataDir(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Select Libera data directory",
+    title: "Select Libera Master directory",
     properties: ["openDirectory", "createDirectory"],
   });
 
   return result.canceled ? "" : result.filePaths[0] ?? "";
+}
+
+function showMessageBox(parentWindow, options) {
+  if (parentWindow && !parentWindow.isDestroyed()) {
+    return dialog.showMessageBox(parentWindow, options);
+  }
+
+  return dialog.showMessageBox(options);
 }
 
 function validateSetupInput(input, existingConfig) {
@@ -115,14 +129,22 @@ function validateSetupInput(input, existingConfig) {
   };
 }
 
-async function createSetupWindow() {
-  return new Promise((resolve, reject) => {
+async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
+  if (activeSetupWindow && !activeSetupWindow.isDestroyed()) {
+    activeSetupWindow.focus();
+    return activeSetupPromise;
+  }
+
+  activeSetupPromise = new Promise((resolve, reject) => {
+    let savedConfig = null;
     const setupWindow = new BrowserWindow({
       width: 560,
       height: 660,
       icon: getIconPath(),
+      modal: Boolean(parentWindow),
+      parent: parentWindow ?? undefined,
       resizable: false,
-      title: "Set Up Libera",
+      title: mode === "configuration" ? "Libera Configuration" : "Set Up Libera",
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -130,6 +152,7 @@ async function createSetupWindow() {
       },
     });
 
+    activeSetupWindow = setupWindow;
     setupWindow.setMenuBarVisibility(false);
 
     ipcMain.handle("setup:get-state", () => getConfigStatus());
@@ -151,8 +174,8 @@ async function createSetupWindow() {
       };
 
       await writeConfig(nextConfig);
+      savedConfig = nextConfig;
       setupWindow.close();
-      resolve(nextConfig);
 
       return { ok: true };
     });
@@ -161,14 +184,145 @@ async function createSetupWindow() {
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
       ipcMain.removeHandler("setup:save");
+      activeSetupPromise = null;
+      activeSetupWindow = null;
 
-      if (!isConfigComplete(readConfig())) {
-        reject(new Error("Setup was canceled."));
+      if (savedConfig) {
+        resolve(savedConfig);
+        return;
       }
+
+      if (mode === "setup" && !isConfigComplete(readConfig())) {
+        reject(new Error("Setup was canceled."));
+        return;
+      }
+
+      resolve(null);
     });
 
-    setupWindow.loadFile(path.join(__dirname, "setup.html"));
+    setupWindow.loadFile(path.join(__dirname, "setup.html"), {
+      query: { mode },
+    });
   });
+
+  return activeSetupPromise;
+}
+
+function showAboutDialog() {
+  const parentWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
+
+  showMessageBox(parentWindow, {
+    type: "info",
+    buttons: ["OK"],
+    defaultId: 0,
+    message: APP_DISPLAY_NAME,
+    title: `About ${APP_DISPLAY_NAME}`,
+    detail: `Version ${app.getVersion()}\nA liberal notetaking app.`,
+  });
+}
+
+async function openConfigurationWindow() {
+  try {
+    const updatedConfig = await createSetupWindow({
+      mode: "configuration",
+      parentWindow: mainWindow,
+    });
+
+    if (!updatedConfig) {
+      return;
+    }
+
+    const result = await showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Restart Now", "Later"],
+      cancelId: 1,
+      defaultId: 0,
+      message: "Restart Libera to apply configuration changes.",
+      detail:
+        "The Libera Master directory and API key are applied when the local server starts.",
+      title: "Configuration Saved",
+    });
+
+    if (result.response === 0) {
+      isQuitting = true;
+      app.relaunch();
+      app.quit();
+    }
+  } catch (error) {
+    if (error.message !== "Setup was canceled.") {
+      dialog.showErrorBox("Unable to update configuration", error.message);
+    }
+  }
+}
+
+function installApplicationMenu() {
+  const isMac = process.platform === "darwin";
+  const configurationMenuItem = {
+    accelerator: "CmdOrCtrl+,",
+    click: () => void openConfigurationWindow(),
+    label: "Configuration...",
+  };
+  const aboutMenuItem = {
+    click: showAboutDialog,
+    label: `About ${APP_DISPLAY_NAME}`,
+  };
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: APP_DISPLAY_NAME,
+            submenu: [
+              aboutMenuItem,
+              { type: "separator" },
+              configurationMenuItem,
+              { type: "separator" },
+              { role: "services" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
+        isMac ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    ...(isMac
+      ? [
+          {
+            label: "Window",
+            submenu: [{ role: "minimize" }, { role: "zoom" }],
+          },
+        ]
+      : [
+          {
+            label: "Help",
+            submenu: [aboutMenuItem],
+          },
+        ]),
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function getFreePort() {
@@ -325,6 +479,7 @@ async function createMainWindow(url) {
     icon: getIconPath(),
     minWidth: 960,
     minHeight: 640,
+    autoHideMenuBar: false,
     title: "Libera",
     webPreferences: {
       contextIsolation: true,
@@ -332,7 +487,7 @@ async function createMainWindow(url) {
     },
   });
 
-  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setMenuBarVisibility(true);
   mainWindow.loadURL(url);
 }
 
@@ -345,10 +500,11 @@ async function bootstrap() {
     let config = readConfig();
 
     if (!isConfigComplete(config)) {
-      config = await createSetupWindow();
+      config = await createSetupWindow({ mode: "setup" });
     }
 
     const url = await startNextServer(config);
+    installApplicationMenu();
     await createMainWindow(url);
   } catch (error) {
     if (error.message !== "Setup was canceled.") {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AppHeader } from "@/components/libera/app-header";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
@@ -41,14 +40,6 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
 
   return (
     <main className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-100 text-zinc-950">
-      <AppHeader
-        query={workspace.query}
-        searchResults={workspace.searchResults}
-        onLogout={workspace.handleLogout}
-        onQueryChange={workspace.setQuery}
-        onSelectSearchResult={workspace.selectSearchResult}
-      />
-
       <div
         className={`grid min-h-0 flex-1 overflow-hidden ${
           notebooksCollapsed ? "lg:grid-cols-[56px_1fr]" : "lg:grid-cols-[320px_1fr]"
@@ -58,6 +49,9 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           activeTabId={workspace.activeTabId}
           collapsed={notebooksCollapsed}
           expanded={workspace.expanded}
+          fileInteractions={workspace.fileInteractions}
+          query={workspace.query}
+          searchResults={workspace.searchResults}
           selectedNotebookName={workspace.selectedNotebookName}
           tree={workspace.tree}
           uploadInputRef={workspace.uploadInputRef}
@@ -73,9 +67,12 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onEditNotebook={workspace.openEditNotebookDialog}
           onMoveFile={workspace.moveFileToFolder}
           onOpenFile={workspace.openFile}
+          onLogout={workspace.handleLogout}
+          onQueryChange={workspace.setQuery}
           onRenameFolder={workspace.renameFolderFromPrompt}
           onRenameFile={workspace.renameFileNodeFromPrompt}
           onSelectNotebook={workspace.selectNotebook}
+          onSelectSearchResult={workspace.selectSearchResult}
           onStartUpload={workspace.startUpload}
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}
@@ -89,6 +86,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             tabs={workspace.tabs}
             onActivateTab={workspace.setActiveTabId}
             onCloseTab={workspace.closeTab}
+            onSwapTabs={workspace.swapTabs}
           />
 
           {workspace.workspaceError ? (

@@ -7,8 +7,13 @@ import {
   Save,
   Trash2,
 } from "lucide-react";
-import type { RefObject } from "react";
-import { useState } from "react";
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  RefObject,
+} from "react";
+import { useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
@@ -47,6 +52,18 @@ type WorkspacePanelProps = {
   onSetDraft: (value: string) => void;
 };
 
+const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
+const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
+const MAX_MARKDOWN_SPLIT_PERCENT = 76;
+const MIN_MARKDOWN_SPLIT_PERCENT = 24;
+
+function clampMarkdownSplitPercent(value: number) {
+  return Math.min(
+    MAX_MARKDOWN_SPLIT_PERCENT,
+    Math.max(MIN_MARKDOWN_SPLIT_PERCENT, value),
+  );
+}
+
 function fixChatGptEquationBlocks(value: string) {
   return value.replace(
     /(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
@@ -78,7 +95,150 @@ export function WorkspacePanel({
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [markdownZoom, setMarkdownZoom] = useState(100);
-  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+  const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
+  const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
+    DEFAULT_MARKDOWN_SPLIT_PERCENT,
+  );
+  const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
+  const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const previewFullscreen =
+    activeTab?.file.fileType === "markdown" && activePreviewTabId === activeTab.id;
+
+  useEffect(() => {
+    const savedSplit = window.localStorage.getItem(MARKDOWN_SPLIT_STORAGE_KEY);
+    const parsedSplit = savedSplit ? Number(savedSplit) : Number.NaN;
+
+    if (Number.isFinite(parsedSplit)) {
+      const animationFrame = window.requestAnimationFrame(() => {
+        setMarkdownSplitPercent(clampMarkdownSplitPercent(parsedSplit));
+      });
+
+      return () => window.cancelAnimationFrame(animationFrame);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!previewFullscreen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      setActivePreviewTabId(null);
+
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [previewFullscreen, textareaRef]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const markdownTab = activeTab;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (markdownTab.status === "saving" || markdownTab.status === "clean") {
+        return;
+      }
+
+      void onSave();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTab, onSave]);
+
+  function saveMarkdownSplitPercent(value: number) {
+    const clampedValue = clampMarkdownSplitPercent(value);
+
+    setMarkdownSplitPercent(clampedValue);
+    window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+  }
+
+  function updateMarkdownSplitFromPointer(clientX: number, clientY: number) {
+    const container = markdownSplitContainerRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    const isDesktopSplit = window.matchMedia("(min-width: 1024px)").matches;
+    const size = isDesktopSplit ? rect.width : rect.height;
+
+    if (size <= 0) {
+      return;
+    }
+
+    const offset = isDesktopSplit ? clientX - rect.left : clientY - rect.top;
+    saveMarkdownSplitPercent((offset / size) * 100);
+  }
+
+  function handleMarkdownSplitPointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setMarkdownSplitDragging(true);
+    updateMarkdownSplitFromPointer(event.clientX, event.clientY);
+
+    function handlePointerMove(pointerEvent: PointerEvent) {
+      updateMarkdownSplitFromPointer(pointerEvent.clientX, pointerEvent.clientY);
+    }
+
+    function stopDragging() {
+      setMarkdownSplitDragging(false);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+  }
+
+  function handleMarkdownSplitKeyDown(
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) {
+    const step = event.shiftKey ? 10 : 5;
+
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      saveMarkdownSplitPercent(markdownSplitPercent - step);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      saveMarkdownSplitPercent(markdownSplitPercent + step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      saveMarkdownSplitPercent(MIN_MARKDOWN_SPLIT_PERCENT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      saveMarkdownSplitPercent(MAX_MARKDOWN_SPLIT_PERCENT);
+    }
+  }
 
   function fixActiveChatGptEquations() {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
@@ -161,18 +321,32 @@ export function WorkspacePanel({
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={setMarkdownZoom}
             onTogglePreviewFullscreen={() =>
-              setPreviewFullscreen((current) => !current)
+              setActivePreviewTabId((current) =>
+                current === activeTab.id ? null : activeTab.id,
+              )
             }
             previewFullscreen={previewFullscreen}
           />
-          <div
-            className={`grid min-h-0 flex-1 overflow-hidden ${
-              previewFullscreen
-                ? "grid-cols-1"
-                : "grid-rows-2 lg:grid-cols-2 lg:grid-rows-none"
-            }`}
-          >
-            {previewFullscreen ? null : (
+          {previewFullscreen ? (
+            <article className="min-h-0 flex-1 overflow-auto bg-white p-6">
+              <MarkdownRenderer
+                content={activeTab.draft}
+                documentPath={activeTab.file.path}
+                textScale={markdownZoom / 100}
+              />
+            </article>
+          ) : (
+            <div
+              ref={markdownSplitContainerRef}
+              className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${
+                markdownSplitDragging ? "select-none" : ""
+              }`}
+              style={
+                {
+                  "--markdown-split": `${markdownSplitPercent}%`,
+                } as CSSProperties
+              }
+            >
               <MarkdownEditor
                 formatting={aiFormatting}
                 imageConverting={imageMarkdownConverting}
@@ -184,15 +358,30 @@ export function WorkspacePanel({
                 onChange={onSetDraft}
                 onInsertImageFile={onInsertImage}
               />
-            )}
-            <article className="min-h-0 overflow-auto bg-white p-6">
-              <MarkdownRenderer
-                content={activeTab.draft}
-                documentPath={activeTab.file.path}
-                textScale={markdownZoom / 100}
-              />
-            </article>
-          </div>
+              <div
+                aria-label="Resize Markdown editor and preview"
+                aria-orientation="vertical"
+                aria-valuemax={MAX_MARKDOWN_SPLIT_PERCENT}
+                aria-valuemin={MIN_MARKDOWN_SPLIT_PERCENT}
+                aria-valuenow={Math.round(markdownSplitPercent)}
+                className="markdown-split-resizer group flex cursor-row-resize items-center justify-center bg-zinc-100 outline-none hover:bg-zinc-200 focus-visible:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-900 lg:cursor-col-resize"
+                role="separator"
+                tabIndex={0}
+                title="Drag to resize editor and preview"
+                onKeyDown={handleMarkdownSplitKeyDown}
+                onPointerDown={handleMarkdownSplitPointerDown}
+              >
+                <span className="h-1 w-10 rounded-full bg-zinc-400 transition group-hover:bg-zinc-700 group-focus-visible:bg-zinc-700 lg:h-10 lg:w-1" />
+              </div>
+              <article className="min-h-0 min-w-0 overflow-auto bg-white p-6">
+                <MarkdownRenderer
+                  content={activeTab.draft}
+                  documentPath={activeTab.file.path}
+                  textScale={markdownZoom / 100}
+                />
+              </article>
+            </div>
+          )}
           <ExistingImageDialog
             notebook={selectedNotebook}
             open={existingImageDialogOpen}

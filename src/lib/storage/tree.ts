@@ -2,13 +2,18 @@ import { readdir, stat } from "node:fs/promises";
 import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
+import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import {
   ensureAdminRoot,
   filePathFromParts,
   getAdminRoot,
+  imageAnnotationsPath,
   itemPath,
+  legacyImageAnnotationsPath,
+  legacyPdfAnnotationsPath,
   notebookPath,
+  pdfAnnotationsPath,
   relativeFilePath,
   relativeItemPath,
 } from "@/lib/storage/paths";
@@ -36,6 +41,57 @@ function sortTreeNodes(left: LiberaTreeNode, right: LiberaTreeNode) {
   return left.name.localeCompare(right.name);
 }
 
+function latestIsoDate(...dates: string[]) {
+  return new Date(
+    Math.max(...dates.map((date) => new Date(date).getTime()).filter(Number.isFinite)),
+  ).toISOString();
+}
+
+async function latestExistingPathMtime(paths: string[]) {
+  const mtimes: string[] = [];
+
+  for (const targetPath of paths) {
+    if (await pathExists(targetPath)) {
+      mtimes.push((await stat(targetPath)).mtime.toISOString());
+    }
+  }
+
+  return mtimes;
+}
+
+async function getFileUpdatedAt(
+  notebook: string,
+  name: string,
+  fileType: LiberaFileNode["fileType"],
+  fileUpdatedAt: string,
+) {
+  if (fileType === "pdf") {
+    return latestIsoDate(
+      fileUpdatedAt,
+      ...(await latestExistingPathMtime([
+        pdfAnnotationsPath(notebook, name),
+        legacyPdfAnnotationsPath(notebook, name),
+      ])),
+    );
+  }
+
+  if (fileType === "image") {
+    return latestIsoDate(
+      fileUpdatedAt,
+      ...(await latestExistingPathMtime([
+        imageAnnotationsPath(notebook, name),
+        legacyImageAnnotationsPath(notebook, name),
+      ])),
+    );
+  }
+
+  return fileUpdatedAt;
+}
+
+function latestTreeNodeUpdatedAt(nodes: LiberaTreeNode[]) {
+  return nodes.map((node) => node.updatedAt);
+}
+
 export async function getFileNode(
   notebook: string,
   pathParts: string[] | string,
@@ -56,8 +112,14 @@ export async function getFileNode(
     path: relativeFilePath(notebook, normalizedPathParts),
     notebook,
     fileType,
+    createdAt: stats.birthtime.toISOString(),
     size: stats.size,
-    updatedAt: stats.mtime.toISOString(),
+    updatedAt: await getFileUpdatedAt(
+      notebook,
+      name,
+      fileType,
+      stats.mtime.toISOString(),
+    ),
   };
 }
 
@@ -78,13 +140,18 @@ async function readTreeDirectory(
 
     if (entry.isDirectory()) {
       const stats = await stat(itemPath(notebook, childParts));
+      const grandChildren = await readTreeDirectory(notebook, childParts);
       children.push({
         kind: "folder",
         name: entry.name,
         path: relativeItemPath(notebook, childParts),
         notebook,
-        updatedAt: stats.mtime.toISOString(),
-        children: await readTreeDirectory(notebook, childParts),
+        createdAt: stats.birthtime.toISOString(),
+        updatedAt: latestIsoDate(
+          stats.mtime.toISOString(),
+          ...latestTreeNodeUpdatedAt(grandChildren),
+        ),
+        children: grandChildren,
       });
       continue;
     }
@@ -114,6 +181,8 @@ export async function getTree(): Promise<LiberaTree> {
       entry.name,
       notebookStats.birthtime.toISOString(),
     );
+    const children = await readTreeDirectory(entry.name, []);
+
     notebooks.push({
       kind: "notebook",
       name: entry.name,
@@ -121,8 +190,11 @@ export async function getTree(): Promise<LiberaTree> {
       createdAt: metadata.createdAt,
       color: metadata.color,
       emoji: metadata.emoji,
-      updatedAt: notebookStats.mtime.toISOString(),
-      children: await readTreeDirectory(entry.name, []),
+      updatedAt: latestIsoDate(
+        notebookStats.mtime.toISOString(),
+        ...latestTreeNodeUpdatedAt(children),
+      ),
+      children,
     });
   }
 

@@ -54,6 +54,8 @@ function imageAltText(name: string) {
   return name.replace(/\.[^.]+$/, "") || "image";
 }
 
+const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
+
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
   const [password, setPassword] = useState("");
@@ -64,6 +66,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [activeTabId, setActiveTabId] = useState("");
   const [selectedNotebookName, setSelectedNotebookName] = useState("");
   const [query, setQuery] = useState("");
+  const [fileInteractions, setFileInteractions] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [aiFormatting, setAiFormatting] = useState(false);
   const [imageMarkdownConverting, setImageMarkdownConverting] = useState(false);
@@ -89,6 +92,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const selectedNotebook = tree.notebooks.find(
     (notebook) => notebook.name === selectedNotebookName,
   );
+
+  useEffect(() => {
+    const animationFrame = window.requestAnimationFrame(() => {
+      try {
+        const savedInteractions = JSON.parse(
+          window.localStorage.getItem(FILE_INTERACTIONS_STORAGE_KEY) ?? "{}",
+        ) as unknown;
+
+        if (savedInteractions && typeof savedInteractions === "object") {
+          setFileInteractions(savedInteractions as Record<string, string>);
+        }
+      } catch {
+        setFileInteractions({});
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, []);
 
   const searchResults = useMemo<SearchResult[]>(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -184,11 +205,30 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     );
   }
 
+  function recordFileInteraction(file: LiberaFileNode) {
+    const interactedAt = new Date().toISOString();
+
+    setFileInteractions((current) => {
+      const nextInteractions = {
+        ...current,
+        [file.path]: interactedAt,
+      };
+
+      window.localStorage.setItem(
+        FILE_INTERACTIONS_STORAGE_KEY,
+        JSON.stringify(nextInteractions),
+      );
+
+      return nextInteractions;
+    });
+  }
+
   async function openFile(file: LiberaFileNode) {
     setWorkspaceError("");
     setSelectedNotebookName(file.notebook);
 
     if (tabs.some((tab) => tab.id === file.path)) {
+      recordFileInteraction(file);
       setActiveTabId(file.path);
       return;
     }
@@ -208,6 +248,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       setTabs((currentTabs) => [...currentTabs, nextTab]);
       setActiveTabId(nextTab.id);
+      recordFileInteraction(payload.file);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not open file.");
     }
@@ -1173,11 +1214,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  function swapTabs(sourceTabId: string, targetTabId: string) {
+    if (sourceTabId === targetTabId) {
+      return;
+    }
+
+    setTabs((currentTabs) => {
+      const sourceIndex = currentTabs.findIndex((tab) => tab.id === sourceTabId);
+      const targetIndex = currentTabs.findIndex((tab) => tab.id === targetTabId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return currentTabs;
+      }
+
+      const nextTabs = [...currentTabs];
+      [nextTabs[sourceIndex], nextTabs[targetIndex]] = [
+        nextTabs[targetIndex],
+        nextTabs[sourceIndex],
+      ];
+      return nextTabs;
+    });
+  }
+
   function activateTab(tabId: string) {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
     if (tab) {
       setSelectedNotebookName(tab.file.notebook);
+      recordFileInteraction(tab.file);
     }
 
     setActiveTabId(tabId);
@@ -1200,6 +1264,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       imageMarkdownConverting,
       password,
       query,
+      fileInteractions,
       searchResults,
       selectedNotebook,
       selectedNotebookName,
@@ -1249,6 +1314,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId: activateTab,
       setPassword,
       setQuery,
+      swapTabs,
       startUpload,
       submitNotebookDialog,
       submitNoteDialog,

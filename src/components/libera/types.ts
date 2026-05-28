@@ -131,6 +131,7 @@ export type LiberaWorkspace = {
   noteDialogSubmitting: boolean;
   password: string;
   query: string;
+  fileInteractions: Record<string, string>;
   searchResults: SearchResult[];
   selectedNotebook?: LiberaNotebookNode;
   selectedNotebookName: string;
@@ -180,6 +181,7 @@ export type LiberaWorkspace = {
   setActiveTabId: (tabId: string) => void;
   setPassword: (password: string) => void;
   setQuery: (query: string) => void;
+  swapTabs: (sourceTabId: string, targetTabId: string) => void;
   startUpload: (notebook: string) => void;
   submitNotebookDialog: (values: NotebookFormValues) => Promise<void>;
   submitNoteDialog: (values: NoteFormValues) => Promise<void>;

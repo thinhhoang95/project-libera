@@ -1,5 +1,6 @@
 export { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 export { createNotebookZip } from "@/lib/storage/download";
+export { deepSearch } from "@/lib/storage/deep-search";
 export { StorageError, toStorageError } from "@/lib/storage/errors";
 export {
   copyFileToDirectory,

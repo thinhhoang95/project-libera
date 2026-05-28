@@ -139,13 +139,13 @@
   <body>
     <main>
       <form id="setup-form">
-        <h1>Set Up Libera</h1>
-        <p>
-          Choose the fixed local storage directory, enter the required API key, and
+        <h1 id="form-title">Set Up Libera</h1>
+        <p id="form-description">
+          Choose the fixed Libera Master directory, enter the required API key, and
           create the password used by the app login screen.
         </p>
 
-        <label for="data-dir">Data directory</label>
+        <label for="data-dir">Libera Master directory</label>
         <div class="directory-row">
           <input id="data-dir" autocomplete="off" readonly required />
           <button id="browse-button" class="secondary" type="button">Choose</button>
@@ -179,6 +179,8 @@
 
     <script>
       const form = document.querySelector("#setup-form");
+      const formTitle = document.querySelector("#form-title");
+      const formDescription = document.querySelector("#form-description");
       const dataDirInput = document.querySelector("#data-dir");
       const browseButton = document.querySelector("#browse-button");
       const apiKeyInput = document.querySelector("#openai-api-key");
@@ -189,6 +191,16 @@
       const passwordConfirmationInput = document.querySelector("#password-confirmation");
       const errorBox = document.querySelector("#error");
       const saveButton = document.querySelector("#save-button");
+      const setupMode = new URLSearchParams(window.location.search).get("mode");
+      const configurationMode = setupMode === "configuration";
+
+      if (configurationMode) {
+        document.title = "Libera Configuration";
+        formTitle.textContent = "Libera Configuration";
+        formDescription.textContent =
+          "Change the Libera Master directory or enter a replacement API key. Saved changes apply after restarting Libera.";
+        saveButton.textContent = "Save Configuration";
+      }
 
       function showError(message) {
         errorBox.textContent = message;

@@ -6,6 +6,7 @@ type ModalDialogProps = {
   children: ReactNode;
   footer?: ReactNode;
   open: boolean;
+  panelClassName?: string;
   title: string;
   description?: string;
   onClose: () => void;
@@ -16,6 +17,7 @@ export function ModalDialog({
   description,
   footer,
   open,
+  panelClassName = "max-w-md",
   title,
   onClose,
 }: ModalDialogProps) {
@@ -55,7 +57,7 @@ export function ModalDialog({
         aria-describedby={description ? descriptionId : undefined}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="w-full max-w-md rounded-lg border border-zinc-200 bg-white shadow-xl"
+        className={`w-full rounded-lg border border-zinc-200 bg-white shadow-xl ${panelClassName}`}
         role="dialog"
       >
         <header className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
