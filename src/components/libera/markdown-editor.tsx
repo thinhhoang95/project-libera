@@ -1,14 +1,19 @@
 "use client";
 
-import { ImageIcon, Sparkles } from "lucide-react";
-import type { DragEvent, MouseEvent, RefObject } from "react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, ImageIcon, Search, Sparkles, X } from "lucide-react";
+import type { DragEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 
 type EditorContextMenuState = {
   image?: MarkdownImageSelection;
   x: number;
   y: number;
+  start: number;
+  end: number;
+};
+
+type TextMatch = {
   start: number;
   end: number;
 };
@@ -26,6 +31,31 @@ type MarkdownEditorProps = {
 
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
+
+function findTextMatches(value: string, query: string): TextMatch[] {
+  const normalizedQuery = query.toLowerCase();
+
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const normalizedValue = value.toLowerCase();
+  const matches: TextMatch[] = [];
+  let searchFrom = 0;
+
+  while (searchFrom <= normalizedValue.length) {
+    const start = normalizedValue.indexOf(normalizedQuery, searchFrom);
+
+    if (start === -1) {
+      break;
+    }
+
+    matches.push({ start, end: start + query.length });
+    searchFrom = start + normalizedQuery.length;
+  }
+
+  return matches;
+}
 
 function findMarkdownImageInText(
   value: string,
@@ -149,6 +179,15 @@ function getTextareaOffsetAtPoint(
   return textarea.value.length;
 }
 
+function scrollTextareaToOffset(textarea: HTMLTextAreaElement, offset: number) {
+  const styles = window.getComputedStyle(textarea);
+  const fontSize = parsePixels(styles.fontSize) || 14;
+  const lineHeight = parsePixels(styles.lineHeight) || fontSize * 1.5;
+  const lineIndex = textarea.value.slice(0, offset).split("\n").length - 1;
+
+  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
+}
+
 export function MarkdownEditor({
   formatting,
   imageConverting,
@@ -161,6 +200,77 @@ export function MarkdownEditor({
 }: MarkdownEditorProps) {
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [draggingImage, setDraggingImage] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const textMatches = useMemo(() => findTextMatches(value, findQuery), [findQuery, value]);
+
+  function selectMatch(matchIndex: number, matches = textMatches) {
+    if (!matches.length) {
+      return;
+    }
+
+    const normalizedIndex = (matchIndex + matches.length) % matches.length;
+    const match = matches[normalizedIndex];
+    setActiveMatchIndex(normalizedIndex);
+
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+
+      if (!textarea) {
+        return;
+      }
+
+      textarea.setSelectionRange(match.start, match.end);
+      scrollTextareaToOffset(textarea, match.start);
+    });
+  }
+
+  function openFind(nextQuery?: string) {
+    const textarea = textareaRef.current;
+    const selectedText = textarea
+      ? value.slice(textarea.selectionStart, textarea.selectionEnd)
+      : "";
+    const query = nextQuery ?? (selectedText.includes("\n") ? "" : selectedText);
+
+    setContextMenu(null);
+    setFindOpen(true);
+
+    if (query) {
+      const matches = findTextMatches(value, query);
+      setFindQuery(query);
+      selectMatch(0, matches);
+    }
+
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }
+
+  function closeFind() {
+    setFindOpen(false);
+    textareaRef.current?.focus();
+  }
+
+  function updateFindQuery(query: string) {
+    const matches = findTextMatches(value, query);
+    setFindQuery(query);
+    setActiveMatchIndex(0);
+
+    if (matches.length) {
+      selectMatch(0, matches);
+    }
+  }
+
+  function findNext() {
+    selectMatch(activeMatchIndex + 1);
+  }
+
+  function findPrevious() {
+    selectMatch(activeMatchIndex - 1);
+  }
 
   useEffect(() => {
     if (!contextMenu) {
@@ -272,19 +382,95 @@ export function MarkdownEditor({
     await onInsertImageFile(imageFiles[0]);
   }
 
+  function handleEditorKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      openFind();
+    }
+  }
+
+  function handleFindKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+
+      if (event.shiftKey) {
+        findPrevious();
+      } else {
+        findNext();
+      }
+    }
+  }
+
+  const currentMatchNumber = textMatches.length
+    ? Math.min(activeMatchIndex + 1, textMatches.length)
+    : 0;
+
   return (
-    <div className="relative min-h-[50vh] lg:min-h-0">
+    <div className="relative min-h-0 overflow-hidden">
       <textarea
         ref={textareaRef}
-        className="h-full min-h-[50vh] w-full resize-none border-b border-zinc-200 bg-white p-5 font-mono text-sm leading-6 outline-none lg:min-h-0 lg:border-b-0 lg:border-r"
+        className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-zinc-200 bg-white p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onContextMenu={openContextMenu}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
+        onKeyDown={handleEditorKeyDown}
         onDrop={(event) => void handleDrop(event)}
         spellCheck={false}
       />
+
+      {findOpen ? (
+        <div className="absolute right-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-md border border-zinc-200 bg-white p-1 shadow-lg">
+          <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-zinc-500" />
+          <input
+            ref={findInputRef}
+            className="h-8 w-48 min-w-0 border-0 px-1 text-sm outline-none"
+            value={findQuery}
+            placeholder="Find in note"
+            onChange={(event) => updateFindQuery(event.target.value)}
+            onKeyDown={handleFindKeyDown}
+          />
+          <span className="min-w-16 text-center text-xs text-zinc-500">
+            {findQuery ? `${currentMatchNumber}/${textMatches.length}` : "0/0"}
+          </span>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            type="button"
+            aria-label="Previous match"
+            title="Previous match"
+            disabled={!textMatches.length}
+            onClick={findPrevious}
+          >
+            <ChevronUp aria-hidden className="h-4 w-4" />
+          </button>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            type="button"
+            aria-label="Next match"
+            title="Next match"
+            disabled={!textMatches.length}
+            onClick={findNext}
+          >
+            <ChevronDown aria-hidden className="h-4 w-4" />
+          </button>
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100"
+            type="button"
+            aria-label="Close find"
+            title="Close"
+            onClick={closeFind}
+          >
+            <X aria-hidden className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
 
       {draggingImage ? (
         <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-md border-2 border-dashed border-zinc-400 bg-white/70 text-sm font-medium text-zinc-700">

@@ -307,7 +307,7 @@ export function ImageViewer({ alt, filePath, src }: ImageViewerProps) {
   }, [deleteSelectedAnnotation, selectedAnnotationId]);
 
   return (
-    <div className="flex min-h-[calc(100vh-172px)] flex-1 flex-col bg-zinc-200">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-200">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2">
         <div className="flex min-w-0 items-center gap-1">
           <Move aria-hidden className="h-4 w-4 shrink-0" />

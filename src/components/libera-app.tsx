@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { AppHeader } from "@/components/libera/app-header";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -17,6 +18,14 @@ type LiberaAppProps = {
 
 export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
+  const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
+  const notebookColors = useMemo(
+    () =>
+      Object.fromEntries(
+        workspace.tree.notebooks.map((notebook) => [notebook.name, notebook.color]),
+      ),
+    [workspace.tree.notebooks],
+  );
 
   if (!authenticated) {
     return (
@@ -31,7 +40,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
   }
 
   return (
-    <main className="flex min-h-screen flex-col bg-zinc-100 text-zinc-950">
+    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-100 text-zinc-950">
       <AppHeader
         query={workspace.query}
         searchResults={workspace.searchResults}
@@ -40,9 +49,14 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
         onSelectSearchResult={workspace.selectSearchResult}
       />
 
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[320px_1fr]">
+      <div
+        className={`grid min-h-0 flex-1 overflow-hidden ${
+          notebooksCollapsed ? "lg:grid-cols-[56px_1fr]" : "lg:grid-cols-[320px_1fr]"
+        }`}
+      >
         <NotebookSidebar
           activeTabId={workspace.activeTabId}
+          collapsed={notebooksCollapsed}
           expanded={workspace.expanded}
           selectedNotebookName={workspace.selectedNotebookName}
           tree={workspace.tree}
@@ -53,6 +67,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onCreateNotebook={workspace.openCreateNotebookDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
           onDeleteFolder={workspace.deleteFolderFromPrompt}
+          onDownloadFile={workspace.downloadFile}
           onDeleteNotebook={workspace.deleteNotebookFromPrompt}
           onDownloadNotebook={workspace.downloadNotebook}
           onEditNotebook={workspace.openEditNotebookDialog}
@@ -62,13 +77,15 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onRenameFile={workspace.renameFileNodeFromPrompt}
           onSelectNotebook={workspace.selectNotebook}
           onStartUpload={workspace.startUpload}
+          onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
         />
 
-        <section className="min-w-0">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
             activeTabId={workspace.activeTabId}
+            notebookColors={notebookColors}
             tabs={workspace.tabs}
             onActivateTab={workspace.setActiveTabId}
             onCloseTab={workspace.closeTab}
@@ -92,6 +109,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onCreateMarkdown={workspace.createMarkdownFromPrompt}
             onCreateNotebook={workspace.openCreateNotebookDialog}
             onDeleteFile={workspace.deleteFileFromPrompt}
+            onDownloadFile={workspace.downloadFile}
             onInsertExistingImage={workspace.insertExistingMarkdownImage}
             onInsertImage={workspace.insertMarkdownImage}
             onInsertMarkdown={workspace.insertMarkdown}

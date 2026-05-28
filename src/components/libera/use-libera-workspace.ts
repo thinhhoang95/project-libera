@@ -642,6 +642,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     link.remove();
   }
 
+  function downloadFile(file: LiberaFileNode, content?: string) {
+    const link = document.createElement("a");
+    const hasDraftContent = typeof content === "string";
+
+    if (hasDraftContent) {
+      const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+      link.href = URL.createObjectURL(blob);
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
+    } else {
+      link.href = `/api/files/raw/${encodeFilePath(file.path)}`;
+    }
+
+    link.download = file.name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
   async function createMarkdownFromPrompt(notebook: string) {
     setWorkspaceError("");
     setSelectedNotebookName(notebook);
@@ -1204,6 +1222,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       createMarkdownFromPrompt,
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
+      downloadFile,
       deleteNotebookFromPrompt,
       downloadNotebook,
       convertImageToMarkdownWithAi,

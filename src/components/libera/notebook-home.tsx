@@ -81,7 +81,7 @@ export function NotebookHome({
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   return (
-    <div className="min-h-[calc(100vh-120px)] overflow-auto bg-zinc-50 px-5 py-5">
+    <div className="h-full min-h-0 overflow-auto bg-zinc-50 px-5 py-5">
       <div className="mx-auto flex max-w-6xl flex-col gap-5">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4">
           <div className="flex min-w-0 items-center gap-3">

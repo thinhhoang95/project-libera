@@ -1,7 +1,9 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 type MarkdownRendererProps = {
@@ -25,10 +27,18 @@ function resolveMarkdownImageSource(src: string | undefined, documentPath: strin
   )}&asset=${encodeURIComponent(src)}`;
 }
 
+function tableCellStyle(align: unknown): CSSProperties | undefined {
+  if (align === "left" || align === "center" || align === "right") {
+    return { textAlign: align };
+  }
+
+  return undefined;
+}
+
 export function MarkdownRenderer({ content, documentPath }: MarkdownRendererProps) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkMath]}
+      remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
         h1: ({ children }) => (
@@ -58,6 +68,35 @@ export function MarkdownRenderer({ content, documentPath }: MarkdownRendererProp
           <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-sm text-zinc-900">
             {children}
           </code>
+        ),
+        table: ({ children }) => (
+          <div className="mb-4 overflow-x-auto rounded-md border border-zinc-200">
+            <table className="w-full border-collapse text-left text-sm">
+              {children}
+            </table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-zinc-100 text-zinc-900">{children}</thead>
+        ),
+        th: ({ align, children }) => (
+          <th
+            className="border-b border-r border-zinc-200 px-3 py-2 font-semibold last:border-r-0"
+            style={tableCellStyle(align)}
+          >
+            {children}
+          </th>
+        ),
+        td: ({ align, children }) => (
+          <td
+            className="border-b border-r border-zinc-200 px-3 py-2 align-top text-zinc-700 last:border-r-0"
+            style={tableCellStyle(align)}
+          >
+            {children}
+          </td>
+        ),
+        tr: ({ children }) => (
+          <tr className="last:[&>td]:border-b-0">{children}</tr>
         ),
         img: ({ alt, src }) => (
           // eslint-disable-next-line @next/next/no-img-element -- Markdown images may be authenticated local assets.

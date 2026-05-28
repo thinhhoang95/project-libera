@@ -1,4 +1,12 @@
-import { BookPlus, FilePlus2, MoveRight, Pencil, Save, Trash2 } from "lucide-react";
+import {
+  BookPlus,
+  Download,
+  FilePlus2,
+  MoveRight,
+  Pencil,
+  Save,
+  Trash2,
+} from "lucide-react";
 import type { RefObject } from "react";
 import { useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
@@ -28,6 +36,7 @@ type WorkspacePanelProps = {
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
+  onDownloadFile: (file: LiberaFileNode, content?: string) => void;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
@@ -37,6 +46,13 @@ type WorkspacePanelProps = {
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
 };
+
+function fixChatGptEquationBlocks(value: string) {
+  return value.replace(
+    /(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
+    (_, prefix: string, equation: string) => `${prefix}$$\n${equation.trim()}\n$$`,
+  );
+}
 
 export function WorkspacePanel({
   activeTab,
@@ -50,6 +66,7 @@ export function WorkspacePanel({
   onCreateMarkdown,
   onCreateNotebook,
   onDeleteFile,
+  onDownloadFile,
   onInsertExistingImage,
   onInsertImage,
   onInsertMarkdown,
@@ -60,6 +77,19 @@ export function WorkspacePanel({
   onSetDraft,
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
+  function fixActiveChatGptEquations() {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    onSetDraft(fixChatGptEquationBlocks(activeTab.draft));
+
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }
 
   if (!activeTab) {
     if (selectedNotebook) {
@@ -73,7 +103,7 @@ export function WorkspacePanel({
     }
 
     return (
-      <div className="flex min-h-[calc(100vh-120px)] items-center justify-center px-6">
+      <div className="flex h-full min-h-0 items-center justify-center overflow-auto px-6">
         <div className="max-w-md text-center">
           <h2 className="text-xl font-semibold tracking-tight">Open a file to begin</h2>
           <p className="mt-2 text-sm leading-6 text-zinc-500">
@@ -104,10 +134,11 @@ export function WorkspacePanel({
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-120px)] flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <WorkspaceFileHeader
         activeTab={activeTab}
         onDeleteFile={onDeleteFile}
+        onDownloadFile={onDownloadFile}
         onMoveFile={onMoveFile}
         onRenameFile={onRenameFile}
         onSave={onSave}
@@ -122,22 +153,35 @@ export function WorkspacePanel({
       {activeTab.file.fileType === "markdown" ? (
         <>
           <MarkdownToolbar
+            onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertImage={onInsertImage}
+            onTogglePreviewFullscreen={() =>
+              setPreviewFullscreen((current) => !current)
+            }
+            previewFullscreen={previewFullscreen}
           />
-          <div className="grid min-h-0 flex-1 lg:grid-cols-2">
-            <MarkdownEditor
-              formatting={aiFormatting}
-              imageConverting={imageMarkdownConverting}
-              textareaRef={textareaRef}
-              value={activeTab.draft}
-              onAiFormatSelection={onAiFormatSelection}
-              onAiImageToMarkdown={onAiImageToMarkdown}
-              onChange={onSetDraft}
-              onInsertImageFile={onInsertImage}
-            />
-            <article className="overflow-auto bg-white p-6">
+          <div
+            className={`grid min-h-0 flex-1 overflow-hidden ${
+              previewFullscreen
+                ? "grid-cols-1"
+                : "grid-rows-2 lg:grid-cols-2 lg:grid-rows-none"
+            }`}
+          >
+            {previewFullscreen ? null : (
+              <MarkdownEditor
+                formatting={aiFormatting}
+                imageConverting={imageMarkdownConverting}
+                textareaRef={textareaRef}
+                value={activeTab.draft}
+                onAiFormatSelection={onAiFormatSelection}
+                onAiImageToMarkdown={onAiImageToMarkdown}
+                onChange={onSetDraft}
+                onInsertImageFile={onInsertImage}
+              />
+            )}
+            <article className="min-h-0 overflow-auto bg-white p-6">
               <MarkdownRenderer
                 content={activeTab.draft}
                 documentPath={activeTab.file.path}
@@ -164,7 +208,7 @@ export function WorkspacePanel({
         <PdfViewer src={activeTab.rawUrl} filePath={activeTab.file.path} />
       ) : (
         <iframe
-          className="min-h-[calc(100vh-172px)] flex-1 bg-white"
+          className="min-h-0 flex-1 bg-white"
           src={activeTab.rawUrl}
           title={activeTab.file.name}
         />
@@ -176,16 +220,21 @@ export function WorkspacePanel({
 function WorkspaceFileHeader({
   activeTab,
   onDeleteFile,
+  onDownloadFile,
   onMoveFile,
   onRenameFile,
   onSave,
 }: {
   activeTab: OpenTab;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
+  onDownloadFile: (file: LiberaFileNode, content?: string) => void;
   onMoveFile: (tab: OpenTab) => Promise<void>;
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
 }) {
+  const downloadContent =
+    activeTab.file.fileType === "markdown" ? activeTab.draft : undefined;
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3">
       <div className="min-w-0">
@@ -206,6 +255,14 @@ function WorkspaceFileHeader({
             Save
           </button>
         ) : null}
+        <button
+          className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+          type="button"
+          onClick={() => onDownloadFile(activeTab.file, downloadContent)}
+        >
+          <Download aria-hidden className="h-4 w-4" />
+          Download
+        </button>
         <button
           className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
           type="button"

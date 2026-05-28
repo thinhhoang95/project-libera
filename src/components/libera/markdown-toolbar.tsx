@@ -7,21 +7,30 @@ import {
   Italic,
   Link,
   List,
+  Maximize2,
+  Minimize2,
   Sigma,
+  Sparkles,
   Underline,
 } from "lucide-react";
 import { useRef } from "react";
 
 type MarkdownToolbarProps = {
+  onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
   onInsertImage: (file: File) => Promise<void>;
+  onTogglePreviewFullscreen: () => void;
+  previewFullscreen: boolean;
 };
 
 export function MarkdownToolbar({
+  onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
   onInsertImage,
+  onTogglePreviewFullscreen,
+  previewFullscreen,
 }: MarkdownToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -99,6 +108,23 @@ export function MarkdownToolbar({
       <button className="toolbar-button" type="button" onClick={() => onInsert("$$\n", "\n$$", "x = y")}>
         <Sigma aria-hidden className="h-4 w-4" />
         Math
+      </button>
+      <button className="toolbar-button" type="button" onClick={onFixChatGptEquations}>
+        <Sparkles aria-hidden className="h-4 w-4" />
+        ChatGPT Eqfix
+      </button>
+      <button
+        className="toolbar-button"
+        type="button"
+        aria-pressed={previewFullscreen}
+        onClick={onTogglePreviewFullscreen}
+      >
+        {previewFullscreen ? (
+          <Minimize2 aria-hidden className="h-4 w-4" />
+        ) : (
+          <Maximize2 aria-hidden className="h-4 w-4" />
+        )}
+        {previewFullscreen ? "Exit" : "Preview"}
       </button>
     </div>
   );

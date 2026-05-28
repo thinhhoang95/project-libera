@@ -11,6 +11,8 @@ import {
   FilePlus2,
   Folder,
   FolderPlus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Trash2,
   Upload,
@@ -30,6 +32,7 @@ type SidebarMenuTarget =
 
 type NotebookSidebarProps = {
   activeTabId: string;
+  collapsed: boolean;
   expanded: Set<string>;
   selectedNotebookName: string;
   tree: LiberaTree;
@@ -41,6 +44,7 @@ type NotebookSidebarProps = {
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDeleteFile: (file: LiberaFileNode) => Promise<void>;
   onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
+  onDownloadFile: (file: LiberaFileNode) => void;
   onDownloadNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
@@ -49,12 +53,14 @@ type NotebookSidebarProps = {
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
   onStartUpload: (notebook: string) => void;
+  onToggleCollapsed: () => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
 };
 
 export function NotebookSidebar({
   activeTabId,
+  collapsed,
   expanded,
   selectedNotebookName,
   tree,
@@ -66,6 +72,7 @@ export function NotebookSidebar({
   onDeleteFile,
   onDeleteFolder,
   onDeleteNotebook,
+  onDownloadFile,
   onDownloadNotebook,
   onEditNotebook,
   onMoveFile,
@@ -74,6 +81,7 @@ export function NotebookSidebar({
   onRenameFile,
   onSelectNotebook,
   onStartUpload,
+  onToggleCollapsed,
   onToggleNotebook,
   onUploadChange,
 }: NotebookSidebarProps) {
@@ -135,20 +143,49 @@ export function NotebookSidebar({
     setDragOverPath("");
   }
 
+  if (collapsed) {
+    return (
+      <aside className="flex min-h-0 border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
+        <div className="flex w-full justify-end px-3 py-3 lg:w-14 lg:justify-center">
+          <button
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+            type="button"
+            aria-label="Expand notebooks panel"
+            title="Expand notebooks panel"
+            onClick={onToggleCollapsed}
+          >
+            <PanelLeftOpen aria-hidden className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
+    <aside className="flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-zinc-200 bg-white lg:max-h-none lg:border-b-0 lg:border-r">
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
           Notebooks
         </h2>
-        <button
-          className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium hover:bg-zinc-50"
-          type="button"
-          onClick={onCreateNotebook}
-        >
-          <BookPlus aria-hidden className="h-3.5 w-3.5" />
-          New
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+            type="button"
+            aria-label="Collapse notebooks panel"
+            title="Collapse notebooks panel"
+            onClick={onToggleCollapsed}
+          >
+            <PanelLeftClose aria-hidden className="h-4 w-4" />
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium hover:bg-zinc-50"
+            type="button"
+            onClick={onCreateNotebook}
+          >
+            <BookPlus aria-hidden className="h-3.5 w-3.5" />
+            New
+          </button>
+        </div>
       </div>
 
       <input
@@ -160,7 +197,7 @@ export function NotebookSidebar({
         onChange={onUploadChange}
       />
 
-      <div className="max-h-[40vh] overflow-auto px-3 py-3 lg:max-h-[calc(100vh-116px)]">
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!tree.notebooks.length ? (
           <div className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
             No notebooks yet.
@@ -206,6 +243,7 @@ export function NotebookSidebar({
           onCreateFolder={onCreateFolder}
           onDelete={onDeleteFile}
           onDeleteFolder={onDeleteFolder}
+          onDownloadFile={onDownloadFile}
           onRenameFolder={onRenameFolder}
           onRename={onRenameFile}
         />
@@ -503,6 +541,7 @@ function SidebarContextMenu({
   onCreateFolder,
   onDelete,
   onDeleteFolder,
+  onDownloadFile,
   onRenameFolder,
   onRename,
 }: {
@@ -514,6 +553,7 @@ function SidebarContextMenu({
   onCreateFolder: (parentPath: string) => Promise<void>;
   onDelete: (file: LiberaFileNode) => Promise<void>;
   onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
+  onDownloadFile: (file: LiberaFileNode) => void;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRename: (file: LiberaFileNode) => Promise<void>;
 }) {
@@ -532,6 +572,18 @@ function SidebarContextMenu({
     >
       {target.kind === "file" ? (
         <>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onClose();
+              onDownloadFile(target.file);
+            }}
+          >
+            <Download aria-hidden className="h-4 w-4 text-zinc-500" />
+            Download
+          </button>
           <button
             className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
             type="button"
