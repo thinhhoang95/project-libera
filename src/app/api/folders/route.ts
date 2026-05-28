@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
-import { createNotebook, deleteNotebook, renameNotebook, toStorageError } from "@/lib/storage";
-import type { LiberaNotebookMetadata } from "@/lib/types";
+import { createFolder, deleteFolder, renameFolder, toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
@@ -18,15 +17,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as Partial<LiberaNotebookMetadata> & {
+    const body = (await request.json()) as {
+      parentPath?: string;
       name?: string;
     };
-    return NextResponse.json(
-      await createNotebook(body.name ?? "", {
-        color: body.color,
-        emoji: body.emoji,
-      }),
-    );
+
+    return NextResponse.json(await createFolder(body.parentPath ?? "", body.name ?? ""));
   } catch (error) {
     return handleError(error);
   }
@@ -40,16 +36,12 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as Partial<LiberaNotebookMetadata> & {
+    const body = (await request.json()) as {
       path?: string;
       name?: string;
     };
-    return NextResponse.json(
-      await renameNotebook(body.path ?? "", body.name ?? "", {
-        color: body.color,
-        emoji: body.emoji,
-      }),
-    );
+
+    return NextResponse.json(await renameFolder(body.path ?? "", body.name ?? ""));
   } catch (error) {
     return handleError(error);
   }
@@ -63,8 +55,8 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const notebook = request.nextUrl.searchParams.get("path") ?? "";
-    return NextResponse.json(await deleteNotebook(notebook));
+    const folderPath = request.nextUrl.searchParams.get("path") ?? "";
+    return NextResponse.json(await deleteFolder(folderPath));
   } catch (error) {
     return handleError(error);
   }

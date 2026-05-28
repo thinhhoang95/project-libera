@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import {
+  copyFileToDirectory,
   createMarkdownFile,
   deleteFile,
+  moveFileToDirectory,
   moveFile,
   readLiberaFile,
   toStorageError,
@@ -43,10 +45,16 @@ export async function POST(request: NextRequest) {
       notebook?: string;
       name?: string;
       content?: string;
+      parentPath?: string;
     };
 
     return NextResponse.json(
-      await createMarkdownFile(body.notebook ?? "", body.name ?? "", body.content ?? ""),
+      await createMarkdownFile(
+        body.notebook ?? "",
+        body.name ?? "",
+        body.content ?? "",
+        body.parentPath,
+      ),
     );
   } catch (error) {
     return handleError(error);
@@ -66,7 +74,29 @@ export async function PATCH(request: NextRequest) {
       content?: string;
       destinationNotebook?: string;
       destinationName?: string;
+      destinationDirectory?: string;
+      copy?: boolean;
     };
+
+    if (body.copy && body.destinationDirectory) {
+      return NextResponse.json(
+        await copyFileToDirectory(
+          body.path ?? "",
+          body.destinationDirectory,
+          body.destinationName,
+        ),
+      );
+    }
+
+    if (body.destinationDirectory) {
+      return NextResponse.json(
+        await moveFileToDirectory(
+          body.path ?? "",
+          body.destinationDirectory,
+          body.destinationName,
+        ),
+      );
+    }
 
     if (body.destinationNotebook || body.destinationName) {
       return NextResponse.json(

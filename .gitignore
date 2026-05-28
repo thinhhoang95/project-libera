@@ -26,6 +26,9 @@
 # misc
 .DS_Store
 ._*
+**/._*
+.AppleDouble
+__MACOSX/
 *.pem
 
 # debug

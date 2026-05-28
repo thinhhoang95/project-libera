@@ -25,15 +25,44 @@ body {
 }
 
 .toolbar-button {
+  align-items: center;
   border: 1px solid #d4d4d8;
   border-radius: 0.375rem;
   color: #27272a;
+  display: inline-flex;
   font-size: 0.875rem;
   font-weight: 500;
+  gap: 0.375rem;
   line-height: 1.25rem;
   padding: 0.375rem 0.625rem;
 }
 
 .toolbar-button:hover {
   background: #f4f4f5;
+}
+
+.pdf-text-layer {
+  color: transparent;
+  inset: 0;
+  line-height: 1;
+  overflow: hidden;
+  position: absolute;
+  text-align: initial;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+  z-index: 10;
+}
+
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  cursor: text;
+  margin: 0;
+  position: absolute;
+  transform-origin: 0 0;
+  white-space: pre;
+}
+
+.pdf-text-layer ::selection {
+  background: rgba(250, 204, 21, 0.35);
 }
