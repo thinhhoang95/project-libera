@@ -2,12 +2,24 @@
 
 import { ChevronDown, ChevronUp, ImageIcon, Search, Sparkles, X } from "lucide-react";
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent, RefObject } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { MarkdownImageSelection } from "@/components/libera/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  MarkdownFileLinkPopup,
+  buildMarkdownFileLinkSections,
+  flattenMarkdownFileLinkSections,
+} from "@/components/libera/markdown-file-link-popup";
+import type {
+  MarkdownFileLinkRange,
+  MarkdownFileLinkSelection,
+  MarkdownImageSelection,
+  OpenTab,
+} from "@/components/libera/types";
+import {
+  getTextareaClientPointForOffset,
   getTextareaOffsetAtPoint,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
+import type { LiberaFileNode } from "@/lib/types";
 
 type EditorContextMenuState = {
   image?: MarkdownImageSelection;
@@ -22,15 +34,31 @@ type TextMatch = {
   end: number;
 };
 
+type FileLinkPopupContext = {
+  destinationEnd: number;
+  destinationStart: number;
+  query: string;
+  x: number;
+  y: number;
+};
+
 type MarkdownEditorProps = {
+  activeFilePath?: string;
+  files: LiberaFileNode[];
   formatting: boolean;
   imageConverting: boolean;
+  openTabs: OpenTab[];
+  recentFiles: LiberaFileNode[];
   textScale?: number;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
   onAiImageToMarkdown: (image: MarkdownImageSelection) => Promise<void>;
   onChange: (value: string) => void;
+  onInsertFileLink: (
+    selection: MarkdownFileLinkSelection,
+    range?: MarkdownFileLinkRange,
+  ) => void;
   onInsertImageFile: (file: File) => Promise<void>;
   onSelectionChange?: (selection: { end: number; start: number }) => void;
 };
@@ -125,14 +153,19 @@ function getDroppedImageFiles(dataTransfer: DataTransfer) {
 }
 
 export function MarkdownEditor({
+  activeFilePath,
+  files,
   formatting,
   imageConverting,
+  openTabs,
+  recentFiles,
   textScale = 1,
   textareaRef,
   value,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onChange,
+  onInsertFileLink,
   onInsertImageFile,
   onSelectionChange,
 }: MarkdownEditorProps) {
@@ -141,8 +174,30 @@ export function MarkdownEditor({
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
+  const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
   const textMatches = useMemo(() => findTextMatches(value, findQuery), [findQuery, value]);
+  const fileLinkSections = useMemo(
+    () =>
+      fileLinkPopup
+        ? buildMarkdownFileLinkSections({
+            activeFilePath,
+            files,
+            openTabs,
+            query: fileLinkPopup.query,
+            recentFiles,
+          })
+        : [],
+    [activeFilePath, fileLinkPopup, files, openTabs, recentFiles],
+  );
+  const fileLinkOptions = useMemo(
+    () => flattenMarkdownFileLinkSections(fileLinkSections),
+    [fileLinkSections],
+  );
+  const selectedFileLinkIndex = fileLinkOptions.length
+    ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1)
+    : 0;
 
   function selectMatch(matchIndex: number, matches = textMatches) {
     if (!matches.length) {
@@ -209,6 +264,97 @@ export function MarkdownEditor({
   function findPrevious() {
     selectMatch(activeMatchIndex - 1);
   }
+
+  const getFileLinkPopupContext = useCallback(
+    (
+      textarea: HTMLTextAreaElement,
+      nextValue = value,
+    ): FileLinkPopupContext | null => {
+      if (textarea.selectionStart !== textarea.selectionEnd) {
+        return null;
+      }
+
+      const cursor = textarea.selectionStart;
+      const beforeCursor = nextValue.slice(0, cursor);
+      const linkOpenIndex = beforeCursor.lastIndexOf("](");
+
+      if (linkOpenIndex < 0) {
+        return null;
+      }
+
+      const labelStart = beforeCursor.lastIndexOf("[", linkOpenIndex);
+
+      if (
+        labelStart < 0 ||
+        beforeCursor.slice(labelStart, linkOpenIndex).includes("\n")
+      ) {
+        return null;
+      }
+
+      const destinationStart = linkOpenIndex + 2;
+      const destination = nextValue.slice(destinationStart, cursor);
+
+      if (destination.includes("\n") || destination.includes(")")) {
+        return null;
+      }
+
+      const point = getTextareaClientPointForOffset(textarea, cursor);
+      const width = Math.min(384, window.innerWidth - 16);
+      const height = 384;
+
+      return {
+        destinationEnd: cursor,
+        destinationStart,
+        query: destination.replace(/^</, ""),
+        x: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
+        y: Math.max(8, Math.min(point.y + 6, window.innerHeight - height - 8)),
+      };
+    },
+    [value],
+  );
+
+  const refreshFileLinkPopup = useCallback(
+    (textarea: HTMLTextAreaElement, nextValue = value) => {
+      const nextPopup = getFileLinkPopupContext(textarea, nextValue);
+
+      if (nextPopup?.query !== fileLinkPopup?.query) {
+        setActiveFileLinkIndex(0);
+      }
+
+      setFileLinkPopup(nextPopup);
+    },
+    [fileLinkPopup?.query, getFileLinkPopupContext, value],
+  );
+
+  function closeFileLinkPopup() {
+    setFileLinkPopup(null);
+  }
+
+  function insertFileLink(selection: MarkdownFileLinkSelection) {
+    const range = fileLinkPopup
+      ? {
+          start: fileLinkPopup.destinationStart,
+          end: fileLinkPopup.destinationEnd,
+        }
+      : undefined;
+
+    closeFileLinkPopup();
+    onInsertFileLink(selection, range);
+  }
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+
+    if (!textarea || document.activeElement !== textarea) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      refreshFileLinkPopup(textarea);
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [refreshFileLinkPopup, textareaRef, value]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -321,10 +467,56 @@ export function MarkdownEditor({
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (fileLinkPopup) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeFileLinkPopup();
+        return;
+      }
+
+      if (fileLinkOptions.length && event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveFileLinkIndex((current) => (current + 1) % fileLinkOptions.length);
+        return;
+      }
+
+      if (fileLinkOptions.length && event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveFileLinkIndex(
+          (current) => (current - 1 + fileLinkOptions.length) % fileLinkOptions.length,
+        );
+        return;
+      }
+
+      if (fileLinkOptions.length && event.key === "Enter") {
+        event.preventDefault();
+        insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        return;
+      }
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openFind();
     }
+  }
+
+  function handleEditorKeyUp(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (
+      event.key === "ArrowDown" ||
+      event.key === "ArrowUp" ||
+      event.key === "Enter" ||
+      event.key === "Escape"
+    ) {
+      return;
+    }
+
+    refreshFileLinkPopup(event.currentTarget);
+  }
+
+  function handleEditorChange(textarea: HTMLTextAreaElement) {
+    onChange(textarea.value);
+    refreshFileLinkPopup(textarea, textarea.value);
   }
 
   function emitSelectionChange(textarea: HTMLTextAreaElement) {
@@ -367,12 +559,15 @@ export function MarkdownEditor({
         }}
         value={value}
         onBlur={(event) => emitSelectionChange(event.currentTarget)}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => handleEditorChange(event.currentTarget)}
         onContextMenu={openContextMenu}
+        onClick={(event) => refreshFileLinkPopup(event.currentTarget)}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
+        onKeyUp={handleEditorKeyUp}
         onDrop={(event) => void handleDrop(event)}
+        onFocus={(event) => refreshFileLinkPopup(event.currentTarget)}
         spellCheck={false}
       />
 
@@ -458,6 +653,16 @@ export function MarkdownEditor({
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      {fileLinkPopup ? (
+        <MarkdownFileLinkPopup
+          activeIndex={selectedFileLinkIndex}
+          sections={fileLinkSections}
+          x={fileLinkPopup.x}
+          y={fileLinkPopup.y}
+          onSelect={insertFileLink}
+        />
       ) : null}
     </div>
   );

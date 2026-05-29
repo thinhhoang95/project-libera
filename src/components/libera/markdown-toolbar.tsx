@@ -24,6 +24,7 @@ type MarkdownToolbarProps = {
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
+  onInsertFileLink: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onMarkdownZoomChange: (zoom: number) => void;
   onStartScreenshotSnip: () => void;
@@ -37,6 +38,7 @@ export function MarkdownToolbar({
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
+  onInsertFileLink,
   onInsertImage,
   onMarkdownZoomChange,
   onStartScreenshotSnip,
@@ -127,7 +129,7 @@ export function MarkdownToolbar({
         className="toolbar-button"
         title="Link"
         type="button"
-        onClick={() => onInsert("[", "](https://)", "link")}
+        onClick={onInsertFileLink}
       >
         <Link aria-hidden className="h-4 w-4" />
       </button>

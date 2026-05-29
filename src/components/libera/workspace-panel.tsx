@@ -26,6 +26,8 @@ import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import type {
   ImageTabViewState,
+  MarkdownFileLinkRange,
+  MarkdownFileLinkSelection,
   MarkdownTabViewState,
   MarkdownScreenshotSnipSession,
   OpenTab,
@@ -47,12 +49,15 @@ import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
   activeTab?: OpenTab;
+  files: LiberaFileNode[];
   aiFormatting: boolean;
   canStartScreenshotSnip: boolean;
   firstNotebook: string;
   imageMarkdownConverting: boolean;
+  recentFiles: LiberaFileNode[];
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   selectedNotebook?: LiberaNotebookNode;
+  tabs: OpenTab[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
   onAiImageToMarkdown: (image: {
@@ -68,6 +73,11 @@ type WorkspacePanelProps = {
   onDeleteFile: (tab: OpenTab) => Promise<void>;
   onDownloadFile: (file: LiberaFileNode, content?: string) => void;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
+  onInsertFileLink: (
+    selection: MarkdownFileLinkSelection,
+    range?: MarkdownFileLinkRange,
+  ) => void;
+  onInsertFileLinkPlaceholder: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   onMoveFile: (tab: OpenTab) => Promise<void>;
@@ -76,6 +86,7 @@ type WorkspacePanelProps = {
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onSetViewState: (viewState: OpenTabViewState) => void;
+  onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
 };
 
@@ -171,6 +182,12 @@ function getPreviewVisibleStartOffset(preview: HTMLElement) {
   return getPreviewSourceOffsetAtY(preview, previewRect.top + padding.top + 1);
 }
 
+function getMarkdownLineForOffset(value: string, offset: number) {
+  const clampedOffset = Math.max(0, Math.min(offset, value.length));
+
+  return value.slice(0, clampedOffset).split("\n").length;
+}
+
 function scrollPreviewToSourceOffset(preview: HTMLElement, offset: number) {
   const sourceElement = findMarkdownSourceElementForOffset(preview, offset);
   const sourceRange = getMarkdownSourceRange(sourceElement);
@@ -218,12 +235,15 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
 
 export function WorkspacePanel({
   activeTab,
+  files,
   aiFormatting,
   canStartScreenshotSnip,
   firstNotebook,
   imageMarkdownConverting,
+  recentFiles,
   screenshotSnipSession,
   selectedNotebook,
+  tabs,
   textareaRef,
   onAiFormatSelection,
   onAiImageToMarkdown,
@@ -234,6 +254,8 @@ export function WorkspacePanel({
   onDeleteFile,
   onDownloadFile,
   onInsertExistingImage,
+  onInsertFileLink,
+  onInsertFileLinkPlaceholder,
   onInsertImage,
   onInsertMarkdown,
   onMoveFile,
@@ -242,6 +264,7 @@ export function WorkspacePanel({
   onSave,
   onSetDraft,
   onSetViewState,
+  onOpenMarkdownFileLink,
   onStartScreenshotSnip,
 }: WorkspacePanelProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
@@ -390,10 +413,13 @@ export function WorkspacePanel({
         return;
       }
 
+      const visibleStartOffset = getTextareaVisibleStartOffset(editor);
+
       syncMarkdownPreviewToTextarea();
       updateMarkdownViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
+        line: getMarkdownLineForOffset(editor.value, visibleStartOffset),
         previewScrollLeft: previewPane.scrollLeft,
         previewScrollTop: previewPane.scrollTop,
       });
@@ -404,10 +430,16 @@ export function WorkspacePanel({
         return;
       }
 
+      const sourceOffset = getPreviewVisibleStartOffset(previewPane);
+
       syncTextareaToMarkdownPreview();
       updateMarkdownViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
+        line:
+          sourceOffset === null
+            ? undefined
+            : getMarkdownLineForOffset(editor.value, sourceOffset),
         previewScrollLeft: previewPane.scrollLeft,
         previewScrollTop: previewPane.scrollTop,
       });
@@ -552,6 +584,7 @@ export function WorkspacePanel({
 
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     updateMarkdownViewState({
+      line: getMarkdownLineForOffset(activeMarkdownDraft, selection.start),
       selectionEnd: selection.end,
       selectionStart: selection.start,
     });
@@ -753,6 +786,7 @@ export function WorkspacePanel({
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
+            onInsertFileLink={onInsertFileLinkPlaceholder}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={onStartScreenshotSnip}
@@ -772,6 +806,9 @@ export function WorkspacePanel({
               <MarkdownRenderer
                 content={activeTab.draft}
                 documentPath={activeTab.file.path}
+                onOpenFileLink={(href) =>
+                  onOpenMarkdownFileLink(activeTab.file.path, href)
+                }
                 textScale={markdownZoom / 100}
               />
             </article>
@@ -788,14 +825,19 @@ export function WorkspacePanel({
               }
             >
               <MarkdownEditor
+                activeFilePath={activeTab.file.path}
+                files={files}
                 formatting={aiFormatting}
                 imageConverting={imageMarkdownConverting}
+                openTabs={tabs}
+                recentFiles={recentFiles}
                 textScale={markdownZoom / 100}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}
                 onAiImageToMarkdown={onAiImageToMarkdown}
                 onChange={onSetDraft}
+                onInsertFileLink={onInsertFileLink}
                 onInsertImageFile={onInsertImage}
                 onSelectionChange={handleMarkdownSelectionChange}
               />
@@ -823,6 +865,9 @@ export function WorkspacePanel({
                 <MarkdownRenderer
                   content={previewMarkdownDraft}
                   documentPath={activeTab.file.path}
+                  onOpenFileLink={(href) =>
+                    onOpenMarkdownFileLink(activeTab.file.path, href)
+                  }
                   textScale={markdownZoom / 100}
                 />
               </article>

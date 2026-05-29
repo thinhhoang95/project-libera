@@ -89,6 +89,38 @@ function getTextareaVisualLineForOffset(
   return visualLine;
 }
 
+function getTextareaVisualPositionForOffset(
+  textarea: HTMLTextAreaElement,
+  offset: number,
+  metrics: TextareaLayoutMetrics,
+) {
+  const clampedOffset = Math.max(0, Math.min(offset, textarea.value.length));
+  const lines = textarea.value.split("\n");
+  let currentOffset = 0;
+  let visualLine = 0;
+
+  for (const line of lines) {
+    const lineEndOffset = currentOffset + line.length;
+
+    if (clampedOffset <= lineEndOffset) {
+      const column = clampedOffset - currentOffset;
+
+      return {
+        column: column % metrics.wrapColumn,
+        visualLine: visualLine + Math.floor(column / metrics.wrapColumn),
+      };
+    }
+
+    currentOffset = lineEndOffset + 1;
+    visualLine += getVisualLineCount(line, metrics.wrapColumn);
+  }
+
+  return {
+    column: 0,
+    visualLine,
+  };
+}
+
 export function getTextareaOffsetAtPoint(
   textarea: HTMLTextAreaElement,
   clientX: number,
@@ -140,6 +172,24 @@ export function getTextareaVisibleStartOffset(textarea: HTMLTextAreaElement) {
     rect.left + metrics.paddingLeft + 1,
     rect.top + metrics.paddingTop + 1,
   );
+}
+
+export function getTextareaClientPointForOffset(
+  textarea: HTMLTextAreaElement,
+  offset: number,
+) {
+  const metrics = getTextareaLayoutMetrics(textarea);
+  const rect = textarea.getBoundingClientRect();
+  const position = getTextareaVisualPositionForOffset(textarea, offset, metrics);
+  const x =
+    rect.left + metrics.paddingLeft + position.column * metrics.charWidth - textarea.scrollLeft;
+  const y =
+    rect.top + metrics.paddingTop + position.visualLine * metrics.lineHeight - textarea.scrollTop;
+
+  return {
+    x: Math.min(rect.right - 8, Math.max(rect.left + 8, x)),
+    y: Math.min(rect.bottom - 8, Math.max(rect.top + 8, y + metrics.lineHeight)),
+  };
 }
 
 export function scrollTextareaToOffset(

@@ -20,6 +20,7 @@ export type OpenTab = {
 export type MarkdownTabViewState = {
   editorScrollLeft?: number;
   editorScrollTop?: number;
+  line?: number;
   previewScrollLeft?: number;
   previewScrollTop?: number;
   selectionEnd?: number;
@@ -151,6 +152,18 @@ export type MarkdownImageSelection = {
   start: number;
 };
 
+export type MarkdownFileLinkSelection = {
+  file: LiberaFileNode;
+  source: "file" | "tab";
+  tabId?: string;
+  viewState?: OpenTabViewState;
+};
+
+export type MarkdownFileLinkRange = {
+  end: number;
+  start: number;
+};
+
 export type MarkdownScreenshotSnipSession = {
   scrollLeft: number;
   scrollTop: number;
@@ -178,6 +191,8 @@ export type LiberaWorkspace = {
   password: string;
   query: string;
   fileInteractions: Record<string, string>;
+  files: LiberaFileNode[];
+  recentFiles: LiberaFileNode[];
   searchResults: SearchResult[];
   selectedNotebook?: LiberaNotebookNode;
   selectedNotebookName: string;
@@ -215,12 +230,18 @@ export type LiberaWorkspace = {
     files: File[],
     destinationPath?: string,
   ) => Promise<void>;
+  insertMarkdownFileLink: (
+    selection: MarkdownFileLinkSelection,
+    range?: MarkdownFileLinkRange,
+  ) => void;
+  insertMarkdownFileLinkPlaceholder: () => void;
   insertExistingMarkdownImage: (file: LiberaFileNode) => Promise<void>;
   insertMarkdownImage: (file: File) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
-  openFile: (file: LiberaFileNode) => Promise<void>;
+  openFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   openCreateNotebookDialog: () => void;
   openEditNotebookDialog: (notebook: LiberaNotebookNode) => void;
   deleteFileNodeFromPrompt: (file: LiberaFileNode) => Promise<void>;

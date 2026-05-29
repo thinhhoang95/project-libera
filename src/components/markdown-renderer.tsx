@@ -6,11 +6,13 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { isLikelyWorkspaceMarkdownLink } from "@/lib/markdown-file-links";
 import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 
 type MarkdownRendererProps = {
   content: string;
   documentPath?: string;
+  onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
 };
 
@@ -53,6 +55,7 @@ function markdownElementProps<T extends { node?: unknown }>(props: T) {
 function MarkdownRendererContent({
   content,
   documentPath,
+  onOpenFileLink,
   textScale = 1,
 }: MarkdownRendererProps) {
   const scaledFontStyle = {
@@ -209,6 +212,31 @@ function MarkdownRendererContent({
               )}
               alt={alt ?? ""}
             />
+          ),
+          a: ({ children, className, href, ...props }) => (
+            <a
+              {...markdownElementProps(props)}
+              className={classNames(
+                "font-medium text-teal-700 underline decoration-teal-700/30 underline-offset-2 hover:text-teal-900",
+                className,
+              )}
+              href={href}
+              onClick={(event) => {
+                if (
+                  !href ||
+                  !documentPath ||
+                  !onOpenFileLink ||
+                  !isLikelyWorkspaceMarkdownLink(href)
+                ) {
+                  return;
+                }
+
+                event.preventDefault();
+                void onOpenFileLink?.(href);
+              }}
+            >
+              {children}
+            </a>
           ),
         }}
       >

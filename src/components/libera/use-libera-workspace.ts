@@ -10,6 +10,8 @@ import type {
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
 import type {
+  MarkdownFileLinkRange,
+  MarkdownFileLinkSelection,
   MarkdownImageSelection,
   MarkdownScreenshotSnipSession,
   NotebookDialogState,
@@ -23,6 +25,11 @@ import type {
   WorkspaceInputDialogState,
   WorkspaceInputDialogValues,
 } from "@/components/libera/types";
+import {
+  createMarkdownFileLinkDestination,
+  resolveMarkdownFileLink,
+  type MarkdownFileLinkMetadata,
+} from "@/lib/markdown-file-links";
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -47,6 +54,19 @@ function collectFileSearchResults(
   }
 }
 
+function collectFiles(nodes: LiberaTreeNode[], results: LiberaFileNode[] = []) {
+  for (const node of nodes) {
+    if (node.kind === "folder") {
+      collectFiles(node.children, results);
+      continue;
+    }
+
+    results.push(node);
+  }
+
+  return results;
+}
+
 function parentPathForFile(file: LiberaFileNode) {
   const parts = file.path.split("/");
   return parts.slice(0, -1).join("/") || file.notebook;
@@ -58,6 +78,10 @@ function imageAltText(name: string) {
 
 function clampTextOffset(value: number, textLength: number) {
   return Math.max(0, Math.min(value, textLength));
+}
+
+function lineForOffset(value: string, offset: number) {
+  return value.slice(0, clampTextOffset(offset, value.length)).split("\n").length;
 }
 
 function shallowEqualRecord(
@@ -137,6 +161,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const selectedNotebook = tree.notebooks.find(
     (notebook) => notebook.name === selectedNotebookName,
   );
+  const files = useMemo(
+    () => tree.notebooks.flatMap((notebook) => collectFiles(notebook.children)),
+    [tree],
+  );
+  const recentFiles = useMemo(() => {
+    const interactionTime = (file: LiberaFileNode) =>
+      new Date(fileInteractions[file.path] ?? file.updatedAt).getTime();
+
+    return [...files]
+      .sort((left, right) => interactionTime(right) - interactionTime(left))
+      .slice(0, 12);
+  }, [fileInteractions, files]);
   const canStartScreenshotSnip =
     activeTab?.file.fileType === "markdown" &&
     tabs.some((tab) => tab.file.fileType === "image" || tab.file.fileType === "pdf");
@@ -271,11 +307,35 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
-  async function openFile(file: LiberaFileNode) {
+  async function openFile(
+    file: LiberaFileNode,
+    options: { viewState?: OpenTabViewState } = {},
+  ) {
     setWorkspaceError("");
     setSelectedNotebookName(file.notebook);
 
-    if (tabs.some((tab) => tab.id === file.path)) {
+    const existingTab = tabs.find((tab) => tab.id === file.path);
+
+    if (existingTab) {
+      if (options.viewState) {
+        updateTab(file.path, (tab) => ({
+          ...tab,
+          viewState: {
+            ...tab.viewState,
+            ...options.viewState,
+          },
+        }));
+
+        if (existingTab.id === activeTabId && options.viewState.markdown) {
+          restoreMarkdownTextarea({
+            scrollLeft: options.viewState.markdown.editorScrollLeft,
+            scrollTop: options.viewState.markdown.editorScrollTop,
+            selectionStart: options.viewState.markdown.selectionStart ?? 0,
+            selectionEnd: options.viewState.markdown.selectionEnd ?? 0,
+          });
+        }
+      }
+
       recordFileInteraction(file);
       setActiveTabId(file.path);
       return;
@@ -292,6 +352,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         saved: payload.content ?? "",
         rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(payload.file.path)}`,
         status: "clean",
+        viewState: options.viewState,
       };
 
       setTabs((currentTabs) => [...currentTabs, nextTab]);
@@ -300,6 +361,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not open file.");
     }
+  }
+
+  async function openMarkdownFileLink(sourcePath: string, href: string) {
+    const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
+
+    if (!resolvedLink) {
+      return false;
+    }
+
+    await openFile(resolvedLink.file, {
+      viewState: resolvedLink.metadata?.viewState,
+    });
+    return true;
   }
 
   function closeTab(tabId: string) {
@@ -423,6 +497,132 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const nextDraft = `${draft.slice(0, start)}${before}${selectedText}${after}${draft.slice(end)}`;
     const nextSelectionStart = start + before.length;
     const nextSelectionEnd = nextSelectionStart + selectedText.length;
+
+    setActiveDraft(nextDraft);
+    restoreMarkdownTextarea({
+      selectionStart: nextSelectionStart,
+      selectionEnd: nextSelectionEnd,
+    });
+  }
+
+  function insertMarkdownFileLinkPlaceholder() {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const draft = activeTab.draft;
+    const start = textarea?.selectionStart ?? draft.length;
+    const end = textarea?.selectionEnd ?? draft.length;
+    const selectedText = draft.slice(start, end) || "link";
+    const insertion = `[${selectedText}]()`;
+    const nextDraft = `${draft.slice(0, start)}${insertion}${draft.slice(end)}`;
+    const destinationOffset = start + selectedText.length + 3;
+
+    setActiveDraft(nextDraft);
+    restoreMarkdownTextarea({
+      selectionStart: destinationOffset,
+      selectionEnd: destinationOffset,
+    });
+  }
+
+  function createMarkdownFileLinkMetadata(
+    selection: MarkdownFileLinkSelection,
+  ): MarkdownFileLinkMetadata | undefined {
+    if (selection.source !== "tab") {
+      return undefined;
+    }
+
+    const targetTab = tabs.find(
+      (tab) => tab.id === selection.tabId || tab.file.path === selection.file.path,
+    );
+    const viewState = selection.viewState ?? targetTab?.viewState ?? {};
+    const markdownSelectionStart = viewState.markdown?.selectionStart;
+    const line =
+      targetTab?.file.fileType === "markdown" &&
+      typeof markdownSelectionStart === "number"
+        ? lineForOffset(targetTab.draft, markdownSelectionStart)
+        : viewState.markdown?.line ?? (selection.file.fileType === "markdown" ? 1 : undefined);
+
+    return {
+      fileType: selection.file.fileType,
+      line,
+      v: 1,
+      viewState: {
+        image:
+          selection.file.fileType === "image"
+            ? {
+                fontSize: viewState.image?.fontSize,
+                panX: viewState.image?.panX ?? 0,
+                panY: viewState.image?.panY ?? 0,
+                selectedAnnotationId: viewState.image?.selectedAnnotationId,
+                tool: viewState.image?.tool,
+                zoom: viewState.image?.zoom ?? 1,
+              }
+            : undefined,
+        markdown:
+          selection.file.fileType === "markdown"
+            ? {
+                editorScrollLeft: viewState.markdown?.editorScrollLeft ?? 0,
+                editorScrollTop: viewState.markdown?.editorScrollTop ?? 0,
+                line,
+                previewScrollLeft: viewState.markdown?.previewScrollLeft ?? 0,
+                previewScrollTop: viewState.markdown?.previewScrollTop ?? 0,
+                selectionEnd: viewState.markdown?.selectionEnd,
+                selectionStart: viewState.markdown?.selectionStart,
+                zoom: viewState.markdown?.zoom,
+              }
+            : undefined,
+        pdf:
+          selection.file.fileType === "pdf"
+            ? {
+                fontSize: viewState.pdf?.fontSize,
+                scrollLeft: viewState.pdf?.scrollLeft ?? 0,
+                scrollTop: viewState.pdf?.scrollTop ?? 0,
+                selectedAnnotationId: viewState.pdf?.selectedAnnotationId,
+                tool: viewState.pdf?.tool,
+                zoom: viewState.pdf?.zoom ?? 1,
+              }
+            : undefined,
+      },
+    };
+  }
+
+  function insertMarkdownFileLink(
+    selection: MarkdownFileLinkSelection,
+    range?: MarkdownFileLinkRange,
+  ) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const destination = createMarkdownFileLinkDestination({
+      metadata: createMarkdownFileLinkMetadata(selection),
+      sourcePath: activeTab.file.path,
+      targetPath: selection.file.path,
+    });
+    const draft = activeTab.draft;
+    const textarea = textareaRef.current;
+    const start = clampTextOffset(
+      range?.start ?? textarea?.selectionStart ?? draft.length,
+      draft.length,
+    );
+    const end = clampTextOffset(
+      Math.max(start, range?.end ?? textarea?.selectionEnd ?? draft.length),
+      draft.length,
+    );
+    const destinationCloseIndex = draft.indexOf(")", start);
+    const hasLinkShell = start >= 2 && draft.slice(start - 2, start) === "](";
+    const nextDraft =
+      hasLinkShell && (destinationCloseIndex < 0 || destinationCloseIndex >= end)
+        ? `${draft.slice(0, start)}${destination}${
+            destinationCloseIndex < 0 ? ")" : ""
+          }${draft.slice(end)}`
+        : `${draft.slice(0, start)}[${selection.file.name}](${destination})${draft.slice(end)}`;
+    const nextSelectionStart = hasLinkShell ? start : start + 1;
+    const nextSelectionEnd = hasLinkShell
+      ? start + destination.length
+      : start + 1 + selection.file.name.length;
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
@@ -1584,6 +1784,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       password,
       query,
       fileInteractions,
+      files,
+      recentFiles,
       screenshotSnipSession,
       searchResults,
       selectedNotebook,
@@ -1618,12 +1820,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       handleLogout,
       handleUploadChange,
       uploadFilesToNotebook,
+      insertMarkdownFileLink,
+      insertMarkdownFileLinkPlaceholder,
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,
+      openMarkdownFileLink,
       openCreateNotebookDialog,
       openEditNotebookDialog,
       deleteFileNodeFromPrompt,

@@ -100,10 +100,13 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             activeTab={workspace.activeTab}
             aiFormatting={workspace.aiFormatting}
             canStartScreenshotSnip={workspace.canStartScreenshotSnip}
+            files={workspace.files}
             firstNotebook={workspace.firstNotebook}
             imageMarkdownConverting={workspace.imageMarkdownConverting}
+            recentFiles={workspace.recentFiles}
             screenshotSnipSession={workspace.screenshotSnipSession}
             selectedNotebook={workspace.selectedNotebook}
+            tabs={workspace.tabs}
             textareaRef={workspace.textareaRef}
             onAiFormatSelection={workspace.formatSelectionWithAi}
             onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
@@ -114,10 +117,13 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onDeleteFile={workspace.deleteFileFromPrompt}
             onDownloadFile={workspace.downloadFile}
             onInsertExistingImage={workspace.insertExistingMarkdownImage}
+            onInsertFileLink={workspace.insertMarkdownFileLink}
+            onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
             onInsertImage={workspace.insertMarkdownImage}
             onInsertMarkdown={workspace.insertMarkdown}
             onMoveFile={workspace.moveFileFromPrompt}
             onOpenFile={workspace.openFile}
+            onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
