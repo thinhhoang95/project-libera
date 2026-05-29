@@ -485,12 +485,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  function getMarkdownTextareaScrollState() {
+    const textarea = textareaRef.current;
+
+    return {
+      scrollLeft: textarea?.scrollLeft,
+      scrollTop: textarea?.scrollTop,
+    };
+  }
+
   function insertMarkdown(before: string, after = "", placeholder = "text") {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
     }
 
     const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
     const draft = activeTab.draft;
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
@@ -501,6 +511,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
+      ...scrollState,
       selectionStart: nextSelectionStart,
       selectionEnd: nextSelectionEnd,
     });
@@ -512,6 +523,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
     const draft = activeTab.draft;
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
@@ -522,6 +534,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
+      ...scrollState,
       selectionStart: destinationOffset,
       selectionEnd: destinationOffset,
     });
@@ -604,6 +617,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
     const draft = activeTab.draft;
     const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
     const start = clampTextOffset(
       range?.start ?? textarea?.selectionStart ?? draft.length,
       draft.length,
@@ -627,6 +641,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
+      ...scrollState,
       selectionStart: nextSelectionStart,
       selectionEnd: nextSelectionEnd,
     });
@@ -674,7 +689,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const scrollState = getMarkdownTextareaScrollState();
+
     restoreMarkdownTextarea({
+      ...scrollState,
       selectionStart: insertionState.nextSelectionStart,
       selectionEnd: insertionState.nextSelectionEnd,
     });
@@ -879,6 +897,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const tabId = activeTab.id;
     const draft = activeTab.draft;
     const selectedText = draft.slice(selection.start, selection.end);
+    const scrollState = getMarkdownTextareaScrollState();
 
     if (!selectedText.trim()) {
       return;
@@ -904,9 +923,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         error: undefined,
       }));
 
-      window.requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(selection.start, nextSelectionEnd);
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: selection.start,
+        selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
       updateTab(tabId, (tab) => ({
@@ -930,6 +950,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const tabId = activeTab.id;
     const draft = activeTab.draft;
     const selectedText = draft.slice(selection.start, selection.end);
+    const scrollState = getMarkdownTextareaScrollState();
 
     if (!selectedText.trim() || !prompt.trim()) {
       return;
@@ -955,9 +976,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         error: undefined,
       }));
 
-      window.requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(selection.start, nextSelectionEnd);
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: selection.start,
+        selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
       updateTab(tabId, (tab) => ({
@@ -978,6 +1000,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const tabId = activeTab.id;
     const draft = activeTab.draft;
     const imageMarkdown = draft.slice(image.start, image.end);
+    const scrollState = getMarkdownTextareaScrollState();
 
     if (!imageMarkdown.trim()) {
       return;
@@ -1022,9 +1045,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         })
         .catch(() => undefined);
 
-      window.requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(image.start, nextSelectionEnd);
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: image.start,
+        selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
       updateTab(tabId, (tab) => ({

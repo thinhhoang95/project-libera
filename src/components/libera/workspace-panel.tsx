@@ -659,10 +659,28 @@ export function WorkspacePanel({
       return;
     }
 
+    const textarea = textareaRef.current;
+    const scrollLeft = textarea?.scrollLeft ?? 0;
+    const scrollTop = textarea?.scrollTop ?? 0;
+    const selectionStart = textarea?.selectionStart ?? 0;
+    const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+
     onSetDraft(fixChatGptEquationBlocks(activeTab.draft));
 
     window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
+      const nextTextarea = textareaRef.current;
+
+      if (!nextTextarea) {
+        return;
+      }
+
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(
+        Math.min(selectionStart, nextTextarea.value.length),
+        Math.min(selectionEnd, nextTextarea.value.length),
+      );
+      nextTextarea.scrollLeft = scrollLeft;
+      nextTextarea.scrollTop = scrollTop;
     });
   }
 
