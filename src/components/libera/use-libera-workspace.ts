@@ -1265,10 +1265,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     link.remove();
   }
 
-  async function createMarkdownFromPrompt(notebook: string) {
+  async function createMarkdownFromPrompt(notebook: string, parentPath?: string) {
     setWorkspaceError("");
     setSelectedNotebookName(notebook);
-    setNoteDialog({ notebook });
+    setNoteDialog({ notebook, parentPath });
+    if (parentPath) {
+      setExpanded((current) => new Set(current).add(parentPath));
+    }
   }
 
   async function submitNoteDialog(values: NoteFormValues) {
@@ -1286,15 +1289,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNoteDialogSubmitting(true);
 
     try {
+      const parentPath = noteDialog.parentPath;
       const payload = await apiRequest<LiberaFilePayload>("/api/files", {
         method: "POST",
         body: JSON.stringify({
           notebook: noteDialog.notebook,
+          parentPath,
           name,
           content: `# ${name.replace(/\.(md|markdown)$/i, "")}\n`,
         }),
       });
       await refreshTree(noteDialog.notebook);
+      if (parentPath) {
+        setExpanded((current) => new Set(current).add(parentPath));
+      }
       setNoteDialog(null);
       await openFile(payload.file);
     } catch (error) {

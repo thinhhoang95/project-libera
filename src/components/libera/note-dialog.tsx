@@ -24,7 +24,7 @@ export function NoteDialog({
     <ModalDialog
       open
       title="New note"
-      description={`Create a Markdown note in ${dialog.notebook}.`}
+      description={`Create a Markdown note in ${dialog.parentPath ?? dialog.notebook}.`}
       onClose={onClose}
       footer={
         <>
@@ -47,7 +47,7 @@ export function NoteDialog({
       }
     >
       <NoteDialogForm
-        key={dialog.notebook}
+        key={`${dialog.notebook}:${dialog.parentPath ?? ""}`}
         error={dialog.error}
         initialValues={{ name: "Untitled.md" }}
         onSubmit={onSubmit}

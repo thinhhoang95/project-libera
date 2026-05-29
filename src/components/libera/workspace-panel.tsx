@@ -801,7 +801,7 @@ export function WorkspacePanel({
           {previewFullscreen ? (
             <article
               ref={markdownPreviewRef}
-              className="min-h-0 flex-1 overflow-auto bg-card p-6"
+              className="markdown-preview-pane min-h-0 flex-1 overflow-auto bg-card p-6"
               onScroll={handleMarkdownPreviewScroll}
             >
               <MarkdownRenderer
@@ -860,7 +860,7 @@ export function WorkspacePanel({
               </div>
               <article
                 ref={markdownPreviewRef}
-                className="min-h-0 min-w-0 overflow-auto bg-card p-6"
+                className="markdown-preview-pane min-h-0 min-w-0 overflow-auto bg-card p-6"
                 onDoubleClick={handleMarkdownPreviewDoubleClick}
                 onScroll={handleMarkdownPreviewScroll}
               >

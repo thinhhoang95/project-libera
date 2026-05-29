@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { LeftPanel } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
-import { NotebookSidebar } from "@/components/libera/notebook-sidebar";
 import { TabStrip } from "@/components/libera/tab-strip";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
@@ -45,7 +45,8 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           notebooksCollapsed ? "lg:grid-cols-[56px_1fr]" : "lg:grid-cols-[320px_1fr]"
         }`}
       >
-        <NotebookSidebar
+        <LeftPanel
+          activeTab={workspace.activeTab}
           activeTabId={workspace.activeTabId}
           collapsed={notebooksCollapsed}
           expanded={workspace.expanded}
@@ -54,6 +55,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           searchResults={workspace.searchResults}
           selectedNotebookName={workspace.selectedNotebookName}
           tree={workspace.tree}
+          textareaRef={workspace.textareaRef}
           uploadInputRef={workspace.uploadInputRef}
           onCopyFile={workspace.copyFileFromPrompt}
           onCreateFolder={workspace.createFolderFromPrompt}

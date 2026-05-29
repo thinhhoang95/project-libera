@@ -79,6 +79,7 @@ export type NoteFormValues = {
 
 export type NoteDialogState = {
   notebook: string;
+  parentPath?: string;
   error?: string;
 };
 
@@ -212,7 +213,7 @@ export type LiberaWorkspace = {
   closeWorkspaceInputDialog: () => void;
   cancelScreenshotSnip: () => void;
   completeScreenshotSnip: (file: File) => Promise<void>;
-  createMarkdownFromPrompt: (notebook: string) => Promise<void>;
+  createMarkdownFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;

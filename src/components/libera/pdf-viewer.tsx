@@ -26,6 +26,7 @@ import type {
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import { apiRequest } from "@/components/libera/api-client";
+import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
 import {
   canvasToPngBlob,
   pngFileFromBlob,
@@ -151,10 +152,15 @@ export function PdfViewer({
   );
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfAnnotation[]>([]);
+  const viewStateSelectedAnnotationId = initialViewState?.selectedAnnotationId;
+  const activeSelectedAnnotationId =
+    typeof viewStateSelectedAnnotationId === "string"
+      ? viewStateSelectedAnnotationId
+      : selectedAnnotationId;
 
   const selectedAnnotation = useMemo(
-    () => annotations.find((annotation) => annotation.id === selectedAnnotationId),
-    [annotations, selectedAnnotationId],
+    () => annotations.find((annotation) => annotation.id === activeSelectedAnnotationId),
+    [activeSelectedAnnotationId, annotations],
   );
 
   const selectedTextAnnotation =
@@ -171,6 +177,51 @@ export function PdfViewer({
   const updateViewState = useCallback((patch: PdfTabViewState) => {
     onViewStateChangeRef.current?.(patch);
   }, []);
+
+  useEffect(() => {
+    const nextSelectedAnnotationId = initialViewState?.selectedAnnotationId;
+
+    if (!nextSelectedAnnotationId || loading || !pdfDocument || !pageNumbers.length) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const scrollContainer = scrollContainerRef.current;
+
+      if (!scrollContainer) {
+        return;
+      }
+
+      const annotationElement = scrollContainer.querySelector<HTMLElement>(
+        `[data-pdf-annotation-id="${CSS.escape(nextSelectedAnnotationId)}"]`,
+      );
+
+      if (annotationElement) {
+        annotationElement.scrollIntoView({ block: "center", inline: "nearest" });
+        return;
+      }
+
+      const annotation = latestAnnotationsRef.current.find(
+        (currentAnnotation) => currentAnnotation.id === nextSelectedAnnotationId,
+      );
+
+      if (!annotation) {
+        return;
+      }
+
+      scrollContainer
+        .querySelector<HTMLElement>(`[data-pdf-page-number="${annotation.pageNumber}"]`)
+        ?.scrollIntoView({ block: "start", inline: "nearest" });
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [
+    initialViewState?.selectedAnnotationId,
+    laidOutPageCount,
+    loading,
+    pageNumbers.length,
+    pdfDocument,
+  ]);
 
   const flushPendingScrollViewState = useCallback(() => {
     if (scrollViewStateFrameRef.current !== null) {
@@ -361,6 +412,7 @@ export function PdfViewer({
     (nextAnnotations: PdfAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
+      dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
       setSaveStatus("saving");
 
       if (saveTimeoutRef.current) {
@@ -378,6 +430,10 @@ export function PdfViewer({
           .then((payload) => {
             latestAnnotationsRef.current = payload.annotations;
             setAnnotations(payload.annotations);
+            dispatchPdfAnnotationsUpdated({
+              path: filePath,
+              annotations: payload.annotations,
+            });
             setSaveStatus("saved");
           })
           .catch((saveError) => {
@@ -557,21 +613,21 @@ export function PdfViewer({
   }
 
   const deleteSelectedAnnotation = useCallback(() => {
-    if (!selectedAnnotationId) {
+    if (!activeSelectedAnnotationId) {
       return;
     }
 
     saveAnnotations(
-      annotations.filter((annotation) => annotation.id !== selectedAnnotationId),
+      annotations.filter((annotation) => annotation.id !== activeSelectedAnnotationId),
     );
     setSelectedAnnotationId("");
     updateViewState({ selectedAnnotationId: "" });
-  }, [annotations, saveAnnotations, selectedAnnotationId, updateViewState]);
+  }, [activeSelectedAnnotationId, annotations, saveAnnotations, updateViewState]);
 
   useEffect(() => {
     function handleDeleteKey(event: KeyboardEvent) {
       if (
-        !selectedAnnotationId ||
+        !activeSelectedAnnotationId ||
         (event.key !== "Delete" && event.key !== "Backspace")
       ) {
         return;
@@ -592,7 +648,7 @@ export function PdfViewer({
 
     window.addEventListener("keydown", handleDeleteKey);
     return () => window.removeEventListener("keydown", handleDeleteKey);
-  }, [deleteSelectedAnnotation, selectedAnnotationId]);
+  }, [activeSelectedAnnotationId, deleteSelectedAnnotation]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
@@ -659,7 +715,7 @@ export function PdfViewer({
             type="button"
             aria-label="Delete selected annotation"
             title="Delete selected annotation"
-            disabled={!selectedAnnotationId}
+            disabled={!activeSelectedAnnotationId}
             onClick={deleteSelectedAnnotation}
           >
             <Trash2 aria-hidden className="h-4 w-4" />
@@ -746,7 +802,7 @@ export function PdfViewer({
                 )}
                 pageNumber={pageNumber}
                 pdfDocument={pdfDocument}
-                selectedAnnotationId={selectedAnnotationId}
+                selectedAnnotationId={activeSelectedAnnotationId}
                 screenshotSnipping={screenshotSnipping}
                 tool={tool}
                 zoom={zoom}
@@ -895,7 +951,7 @@ function PdfPageView({
   }
 
   return (
-    <div className="relative bg-card shadow-sm">
+    <div className="relative bg-card shadow-sm" data-pdf-page-number={pageNumber}>
       <div
         ref={pageRef}
         className="relative overflow-hidden bg-card"
@@ -983,6 +1039,7 @@ function PdfHighlightAnnotationView({
           } ${selected ? "ring-2 ring-yellow-600" : ""}`}
           type="button"
           aria-label="Select highlight"
+          data-pdf-annotation-id={annotation.id}
           style={{
             ...rectStyle(rect, pageSize),
             background: annotation.color,

@@ -407,6 +407,7 @@ export function TextAnnotationLayer({
           return (
             <div
               key={annotation.id}
+              data-pdf-annotation-id={annotation.id}
               className={`absolute ${
                 interactive ? "pointer-events-auto" : "pointer-events-none"
               }`}

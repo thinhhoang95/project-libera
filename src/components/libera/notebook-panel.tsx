@@ -14,17 +14,14 @@ import {
   Folder,
   FolderPlus,
   MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
   Pencil,
   Trash2,
   Upload,
 } from "lucide-react";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
-import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
-import type { SearchResult } from "@/components/libera/types";
+import type { OpenTabViewState, SearchResult } from "@/components/libera/types";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -42,9 +39,8 @@ type MenuPosition = {
   y: number;
 };
 
-type NotebookSidebarProps = {
+export type NotebookPanelProps = {
   activeTabId: string;
-  collapsed: boolean;
   expanded: Set<string>;
   fileInteractions: Record<string, string>;
   query: string;
@@ -54,7 +50,7 @@ type NotebookSidebarProps = {
   uploadInputRef: RefObject<HTMLInputElement | null>;
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
-  onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateNotebook: () => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDeleteFile: (file: LiberaFileNode) => Promise<void>;
@@ -63,15 +59,13 @@ type NotebookSidebarProps = {
   onDownloadNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
-  onOpenFile: (file: LiberaFileNode) => Promise<void>;
-  onLogout: () => Promise<void>;
+  onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   onQueryChange: (query: string) => void;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRenameFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
   onSelectSearchResult: (result: SearchResult) => void;
   onStartUpload: (notebook: string) => void;
-  onToggleCollapsed: () => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
   onUploadFiles: (
@@ -304,9 +298,8 @@ function sortTreeForSidebar(
   };
 }
 
-export function NotebookSidebar({
+export function NotebookPanel({
   activeTabId,
-  collapsed,
   expanded,
   fileInteractions,
   query,
@@ -326,18 +319,16 @@ export function NotebookSidebar({
   onEditNotebook,
   onMoveFile,
   onOpenFile,
-  onLogout,
   onQueryChange,
   onRenameFolder,
   onRenameFile,
   onSelectNotebook,
   onSelectSearchResult,
   onStartUpload,
-  onToggleCollapsed,
   onToggleNotebook,
   onUploadChange,
   onUploadFiles,
-}: NotebookSidebarProps) {
+}: NotebookPanelProps) {
   const [contextMenu, setContextMenu] = useState<{
     target: SidebarMenuTarget;
     x: number;
@@ -498,28 +489,8 @@ export function NotebookSidebar({
     setSortMenuPosition({ x, y });
   }
 
-  if (collapsed) {
-    return (
-      <aside className="flex min-h-0 flex-col border-b border-border bg-card lg:border-b-0 lg:border-r">
-        <div className="flex w-full justify-end px-3 py-3 lg:w-14 lg:justify-center">
-          <button
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
-            type="button"
-            aria-label="Expand notebooks panel"
-            title="Expand notebooks panel"
-            onClick={onToggleCollapsed}
-          >
-            <PanelLeftOpen aria-hidden className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1" />
-        <SidebarAppMenu collapsed onLogout={onLogout} />
-      </aside>
-    );
-  }
-
   return (
-    <aside className="flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <SidebarSearch
         query={query}
         searchResults={searchResults}
@@ -530,18 +501,9 @@ export function NotebookSidebar({
 
       <div className="flex items-center justify-between border-b border-border px-4 py-2 shadow-sm">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Notebooks
+          Notebook
         </h2>
         <div className="flex items-center gap-2">
-          <button
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
-            type="button"
-            aria-label="Collapse notebooks panel"
-            title="Collapse notebooks panel"
-            onClick={onToggleCollapsed}
-          >
-            <PanelLeftClose aria-hidden className="h-4 w-4" />
-          </button>
           <div>
             <button
               ref={sortMenuButtonRef}
@@ -659,6 +621,7 @@ export function NotebookSidebar({
           onClose={() => setContextMenu(null)}
           onCopyFile={onCopyFile}
           onCreateFolder={onCreateFolder}
+          onCreateMarkdown={onCreateMarkdown}
           onDelete={onDeleteFile}
           onDeleteFolder={onDeleteFolder}
           onDownloadFile={onDownloadFile}
@@ -673,8 +636,7 @@ export function NotebookSidebar({
           onOpenFile={onOpenFile}
         />
       ) : null}
-      <SidebarAppMenu onLogout={onLogout} />
-    </aside>
+    </div>
   );
 }
 
@@ -709,7 +671,7 @@ function NotebookSection({
   isSelected: boolean;
   notebook: LiberaTree["notebooks"][number];
   onCreateFolder: (parentPath: string) => Promise<void>;
-  onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDropFile: (destinationPath: string) => Promise<void>;
@@ -1241,6 +1203,7 @@ function SidebarContextMenu({
   onClose,
   onCopyFile,
   onCreateFolder,
+  onCreateMarkdown,
   onDelete,
   onDeleteFolder,
   onDownloadFile,
@@ -1253,6 +1216,7 @@ function SidebarContextMenu({
   onClose: () => void;
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
+  onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onDelete: (file: LiberaFileNode) => Promise<void>;
   onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
   onDownloadFile: (file: LiberaFileNode) => void;
@@ -1316,6 +1280,17 @@ function SidebarContextMenu({
         </>
       ) : (
         <>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
+            type="button"
+            role="menuitem"
+            onClick={() =>
+              runAction(() => onCreateMarkdown(target.folder.notebook, target.folder.path))
+            }
+          >
+            <FilePlus2 aria-hidden className="h-4 w-4 text-muted-foreground" />
+            Add Note
+          </button>
           <button
             className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"

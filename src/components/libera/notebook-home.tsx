@@ -7,6 +7,7 @@ import {
   FileText,
   Image as ImageIcon,
   RotateCcw,
+  Search,
   X,
   ZoomIn,
   ZoomOut,
@@ -20,6 +21,7 @@ import {
   useState,
 } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
+import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 const MIN_ZOOM = 0.25;
@@ -46,16 +48,20 @@ function clampZoom(value: number) {
 }
 
 function collectNotebookFiles(nodes: LiberaTreeNode[]) {
+  const files: LiberaFileNode[] = [];
   const notes: LiberaFileNode[] = [];
   const images: LiberaFileNode[] = [];
 
   for (const node of nodes) {
     if (node.kind === "folder") {
       const nested = collectNotebookFiles(node.children);
+      files.push(...nested.files);
       notes.push(...nested.notes);
       images.push(...nested.images);
       continue;
     }
+
+    files.push(node);
 
     if (node.fileType === "markdown") {
       notes.push(node);
@@ -66,7 +72,7 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
     }
   }
 
-  return { notes, images };
+  return { files, notes, images };
 }
 
 export function NotebookHome({
@@ -74,11 +80,29 @@ export function NotebookHome({
   onCreateMarkdown,
   onOpenFile,
 }: NotebookHomeProps) {
-  const { notes, images } = useMemo(
+  const { files, notes, images } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
   );
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const fileSearchResults = useMemo(() => {
+    const normalizedQuery = fileSearchQuery.trim().toLowerCase();
+
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    return files
+      .filter((file) => file.name.toLowerCase().includes(normalizedQuery))
+      .slice(0, 10);
+  }, [fileSearchQuery, files]);
+  const trimmedFileSearchQuery = fileSearchQuery.trim();
+
+  function openSearchResult(file: LiberaFileNode) {
+    setFileSearchQuery("");
+    onOpenFile(file);
+  }
 
   return (
     <div className="h-full min-h-0 overflow-auto bg-muted px-5 py-5">
@@ -109,6 +133,65 @@ export function NotebookHome({
             New note
           </button>
         </header>
+
+        <section className="py-4 text-center">
+          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+            What&apos;s next for {notebook.name}
+          </h1>
+          <div className="relative mx-auto mt-5 max-w-3xl text-left">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground"
+            />
+            <input
+              aria-label={`Search files in ${notebook.name}`}
+              className="h-14 w-full rounded-lg border border-input bg-card px-12 text-base outline-none transition placeholder:text-muted-foreground focus:border-ring"
+              placeholder="Search files by name"
+              value={fileSearchQuery}
+              onChange={(event) => setFileSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && fileSearchResults[0]) {
+                  openSearchResult(fileSearchResults[0]);
+                }
+              }}
+            />
+            {trimmedFileSearchQuery ? (
+              <div className="absolute left-0 right-0 top-[3.75rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
+                {fileSearchResults.length ? (
+                  fileSearchResults.map((file) => (
+                    <button
+                      key={file.path}
+                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted"
+                      type="button"
+                      onClick={() => openSearchResult(file)}
+                    >
+                      <span className="flex min-w-0 items-center gap-3">
+                        <span className="text-muted-foreground">
+                          <FileTypeIcon fileType={file.fileType} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium">
+                            {file.name}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                            {file.path}
+                          </span>
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs uppercase text-muted-foreground">
+                        {fileTypeLabel(file.fileType)}
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-3 text-sm text-muted-foreground">
+                    No files found in this notebook.
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </section>
 
         <section className="rounded-lg border border-border bg-card">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
