@@ -21,50 +21,50 @@ export function SidebarSearch({
   const suggestionsOpen = Boolean(normalizedQuery);
 
   return (
-    <div className="relative px-3 py-2">
+    <div className="relative border-b border-transparent px-3 py-2">
       <Search
         aria-hidden
-        className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400"
+        className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
       />
       <input
         aria-label="Search notebooks and files"
-        className="h-[34px] w-full rounded-md border border-zinc-300 bg-white px-9 text-sm outline-none transition focus:border-zinc-950"
+        className="h-9 w-full rounded-full border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
         placeholder="Search notebooks and files"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
       />
       {suggestionsOpen ? (
-        <div className="absolute left-3 right-3 top-[2.875rem] z-30 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg">
+        <div className="absolute left-3 right-3 top-[2.875rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
           {searchResults.map((result) => (
             <button
               key={`${result.type}:${result.label}`}
-              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-zinc-100"
+              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
               type="button"
               onClick={() => onSelectSearchResult(result)}
             >
               <span className="flex min-w-0 items-center gap-2">
                 {result.type === "notebook" ? (
-                  <BookOpen aria-hidden className="h-4 w-4 shrink-0 text-zinc-500" />
+                  <BookOpen aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                 ) : (
                   <FileTypeIcon fileType={result.file.fileType} />
                 )}
                 <span className="truncate">{result.label}</span>
               </span>
-              <span className="shrink-0 text-xs uppercase text-zinc-500">
+              <span className="shrink-0 text-xs uppercase text-muted-foreground">
                 {result.type}
               </span>
             </button>
           ))}
           <button
-            className="flex w-full items-center justify-between gap-3 border-t border-zinc-200 px-3 py-2 text-left text-sm font-medium hover:bg-zinc-100"
+            className="flex w-full items-center justify-between gap-3 border-t border-border px-3 py-2 text-left text-sm font-medium hover:bg-muted"
             type="button"
             onClick={() => onDeepSearch(normalizedQuery)}
           >
             <span className="flex min-w-0 items-center gap-2">
-              <FileSearch aria-hidden className="h-4 w-4 shrink-0 text-zinc-500" />
+              <FileSearch aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="truncate">Deep Search</span>
             </span>
-            <span className="shrink-0 text-xs text-zinc-500">content</span>
+            <span className="shrink-0 text-xs text-muted-foreground">content</span>
           </button>
         </div>
       ) : null}

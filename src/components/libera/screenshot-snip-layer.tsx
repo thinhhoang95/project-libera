@@ -168,7 +168,7 @@ export function ScreenshotSnipLayer({
     >
       <button
         aria-label="Cancel snip"
-        className="absolute right-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/50 bg-zinc-950/75 text-white shadow-sm hover:bg-zinc-900"
+        className="absolute right-2 top-2 z-20 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/50 bg-zinc-950/75 text-white shadow-sm hover:bg-zinc-900"
         type="button"
         title="Cancel snip"
         onPointerDown={(event) => event.stopPropagation()}
@@ -178,12 +178,12 @@ export function ScreenshotSnipLayer({
       </button>
       {draftSnip ? (
         <div
-          className="absolute border-2 border-white bg-teal-400/20 shadow-[0_0_0_9999px_rgba(9,9,11,0.25)] ring-1 ring-teal-500"
+          className="absolute border-2 border-white bg-accent/20 shadow-[0_0_0_9999px_rgba(9,9,11,0.25)] ring-1 ring-accent"
           style={rectStyle(draftSnip.rect, pageSize)}
         />
       ) : null}
       {capturing ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/45 text-zinc-800">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/45 text-foreground">
           <Loader2 aria-hidden className="h-5 w-5 animate-spin" />
         </div>
       ) : null}

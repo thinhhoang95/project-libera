@@ -81,12 +81,12 @@ export function NotebookHome({
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   return (
-    <div className="h-full min-h-0 overflow-auto bg-zinc-50 px-5 py-5">
+    <div className="h-full min-h-0 overflow-auto bg-muted px-5 py-5">
       <div className="mx-auto flex max-w-6xl flex-col gap-5">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
           <div className="flex min-w-0 items-center gap-3">
             <span
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-xl"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-xl"
               style={{ backgroundColor: notebook.color, color: "#ffffff" }}
             >
               {notebook.emoji}
@@ -95,13 +95,13 @@ export function NotebookHome({
               <h2 className="truncate text-xl font-semibold tracking-tight">
                 {notebook.name}
               </h2>
-              <p className="mt-1 text-sm text-zinc-500">
+              <p className="mt-1 text-sm text-muted-foreground">
                 {notes.length} notes · {images.length} images
               </p>
             </div>
           </div>
           <button
-            className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             type="button"
             onClick={() => onCreateMarkdown(notebook.name)}
           >
@@ -110,57 +110,57 @@ export function NotebookHome({
           </button>
         </header>
 
-        <section className="rounded-md border border-zinc-200 bg-white">
-          <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+        <section className="rounded-lg border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Note files
             </h3>
-            <span className="text-xs text-zinc-500">{notes.length}</span>
+            <span className="text-xs text-muted-foreground">{notes.length}</span>
           </div>
           {notes.length ? (
-            <div className="divide-y divide-zinc-100">
+            <div className="divide-y divide-border">
               {notes.map((note) => (
                 <button
                   key={note.path}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-50"
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted"
                   type="button"
                   onClick={() => onOpenFile(note)}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">{note.name}</span>
-                    <span className="mt-0.5 block truncate text-xs text-zinc-500">
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                       {note.path}
                     </span>
                   </span>
-                  <span className="shrink-0 text-xs text-zinc-400">
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {new Date(note.updatedAt).toLocaleDateString()}
                   </span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="px-4 py-8 text-center text-sm text-zinc-500">
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
               No Markdown notes in this notebook.
             </div>
           )}
         </section>
 
-        <section className="rounded-md border border-zinc-200 bg-white">
-          <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+        <section className="rounded-lg border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Image previews
             </h3>
-            <span className="text-xs text-zinc-500">{images.length}</span>
+            <span className="text-xs text-muted-foreground">{images.length}</span>
           </div>
           {images.length ? (
             <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
               {images.map((image, index) => (
                 <figure
                   key={image.path}
-                  className="overflow-hidden rounded-md border border-zinc-200 bg-zinc-50"
+                  className="overflow-hidden rounded-lg border border-border bg-muted"
                 >
                   <button
-                    className="block aspect-[4/3] w-full bg-zinc-200"
+                    className="block aspect-[4/3] w-full bg-muted"
                     type="button"
                     onClick={() => setPreviewIndex(index)}
                   >
@@ -174,12 +174,12 @@ export function NotebookHome({
                   <figcaption className="flex items-center justify-between gap-2 px-3 py-2">
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium">{image.name}</span>
-                      <span className="block truncate text-xs text-zinc-500">
+                      <span className="block truncate text-xs text-muted-foreground">
                         {image.path}
                       </span>
                     </span>
                     <button
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-300 text-zinc-600 hover:bg-white"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-input text-foreground hover:bg-card"
                       type="button"
                       aria-label={`Open ${image.name} in official viewer`}
                       title="Open official viewer"
@@ -192,7 +192,7 @@ export function NotebookHome({
               ))}
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-zinc-500">
+            <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground">
               <ImageIcon aria-hidden className="h-4 w-4" />
               No image files in this notebook.
             </div>
@@ -328,11 +328,11 @@ function ImagePreviewModal({
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-zinc-950 px-4 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{currentImage.name}</p>
-          <p className="truncate text-xs text-zinc-400">{currentImage.path}</p>
+          <p className="truncate text-xs text-muted-foreground">{currentImage.path}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/20 hover:bg-white/10 disabled:opacity-40"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10 disabled:opacity-40"
             type="button"
             aria-label="Zoom out"
             title="Zoom out"
@@ -343,7 +343,7 @@ function ImagePreviewModal({
           </button>
           <span className="min-w-14 text-center text-sm">{Math.round(zoom * 100)}%</span>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/20 hover:bg-white/10 disabled:opacity-40"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10 disabled:opacity-40"
             type="button"
             aria-label="Zoom in"
             title="Zoom in"
@@ -353,7 +353,7 @@ function ImagePreviewModal({
             <ZoomIn aria-hidden className="h-4 w-4" />
           </button>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/20 hover:bg-white/10"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10"
             type="button"
             aria-label="Reset view"
             title="Reset view"
@@ -362,7 +362,7 @@ function ImagePreviewModal({
             <RotateCcw aria-hidden className="h-4 w-4" />
           </button>
           <button
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 px-2.5 py-1.5 text-sm hover:bg-white/10"
+            className="inline-flex items-center gap-2 rounded-lg border border-white/20 px-2.5 py-1.5 text-sm hover:bg-white/10"
             type="button"
             onClick={() => onOpenOfficialViewer(currentImage)}
           >
@@ -370,7 +370,7 @@ function ImagePreviewModal({
             Open viewer
           </button>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/20 hover:bg-white/10"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 hover:bg-white/10"
             type="button"
             aria-label="Close preview"
             title="Close"

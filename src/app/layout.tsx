@@ -48,7 +48,7 @@ export default function RootLayout({
 
   return (
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
-      <body className="flex h-full flex-col overflow-hidden">
+      <body className="flex h-full flex-col overflow-hidden font-sans">
         {children}
         <Script
           id="libera-theme"

@@ -29,14 +29,14 @@ export function NoteDialog({
       footer={
         <>
           <button
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+            className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted"
             type="button"
             onClick={onClose}
           >
             Cancel
           </button>
           <button
-            className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             form="note-dialog-form"
             type="submit"
             disabled={submitting}
@@ -75,19 +75,19 @@ function NoteDialogForm({
   return (
     <form className="space-y-4" id="note-dialog-form" onSubmit={handleSubmit}>
       <div>
-        <label className="block text-sm font-medium text-zinc-700" htmlFor="note-name">
+        <label className="block text-sm font-medium text-foreground" htmlFor="note-name">
           Name
         </label>
         <input
           id="note-name"
-          className="mt-1 h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-950"
+          className="mt-1 h-10 w-full rounded-xl border border-input px-3 text-sm outline-none transition focus:border-ring"
           value={values.name}
           onChange={(event) => setValues({ name: event.target.value })}
           autoFocus
         />
       </div>
 
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </form>
   );
 }

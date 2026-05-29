@@ -48,12 +48,50 @@ function classNames(...classes: Array<string | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+function markdownHeadingClassName(level: number, className: string | undefined) {
+  return classNames(
+    level === 1
+      ? "mb-4 text-[calc(1.875rem*var(--markdown-text-scale))] font-semibold tracking-tight text-foreground"
+      : undefined,
+    level === 2
+      ? "mb-3 mt-8 text-[calc(1.25rem*var(--markdown-text-scale))] font-semibold text-foreground"
+      : undefined,
+    level === 3
+      ? "mb-3 mt-7 text-[calc(1.125rem*var(--markdown-text-scale))] font-semibold text-foreground"
+      : undefined,
+    level === 4
+      ? "mb-2 mt-6 text-[calc(1rem*var(--markdown-text-scale))] font-semibold text-foreground"
+      : undefined,
+    level >= 5
+      ? "mb-2 mt-5 text-[calc(1rem*var(--markdown-text-scale))] font-semibold leading-7 text-foreground"
+      : undefined,
+    className,
+  );
+}
+
 function markdownElementProps<T extends { node?: unknown }>(props: T) {
   const { node, ...elementProps } = props;
 
   void node;
 
   return elementProps;
+}
+
+function parseExtendedMarkdownHeading(children: unknown) {
+  if (typeof children !== "string") {
+    return null;
+  }
+
+  const match = children.match(/^(#{7,10})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    level: match[1].length,
+    text: match[2],
+  };
 }
 
 function openExternalLink(href: string) {
@@ -80,10 +118,7 @@ function MarkdownRendererContent({
           h1: ({ children, className, ...props }) => (
             <h1
               {...markdownElementProps(props)}
-              className={classNames(
-                "mb-4 text-[calc(1.875rem*var(--markdown-text-scale))] font-semibold tracking-tight text-zinc-950",
-                className,
-              )}
+              className={markdownHeadingClassName(1, className)}
             >
               {children}
             </h1>
@@ -91,30 +126,79 @@ function MarkdownRendererContent({
           h2: ({ children, className, ...props }) => (
             <h2
               {...markdownElementProps(props)}
-              className={classNames(
-                "mb-3 mt-8 text-[calc(1.25rem*var(--markdown-text-scale))] font-semibold text-zinc-900",
-                className,
-              )}
+              className={markdownHeadingClassName(2, className)}
             >
               {children}
             </h2>
           ),
-          p: ({ children, className, ...props }) => (
-            <p
+          h3: ({ children, className, ...props }) => (
+            <h3
               {...markdownElementProps(props)}
-              className={classNames(
-                "mb-4 text-[calc(1rem*var(--markdown-text-scale))] leading-7 text-zinc-700",
-                className,
-              )}
+              className={markdownHeadingClassName(3, className)}
             >
               {children}
-            </p>
+            </h3>
           ),
+          h4: ({ children, className, ...props }) => (
+            <h4
+              {...markdownElementProps(props)}
+              className={markdownHeadingClassName(4, className)}
+            >
+              {children}
+            </h4>
+          ),
+          h5: ({ children, className, ...props }) => (
+            <h5
+              {...markdownElementProps(props)}
+              className={markdownHeadingClassName(5, className)}
+            >
+              {children}
+            </h5>
+          ),
+          h6: ({ children, className, ...props }) => (
+            <h6
+              {...markdownElementProps(props)}
+              className={markdownHeadingClassName(6, className)}
+            >
+              {children}
+            </h6>
+          ),
+          p: ({ children, className, ...props }) => {
+            const extendedHeading = parseExtendedMarkdownHeading(children);
+
+            if (extendedHeading) {
+              return (
+                <div
+                  {...markdownElementProps(props)}
+                  aria-level={extendedHeading.level}
+                  className={markdownHeadingClassName(
+                    extendedHeading.level,
+                    className,
+                  )}
+                  role="heading"
+                >
+                  {extendedHeading.text}
+                </div>
+              );
+            }
+
+            return (
+              <p
+                {...markdownElementProps(props)}
+                className={classNames(
+                  "mb-4 text-[calc(1rem*var(--markdown-text-scale))] leading-7 text-foreground",
+                  className,
+                )}
+              >
+                {children}
+              </p>
+            );
+          },
           blockquote: ({ children, className, ...props }) => (
             <blockquote
               {...markdownElementProps(props)}
               className={classNames(
-                "mb-4 border-l-4 border-zinc-300 bg-zinc-50 py-3 pl-4 pr-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700 [&>p:last-child]:mb-0",
+                "mb-4 border-l-4 border-input bg-muted py-3 pl-4 pr-5 text-[calc(1rem*var(--markdown-text-scale))] text-foreground [&>p:last-child]:mb-0",
                 className,
               )}
             >
@@ -125,7 +209,7 @@ function MarkdownRendererContent({
             <ul
               {...markdownElementProps(props)}
               className={classNames(
-                "mb-4 list-disc space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700",
+                "mb-4 list-disc space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-foreground",
                 className,
               )}
             >
@@ -136,7 +220,7 @@ function MarkdownRendererContent({
             <ol
               {...markdownElementProps(props)}
               className={classNames(
-                "mb-4 list-decimal space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-zinc-700",
+                "mb-4 list-decimal space-y-2 pl-5 text-[calc(1rem*var(--markdown-text-scale))] text-foreground",
                 className,
               )}
             >
@@ -147,7 +231,7 @@ function MarkdownRendererContent({
             <code
               {...markdownElementProps(props)}
               className={classNames(
-                "rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[calc(0.875rem*var(--markdown-text-scale))] text-zinc-900",
+                "rounded bg-muted px-1.5 py-0.5 font-mono text-[calc(0.875rem*var(--markdown-text-scale))] text-foreground",
                 className,
               )}
             >
@@ -155,7 +239,7 @@ function MarkdownRendererContent({
             </code>
           ),
           table: ({ children, className, ...props }) => (
-            <div className="mb-4 overflow-x-auto rounded-md border border-zinc-200">
+            <div className="mb-4 overflow-x-auto rounded-lg border border-border">
               <table
                 {...markdownElementProps(props)}
                 className={classNames(
@@ -170,7 +254,7 @@ function MarkdownRendererContent({
           thead: ({ children, className, ...props }) => (
             <thead
               {...markdownElementProps(props)}
-              className={classNames("bg-zinc-100 text-zinc-900", className)}
+              className={classNames("bg-muted text-foreground", className)}
             >
               {children}
             </thead>
@@ -179,7 +263,7 @@ function MarkdownRendererContent({
             <th
               {...markdownElementProps(props)}
               className={classNames(
-                "border-b border-r border-zinc-200 px-3 py-2 font-semibold last:border-r-0",
+                "border-b border-r border-border px-3 py-2 font-semibold last:border-r-0",
                 className,
               )}
               style={tableCellStyle(align)}
@@ -191,7 +275,7 @@ function MarkdownRendererContent({
             <td
               {...markdownElementProps(props)}
               className={classNames(
-                "border-b border-r border-zinc-200 px-3 py-2 align-top text-zinc-700 last:border-r-0",
+                "border-b border-r border-border px-3 py-2 align-top text-foreground last:border-r-0",
                 className,
               )}
               style={tableCellStyle(align)}
@@ -212,7 +296,7 @@ function MarkdownRendererContent({
             <img
               {...markdownElementProps(props)}
               className={classNames(
-                "my-4 max-h-[560px] max-w-full rounded-md border border-zinc-200 object-contain",
+                "my-4 max-h-[560px] max-w-full rounded-lg border border-border object-contain",
                 className,
               )}
               src={resolveMarkdownImageSource(
@@ -226,7 +310,7 @@ function MarkdownRendererContent({
             <a
               {...markdownElementProps(props)}
               className={classNames(
-                "font-medium text-teal-700 underline decoration-teal-700/30 underline-offset-2 hover:text-teal-900",
+                "font-medium text-accent underline decoration-accent/30 underline-offset-2 hover:text-accent",
                 className,
               )}
               href={href}

@@ -68,14 +68,14 @@ export function ExistingImageDialog({
       footer={
         <>
           <button
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+            className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted"
             type="button"
             onClick={onClose}
           >
             Cancel
           </button>
           <button
-            className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             type="button"
             disabled={!selectedImage}
             onClick={() => void insertSelectedImage()}
@@ -90,16 +90,16 @@ export function ExistingImageDialog({
           {images.map((image) => (
             <button
               key={image.path}
-              className={`overflow-hidden rounded-md border text-left ${
+              className={`overflow-hidden rounded-lg border text-left ${
                 selectedPath === image.path
-                  ? "border-zinc-950 ring-2 ring-zinc-950/10"
-                  : "border-zinc-200 hover:border-zinc-400"
+                  ? "border-foreground ring-2 ring-foreground/10"
+                  : "border-border hover:border-input"
               }`}
               type="button"
               onClick={() => setSelectedPath(image.path)}
               onDoubleClick={() => void onSelect(image)}
             >
-              <span className="block aspect-[4/3] bg-zinc-100">
+              <span className="block aspect-[4/3] bg-muted">
                 {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
                 <img
                   alt={image.name}
@@ -109,13 +109,13 @@ export function ExistingImageDialog({
               </span>
               <span className="block min-w-0 px-3 py-2">
                 <span className="block truncate text-sm font-medium">{image.name}</span>
-                <span className="block truncate text-xs text-zinc-500">{image.path}</span>
+                <span className="block truncate text-xs text-muted-foreground">{image.path}</span>
               </span>
             </button>
           ))}
         </div>
       ) : (
-        <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-zinc-300 px-4 py-8 text-sm text-zinc-500">
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-input px-4 py-8 text-sm text-muted-foreground">
           <ImageIcon aria-hidden className="h-4 w-4" />
           No images are available in this notebook.
         </div>

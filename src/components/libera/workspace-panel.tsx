@@ -726,12 +726,12 @@ export function WorkspacePanel({
       <div className="flex h-full min-h-0 items-center justify-center overflow-auto px-6">
         <div className="max-w-md text-center">
           <h2 className="text-xl font-semibold tracking-tight">Open a file to begin</h2>
-          <p className="mt-2 text-sm leading-6 text-zinc-500">
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
             Create a notebook, add Markdown notes, or upload images and PDFs from the explorer.
           </p>
           {firstNotebook ? (
             <button
-              className="mt-5 inline-flex items-center gap-2 rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               type="button"
               onClick={() => onCreateMarkdown(firstNotebook)}
             >
@@ -740,7 +740,7 @@ export function WorkspacePanel({
             </button>
           ) : (
             <button
-              className="mt-5 inline-flex items-center gap-2 rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               type="button"
               onClick={onCreateNotebook}
             >
@@ -756,7 +756,7 @@ export function WorkspacePanel({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {activeTab.error ? (
-        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+        <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           {activeTab.error}
         </div>
       ) : null}
@@ -783,7 +783,7 @@ export function WorkspacePanel({
           {previewFullscreen ? (
             <article
               ref={markdownPreviewRef}
-              className="min-h-0 flex-1 overflow-auto bg-white p-6"
+              className="min-h-0 flex-1 overflow-auto bg-card p-6"
               onScroll={handleMarkdownPreviewScroll}
             >
               <MarkdownRenderer
@@ -831,18 +831,18 @@ export function WorkspacePanel({
                 aria-valuemax={MAX_MARKDOWN_SPLIT_PERCENT}
                 aria-valuemin={MIN_MARKDOWN_SPLIT_PERCENT}
                 aria-valuenow={Math.round(markdownSplitPercent)}
-                className="markdown-split-resizer group flex cursor-row-resize items-center justify-center bg-zinc-100 outline-none hover:bg-zinc-200 focus-visible:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-900 lg:cursor-col-resize"
+                className="markdown-split-resizer group flex cursor-row-resize items-center justify-center bg-muted outline-none hover:bg-input focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-foreground lg:cursor-col-resize"
                 role="separator"
                 tabIndex={0}
                 title="Drag to resize editor and preview"
                 onKeyDown={handleMarkdownSplitKeyDown}
                 onPointerDown={handleMarkdownSplitPointerDown}
               >
-                <span className="h-1 w-10 rounded-full bg-zinc-400 transition group-hover:bg-zinc-700 group-focus-visible:bg-zinc-700 lg:h-10 lg:w-1" />
+                <span className="h-1 w-10 rounded-full bg-input transition group-hover:bg-muted-foreground group-focus-visible:bg-muted-foreground lg:h-10 lg:w-1" />
               </div>
               <article
                 ref={markdownPreviewRef}
-                className="min-h-0 min-w-0 overflow-auto bg-white p-6"
+                className="min-h-0 min-w-0 overflow-auto bg-card p-6"
                 onDoubleClick={handleMarkdownPreviewDoubleClick}
                 onScroll={handleMarkdownPreviewScroll}
               >
@@ -891,7 +891,7 @@ export function WorkspacePanel({
         />
       ) : (
         <iframe
-          className="min-h-0 flex-1 bg-white"
+          className="min-h-0 flex-1 bg-card"
           src={activeTab.rawUrl}
           title={activeTab.file.name}
         />

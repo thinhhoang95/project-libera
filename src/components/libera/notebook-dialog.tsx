@@ -55,14 +55,14 @@ export function NotebookDialog({
       footer={
         <>
           <button
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+            className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted"
             type="button"
             onClick={onClose}
           >
             Cancel
           </button>
           <button
-            className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             form="notebook-dialog-form"
             type="submit"
             disabled={submitting}
@@ -101,12 +101,12 @@ function NotebookDialogForm({
   return (
     <form className="space-y-4" id="notebook-dialog-form" onSubmit={handleSubmit}>
       <div>
-        <label className="block text-sm font-medium text-zinc-700" htmlFor="notebook-name">
+        <label className="block text-sm font-medium text-foreground" htmlFor="notebook-name">
           Name
         </label>
         <input
           id="notebook-name"
-          className="mt-1 h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-950"
+          className="mt-1 h-10 w-full rounded-xl border border-input px-3 text-sm outline-none transition focus:border-ring"
           value={values.name}
           onChange={(event) =>
             setValues((current) => ({ ...current, name: event.target.value }))
@@ -116,12 +116,12 @@ function NotebookDialogForm({
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-zinc-700" htmlFor="notebook-emoji">
+        <label className="block text-sm font-medium text-foreground" htmlFor="notebook-emoji">
           Emoji
         </label>
         <input
           id="notebook-emoji"
-          className="mt-1 h-10 w-24 rounded-md border border-zinc-300 px-3 text-center text-lg outline-none transition focus:border-zinc-950"
+          className="mt-1 h-10 w-24 rounded-xl border border-input px-3 text-center text-lg outline-none transition focus:border-ring"
           value={values.emoji}
           maxLength={4}
           onChange={(event) =>
@@ -131,7 +131,7 @@ function NotebookDialogForm({
       </div>
 
       <div>
-        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-zinc-700">
+        <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
           <Palette aria-hidden className="h-4 w-4" />
           Color
         </div>
@@ -140,7 +140,7 @@ function NotebookDialogForm({
             <button
               key={color}
               aria-label={`Select notebook color ${color}`}
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-200"
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-border"
               style={{ backgroundColor: color }}
               type="button"
               onClick={() => setValues((current) => ({ ...current, color }))}
@@ -153,7 +153,7 @@ function NotebookDialogForm({
         </div>
       </div>
 
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
     </form>
   );
 }

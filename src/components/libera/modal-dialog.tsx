@@ -57,23 +57,23 @@ export function ModalDialog({
         aria-describedby={description ? descriptionId : undefined}
         aria-labelledby={titleId}
         aria-modal="true"
-        className={`w-full rounded-lg border border-zinc-200 bg-white shadow-xl ${panelClassName}`}
+        className={`w-full rounded-xl border border-border bg-card shadow-xl ${panelClassName}`}
         role="dialog"
       >
-        <header className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+        <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
           <div>
             <h2 className="text-lg font-semibold tracking-tight" id={titleId}>
               {title}
             </h2>
             {description ? (
-              <p className="mt-1 text-sm leading-6 text-zinc-500" id={descriptionId}>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground" id={descriptionId}>
                 {description}
               </p>
             ) : null}
           </div>
           <button
             aria-label="Close dialog"
-            className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-950"
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             type="button"
             onClick={onClose}
           >
@@ -82,7 +82,7 @@ export function ModalDialog({
         </header>
         <div className="px-5 py-4">{children}</div>
         {footer ? (
-          <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-4">
+          <footer className="flex justify-end gap-2 border-t border-border px-5 py-4">
             {footer}
           </footer>
         ) : null}

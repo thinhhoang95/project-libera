@@ -22,7 +22,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
       onClose={onClose}
       footer={
         <button
-          className="rounded-md bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800"
+          className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           type="button"
           onClick={onClose}
         >
@@ -30,11 +30,11 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
         </button>
       }
     >
-      <dl className="divide-y divide-zinc-200 text-sm">
+      <dl className="divide-y divide-border text-sm">
         {ABOUT_ROWS.map(([label, value]) => (
           <div className="grid grid-cols-[120px_1fr] gap-4 py-3 first:pt-0 last:pb-0" key={label}>
-            <dt className="font-medium text-zinc-600">{label}</dt>
-            <dd className="min-w-0 text-zinc-950">{value}</dd>
+            <dt className="font-medium text-foreground">{label}</dt>
+            <dd className="min-w-0 text-foreground">{value}</dd>
           </div>
         ))}
       </dl>

@@ -62,7 +62,7 @@ export function MarkdownToolbar({
   }
 
   return (
-    <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto border-b border-zinc-200 bg-white px-4 py-2 whitespace-nowrap">
+    <div className="relative z-10 flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto border-b border-border bg-card px-4 py-2 whitespace-nowrap shadow-sm">
       <input
         ref={imageInputRef}
         className="hidden"
@@ -194,12 +194,12 @@ export function MarkdownToolbar({
       </button>
       <label
         aria-label={`Rendered Markdown text zoom: ${markdownZoom}%`}
-        className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-2.5 text-sm font-medium text-zinc-700"
+        className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-border bg-muted px-3 text-sm font-medium text-foreground"
         title={`Rendered Markdown text zoom: ${markdownZoom}%`}
       >
         <ZoomIn aria-hidden className="h-4 w-4" />
         <input
-          className="h-2 w-32 accent-zinc-900"
+          className="h-2 w-32 accent-foreground"
           type="range"
           min="75"
           max="150"

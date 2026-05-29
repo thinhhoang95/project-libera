@@ -189,7 +189,7 @@ export function MarkdownFileLinkPopup({
   if (!sections.length) {
     return (
       <div
-        className="fixed z-40 w-80 rounded-md border border-zinc-200 bg-white p-3 text-sm text-zinc-500 shadow-xl"
+        className="fixed z-40 w-80 rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground shadow-xl"
         style={{ left: x, top: y }}
       >
         No matching files
@@ -199,13 +199,13 @@ export function MarkdownFileLinkPopup({
 
   return (
     <div
-      className="fixed z-40 max-h-96 w-96 max-w-[calc(100vw-1rem)] overflow-auto rounded-md border border-zinc-200 bg-white p-1 shadow-xl"
+      className="fixed z-40 max-h-96 w-96 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-border bg-card p-1 shadow-xl"
       style={{ left: x, top: y }}
       onMouseDown={(event) => event.preventDefault()}
     >
       {indexedSections.map((section) => (
         <div key={section.title} className="py-1">
-          <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+          <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             {section.title}
           </div>
           {section.options.map(({ option, optionIndex }) => {
@@ -215,22 +215,22 @@ export function MarkdownFileLinkPopup({
               <button
                 key={option.id}
                 className={`flex w-full min-w-0 items-center gap-2 rounded px-2.5 py-2 text-left ${
-                  selected ? "bg-zinc-100" : "hover:bg-zinc-50"
+                  selected ? "bg-muted" : "hover:bg-muted"
                 }`}
                 type="button"
                 onClick={() => onSelect(optionSelection(option))}
               >
-                <span className="shrink-0 text-zinc-500">{fileIcon(option.file)}</span>
+                <span className="shrink-0 text-muted-foreground">{fileIcon(option.file)}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-zinc-900">
+                  <span className="block truncate text-sm font-medium text-foreground">
                     {option.title}
                   </span>
-                  <span className="block truncate text-xs text-zinc-500">
+                  <span className="block truncate text-xs text-muted-foreground">
                     {option.subtitle}
                   </span>
                 </span>
                 {option.source === "tab" ? (
-                  <PanelTop aria-hidden className="h-4 w-4 shrink-0 text-zinc-400" />
+                  <PanelTop aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                 ) : null}
               </button>
             );

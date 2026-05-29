@@ -595,14 +595,14 @@ export function PdfViewer({
   }, [deleteSelectedAnnotation, selectedAnnotationId]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-200">
-      <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2 shadow-sm">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
+      <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2 shadow-sm">
         <div className="flex min-w-0 items-center gap-1">
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "select"
-                ? "border-zinc-950 bg-zinc-950 text-white"
-                : "border-zinc-300 hover:bg-zinc-50"
+                ? "border-foreground bg-primary text-primary-foreground"
+                : "border-input hover:bg-muted"
             }`}
             type="button"
             onClick={() => {
@@ -614,10 +614,10 @@ export function PdfViewer({
             Select
           </button>
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "highlight"
                 ? "border-yellow-500 bg-yellow-100 text-yellow-950"
-                : "border-zinc-300 hover:bg-zinc-50"
+                : "border-input hover:bg-muted"
             }`}
             type="button"
             onClick={() => {
@@ -629,10 +629,10 @@ export function PdfViewer({
             Highlight
           </button>
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "text"
-                ? "border-zinc-950 bg-zinc-950 text-white"
-                : "border-zinc-300 hover:bg-zinc-50"
+                ? "border-foreground bg-primary text-primary-foreground"
+                : "border-input hover:bg-muted"
             }`}
             type="button"
             onClick={() => {
@@ -643,7 +643,7 @@ export function PdfViewer({
             <Type aria-hidden className="h-4 w-4" />
             Text
           </button>
-          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-md border border-zinc-300 px-2 text-sm">
+          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-lg border border-input px-2 text-sm">
             Size
             <input
               className="w-14 border-0 bg-transparent text-sm outline-none"
@@ -655,7 +655,7 @@ export function PdfViewer({
             />
           </label>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             aria-label="Delete selected annotation"
             title="Delete selected annotation"
@@ -667,7 +667,7 @@ export function PdfViewer({
         </div>
 
         <div className="flex items-center gap-1">
-          <span className="mr-2 text-xs text-zinc-500">
+          <span className="mr-2 text-xs text-muted-foreground">
             {saveStatus === "saving"
               ? "Saving"
               : saveStatus === "saved"
@@ -678,7 +678,7 @@ export function PdfViewer({
           </span>
           <button
             aria-label="Zoom out"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             disabled={zoom <= MIN_ZOOM}
             onClick={() => changeZoom(-ZOOM_STEP)}
@@ -686,12 +686,12 @@ export function PdfViewer({
           >
             <ZoomOut aria-hidden className="h-4 w-4" />
           </button>
-          <span className="min-w-14 text-center text-sm font-medium text-zinc-700">
+          <span className="min-w-14 text-center text-sm font-medium text-foreground">
             {Math.round(zoom * 100)}%
           </span>
           <button
             aria-label="Zoom in"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             disabled={zoom >= MAX_ZOOM}
             onClick={() => changeZoom(ZOOM_STEP)}
@@ -701,7 +701,7 @@ export function PdfViewer({
           </button>
           <button
             aria-label="Reset zoom"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 hover:bg-zinc-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             type="button"
             onClick={() => {
               if (zoom !== 1) {
@@ -719,7 +719,7 @@ export function PdfViewer({
       </div>
 
       {error ? (
-        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+        <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           {error}
         </div>
       ) : null}
@@ -730,7 +730,7 @@ export function PdfViewer({
         onScroll={handleScroll}
       >
         {loading ? (
-          <div className="flex min-h-80 items-center justify-center text-sm text-zinc-600">
+          <div className="flex min-h-80 items-center justify-center text-sm text-foreground">
             <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />
             Loading PDF
           </div>
@@ -895,10 +895,10 @@ function PdfPageView({
   }
 
   return (
-    <div className="relative bg-white shadow-sm">
+    <div className="relative bg-card shadow-sm">
       <div
         ref={pageRef}
-        className="relative overflow-hidden bg-white"
+        className="relative overflow-hidden bg-card"
         style={{ width: size.width, height: size.height }}
         onMouseUp={createHighlightFromSelection}
       >
@@ -947,7 +947,7 @@ function PdfPageView({
         />
 
         {rendering ? (
-          <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/60 text-xs text-zinc-500">
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/60 text-xs text-muted-foreground">
             <Loader2 aria-hidden className="mr-2 h-3.5 w-3.5 animate-spin" />
             Rendering
           </div>

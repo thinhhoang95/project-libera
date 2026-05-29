@@ -231,6 +231,18 @@ function showAboutDialog() {
   });
 }
 
+function dispatchRendererTabShortcut(webContents, shiftKey) {
+  const script = `window.dispatchEvent(new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    ctrlKey: true,
+    key: "Tab",
+    shiftKey: ${shiftKey ? "true" : "false"}
+  }))`;
+
+  webContents.executeJavaScript(script).catch(() => null);
+}
+
 async function openConfigurationWindow() {
   try {
     const updatedConfig = await createSetupWindow({
@@ -537,6 +549,20 @@ async function createMainWindow(url) {
   });
 
   mainWindow.setMenuBarVisibility(true);
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (
+      input.type !== "keyDown" ||
+      input.key !== "Tab" ||
+      !input.control ||
+      input.meta ||
+      input.alt
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    dispatchRendererTabShortcut(mainWindow.webContents, Boolean(input.shift));
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     if (isExternalBrowserUrl(targetUrl)) {
       void shell.openExternal(targetUrl);

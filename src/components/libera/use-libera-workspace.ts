@@ -153,6 +153,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const [uploadNotebook, setUploadNotebook] = useState("");
+  const activeTabHistoryRef = useRef<string[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -1815,6 +1816,95 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     setActiveTabId(tabId);
   }
+
+  useEffect(() => {
+    const openTabIds = new Set(tabs.map((tab) => tab.id));
+
+    activeTabHistoryRef.current = activeTabHistoryRef.current.filter((tabId) =>
+      openTabIds.has(tabId),
+    );
+
+    if (!activeTabId || !openTabIds.has(activeTabId)) {
+      return;
+    }
+
+    activeTabHistoryRef.current = [
+      activeTabId,
+      ...activeTabHistoryRef.current.filter((tabId) => tabId !== activeTabId),
+    ];
+  }, [activeTabId, tabs]);
+
+  useEffect(() => {
+    function activateShortcutTab(tabId: string) {
+      const tab = tabs.find((currentTab) => currentTab.id === tabId);
+
+      if (tab) {
+        const interactedAt = new Date().toISOString();
+
+        setSelectedNotebookName(tab.file.notebook);
+        setFileInteractions((current) => {
+          const nextInteractions = {
+            ...current,
+            [tab.file.path]: interactedAt,
+          };
+
+          window.localStorage.setItem(
+            FILE_INTERACTIONS_STORAGE_KEY,
+            JSON.stringify(nextInteractions),
+          );
+
+          return nextInteractions;
+        });
+      }
+
+      setActiveTabId(tabId);
+    }
+
+    function cycleOrderedTab() {
+      if (!tabs.length) {
+        return;
+      }
+
+      const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId);
+      const nextIndex = activeIndex < 0 ? 0 : (activeIndex + 1) % tabs.length;
+
+      activateShortcutTab(tabs[nextIndex].id);
+    }
+
+    function toggleRecentTab() {
+      const openTabIds = new Set(tabs.map((tab) => tab.id));
+      const recentTabId = activeTabHistoryRef.current.find(
+        (tabId) => tabId !== activeTabId && openTabIds.has(tabId),
+      );
+
+      if (recentTabId) {
+        activateShortcutTab(recentTabId);
+        return;
+      }
+
+      cycleOrderedTab();
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.key !== "Tab") {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (event.shiftKey) {
+        cycleOrderedTab();
+      } else {
+        toggleRecentTab();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTabId, tabs]);
 
   return {
     authenticated,

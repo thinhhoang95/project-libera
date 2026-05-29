@@ -383,15 +383,15 @@ export function ImageViewer({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-200">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-300 bg-white px-4 py-2">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
         <div className="flex min-w-0 items-center gap-1">
           <Move aria-hidden className="h-4 w-4 shrink-0" />
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "select"
-                ? "border-zinc-950 bg-zinc-950 text-white"
-                : "border-zinc-300 hover:bg-zinc-50"
+                ? "border-foreground bg-primary text-primary-foreground"
+                : "border-input hover:bg-muted"
             }`}
             type="button"
             onClick={() => {
@@ -403,10 +403,10 @@ export function ImageViewer({
             Select
           </button>
           <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-sm font-medium ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "text"
-                ? "border-zinc-950 bg-zinc-950 text-white"
-                : "border-zinc-300 hover:bg-zinc-50"
+                ? "border-foreground bg-primary text-primary-foreground"
+                : "border-input hover:bg-muted"
             }`}
             type="button"
             onClick={() => {
@@ -417,7 +417,7 @@ export function ImageViewer({
             <Type aria-hidden className="h-4 w-4" />
             Text
           </button>
-          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-md border border-zinc-300 px-2 text-sm">
+          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-lg border border-input px-2 text-sm">
             Size
             <input
               className="w-14 border-0 bg-transparent text-sm outline-none"
@@ -429,7 +429,7 @@ export function ImageViewer({
             />
           </label>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
             aria-label="Delete selected annotation"
             title="Delete selected annotation"
@@ -440,7 +440,7 @@ export function ImageViewer({
           </button>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <span className="mr-2 text-xs text-zinc-500">
+          <span className="mr-2 text-xs text-muted-foreground">
             {saveStatus === "saving"
               ? "Saving"
               : saveStatus === "saved"
@@ -451,7 +451,7 @@ export function ImageViewer({
           </span>
           <button
             aria-label="Zoom out"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-sm font-medium hover:bg-zinc-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
             type="button"
             onClick={() => changeZoom(-ZOOM_STEP)}
             disabled={zoom <= MIN_ZOOM}
@@ -459,12 +459,12 @@ export function ImageViewer({
           >
             <ZoomOut aria-hidden className="h-4 w-4" />
           </button>
-          <span className="min-w-14 text-center text-sm font-medium text-zinc-700">
+          <span className="min-w-14 text-center text-sm font-medium text-foreground">
             {Math.round(zoom * 100)}%
           </span>
           <button
             aria-label="Zoom in"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-sm font-medium hover:bg-zinc-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
             type="button"
             onClick={() => changeZoom(ZOOM_STEP)}
             disabled={zoom >= MAX_ZOOM}
@@ -474,7 +474,7 @@ export function ImageViewer({
           </button>
           <button
             aria-label="Reset image view"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-sm font-medium hover:bg-zinc-50"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
             type="button"
             onClick={resetView}
             title="Reset image view"
@@ -485,7 +485,7 @@ export function ImageViewer({
       </div>
 
       {error ? (
-        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+        <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           {error}
         </div>
       ) : null}
@@ -512,7 +512,7 @@ export function ImageViewer({
         {src ? (
           <div
             ref={imageFrameRef}
-            className="relative inline-block rounded-md bg-white shadow-sm"
+            className="relative inline-block rounded-lg bg-card shadow-sm"
             style={{
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transition: isPanning ? "none" : "transform 120ms ease-out",
@@ -522,7 +522,7 @@ export function ImageViewer({
             {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
             <img
               ref={imageRef}
-              className="block max-h-[calc(100vh-236px)] max-w-full select-none rounded-md object-contain"
+              className="block max-h-[calc(100vh-236px)] max-w-full select-none rounded-lg object-contain"
               src={src}
               alt={alt}
               draggable={false}
@@ -549,7 +549,7 @@ export function ImageViewer({
             />
           </div>
         ) : (
-          <p className="text-sm text-zinc-500">Image preview is unavailable.</p>
+          <p className="text-sm text-muted-foreground">Image preview is unavailable.</p>
         )}
       </div>
     </div>

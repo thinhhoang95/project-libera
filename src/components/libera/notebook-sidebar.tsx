@@ -81,7 +81,7 @@ type NotebookSidebarProps = {
   ) => Promise<void>;
 };
 
-type SidebarSortKey = "createdAt" | "updatedAt" | "interactedAt";
+type SidebarSortKey = "name" | "createdAt" | "updatedAt" | "interactedAt";
 type SidebarSortDirection = "asc" | "desc";
 
 type SidebarSortPreference = {
@@ -100,6 +100,8 @@ const SORT_OPTIONS: Array<{
   key: SidebarSortKey;
   label: string;
 }> = [
+  { key: "name", direction: "asc", label: "Name, A to Z" },
+  { key: "name", direction: "desc", label: "Name, Z to A" },
   { key: "createdAt", direction: "desc", label: "Date created, newest first" },
   { key: "createdAt", direction: "asc", label: "Date created, oldest first" },
   { key: "updatedAt", direction: "desc", label: "Last modified, newest first" },
@@ -116,7 +118,8 @@ function parseSortPreference(input: unknown): SidebarSortPreference {
   const candidate = input as Partial<SidebarSortPreference>;
 
   if (
-    (candidate.key === "createdAt" ||
+    (candidate.key === "name" ||
+      candidate.key === "createdAt" ||
       candidate.key === "updatedAt" ||
       candidate.key === "interactedAt") &&
     (candidate.direction === "asc" || candidate.direction === "desc")
@@ -200,6 +203,10 @@ function nodeSortValue(
   sortPreference: SidebarSortPreference,
   fileInteractions: Record<string, string>,
 ) {
+  if (sortPreference.key === "name") {
+    return node.name;
+  }
+
   if (sortPreference.key === "interactedAt") {
     return latestNodeInteraction(node, fileInteractions);
   }
@@ -212,6 +219,10 @@ function notebookSortValue(
   sortPreference: SidebarSortPreference,
   fileInteractions: Record<string, string>,
 ) {
+  if (sortPreference.key === "name") {
+    return notebook.name;
+  }
+
   if (sortPreference.key === "interactedAt") {
     return latestNotebookInteraction(notebook, fileInteractions);
   }
@@ -220,11 +231,14 @@ function notebookSortValue(
 }
 
 function compareSortValues(
-  leftValue: number,
-  rightValue: number,
+  leftValue: number | string,
+  rightValue: number | string,
   direction: SidebarSortDirection,
 ) {
-  const difference = leftValue - rightValue;
+  const difference =
+    typeof leftValue === "string" && typeof rightValue === "string"
+      ? leftValue.localeCompare(rightValue)
+      : Number(leftValue) - Number(rightValue);
 
   return direction === "asc" ? difference : -difference;
 }
@@ -473,7 +487,7 @@ export function NotebookSidebar({
 
     const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = 288;
-    const menuHeight = 288;
+    const menuHeight = SORT_OPTIONS.length * 40 + 8;
     const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
     const preferredY = rect.bottom + 8;
     const y =
@@ -486,10 +500,10 @@ export function NotebookSidebar({
 
   if (collapsed) {
     return (
-      <aside className="flex min-h-0 flex-col border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
+      <aside className="flex min-h-0 flex-col border-b border-border bg-card lg:border-b-0 lg:border-r">
         <div className="flex w-full justify-end px-3 py-3 lg:w-14 lg:justify-center">
           <button
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
             type="button"
             aria-label="Expand notebooks panel"
             title="Expand notebooks panel"
@@ -505,7 +519,7 @@ export function NotebookSidebar({
   }
 
   return (
-    <aside className="flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-zinc-200 bg-white lg:max-h-none lg:border-b-0 lg:border-r">
+    <aside className="flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
       <SidebarSearch
         query={query}
         searchResults={searchResults}
@@ -514,13 +528,13 @@ export function NotebookSidebar({
         onSelectSearchResult={onSelectSearchResult}
       />
 
-      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
+      <div className="flex items-center justify-between border-b border-border px-4 py-2 shadow-sm">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Notebooks
         </h2>
         <div className="flex items-center gap-2">
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
             type="button"
             aria-label="Collapse notebooks panel"
             title="Collapse notebooks panel"
@@ -534,7 +548,7 @@ export function NotebookSidebar({
               aria-expanded={sortMenuOpen}
               aria-haspopup="menu"
               aria-label="Sort notebooks and files"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
               title="Sort notebooks and files"
               type="button"
               onClick={toggleSortMenu}
@@ -544,7 +558,7 @@ export function NotebookSidebar({
             {sortMenuPosition ? (
               <div
                 ref={sortMenuRef}
-                className="fixed z-50 w-[288px] overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+                className="fixed z-50 w-[288px] overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
                 role="menu"
                 style={{
                   left: sortMenuPosition.x,
@@ -559,7 +573,7 @@ export function NotebookSidebar({
                   return (
                     <button
                       key={`${option.key}:${option.direction}`}
-                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-zinc-100"
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
                       type="button"
                       role="menuitemradio"
                       aria-checked={selected}
@@ -572,7 +586,7 @@ export function NotebookSidebar({
                     >
                       <span>{option.label}</span>
                       {selected ? (
-                        <Check aria-hidden className="h-4 w-4 text-zinc-500" />
+                        <Check aria-hidden className="h-4 w-4 text-muted-foreground" />
                       ) : null}
                     </button>
                   );
@@ -581,7 +595,7 @@ export function NotebookSidebar({
             ) : null}
           </div>
           <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium hover:bg-zinc-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-input px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
             type="button"
             onClick={onCreateNotebook}
           >
@@ -602,7 +616,7 @@ export function NotebookSidebar({
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!sortedTree.notebooks.length ? (
-          <div className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
+          <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
             No notebooks yet.
           </div>
         ) : null}
@@ -788,8 +802,8 @@ function NotebookSection({
 
   return (
     <section
-      className={`rounded-md border ${
-        isSelected || isUploadTarget ? "border-teal-300 shadow-sm" : "border-zinc-200"
+      className={`rounded-lg border border-border transition-shadow ${
+        isSelected || isUploadTarget ? "shadow-md" : ""
       }`}
       onDragOver={(event) => {
         if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
@@ -817,10 +831,8 @@ function NotebookSection({
       }}
     >
       <div
-        className={`flex items-center gap-2 border-b px-2 py-2 ${
-          isDragTarget || isUploadTarget || isSelected
-            ? "border-teal-300 bg-teal-50"
-            : "border-zinc-100"
+        className={`flex items-center gap-2 border-b border-border px-2 py-2 ${
+          isDragTarget || isUploadTarget || isSelected ? "bg-accent/8" : ""
         }`}
         onDragOver={(event) => {
           if (!draggingFile) {
@@ -837,7 +849,7 @@ function NotebookSection({
         }}
       >
         <button
-          className="h-7 w-7 rounded text-sm hover:bg-zinc-100"
+          className="h-7 w-7 rounded text-sm hover:bg-muted"
           type="button"
           onClick={() => onToggleNotebook(notebook.name)}
         >
@@ -853,14 +865,14 @@ function NotebookSection({
           onClick={() => onSelectNotebook(notebook.name)}
         >
           <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sm"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-sm"
             style={{ backgroundColor: notebook.color, color: "#ffffff" }}
           >
             {notebook.emoji}
           </span>
           <span className="min-w-0">
             <span className="block truncate">{notebook.name}</span>
-            <span className="block truncate text-xs font-normal text-zinc-500">
+            <span className="block truncate text-xs font-normal text-muted-foreground">
               Created {new Date(notebook.createdAt).toLocaleDateString()}
             </span>
           </span>
@@ -870,7 +882,7 @@ function NotebookSection({
           aria-expanded={Boolean(actionMenuPosition)}
           aria-haspopup="menu"
           aria-label={`Notebook actions for ${notebook.name}`}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-600 hover:bg-zinc-100"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground hover:bg-muted"
           title="Notebook actions"
           type="button"
           onClick={toggleActionMenu}
@@ -895,7 +907,7 @@ function NotebookSection({
       ) : null}
       {isExpanded ? (
         <div
-          className={`px-2 py-2 ${isDragTarget ? "bg-teal-50/60" : ""}`}
+          className={`px-2 py-2 ${isDragTarget ? "bg-accent/10/60" : ""}`}
           onDragOver={(event) =>
             handleFileDragOverDirectory(
               event,
@@ -934,7 +946,7 @@ function NotebookSection({
               />
             ))}
             {!notebook.children.length ? (
-              <p className="px-2 py-2 text-sm text-zinc-500">No files.</p>
+              <p className="px-2 py-2 text-sm text-muted-foreground">No files.</p>
             ) : null}
           </div>
         </div>
@@ -976,32 +988,32 @@ function NotebookActionsMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 w-[184px] overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+      className="fixed z-50 w-[184px] overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
       style={{ left: x, top: y }}
       role="menu"
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => runAction(() => onCreateMarkdown(notebook.name))}
       >
-        <FilePlus2 aria-hidden className="h-4 w-4 text-zinc-500" />
+        <FilePlus2 aria-hidden className="h-4 w-4 text-muted-foreground" />
         New note
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => runAction(() => onCreateFolder(notebook.path))}
       >
-        <FolderPlus aria-hidden className="h-4 w-4 text-zinc-500" />
+        <FolderPlus aria-hidden className="h-4 w-4 text-muted-foreground" />
         New folder
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => {
@@ -1009,11 +1021,11 @@ function NotebookActionsMenu({
           onStartUpload(notebook.name);
         }}
       >
-        <Upload aria-hidden className="h-4 w-4 text-zinc-500" />
+        <Upload aria-hidden className="h-4 w-4 text-muted-foreground" />
         Upload
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => {
@@ -1021,11 +1033,11 @@ function NotebookActionsMenu({
           onEditNotebook(notebook);
         }}
       >
-        <Pencil aria-hidden className="h-4 w-4 text-zinc-500" />
+        <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
         Edit
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => {
@@ -1033,11 +1045,11 @@ function NotebookActionsMenu({
           onDownloadNotebook(notebook.name);
         }}
       >
-        <Download aria-hidden className="h-4 w-4 text-zinc-500" />
+        <Download aria-hidden className="h-4 w-4 text-muted-foreground" />
         Download
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-700 hover:bg-red-50"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
         type="button"
         role="menuitem"
         onClick={() => runAction(() => onDeleteNotebook(notebook.name))}
@@ -1092,8 +1104,8 @@ function TreeNodeRow({
     return (
       <div>
         <button
-          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-zinc-100 ${
-            isDragTarget || isUploadTarget ? "bg-teal-50 ring-1 ring-teal-300" : ""
+          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+            isDragTarget || isUploadTarget ? "bg-accent/10 ring-1 ring-accent" : ""
           }`}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
           type="button"
@@ -1128,17 +1140,17 @@ function TreeNodeRow({
           }}
         >
           {isExpanded ? (
-            <ChevronDown aria-hidden className="h-4 w-4 shrink-0 text-zinc-500" />
+            <ChevronDown aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           ) : (
-            <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-zinc-500" />
+            <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           )}
-          <Folder aria-hidden className="h-4 w-4 shrink-0 text-teal-600" />
+          <Folder aria-hidden className="h-4 w-4 shrink-0 text-accent" />
           <span className="min-w-0 truncate">{node.name}</span>
         </button>
 
         {isExpanded ? (
           <div
-            className={`mt-1 space-y-1 ${isDragTarget ? "bg-teal-50/50" : ""}`}
+            className={`mt-1 space-y-1 ${isDragTarget ? "bg-accent/10/50" : ""}`}
             onDragOver={(event) =>
               handleFileDragOverDirectory(
                 event,
@@ -1183,8 +1195,8 @@ function TreeNodeRow({
 
   return (
     <button
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-zinc-100 ${
-        activeTabId === node.path ? "bg-zinc-100" : ""
+      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+        activeTabId === node.path ? "bg-muted" : ""
       }`}
       draggable
       style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -1213,7 +1225,7 @@ function TreeNodeRow({
         onSetDragOverPath("");
       }}
     >
-      <span className="w-9 shrink-0 rounded bg-zinc-200 px-1.5 py-0.5 text-center text-[10px] font-semibold text-zinc-700">
+      <span className="w-9 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-foreground">
         {fileTypeLabel(node.fileType)}
       </span>
       <FileTypeIcon fileType={node.fileType} />
@@ -1254,7 +1266,7 @@ function SidebarContextMenu({
 
   return (
     <div
-      className="fixed z-50 min-w-40 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+      className="fixed z-50 min-w-40 overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
       style={{ left: x, top: y }}
       role="menu"
       onClick={(event) => event.stopPropagation()}
@@ -1263,7 +1275,7 @@ function SidebarContextMenu({
       {target.kind === "file" ? (
         <>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"
             role="menuitem"
             onClick={() => {
@@ -1271,29 +1283,29 @@ function SidebarContextMenu({
               onDownloadFile(target.file);
             }}
           >
-            <Download aria-hidden className="h-4 w-4 text-zinc-500" />
+            <Download aria-hidden className="h-4 w-4 text-muted-foreground" />
             Download
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onCopyFile(target.file))}
           >
-            <Copy aria-hidden className="h-4 w-4 text-zinc-500" />
+            <Copy aria-hidden className="h-4 w-4 text-muted-foreground" />
             Copy
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onRename(target.file))}
           >
-            <Pencil aria-hidden className="h-4 w-4 text-zinc-500" />
+            <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
             Rename
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-700 hover:bg-red-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onDelete(target.file))}
@@ -1305,25 +1317,25 @@ function SidebarContextMenu({
       ) : (
         <>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onCreateFolder(target.folder.path))}
           >
-            <FolderPlus aria-hidden className="h-4 w-4 text-zinc-500" />
+            <FolderPlus aria-hidden className="h-4 w-4 text-muted-foreground" />
             New folder
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onRenameFolder(target.folder))}
           >
-            <Pencil aria-hidden className="h-4 w-4 text-zinc-500" />
+            <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
             Rename
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-700 hover:bg-red-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
             type="button"
             role="menuitem"
             onClick={() => runAction(() => onDeleteFolder(target.folder))}

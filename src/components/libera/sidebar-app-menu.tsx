@@ -128,14 +128,14 @@ export function SidebarAppMenu({
   return (
     <>
       <div
-        className={`relative border-t border-zinc-200 bg-white ${
+        className={`relative border-t border-border bg-card ${
           collapsed ? "px-2 py-2" : "px-3 py-2"
         }`}
         ref={menuRef}
       >
         {menuOpen ? (
           <div
-            className="fixed z-[100] min-w-44 rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+            className="fixed z-[100] min-w-44 rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
             role="menu"
             style={{
               bottom: menuPosition.bottom,
@@ -145,46 +145,46 @@ export function SidebarAppMenu({
           >
             <button
               aria-checked={theme === "dark"}
-              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-zinc-100"
+              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
               type="button"
               role="menuitemcheckbox"
               onClick={toggleDarkMode}
             >
               <span className="flex items-center gap-2">
                 {theme === "dark" ? (
-                  <Sun aria-hidden className="h-4 w-4 text-zinc-500" />
+                  <Sun aria-hidden className="h-4 w-4 text-muted-foreground" />
                 ) : (
-                  <Moon aria-hidden className="h-4 w-4 text-zinc-500" />
+                  <Moon aria-hidden className="h-4 w-4 text-muted-foreground" />
                 )}
                 Dark Mode
               </span>
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-muted-foreground">
                 {theme === "dark" ? "On" : "Off"}
               </span>
             </button>
             <div className="group/menu relative">
               <button
-                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-zinc-100"
+                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
                 type="button"
                 role="menuitem"
               >
                 <span className="flex items-center gap-2">
-                  <Info aria-hidden className="h-4 w-4 text-zinc-500" />
+                  <Info aria-hidden className="h-4 w-4 text-muted-foreground" />
                   About
                 </span>
-                <ChevronRight aria-hidden className="h-4 w-4 text-zinc-400" />
+                <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground" />
               </button>
               <div
-                className="absolute bottom-0 left-full hidden min-w-44 rounded-md border border-zinc-200 bg-white py-1 shadow-lg group-hover/menu:block group-focus-within/menu:block"
+                className="absolute bottom-0 left-full hidden min-w-44 rounded-lg border border-border bg-card py-1 shadow-lg group-hover/menu:block group-focus-within/menu:block"
                 role="menu"
               >
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
                   type="button"
                   role="menuitem"
                   onClick={openAboutDialog}
                 >
-                  <Info aria-hidden className="h-4 w-4 text-zinc-500" />
+                  <Info aria-hidden className="h-4 w-4 text-muted-foreground" />
                   About LiBERA
                 </button>
               </div>
@@ -198,7 +198,7 @@ export function SidebarAppMenu({
               aria-expanded={menuOpen}
               aria-haspopup="menu"
               aria-label="LiBERA menu"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-sm font-semibold text-zinc-950 hover:bg-zinc-100"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold text-foreground hover:bg-muted"
               title="LiBERA menu"
               type="button"
               onClick={toggleMenu}
@@ -207,7 +207,7 @@ export function SidebarAppMenu({
             </button>
             <button
               aria-label="Logout"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted hover:text-foreground"
               title="Logout"
               type="button"
               onClick={() => void onLogout()}
@@ -220,7 +220,7 @@ export function SidebarAppMenu({
             <button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              className="min-w-0 rounded-md px-2 py-1.5 text-left text-sm font-semibold tracking-tight text-zinc-950 hover:bg-zinc-100"
+              className="min-w-0 rounded-lg px-2 py-1.5 text-left text-sm font-semibold tracking-tight text-foreground hover:bg-muted"
               type="button"
               onClick={toggleMenu}
             >
@@ -228,7 +228,7 @@ export function SidebarAppMenu({
             </button>
             <button
               aria-label="Logout"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-300 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-950"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted hover:text-foreground"
               title="Logout"
               type="button"
               onClick={() => void onLogout()}

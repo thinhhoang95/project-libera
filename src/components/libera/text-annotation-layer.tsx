@@ -413,10 +413,10 @@ export function TextAnnotationLayer({
               style={rectStyle(annotation.rect, pageSize)}
             >
               <textarea
-                className={`h-full w-full resize-none overflow-hidden border bg-white/80 p-1 leading-tight text-zinc-950 outline-none ${
+                className={`h-full w-full resize-none overflow-hidden border bg-white/80 p-1 leading-tight text-foreground outline-none ${
                   selected
-                    ? "border-zinc-950 ring-2 ring-zinc-950/20"
-                    : "border-zinc-500/60"
+                    ? "border-foreground ring-2 ring-foreground/20"
+                    : "border-input/60"
                 }`}
                 value={annotation.text}
                 aria-label="Text annotation"
@@ -446,7 +446,7 @@ export function TextAnnotationLayer({
                 <>
                   <button
                     aria-label="Move text annotation"
-                    className="absolute right-1 top-1 z-20 inline-flex h-5 w-5 items-center justify-center rounded border border-zinc-300 bg-white/90 text-zinc-600 shadow-sm hover:bg-zinc-50"
+                    className="absolute right-1 top-1 z-20 inline-flex h-5 w-5 items-center justify-center rounded border border-input bg-white/90 text-foreground shadow-sm hover:bg-muted"
                     type="button"
                     title="Move text annotation"
                     onPointerDown={(event) =>
@@ -462,7 +462,7 @@ export function TextAnnotationLayer({
                     <button
                       key={handle.handle}
                       aria-label={handle.label}
-                      className={`absolute z-20 h-3 w-3 rounded-full border border-zinc-950 bg-white shadow-sm ${handle.className}`}
+                      className={`absolute z-20 h-3 w-3 rounded-full border border-foreground bg-card shadow-sm ${handle.className}`}
                       type="button"
                       title={handle.label}
                       onPointerDown={(event) =>
@@ -493,7 +493,7 @@ export function TextAnnotationLayer({
       >
         {draftTextBox ? (
           <div
-            className="absolute border border-zinc-950 bg-white/40"
+            className="absolute border border-foreground bg-white/40"
             style={rectStyle(draftTextBox.rect, pageSize)}
           />
         ) : null}

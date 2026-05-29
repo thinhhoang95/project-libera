@@ -607,7 +607,7 @@ export function MarkdownEditor({
     <div className="relative min-h-0 min-w-0 overflow-hidden">
       <textarea
         ref={textareaRef}
-        className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-zinc-200 bg-white p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
+        className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-border bg-card p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
           fontSize: `${0.875 * textScale}rem`,
           lineHeight: `${1.5 * textScale}rem`,
@@ -627,8 +627,8 @@ export function MarkdownEditor({
       />
 
       {findOpen ? (
-        <div className="absolute right-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-md border border-zinc-200 bg-white p-1 shadow-lg">
-          <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-zinc-500" />
+        <div className="absolute right-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
+          <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             ref={findInputRef}
             className="h-8 w-48 min-w-0 border-0 px-1 text-sm outline-none"
@@ -637,11 +637,11 @@ export function MarkdownEditor({
             onChange={(event) => updateFindQuery(event.target.value)}
             onKeyDown={handleFindKeyDown}
           />
-          <span className="min-w-16 text-center text-xs text-zinc-500">
+          <span className="min-w-16 text-center text-xs text-muted-foreground">
             {findQuery ? `${currentMatchNumber}/${textMatches.length}` : "0/0"}
           </span>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
             type="button"
             aria-label="Previous match"
             title="Previous match"
@@ -651,7 +651,7 @@ export function MarkdownEditor({
             <ChevronUp aria-hidden className="h-4 w-4" />
           </button>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
             type="button"
             aria-label="Next match"
             title="Next match"
@@ -661,7 +661,7 @@ export function MarkdownEditor({
             <ChevronDown aria-hidden className="h-4 w-4" />
           </button>
           <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-zinc-600 hover:bg-zinc-100"
+            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted"
             type="button"
             aria-label="Close find"
             title="Close"
@@ -673,13 +673,13 @@ export function MarkdownEditor({
       ) : null}
 
       {draggingImage ? (
-        <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-md border-2 border-dashed border-zinc-400 bg-white/70 text-sm font-medium text-zinc-700">
+        <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-lg border-2 border-dashed border-input bg-white/70 text-sm font-medium text-foreground">
           Drop image to insert
         </div>
       ) : null}
 
       {aiWorking ? (
-        <div className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 shadow-lg">
+        <div className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-lg">
           <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
           AI is working...
         </div>
@@ -687,13 +687,13 @@ export function MarkdownEditor({
 
       {contextMenu ? (
         <div
-          className="fixed z-50 w-72 rounded-md border border-zinc-200 bg-white p-1 shadow-lg"
+          className="fixed z-50 w-72 rounded-lg border border-border bg-card p-1 shadow-lg"
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
           <button
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-zinc-800 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
             type="button"
             role="menuitem"
             disabled={aiWorking || contextMenu.start === contextMenu.end}
@@ -707,20 +707,20 @@ export function MarkdownEditor({
             {formatting ? "Formatting..." : "AI Format"}
           </button>
           <form
-            className="mt-1 border-t border-zinc-100 px-2 py-2"
+            className="mt-1 border-t border-border px-2 py-2"
             onSubmit={(event) => {
               event.preventDefault();
               void rewriteSelection();
             }}
           >
-            <label className="block text-xs font-medium text-zinc-500" htmlFor="ai-rewrite-prompt">
+            <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
               AI Rewrite
             </label>
             <div className="mt-1 flex items-center gap-2">
               <input
                 ref={rewriteInputRef}
                 id="ai-rewrite-prompt"
-                className="h-8 min-w-0 flex-1 rounded border border-zinc-200 bg-white px-2 text-sm outline-none focus:border-zinc-400"
+                className="h-8 min-w-0 flex-1 rounded-xl border border-border bg-card px-2 text-sm outline-none focus:border-input"
                 placeholder="Prompt..."
                 value={rewritePrompt}
                 disabled={aiWorking || contextMenu.start === contextMenu.end}
@@ -733,7 +733,7 @@ export function MarkdownEditor({
                 }}
               />
               <button
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-zinc-950 text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 type="submit"
                 aria-label="Rewrite selected text"
                 title="Rewrite selected text"
@@ -753,7 +753,7 @@ export function MarkdownEditor({
           </form>
           {contextMenu.image ? (
             <button
-              className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-zinc-800 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
               type="button"
               role="menuitem"
               disabled={aiWorking}

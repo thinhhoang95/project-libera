@@ -1,151 +1,91 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fafafa; /* app canvas */
+  --foreground: #18181b; /* primary text */
+  --card: #ffffff; /* panels/cards */
+  --card-foreground: #18181b;
+  --muted: #f4f4f5; /* subtle fills / button rest */
+  --muted-foreground: #71717a; /* secondary/meta text */
+  --border: #e8e8ec; /* hairline divider */
+  --input: #e4e4e7; /* control borders */
+  --ring: #0d9488; /* focus ring = accent */
+  --accent: #0d9488; /* the single restrained accent */
+  --accent-foreground: #ffffff;
+  --primary: #18181b; /* solid/primary button */
+  --primary-foreground: #fafafa;
+  --destructive: #dc2626; /* red status/danger */
+  --destructive-foreground: #ffffff;
+  --destructive-muted: #fef2f2;
+  --radius: 0.625rem;
 }
 
 .dark {
   --background: #09090b;
   --foreground: #f4f4f5;
+  --card: #18181b;
+  --card-foreground: #f4f4f5;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #27272a;
+  --input: #3f3f46;
+  --ring: #2dd4bf;
+  --accent: #2dd4bf;
+  --accent-foreground: #042f2e;
+  --primary: #fafafa;
+  --primary-foreground: #18181b;
+  --destructive: #f87171;
+  --destructive-foreground: #450a0a;
+  --destructive-muted: #450a0a;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-muted: var(--destructive-muted);
+  --radius-lg: var(--radius);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --font-mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
+  font-family: var(--font-sans);
 }
 
-.dark .bg-white {
-  background-color: #18181b;
+input,
+textarea {
+  background-color: var(--card);
+  color: var(--foreground);
+  caret-color: var(--foreground);
 }
 
-.dark .bg-zinc-50 {
-  background-color: #27272a;
-}
-
-.dark .bg-zinc-100 {
-  background-color: #09090b;
-}
-
-.dark .bg-zinc-200 {
-  background-color: #3f3f46;
-}
-
-.dark .bg-teal-50 {
-  background-color: #064e3b;
-}
-
-.dark .bg-red-50 {
-  background-color: #450a0a;
-}
-
-.dark .bg-amber-50 {
-  background-color: #451a03;
-}
-
-.dark .border-zinc-100,
-.dark .border-zinc-200 {
-  border-color: #3f3f46;
-}
-
-.dark .border-zinc-300,
-.dark .border-zinc-400 {
-  border-color: #52525b;
-}
-
-.dark .border-teal-300 {
-  border-color: #059669;
-}
-
-.dark .ring-teal-300 {
-  --tw-ring-color: #10b981;
-}
-
-.dark .border-red-200 {
-  border-color: #7f1d1d;
-}
-
-.dark .border-amber-200 {
-  border-color: #92400e;
-}
-
-.dark .text-zinc-950,
-.dark .text-zinc-900,
-.dark .text-zinc-800 {
-  color: #f4f4f5;
-}
-
-.dark .text-zinc-700,
-.dark .text-zinc-600 {
-  color: #d4d4d8;
-}
-
-.dark .text-zinc-500 {
-  color: #a1a1aa;
-}
-
-.dark .text-zinc-400 {
-  color: #71717a;
-}
-
-.dark .text-teal-600 {
-  color: #34d399;
-}
-
-.dark .text-red-700 {
-  color: #fca5a5;
-}
-
-.dark .text-amber-900 {
-  color: #fcd34d;
-}
-
-.dark .hover\:bg-zinc-50:hover,
-.dark .hover\:bg-zinc-100:hover,
-.dark .focus-visible\:bg-zinc-200:focus-visible {
-  background-color: #27272a;
-}
-
-.dark .hover\:bg-red-50:hover {
-  background-color: #7f1d1d;
-}
-
-.dark .hover\:text-zinc-950:hover {
-  color: #f4f4f5;
-}
-
-.dark input,
-.dark textarea {
-  background-color: #18181b;
-  color: #f4f4f5;
-  caret-color: #f4f4f5;
-}
-
-.dark input::placeholder,
-.dark textarea::placeholder {
-  color: #71717a;
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted-foreground);
 }
 
 .toolbar-button {
   align-items: center;
-  background: #f4f4f5;
+  background: transparent;
   border: 1px solid transparent;
-  border-radius: 0.375rem;
-  color: #27272a;
+  border-radius: calc(var(--radius) - 0.25rem);
+  color: var(--muted-foreground);
   display: inline-flex;
   flex: 0 0 auto;
   font-size: 0.875rem;
@@ -154,32 +94,29 @@ body {
   justify-content: center;
   line-height: 1.25rem;
   padding: 0;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
   width: 2.25rem;
 }
 
-.dark .toolbar-button {
-  background: #27272a;
-  border-color: transparent;
-  color: #e4e4e7;
+.toolbar-button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
 }
 
-.toolbar-button:hover,
 .toolbar-button[aria-pressed="true"] {
-  background: #e4e4e7;
-}
-
-.dark .toolbar-button:hover,
-.dark .toolbar-button[aria-pressed="true"] {
-  background: #3f3f46;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
 }
 
 .toolbar-button:focus-visible {
-  outline: 2px solid #18181b;
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
 button.border {
-  background-color: #f4f4f5;
+  background-color: var(--muted);
   border-color: transparent;
   transition:
     background-color 150ms ease,
@@ -188,15 +125,17 @@ button.border {
 }
 
 button.border:hover {
-  background-color: #e4e4e7;
+  background-color: var(--input);
 }
 
+button.border[class*="border-destructive"],
 button.border[class*="border-red"] {
-  background-color: #fef2f2;
+  background-color: var(--destructive-muted);
 }
 
+button.border[class*="border-destructive"]:hover,
 button.border[class*="border-red"]:hover {
-  background-color: #fee2e2;
+  background-color: color-mix(in srgb, var(--destructive) 18%, transparent);
 }
 
 button.border[class*="border-white"] {
@@ -205,23 +144,6 @@ button.border[class*="border-white"] {
 
 button.border[class*="border-white"]:hover {
   background-color: rgba(255, 255, 255, 0.16);
-}
-
-.dark button.border {
-  background-color: #27272a;
-  border-color: transparent;
-}
-
-.dark button.border:hover {
-  background-color: #3f3f46;
-}
-
-.dark button.border[class*="border-red"] {
-  background-color: #450a0a;
-}
-
-.dark button.border[class*="border-red"]:hover {
-  background-color: #7f1d1d;
 }
 
 .markdown-split-grid {

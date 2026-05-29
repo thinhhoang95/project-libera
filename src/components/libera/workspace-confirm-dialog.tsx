@@ -71,15 +71,17 @@ export function WorkspaceConfirmDialog({
       footer={
         <>
           <button
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+            className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted"
             type="button"
             onClick={onClose}
           >
             Cancel
           </button>
           <button
-            className={`rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60 ${
-              content.destructive ? "bg-red-700 hover:bg-red-800" : "bg-zinc-950 hover:bg-zinc-800"
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60 ${
+              content.destructive
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:bg-primary/90"
             }`}
             type="button"
             disabled={submitting}
@@ -90,7 +92,7 @@ export function WorkspaceConfirmDialog({
         </>
       }
     >
-      <div className="flex gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+      <div className="flex gap-3 rounded-lg border border-border bg-muted px-3 py-3 text-sm text-foreground">
         <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
         <p>This action cannot be undone automatically.</p>
       </div>

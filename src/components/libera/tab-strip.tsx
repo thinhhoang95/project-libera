@@ -63,7 +63,7 @@ export function TabStrip({
   }
 
   return (
-    <div className="border-b border-zinc-200 bg-white">
+    <div className="border-b border-border bg-card shadow-sm">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
           {tabs.map((tab) => {
@@ -76,13 +76,13 @@ export function TabStrip({
             return (
               <button
                 key={tab.id}
-                className={`flex max-w-64 shrink-0 cursor-grab items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition active:cursor-grabbing ${
+                className={`flex max-w-64 shrink-0 cursor-grab items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition active:cursor-grabbing ${
                   isActive
-                    ? "shadow-sm ring-2 ring-zinc-950/20"
+                    ? "shadow-sm ring-2 ring-foreground/20"
                     : "opacity-85 hover:opacity-100"
                 } ${
                   isDragTarget
-                    ? "outline outline-2 outline-offset-2 outline-zinc-950/30"
+                    ? "outline outline-2 outline-offset-2 outline-foreground/30"
                     : ""
                 } ${isDragging ? "opacity-50" : ""}`}
                 draggable
@@ -186,11 +186,11 @@ function ActiveFileActions({
     activeTab.file.fileType === "markdown" ? activeTab.draft : undefined;
 
   return (
-    <div className="flex shrink-0 items-center gap-1 border-l border-zinc-200 pl-2">
+    <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
       {activeTab.file.fileType === "markdown" ? (
         <button
           aria-label="Save"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
           disabled={activeTab.status === "saving" || activeTab.status === "clean"}
           title="Save"
           type="button"
@@ -201,7 +201,7 @@ function ActiveFileActions({
       ) : null}
       <button
         aria-label="Download"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         title="Download"
         type="button"
         onClick={() => onDownloadFile(activeTab.file, downloadContent)}
@@ -210,7 +210,7 @@ function ActiveFileActions({
       </button>
       <button
         aria-label="Rename"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         title="Rename"
         type="button"
         onClick={() => onRenameFile(activeTab)}
@@ -219,7 +219,7 @@ function ActiveFileActions({
       </button>
       <button
         aria-label="Move"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         title="Move"
         type="button"
         onClick={() => onMoveFile(activeTab)}
@@ -228,7 +228,7 @@ function ActiveFileActions({
       </button>
       <button
         aria-label="Delete"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-red-50 text-red-700 transition hover:bg-red-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive"
         title="Delete"
         type="button"
         onClick={() => onDeleteFile(activeTab)}
