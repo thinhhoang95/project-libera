@@ -201,6 +201,20 @@ export function isLikelyWorkspaceMarkdownLink(href: string | undefined) {
   return !/^[a-z][a-z0-9+.-]*:/i.test(href);
 }
 
+export function isExternalMarkdownLink(href: string | undefined) {
+  if (!href) {
+    return false;
+  }
+
+  try {
+    const url = new URL(href);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function resolveMarkdownFileLink(
   href: string,
   sourcePath: string,

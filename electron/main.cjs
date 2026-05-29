@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, session } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
 const { randomBytes, scryptSync } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -421,6 +421,24 @@ function applyServerEnv(env) {
   }
 }
 
+function isExternalBrowserUrl(url) {
+  try {
+    const parsedUrl = new URL(url);
+
+    return parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isSameOrigin(url, appUrl) {
+  try {
+    return new URL(url).origin === new URL(appUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 async function startNextServer(config) {
   const appRoot = getAppRoot();
   const mode = process.env.LIBERA_ELECTRON_NEXT_MODE === "dev" ? "dev" : "start";
@@ -519,6 +537,24 @@ async function createMainWindow(url) {
   });
 
   mainWindow.setMenuBarVisibility(true);
+  mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (isExternalBrowserUrl(targetUrl)) {
+      void shell.openExternal(targetUrl);
+    }
+
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
+    if (isSameOrigin(targetUrl, url)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    if (isExternalBrowserUrl(targetUrl)) {
+      void shell.openExternal(targetUrl);
+    }
+  });
   mainWindow.loadURL(url);
 }
 

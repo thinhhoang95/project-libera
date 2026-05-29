@@ -918,6 +918,57 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  async function rewriteSelectionWithAi(
+    selection: { start: number; end: number },
+    prompt: string,
+  ) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const tabId = activeTab.id;
+    const draft = activeTab.draft;
+    const selectedText = draft.slice(selection.start, selection.end);
+
+    if (!selectedText.trim() || !prompt.trim()) {
+      return;
+    }
+
+    setAiFormatting(true);
+    updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
+
+    try {
+      const payload = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
+        method: "POST",
+        body: JSON.stringify({ text: selectedText, prompt }),
+      });
+      const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
+        selection.end,
+      )}`;
+      const nextSelectionEnd = selection.start + payload.rewrittenText.length;
+
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        draft: nextDraft,
+        status: nextDraft === tab.saved ? "clean" : "dirty",
+        error: undefined,
+      }));
+
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(selection.start, nextSelectionEnd);
+      });
+    } catch (error) {
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        status: "error",
+        error: error instanceof Error ? error.message : "AI rewrite failed.",
+      }));
+    } finally {
+      setAiFormatting(false);
+    }
+  }
+
   async function convertImageToMarkdownWithAi(image: MarkdownImageSelection) {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
@@ -1816,6 +1867,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       downloadNotebook,
       convertImageToMarkdownWithAi,
       formatSelectionWithAi,
+      rewriteSelectionWithAi,
       handleLogin,
       handleLogout,
       handleUploadChange,

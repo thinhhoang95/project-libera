@@ -1,17 +1,28 @@
 "use client";
 
 import { useState } from "react";
-import { X } from "lucide-react";
+import { Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
 import type { OpenTab } from "@/components/libera/types";
 
 type TabStripProps = {
+  activeTab?: OpenTab;
   activeTabId: string;
   notebookColors: Record<string, string>;
   tabs: OpenTab[];
   onActivateTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
+  onDeleteFile: (tab: OpenTab) => Promise<void>;
+  onDownloadFile: (file: OpenTab["file"], content?: string) => void;
+  onMoveFile: (tab: OpenTab) => Promise<void>;
+  onRenameFile: (tab: OpenTab) => Promise<void>;
+  onSave: () => Promise<void>;
   onSwapTabs: (sourceTabId: string, targetTabId: string) => void;
 };
+
+type ActiveFileActionsProps = Pick<
+  TabStripProps,
+  "activeTab" | "onDeleteFile" | "onDownloadFile" | "onMoveFile" | "onRenameFile" | "onSave"
+>;
 
 function readableTextColor(backgroundColor: string) {
   const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(backgroundColor);
@@ -30,11 +41,17 @@ function readableTextColor(backgroundColor: string) {
 }
 
 export function TabStrip({
+  activeTab,
   activeTabId,
   notebookColors,
   tabs,
   onActivateTab,
   onCloseTab,
+  onDeleteFile,
+  onDownloadFile,
+  onMoveFile,
+  onRenameFile,
+  onSave,
   onSwapTabs,
 }: TabStripProps) {
   const [draggingTabId, setDraggingTabId] = useState("");
@@ -47,98 +64,177 @@ export function TabStrip({
 
   return (
     <div className="border-b border-zinc-200 bg-white">
-      <div className="flex min-h-12 items-center gap-2 overflow-x-auto px-3 py-2">
-        {tabs.map((tab) => {
-          const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
-          const textColor = readableTextColor(tabColor);
-          const isActive = activeTabId === tab.id;
-          const isDragging = draggingTabId === tab.id;
-          const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
+      <div className="flex min-h-12 items-center gap-2 px-3 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+          {tabs.map((tab) => {
+            const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
+            const textColor = readableTextColor(tabColor);
+            const isActive = activeTabId === tab.id;
+            const isDragging = draggingTabId === tab.id;
+            const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
 
-          return (
-            <button
-              key={tab.id}
-              className={`flex max-w-64 cursor-grab items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition active:cursor-grabbing ${
-                isActive
-                  ? "shadow-sm ring-2 ring-zinc-950/20"
-                  : "opacity-85 hover:opacity-100"
-              } ${
-                isDragTarget
-                  ? "outline outline-2 outline-offset-2 outline-zinc-950/30"
-                  : ""
-              } ${isDragging ? "opacity-50" : ""}`}
-              draggable
-              data-tab-id={tab.id}
-              aria-label={`Open ${tab.file.name}`}
-              aria-describedby={isDragTarget ? `${tab.id}-drop-target` : undefined}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("application/x-libera-tab-id", tab.id);
-                setDraggingTabId(tab.id);
-              }}
-              onDragOver={(event) => {
-                if (!draggingTabId || draggingTabId === tab.id) {
-                  return;
-                }
-
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                setDragOverTabId(tab.id);
-              }}
-              onDragLeave={() => {
-                setDragOverTabId((current) => (current === tab.id ? "" : current));
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const sourceTabId =
-                  event.dataTransfer.getData("application/x-libera-tab-id") ||
-                  draggingTabId;
-
-                if (sourceTabId && sourceTabId !== tab.id) {
-                  onSwapTabs(sourceTabId, tab.id);
-                }
-
-                clearDragState();
-              }}
-              onDragEnd={clearDragState}
-              style={{
-                backgroundColor: tabColor,
-                borderColor: tabColor,
-                color: textColor,
-              }}
-              type="button"
-              onClick={() => onActivateTab(tab.id)}
-            >
-              <span className="truncate">{tab.file.name}</span>
-              {isDragTarget ? (
-                <span id={`${tab.id}-drop-target`} className="sr-only">
-                  Drop to swap tabs
-                </span>
-              ) : null}
-              {tab.status === "dirty" ? <span aria-label="Unsaved">*</span> : null}
-              <span
-                className="ml-1 rounded p-0.5 hover:bg-black/10"
-                role="button"
-                tabIndex={0}
-                aria-label={`Close ${tab.file.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onCloseTab(tab.id);
+            return (
+              <button
+                key={tab.id}
+                className={`flex max-w-64 shrink-0 cursor-grab items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition active:cursor-grabbing ${
+                  isActive
+                    ? "shadow-sm ring-2 ring-zinc-950/20"
+                    : "opacity-85 hover:opacity-100"
+                } ${
+                  isDragTarget
+                    ? "outline outline-2 outline-offset-2 outline-zinc-950/30"
+                    : ""
+                } ${isDragging ? "opacity-50" : ""}`}
+                draggable
+                data-tab-id={tab.id}
+                aria-label={`Open ${tab.file.name}`}
+                aria-describedby={isDragTarget ? `${tab.id}-drop-target` : undefined}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("application/x-libera-tab-id", tab.id);
+                  setDraggingTabId(tab.id);
                 }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
+                onDragOver={(event) => {
+                  if (!draggingTabId || draggingTabId === tab.id) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragOverTabId(tab.id);
+                }}
+                onDragLeave={() => {
+                  setDragOverTabId((current) => (current === tab.id ? "" : current));
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceTabId =
+                    event.dataTransfer.getData("application/x-libera-tab-id") ||
+                    draggingTabId;
+
+                  if (sourceTabId && sourceTabId !== tab.id) {
+                    onSwapTabs(sourceTabId, tab.id);
+                  }
+
+                  clearDragState();
+                }}
+                onDragEnd={clearDragState}
+                style={{
+                  backgroundColor: tabColor,
+                  borderColor: tabColor,
+                  color: textColor,
+                }}
+                type="button"
+                onClick={() => onActivateTab(tab.id)}
+              >
+                <span className="truncate">{tab.file.name}</span>
+                {isDragTarget ? (
+                  <span id={`${tab.id}-drop-target`} className="sr-only">
+                    Drop to swap tabs
+                  </span>
+                ) : null}
+                {tab.status === "dirty" ? <span aria-label="Unsaved">*</span> : null}
+                <span
+                  className="ml-1 rounded p-0.5 hover:bg-black/10"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Close ${tab.file.name}`}
+                  onClick={(event) => {
                     event.stopPropagation();
                     onCloseTab(tab.id);
-                  }
-                }}
-              >
-                <X aria-hidden className="h-3.5 w-3.5" />
-              </span>
-            </button>
-          );
-        })}
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onCloseTab(tab.id);
+                    }
+                  }}
+                >
+                  <X aria-hidden className="h-3.5 w-3.5" />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <ActiveFileActions
+          activeTab={activeTab}
+          onDeleteFile={onDeleteFile}
+          onDownloadFile={onDownloadFile}
+          onMoveFile={onMoveFile}
+          onRenameFile={onRenameFile}
+          onSave={onSave}
+        />
       </div>
+    </div>
+  );
+}
+
+function ActiveFileActions({
+  activeTab,
+  onDeleteFile,
+  onDownloadFile,
+  onMoveFile,
+  onRenameFile,
+  onSave,
+}: ActiveFileActionsProps) {
+  if (!activeTab) {
+    return null;
+  }
+
+  const downloadContent =
+    activeTab.file.fileType === "markdown" ? activeTab.draft : undefined;
+
+  return (
+    <div className="flex shrink-0 items-center gap-1 border-l border-zinc-200 pl-2">
+      {activeTab.file.fileType === "markdown" ? (
+        <button
+          aria-label="Save"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={activeTab.status === "saving" || activeTab.status === "clean"}
+          title="Save"
+          type="button"
+          onClick={onSave}
+        >
+          <Save aria-hidden className="h-4 w-4" />
+        </button>
+      ) : null}
+      <button
+        aria-label="Download"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        title="Download"
+        type="button"
+        onClick={() => onDownloadFile(activeTab.file, downloadContent)}
+      >
+        <Download aria-hidden className="h-4 w-4" />
+      </button>
+      <button
+        aria-label="Rename"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        title="Rename"
+        type="button"
+        onClick={() => onRenameFile(activeTab)}
+      >
+        <Pencil aria-hidden className="h-4 w-4" />
+      </button>
+      <button
+        aria-label="Move"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-700 transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        title="Move"
+        type="button"
+        onClick={() => onMoveFile(activeTab)}
+      >
+        <MoveRight aria-hidden className="h-4 w-4" />
+      </button>
+      <button
+        aria-label="Delete"
+        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-red-50 text-red-700 transition hover:bg-red-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+        title="Delete"
+        type="button"
+        onClick={() => onDeleteFile(activeTab)}
+      >
+        <Trash2 aria-hidden className="h-4 w-4" />
+      </button>
     </div>
   );
 }

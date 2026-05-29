@@ -1,11 +1,6 @@
 import {
   BookPlus,
-  Download,
   FilePlus2,
-  MoveRight,
-  Pencil,
-  Save,
-  Trash2,
 } from "lucide-react";
 import type {
   CSSProperties,
@@ -66,12 +61,14 @@ type WorkspacePanelProps = {
     src: string;
     start: number;
   }) => Promise<void>;
+  onAiRewriteSelection: (
+    selection: { start: number; end: number },
+    prompt: string,
+  ) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
   onCompleteScreenshotSnip: (file: File) => Promise<void>;
-  onDeleteFile: (tab: OpenTab) => Promise<void>;
-  onDownloadFile: (file: LiberaFileNode, content?: string) => void;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
@@ -80,9 +77,7 @@ type WorkspacePanelProps = {
   onInsertFileLinkPlaceholder: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
-  onMoveFile: (tab: OpenTab) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
-  onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onSetViewState: (viewState: OpenTabViewState) => void;
@@ -247,20 +242,17 @@ export function WorkspacePanel({
   textareaRef,
   onAiFormatSelection,
   onAiImageToMarkdown,
+  onAiRewriteSelection,
   onCreateMarkdown,
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
-  onDeleteFile,
-  onDownloadFile,
   onInsertExistingImage,
   onInsertFileLink,
   onInsertFileLinkPlaceholder,
   onInsertImage,
   onInsertMarkdown,
-  onMoveFile,
   onOpenFile,
-  onRenameFile,
   onSave,
   onSetDraft,
   onSetViewState,
@@ -763,15 +755,6 @@ export function WorkspacePanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <WorkspaceFileHeader
-        activeTab={activeTab}
-        onDeleteFile={onDeleteFile}
-        onDownloadFile={onDownloadFile}
-        onMoveFile={onMoveFile}
-        onRenameFile={onRenameFile}
-        onSave={onSave}
-      />
-
       {activeTab.error ? (
         <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
           {activeTab.error}
@@ -836,6 +819,7 @@ export function WorkspacePanel({
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}
                 onAiImageToMarkdown={onAiImageToMarkdown}
+                onAiRewriteSelection={onAiRewriteSelection}
                 onChange={onSetDraft}
                 onInsertFileLink={onInsertFileLink}
                 onInsertImageFile={onInsertImage}
@@ -912,81 +896,6 @@ export function WorkspacePanel({
           title={activeTab.file.name}
         />
       )}
-    </div>
-  );
-}
-
-function WorkspaceFileHeader({
-  activeTab,
-  onDeleteFile,
-  onDownloadFile,
-  onMoveFile,
-  onRenameFile,
-  onSave,
-}: {
-  activeTab: OpenTab;
-  onDeleteFile: (tab: OpenTab) => Promise<void>;
-  onDownloadFile: (file: LiberaFileNode, content?: string) => void;
-  onMoveFile: (tab: OpenTab) => Promise<void>;
-  onRenameFile: (tab: OpenTab) => Promise<void>;
-  onSave: () => Promise<void>;
-}) {
-  const downloadContent =
-    activeTab.file.fileType === "markdown" ? activeTab.draft : undefined;
-
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{activeTab.file.path}</p>
-        <p className="text-xs text-zinc-500">
-          {activeTab.file.fileType.toUpperCase()} · {activeTab.status}
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {activeTab.file.fileType === "markdown" ? (
-          <button
-            className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-            type="button"
-            disabled={activeTab.status === "saving" || activeTab.status === "clean"}
-            onClick={onSave}
-          >
-            <Save aria-hidden className="h-4 w-4" />
-            Save
-          </button>
-        ) : null}
-        <button
-          className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
-          type="button"
-          onClick={() => onDownloadFile(activeTab.file, downloadContent)}
-        >
-          <Download aria-hidden className="h-4 w-4" />
-          Download
-        </button>
-        <button
-          className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
-          type="button"
-          onClick={() => onRenameFile(activeTab)}
-        >
-          <Pencil aria-hidden className="h-4 w-4" />
-          Rename
-        </button>
-        <button
-          className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
-          type="button"
-          onClick={() => onMoveFile(activeTab)}
-        >
-          <MoveRight aria-hidden className="h-4 w-4" />
-          Move
-        </button>
-        <button
-          className="inline-flex items-center gap-2 rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50"
-          type="button"
-          onClick={() => onDeleteFile(activeTab)}
-        >
-          <Trash2 aria-hidden className="h-4 w-4" />
-          Delete
-        </button>
-      </div>
     </div>
   );
 }

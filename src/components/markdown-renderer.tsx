@@ -6,12 +6,16 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { isLikelyWorkspaceMarkdownLink } from "@/lib/markdown-file-links";
+import {
+  isExternalMarkdownLink,
+  isLikelyWorkspaceMarkdownLink,
+} from "@/lib/markdown-file-links";
 import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 
 type MarkdownRendererProps = {
   content: string;
   documentPath?: string;
+  onOpenExternalLink?: (href: string) => void;
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
 };
@@ -52,9 +56,14 @@ function markdownElementProps<T extends { node?: unknown }>(props: T) {
   return elementProps;
 }
 
+function openExternalLink(href: string) {
+  window.open(href, "_blank", "noopener,noreferrer");
+}
+
 function MarkdownRendererContent({
   content,
   documentPath,
+  onOpenExternalLink,
   onOpenFileLink,
   textScale = 1,
 }: MarkdownRendererProps) {
@@ -222,17 +231,24 @@ function MarkdownRendererContent({
               )}
               href={href}
               onClick={(event) => {
-                if (
-                  !href ||
-                  !documentPath ||
-                  !onOpenFileLink ||
-                  !isLikelyWorkspaceMarkdownLink(href)
-                ) {
+                if (!href) {
                   return;
                 }
 
-                event.preventDefault();
-                void onOpenFileLink?.(href);
+                if (
+                  documentPath &&
+                  onOpenFileLink &&
+                  isLikelyWorkspaceMarkdownLink(href)
+                ) {
+                  event.preventDefault();
+                  void onOpenFileLink(href);
+                  return;
+                }
+
+                if (isExternalMarkdownLink(href)) {
+                  event.preventDefault();
+                  (onOpenExternalLink ?? openExternalLink)(href);
+                }
               }}
             >
               {children}

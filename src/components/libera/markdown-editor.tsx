@@ -1,7 +1,20 @@
 "use client";
 
-import { ChevronDown, ChevronUp, ImageIcon, Search, Sparkles, X } from "lucide-react";
-import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent, RefObject } from "react";
+import {
+  ChevronDown,
+  ChevronUp,
+  ImageIcon,
+  Loader2,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
+import type {
+  DragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent,
+  RefObject,
+} from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   MarkdownFileLinkPopup,
@@ -54,6 +67,10 @@ type MarkdownEditorProps = {
   value: string;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
   onAiImageToMarkdown: (image: MarkdownImageSelection) => Promise<void>;
+  onAiRewriteSelection: (
+    selection: { start: number; end: number },
+    prompt: string,
+  ) => Promise<void>;
   onChange: (value: string) => void;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
@@ -164,12 +181,14 @@ export function MarkdownEditor({
   value,
   onAiFormatSelection,
   onAiImageToMarkdown,
+  onAiRewriteSelection,
   onChange,
   onInsertFileLink,
   onInsertImageFile,
   onSelectionChange,
 }: MarkdownEditorProps) {
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
+  const [rewritePrompt, setRewritePrompt] = useState("");
   const [draggingImage, setDraggingImage] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -177,6 +196,8 @@ export function MarkdownEditor({
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
+  const rewriteInputRef = useRef<HTMLInputElement>(null);
+  const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(() => findTextMatches(value, findQuery), [findQuery, value]);
   const fileLinkSections = useMemo(
     () =>
@@ -384,6 +405,18 @@ export function MarkdownEditor({
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      rewriteInputRef.current?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [contextMenu]);
+
   function openContextMenu(event: MouseEvent<HTMLTextAreaElement>) {
     const textarea = event.currentTarget;
     const start = textarea.selectionStart;
@@ -397,8 +430,9 @@ export function MarkdownEditor({
     }
 
     event.preventDefault();
-    const menuWidth = 176;
-    const menuHeight = image ? 88 : 44;
+    const menuWidth = 288;
+    const menuHeight = image ? 190 : 146;
+    setRewritePrompt("");
 
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -410,7 +444,7 @@ export function MarkdownEditor({
   }
 
   async function formatSelection() {
-    if (!contextMenu || formatting) {
+    if (!contextMenu || aiWorking) {
       return;
     }
 
@@ -423,8 +457,29 @@ export function MarkdownEditor({
     await onAiFormatSelection(selection);
   }
 
+  async function rewriteSelection() {
+    if (!contextMenu || aiWorking) {
+      return;
+    }
+
+    const prompt = rewritePrompt.trim();
+
+    if (!prompt) {
+      rewriteInputRef.current?.focus();
+      return;
+    }
+
+    const selection = {
+      start: contextMenu.start,
+      end: contextMenu.end,
+    };
+
+    setContextMenu(null);
+    await onAiRewriteSelection(selection, prompt);
+  }
+
   async function imageToMarkdown() {
-    if (!contextMenu?.image || imageConverting) {
+    if (!contextMenu?.image || aiWorking) {
       return;
     }
 
@@ -623,9 +678,16 @@ export function MarkdownEditor({
         </div>
       ) : null}
 
+      {aiWorking ? (
+        <div className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 shadow-lg">
+          <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+          AI is working...
+        </div>
+      ) : null}
+
       {contextMenu ? (
         <div
-          className="fixed z-50 min-w-44 rounded-md border border-zinc-200 bg-white p-1 shadow-lg"
+          className="fixed z-50 w-72 rounded-md border border-zinc-200 bg-white p-1 shadow-lg"
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
@@ -634,21 +696,74 @@ export function MarkdownEditor({
             className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-zinc-800 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
             type="button"
             role="menuitem"
-            disabled={formatting || contextMenu.start === contextMenu.end}
+            disabled={aiWorking || contextMenu.start === contextMenu.end}
             onClick={() => void formatSelection()}
           >
-            <Sparkles aria-hidden className="h-4 w-4" />
+            {formatting ? (
+              <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles aria-hidden className="h-4 w-4" />
+            )}
             {formatting ? "Formatting..." : "AI Format"}
           </button>
+          <form
+            className="mt-1 border-t border-zinc-100 px-2 py-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void rewriteSelection();
+            }}
+          >
+            <label className="block text-xs font-medium text-zinc-500" htmlFor="ai-rewrite-prompt">
+              AI Rewrite
+            </label>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                ref={rewriteInputRef}
+                id="ai-rewrite-prompt"
+                className="h-8 min-w-0 flex-1 rounded border border-zinc-200 bg-white px-2 text-sm outline-none focus:border-zinc-400"
+                placeholder="Prompt..."
+                value={rewritePrompt}
+                disabled={aiWorking || contextMenu.start === contextMenu.end}
+                onChange={(event) => setRewritePrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setContextMenu(null);
+                  }
+                }}
+              />
+              <button
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-zinc-950 text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                type="submit"
+                aria-label="Rewrite selected text"
+                title="Rewrite selected text"
+                disabled={
+                  aiWorking ||
+                  contextMenu.start === contextMenu.end ||
+                  !rewritePrompt.trim()
+                }
+              >
+                {formatting ? (
+                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles aria-hidden className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+          </form>
           {contextMenu.image ? (
             <button
               className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-zinc-800 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
               type="button"
               role="menuitem"
-              disabled={imageConverting}
+              disabled={aiWorking}
               onClick={() => void imageToMarkdown()}
             >
-              <ImageIcon aria-hidden className="h-4 w-4" />
+              {imageConverting ? (
+                <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+              ) : (
+                <ImageIcon aria-hidden className="h-4 w-4" />
+              )}
               {imageConverting ? "Converting..." : "AI Image to Markdown"}
             </button>
           ) : null}

@@ -82,11 +82,17 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
+            activeTab={workspace.activeTab}
             activeTabId={workspace.activeTabId}
             notebookColors={notebookColors}
             tabs={workspace.tabs}
             onActivateTab={workspace.setActiveTabId}
             onCloseTab={workspace.closeTab}
+            onDeleteFile={workspace.deleteFileFromPrompt}
+            onDownloadFile={workspace.downloadFile}
+            onMoveFile={workspace.moveFileFromPrompt}
+            onRenameFile={workspace.renameFileFromPrompt}
+            onSave={workspace.saveActiveTab}
             onSwapTabs={workspace.swapTabs}
           />
 
@@ -110,21 +116,18 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             textareaRef={workspace.textareaRef}
             onAiFormatSelection={workspace.formatSelectionWithAi}
             onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
+            onAiRewriteSelection={workspace.rewriteSelectionWithAi}
             onCreateMarkdown={workspace.createMarkdownFromPrompt}
             onCreateNotebook={workspace.openCreateNotebookDialog}
             onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
             onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
-            onDeleteFile={workspace.deleteFileFromPrompt}
-            onDownloadFile={workspace.downloadFile}
             onInsertExistingImage={workspace.insertExistingMarkdownImage}
             onInsertFileLink={workspace.insertMarkdownFileLink}
             onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
             onInsertImage={workspace.insertMarkdownImage}
             onInsertMarkdown={workspace.insertMarkdown}
-            onMoveFile={workspace.moveFileFromPrompt}
             onOpenFile={workspace.openFile}
             onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
-            onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
             onSetViewState={workspace.setActiveTabViewState}
