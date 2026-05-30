@@ -18,7 +18,6 @@ import {
   copyPdfTextCache,
   deletePdfTextCache,
   deletePdfTextCacheDirectory,
-  ensurePdfTextCache,
   movePdfTextCache,
   movePdfTextCacheDirectory,
 } from "@/lib/storage/pdf-text-cache";
@@ -50,10 +49,6 @@ export async function readLiberaFile(relativePath: string): Promise<LiberaFilePa
   const node = await getFileNode(notebook, pathParts);
 
   if (node.fileType !== "markdown") {
-    if (node.fileType === "pdf") {
-      await ensurePdfTextCache(relativePath).catch(() => undefined);
-    }
-
     return {
       file: node,
       rawUrl: rawFileUrl(node.path),

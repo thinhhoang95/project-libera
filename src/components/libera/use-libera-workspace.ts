@@ -100,6 +100,24 @@ function shallowEqualRecord(
   return leftKeys.every((key) => leftRecord[key] === rightRecord[key]);
 }
 
+function mergeOpenTabViewState(
+  currentViewState: OpenTabViewState | undefined,
+  patchViewState: OpenTabViewState,
+): OpenTabViewState {
+  return {
+    ...currentViewState,
+    image: patchViewState.image
+      ? { ...currentViewState?.image, ...patchViewState.image }
+      : currentViewState?.image,
+    markdown: patchViewState.markdown
+      ? { ...currentViewState?.markdown, ...patchViewState.markdown }
+      : currentViewState?.markdown,
+    pdf: patchViewState.pdf
+      ? { ...currentViewState?.pdf, ...patchViewState.pdf }
+      : currentViewState?.pdf,
+  };
+}
+
 function createMarkdownImageInsertion(
   draft: string,
   insertion: string,
@@ -321,10 +339,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (options.viewState) {
         updateTab(file.path, (tab) => ({
           ...tab,
-          viewState: {
-            ...tab.viewState,
-            ...options.viewState,
-          },
+          viewState: mergeOpenTabViewState(tab.viewState, options.viewState ?? {}),
         }));
 
         if (existingTab.id === activeTabId && options.viewState.markdown) {

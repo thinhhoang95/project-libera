@@ -29,6 +29,14 @@ type MarkdownHeading = {
   text: string;
 };
 
+const MARKDOWN_OUTLINE_PARSE_DELAY_MS = 250;
+
+type MarkdownOutlineState = {
+  draft: string;
+  headings: MarkdownHeading[];
+  tabId: string;
+};
+
 function stripInlineMarkdown(value: string) {
   return value
     .replace(/`([^`]+)`/g, "$1")
@@ -75,6 +83,57 @@ function parseMarkdownHeadings(markdown: string): MarkdownHeading[] {
   });
 
   return headings;
+}
+
+function useMarkdownOutlineHeadings(activeTab?: OpenTab) {
+  const hasActiveTab = Boolean(activeTab);
+  const tabId = activeTab?.id ?? "";
+  const draft = activeTab?.draft ?? "";
+  const [outlineState, setOutlineState] = useState<MarkdownOutlineState>(() => ({
+    draft,
+    headings: activeTab ? parseMarkdownHeadings(draft) : [],
+    tabId,
+  }));
+
+  useEffect(() => {
+    if (!hasActiveTab) {
+      const timeout = window.setTimeout(() => {
+        setOutlineState((current) =>
+          current.tabId === "" &&
+          current.draft === "" &&
+          current.headings.length === 0
+            ? current
+            : { draft: "", headings: [], tabId: "" },
+        );
+      }, 0);
+
+      return () => window.clearTimeout(timeout);
+    }
+
+    if (outlineState.tabId === tabId && outlineState.draft === draft) {
+      return;
+    }
+
+    const parseDelay =
+      outlineState.tabId === tabId ? MARKDOWN_OUTLINE_PARSE_DELAY_MS : 0;
+    const timeout = window.setTimeout(() => {
+      setOutlineState({
+        draft,
+        headings: parseMarkdownHeadings(draft),
+        tabId,
+      });
+    }, parseDelay);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    draft,
+    hasActiveTab,
+    outlineState.draft,
+    outlineState.tabId,
+    tabId,
+  ]);
+
+  return outlineState.tabId === tabId ? outlineState.headings : [];
 }
 
 function annotationLabel(annotation: PdfAnnotation) {
@@ -162,10 +221,7 @@ function MarkdownOutline({
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
 }) {
-  const headings = useMemo(
-    () => (activeTab ? parseMarkdownHeadings(activeTab.draft) : []),
-    [activeTab],
-  );
+  const headings = useMarkdownOutlineHeadings(activeTab);
 
   async function navigateToHeading(heading: MarkdownHeading) {
     if (!activeTab) {

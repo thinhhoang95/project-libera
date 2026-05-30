@@ -14,6 +14,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent,
   RefObject,
+  UIEvent,
 } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -32,6 +33,14 @@ import {
   getTextareaOffsetAtPoint,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
+import {
+  getMarkdownEditorLineHighlight,
+  initialMarkdownEditorHighlightState,
+} from "@/lib/markdown-editor-highlighting";
+import type {
+  MarkdownEditorHighlightState,
+  MarkdownEditorLineTone,
+} from "@/lib/markdown-editor-highlighting";
 import type { LiberaFileNode } from "@/lib/types";
 
 type EditorContextMenuState = {
@@ -82,6 +91,12 @@ type MarkdownEditorProps = {
 
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
+const EMPTY_EDITOR_LINE = "\u200b";
+
+type HighlightChunk = {
+  className?: string;
+  text: string;
+};
 
 function findTextMatches(value: string, query: string): TextMatch[] {
   const normalizedQuery = query.toLowerCase();
@@ -169,6 +184,49 @@ function getDroppedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files).filter(isImageFile);
 }
 
+function getHighlightClassName(tone: MarkdownEditorLineTone | undefined) {
+  return tone ? `markdown-editor-highlight-tone-${tone}` : undefined;
+}
+
+function appendHighlightChunk(
+  chunks: HighlightChunk[],
+  className: string | undefined,
+  text: string,
+) {
+  const previousChunk = chunks.at(-1);
+
+  if (previousChunk && previousChunk.className === className) {
+    previousChunk.text += text;
+    return;
+  }
+
+  chunks.push({ className, text });
+}
+
+function renderHighlightedMarkdown(value: string) {
+  const lines = value.split("\n");
+  const chunks: HighlightChunk[] = [];
+  let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
+
+  lines.forEach((line, index) => {
+    const highlight = getMarkdownEditorLineHighlight(line, state);
+    const lineText = `${line || EMPTY_EDITOR_LINE}${
+      index < lines.length - 1 ? "\n" : ""
+    }`;
+
+    state = highlight.nextState;
+    appendHighlightChunk(chunks, getHighlightClassName(highlight.tone), lineText);
+  });
+
+  return chunks.map((chunk, index) => {
+    return (
+      <span className={chunk.className} key={index}>
+        {chunk.text}
+      </span>
+    );
+  });
+}
+
 export function MarkdownEditor({
   activeFilePath,
   files,
@@ -197,8 +255,10 @@ export function MarkdownEditor({
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLInputElement>(null);
+  const highlightLayerRef = useRef<HTMLPreElement>(null);
   const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(() => findTextMatches(value, findQuery), [findQuery, value]);
+  const highlightedMarkdown = useMemo(() => renderHighlightedMarkdown(value), [value]);
   const fileLinkSections = useMemo(
     () =>
       fileLinkPopup
@@ -296,7 +356,8 @@ export function MarkdownEditor({
       }
 
       const cursor = textarea.selectionStart;
-      const beforeCursor = nextValue.slice(0, cursor);
+      const lineStart = nextValue.lastIndexOf("\n", cursor - 1) + 1;
+      const beforeCursor = nextValue.slice(lineStart, cursor);
       const linkOpenIndex = beforeCursor.lastIndexOf("](");
 
       if (linkOpenIndex < 0) {
@@ -305,14 +366,11 @@ export function MarkdownEditor({
 
       const labelStart = beforeCursor.lastIndexOf("[", linkOpenIndex);
 
-      if (
-        labelStart < 0 ||
-        beforeCursor.slice(labelStart, linkOpenIndex).includes("\n")
-      ) {
+      if (labelStart < 0) {
         return null;
       }
 
-      const destinationStart = linkOpenIndex + 2;
+      const destinationStart = lineStart + linkOpenIndex + 2;
       const destination = nextValue.slice(destinationStart, cursor);
 
       if (destination.includes("\n") || destination.includes(")")) {
@@ -581,6 +639,21 @@ export function MarkdownEditor({
     });
   }
 
+  function syncHighlightLayerScroll(textarea: HTMLTextAreaElement) {
+    const highlightLayer = highlightLayerRef.current;
+
+    if (!highlightLayer) {
+      return;
+    }
+
+    highlightLayer.scrollLeft = textarea.scrollLeft;
+    highlightLayer.scrollTop = textarea.scrollTop;
+  }
+
+  function handleEditorScroll(event: UIEvent<HTMLTextAreaElement>) {
+    syncHighlightLayerScroll(event.currentTarget);
+  }
+
   function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -604,10 +677,21 @@ export function MarkdownEditor({
     : 0;
 
   return (
-    <div className="relative min-h-0 min-w-0 overflow-hidden">
+    <div className="relative min-h-0 min-w-0 overflow-hidden bg-card">
+      <pre
+        ref={highlightLayerRef}
+        aria-hidden="true"
+        className="markdown-editor-highlight-layer pointer-events-none absolute inset-0 z-0 h-full w-full overflow-auto border-b border-transparent p-5 font-mono text-sm leading-6 lg:border-b-0 lg:border-r"
+        style={{
+          fontSize: `${0.875 * textScale}rem`,
+          lineHeight: `${1.5 * textScale}rem`,
+        }}
+      >
+        {highlightedMarkdown}
+      </pre>
       <textarea
         ref={textareaRef}
-        className="block h-full min-h-0 w-full resize-none overflow-auto border-b border-border bg-card p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
+        className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
           fontSize: `${0.875 * textScale}rem`,
           lineHeight: `${1.5 * textScale}rem`,
@@ -623,6 +707,7 @@ export function MarkdownEditor({
         onKeyUp={handleEditorKeyUp}
         onDrop={(event) => void handleDrop(event)}
         onFocus={(event) => refreshFileLinkPopup(event.currentTarget)}
+        onScroll={handleEditorScroll}
         spellCheck={false}
       />
 

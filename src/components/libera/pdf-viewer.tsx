@@ -62,12 +62,25 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
 const HIGHLIGHT_COLOR = "#fde047";
+const PDF_PAGE_RENDER_ROOT_MARGIN = "1200px 0px";
+const PDF_PAGE_RENDER_FALLBACK_COUNT = 2;
+const PDF_PAGE_RENDER_CONCURRENCY = 2;
 
 type PdfTool = "select" | "highlight" | "text";
 type PdfScrollPosition = {
   scrollLeft: number;
   scrollTop: number;
 };
+type PdfPageLayout = {
+  height: number;
+  pageNumber: number;
+  width: number;
+};
+type PdfAnnotationScrollState = {
+  allowInitialScroll: boolean;
+  lastSelectedAnnotationId: string;
+};
+type RequestRenderSlot = () => Promise<() => void>;
 
 type PdfViewerProps = {
   filePath: string;
@@ -114,6 +127,90 @@ function renderCanvas(viewport: PageViewport, canvas: HTMLCanvasElement) {
   context.clearRect(0, 0, viewport.width, viewport.height);
 }
 
+async function readPdfBasePageLayouts(pdfDocument: PDFDocumentProxy) {
+  const layouts: PdfPageLayout[] = [];
+
+  for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+    const page = await pdfDocument.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+
+    layouts.push({
+      height: viewport.height,
+      pageNumber,
+      width: viewport.width,
+    });
+  }
+
+  return layouts;
+}
+
+function pageNumberFromObservedElement(element: Element) {
+  const pageNumber = Number((element as HTMLElement).dataset.pdfPageNumber);
+
+  return Number.isInteger(pageNumber) && pageNumber > 0 ? pageNumber : null;
+}
+
+function hasExplicitScrollPosition(viewState: PdfTabViewState | undefined) {
+  return (
+    typeof viewState?.scrollLeft === "number" ||
+    typeof viewState?.scrollTop === "number"
+  );
+}
+
+function usePdfRenderQueue(maxConcurrentRenders: number): RequestRenderSlot {
+  const activeRenderCountRef = useRef(0);
+  const pumpRenderQueueRef = useRef<() => void>(() => undefined);
+  const renderQueueRef = useRef<Array<(release: () => void) => void>>([]);
+
+  const pumpRenderQueue = useCallback(() => {
+    while (
+      activeRenderCountRef.current < maxConcurrentRenders &&
+      renderQueueRef.current.length
+    ) {
+      const resolve = renderQueueRef.current.shift();
+
+      if (!resolve) {
+        continue;
+      }
+
+      activeRenderCountRef.current += 1;
+      let released = false;
+
+      resolve(() => {
+        if (released) {
+          return;
+        }
+
+        released = true;
+        activeRenderCountRef.current = Math.max(0, activeRenderCountRef.current - 1);
+        pumpRenderQueueRef.current();
+      });
+    }
+  }, [maxConcurrentRenders]);
+
+  useEffect(() => {
+    pumpRenderQueueRef.current = pumpRenderQueue;
+  }, [pumpRenderQueue]);
+
+  useEffect(
+    () => () => {
+      const queuedResolvers = renderQueueRef.current.splice(0);
+
+      queuedResolvers.forEach((resolve) => resolve(() => undefined));
+    },
+    [],
+  );
+
+  return useCallback(
+    () =>
+      new Promise<() => void>((resolve) => {
+        renderQueueRef.current.push(resolve);
+        pumpRenderQueue();
+      }),
+    [pumpRenderQueue],
+  );
+}
+
 export function PdfViewer({
   filePath,
   initialViewState,
@@ -128,14 +225,21 @@ export function PdfViewer({
     scrollLeft: initialViewState?.scrollLeft ?? 0,
     scrollTop: initialViewState?.scrollTop ?? 0,
   });
-  const laidOutPageNumbersRef = useRef<Set<number>>(new Set());
+  const pageElementRefs = useRef<Map<number, HTMLElement>>(new Map());
   const pendingScrollViewStateRef = useRef<PdfScrollPosition | null>(null);
   const scrollViewStateFrameRef = useRef<number | null>(null);
   const onViewStateChangeRef = useRef(onViewStateChange);
   const initialViewStateRef = useRef(initialViewState);
+  const annotationScrollStateRef = useRef<PdfAnnotationScrollState>({
+    allowInitialScroll:
+      Boolean(initialViewState?.selectedAnnotationId) &&
+      !hasExplicitScrollPosition(initialViewState),
+    lastSelectedAnnotationId: initialViewState?.selectedAnnotationId ?? "",
+  });
+  const requestRenderSlot = usePdfRenderQueue(PDF_PAGE_RENDER_CONCURRENCY);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
-  const [pageNumbers, setPageNumbers] = useState<number[]>([]);
-  const [laidOutPageCount, setLaidOutPageCount] = useState(0);
+  const [basePageLayouts, setBasePageLayouts] = useState<PdfPageLayout[]>([]);
+  const [renderWindowPages, setRenderWindowPages] = useState<Set<number>>(new Set());
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
     initialViewState?.selectedAnnotationId ?? "",
@@ -157,11 +261,31 @@ export function PdfViewer({
     typeof viewStateSelectedAnnotationId === "string"
       ? viewStateSelectedAnnotationId
       : selectedAnnotationId;
+  const pageLayouts = useMemo(
+    () =>
+      basePageLayouts.map((layout) => ({
+        ...layout,
+        height: layout.height * zoom,
+        width: layout.width * zoom,
+      })),
+    [basePageLayouts, zoom],
+  );
 
   const selectedAnnotation = useMemo(
     () => annotations.find((annotation) => annotation.id === activeSelectedAnnotationId),
     [activeSelectedAnnotationId, annotations],
   );
+  const annotationsByPage = useMemo(() => {
+    const groupedAnnotations = new Map<number, PdfAnnotation[]>();
+
+    for (const annotation of annotations) {
+      const pageAnnotations = groupedAnnotations.get(annotation.pageNumber) ?? [];
+      pageAnnotations.push(annotation);
+      groupedAnnotations.set(annotation.pageNumber, pageAnnotations);
+    }
+
+    return groupedAnnotations;
+  }, [annotations]);
 
   const selectedTextAnnotation =
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
@@ -179,9 +303,32 @@ export function PdfViewer({
   }, []);
 
   useEffect(() => {
-    const nextSelectedAnnotationId = initialViewState?.selectedAnnotationId;
+    const nextSelectedAnnotationId = initialViewState?.selectedAnnotationId ?? "";
+    const annotationScrollState = annotationScrollStateRef.current;
+    const selectedAnnotationChanged =
+      nextSelectedAnnotationId !== annotationScrollState.lastSelectedAnnotationId;
 
-    if (!nextSelectedAnnotationId || loading || !pdfDocument || !pageNumbers.length) {
+    if (!nextSelectedAnnotationId) {
+      if (selectedAnnotationChanged) {
+        annotationScrollState.lastSelectedAnnotationId = "";
+        annotationScrollState.allowInitialScroll = false;
+      }
+
+      return;
+    }
+
+    if (
+      !annotationScrollState.allowInitialScroll &&
+      !selectedAnnotationChanged
+    ) {
+      return;
+    }
+
+    if (
+      loading ||
+      !pdfDocument ||
+      !pageLayouts.length
+    ) {
       return;
     }
 
@@ -191,6 +338,9 @@ export function PdfViewer({
       if (!scrollContainer) {
         return;
       }
+
+      annotationScrollState.lastSelectedAnnotationId = nextSelectedAnnotationId;
+      annotationScrollState.allowInitialScroll = false;
 
       const annotationElement = scrollContainer.querySelector<HTMLElement>(
         `[data-pdf-annotation-id="${CSS.escape(nextSelectedAnnotationId)}"]`,
@@ -217,9 +367,8 @@ export function PdfViewer({
     return () => window.cancelAnimationFrame(animationFrame);
   }, [
     initialViewState?.selectedAnnotationId,
-    laidOutPageCount,
     loading,
-    pageNumbers.length,
+    pageLayouts.length,
     pdfDocument,
   ]);
 
@@ -262,15 +411,6 @@ export function PdfViewer({
     [updateViewState],
   );
 
-  const handlePageLayout = useCallback((pageNumber: number) => {
-    if (laidOutPageNumbersRef.current.has(pageNumber)) {
-      return;
-    }
-
-    laidOutPageNumbersRef.current.add(pageNumber);
-    setLaidOutPageCount(laidOutPageNumbersRef.current.size);
-  }, []);
-
   useEffect(() => {
     let active = true;
     let loadedDocument: PDFDocumentProxy | null = null;
@@ -285,9 +425,9 @@ export function PdfViewer({
       setLoading(true);
       setError("");
       setPdfDocument(null);
-      setPageNumbers([]);
-      setLaidOutPageCount(0);
-      laidOutPageNumbersRef.current.clear();
+      setBasePageLayouts([]);
+      setRenderWindowPages(new Set());
+      pageElementRefs.current.clear();
       const restoreViewState = initialViewStateRef.current;
       pendingScrollRestoreRef.current = {
         scrollLeft: restoreViewState?.scrollLeft ?? 0,
@@ -309,6 +449,7 @@ export function PdfViewer({
         ]);
         const loadingTask = getDocument({ data: new Uint8Array(pdfResponse) });
         loadedDocument = await loadingTask.promise;
+        const loadedPageLayouts = await readPdfBasePageLayouts(loadedDocument);
 
         if (!active) {
           await loadedDocument.destroy();
@@ -316,9 +457,7 @@ export function PdfViewer({
         }
 
         setPdfDocument(loadedDocument);
-        setPageNumbers(
-          Array.from({ length: loadedDocument.numPages }, (_, index) => index + 1),
-        );
+        setBasePageLayouts(loadedPageLayouts);
         latestAnnotationsRef.current = annotationsPayload.annotations;
         setAnnotations(annotationsPayload.annotations);
       } catch (loadError) {
@@ -345,21 +484,10 @@ export function PdfViewer({
     };
   }, [filePath, src]);
 
-  function resetPageLayoutTracking() {
-    laidOutPageNumbersRef.current.clear();
-    setLaidOutPageCount(0);
-  }
-
   useEffect(() => {
     const pendingScrollRestore = pendingScrollRestoreRef.current;
 
-    if (
-      loading ||
-      !pdfDocument ||
-      !pendingScrollRestore ||
-      !pageNumbers.length ||
-      laidOutPageCount === 0
-    ) {
+    if (loading || !pdfDocument || !pendingScrollRestore || !pageLayouts.length) {
       return;
     }
 
@@ -378,20 +506,6 @@ export function PdfViewer({
         0,
         scrollContainer.scrollHeight - scrollContainer.clientHeight,
       );
-      const allPagesLaidOut = laidOutPageCount >= pageNumbers.length;
-      const canRestoreHorizontal =
-        pendingScrollRestore.scrollLeft === 0 ||
-        maxScrollLeft >= pendingScrollRestore.scrollLeft ||
-        allPagesLaidOut;
-      const canRestoreVertical =
-        pendingScrollRestore.scrollTop === 0 ||
-        maxScrollTop >= pendingScrollRestore.scrollTop ||
-        allPagesLaidOut;
-
-      if (!canRestoreHorizontal || !canRestoreVertical) {
-        return;
-      }
-
       scrollContainer.scrollLeft = Math.min(
         pendingScrollRestore.scrollLeft,
         maxScrollLeft,
@@ -404,9 +518,63 @@ export function PdfViewer({
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [laidOutPageCount, loading, pageNumbers.length, pdfDocument]);
+  }, [loading, pageLayouts.length, pdfDocument]);
 
   useEffect(() => flushPendingScrollViewState, [flushPendingScrollViewState]);
+
+  const setPageElement = useCallback((pageNumber: number, element: HTMLElement | null) => {
+    if (element) {
+      pageElementRefs.current.set(pageNumber, element);
+      return;
+    }
+
+    pageElementRefs.current.delete(pageNumber);
+  }, []);
+
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current;
+
+    if (!scrollContainer || !pageLayouts.length) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setRenderWindowPages((currentPages) => {
+          const nextPages = new Set(currentPages);
+          let changed = false;
+
+          for (const entry of entries) {
+            const pageNumber = pageNumberFromObservedElement(entry.target);
+
+            if (!pageNumber) {
+              continue;
+            }
+
+            if (entry.isIntersecting) {
+              if (!nextPages.has(pageNumber)) {
+                nextPages.add(pageNumber);
+                changed = true;
+              }
+            } else if (nextPages.delete(pageNumber)) {
+              changed = true;
+            }
+          }
+
+          return changed ? nextPages : currentPages;
+        });
+      },
+      {
+        root: scrollContainer,
+        rootMargin: PDF_PAGE_RENDER_ROOT_MARGIN,
+        threshold: 0,
+      },
+    );
+
+    pageElementRefs.current.forEach((element) => observer.observe(element));
+
+    return () => observer.disconnect();
+  }, [filePath, pageLayouts.length, zoom]);
 
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
@@ -456,7 +624,6 @@ export function PdfViewer({
       return;
     }
 
-    resetPageLayoutTracking();
     setZoom(nextZoom);
     updateViewState({ zoom: nextZoom });
   }
@@ -760,10 +927,6 @@ export function PdfViewer({
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             type="button"
             onClick={() => {
-              if (zoom !== 1) {
-                resetPageLayoutTracking();
-              }
-
               setZoom(1);
               updateViewState({ zoom: 1 });
             }}
@@ -794,14 +957,19 @@ export function PdfViewer({
 
         {!loading && pdfDocument ? (
           <div className="mx-auto flex w-max flex-col gap-5">
-            {pageNumbers.map((pageNumber) => (
+            {pageLayouts.map((layout) => (
               <PdfPageView
-                key={`${filePath}-${pageNumber}`}
-                annotations={annotations.filter(
-                  (annotation) => annotation.pageNumber === pageNumber,
-                )}
-                pageNumber={pageNumber}
+                key={`${filePath}-${layout.pageNumber}`}
+                annotations={annotationsByPage.get(layout.pageNumber) ?? []}
+                pageLayout={layout}
                 pdfDocument={pdfDocument}
+                renderActive={
+                  renderWindowPages.has(layout.pageNumber) ||
+                  selectedAnnotation?.pageNumber === layout.pageNumber ||
+                  (!renderWindowPages.size &&
+                    layout.pageNumber <= PDF_PAGE_RENDER_FALLBACK_COUNT)
+                }
+                requestRenderSlot={requestRenderSlot}
                 selectedAnnotationId={activeSelectedAnnotationId}
                 screenshotSnipping={screenshotSnipping}
                 tool={tool}
@@ -813,7 +981,7 @@ export function PdfViewer({
                   setTool("select");
                   updateViewState({ tool: "select" });
                 }}
-                onPageLayout={handlePageLayout}
+                onPageElement={setPageElement}
                 onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
                 onUpdateTextAnnotation={updateTextAnnotation}
@@ -828,8 +996,10 @@ export function PdfViewer({
 
 function PdfPageView({
   annotations,
-  pageNumber,
+  pageLayout,
   pdfDocument,
+  renderActive,
+  requestRenderSlot,
   selectedAnnotationId,
   screenshotSnipping,
   tool,
@@ -838,14 +1008,16 @@ function PdfPageView({
   onAddTextAnnotation,
   onCancelScreenshotSnip,
   onExitTextEditing,
-  onPageLayout,
+  onPageElement,
   onScreenshotSnip,
   onSelectAnnotation,
   onUpdateTextAnnotation,
 }: {
   annotations: PdfAnnotation[];
-  pageNumber: number;
+  pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
+  renderActive: boolean;
+  requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
   screenshotSnipping: boolean;
   tool: PdfTool;
@@ -854,7 +1026,84 @@ function PdfPageView({
   onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
   onCancelScreenshotSnip: () => void;
   onExitTextEditing: () => void;
-  onPageLayout: (pageNumber: number) => void;
+  onPageElement: (pageNumber: number, element: HTMLElement | null) => void;
+  onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
+  onSelectAnnotation: (annotation: PdfAnnotation) => void;
+  onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
+}) {
+  const pageNumber = pageLayout.pageNumber;
+
+  return (
+    <div
+      ref={(element) => onPageElement(pageNumber, element)}
+      className="relative bg-card shadow-sm"
+      data-pdf-page-number={pageNumber}
+    >
+      <div
+        className="relative overflow-hidden bg-card"
+        style={{ width: pageLayout.width, height: pageLayout.height }}
+      >
+        {renderActive ? (
+          <PdfPageContent
+            annotations={annotations}
+            pageLayout={pageLayout}
+            pageNumber={pageNumber}
+            pdfDocument={pdfDocument}
+            requestRenderSlot={requestRenderSlot}
+            selectedAnnotationId={selectedAnnotationId}
+            screenshotSnipping={screenshotSnipping}
+            tool={tool}
+            zoom={zoom}
+            onAddHighlight={onAddHighlight}
+            onAddTextAnnotation={onAddTextAnnotation}
+            onCancelScreenshotSnip={onCancelScreenshotSnip}
+            onExitTextEditing={onExitTextEditing}
+            onScreenshotSnip={onScreenshotSnip}
+            onSelectAnnotation={onSelectAnnotation}
+            onUpdateTextAnnotation={onUpdateTextAnnotation}
+          />
+        ) : (
+          <PdfAnnotationScrollAnchors annotations={annotations} pageSize={pageLayout} />
+        )}
+      </div>
+      <div className="absolute bottom-2 right-2 rounded bg-zinc-950/75 px-2 py-1 text-xs font-medium text-white">
+        {pageNumber}
+      </div>
+    </div>
+  );
+}
+
+function PdfPageContent({
+  annotations,
+  pageLayout,
+  pageNumber,
+  pdfDocument,
+  requestRenderSlot,
+  selectedAnnotationId,
+  screenshotSnipping,
+  tool,
+  zoom,
+  onAddHighlight,
+  onAddTextAnnotation,
+  onCancelScreenshotSnip,
+  onExitTextEditing,
+  onScreenshotSnip,
+  onSelectAnnotation,
+  onUpdateTextAnnotation,
+}: {
+  annotations: PdfAnnotation[];
+  pageLayout: PdfPageLayout;
+  pageNumber: number;
+  pdfDocument: PDFDocumentProxy;
+  requestRenderSlot: RequestRenderSlot;
+  selectedAnnotationId: string;
+  screenshotSnipping: boolean;
+  tool: PdfTool;
+  zoom: number;
+  onAddHighlight: (pageNumber: number, rects: PdfAnnotationRect[]) => void;
+  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
+  onCancelScreenshotSnip: () => void;
+  onExitTextEditing: () => void;
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
   onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
@@ -862,19 +1111,22 @@ function PdfPageView({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState<AnnotationSurfaceSize>({ width: 0, height: 0 });
   const [rendering, setRendering] = useState(true);
-
-  useEffect(() => {
-    if (size.width > 0 && size.height > 0) {
-      onPageLayout(pageNumber);
-    }
-  }, [onPageLayout, pageNumber, size.height, size.width]);
 
   useEffect(() => {
     let active = true;
     let renderTask: RenderTask | null = null;
     let textLayer: TextLayer | null = null;
+    let releaseRenderSlot: (() => void) | null = null;
+
+    function releaseSlot() {
+      if (!releaseRenderSlot) {
+        return;
+      }
+
+      releaseRenderSlot();
+      releaseRenderSlot = null;
+    }
 
     async function renderPage() {
       const canvas = canvasRef.current;
@@ -885,6 +1137,12 @@ function PdfPageView({
       }
 
       setRendering(true);
+      releaseRenderSlot = await requestRenderSlot();
+
+      if (!active) {
+        return;
+      }
+
       const page: PDFPageProxy = await pdfDocument.getPage(pageNumber);
       const viewport = page.getViewport({ scale: zoom });
 
@@ -892,17 +1150,28 @@ function PdfPageView({
         return;
       }
 
-      setSize({ width: viewport.width, height: viewport.height });
       renderCanvas(viewport, canvas);
+      const canvasContext = canvas.getContext("2d");
+
+      if (!canvasContext) {
+        throw new Error("Could not create PDF page canvas.");
+      }
+
       renderTask = page.render({
-        canvasContext: canvas.getContext("2d") as CanvasRenderingContext2D,
+        canvasContext,
         viewport,
       });
 
       textLayerElement.replaceChildren();
       textLayerElement.style.setProperty("--scale-factor", String(viewport.scale));
+      const textContent = await page.getTextContent();
+
+      if (!active) {
+        return;
+      }
+
       textLayer = new TextLayer({
-        textContentSource: await page.getTextContent(),
+        textContentSource: textContent,
         container: textLayerElement,
         viewport,
       });
@@ -914,18 +1183,40 @@ function PdfPageView({
       }
     }
 
-    renderPage().catch((renderError: unknown) => {
-      if (active && !(renderError instanceof Error && renderError.name === "RenderingCancelledException")) {
-        setRendering(false);
-      }
-    });
+    renderPage()
+      .catch((renderError: unknown) => {
+        if (
+          active &&
+          !(renderError instanceof Error && renderError.name === "RenderingCancelledException")
+        ) {
+          setRendering(false);
+        }
+      })
+      .finally(() => {
+        releaseSlot();
+      });
 
     return () => {
       active = false;
       renderTask?.cancel();
       textLayer?.cancel();
+      releaseSlot();
     };
-  }, [pageNumber, pdfDocument, zoom]);
+  }, [pageNumber, pdfDocument, requestRenderSlot, zoom]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const textLayerElement = textLayerRef.current;
+
+    return () => {
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+
+      textLayerElement?.replaceChildren();
+    };
+  }, []);
 
   function createHighlightFromSelection() {
     if (tool !== "highlight" || !pageRef.current) {
@@ -951,67 +1242,91 @@ function PdfPageView({
   }
 
   return (
-    <div className="relative bg-card shadow-sm" data-pdf-page-number={pageNumber}>
+    <div
+      ref={pageRef}
+      className="absolute inset-0 overflow-hidden bg-card"
+      onMouseUp={createHighlightFromSelection}
+    >
+      <canvas ref={canvasRef} className="absolute inset-0 z-0" />
       <div
-        ref={pageRef}
-        className="relative overflow-hidden bg-card"
-        style={{ width: size.width, height: size.height }}
-        onMouseUp={createHighlightFromSelection}
-      >
-        <canvas ref={canvasRef} className="absolute inset-0 z-0" />
-        <div
-          ref={textLayerRef}
-          className="pdf-text-layer"
-          style={{ pointerEvents: tool === "highlight" ? "auto" : "none" }}
-        />
+        ref={textLayerRef}
+        className="pdf-text-layer"
+        style={{ pointerEvents: tool === "highlight" ? "auto" : "none" }}
+      />
 
-        <div className="pointer-events-none absolute inset-0 z-20">
-          {annotations.map((annotation) => (
-            annotation.type === "highlight" ? (
-              <PdfHighlightAnnotationView
-                key={annotation.id}
-                annotation={annotation}
-                interactive={tool === "select"}
-                pageSize={size}
-                selected={selectedAnnotationId === annotation.id}
-                onSelect={onSelectAnnotation}
-              />
-            ) : null
-          ))}
+      <div className="pointer-events-none absolute inset-0 z-20">
+        {annotations.map((annotation) =>
+          annotation.type === "highlight" ? (
+            <PdfHighlightAnnotationView
+              key={annotation.id}
+              annotation={annotation}
+              interactive={tool === "select"}
+              pageSize={pageLayout}
+              selected={selectedAnnotationId === annotation.id}
+              onSelect={onSelectAnnotation}
+            />
+          ) : null,
+        )}
+      </div>
+
+      <TextAnnotationLayer
+        annotations={annotations.filter(
+          (annotation): annotation is PdfTextAnnotation => annotation.type === "text",
+        )}
+        drawing={tool === "text"}
+        interactive={tool === "select"}
+        pageSize={pageLayout}
+        selectedAnnotationId={selectedAnnotationId}
+        textScale={zoom}
+        onAddAnnotation={(rect) => onAddTextAnnotation(pageNumber, rect)}
+        onExitTextEditing={onExitTextEditing}
+        onSelectAnnotation={onSelectAnnotation}
+        onUpdateAnnotation={onUpdateTextAnnotation}
+      />
+
+      <ScreenshotSnipLayer
+        active={screenshotSnipping}
+        pageSize={pageLayout}
+        onCancel={onCancelScreenshotSnip}
+        onCapture={(rect) => onScreenshotSnip(pageNumber, rect)}
+      />
+
+      {rendering ? (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/60 text-xs text-muted-foreground">
+          <Loader2 aria-hidden className="mr-2 h-3.5 w-3.5 animate-spin" />
+          Rendering
         </div>
+      ) : null}
+    </div>
+  );
+}
 
-        <TextAnnotationLayer
-          annotations={annotations.filter(
-            (annotation): annotation is PdfTextAnnotation => annotation.type === "text",
-          )}
-          drawing={tool === "text"}
-          interactive={tool === "select"}
-          pageSize={size}
-          selectedAnnotationId={selectedAnnotationId}
-          textScale={zoom}
-          onAddAnnotation={(rect) => onAddTextAnnotation(pageNumber, rect)}
-          onExitTextEditing={onExitTextEditing}
-          onSelectAnnotation={onSelectAnnotation}
-          onUpdateAnnotation={onUpdateTextAnnotation}
-        />
+function PdfAnnotationScrollAnchors({
+  annotations,
+  pageSize,
+}: {
+  annotations: PdfAnnotation[];
+  pageSize: AnnotationSurfaceSize;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0">
+      {annotations.map((annotation) => {
+        const rect = annotation.type === "highlight" ? annotation.rects[0] : annotation.rect;
 
-        <ScreenshotSnipLayer
-          active={screenshotSnipping}
-          pageSize={size}
-          onCancel={onCancelScreenshotSnip}
-          onCapture={(rect) => onScreenshotSnip(pageNumber, rect)}
-        />
+        if (!rect) {
+          return null;
+        }
 
-        {rendering ? (
-          <div className="absolute inset-0 z-40 flex items-center justify-center bg-white/60 text-xs text-muted-foreground">
-            <Loader2 aria-hidden className="mr-2 h-3.5 w-3.5 animate-spin" />
-            Rendering
-          </div>
-        ) : null}
-      </div>
-      <div className="absolute bottom-2 right-2 rounded bg-zinc-950/75 px-2 py-1 text-xs font-medium text-white">
-        {pageNumber}
-      </div>
+        return (
+          <span
+            key={annotation.id}
+            aria-hidden
+            className="absolute"
+            data-pdf-annotation-id={annotation.id}
+            style={rectStyle(rect, pageSize)}
+          />
+        );
+      })}
     </div>
   );
 }

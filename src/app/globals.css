@@ -17,6 +17,12 @@
   --destructive: #dc2626; /* red status/danger */
   --destructive-foreground: #ffffff;
   --destructive-muted: #fef2f2;
+  --markdown-editor-heading-1: #b91c1c;
+  --markdown-editor-heading-2: #047857;
+  --markdown-editor-heading-3: #a16207;
+  --markdown-editor-heading-4: #047857;
+  --markdown-editor-blockquote: #0f766e;
+  --markdown-editor-selection: color-mix(in srgb, var(--accent) 24%, transparent);
   --radius: 0.625rem;
 }
 
@@ -37,6 +43,12 @@
   --destructive: #f87171;
   --destructive-foreground: #450a0a;
   --destructive-muted: #450a0a;
+  --markdown-editor-heading-1: #fca5a5;
+  --markdown-editor-heading-2: #86efac;
+  --markdown-editor-heading-3: #fde047;
+  --markdown-editor-heading-4: #86efac;
+  --markdown-editor-blockquote: #5eead4;
+  --markdown-editor-selection: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 @theme inline {
@@ -78,6 +90,59 @@ textarea {
 input::placeholder,
 textarea::placeholder {
   color: var(--muted-foreground);
+}
+
+.markdown-editor-highlight-layer {
+  color: var(--foreground);
+  margin: 0;
+  overflow-wrap: break-word;
+  scrollbar-color: transparent transparent;
+  white-space: pre-wrap;
+  word-break: normal;
+}
+
+.markdown-editor-highlight-layer::-webkit-scrollbar,
+.markdown-editor-highlight-layer::-webkit-scrollbar-thumb,
+.markdown-editor-highlight-layer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.markdown-editor-highlight-tone-heading-1 {
+  color: var(--markdown-editor-heading-1);
+}
+
+.markdown-editor-highlight-tone-heading-2 {
+  color: var(--markdown-editor-heading-2);
+}
+
+.markdown-editor-highlight-tone-heading-3 {
+  color: var(--markdown-editor-heading-3);
+}
+
+.markdown-editor-highlight-tone-heading-4 {
+  color: var(--markdown-editor-heading-4);
+}
+
+.markdown-editor-highlight-tone-blockquote {
+  color: var(--markdown-editor-blockquote);
+}
+
+textarea.markdown-editor-input {
+  background-color: transparent;
+  caret-color: var(--foreground);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+textarea.markdown-editor-input::placeholder {
+  color: var(--muted-foreground);
+  -webkit-text-fill-color: var(--muted-foreground);
+}
+
+textarea.markdown-editor-input::selection {
+  background: var(--markdown-editor-selection);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 .toolbar-button {
