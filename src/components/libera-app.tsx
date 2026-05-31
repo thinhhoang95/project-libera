@@ -93,6 +93,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
             onDownloadFile={workspace.downloadFile}
+            onDownloadMarkdownPdf={workspace.downloadMarkdownPdf}
             onMoveFile={workspace.moveFileFromPrompt}
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}

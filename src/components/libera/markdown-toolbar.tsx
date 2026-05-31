@@ -8,6 +8,7 @@ import {
   Italic,
   Link,
   List,
+  ListOrdered,
   Maximize2,
   Minimize2,
   Scissors,
@@ -16,11 +17,16 @@ import {
   Underline,
   ZoomIn,
 } from "lucide-react";
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enumeration";
 
 type MarkdownToolbarProps = {
   canStartScreenshotSnip: boolean;
   markdownZoom: number;
+  onEnumerateHeadings: (
+    scope: MarkdownHeadingEnumerationScope,
+    startAt?: number,
+  ) => void;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
@@ -32,9 +38,13 @@ type MarkdownToolbarProps = {
   previewFullscreen: boolean;
 };
 
+const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
+const ENUMERATE_HEADINGS_MENU_GAP = 6;
+
 export function MarkdownToolbar({
   canStartScreenshotSnip,
   markdownZoom,
+  onEnumerateHeadings,
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
@@ -46,6 +56,116 @@ export function MarkdownToolbar({
   previewFullscreen,
 }: MarkdownToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const enumerateButtonRef = useRef<HTMLButtonElement>(null);
+  const enumerateMenuRef = useRef<HTMLDivElement>(null);
+  const [enumerateMenuOpen, setEnumerateMenuOpen] = useState(false);
+  const [enumerateMenuPosition, setEnumerateMenuPosition] = useState({
+    left: 0,
+    top: 0,
+  });
+  const [selectedHeadingStart, setSelectedHeadingStart] = useState("1");
+
+  const getEnumerateMenuPosition = useCallback(() => {
+    const button = enumerateButtonRef.current;
+
+    if (!button) {
+      return null;
+    }
+
+    const rect = button.getBoundingClientRect();
+    const maxLeft =
+      window.innerWidth - ENUMERATE_HEADINGS_MENU_WIDTH - ENUMERATE_HEADINGS_MENU_GAP;
+
+    return {
+      left: Math.max(
+        ENUMERATE_HEADINGS_MENU_GAP,
+        Math.min(rect.left, maxLeft),
+      ),
+      top: Math.min(
+        rect.bottom + ENUMERATE_HEADINGS_MENU_GAP,
+        window.innerHeight - ENUMERATE_HEADINGS_MENU_GAP,
+      ),
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!enumerateMenuOpen) {
+      return;
+    }
+
+    function closeEnumerateMenu(event: PointerEvent) {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        (enumerateButtonRef.current?.contains(target) ||
+          enumerateMenuRef.current?.contains(target))
+      ) {
+        return;
+      }
+
+      setEnumerateMenuOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setEnumerateMenuOpen(false);
+      }
+    }
+
+    function repositionEnumerateMenu() {
+      const nextPosition = getEnumerateMenuPosition();
+
+      if (nextPosition) {
+        setEnumerateMenuPosition(nextPosition);
+      }
+    }
+
+    window.addEventListener("pointerdown", closeEnumerateMenu);
+    window.addEventListener("scroll", repositionEnumerateMenu, true);
+    window.addEventListener("resize", repositionEnumerateMenu);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeEnumerateMenu);
+      window.removeEventListener("scroll", repositionEnumerateMenu, true);
+      window.removeEventListener("resize", repositionEnumerateMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [enumerateMenuOpen, getEnumerateMenuPosition]);
+
+  function toggleEnumerateMenu() {
+    if (enumerateMenuOpen) {
+      setEnumerateMenuOpen(false);
+      return;
+    }
+
+    const nextPosition = getEnumerateMenuPosition();
+
+    if (nextPosition) {
+      setEnumerateMenuPosition(nextPosition);
+    }
+
+    setEnumerateMenuOpen(true);
+  }
+
+  function selectedHeadingStartValue() {
+    const parsed = Number(selectedHeadingStart);
+
+    if (!Number.isFinite(parsed)) {
+      return 1;
+    }
+
+    return Math.max(1, Math.floor(parsed));
+  }
+
+  function enumerateHeadings(
+    scope: MarkdownHeadingEnumerationScope,
+    startAt?: number,
+  ) {
+    setEnumerateMenuOpen(false);
+    onEnumerateHeadings(scope, startAt);
+  }
 
   async function handleImageChange() {
     const file = imageInputRef.current?.files?.[0];
@@ -192,6 +312,78 @@ export function MarkdownToolbar({
       >
         <Sparkles aria-hidden className="h-4 w-4" />
       </button>
+      <button
+        ref={enumerateButtonRef}
+        aria-expanded={enumerateMenuOpen}
+        aria-haspopup="menu"
+        aria-label="Enumerate Headings"
+        className="toolbar-button"
+        title="Enumerate Headings"
+        type="button"
+        onClick={toggleEnumerateMenu}
+      >
+        <ListOrdered aria-hidden className="h-4 w-4" />
+      </button>
+      {enumerateMenuOpen ? (
+        <div
+          ref={enumerateMenuRef}
+          className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-card p-1 text-sm shadow-lg"
+          role="menu"
+          style={{
+            left: enumerateMenuPosition.left,
+            top: enumerateMenuPosition.top,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left font-medium text-foreground hover:bg-muted"
+            type="button"
+            role="menuitem"
+            onClick={() => enumerateHeadings("all", 1)}
+          >
+            <ListOrdered aria-hidden className="h-4 w-4 text-muted-foreground" />
+            Enumerate All Headings
+          </button>
+          <form
+            className="mt-1 border-t border-border px-2 py-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              enumerateHeadings("selected", selectedHeadingStartValue());
+            }}
+          >
+            <label
+              className="block text-xs font-medium text-muted-foreground"
+              htmlFor="enumerate-selected-headings-start"
+            >
+              Enumerate Selected Headings
+            </label>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                id="enumerate-selected-headings-start"
+                className="h-8 min-w-0 flex-1 rounded-xl border border-border bg-card px-2 text-sm outline-none focus:border-input"
+                type="number"
+                min="1"
+                step="1"
+                value={selectedHeadingStart}
+                aria-label="Selected heading start value"
+                onChange={(event) => setSelectedHeadingStart(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setEnumerateMenuOpen(false);
+                  }
+                }}
+              />
+              <button
+                className="inline-flex h-8 shrink-0 items-center rounded bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                type="submit"
+              >
+                Apply
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
       <label
         aria-label={`Rendered Markdown text zoom: ${markdownZoom}%`}
         className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-border bg-muted px-3 text-sm font-medium text-foreground"

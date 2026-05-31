@@ -5,3 +5,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
 });
+
+contextBridge.exposeInMainWorld("liberaExport", {
+  exportMarkdownPdf: (input) => ipcRenderer.invoke("export:markdown-pdf", input),
+});

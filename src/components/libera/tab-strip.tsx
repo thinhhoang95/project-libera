@@ -1,7 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Download,
+  FileDown,
+  FileText,
+  MoveRight,
+  Pencil,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
 import type { OpenTab } from "@/components/libera/types";
 
 type TabStripProps = {
@@ -13,6 +22,7 @@ type TabStripProps = {
   onCloseTab: (tabId: string) => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
   onDownloadFile: (file: OpenTab["file"], content?: string) => void;
+  onDownloadMarkdownPdf: (tab: OpenTab) => Promise<void>;
   onMoveFile: (tab: OpenTab) => Promise<void>;
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
@@ -21,7 +31,13 @@ type TabStripProps = {
 
 type ActiveFileActionsProps = Pick<
   TabStripProps,
-  "activeTab" | "onDeleteFile" | "onDownloadFile" | "onMoveFile" | "onRenameFile" | "onSave"
+  | "activeTab"
+  | "onDeleteFile"
+  | "onDownloadFile"
+  | "onDownloadMarkdownPdf"
+  | "onMoveFile"
+  | "onRenameFile"
+  | "onSave"
 >;
 
 function readableTextColor(backgroundColor: string) {
@@ -49,6 +65,7 @@ export function TabStrip({
   onCloseTab,
   onDeleteFile,
   onDownloadFile,
+  onDownloadMarkdownPdf,
   onMoveFile,
   onRenameFile,
   onSave,
@@ -161,6 +178,7 @@ export function TabStrip({
           activeTab={activeTab}
           onDeleteFile={onDeleteFile}
           onDownloadFile={onDownloadFile}
+          onDownloadMarkdownPdf={onDownloadMarkdownPdf}
           onMoveFile={onMoveFile}
           onRenameFile={onRenameFile}
           onSave={onSave}
@@ -174,20 +192,59 @@ function ActiveFileActions({
   activeTab,
   onDeleteFile,
   onDownloadFile,
+  onDownloadMarkdownPdf,
   onMoveFile,
   onRenameFile,
   onSave,
 }: ActiveFileActionsProps) {
+  const [downloadMenuTabId, setDownloadMenuTabId] = useState<string | null>(null);
+  const downloadMenuRef = useRef<HTMLDivElement | null>(null);
+  const downloadMenuOpen = Boolean(activeTab && downloadMenuTabId === activeTab.id);
+
+  useEffect(() => {
+    if (!downloadMenuOpen) {
+      return;
+    }
+
+    function closeOnPointerDown(event: PointerEvent) {
+      if (!downloadMenuRef.current?.contains(event.target as Node)) {
+        setDownloadMenuTabId(null);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDownloadMenuTabId(null);
+      }
+    }
+
+    function closeMenu() {
+      setDownloadMenuTabId(null);
+    }
+
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [downloadMenuOpen]);
+
   if (!activeTab) {
     return null;
   }
 
-  const downloadContent =
-    activeTab.file.fileType === "markdown" ? activeTab.draft : undefined;
+  const isMarkdown = activeTab.file.fileType === "markdown";
+  const downloadContent = isMarkdown ? activeTab.draft : undefined;
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
-      {activeTab.file.fileType === "markdown" ? (
+      {isMarkdown ? (
         <button
           aria-label="Save"
           className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
@@ -199,15 +256,67 @@ function ActiveFileActions({
           <Save aria-hidden className="h-4 w-4" />
         </button>
       ) : null}
-      <button
-        aria-label="Download"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        title="Download"
-        type="button"
-        onClick={() => onDownloadFile(activeTab.file, downloadContent)}
-      >
-        <Download aria-hidden className="h-4 w-4" />
-      </button>
+      {isMarkdown ? (
+        <div ref={downloadMenuRef} className="relative">
+          <button
+            aria-expanded={downloadMenuOpen}
+            aria-haspopup="menu"
+            aria-label="Download"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            title="Download"
+            type="button"
+            onClick={() =>
+              setDownloadMenuTabId((current) =>
+                current === activeTab.id ? null : activeTab.id,
+              )
+            }
+          >
+            <Download aria-hidden className="h-4 w-4" />
+          </button>
+          {downloadMenuOpen ? (
+            <div
+              className="absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
+              role="menu"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <button
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-muted"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setDownloadMenuTabId(null);
+                  onDownloadFile(activeTab.file, downloadContent);
+                }}
+              >
+                <FileText aria-hidden className="h-4 w-4 text-muted-foreground" />
+                Markdown file
+              </button>
+              <button
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-muted"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setDownloadMenuTabId(null);
+                  void onDownloadMarkdownPdf(activeTab);
+                }}
+              >
+                <FileDown aria-hidden className="h-4 w-4 text-muted-foreground" />
+                PDF file
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <button
+          aria-label="Download"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          title="Download"
+          type="button"
+          onClick={() => onDownloadFile(activeTab.file)}
+        >
+          <Download aria-hidden className="h-4 w-4" />
+        </button>
+      )}
       <button
         aria-label="Rename"
         className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"

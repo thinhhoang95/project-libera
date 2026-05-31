@@ -219,6 +219,7 @@ export type LiberaWorkspace = {
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;
   deleteFolderFromPrompt: (folder: LiberaFolderNode) => Promise<void>;
   downloadFile: (file: LiberaFileNode, content?: string) => void;
+  downloadMarkdownPdf: (tab: OpenTab) => Promise<void>;
   deleteNotebookFromPrompt: (notebook: string) => Promise<void>;
   downloadNotebook: (notebook: string) => void;
   convertImageToMarkdownWithAi: (image: MarkdownImageSelection) => Promise<void>;

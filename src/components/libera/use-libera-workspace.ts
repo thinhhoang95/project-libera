@@ -76,6 +76,14 @@ function imageAltText(name: string) {
   return name.replace(/\.[^.]+$/, "") || "image";
 }
 
+function markdownExportBaseName(name: string) {
+  return name.replace(/\.(?:md|markdown)$/i, "") || "document";
+}
+
+function markdownPdfFileName(name: string) {
+  return `${markdownExportBaseName(name)}.pdf`;
+}
+
 function clampTextOffset(value: number, textLength: number) {
   return Math.max(0, Math.min(value, textLength));
 }
@@ -1345,6 +1353,32 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     link.remove();
   }
 
+  async function downloadMarkdownPdf(tab: OpenTab) {
+    setWorkspaceError("");
+
+    if (tab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const exporter = window.liberaExport?.exportMarkdownPdf;
+
+    if (!exporter) {
+      setWorkspaceError("Export to PDF is available in the Libera desktop app.");
+      return;
+    }
+
+    try {
+      await exporter({
+        content: getTabDraft(tab),
+        documentPath: tab.file.path,
+        fileName: markdownPdfFileName(tab.file.name),
+        title: markdownExportBaseName(tab.file.name),
+      });
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "PDF export failed.");
+    }
+  }
+
   async function createMarkdownFromPrompt(notebook: string, parentPath?: string) {
     setWorkspaceError("");
     setSelectedNotebookName(notebook);
@@ -2127,6 +2161,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
       downloadFile,
+      downloadMarkdownPdf,
       deleteNotebookFromPrompt,
       downloadNotebook,
       convertImageToMarkdownWithAi,

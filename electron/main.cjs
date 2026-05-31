@@ -9,11 +9,13 @@ const { spawn } = require("node:child_process");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
+const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera";
+const MACOS_MENU_BAR_APP_NAME = "Libera by Thinh Hoang";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
 
 function applyApplicationIdentity() {
-  app.setName(APP_DISPLAY_NAME);
+  app.setName(MACOS_MENU_BAR_APP_NAME);
   process.title = APP_DISPLAY_NAME;
   app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
 }
@@ -24,6 +26,7 @@ let activeSetupPromise = null;
 let activeSetupWindow = null;
 let nextProcess = null;
 let mainWindow = null;
+let nextServerUrl = "";
 let isQuitting = false;
 
 function getAppRoot() {
@@ -231,6 +234,130 @@ function showAboutDialog() {
   });
 }
 
+function sanitizePdfFileName(fileName) {
+  const cleaned = (typeof fileName === "string" ? fileName : "")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const fallback = "document.pdf";
+  const safeFileName = cleaned || fallback;
+
+  return /\.pdf$/i.test(safeFileName) ? safeFileName : `${safeFileName}.pdf`;
+}
+
+function normalizeMarkdownPdfExportInput(input) {
+  if (!input || typeof input !== "object") {
+    throw new Error("PDF export input is invalid.");
+  }
+
+  return {
+    content: typeof input.content === "string" ? input.content : "",
+    documentPath: typeof input.documentPath === "string" ? input.documentPath : "",
+    fileName: sanitizePdfFileName(input.fileName),
+    title: typeof input.title === "string" ? input.title : "",
+  };
+}
+
+function getRendererOrigin(webContents) {
+  if (nextServerUrl) {
+    return nextServerUrl;
+  }
+
+  const currentUrl = webContents.getURL();
+
+  if (!currentUrl) {
+    throw new Error("Could not determine the app URL for PDF export.");
+  }
+
+  return new URL(currentUrl).origin;
+}
+
+async function waitForMarkdownPdfExportPage(webContents) {
+  await webContents.executeJavaScript(`
+    new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const timeoutMs = ${MARKDOWN_EXPORT_READY_TIMEOUT_MS};
+
+      function check() {
+        if (window.liberaMarkdownPdfExport && typeof window.liberaMarkdownPdfExport.render === "function") {
+          resolve(true);
+          return;
+        }
+
+        if (Date.now() - startedAt > timeoutMs) {
+          reject(new Error("Markdown PDF export page did not initialize."));
+          return;
+        }
+
+        window.setTimeout(check, 50);
+      }
+
+      check();
+    })
+  `);
+}
+
+async function renderMarkdownPdfExportPage(webContents, payload) {
+  await webContents.executeJavaScript(
+    `window.liberaMarkdownPdfExport.render(${JSON.stringify(payload)})`,
+  );
+}
+
+async function exportMarkdownPdf(event, input) {
+  const payload = normalizeMarkdownPdfExportInput(input);
+  const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+  const saveResult = await dialog.showSaveDialog(parentWindow, {
+    defaultPath: path.join(app.getPath("documents"), payload.fileName),
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+    title: "Export Markdown as PDF",
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { canceled: true };
+  }
+
+  const outputPath = /\.pdf$/i.test(saveResult.filePath)
+    ? saveResult.filePath
+    : `${saveResult.filePath}.pdf`;
+  const exportWindow = new BrowserWindow({
+    backgroundColor: "#ffffff",
+    height: 1280,
+    parent: parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+    width: 960,
+  });
+
+  try {
+    const exportUrl = new URL("/markdown-export", getRendererOrigin(event.sender));
+
+    await exportWindow.loadURL(exportUrl.toString());
+    await waitForMarkdownPdfExportPage(exportWindow.webContents);
+    await renderMarkdownPdfExportPage(exportWindow.webContents, {
+      content: payload.content,
+      documentPath: payload.documentPath,
+      title: payload.title,
+    });
+
+    const pdf = await exportWindow.webContents.printToPDF({
+      pageSize: "A4",
+      preferCSSPageSize: true,
+      printBackground: true,
+    });
+
+    await fsp.writeFile(outputPath, pdf);
+
+    return { canceled: false, filePath: outputPath };
+  } finally {
+    if (!exportWindow.isDestroyed()) {
+      exportWindow.close();
+    }
+  }
+}
+
 function dispatchRendererKeydown(webContents, options) {
   if (!webContents || webContents.isDestroyed()) {
     return;
@@ -330,7 +457,7 @@ function installApplicationMenu() {
     ...(isMac
       ? [
           {
-            label: APP_DISPLAY_NAME,
+            label: MACOS_MENU_BAR_APP_NAME,
             submenu: [
               aboutMenuItem,
               { type: "separator" },
@@ -338,11 +465,11 @@ function installApplicationMenu() {
               { type: "separator" },
               { role: "services" },
               { type: "separator" },
-              { role: "hide" },
-              { role: "hideOthers" },
+              { label: `Hide ${APP_DISPLAY_NAME}`, role: "hide" },
+              { label: "Hide Others", role: "hideOthers" },
               { role: "unhide" },
               { type: "separator" },
-              { role: "quit" },
+              { label: `Quit ${APP_DISPLAY_NAME}`, role: "quit" },
             ],
           },
         ]
@@ -399,6 +526,10 @@ function installApplicationMenu() {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function installExportHandlers() {
+  ipcMain.handle("export:markdown-pdf", exportMarkdownPdf);
 }
 
 function getFreePort() {
@@ -582,6 +713,7 @@ async function createMainWindow(url) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
     },
   });
 
@@ -636,6 +768,8 @@ async function bootstrap() {
     }
 
     const url = await startNextServer(config);
+    nextServerUrl = url;
+    installExportHandlers();
     installApplicationMenu();
     await createMainWindow(url);
   } catch (error) {

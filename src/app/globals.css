@@ -80,6 +80,82 @@ body {
   font-family: var(--font-sans);
 }
 
+html.libera-markdown-export-mode {
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #52525b;
+  --border: #d4d4d8;
+  --input: #d4d4d8;
+  --accent: #0f766e;
+  --accent-foreground: #ffffff;
+  --primary: #18181b;
+  --primary-foreground: #ffffff;
+  background: #ffffff;
+  color: #18181b;
+  color-scheme: light;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+html.libera-markdown-export-mode body {
+  background: #ffffff;
+  color: #18181b;
+  display: block;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.markdown-pdf-export-page {
+  background: #ffffff;
+  color: #18181b;
+  min-height: 100vh;
+  padding: 48px;
+}
+
+.markdown-pdf-export-document {
+  margin: 0 auto;
+  max-width: 760px;
+}
+
+.markdown-pdf-export-loading {
+  color: #52525b;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.markdown-pdf-export-document img,
+.markdown-pdf-export-document blockquote,
+.markdown-pdf-export-document pre,
+.markdown-pdf-export-document table,
+.markdown-pdf-export-document .katex-display {
+  break-inside: avoid;
+}
+
+@page {
+  margin: 18mm;
+  size: A4;
+}
+
+@media print {
+  .markdown-pdf-export-page {
+    min-height: auto;
+    padding: 0;
+  }
+
+  .markdown-pdf-export-document {
+    max-width: none;
+  }
+
+  .markdown-pdf-export-document a {
+    color: inherit;
+  }
+}
+
 input,
 textarea {
   background-color: var(--card);

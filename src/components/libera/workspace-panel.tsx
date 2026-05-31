@@ -29,6 +29,10 @@ import type {
   OpenTabViewState,
   PdfTabViewState,
 } from "@/components/libera/types";
+import { enumerateMarkdownHeadings } from "@/lib/markdown-heading-enumeration";
+import type {
+  MarkdownHeadingEnumerationScope,
+} from "@/lib/markdown-heading-enumeration";
 import {
   findMarkdownSourceElementForOffset,
   getMarkdownSourceOffsetAtPoint,
@@ -719,6 +723,63 @@ export function WorkspacePanel({
     });
   }
 
+  function enumerateActiveMarkdownHeadings(
+    scope: MarkdownHeadingEnumerationScope,
+    startAt = 1,
+  ) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const draft = textarea?.value ?? activeTab.draft;
+    const scrollLeft = textarea?.scrollLeft ?? 0;
+    const scrollTop = textarea?.scrollTop ?? 0;
+    const selectionStart =
+      textarea?.selectionStart ?? activeMarkdownViewState?.selectionStart ?? 0;
+    const selectionEnd =
+      textarea?.selectionEnd ?? activeMarkdownViewState?.selectionEnd ?? selectionStart;
+    const nextDraft = enumerateMarkdownHeadings(draft, {
+      scope,
+      selection: {
+        end: selectionEnd,
+        start: selectionStart,
+      },
+      startAt,
+    });
+
+    if (nextDraft === draft) {
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      return;
+    }
+
+    onSetDraft(nextDraft);
+
+    const nextSelectionStart = Math.min(selectionStart, nextDraft.length);
+    const nextSelectionEnd = Math.min(selectionEnd, nextDraft.length);
+
+    updateMarkdownViewState({
+      line: getMarkdownLineForOffset(nextDraft, nextSelectionStart),
+      selectionEnd: nextSelectionEnd,
+      selectionStart: nextSelectionStart,
+    });
+
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+
+      if (!nextTextarea) {
+        return;
+      }
+
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+      nextTextarea.scrollLeft = scrollLeft;
+      nextTextarea.scrollTop = scrollTop;
+    });
+  }
+
   function handleMarkdownPreviewDoubleClick(
     event: ReactMouseEvent<HTMLElement>,
   ) {
@@ -819,6 +880,7 @@ export function WorkspacePanel({
           <MarkdownToolbar
             canStartScreenshotSnip={canStartScreenshotSnip}
             markdownZoom={markdownZoom}
+            onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
