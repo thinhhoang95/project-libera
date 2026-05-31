@@ -114,6 +114,7 @@ const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
 const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
 const PENDING_PARENT_DRAFT_TIMEOUT_MS = 1000;
+const SELECTION_CHANGE_DEBOUNCE_MS = 120;
 
 type HeadingLevelChangeDirection = "indent" | "unindent";
 
@@ -479,6 +480,7 @@ export function MarkdownEditor({
   const pendingEditorValueTimeoutRef = useRef<number | null>(null);
   const previousActiveFilePathRef = useRef(activeFilePath);
   const propValueRef = useRef(value);
+  const selectionChangeTimeoutRef = useRef<number | null>(null);
   const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(
     () => findTextMatches(editorValue, findQuery),
@@ -583,6 +585,10 @@ export function MarkdownEditor({
 
       if (pendingEditorValueTimeoutRef.current !== null) {
         window.clearTimeout(pendingEditorValueTimeoutRef.current);
+      }
+
+      if (selectionChangeTimeoutRef.current !== null) {
+        window.clearTimeout(selectionChangeTimeoutRef.current);
       }
     };
   }, []);
@@ -1013,6 +1019,10 @@ export function MarkdownEditor({
   }
 
   function handleEditorKeyUp(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Escape") {
+      scheduleSelectionChange(event.currentTarget);
+    }
+
     if (
       event.key === "ArrowDown" ||
       event.key === "ArrowUp" ||
@@ -1046,6 +1056,7 @@ export function MarkdownEditor({
     setEditorValue(nextValue);
     startTransition(() => onChange(nextValue));
     scheduleFileLinkPopupRefresh(textarea, nextValue);
+    scheduleSelectionChange(textarea);
   }
 
   function handleEditorChange(textarea: HTMLTextAreaElement) {
@@ -1053,10 +1064,36 @@ export function MarkdownEditor({
   }
 
   function emitSelectionChange(textarea: HTMLTextAreaElement) {
-    onSelectionChange?.({
+    const selection = {
       end: textarea.selectionEnd,
       start: textarea.selectionStart,
-    });
+    };
+
+    startTransition(() => onSelectionChange?.(selection));
+  }
+
+  function flushSelectionChange(textarea: HTMLTextAreaElement) {
+    if (selectionChangeTimeoutRef.current !== null) {
+      window.clearTimeout(selectionChangeTimeoutRef.current);
+      selectionChangeTimeoutRef.current = null;
+    }
+
+    emitSelectionChange(textarea);
+  }
+
+  function scheduleSelectionChange(textarea: HTMLTextAreaElement) {
+    if (!onSelectionChange) {
+      return;
+    }
+
+    if (selectionChangeTimeoutRef.current !== null) {
+      window.clearTimeout(selectionChangeTimeoutRef.current);
+    }
+
+    selectionChangeTimeoutRef.current = window.setTimeout(() => {
+      selectionChangeTimeoutRef.current = null;
+      emitSelectionChange(textarea);
+    }, SELECTION_CHANGE_DEBOUNCE_MS);
   }
 
   function syncHighlightLayerScroll(textarea: HTMLTextAreaElement) {
@@ -1117,10 +1154,13 @@ export function MarkdownEditor({
           lineHeight: `${1.5 * textScale}rem`,
         }}
         value={editorValue}
-        onBlur={(event) => emitSelectionChange(event.currentTarget)}
+        onBlur={(event) => flushSelectionChange(event.currentTarget)}
         onChange={(event) => handleEditorChange(event.currentTarget)}
         onContextMenu={openContextMenu}
-        onClick={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
+        onClick={(event) => {
+          scheduleFileLinkPopupRefresh(event.currentTarget);
+          scheduleSelectionChange(event.currentTarget);
+        }}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
@@ -1128,6 +1168,7 @@ export function MarkdownEditor({
         onDrop={(event) => void handleDrop(event)}
         onPaste={(event) => void handlePaste(event)}
         onFocus={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
+        onSelect={(event) => scheduleSelectionChange(event.currentTarget)}
         onScroll={handleEditorScroll}
         spellCheck={false}
       />

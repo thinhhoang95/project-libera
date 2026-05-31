@@ -7,7 +7,7 @@ import {
   StickyNote,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import {
@@ -132,6 +132,27 @@ function getMarkdownHeadingSectionEnd(
 function lineForOffset(value: string, offset: number) {
   return value.slice(0, Math.max(0, Math.min(offset, value.length))).split("\n")
     .length;
+}
+
+function getActiveMarkdownHeadingId(
+  headings: MarkdownHeading[],
+  activeLine: number | undefined,
+) {
+  if (activeLine === undefined) {
+    return null;
+  }
+
+  let activeHeadingId: string | null = null;
+
+  for (const heading of headings) {
+    if (heading.line > activeLine) {
+      break;
+    }
+
+    activeHeadingId = heading.id;
+  }
+
+  return activeHeadingId;
 }
 
 function insertMarkdownSection(
@@ -285,6 +306,7 @@ function useMarkdownOutline(activeTab?: OpenTab) {
   const hasActiveTab = Boolean(activeTab);
   const tabId = activeTab?.id ?? "";
   const draft = activeTab?.draft ?? "";
+  const updateSequenceRef = useRef(0);
   const [outlineState, setOutlineState] = useState<MarkdownOutlineState>(() => ({
     draft,
     headings: activeTab ? parseMarkdownHeadings(draft) : [],
@@ -292,15 +314,21 @@ function useMarkdownOutline(activeTab?: OpenTab) {
   }));
 
   useEffect(() => {
+    updateSequenceRef.current += 1;
+    const updateSequence = updateSequenceRef.current;
+
     if (!hasActiveTab) {
       const timeout = window.setTimeout(() => {
-        setOutlineState((current) =>
-          current.tabId === "" &&
-          current.draft === "" &&
-          current.headings.length === 0
-            ? current
-            : { draft: "", headings: [], tabId: "" },
-        );
+        startTransition(() => {
+          setOutlineState((current) =>
+            updateSequenceRef.current !== updateSequence ||
+            (current.tabId === "" &&
+              current.draft === "" &&
+              current.headings.length === 0)
+              ? current
+              : { draft: "", headings: [], tabId: "" },
+          );
+        });
       }, 0);
 
       return () => window.clearTimeout(timeout);
@@ -313,10 +341,21 @@ function useMarkdownOutline(activeTab?: OpenTab) {
     const parseDelay =
       outlineState.tabId === tabId ? MARKDOWN_OUTLINE_PARSE_DELAY_MS : 0;
     const timeout = window.setTimeout(() => {
-      setOutlineState({
-        draft,
-        headings: parseMarkdownHeadings(draft),
-        tabId,
+      startTransition(() => {
+        setOutlineState((current) => {
+          if (
+            updateSequenceRef.current !== updateSequence ||
+            (current.tabId === tabId && current.draft === draft)
+          ) {
+            return current;
+          }
+
+          return {
+            draft,
+            headings: parseMarkdownHeadings(draft),
+            tabId,
+          };
+        });
       });
     }, parseDelay);
 
@@ -426,6 +465,14 @@ function MarkdownOutline({
   const outlineState = useMarkdownOutline(activeTab);
   const headings = outlineState.headings;
   const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
+  const activeMarkdownLine =
+    activeTab?.viewState?.markdown?.line ??
+    (typeof activeTab?.viewState?.markdown?.selectionStart === "number"
+      ? lineForOffset(activeTab.draft, activeTab.viewState.markdown.selectionStart)
+      : undefined);
+  const activeHeadingId = outlineIsCurrent
+    ? getActiveMarkdownHeadingId(headings, activeMarkdownLine)
+    : null;
   const [draggingHeadingId, setDraggingHeadingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<MarkdownOutlineDropTarget | null>(
     null,
@@ -668,18 +715,31 @@ function MarkdownOutline({
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
             const isDragging = draggingHeadingId === heading.id;
+            const isActive = activeHeadingId === heading.id;
 
             return (
               <button
                 key={heading.id}
-                className={`relative flex w-full cursor-grab items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted active:cursor-grabbing disabled:cursor-default disabled:opacity-60 ${
+                className={`relative flex w-full items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
+                  outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
+                } ${
                   isDragging ? "opacity-45" : ""
                 }`}
-                style={{ paddingLeft: `${8 + (heading.level - 1) * 12}px` }}
+                style={{
+                  paddingLeft: `${8 + (heading.level - 1) * 12}px`,
+                  ...(isActive
+                    ? {
+                        backgroundColor:
+                          "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        borderColor:
+                          "color-mix(in srgb, var(--accent) 46%, transparent)",
+                      }
+                    : undefined),
+                }}
+                aria-current={isActive ? "location" : undefined}
                 title={heading.text}
                 type="button"
                 draggable={outlineIsCurrent}
-                disabled={!outlineIsCurrent}
                 onClick={() => void navigateToHeading(heading)}
                 onDragEnd={handleHeadingDragEnd}
                 onDragLeave={(event) => handleHeadingDragLeave(event, heading)}

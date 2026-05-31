@@ -11,7 +11,7 @@ import type {
   RefObject,
   UIEvent as ReactUIEvent,
 } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
@@ -210,8 +210,12 @@ function scrollPreviewToSourceOffset(preview: HTMLElement, offset: number) {
 function useDebouncedPreviewContent(content: string, resetKey: string | undefined) {
   const [previewContent, setPreviewContent] = useState(content);
   const resetKeyRef = useRef(resetKey);
+  const updateSequenceRef = useRef(0);
 
   useEffect(() => {
+    updateSequenceRef.current += 1;
+    const updateSequence = updateSequenceRef.current;
+
     if (resetKeyRef.current !== resetKey) {
       resetKeyRef.current = resetKey;
       setPreviewContent(content);
@@ -219,7 +223,13 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
     }
 
     const timeout = window.setTimeout(() => {
-      setPreviewContent(content);
+      startTransition(() => {
+        setPreviewContent((currentPreviewContent) =>
+          updateSequenceRef.current === updateSequence
+            ? content
+            : currentPreviewContent,
+        );
+      });
     }, MARKDOWN_PREVIEW_RENDER_DELAY_MS);
 
     return () => window.clearTimeout(timeout);
