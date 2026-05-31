@@ -4,12 +4,15 @@ import {
   ChevronDown,
   ChevronUp,
   ImageIcon,
+  ListIndentDecrease,
+  ListIndentIncrease,
   Loader2,
   Search,
   Sparkles,
   X,
 } from "lucide-react";
 import type {
+  ClipboardEvent as ReactClipboardEvent,
   DragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent,
@@ -92,18 +95,45 @@ type MarkdownEditorProps = {
     selection: MarkdownFileLinkSelection,
     range?: MarkdownFileLinkRange,
   ) => void;
-  onInsertImageFile: (file: File) => Promise<void>;
+  onInsertImageFile: (
+    file: File,
+    selection?: { end: number; start: number },
+  ) => Promise<void>;
   onSelectionChange?: (selection: { end: number; start: number }) => void;
 };
 
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
+const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
 const PENDING_PARENT_DRAFT_TIMEOUT_MS = 1000;
+
+type HeadingLevelChangeDirection = "indent" | "unindent";
 
 type HighlightChunk = {
   className?: string;
   text: string;
+};
+
+type TextMutation = {
+  inserted: number;
+  offset: number;
+  removed: number;
+};
+
+type HeadingLevelChangeResult = {
+  changed: boolean;
+  hasHeading: boolean;
+  nextEnd: number;
+  nextStart: number;
+  nextValue: string;
 };
 
 function findTextMatches(value: string, query: string): TextMatch[] {
@@ -192,8 +222,172 @@ function getDroppedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files).filter(isImageFile);
 }
 
+function timestampForPastedImageName() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[:.]/g, "-");
+}
+
+function normalizeClipboardImageFile(file: File) {
+  if (IMAGE_FILE_EXTENSION_REGEX.test(file.name)) {
+    return file;
+  }
+
+  const extension = CLIPBOARD_IMAGE_TYPE_EXTENSIONS[file.type.toLowerCase()];
+
+  if (!extension) {
+    return null;
+  }
+
+  return new File([file], `pasted-image-${timestampForPastedImageName()}.${extension}`, {
+    lastModified: file.lastModified || Date.now(),
+    type: file.type,
+  });
+}
+
+function getClipboardImageFiles(dataTransfer: DataTransfer) {
+  const files = Array.from(dataTransfer.files)
+    .filter(isImageFile)
+    .map(normalizeClipboardImageFile)
+    .filter((file): file is File => Boolean(file));
+
+  if (files.length) {
+    return files;
+  }
+
+  return Array.from(dataTransfer.items)
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+    .map(normalizeClipboardImageFile)
+    .filter((file): file is File => Boolean(file));
+}
+
 function getHighlightClassName(tone: MarkdownEditorLineTone | undefined) {
   return tone ? `markdown-editor-highlight-tone-${tone}` : undefined;
+}
+
+function isHeadingTone(tone: MarkdownEditorLineTone | undefined) {
+  return tone?.startsWith("heading-") ?? false;
+}
+
+function transformSelectionOffset(
+  offset: number,
+  mutations: TextMutation[],
+  insertAffinity: "after" | "before",
+) {
+  let delta = 0;
+
+  for (const mutation of mutations) {
+    if (mutation.removed === 0) {
+      if (
+        offset > mutation.offset ||
+        (offset === mutation.offset && insertAffinity === "after")
+      ) {
+        delta += mutation.inserted;
+      }
+
+      continue;
+    }
+
+    if (offset <= mutation.offset) {
+      continue;
+    }
+
+    if (offset <= mutation.offset + mutation.removed) {
+      return mutation.offset + delta + mutation.inserted;
+    }
+
+    delta += mutation.inserted - mutation.removed;
+  }
+
+  return offset + delta;
+}
+
+function changeSelectedHeadingLevels(
+  value: string,
+  start: number,
+  end: number,
+  direction: HeadingLevelChangeDirection,
+): HeadingLevelChangeResult {
+  const selectionStart = Math.max(0, Math.min(start, end, value.length));
+  const selectionEnd = Math.max(0, Math.min(Math.max(start, end), value.length));
+
+  if (selectionStart === selectionEnd) {
+    return {
+      changed: false,
+      hasHeading: false,
+      nextEnd: selectionEnd,
+      nextStart: selectionStart,
+      nextValue: value,
+    };
+  }
+
+  const lines = value.split("\n");
+  const mutations: TextMutation[] = [];
+  const nextLines: string[] = [];
+  let hasHeading = false;
+  let lineOffset = 0;
+  let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
+
+  for (const line of lines) {
+    const lineEnd = lineOffset + line.length;
+    const lineSelected = selectionStart < lineEnd && selectionEnd > lineOffset;
+    const highlight = getMarkdownEditorLineHighlight(line, state);
+    const headingMatch = line.match(MARKDOWN_HEADING_REGEX);
+    let nextLine = line;
+
+    state = highlight.nextState;
+
+    if (lineSelected && isHeadingTone(highlight.tone) && headingMatch) {
+      const leadingSpaces = headingMatch[1] ?? "";
+      const headingMarkers = headingMatch[2] ?? "";
+      const markerOffset = lineOffset + leadingSpaces.length;
+
+      hasHeading = true;
+
+      if (direction === "indent" && headingMarkers.length < 6) {
+        nextLine = `${line.slice(0, leadingSpaces.length)}#${line.slice(
+          leadingSpaces.length,
+        )}`;
+        mutations.push({
+          inserted: 1,
+          offset: markerOffset,
+          removed: 0,
+        });
+      }
+
+      if (direction === "unindent" && headingMarkers.length > 1) {
+        nextLine = `${line.slice(0, leadingSpaces.length)}${line.slice(
+          leadingSpaces.length + 1,
+        )}`;
+        mutations.push({
+          inserted: 0,
+          offset: markerOffset,
+          removed: 1,
+        });
+      }
+    }
+
+    nextLines.push(nextLine);
+    lineOffset = lineEnd + 1;
+  }
+
+  if (!mutations.length) {
+    return {
+      changed: false,
+      hasHeading,
+      nextEnd: selectionEnd,
+      nextStart: selectionStart,
+      nextValue: value,
+    };
+  }
+
+  return {
+    changed: true,
+    hasHeading,
+    nextEnd: transformSelectionOffset(selectionEnd, mutations, "after"),
+    nextStart: transformSelectionOffset(selectionStart, mutations, "before"),
+    nextValue: nextLines.join("\n"),
+  };
 }
 
 function appendHighlightChunk(
@@ -314,6 +508,29 @@ export function MarkdownEditor({
   const selectedFileLinkIndex = fileLinkOptions.length
     ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1)
     : 0;
+  const contextMenuHeadingLevels = useMemo(() => {
+    if (!contextMenu || contextMenu.start === contextMenu.end) {
+      return {
+        canIndent: false,
+        canUnindent: false,
+      };
+    }
+
+    return {
+      canIndent: changeSelectedHeadingLevels(
+        editorValue,
+        contextMenu.start,
+        contextMenu.end,
+        "indent",
+      ).changed,
+      canUnindent: changeSelectedHeadingLevels(
+        editorValue,
+        contextMenu.start,
+        contextMenu.end,
+        "unindent",
+      ).changed,
+    };
+  }, [contextMenu, editorValue]);
 
   useEffect(() => {
     editorValueRef.current = editorValue;
@@ -591,7 +808,7 @@ export function MarkdownEditor({
 
     event.preventDefault();
     const menuWidth = 288;
-    const menuHeight = image ? 190 : 146;
+    const menuHeight = (image ? 190 : 146) + (selectedText.trim() ? 80 : 0);
     setRewritePrompt("");
 
     setContextMenu({
@@ -649,6 +866,49 @@ export function MarkdownEditor({
     await onAiImageToMarkdown(image);
   }
 
+  function applyHeadingLevelChange(
+    direction: HeadingLevelChangeDirection,
+    selection?: { end: number; start: number },
+  ) {
+    const textarea = textareaRef.current;
+    const currentValue = editorValueRef.current;
+    const selectionStart = selection?.start ?? textarea?.selectionStart ?? 0;
+    const selectionEnd = selection?.end ?? textarea?.selectionEnd ?? 0;
+    const result = changeSelectedHeadingLevels(
+      currentValue,
+      selectionStart,
+      selectionEnd,
+      direction,
+    );
+
+    if (!result.hasHeading) {
+      return false;
+    }
+
+    setContextMenu(null);
+    closeFileLinkPopup();
+
+    if (textarea && result.changed) {
+      commitEditorValue(textarea, result.nextValue);
+    }
+
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+
+      if (!nextTextarea) {
+        return;
+      }
+
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(result.nextStart, result.nextEnd);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+      scheduleFileLinkPopupRefresh(nextTextarea, result.nextValue);
+    });
+
+    return true;
+  }
+
   function handleDragOver(event: DragEvent<HTMLTextAreaElement>) {
     if (!hasImageDragItem(event.dataTransfer)) {
       return;
@@ -678,7 +938,27 @@ export function MarkdownEditor({
     textarea.focus();
     textarea.setSelectionRange(dropOffset, dropOffset);
 
-    await onInsertImageFile(imageFiles[0]);
+    await onInsertImageFile(imageFiles[0], { start: dropOffset, end: dropOffset });
+  }
+
+  async function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = getClipboardImageFiles(event.clipboardData);
+
+    if (!imageFiles.length) {
+      return;
+    }
+
+    event.preventDefault();
+    setContextMenu(null);
+    closeFileLinkPopup();
+
+    const textarea = event.currentTarget;
+    const selection = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+
+    await onInsertImageFile(imageFiles[0], selection);
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -710,6 +990,22 @@ export function MarkdownEditor({
       }
     }
 
+    if (
+      event.key === "Tab" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey
+    ) {
+      const handled = applyHeadingLevelChange(
+        event.shiftKey ? "unindent" : "indent",
+      );
+
+      if (handled) {
+        event.preventDefault();
+        return;
+      }
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openFind();
@@ -729,9 +1025,7 @@ export function MarkdownEditor({
     scheduleFileLinkPopupRefresh(event.currentTarget);
   }
 
-  function handleEditorChange(textarea: HTMLTextAreaElement) {
-    const nextValue = textarea.value;
-
+  function commitEditorValue(textarea: HTMLTextAreaElement, nextValue: string) {
     pendingEditorValueRef.current = nextValue;
     if (pendingEditorValueTimeoutRef.current !== null) {
       window.clearTimeout(pendingEditorValueTimeoutRef.current);
@@ -752,6 +1046,10 @@ export function MarkdownEditor({
     setEditorValue(nextValue);
     startTransition(() => onChange(nextValue));
     scheduleFileLinkPopupRefresh(textarea, nextValue);
+  }
+
+  function handleEditorChange(textarea: HTMLTextAreaElement) {
+    commitEditorValue(textarea, textarea.value);
   }
 
   function emitSelectionChange(textarea: HTMLTextAreaElement) {
@@ -828,6 +1126,7 @@ export function MarkdownEditor({
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
         onDrop={(event) => void handleDrop(event)}
+        onPaste={(event) => void handlePaste(event)}
         onFocus={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
         onScroll={handleEditorScroll}
         spellCheck={false}
@@ -913,6 +1212,40 @@ export function MarkdownEditor({
             )}
             {formatting ? "Formatting..." : "AI Format"}
           </button>
+          {contextMenu.start !== contextMenu.end ? (
+            <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                disabled={!contextMenuHeadingLevels.canIndent}
+                onClick={() => {
+                  applyHeadingLevelChange("indent", {
+                    start: contextMenu.start,
+                    end: contextMenu.end,
+                  });
+                }}
+              >
+                <ListIndentIncrease aria-hidden className="h-4 w-4" />
+                Indent Headings
+              </button>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                disabled={!contextMenuHeadingLevels.canUnindent}
+                onClick={() => {
+                  applyHeadingLevelChange("unindent", {
+                    start: contextMenu.start,
+                    end: contextMenu.end,
+                  });
+                }}
+              >
+                <ListIndentDecrease aria-hidden className="h-4 w-4" />
+                Unindent Headings
+              </button>
+            </>
+          ) : null}
           <form
             className="mt-1 border-t border-border px-2 py-2"
             onSubmit={(event) => {

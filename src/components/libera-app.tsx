@@ -75,6 +75,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onRenameFile={workspace.renameFileNodeFromPrompt}
           onSelectNotebook={workspace.selectNotebook}
           onSelectSearchResult={workspace.selectSearchResult}
+          onSetDraft={workspace.setActiveDraft}
           onStartUpload={workspace.startUpload}
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}

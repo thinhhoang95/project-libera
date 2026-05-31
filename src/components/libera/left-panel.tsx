@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { RefObject } from "react";
 import {
   BookOpen,
@@ -21,6 +21,7 @@ type LeftPanelProps = NotebookPanelProps & {
   collapsed: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onLogout: () => Promise<void>;
+  onSetDraft: (value: string) => void;
   onToggleCollapsed: () => void;
 };
 
@@ -38,6 +39,7 @@ export function LeftPanel({
   collapsed,
   textareaRef,
   onLogout,
+  onSetDraft,
   onToggleCollapsed,
   ...notebookPanelProps
 }: LeftPanelProps) {
@@ -50,6 +52,40 @@ export function LeftPanel({
       onToggleCollapsed();
     }
   }
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (
+        event.defaultPrevented ||
+        event.altKey ||
+        event.shiftKey ||
+        (!event.metaKey && !event.ctrlKey)
+      ) {
+        return;
+      }
+
+      const nextPanel =
+        event.key === "1" || event.code === "Digit1"
+          ? "notebook"
+          : event.key === "2" || event.code === "Digit2"
+            ? "outlines"
+            : null;
+
+      if (!nextPanel) {
+        return;
+      }
+
+      event.preventDefault();
+      setActivePanel(nextPanel);
+
+      if (collapsed) {
+        onToggleCollapsed();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [collapsed, onToggleCollapsed]);
 
   return (
     <aside className="flex min-h-0 max-h-[40vh] overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
@@ -69,6 +105,7 @@ export function LeftPanel({
               activeTab={activeTab}
               textareaRef={textareaRef}
               onOpenFile={notebookPanelProps.onOpenFile}
+              onSetDraft={onSetDraft}
             />
           )}
         </div>

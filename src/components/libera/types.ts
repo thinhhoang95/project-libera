@@ -241,7 +241,10 @@ export type LiberaWorkspace = {
   ) => void;
   insertMarkdownFileLinkPlaceholder: () => void;
   insertExistingMarkdownImage: (file: LiberaFileNode) => Promise<void>;
-  insertMarkdownImage: (file: File) => Promise<void>;
+  insertMarkdownImage: (
+    file: File,
+    selection?: { end: number; start: number },
+  ) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;

@@ -733,12 +733,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
-  async function insertMarkdownImage(file: File) {
+  async function insertMarkdownImage(
+    file: File,
+    selection?: { start: number; end: number },
+  ) {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
     }
 
     const tabId = activeTab.id;
+    const scrollState = getMarkdownTextareaScrollState();
     const formData = new FormData();
     formData.append("documentPath", activeTab.file.path);
     formData.append("file", file);
@@ -750,7 +754,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         body: formData,
       });
-      insertMarkdownImageMarkup(payload.markdown);
+      const insertionState = insertMarkdownImageMarkupInTab(
+        tabId,
+        payload.markdown,
+        selection,
+      );
+
+      if (insertionState && tabId === activeTabId) {
+        restoreMarkdownTextarea({
+          ...scrollState,
+          selectionStart: insertionState.nextSelectionStart,
+          selectionEnd: insertionState.nextSelectionEnd,
+        });
+      }
     } catch (error) {
       updateTab(tabId, (tab) => ({
         ...tab,

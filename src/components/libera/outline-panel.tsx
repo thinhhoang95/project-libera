@@ -1,8 +1,14 @@
 "use client";
 
-import { FileText, Highlighter, StickyNote } from "lucide-react";
+import {
+  FileText,
+  GripVertical,
+  Highlighter,
+  StickyNote,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { RefObject } from "react";
+import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import {
   PDF_ANNOTATIONS_UPDATED_EVENT,
@@ -19,6 +25,7 @@ type OutlinePanelProps = {
     file: LiberaFileNode,
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
+  onSetDraft: (value: string) => void;
 };
 
 type MarkdownHeading = {
@@ -35,6 +42,25 @@ type MarkdownOutlineState = {
   draft: string;
   headings: MarkdownHeading[];
   tabId: string;
+};
+
+type MarkdownSectionDropPlacement = "after" | "before";
+
+type MarkdownSectionMoveResult = {
+  nextLine: number;
+  nextMarkdown: string;
+  nextOffset: number;
+};
+
+type MarkdownOutlineDropTarget = {
+  headingId: string;
+  placement: MarkdownSectionDropPlacement;
+};
+
+type MarkdownOutlineContextMenuState = {
+  headingId: string;
+  x: number;
+  y: number;
 };
 
 function stripInlineMarkdown(value: string) {
@@ -85,7 +111,177 @@ function parseMarkdownHeadings(markdown: string): MarkdownHeading[] {
   return headings;
 }
 
-function useMarkdownOutlineHeadings(activeTab?: OpenTab) {
+function getMarkdownHeadingSectionEnd(
+  markdown: string,
+  headings: MarkdownHeading[],
+  headingIndex: number,
+) {
+  const heading = headings[headingIndex];
+
+  if (!heading) {
+    return markdown.length;
+  }
+
+  const nextSection = headings
+    .slice(headingIndex + 1)
+    .find((candidate) => candidate.level <= heading.level);
+
+  return nextSection?.offset ?? markdown.length;
+}
+
+function lineForOffset(value: string, offset: number) {
+  return value.slice(0, Math.max(0, Math.min(offset, value.length))).split("\n")
+    .length;
+}
+
+function insertMarkdownSection(
+  markdown: string,
+  insertionOffset: number,
+  section: string,
+) {
+  const before = markdown.slice(0, insertionOffset);
+  const after = markdown.slice(insertionOffset);
+  const prefix = before && !before.endsWith("\n") ? "\n" : "";
+  const suffix = after && !section.endsWith("\n") ? "\n" : "";
+  const nextOffset = before.length + prefix.length;
+
+  return {
+    nextMarkdown: `${before}${prefix}${section}${suffix}${after}`,
+    nextOffset,
+  };
+}
+
+function moveMarkdownHeadingSection(
+  markdown: string,
+  headings: MarkdownHeading[],
+  sourceHeadingId: string,
+  targetHeadingId: string,
+  placement: MarkdownSectionDropPlacement,
+): MarkdownSectionMoveResult | null {
+  const sourceIndex = headings.findIndex((heading) => heading.id === sourceHeadingId);
+  const targetIndex = headings.findIndex((heading) => heading.id === targetHeadingId);
+
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return null;
+  }
+
+  const sourceHeading = headings[sourceIndex];
+  const targetHeading = headings[targetIndex];
+  const sourceStart = sourceHeading.offset;
+  const sourceEnd = getMarkdownHeadingSectionEnd(markdown, headings, sourceIndex);
+  const targetSectionEnd = getMarkdownHeadingSectionEnd(markdown, headings, targetIndex);
+
+  if (
+    targetHeading.offset >= sourceStart &&
+    targetHeading.offset < sourceEnd
+  ) {
+    return null;
+  }
+
+  const sourceSection = markdown.slice(sourceStart, sourceEnd);
+  const markdownWithoutSource = `${markdown.slice(0, sourceStart)}${markdown.slice(
+    sourceEnd,
+  )}`;
+  const targetInsertionOffset =
+    placement === "before" ? targetHeading.offset : targetSectionEnd;
+  const insertionOffset =
+    targetInsertionOffset > sourceStart
+      ? targetInsertionOffset - sourceSection.length
+      : targetInsertionOffset;
+  const insertion = insertMarkdownSection(
+    markdownWithoutSource,
+    insertionOffset,
+    sourceSection,
+  );
+
+  if (insertion.nextMarkdown === markdown) {
+    return null;
+  }
+
+  return {
+    ...insertion,
+    nextLine: lineForOffset(insertion.nextMarkdown, insertion.nextOffset),
+  };
+}
+
+function deleteMarkdownHeadingSection(
+  markdown: string,
+  headings: MarkdownHeading[],
+  headingId: string,
+): MarkdownSectionMoveResult | null {
+  const headingIndex = headings.findIndex((heading) => heading.id === headingId);
+
+  if (headingIndex < 0) {
+    return null;
+  }
+
+  const heading = headings[headingIndex];
+  const sectionEnd = getMarkdownHeadingSectionEnd(markdown, headings, headingIndex);
+  const nextMarkdown = `${markdown.slice(0, heading.offset)}${markdown.slice(
+    sectionEnd,
+  )}`;
+  const nextOffset = Math.min(heading.offset, nextMarkdown.length);
+
+  if (nextMarkdown === markdown) {
+    return null;
+  }
+
+  return {
+    nextLine: lineForOffset(nextMarkdown, nextOffset),
+    nextMarkdown,
+    nextOffset,
+  };
+}
+
+function canMoveMarkdownHeadingSection(
+  markdown: string,
+  headings: MarkdownHeading[],
+  sourceHeadingId: string,
+  targetHeadingId: string,
+) {
+  const sourceIndex = headings.findIndex((heading) => heading.id === sourceHeadingId);
+  const targetIndex = headings.findIndex((heading) => heading.id === targetHeadingId);
+
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return false;
+  }
+
+  const sourceHeading = headings[sourceIndex];
+  const targetHeading = headings[targetIndex];
+  const sourceEnd = getMarkdownHeadingSectionEnd(markdown, headings, sourceIndex);
+
+  return !(
+    targetHeading.offset >= sourceHeading.offset &&
+    targetHeading.offset < sourceEnd
+  );
+}
+
+function getDropPlacement(event: DragEvent<HTMLElement>) {
+  const rect = event.currentTarget.getBoundingClientRect();
+
+  return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
+function restoreMarkdownTextareaToSection(
+  textareaRef: RefObject<HTMLTextAreaElement | null>,
+  offset: number,
+) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+
+      if (!textarea) {
+        return;
+      }
+
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset);
+      scrollTextareaToOffset(textarea, offset, { block: "start" });
+    });
+  });
+}
+
+function useMarkdownOutline(activeTab?: OpenTab) {
   const hasActiveTab = Boolean(activeTab);
   const tabId = activeTab?.id ?? "";
   const draft = activeTab?.draft ?? "";
@@ -133,7 +329,9 @@ function useMarkdownOutlineHeadings(activeTab?: OpenTab) {
     tabId,
   ]);
 
-  return outlineState.tabId === tabId ? outlineState.headings : [];
+  return outlineState.tabId === tabId
+    ? outlineState
+    : { draft: "", headings: [], tabId: "" };
 }
 
 function annotationLabel(annotation: PdfAnnotation) {
@@ -176,6 +374,7 @@ export function OutlinePanel({
   activeTab,
   textareaRef,
   onOpenFile,
+  onSetDraft,
 }: OutlinePanelProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -190,6 +389,7 @@ export function OutlinePanel({
             activeTab={activeTab}
             textareaRef={textareaRef}
             onOpenFile={onOpenFile}
+            onSetDraft={onSetDraft}
           />
         ) : activeTab?.file.fileType === "pdf" ? (
           <PdfOutline activeTab={activeTab} onOpenFile={onOpenFile} />
@@ -213,6 +413,7 @@ function MarkdownOutline({
   activeTab,
   textareaRef,
   onOpenFile,
+  onSetDraft,
 }: {
   activeTab?: OpenTab;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -220,8 +421,45 @@ function MarkdownOutline({
     file: LiberaFileNode,
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
+  onSetDraft: (value: string) => void;
 }) {
-  const headings = useMarkdownOutlineHeadings(activeTab);
+  const outlineState = useMarkdownOutline(activeTab);
+  const headings = outlineState.headings;
+  const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
+  const [draggingHeadingId, setDraggingHeadingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<MarkdownOutlineDropTarget | null>(
+    null,
+  );
+  const [contextMenu, setContextMenu] =
+    useState<MarkdownOutlineContextMenuState | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    function closeContextMenu() {
+      setContextMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeContextMenu();
+      }
+    }
+
+    window.addEventListener("pointerdown", closeContextMenu);
+    window.addEventListener("scroll", closeContextMenu, true);
+    window.addEventListener("resize", closeContextMenu);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeContextMenu);
+      window.removeEventListener("scroll", closeContextMenu, true);
+      window.removeEventListener("resize", closeContextMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
 
   async function navigateToHeading(heading: MarkdownHeading) {
     if (!activeTab) {
@@ -251,6 +489,169 @@ function MarkdownOutline({
     });
   }
 
+  function handleHeadingDragStart(
+    event: DragEvent<HTMLButtonElement>,
+    heading: MarkdownHeading,
+  ) {
+    setContextMenu(null);
+
+    if (!outlineIsCurrent) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", heading.id);
+    setDraggingHeadingId(heading.id);
+    setDropTarget(null);
+  }
+
+  function handleHeadingDragOver(
+    event: DragEvent<HTMLButtonElement>,
+    heading: MarkdownHeading,
+  ) {
+    const sourceHeadingId = draggingHeadingId ?? event.dataTransfer.getData("text/plain");
+
+    if (
+      !outlineIsCurrent ||
+      !sourceHeadingId ||
+      !canMoveMarkdownHeadingSection(
+        outlineState.draft,
+        headings,
+        sourceHeadingId,
+        heading.id,
+      )
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+
+    const placement = getDropPlacement(event);
+    setDropTarget((current) =>
+      current?.headingId === heading.id && current.placement === placement
+        ? current
+        : { headingId: heading.id, placement },
+    );
+  }
+
+  function handleHeadingDragLeave(
+    event: DragEvent<HTMLButtonElement>,
+    heading: MarkdownHeading,
+  ) {
+    if (
+      event.relatedTarget instanceof Node &&
+      event.currentTarget.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+
+    setDropTarget((current) =>
+      current?.headingId === heading.id ? null : current,
+    );
+  }
+
+  function handleHeadingDrop(
+    event: DragEvent<HTMLButtonElement>,
+    heading: MarkdownHeading,
+  ) {
+    event.preventDefault();
+
+    const sourceHeadingId = draggingHeadingId ?? event.dataTransfer.getData("text/plain");
+    const placement = dropTarget?.headingId === heading.id
+      ? dropTarget.placement
+      : getDropPlacement(event);
+
+    setDraggingHeadingId(null);
+    setDropTarget(null);
+
+    if (!activeTab || !outlineIsCurrent || !sourceHeadingId) {
+      return;
+    }
+
+    const moveResult = moveMarkdownHeadingSection(
+      outlineState.draft,
+      headings,
+      sourceHeadingId,
+      heading.id,
+      placement,
+    );
+
+    if (!moveResult) {
+      return;
+    }
+
+    onSetDraft(moveResult.nextMarkdown);
+
+    void onOpenFile(activeTab.file, {
+      viewState: {
+        markdown: {
+          line: moveResult.nextLine,
+          selectionEnd: moveResult.nextOffset,
+          selectionStart: moveResult.nextOffset,
+        },
+      },
+    });
+    restoreMarkdownTextareaToSection(textareaRef, moveResult.nextOffset);
+  }
+
+  function handleHeadingDragEnd() {
+    setDraggingHeadingId(null);
+    setDropTarget(null);
+  }
+
+  function openHeadingContextMenu(
+    event: ReactMouseEvent<HTMLButtonElement>,
+    heading: MarkdownHeading,
+  ) {
+    if (!outlineIsCurrent) {
+      return;
+    }
+
+    event.preventDefault();
+    const menuWidth = 192;
+    const menuHeight = 44;
+
+    setContextMenu({
+      headingId: heading.id,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    });
+  }
+
+  function deleteHeadingSection(headingId: string) {
+    if (!activeTab || !outlineIsCurrent) {
+      setContextMenu(null);
+      return;
+    }
+
+    const deleteResult = deleteMarkdownHeadingSection(
+      outlineState.draft,
+      headings,
+      headingId,
+    );
+
+    setContextMenu(null);
+
+    if (!deleteResult) {
+      return;
+    }
+
+    onSetDraft(deleteResult.nextMarkdown);
+
+    void onOpenFile(activeTab.file, {
+      viewState: {
+        markdown: {
+          line: deleteResult.nextLine,
+          selectionEnd: deleteResult.nextOffset,
+          selectionStart: deleteResult.nextOffset,
+        },
+      },
+    });
+    restoreMarkdownTextareaToSection(textareaRef, deleteResult.nextOffset);
+  }
+
   return (
     <section>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -263,30 +664,74 @@ function MarkdownOutline({
         </p>
       ) : headings.length ? (
         <div className="space-y-1">
-          {headings.map((heading) => (
-            <button
-              key={heading.id}
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-              style={{ paddingLeft: `${8 + (heading.level - 1) * 12}px` }}
-              title={heading.text}
-              type="button"
-              onClick={() => void navigateToHeading(heading)}
-            >
-              <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
-                H{heading.level}
-              </span>
-              <span className="min-w-0 flex-1 truncate">{heading.text}</span>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {heading.line}
-              </span>
-            </button>
-          ))}
+          {headings.map((heading) => {
+            const activeDropPlacement =
+              dropTarget?.headingId === heading.id ? dropTarget.placement : null;
+            const isDragging = draggingHeadingId === heading.id;
+
+            return (
+              <button
+                key={heading.id}
+                className={`relative flex w-full cursor-grab items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted active:cursor-grabbing disabled:cursor-default disabled:opacity-60 ${
+                  isDragging ? "opacity-45" : ""
+                }`}
+                style={{ paddingLeft: `${8 + (heading.level - 1) * 12}px` }}
+                title={heading.text}
+                type="button"
+                draggable={outlineIsCurrent}
+                disabled={!outlineIsCurrent}
+                onClick={() => void navigateToHeading(heading)}
+                onDragEnd={handleHeadingDragEnd}
+                onDragLeave={(event) => handleHeadingDragLeave(event, heading)}
+                onDragOver={(event) => handleHeadingDragOver(event, heading)}
+                onDragStart={(event) => handleHeadingDragStart(event, heading)}
+                onDrop={(event) => handleHeadingDrop(event, heading)}
+                onContextMenu={(event) => openHeadingContextMenu(event, heading)}
+              >
+                {activeDropPlacement === "before" ? (
+                  <span className="pointer-events-none absolute left-2 right-2 top-0 h-0.5 rounded-full bg-accent" />
+                ) : null}
+                {activeDropPlacement === "after" ? (
+                  <span className="pointer-events-none absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-accent" />
+                ) : null}
+                <GripVertical
+                  aria-hidden
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                />
+                <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
+                  H{heading.level}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{heading.text}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {heading.line}
+                </span>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
           No headings in this Markdown file.
         </p>
       )}
+      {contextMenu ? (
+        <div
+          className="fixed z-50 w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-destructive hover:bg-destructive-muted"
+            type="button"
+            role="menuitem"
+            onClick={() => deleteHeadingSection(contextMenu.headingId)}
+          >
+            <Trash2 aria-hidden className="h-4 w-4" />
+            Delete Section
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
