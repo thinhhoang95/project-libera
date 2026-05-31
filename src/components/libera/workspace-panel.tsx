@@ -267,6 +267,8 @@ export function WorkspacePanel({
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
+  const activeMarkdownPathRef = useRef<string | undefined>(undefined);
+  const openMarkdownFileLinkRef = useRef(onOpenMarkdownFileLink);
   const suppressEditorScrollRef = useRef(false);
   const suppressEditorScrollTimeoutRef = useRef<number | null>(null);
   const suppressPreviewScrollRef = useRef(false);
@@ -276,6 +278,8 @@ export function WorkspacePanel({
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
   const activeTabStatus = activeTab?.status;
   const activeTabId = activeTab?.id;
+  const activeMarkdownPath =
+    activeFileType === "markdown" ? activeTab?.file.path : undefined;
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
   const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
@@ -310,6 +314,24 @@ export function WorkspacePanel({
     },
     [onSetViewState],
   );
+
+  useEffect(() => {
+    activeMarkdownPathRef.current = activeMarkdownPath;
+  }, [activeMarkdownPath]);
+
+  useEffect(() => {
+    openMarkdownFileLinkRef.current = onOpenMarkdownFileLink;
+  }, [onOpenMarkdownFileLink]);
+
+  const handleOpenMarkdownFileLink = useCallback((href: string) => {
+    const sourcePath = activeMarkdownPathRef.current;
+
+    if (!sourcePath) {
+      return Promise.resolve(false);
+    }
+
+    return openMarkdownFileLinkRef.current(sourcePath, href);
+  }, []);
 
   useEffect(() => {
     markdownRestoreViewStateRef.current = activeMarkdownViewState;
@@ -549,7 +571,7 @@ export function WorkspacePanel({
 
       event.preventDefault();
 
-      if (activeTabStatus === "saving" || activeTabStatus === "clean") {
+      if (activeTabStatus === "saving") {
         return;
       }
 
@@ -575,8 +597,10 @@ export function WorkspacePanel({
   }
 
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
+    const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
+
     updateMarkdownViewState({
-      line: getMarkdownLineForOffset(activeMarkdownDraft, selection.start),
+      line: getMarkdownLineForOffset(markdownDraft, selection.start),
       selectionEnd: selection.end,
       selectionStart: selection.start,
     });
@@ -660,12 +684,13 @@ export function WorkspacePanel({
     }
 
     const textarea = textareaRef.current;
+    const draft = textarea?.value ?? activeTab.draft;
     const scrollLeft = textarea?.scrollLeft ?? 0;
     const scrollTop = textarea?.scrollTop ?? 0;
     const selectionStart = textarea?.selectionStart ?? 0;
     const selectionEnd = textarea?.selectionEnd ?? selectionStart;
 
-    onSetDraft(fixChatGptEquationBlocks(activeTab.draft));
+    onSetDraft(fixChatGptEquationBlocks(draft));
 
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;
@@ -807,9 +832,7 @@ export function WorkspacePanel({
               <MarkdownRenderer
                 content={activeTab.draft}
                 documentPath={activeTab.file.path}
-                onOpenFileLink={(href) =>
-                  onOpenMarkdownFileLink(activeTab.file.path, href)
-                }
+                onOpenFileLink={handleOpenMarkdownFileLink}
                 textScale={markdownZoom / 100}
               />
             </article>
@@ -867,9 +890,7 @@ export function WorkspacePanel({
                 <MarkdownRenderer
                   content={previewMarkdownDraft}
                   documentPath={activeTab.file.path}
-                  onOpenFileLink={(href) =>
-                    onOpenMarkdownFileLink(activeTab.file.path, href)
-                  }
+                  onOpenFileLink={handleOpenMarkdownFileLink}
                   textScale={markdownZoom / 100}
                 />
               </article>

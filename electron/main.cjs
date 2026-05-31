@@ -231,16 +231,47 @@ function showAboutDialog() {
   });
 }
 
-function dispatchRendererTabShortcut(webContents, shiftKey) {
+function dispatchRendererKeydown(webContents, options) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
   const script = `window.dispatchEvent(new KeyboardEvent("keydown", {
     bubbles: true,
     cancelable: true,
-    ctrlKey: true,
-    key: "Tab",
-    shiftKey: ${shiftKey ? "true" : "false"}
+    ctrlKey: ${options.ctrlKey ? "true" : "false"},
+    key: ${JSON.stringify(options.key)},
+    metaKey: ${options.metaKey ? "true" : "false"},
+    shiftKey: ${options.shiftKey ? "true" : "false"}
   }))`;
 
   webContents.executeJavaScript(script).catch(() => null);
+}
+
+function dispatchRendererTabShortcut(webContents, shiftKey) {
+  dispatchRendererKeydown(webContents, {
+    ctrlKey: true,
+    key: "Tab",
+    metaKey: false,
+    shiftKey,
+  });
+}
+
+function dispatchRendererCloseTabShortcut(webContents) {
+  const isMac = process.platform === "darwin";
+
+  dispatchRendererKeydown(webContents, {
+    ctrlKey: !isMac,
+    key: "w",
+    metaKey: isMac,
+    shiftKey: false,
+  });
+}
+
+function dispatchCloseTabToFocusedWindow() {
+  const focusedWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
+
+  dispatchRendererCloseTabShortcut(focusedWindow?.webContents);
 }
 
 async function openConfigurationWindow() {
@@ -286,6 +317,11 @@ function installApplicationMenu() {
     click: () => void openConfigurationWindow(),
     label: "Configuration...",
   };
+  const closeTabMenuItem = {
+    accelerator: "CmdOrCtrl+W",
+    click: dispatchCloseTabToFocusedWindow,
+    label: "Close Tab",
+  };
   const aboutMenuItem = {
     click: showAboutDialog,
     label: `About ${APP_DISPLAY_NAME}`,
@@ -315,7 +351,8 @@ function installApplicationMenu() {
       label: "File",
       submenu: [
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
-        isMac ? { role: "close" } : { role: "quit" },
+        closeTabMenuItem,
+        ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
       ],
     },
     {

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   LiberaFileNode,
   LiberaFilePayload,
@@ -172,6 +172,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [workspaceError, setWorkspaceError] = useState("");
   const [uploadNotebook, setUploadNotebook] = useState("");
   const activeTabHistoryRef = useRef<string[]>([]);
+  const latestDraftByTabIdRef = useRef<Record<string, string>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -297,6 +298,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }).catch(() => null);
     setAuthenticated(false);
     setTree(emptyTree());
+    latestDraftByTabIdRef.current = {};
     setTabs([]);
     setActiveTabId("");
     setSelectedNotebookName("");
@@ -306,6 +308,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setTabs((currentTabs) =>
       currentTabs.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
     );
+  }
+
+  function rememberTabDraft(tabId: string, draft: string) {
+    latestDraftByTabIdRef.current[tabId] = draft;
+  }
+
+  function forgetTabDraft(tabId: string) {
+    delete latestDraftByTabIdRef.current[tabId];
+  }
+
+  function getTabDraft(tab: OpenTab) {
+    return latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
   }
 
   function recordFileInteraction(file: LiberaFileNode) {
@@ -361,16 +375,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const payload = await apiRequest<LiberaFilePayload>(
         `/api/files?path=${encodeURIComponent(file.path)}`,
       );
+      const draft = payload.content ?? "";
       const nextTab: OpenTab = {
         id: payload.file.path,
         file: payload.file,
-        draft: payload.content ?? "",
-        saved: payload.content ?? "",
+        draft,
+        saved: draft,
         rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(payload.file.path)}`,
         status: "clean",
         viewState: options.viewState,
       };
 
+      rememberTabDraft(nextTab.id, draft);
       setTabs((currentTabs) => [...currentTabs, nextTab]);
       setActiveTabId(nextTab.id);
       recordFileInteraction(payload.file);
@@ -392,24 +408,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return true;
   }
 
-  function closeTab(tabId: string) {
+  const closeTabWithoutConfirm = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab?.status === "dirty") {
-      setWorkspaceConfirmDialog({
-        mode: "close-tab",
-        tabId,
-        fileName: tab.file.name,
-      });
-      return;
-    }
-
-    closeTabWithoutConfirm(tabId);
-  }
-
-  function closeTabWithoutConfirm(tabId: string) {
-    const tab = tabs.find((currentTab) => currentTab.id === tabId);
-
+    forgetTabDraft(tabId);
     setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== tabId));
 
     if (activeTabId === tabId) {
@@ -423,13 +425,29 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         setSelectedNotebookName(tab.file.notebook);
       }
     }
-  }
+  }, [activeTabId, tabs]);
+
+  const closeTab = useCallback((tabId: string) => {
+    const tab = tabs.find((currentTab) => currentTab.id === tabId);
+
+    if (tab?.status === "dirty") {
+      setWorkspaceConfirmDialog({
+        mode: "close-tab",
+        tabId,
+        fileName: tab.file.name,
+      });
+      return;
+    }
+
+    closeTabWithoutConfirm(tabId);
+  }, [closeTabWithoutConfirm, tabs]);
 
   function setActiveDraft(value: string) {
     if (!activeTab) {
       return;
     }
 
+    rememberTabDraft(activeTab.id, value);
     updateTab(activeTab.id, (tab) => ({
       ...tab,
       draft: value,
@@ -516,7 +534,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
     const selectedText = draft.slice(start, end) || placeholder;
@@ -539,7 +557,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
     const selectedText = draft.slice(start, end) || "link";
@@ -570,7 +588,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const line =
       targetTab?.file.fileType === "markdown" &&
       typeof markdownSelectionStart === "number"
-        ? lineForOffset(targetTab.draft, markdownSelectionStart)
+        ? lineForOffset(getTabDraft(targetTab), markdownSelectionStart)
         : viewState.markdown?.line ?? (selection.file.fileType === "markdown" ? 1 : undefined);
 
     return {
@@ -630,7 +648,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       sourcePath: activeTab.file.path,
       targetPath: selection.file.path,
     });
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
     const start = clampTextOffset(
@@ -674,15 +692,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const textarea = tabId === activeTabId ? textareaRef.current : null;
+    const targetDraft = getTabDraft(targetTab);
     const insertionState = createMarkdownImageInsertion(
-      targetTab.draft,
+      targetDraft,
       insertion,
       selection ?? {
-        start: textarea?.selectionStart ?? targetTab.draft.length,
-        end: textarea?.selectionEnd ?? targetTab.draft.length,
+        start: textarea?.selectionStart ?? targetDraft.length,
+        end: textarea?.selectionEnd ?? targetDraft.length,
       },
     );
 
+    rememberTabDraft(tabId, insertionState.nextDraft);
     updateTab(tabId, (tab) => ({
       ...tab,
       draft: insertionState.nextDraft,
@@ -797,8 +817,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const textarea = textareaRef.current;
-    const selectionStart = textarea?.selectionStart ?? activeTab.draft.length;
-    const selectionEnd = textarea?.selectionEnd ?? activeTab.draft.length;
+    const draft = getTabDraft(activeTab);
+    const selectionStart = textarea?.selectionStart ?? draft.length;
+    const selectionEnd = textarea?.selectionEnd ?? draft.length;
 
     setScreenshotSnipSession({
       scrollLeft: textarea?.scrollLeft ?? 0,
@@ -910,7 +931,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const tabId = activeTab.id;
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const selectedText = draft.slice(selection.start, selection.end);
     const scrollState = getMarkdownTextareaScrollState();
 
@@ -931,6 +952,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = selection.start + payload.formattedText.length;
 
+      rememberTabDraft(tabId, nextDraft);
       updateTab(tabId, (tab) => ({
         ...tab,
         draft: nextDraft,
@@ -963,7 +985,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const tabId = activeTab.id;
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const selectedText = draft.slice(selection.start, selection.end);
     const scrollState = getMarkdownTextareaScrollState();
 
@@ -984,6 +1006,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = selection.start + payload.rewrittenText.length;
 
+      rememberTabDraft(tabId, nextDraft);
       updateTab(tabId, (tab) => ({
         ...tab,
         draft: nextDraft,
@@ -1013,7 +1036,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     const tabId = activeTab.id;
-    const draft = activeTab.draft;
+    const draft = getTabDraft(activeTab);
     const imageMarkdown = draft.slice(image.start, image.end);
     const scrollState = getMarkdownTextareaScrollState();
 
@@ -1038,6 +1061,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = image.start + payload.markdown.length;
 
+      rememberTabDraft(tabId, nextDraft);
       updateTab(tabId, (tab) => ({
         ...tab,
         draft: nextDraft,
@@ -1081,6 +1105,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const draft = getTabDraft(activeTab);
+
+    if (draft === activeTab.saved && activeTab.status !== "error") {
+      return;
+    }
+
     updateTab(activeTab.id, (tab) => ({ ...tab, status: "saving", error: undefined }));
 
     try {
@@ -1088,14 +1118,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "PATCH",
         body: JSON.stringify({
           path: activeTab.file.path,
-          content: activeTab.draft,
+          content: draft,
         }),
       });
 
+      rememberTabDraft(activeTab.id, draft);
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         file: payload.file,
-        saved: activeTab.draft,
+        saved: draft,
         status: "clean",
       }));
       await refreshTree(activeTab.file.notebook);
@@ -1187,6 +1218,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         setSelectedNotebookName((current) =>
           current === previousName ? nextName : current,
         );
+        tabs.forEach((tab) => {
+          if (tab.file.notebook !== previousName) {
+            return;
+          }
+
+          const suffix = tab.file.path.slice(previousName.length + 1);
+          const nextPath = `${nextName}/${suffix}`;
+          const draft = getTabDraft(tab);
+
+          forgetTabDraft(tab.id);
+          rememberTabDraft(nextPath, draft);
+        });
         setTabs((currentTabs) =>
           currentTabs.map((tab) => {
             if (tab.file.notebook !== previousName) {
@@ -1199,6 +1242,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
             return {
               ...tab,
               id: nextPath,
+              draft: latestDraftByTabIdRef.current[nextPath] ?? tab.draft,
               file: {
                 ...tab.file,
                 notebook: nextName,
@@ -1243,6 +1287,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const next = new Set(current);
         next.delete(notebook);
         return next;
+      });
+      tabs.forEach((tab) => {
+        if (tab.file.notebook === notebook) {
+          forgetTabDraft(tab.id);
+        }
       });
       setTabs((currentTabs) =>
         currentTabs.filter((tab) => tab.file.notebook !== notebook),
@@ -1428,12 +1477,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
       const nextId = payload.file.path;
+      if (openTab) {
+        const draft = getTabDraft(openTab);
+
+        forgetTabDraft(openTab.id);
+        rememberTabDraft(nextId, draft);
+      }
       setTabs((currentTabs) =>
         currentTabs.map((currentTab) =>
           currentTab.file.path === file.path
             ? {
                 ...currentTab,
                 id: nextId,
+                draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
                 file: payload.file,
                 rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
               }
@@ -1478,12 +1534,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       const nextId = payload.file.path;
 
+      if (openTab) {
+        const draft = getTabDraft(openTab);
+
+        forgetTabDraft(openTab.id);
+        rememberTabDraft(nextId, draft);
+      }
       setTabs((currentTabs) =>
         currentTabs.map((currentTab) =>
           currentTab.file.path === file.path
             ? {
                 ...currentTab,
                 id: nextId,
+                draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
                 file: payload.file,
                 rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
               }
@@ -1515,6 +1578,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     try {
       await apiRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}`, {
         method: "DELETE",
+      });
+      tabs.forEach((tab) => {
+        if (tab.file.path === file.path) {
+          forgetTabDraft(tab.id);
+        }
       });
       setTabs((currentTabs) =>
         currentTabs.filter((currentTab) => currentTab.file.path !== file.path),
@@ -1554,6 +1622,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         next.add(parentPath);
         return next;
       });
+      tabs.forEach((tab) => {
+        if (!tab.file.path.startsWith(`${folder.path}/`)) {
+          return;
+        }
+
+        const suffix = tab.file.path.slice(folder.path.length + 1);
+        const updatedPath = `${nextPath}/${suffix}`;
+        const draft = getTabDraft(tab);
+
+        forgetTabDraft(tab.id);
+        rememberTabDraft(updatedPath, draft);
+      });
       setTabs((currentTabs) =>
         currentTabs.map((tab) => {
           if (!tab.file.path.startsWith(`${folder.path}/`)) {
@@ -1566,6 +1646,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           return {
             ...tab,
             id: updatedPath,
+            draft: latestDraftByTabIdRef.current[updatedPath] ?? tab.draft,
             file: {
               ...tab.file,
               path: updatedPath,
@@ -1682,6 +1763,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         const next = new Set(current);
         next.delete(folder.path);
         return next;
+      });
+      tabs.forEach((tab) => {
+        if (tab.file.path.startsWith(`${folder.path}/`)) {
+          forgetTabDraft(tab.id);
+        }
       });
       setTabs((currentTabs) =>
         currentTabs.filter((currentTab) => !currentTab.file.path.startsWith(`${folder.path}/`)),
@@ -1952,6 +2038,31 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [activeTabId, tabs]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== "w"
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (activeTabId) {
+        closeTab(activeTabId);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTabId, closeTab]);
 
   return {
     authenticated,

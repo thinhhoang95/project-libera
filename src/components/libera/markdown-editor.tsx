@@ -16,7 +16,14 @@ import type {
   RefObject,
   UIEvent,
 } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   MarkdownFileLinkPopup,
   buildMarkdownFileLinkSections,
@@ -92,6 +99,7 @@ type MarkdownEditorProps = {
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
 const EMPTY_EDITOR_LINE = "\u200b";
+const PENDING_PARENT_DRAFT_TIMEOUT_MS = 1000;
 
 type HighlightChunk = {
   className?: string;
@@ -227,6 +235,19 @@ function renderHighlightedMarkdown(value: string) {
   });
 }
 
+function isSameFileLinkPopupContext(
+  left: FileLinkPopupContext | null,
+  right: FileLinkPopupContext | null,
+) {
+  return (
+    left?.destinationEnd === right?.destinationEnd &&
+    left?.destinationStart === right?.destinationStart &&
+    left?.query === right?.query &&
+    left?.x === right?.x &&
+    left?.y === right?.y
+  );
+}
+
 export function MarkdownEditor({
   activeFilePath,
   files,
@@ -245,6 +266,7 @@ export function MarkdownEditor({
   onInsertImageFile,
   onSelectionChange,
 }: MarkdownEditorProps) {
+  const [editorValue, setEditorValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [draggingImage, setDraggingImage] = useState(false);
@@ -256,9 +278,22 @@ export function MarkdownEditor({
   const findInputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLInputElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
+  const editorValueRef = useRef(value);
+  const fileLinkPopupFrameRef = useRef<number | null>(null);
+  const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
+  const pendingEditorValueRef = useRef<string | null>(null);
+  const pendingEditorValueTimeoutRef = useRef<number | null>(null);
+  const previousActiveFilePathRef = useRef(activeFilePath);
+  const propValueRef = useRef(value);
   const aiWorking = formatting || imageConverting;
-  const textMatches = useMemo(() => findTextMatches(value, findQuery), [findQuery, value]);
-  const highlightedMarkdown = useMemo(() => renderHighlightedMarkdown(value), [value]);
+  const textMatches = useMemo(
+    () => findTextMatches(editorValue, findQuery),
+    [findQuery, editorValue],
+  );
+  const highlightedMarkdown = useMemo(
+    () => renderHighlightedMarkdown(editorValue),
+    [editorValue],
+  );
   const fileLinkSections = useMemo(
     () =>
       fileLinkPopup
@@ -279,6 +314,61 @@ export function MarkdownEditor({
   const selectedFileLinkIndex = fileLinkOptions.length
     ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1)
     : 0;
+
+  useEffect(() => {
+    editorValueRef.current = editorValue;
+  }, [editorValue]);
+
+  useEffect(() => {
+    propValueRef.current = value;
+    const fileChanged = previousActiveFilePathRef.current !== activeFilePath;
+
+    previousActiveFilePathRef.current = activeFilePath;
+
+    if (fileChanged) {
+      pendingEditorValueRef.current = null;
+      if (pendingEditorValueTimeoutRef.current !== null) {
+        window.clearTimeout(pendingEditorValueTimeoutRef.current);
+        pendingEditorValueTimeoutRef.current = null;
+      }
+      editorValueRef.current = value;
+      setEditorValue(value);
+      return;
+    }
+
+    if (pendingEditorValueRef.current !== null) {
+      if (value === pendingEditorValueRef.current) {
+        pendingEditorValueRef.current = null;
+        if (pendingEditorValueTimeoutRef.current !== null) {
+          window.clearTimeout(pendingEditorValueTimeoutRef.current);
+          pendingEditorValueTimeoutRef.current = null;
+        }
+      }
+
+      return;
+    }
+
+    if (value !== editorValueRef.current) {
+      editorValueRef.current = value;
+      setEditorValue(value);
+    }
+  }, [activeFilePath, value]);
+
+  useEffect(() => {
+    fileLinkPopupRef.current = fileLinkPopup;
+  }, [fileLinkPopup]);
+
+  useEffect(() => {
+    return () => {
+      if (fileLinkPopupFrameRef.current !== null) {
+        window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
+      }
+
+      if (pendingEditorValueTimeoutRef.current !== null) {
+        window.clearTimeout(pendingEditorValueTimeoutRef.current);
+      }
+    };
+  }, []);
 
   function selectMatch(matchIndex: number, matches = textMatches) {
     if (!matches.length) {
@@ -304,7 +394,7 @@ export function MarkdownEditor({
   function openFind(nextQuery?: string) {
     const textarea = textareaRef.current;
     const selectedText = textarea
-      ? value.slice(textarea.selectionStart, textarea.selectionEnd)
+      ? editorValue.slice(textarea.selectionStart, textarea.selectionEnd)
       : "";
     const query = nextQuery ?? (selectedText.includes("\n") ? "" : selectedText);
 
@@ -312,7 +402,7 @@ export function MarkdownEditor({
     setFindOpen(true);
 
     if (query) {
-      const matches = findTextMatches(value, query);
+      const matches = findTextMatches(editorValue, query);
       setFindQuery(query);
       selectMatch(0, matches);
     }
@@ -329,7 +419,7 @@ export function MarkdownEditor({
   }
 
   function updateFindQuery(query: string) {
-    const matches = findTextMatches(value, query);
+    const matches = findTextMatches(editorValue, query);
     setFindQuery(query);
     setActiveMatchIndex(0);
 
@@ -349,7 +439,7 @@ export function MarkdownEditor({
   const getFileLinkPopupContext = useCallback(
     (
       textarea: HTMLTextAreaElement,
-      nextValue = value,
+      nextValue = editorValueRef.current,
     ): FileLinkPopupContext | null => {
       if (textarea.selectionStart !== textarea.selectionEnd) {
         return null;
@@ -389,23 +479,49 @@ export function MarkdownEditor({
         y: Math.max(8, Math.min(point.y + 6, window.innerHeight - height - 8)),
       };
     },
-    [value],
+    [],
   );
 
   const refreshFileLinkPopup = useCallback(
-    (textarea: HTMLTextAreaElement, nextValue = value) => {
+    (textarea: HTMLTextAreaElement, nextValue = editorValueRef.current) => {
       const nextPopup = getFileLinkPopupContext(textarea, nextValue);
+      const currentPopup = fileLinkPopupRef.current;
 
-      if (nextPopup?.query !== fileLinkPopup?.query) {
+      if (nextPopup?.query !== currentPopup?.query) {
         setActiveFileLinkIndex(0);
       }
 
+      if (isSameFileLinkPopupContext(currentPopup, nextPopup)) {
+        return;
+      }
+
+      fileLinkPopupRef.current = nextPopup;
       setFileLinkPopup(nextPopup);
     },
-    [fileLinkPopup?.query, getFileLinkPopupContext, value],
+    [getFileLinkPopupContext],
+  );
+
+  const scheduleFileLinkPopupRefresh = useCallback(
+    (textarea: HTMLTextAreaElement, nextValue = editorValueRef.current) => {
+      if (fileLinkPopupFrameRef.current !== null) {
+        window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
+      }
+
+      fileLinkPopupFrameRef.current = window.requestAnimationFrame(() => {
+        fileLinkPopupFrameRef.current = null;
+        refreshFileLinkPopup(textarea, nextValue);
+      });
+    },
+    [refreshFileLinkPopup],
   );
 
   function closeFileLinkPopup() {
+    if (fileLinkPopupFrameRef.current !== null) {
+      window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
+      fileLinkPopupFrameRef.current = null;
+    }
+
+    fileLinkPopupRef.current = null;
     setFileLinkPopup(null);
   }
 
@@ -420,20 +536,6 @@ export function MarkdownEditor({
     closeFileLinkPopup();
     onInsertFileLink(selection, range);
   }
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-
-    if (!textarea || document.activeElement !== textarea) {
-      return;
-    }
-
-    const animationFrame = window.requestAnimationFrame(() => {
-      refreshFileLinkPopup(textarea);
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [refreshFileLinkPopup, textareaRef, value]);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -479,8 +581,8 @@ export function MarkdownEditor({
     const textarea = event.currentTarget;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const selectedText = value.slice(start, end);
-    const image = findMarkdownImageInText(value, start, end);
+    const selectedText = editorValue.slice(start, end);
+    const image = findMarkdownImageInText(editorValue, start, end);
 
     if ((start === end || !selectedText.trim()) && !image) {
       setContextMenu(null);
@@ -624,12 +726,32 @@ export function MarkdownEditor({
       return;
     }
 
-    refreshFileLinkPopup(event.currentTarget);
+    scheduleFileLinkPopupRefresh(event.currentTarget);
   }
 
   function handleEditorChange(textarea: HTMLTextAreaElement) {
-    onChange(textarea.value);
-    refreshFileLinkPopup(textarea, textarea.value);
+    const nextValue = textarea.value;
+
+    pendingEditorValueRef.current = nextValue;
+    if (pendingEditorValueTimeoutRef.current !== null) {
+      window.clearTimeout(pendingEditorValueTimeoutRef.current);
+    }
+
+    pendingEditorValueTimeoutRef.current = window.setTimeout(() => {
+      pendingEditorValueRef.current = null;
+      pendingEditorValueTimeoutRef.current = null;
+
+      const latestPropValue = propValueRef.current;
+
+      if (latestPropValue !== editorValueRef.current) {
+        editorValueRef.current = latestPropValue;
+        setEditorValue(latestPropValue);
+      }
+    }, PENDING_PARENT_DRAFT_TIMEOUT_MS);
+    editorValueRef.current = nextValue;
+    setEditorValue(nextValue);
+    startTransition(() => onChange(nextValue));
+    scheduleFileLinkPopupRefresh(textarea, nextValue);
   }
 
   function emitSelectionChange(textarea: HTMLTextAreaElement) {
@@ -696,17 +818,17 @@ export function MarkdownEditor({
           fontSize: `${0.875 * textScale}rem`,
           lineHeight: `${1.5 * textScale}rem`,
         }}
-        value={value}
+        value={editorValue}
         onBlur={(event) => emitSelectionChange(event.currentTarget)}
         onChange={(event) => handleEditorChange(event.currentTarget)}
         onContextMenu={openContextMenu}
-        onClick={(event) => refreshFileLinkPopup(event.currentTarget)}
+        onClick={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
         onDrop={(event) => void handleDrop(event)}
-        onFocus={(event) => refreshFileLinkPopup(event.currentTarget)}
+        onFocus={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
         onScroll={handleEditorScroll}
         spellCheck={false}
       />
