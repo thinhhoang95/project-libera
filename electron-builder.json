@@ -1,6 +1,6 @@
 {
   "appId": "com.libera.notes",
-  "productName": "Libera",
+  "productName": "Libera by Thinh Hoang",
   "asar": false,
   "directories": {
     "app": ".electron-build/app",

@@ -1,6 +1,6 @@
 {
   "name": "project-libera",
-  "productName": "Libera",
+  "productName": "Libera by Thinh Hoang",
   "version": "0.2.1",
   "private": true,
   "main": "electron/main.cjs",

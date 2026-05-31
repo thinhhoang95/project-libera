@@ -10,12 +10,11 @@ const { spawn } = require("node:child_process");
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
-const APP_DISPLAY_NAME = "Libera";
-const MACOS_MENU_BAR_APP_NAME = "Libera by Thinh Hoang";
+const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
 
 function applyApplicationIdentity() {
-  app.setName(MACOS_MENU_BAR_APP_NAME);
+  app.setName(APP_DISPLAY_NAME);
   process.title = APP_DISPLAY_NAME;
   app.setAboutPanelOptions({ applicationName: APP_DISPLAY_NAME });
 }
@@ -90,7 +89,7 @@ function isConfigComplete(config) {
 
 async function selectDataDir(parentWindow) {
   const result = await dialog.showOpenDialog(parentWindow, {
-    title: "Select Libera Master directory",
+    title: `Select ${APP_DISPLAY_NAME} Master directory`,
     properties: ["openDirectory", "createDirectory"],
   });
 
@@ -157,7 +156,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       modal: Boolean(parentWindow),
       parent: parentWindow ?? undefined,
       resizable: false,
-      title: mode === "configuration" ? "Libera Configuration" : "Set Up Libera",
+      title:
+        mode === "configuration"
+          ? `${APP_DISPLAY_NAME} Configuration`
+          : `Set Up ${APP_DISPLAY_NAME}`,
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -417,9 +419,9 @@ async function openConfigurationWindow() {
       buttons: ["Restart Now", "Later"],
       cancelId: 1,
       defaultId: 0,
-      message: "Restart Libera to apply configuration changes.",
+      message: `Restart ${APP_DISPLAY_NAME} to apply configuration changes.`,
       detail:
-        "The Libera Master directory and API key are applied when the local server starts.",
+        `The ${APP_DISPLAY_NAME} Master directory and API key are applied when the local server starts.`,
       title: "Configuration Saved",
     });
 
@@ -457,7 +459,7 @@ function installApplicationMenu() {
     ...(isMac
       ? [
           {
-            label: MACOS_MENU_BAR_APP_NAME,
+            label: APP_DISPLAY_NAME,
             submenu: [
               aboutMenuItem,
               { type: "separator" },
@@ -681,7 +683,7 @@ async function startNextServer(config) {
 
     if (!isQuitting) {
       dialog.showErrorBox(
-        "Libera server stopped",
+        `${APP_DISPLAY_NAME} server stopped`,
         `The local Next.js server stopped unexpectedly (${signal ?? code}).`,
       );
       app.quit();
@@ -709,7 +711,7 @@ async function createMainWindow(url) {
     minWidth: 960,
     minHeight: 640,
     autoHideMenuBar: false,
-    title: "Libera",
+    title: APP_DISPLAY_NAME,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -774,7 +776,7 @@ async function bootstrap() {
     await createMainWindow(url);
   } catch (error) {
     if (error.message !== "Setup was canceled.") {
-      dialog.showErrorBox("Unable to start Libera", error.message);
+      dialog.showErrorBox(`Unable to start ${APP_DISPLAY_NAME}`, error.message);
     }
 
     app.quit();

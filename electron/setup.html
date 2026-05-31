@@ -7,7 +7,7 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Set Up Libera</title>
+    <title>Set Up Libera by Thinh Hoang</title>
     <style>
       :root {
         color-scheme: light;
@@ -139,13 +139,13 @@
   <body>
     <main>
       <form id="setup-form">
-        <h1 id="form-title">Set Up Libera</h1>
+        <h1 id="form-title">Set Up Libera by Thinh Hoang</h1>
         <p id="form-description">
-          Choose the fixed Libera Master directory, enter the required API key, and
+          Choose the fixed Libera by Thinh Hoang Master directory, enter the required API key, and
           create the password used by the app login screen.
         </p>
 
-        <label for="data-dir">Libera Master directory</label>
+        <label for="data-dir">Libera by Thinh Hoang Master directory</label>
         <div class="directory-row">
           <input id="data-dir" autocomplete="off" readonly required />
           <button id="browse-button" class="secondary" type="button">Choose</button>
@@ -166,13 +166,13 @@
         </div>
         <div id="password-locked" class="locked hidden">
           An app password is already configured. The login screen will ask for it every
-          time Libera starts.
+          time Libera by Thinh Hoang starts.
         </div>
 
         <div id="error" class="error"></div>
 
         <div class="actions">
-          <button id="save-button" type="submit">Start Libera</button>
+          <button id="save-button" type="submit">Start Libera by Thinh Hoang</button>
         </div>
       </form>
     </main>
@@ -195,10 +195,10 @@
       const configurationMode = setupMode === "configuration";
 
       if (configurationMode) {
-        document.title = "Libera Configuration";
-        formTitle.textContent = "Libera Configuration";
+        document.title = "Libera by Thinh Hoang Configuration";
+        formTitle.textContent = "Libera by Thinh Hoang Configuration";
         formDescription.textContent =
-          "Change the Libera Master directory or enter a replacement API key. Saved changes apply after restarting Libera.";
+          "Change the Libera by Thinh Hoang Master directory or enter a replacement API key. Saved changes apply after restarting Libera by Thinh Hoang.";
         saveButton.textContent = "Save Configuration";
       }
 

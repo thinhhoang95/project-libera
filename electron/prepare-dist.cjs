@@ -6,7 +6,11 @@ const distAppRoot = path.join(projectRoot, ".electron-build", "app");
 
 async function copy(source, destination) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
-  await fs.cp(source, destination, { recursive: true, verbatimSymlinks: true });
+  await fs.cp(source, destination, {
+    filter: (entryPath) => !path.basename(entryPath).startsWith("._"),
+    recursive: true,
+    verbatimSymlinks: true,
+  });
 }
 
 async function removeAppleDoubleFiles(directory) {
@@ -50,7 +54,7 @@ async function main() {
     `${JSON.stringify(
       {
         name: "libera",
-        productName: "Libera",
+        productName: "Libera by Thinh Hoang",
         version: "0.2.1",
         private: true,
         main: "electron/main.cjs",
