@@ -62,7 +62,14 @@ export function MarkdownPdfExportPage() {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    document.documentElement.classList.add("libera-markdown-export-mode");
+    const { documentElement } = document;
+    const previousColorScheme = documentElement.style.colorScheme;
+    const hadDarkClass = documentElement.classList.contains("dark");
+
+    documentElement.classList.add("libera-markdown-export-mode");
+    documentElement.classList.remove("dark");
+    documentElement.style.colorScheme = "light";
+
     window.liberaMarkdownPdfExport = {
       render: (nextPayload) =>
         new Promise<void>((resolve, reject) => {
@@ -72,7 +79,9 @@ export function MarkdownPdfExportPage() {
     };
 
     return () => {
-      document.documentElement.classList.remove("libera-markdown-export-mode");
+      documentElement.classList.remove("libera-markdown-export-mode");
+      documentElement.classList.toggle("dark", hadDarkClass);
+      documentElement.style.colorScheme = previousColorScheme;
       delete window.liberaMarkdownPdfExport;
     };
   }, []);

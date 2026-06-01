@@ -13,6 +13,7 @@
     "electron:prepare-dist": "node electron/prepare-dist.cjs",
     "electron:start": "npm run build && npm run electron:prepare-standalone && cross-env LIBERA_ELECTRON_NEXT_MODE=start electron .",
     "electron:dist": "npm run build && npm run electron:prepare-standalone && npm run electron:prepare-dist && electron-builder --config electron-builder.json",
+    "electron:dist:win": "npm run electron:dist -- --win --x64",
     "lint": "eslint"
   },
   "dependencies": {

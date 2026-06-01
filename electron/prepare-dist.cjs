@@ -30,6 +30,37 @@ async function removeAppleDoubleFiles(directory) {
   }
 }
 
+async function removeIfPresent(targetPath) {
+  await fs.rm(targetPath, { force: true, recursive: true });
+}
+
+async function removeStandalonePackagingNoise(standaloneAppRoot) {
+  const rootEntriesToRemove = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "electron-builder.json",
+    "eslint.config.mjs",
+    "next.config.ts",
+    "package-lock.json",
+    "postcss.config.mjs",
+    "tsconfig.json",
+    "tsconfig.tsbuildinfo",
+  ];
+
+  await Promise.all(
+    rootEntriesToRemove.map((entry) => removeIfPresent(path.join(standaloneAppRoot, entry))),
+  );
+
+  const entries = await fs.readdir(standaloneAppRoot);
+
+  await Promise.all(
+    entries
+      .filter((entry) => entry === ".env" || entry.startsWith(".env."))
+      .map((entry) => removeIfPresent(path.join(standaloneAppRoot, entry))),
+  );
+}
+
 async function main() {
   await fs.rm(distAppRoot, { force: true, recursive: true });
   await fs.mkdir(distAppRoot, { recursive: true });
@@ -40,6 +71,7 @@ async function main() {
     path.join(projectRoot, ".next", "standalone"),
     path.join(distAppRoot, ".next", "standalone"),
   );
+  await removeStandalonePackagingNoise(path.join(distAppRoot, ".next", "standalone"));
   await fs.rename(
     path.join(distAppRoot, ".next", "standalone", "node_modules"),
     path.join(distAppRoot, "node_modules"),

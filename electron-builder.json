@@ -10,5 +10,9 @@
     "icon": "assets/libera-icon.icns",
     "identity": null
   },
+  "win": {
+    "icon": "assets/libera-icon.ico",
+    "target": ["nsis"]
+  },
   "files": ["**/*"]
 }

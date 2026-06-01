@@ -137,12 +137,22 @@ html.libera-markdown-export-mode body {
 }
 
 @page {
+  background: #ffffff;
   margin: 18mm;
   size: A4;
 }
 
 @media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #18181b !important;
+    color-scheme: light !important;
+  }
+
   .markdown-pdf-export-page {
+    background: #ffffff !important;
+    color: #18181b !important;
     min-height: auto;
     padding: 0;
   }
