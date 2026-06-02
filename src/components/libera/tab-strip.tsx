@@ -143,6 +143,20 @@ export function TabStrip({
                 }}
                 type="button"
                 onClick={() => onActivateTab(tab.id)}
+                onMouseDown={(event) => {
+                  if (event.button === 1) {
+                    event.preventDefault();
+                  }
+                }}
+                onAuxClick={(event) => {
+                  if (event.button !== 1) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onCloseTab(tab.id);
+                }}
               >
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (

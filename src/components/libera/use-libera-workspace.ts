@@ -183,6 +183,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const latestDraftByTabIdRef = useRef<Record<string, string>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const openingFilePathsRef = useRef<Set<string>>(new Set());
+  const pendingOpenViewStateByPathRef = useRef<Record<string, OpenTabViewState | undefined>>({});
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const firstNotebook = tree.notebooks[0]?.name ?? "";
@@ -348,6 +350,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  function rememberPendingOpenViewState(
+    filePath: string,
+    viewState: OpenTabViewState | undefined,
+  ) {
+    if (!viewState) {
+      return;
+    }
+
+    pendingOpenViewStateByPathRef.current[filePath] = mergeOpenTabViewState(
+      pendingOpenViewStateByPathRef.current[filePath],
+      viewState,
+    );
+  }
+
   async function openFile(
     file: LiberaFileNode,
     options: { viewState?: OpenTabViewState } = {},
@@ -379,11 +395,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    rememberPendingOpenViewState(file.path, options.viewState);
+
+    if (openingFilePathsRef.current.has(file.path)) {
+      recordFileInteraction(file);
+      return;
+    }
+
+    openingFilePathsRef.current.add(file.path);
+
     try {
       const payload = await apiRequest<LiberaFilePayload>(
         `/api/files?path=${encodeURIComponent(file.path)}`,
       );
       const draft = payload.content ?? "";
+      const pendingViewState = pendingOpenViewStateByPathRef.current[file.path];
       const nextTab: OpenTab = {
         id: payload.file.path,
         file: payload.file,
@@ -391,15 +417,37 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         saved: draft,
         rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(payload.file.path)}`,
         status: "clean",
-        viewState: options.viewState,
+        viewState: pendingViewState,
       };
 
-      rememberTabDraft(nextTab.id, draft);
-      setTabs((currentTabs) => [...currentTabs, nextTab]);
+      setTabs((currentTabs) => {
+        const currentTab = currentTabs.find((tab) => tab.id === nextTab.id);
+
+        if (currentTab) {
+          if (!pendingViewState) {
+            return currentTabs;
+          }
+
+          return currentTabs.map((tab) =>
+            tab.id === nextTab.id
+              ? {
+                  ...tab,
+                  viewState: mergeOpenTabViewState(tab.viewState, pendingViewState),
+                }
+              : tab,
+          );
+        }
+
+        rememberTabDraft(nextTab.id, draft);
+        return [...currentTabs, nextTab];
+      });
       setActiveTabId(nextTab.id);
       recordFileInteraction(payload.file);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not open file.");
+    } finally {
+      openingFilePathsRef.current.delete(file.path);
+      delete pendingOpenViewStateByPathRef.current[file.path];
     }
   }
 
