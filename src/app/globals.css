@@ -307,6 +307,7 @@ button.border[class*="border-white"]:hover {
 }
 
 .markdown-preview-pane {
+  overflow-anchor: none;
   padding-bottom: max(12rem, 70vh);
 }
 

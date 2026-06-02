@@ -6,7 +6,6 @@ import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
-  MutableRefObject,
   PointerEvent as ReactPointerEvent,
   RefObject,
   UIEvent as ReactUIEvent,
@@ -90,10 +89,15 @@ type WorkspacePanelProps = {
 };
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
+const MARKDOWN_EDITOR_ACTIVITY_GRACE_MS = 1200;
+const MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS = 250;
 const MARKDOWN_PREVIEW_RENDER_DELAY_MS = 250;
+const MARKDOWN_PREVIEW_USER_SCROLL_GRACE_MS = 1000;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
 const MAX_MARKDOWN_SPLIT_PERCENT = 76;
 const MIN_MARKDOWN_SPLIT_PERCENT = 24;
+
+type PreviewScrollBlock = "nearest" | "start";
 
 function clampMarkdownSplitPercent(value: number) {
   return Math.min(
@@ -187,7 +191,11 @@ function getMarkdownLineForOffset(value: string, offset: number) {
   return value.slice(0, clampedOffset).split("\n").length;
 }
 
-function scrollPreviewToSourceOffset(preview: HTMLElement, offset: number) {
+function scrollPreviewToSourceOffset(
+  preview: HTMLElement,
+  offset: number,
+  options: { block?: PreviewScrollBlock } = {},
+) {
   const sourceElement = findMarkdownSourceElementForOffset(preview, offset);
   const sourceRange = getMarkdownSourceRange(sourceElement);
 
@@ -204,6 +212,25 @@ function scrollPreviewToSourceOffset(preview: HTMLElement, offset: number) {
     Math.max(0, (offset - sourceRange.start) / sourceSpan),
   );
   const offsetWithinElement = sourceRect.height * progress;
+  const block = options.block ?? "start";
+
+  if (block === "nearest") {
+    const targetClientY = sourceRect.top + offsetWithinElement;
+    const margin = Math.min(96, Math.max(24, preview.clientHeight * 0.2));
+    const topLimit = previewRect.top + padding.top + margin;
+    const bottomLimit = previewRect.bottom - margin;
+
+    if (targetClientY < topLimit) {
+      preview.scrollTop = Math.max(0, preview.scrollTop + targetClientY - topLimit);
+    } else if (targetClientY > bottomLimit) {
+      preview.scrollTop = Math.max(
+        0,
+        preview.scrollTop + targetClientY - bottomLimit,
+      );
+    }
+
+    return;
+  }
 
   preview.scrollTop = Math.max(
     0,
@@ -282,11 +309,11 @@ export function WorkspacePanel({
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
+  const editorActivityUntilRef = useRef(0);
   const openMarkdownFileLinkRef = useRef(onOpenMarkdownFileLink);
-  const suppressEditorScrollRef = useRef(false);
-  const suppressEditorScrollTimeoutRef = useRef<number | null>(null);
-  const suppressPreviewScrollRef = useRef(false);
-  const suppressPreviewScrollTimeoutRef = useRef<number | null>(null);
+  const previewUserScrollUntilRef = useRef(0);
+  const programmaticEditorScrollUntilRef = useRef(0);
+  const programmaticPreviewScrollUntilRef = useRef(0);
   const markdownRestoreViewStateRef = useRef<MarkdownTabViewState | undefined>(undefined);
   const activeFileType = activeTab?.file.fileType;
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
@@ -351,34 +378,30 @@ export function WorkspacePanel({
     markdownRestoreViewStateRef.current = activeMarkdownViewState;
   }, [activeMarkdownViewState]);
 
-  const markScrollSuppressed = useCallback(
-    (
-      suppressedRef: MutableRefObject<boolean>,
-      timeoutRef: MutableRefObject<number | null>,
-    ) => {
-      suppressedRef.current = true;
+  const markEditorActivity = useCallback(() => {
+    editorActivityUntilRef.current =
+      window.performance.now() + MARKDOWN_EDITOR_ACTIVITY_GRACE_MS;
+  }, []);
 
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-      }
+  const markPreviewUserScrollIntent = useCallback(() => {
+    previewUserScrollUntilRef.current =
+      window.performance.now() + MARKDOWN_PREVIEW_USER_SCROLL_GRACE_MS;
+  }, []);
 
-      timeoutRef.current = window.setTimeout(() => {
-        suppressedRef.current = false;
-        timeoutRef.current = null;
-      }, 80);
-    },
-    [],
-  );
+  const markProgrammaticEditorScroll = useCallback(() => {
+    programmaticEditorScrollUntilRef.current =
+      window.performance.now() + MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS;
+  }, []);
 
-  const suppressEditorScroll = useCallback(() => {
-    markScrollSuppressed(suppressEditorScrollRef, suppressEditorScrollTimeoutRef);
-  }, [markScrollSuppressed]);
+  const markProgrammaticPreviewScroll = useCallback(() => {
+    programmaticPreviewScrollUntilRef.current =
+      window.performance.now() + MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS;
+  }, []);
 
-  const suppressPreviewScroll = useCallback(() => {
-    markScrollSuppressed(suppressPreviewScrollRef, suppressPreviewScrollTimeoutRef);
-  }, [markScrollSuppressed]);
-
-  const syncMarkdownPreviewToTextarea = useCallback(() => {
+  const syncMarkdownPreviewToTextarea = useCallback((options: {
+    block?: PreviewScrollBlock;
+    offset?: number;
+  } = {}) => {
     const textarea = textareaRef.current;
     const preview = markdownPreviewRef.current;
 
@@ -386,9 +409,37 @@ export function WorkspacePanel({
       return;
     }
 
-    suppressPreviewScroll();
-    scrollPreviewToSourceOffset(preview, getTextareaVisibleStartOffset(textarea));
-  }, [suppressPreviewScroll, textareaRef]);
+    markProgrammaticPreviewScroll();
+    scrollPreviewToSourceOffset(
+      preview,
+      options.offset ?? getTextareaVisibleStartOffset(textarea),
+      { block: options.block },
+    );
+  }, [markProgrammaticPreviewScroll, textareaRef]);
+
+  const syncMarkdownPreviewToActiveEditorPosition = useCallback(() => {
+    const textarea = textareaRef.current;
+    const now = window.performance.now();
+
+    if (now <= previewUserScrollUntilRef.current) {
+      return;
+    }
+
+    if (!textarea) {
+      syncMarkdownPreviewToTextarea();
+      return;
+    }
+
+    if (document.activeElement === textarea || now <= editorActivityUntilRef.current) {
+      syncMarkdownPreviewToTextarea({
+        block: "nearest",
+        offset: textarea.selectionStart,
+      });
+      return;
+    }
+
+    syncMarkdownPreviewToTextarea();
+  }, [syncMarkdownPreviewToTextarea, textareaRef]);
 
   const syncTextareaToMarkdownPreview = useCallback(() => {
     const textarea = textareaRef.current;
@@ -404,9 +455,9 @@ export function WorkspacePanel({
       return;
     }
 
-    suppressEditorScroll();
+    markProgrammaticEditorScroll();
     scrollTextareaToOffset(textarea, sourceOffset, { block: "start" });
-  }, [suppressEditorScroll, textareaRef]);
+  }, [markProgrammaticEditorScroll, textareaRef]);
 
   useEffect(() => {
     const savedSplit = window.localStorage.getItem(MARKDOWN_SPLIT_STORAGE_KEY);
@@ -437,13 +488,19 @@ export function WorkspacePanel({
     const previewPane = preview;
 
     function handleEditorScroll() {
-      if (suppressEditorScrollRef.current) {
+      const now = window.performance.now();
+
+      if (now <= programmaticEditorScrollUntilRef.current) {
         return;
       }
 
+      markEditorActivity();
       const visibleStartOffset = getTextareaVisibleStartOffset(editor);
 
-      syncMarkdownPreviewToTextarea();
+      syncMarkdownPreviewToTextarea({
+        block: "start",
+        offset: visibleStartOffset,
+      });
       updateMarkdownViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
@@ -454,13 +511,16 @@ export function WorkspacePanel({
     }
 
     function handlePreviewScroll() {
-      if (suppressPreviewScrollRef.current) {
-        return;
+      const now = window.performance.now();
+      const sourceOffset = getPreviewVisibleStartOffset(previewPane);
+      const hasPreviewUserIntent =
+        now > programmaticPreviewScrollUntilRef.current &&
+        now <= previewUserScrollUntilRef.current;
+
+      if (hasPreviewUserIntent) {
+        syncTextareaToMarkdownPreview();
       }
 
-      const sourceOffset = getPreviewVisibleStartOffset(previewPane);
-
-      syncTextareaToMarkdownPreview();
       updateMarkdownViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
@@ -483,6 +543,7 @@ export function WorkspacePanel({
   }, [
     activeFileType,
     activeTabId,
+    markEditorActivity,
     previewFullscreen,
     syncMarkdownPreviewToTextarea,
     syncTextareaToMarkdownPreview,
@@ -495,7 +556,9 @@ export function WorkspacePanel({
       return;
     }
 
-    const animationFrame = window.requestAnimationFrame(syncMarkdownPreviewToTextarea);
+    const animationFrame = window.requestAnimationFrame(
+      syncMarkdownPreviewToActiveEditorPosition,
+    );
 
     return () => window.cancelAnimationFrame(animationFrame);
   }, [
@@ -503,7 +566,7 @@ export function WorkspacePanel({
     activeTabId,
     previewMarkdownDraft,
     previewFullscreen,
-    syncMarkdownPreviewToTextarea,
+    syncMarkdownPreviewToActiveEditorPosition,
   ]);
 
   useEffect(() => {
@@ -517,6 +580,7 @@ export function WorkspacePanel({
       const viewState = markdownRestoreViewStateRef.current;
 
       if (textarea && !previewFullscreen) {
+        markProgrammaticEditorScroll();
         textarea.scrollLeft = viewState?.editorScrollLeft ?? 0;
         textarea.scrollTop = viewState?.editorScrollTop ?? 0;
 
@@ -535,6 +599,7 @@ export function WorkspacePanel({
       }
 
       if (preview) {
+        markProgrammaticPreviewScroll();
         preview.scrollLeft = viewState?.previewScrollLeft ?? 0;
         preview.scrollTop = viewState?.previewScrollTop ?? 0;
       }
@@ -544,6 +609,8 @@ export function WorkspacePanel({
   }, [
     activeFileType,
     activeTabId,
+    markProgrammaticEditorScroll,
+    markProgrammaticPreviewScroll,
     previewFullscreen,
     textareaRef,
   ]);
@@ -613,11 +680,17 @@ export function WorkspacePanel({
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
 
+    markEditorActivity();
     updateMarkdownViewState({
       line: getMarkdownLineForOffset(markdownDraft, selection.start),
       selectionEnd: selection.end,
       selectionStart: selection.start,
     });
+  }
+
+  function handleMarkdownDraftChange(value: string) {
+    markEditorActivity();
+    onSetDraft(value);
   }
 
   function handleMarkdownPreviewScroll(event: ReactUIEvent<HTMLElement>) {
@@ -627,6 +700,19 @@ export function WorkspacePanel({
       previewScrollLeft: preview.scrollLeft,
       previewScrollTop: preview.scrollTop,
     });
+  }
+
+  function handleMarkdownPreviewPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    const preview = event.currentTarget;
+    const rect = preview.getBoundingClientRect();
+    const scrollbarGutter = 18;
+    const inScrollbarGutter =
+      event.clientX >= rect.right - scrollbarGutter ||
+      event.clientY >= rect.bottom - scrollbarGutter;
+
+    if (event.target === preview || inScrollbarGutter) {
+      markPreviewUserScrollIntent();
+    }
   }
 
   function updateMarkdownSplitFromPointer(clientX: number, clientY: number) {
@@ -819,7 +905,7 @@ export function WorkspacePanel({
     const clampedOffset = Math.max(0, Math.min(sourceOffset, textarea.value.length));
 
     event.preventDefault();
-    suppressEditorScroll();
+    markProgrammaticEditorScroll();
     textarea.focus();
     textarea.setSelectionRange(clampedOffset, clampedOffset);
     scrollTextareaToOffset(textarea, clampedOffset);
@@ -899,7 +985,10 @@ export function WorkspacePanel({
             <article
               ref={markdownPreviewRef}
               className="markdown-preview-pane min-h-0 flex-1 overflow-auto bg-card p-6"
+              onPointerDown={handleMarkdownPreviewPointerDown}
               onScroll={handleMarkdownPreviewScroll}
+              onTouchStart={markPreviewUserScrollIntent}
+              onWheel={markPreviewUserScrollIntent}
             >
               <MarkdownRenderer
                 content={activeTab.draft}
@@ -933,7 +1022,7 @@ export function WorkspacePanel({
                 onAiFormatSelection={onAiFormatSelection}
                 onAiImageToMarkdown={onAiImageToMarkdown}
                 onAiRewriteSelection={onAiRewriteSelection}
-                onChange={onSetDraft}
+                onChange={handleMarkdownDraftChange}
                 onInsertFileLink={onInsertFileLink}
                 onInsertImageFile={onInsertImage}
                 onSelectionChange={handleMarkdownSelectionChange}
@@ -957,7 +1046,9 @@ export function WorkspacePanel({
                 ref={markdownPreviewRef}
                 className="markdown-preview-pane min-h-0 min-w-0 overflow-auto bg-card p-6"
                 onDoubleClick={handleMarkdownPreviewDoubleClick}
-                onScroll={handleMarkdownPreviewScroll}
+                onPointerDown={handleMarkdownPreviewPointerDown}
+                onTouchStart={markPreviewUserScrollIntent}
+                onWheel={markPreviewUserScrollIntent}
               >
                 <MarkdownRenderer
                   content={previewMarkdownDraft}
