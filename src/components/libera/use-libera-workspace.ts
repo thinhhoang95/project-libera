@@ -5,6 +5,8 @@ import type {
   LiberaFileNode,
   LiberaFilePayload,
   LiberaFolderNode,
+  LiberaNotebookGroup,
+  LiberaNotebookViewOptions,
   LiberaTree,
   LiberaTreeNode,
 } from "@/lib/types";
@@ -16,6 +18,8 @@ import type {
   MarkdownScreenshotSnipSession,
   NotebookDialogState,
   NotebookFormValues,
+  NotebookGroupDialogState,
+  NotebookGroupFormValues,
   NoteDialogState,
   NoteFormValues,
   OpenTab,
@@ -167,6 +171,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     useState<MarkdownScreenshotSnipSession | null>(null);
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [notebookDialogSubmitting, setNotebookDialogSubmitting] = useState(false);
+  const [notebookGroupDialog, setNotebookGroupDialog] =
+    useState<NotebookGroupDialogState | null>(null);
+  const [notebookGroupDialogSubmitting, setNotebookGroupDialogSubmitting] =
+    useState(false);
   const [noteDialog, setNoteDialog] = useState<NoteDialogState | null>(null);
   const [noteDialogSubmitting, setNoteDialogSubmitting] = useState(false);
   const [workspaceInputDialog, setWorkspaceInputDialog] =
@@ -1215,12 +1223,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNotebookDialog({ mode: "create" });
   }
 
+  function openCreateNotebookGroupDialog() {
+    setNotebookGroupDialog({ mode: "create" });
+  }
+
   function openEditNotebookDialog(notebook: LiberaTree["notebooks"][number]) {
     setNotebookDialog({ mode: "edit", notebook });
   }
 
+  function openEditNotebookGroupDialog(group: LiberaNotebookGroup) {
+    setNotebookGroupDialog({ mode: "edit", group });
+  }
+
   function closeNotebookDialog() {
     setNotebookDialog(null);
+  }
+
+  function closeNotebookGroupDialog() {
+    setNotebookGroupDialog(null);
   }
 
   function closeNoteDialog() {
@@ -1237,6 +1257,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function setNotebookDialogError(error: string) {
     setNotebookDialog((current) => (current ? { ...current, error } : current));
+  }
+
+  function setNotebookGroupDialogError(error: string) {
+    setNotebookGroupDialog((current) => (current ? { ...current, error } : current));
   }
 
   function setNoteDialogError(error: string) {
@@ -1339,6 +1363,75 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     } finally {
       setNotebookDialogSubmitting(false);
     }
+  }
+
+  async function submitNotebookGroupDialog(values: NotebookGroupFormValues) {
+    if (!notebookGroupDialog) {
+      return;
+    }
+
+    const title = values.title.trim();
+
+    if (!title) {
+      setNotebookGroupDialogError("Group title is required.");
+      return;
+    }
+
+    setNotebookGroupDialogSubmitting(true);
+
+    try {
+      const nextTree = await apiRequest<LiberaTree>("/api/notebook-groups", {
+        method: notebookGroupDialog.mode === "create" ? "POST" : "PATCH",
+        body: JSON.stringify({
+          id:
+            notebookGroupDialog.mode === "edit"
+              ? notebookGroupDialog.group.id
+              : undefined,
+          title,
+          description: values.description,
+          notebookNames: values.notebookNames,
+        }),
+      });
+
+      setTree(nextTree);
+      setNotebookGroupDialog(null);
+      setExpanded((current) => {
+        const next = new Set(current);
+        values.notebookNames.forEach((notebookName) => next.add(notebookName));
+        return next;
+      });
+    } catch (error) {
+      setNotebookGroupDialogError(
+        error instanceof Error ? error.message : "Could not save group.",
+      );
+    } finally {
+      setNotebookGroupDialogSubmitting(false);
+    }
+  }
+
+  async function deleteNotebookGroup(group: LiberaNotebookGroup) {
+    setWorkspaceError("");
+
+    try {
+      const nextTree = await apiRequest<LiberaTree>(
+        `/api/notebook-groups?id=${encodeURIComponent(group.id)}`,
+        { method: "DELETE" },
+      );
+      setTree(nextTree);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not delete group.");
+    }
+  }
+
+  async function updateNotebookViewOptions(
+    viewOptions: LiberaNotebookViewOptions,
+  ) {
+    const nextTree = await apiRequest<LiberaTree>("/api/notebook-view-options", {
+      method: "PATCH",
+      body: JSON.stringify(viewOptions),
+    });
+
+    setTree(nextTree);
   }
 
   async function deleteNotebookFromPrompt(notebook: string) {
@@ -2175,6 +2268,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       firstNotebook,
       notebookDialog,
       notebookDialogSubmitting,
+      notebookGroupDialog,
+      notebookGroupDialogSubmitting,
       noteDialog,
       noteDialogSubmitting,
       imageMarkdownConverting,
@@ -2198,6 +2293,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       workspaceError,
       closeTab,
       closeNotebookDialog,
+      closeNotebookGroupDialog,
       closeNoteDialog,
       closeWorkspaceConfirmDialog,
       closeWorkspaceInputDialog,
@@ -2208,6 +2304,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       createMarkdownFromPrompt,
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
+      deleteNotebookGroup,
       downloadFile,
       downloadMarkdownPdf,
       deleteNotebookFromPrompt,
@@ -2229,7 +2326,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       openFile,
       openMarkdownFileLink,
       openCreateNotebookDialog,
+      openCreateNotebookGroupDialog,
       openEditNotebookDialog,
+      openEditNotebookGroupDialog,
       deleteFileNodeFromPrompt,
       renameFolderFromPrompt,
       renameFileNodeFromPrompt,
@@ -2246,10 +2345,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       swapTabs,
       startUpload,
       submitNotebookDialog,
+      submitNotebookGroupDialog,
       submitNoteDialog,
       submitWorkspaceConfirmDialog,
       submitWorkspaceInputDialog,
       toggleNotebook,
+      updateNotebookViewOptions,
     },
   };
 }

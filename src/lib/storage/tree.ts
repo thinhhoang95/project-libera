@@ -4,6 +4,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
+import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -19,6 +20,7 @@ import {
 } from "@/lib/storage/paths";
 import type {
   LiberaFileNode,
+  LiberaNotebookViewOptions,
   LiberaNotebookNode,
   LiberaTree,
   LiberaTreeNode,
@@ -90,6 +92,25 @@ async function getFileUpdatedAt(
 
 function latestTreeNodeUpdatedAt(nodes: LiberaTreeNode[]) {
   return nodes.map((node) => node.updatedAt);
+}
+
+function normalizeTreeViewOptions({
+  notebookNames,
+  validGroupIds,
+  viewOptions,
+}: {
+  notebookNames: Set<string>;
+  validGroupIds: Set<string>;
+  viewOptions: LiberaNotebookViewOptions;
+}): LiberaNotebookViewOptions {
+  return {
+    hiddenGroupIds: viewOptions.hiddenGroupIds.filter((groupId) =>
+      validGroupIds.has(groupId),
+    ),
+    hiddenNotebookNames: viewOptions.hiddenNotebookNames.filter((notebookName) =>
+      notebookNames.has(notebookName),
+    ),
+  };
 }
 
 export async function getFileNode(
@@ -167,6 +188,10 @@ async function readTreeDirectory(
 export async function getTree(): Promise<LiberaTree> {
   await ensureAdminRoot();
 
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const validGroupIds = new Set(
+    workspaceMetadata.notebookGroups.map((group) => group.id),
+  );
   const entries = await readdir(getAdminRoot(), { withFileTypes: true });
   const notebooks: LiberaNotebookNode[] = [];
 
@@ -190,6 +215,10 @@ export async function getTree(): Promise<LiberaTree> {
       createdAt: metadata.createdAt,
       color: metadata.color,
       emoji: metadata.emoji,
+      groupId:
+        metadata.groupId && validGroupIds.has(metadata.groupId)
+          ? metadata.groupId
+          : null,
       updatedAt: latestIsoDate(
         notebookStats.mtime.toISOString(),
         ...latestTreeNodeUpdatedAt(children),
@@ -200,6 +229,12 @@ export async function getTree(): Promise<LiberaTree> {
 
   return {
     root: getAdminRoot(),
+    notebookGroups: workspaceMetadata.notebookGroups,
+    notebookViewOptions: normalizeTreeViewOptions({
+      notebookNames: new Set(notebooks.map((notebook) => notebook.name)),
+      validGroupIds,
+      viewOptions: workspaceMetadata.notebookViewOptions,
+    }),
     notebooks: notebooks.sort((left, right) => left.name.localeCompare(right.name)),
   };
 }

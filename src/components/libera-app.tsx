@@ -5,6 +5,7 @@ import { LeftPanel } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
+import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { TabStrip } from "@/components/libera/tab-strip";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
@@ -61,12 +62,15 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
+          onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
           onDeleteFolder={workspace.deleteFolderFromPrompt}
+          onDeleteNotebookGroup={workspace.deleteNotebookGroup}
           onDownloadFile={workspace.downloadFile}
           onDeleteNotebook={workspace.deleteNotebookFromPrompt}
           onDownloadNotebook={workspace.downloadNotebook}
           onEditNotebook={workspace.openEditNotebookDialog}
+          onEditNotebookGroup={workspace.openEditNotebookGroupDialog}
           onMoveFile={workspace.moveFileToFolder}
           onOpenFile={workspace.openFile}
           onLogout={workspace.handleLogout}
@@ -81,6 +85,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
+          onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
         />
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -142,9 +147,17 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
 
       <NotebookDialog
         dialog={workspace.notebookDialog}
+        groups={workspace.tree.notebookGroups}
         submitting={workspace.notebookDialogSubmitting}
         onClose={workspace.closeNotebookDialog}
         onSubmit={workspace.submitNotebookDialog}
+      />
+      <NotebookGroupDialog
+        dialog={workspace.notebookGroupDialog}
+        submitting={workspace.notebookGroupDialogSubmitting}
+        tree={workspace.tree}
+        onClose={workspace.closeNotebookGroupDialog}
+        onSubmit={workspace.submitNotebookGroupDialog}
       />
       <NoteDialog
         dialog={workspace.noteDialog}

@@ -29,6 +29,12 @@ export {
   renameNotebook,
 } from "@/lib/storage/notebooks";
 export {
+  createNotebookGroup,
+  deleteNotebookGroup,
+  updateNotebookGroup,
+  updateNotebookViewOptions,
+} from "@/lib/storage/notebook-groups";
+export {
   ensureAdminRoot,
   getAdminRoot,
 } from "@/lib/storage/paths";

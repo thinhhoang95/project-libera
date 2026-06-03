@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
-import { createNotebook, deleteNotebook, renameNotebook, toStorageError } from "@/lib/storage";
-import type { LiberaNotebookMetadata } from "@/lib/types";
+import {
+  createNotebookGroup,
+  deleteNotebookGroup,
+  toStorageError,
+  updateNotebookGroup,
+} from "@/lib/storage";
 
 export const runtime = "nodejs";
 
@@ -18,16 +22,13 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as Partial<LiberaNotebookMetadata> & {
-      name?: string;
+    const body = (await request.json()) as {
+      description?: string;
+      notebookNames?: string[];
+      title?: string;
     };
-    return NextResponse.json(
-      await createNotebook(body.name ?? "", {
-        color: body.color,
-        emoji: body.emoji,
-        groupId: body.groupId,
-      }),
-    );
+
+    return NextResponse.json(await createNotebookGroup(body));
   } catch (error) {
     return handleError(error);
   }
@@ -41,17 +42,14 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as Partial<LiberaNotebookMetadata> & {
-      path?: string;
-      name?: string;
+    const body = (await request.json()) as {
+      description?: string;
+      id?: string;
+      notebookNames?: string[];
+      title?: string;
     };
-    return NextResponse.json(
-      await renameNotebook(body.path ?? "", body.name ?? "", {
-        color: body.color,
-        emoji: body.emoji,
-        groupId: body.groupId,
-      }),
-    );
+
+    return NextResponse.json(await updateNotebookGroup(body.id ?? "", body));
   } catch (error) {
     return handleError(error);
   }
@@ -65,8 +63,8 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const notebook = request.nextUrl.searchParams.get("path") ?? "";
-    return NextResponse.json(await deleteNotebook(notebook));
+    const id = request.nextUrl.searchParams.get("id") ?? "";
+    return NextResponse.json(await deleteNotebookGroup(id));
   } catch (error) {
     return handleError(error);
   }

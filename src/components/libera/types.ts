@@ -2,6 +2,8 @@ import type { FormEvent, RefObject } from "react";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
+  LiberaNotebookGroup,
+  LiberaNotebookViewOptions,
   LiberaNotebookNode,
   LiberaTree,
 } from "@/lib/types";
@@ -60,6 +62,7 @@ export type NotebookFormValues = {
   name: string;
   color: string;
   emoji: string;
+  groupId: string;
 };
 
 export type NotebookDialogState =
@@ -70,6 +73,23 @@ export type NotebookDialogState =
   | {
       mode: "edit";
       notebook: LiberaNotebookNode;
+      error?: string;
+    };
+
+export type NotebookGroupFormValues = {
+  title: string;
+  description: string;
+  notebookNames: string[];
+};
+
+export type NotebookGroupDialogState =
+  | {
+      mode: "create";
+      error?: string;
+    }
+  | {
+      mode: "edit";
+      group: LiberaNotebookGroup;
       error?: string;
     };
 
@@ -187,6 +207,8 @@ export type LiberaWorkspace = {
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   notebookDialog: NotebookDialogState | null;
   notebookDialogSubmitting: boolean;
+  notebookGroupDialog: NotebookGroupDialogState | null;
+  notebookGroupDialogSubmitting: boolean;
   noteDialog: NoteDialogState | null;
   noteDialogSubmitting: boolean;
   password: string;
@@ -208,6 +230,7 @@ export type LiberaWorkspace = {
   workspaceError: string;
   closeTab: (tabId: string) => void;
   closeNotebookDialog: () => void;
+  closeNotebookGroupDialog: () => void;
   closeNoteDialog: () => void;
   closeWorkspaceConfirmDialog: () => void;
   closeWorkspaceInputDialog: () => void;
@@ -252,7 +275,10 @@ export type LiberaWorkspace = {
   openFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   openCreateNotebookDialog: () => void;
+  openCreateNotebookGroupDialog: () => void;
   openEditNotebookDialog: (notebook: LiberaNotebookNode) => void;
+  openEditNotebookGroupDialog: (group: LiberaNotebookGroup) => void;
+  deleteNotebookGroup: (group: LiberaNotebookGroup) => Promise<void>;
   deleteFileNodeFromPrompt: (file: LiberaFileNode) => Promise<void>;
   renameFolderFromPrompt: (folder: LiberaFolderNode) => Promise<void>;
   renameFileNodeFromPrompt: (file: LiberaFileNode) => Promise<void>;
@@ -269,6 +295,8 @@ export type LiberaWorkspace = {
   swapTabs: (sourceTabId: string, targetTabId: string) => void;
   startUpload: (notebook: string) => void;
   submitNotebookDialog: (values: NotebookFormValues) => Promise<void>;
+  submitNotebookGroupDialog: (values: NotebookGroupFormValues) => Promise<void>;
+  updateNotebookViewOptions: (viewOptions: LiberaNotebookViewOptions) => Promise<void>;
   submitNoteDialog: (values: NoteFormValues) => Promise<void>;
   submitWorkspaceConfirmDialog: () => Promise<void>;
   submitWorkspaceInputDialog: (values: WorkspaceInputDialogValues) => Promise<void>;

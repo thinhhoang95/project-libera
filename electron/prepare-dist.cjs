@@ -87,7 +87,7 @@ async function main() {
       {
         name: "libera",
         productName: "Libera by Thinh Hoang",
-        version: "0.2.1",
+        version: "0.2.5",
         private: true,
         main: "electron/main.cjs",
         dependencies: {

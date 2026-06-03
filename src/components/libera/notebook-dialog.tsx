@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { Check, Palette } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { NotebookDialogState, NotebookFormValues } from "@/components/libera/types";
+import type { LiberaNotebookGroup } from "@/lib/types";
 
 const NOTEBOOK_COLORS = [
   "#64748b",
@@ -18,6 +19,7 @@ const NOTEBOOK_COLORS = [
 
 type NotebookDialogProps = {
   dialog: NotebookDialogState | null;
+  groups: LiberaNotebookGroup[];
   submitting: boolean;
   onClose: () => void;
   onSubmit: (values: NotebookFormValues) => Promise<void>;
@@ -25,6 +27,7 @@ type NotebookDialogProps = {
 
 export function NotebookDialog({
   dialog,
+  groups,
   submitting,
   onClose,
   onSubmit,
@@ -39,18 +42,20 @@ export function NotebookDialog({
           name: dialog.notebook.name,
           color: dialog.notebook.color,
           emoji: dialog.notebook.emoji,
+          groupId: dialog.notebook.groupId ?? "",
         }
       : {
           name: "",
           color: NOTEBOOK_COLORS[0],
           emoji: "📓",
+          groupId: "",
         };
 
   return (
     <ModalDialog
       open
       title={dialog.mode === "create" ? "New notebook" : "Edit notebook"}
-      description="Choose a name, color, and emoji for this notebook."
+      description="Choose a name, group, color, and emoji for this notebook."
       onClose={onClose}
       footer={
         <>
@@ -75,6 +80,7 @@ export function NotebookDialog({
       <NotebookDialogForm
         key={dialog.mode === "edit" ? `edit:${dialog.notebook.path}` : "create"}
         error={dialog.error}
+        groups={groups}
         initialValues={initialValues}
         onSubmit={onSubmit}
       />
@@ -84,10 +90,12 @@ export function NotebookDialog({
 
 function NotebookDialogForm({
   error,
+  groups,
   initialValues,
   onSubmit,
 }: {
   error?: string;
+  groups: LiberaNotebookGroup[];
   initialValues: NotebookFormValues;
   onSubmit: (values: NotebookFormValues) => Promise<void>;
 }) {
@@ -113,6 +121,29 @@ function NotebookDialogForm({
           }
           autoFocus
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-foreground" htmlFor="notebook-group">
+          Group
+        </label>
+        <select
+          id="notebook-group"
+          className="mt-1 h-10 w-full rounded-xl border border-input bg-card px-3 text-sm outline-none transition focus:border-ring"
+          value={values.groupId}
+          onChange={(event) =>
+            setValues((current) => ({ ...current, groupId: event.target.value }))
+          }
+        >
+          <option value="">No group</option>
+          {[...groups]
+            .sort((left, right) => left.title.localeCompare(right.title))
+            .map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.title}
+              </option>
+            ))}
+        </select>
       </div>
 
       <div>

@@ -9,6 +9,7 @@ import {
   NOTEBOOK_METADATA_FILE,
   PDF_ANNOTATIONS_SUFFIX,
   PDF_TEXT_CACHE_DIR,
+  WORKSPACE_METADATA_FILE,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 
@@ -70,6 +71,12 @@ export function assertInsideAdminRoot(targetPath: string) {
 export function notebookPath(name: string) {
   const safeName = assertSafeSegment(name, "Notebook name");
   const targetPath = path.join(getAdminRoot(), safeName);
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
+}
+
+export function workspaceMetadataPath() {
+  const targetPath = path.join(getAdminRoot(), WORKSPACE_METADATA_FILE);
   assertInsideAdminRoot(targetPath);
   return targetPath;
 }

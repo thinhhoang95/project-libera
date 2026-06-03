@@ -15,17 +15,21 @@ import {
   FolderPlus,
   MoreHorizontal,
   Pencil,
+  Settings2,
   Trash2,
   Upload,
 } from "lucide-react";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
+import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
 import type { OpenTabViewState, SearchResult } from "@/components/libera/types";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
+  LiberaNotebookGroup,
   LiberaNotebookNode,
+  LiberaNotebookViewOptions,
   LiberaTree,
   LiberaTreeNode,
 } from "@/lib/types";
@@ -52,12 +56,15 @@ export type NotebookPanelProps = {
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateNotebook: () => void;
+  onCreateNotebookGroup: () => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
+  onDeleteNotebookGroup: (group: LiberaNotebookGroup) => Promise<void>;
   onDeleteFile: (file: LiberaFileNode) => Promise<void>;
   onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
   onDownloadFile: (file: LiberaFileNode) => void;
   onDownloadNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
+  onEditNotebookGroup: (group: LiberaNotebookGroup) => void;
   onMoveFile: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   onQueryChange: (query: string) => void;
@@ -72,6 +79,9 @@ export type NotebookPanelProps = {
     notebook: string,
     files: File[],
     destinationPath?: string,
+  ) => Promise<void>;
+  onUpdateNotebookViewOptions: (
+    viewOptions: LiberaNotebookViewOptions,
   ) => Promise<void>;
 };
 
@@ -298,6 +308,57 @@ function sortTreeForSidebar(
   };
 }
 
+function isNotebookVisibleInPanel(
+  notebook: LiberaNotebookNode,
+  viewOptions: LiberaNotebookViewOptions,
+) {
+  if (viewOptions.hiddenNotebookNames.includes(notebook.name)) {
+    return false;
+  }
+
+  return !notebook.groupId || !viewOptions.hiddenGroupIds.includes(notebook.groupId);
+}
+
+function groupNotebookSections(
+  tree: LiberaTree,
+): {
+  groupedSections: Array<{
+    group: LiberaNotebookGroup;
+    notebooks: LiberaNotebookNode[];
+  }>;
+  topLevelNotebooks: LiberaNotebookNode[];
+} {
+  const groupsById = new Map(tree.notebookGroups.map((group) => [group.id, group]));
+  const topLevelNotebooks: LiberaNotebookNode[] = [];
+  const notebooksByGroupId = new Map<string, LiberaNotebookNode[]>();
+
+  for (const notebook of tree.notebooks) {
+    if (!isNotebookVisibleInPanel(notebook, tree.notebookViewOptions)) {
+      continue;
+    }
+
+    if (!notebook.groupId || !groupsById.has(notebook.groupId)) {
+      topLevelNotebooks.push(notebook);
+      continue;
+    }
+
+    const groupNotebooks = notebooksByGroupId.get(notebook.groupId) ?? [];
+    groupNotebooks.push(notebook);
+    notebooksByGroupId.set(notebook.groupId, groupNotebooks);
+  }
+
+  return {
+    topLevelNotebooks,
+    groupedSections: [...tree.notebookGroups]
+      .filter((group) => !tree.notebookViewOptions.hiddenGroupIds.includes(group.id))
+      .sort((left, right) => left.title.localeCompare(right.title))
+      .map((group) => ({
+        group,
+        notebooks: notebooksByGroupId.get(group.id) ?? [],
+      })),
+  };
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -311,12 +372,15 @@ export function NotebookPanel({
   onCreateFolder,
   onCreateMarkdown,
   onCreateNotebook,
+  onCreateNotebookGroup,
   onDeleteFile,
   onDeleteFolder,
   onDeleteNotebook,
+  onDeleteNotebookGroup,
   onDownloadFile,
   onDownloadNotebook,
   onEditNotebook,
+  onEditNotebookGroup,
   onMoveFile,
   onOpenFile,
   onQueryChange,
@@ -328,6 +392,7 @@ export function NotebookPanel({
   onToggleNotebook,
   onUploadChange,
   onUploadFiles,
+  onUpdateNotebookViewOptions,
 }: NotebookPanelProps) {
   const [contextMenu, setContextMenu] = useState<{
     target: SidebarMenuTarget;
@@ -341,6 +406,9 @@ export function NotebookPanel({
   const [sortMenuPosition, setSortMenuPosition] = useState<MenuPosition | null>(null);
   const [sortPreference, setSortPreference] =
     useState<SidebarSortPreference>(DEFAULT_SIDEBAR_SORT);
+  const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
+  const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
+  const [viewOptionsError, setViewOptionsError] = useState("");
   const sortMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const sortMenuOpen = Boolean(sortMenuPosition);
@@ -348,6 +416,14 @@ export function NotebookPanel({
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
   );
+  const { groupedSections, topLevelNotebooks } = useMemo(
+    () => groupNotebookSections(sortedTree),
+    [sortedTree],
+  );
+  const hasPanelItems =
+    Boolean(sortedTree.notebooks.length) || Boolean(sortedTree.notebookGroups.length);
+  const hasVisiblePanelItems =
+    Boolean(topLevelNotebooks.length) || Boolean(groupedSections.length);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -470,6 +546,22 @@ export function NotebookPanel({
     );
   }
 
+  async function saveViewOptions(viewOptions: LiberaNotebookViewOptions) {
+    setViewOptionsSubmitting(true);
+    setViewOptionsError("");
+
+    try {
+      await onUpdateNotebookViewOptions(viewOptions);
+      setViewOptionsOpen(false);
+    } catch (error) {
+      setViewOptionsError(
+        error instanceof Error ? error.message : "Could not save view options.",
+      );
+    } finally {
+      setViewOptionsSubmitting(false);
+    }
+  }
+
   function toggleSortMenu(event: MouseEvent<HTMLButtonElement>) {
     if (sortMenuPosition) {
       setSortMenuPosition(null);
@@ -478,7 +570,7 @@ export function NotebookPanel({
 
     const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = 288;
-    const menuHeight = SORT_OPTIONS.length * 40 + 8;
+    const menuHeight = SORT_OPTIONS.length * 40 + 48;
     const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
     const preferredY = rect.bottom + 8;
     const y =
@@ -553,16 +645,40 @@ export function NotebookPanel({
                     </button>
                   );
                 })}
+                <div className="my-1 border-t border-border" />
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setSortMenuPosition(null);
+                    setViewOptionsError("");
+                    setViewOptionsOpen(true);
+                  }}
+                >
+                  <Settings2 aria-hidden className="h-4 w-4 text-muted-foreground" />
+                  View Options
+                </button>
               </div>
             ) : null}
           </div>
           <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-input px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+            aria-label="New group"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input hover:bg-muted"
+            title="New group"
+            type="button"
+            onClick={onCreateNotebookGroup}
+          >
+            <FolderPlus aria-hidden className="h-4 w-4" />
+          </button>
+          <button
+            aria-label="New notebook"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input hover:bg-muted"
+            title="New notebook"
             type="button"
             onClick={onCreateNotebook}
           >
-            <BookPlus aria-hidden className="h-3.5 w-3.5" />
-            New
+            <BookPlus aria-hidden className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -577,14 +693,19 @@ export function NotebookPanel({
       />
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
-        {!sortedTree.notebooks.length ? (
+        {!hasPanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
             No notebooks yet.
           </div>
         ) : null}
+        {hasPanelItems && !hasVisiblePanelItems ? (
+          <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
+            No notebooks are visible.
+          </div>
+        ) : null}
 
         <div className="space-y-2">
-          {sortedTree.notebooks.map((notebook) => (
+          {topLevelNotebooks.map((notebook) => (
             <NotebookSection
               key={notebook.name}
               activeTabId={activeTabId}
@@ -600,6 +721,34 @@ export function NotebookPanel({
               onDeleteNotebook={onDeleteNotebook}
               onDropFile={dropFileOnPath}
               onDownloadNotebook={onDownloadNotebook}
+              onEditNotebook={onEditNotebook}
+              onOpenFile={onOpenFile}
+              onSelectNotebook={onSelectNotebook}
+              onSetDragOverPath={setDragOverPath}
+              onSetDraggingFile={setDraggingFile}
+              onStartUpload={onStartUpload}
+              onToggleNotebook={onToggleNotebook}
+              onUploadFiles={onUploadFiles}
+            />
+          ))}
+          {groupedSections.map(({ group, notebooks }) => (
+            <NotebookGroupSection
+              key={group.id}
+              activeTabId={activeTabId}
+              dragOverPath={dragOverPath}
+              draggingFile={draggingFile}
+              expanded={expanded}
+              group={group}
+              notebooks={notebooks}
+              selectedNotebookName={selectedNotebookName}
+              onCreateFolder={onCreateFolder}
+              onCreateMarkdown={onCreateMarkdown}
+              onContextMenu={openContextMenu}
+              onDeleteGroup={onDeleteNotebookGroup}
+              onDeleteNotebook={onDeleteNotebook}
+              onDownloadNotebook={onDownloadNotebook}
+              onDropFile={dropFileOnPath}
+              onEditGroup={onEditNotebookGroup}
               onEditNotebook={onEditNotebook}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
@@ -634,6 +783,15 @@ export function NotebookPanel({
           initialQuery={deepSearchQuery}
           onClose={() => setDeepSearchOpen(false)}
           onOpenFile={onOpenFile}
+        />
+      ) : null}
+      {viewOptionsOpen ? (
+        <NotebookViewOptionsDialog
+          error={viewOptionsError}
+          submitting={viewOptionsSubmitting}
+          tree={tree}
+          onClose={() => setViewOptionsOpen(false)}
+          onSubmit={(viewOptions) => void saveViewOptions(viewOptions)}
         />
       ) : null}
     </div>
@@ -913,6 +1071,131 @@ function NotebookSection({
           </div>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function NotebookGroupSection({
+  activeTabId,
+  dragOverPath,
+  draggingFile,
+  expanded,
+  group,
+  notebooks,
+  selectedNotebookName,
+  onCreateFolder,
+  onCreateMarkdown,
+  onContextMenu,
+  onDeleteGroup,
+  onDeleteNotebook,
+  onDownloadNotebook,
+  onDropFile,
+  onEditGroup,
+  onEditNotebook,
+  onOpenFile,
+  onSelectNotebook,
+  onSetDragOverPath,
+  onSetDraggingFile,
+  onStartUpload,
+  onToggleNotebook,
+  onUploadFiles,
+}: {
+  activeTabId: string;
+  dragOverPath: string;
+  draggingFile: LiberaFileNode | null;
+  expanded: Set<string>;
+  group: LiberaNotebookGroup;
+  notebooks: LiberaNotebookNode[];
+  selectedNotebookName: string;
+  onCreateFolder: (parentPath: string) => Promise<void>;
+  onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
+  onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
+  onDeleteGroup: (group: LiberaNotebookGroup) => Promise<void>;
+  onDeleteNotebook: (notebook: string) => Promise<void>;
+  onDownloadNotebook: (notebook: string) => void;
+  onDropFile: (destinationPath: string) => Promise<void>;
+  onEditGroup: (group: LiberaNotebookGroup) => void;
+  onEditNotebook: (notebook: LiberaNotebookNode) => void;
+  onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onSelectNotebook: (notebook: string) => void;
+  onSetDragOverPath: (path: string) => void;
+  onSetDraggingFile: (file: LiberaFileNode | null) => void;
+  onStartUpload: (notebook: string) => void;
+  onToggleNotebook: (notebook: string) => void;
+  onUploadFiles: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
+}) {
+  return (
+    <section className="space-y-2 pt-2">
+      <div className="flex items-start justify-between gap-3 px-1">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {group.title}
+          </h3>
+          {group.description ? (
+            <p className="mt-0.5 max-h-10 overflow-hidden text-xs leading-5 text-muted-foreground">
+              {group.description}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            aria-label={`Edit ${group.title}`}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Edit group"
+            type="button"
+            onClick={() => onEditGroup(group)}
+          >
+            <Pencil aria-hidden className="h-3.5 w-3.5" />
+          </button>
+          <button
+            aria-label={`Delete ${group.title}`}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive-muted hover:text-destructive"
+            title="Delete group"
+            type="button"
+            onClick={() => void onDeleteGroup(group)}
+          >
+            <Trash2 aria-hidden className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+      {notebooks.length ? (
+        <div className="space-y-2">
+          {notebooks.map((notebook) => (
+            <NotebookSection
+              key={notebook.name}
+              activeTabId={activeTabId}
+              dragOverPath={dragOverPath}
+              draggingFile={draggingFile}
+              expanded={expanded}
+              isExpanded={expanded.has(notebook.name)}
+              isSelected={selectedNotebookName === notebook.name}
+              notebook={notebook}
+              onCreateFolder={onCreateFolder}
+              onCreateMarkdown={onCreateMarkdown}
+              onContextMenu={onContextMenu}
+              onDeleteNotebook={onDeleteNotebook}
+              onDownloadNotebook={onDownloadNotebook}
+              onDropFile={onDropFile}
+              onEditNotebook={onEditNotebook}
+              onOpenFile={onOpenFile}
+              onSelectNotebook={onSelectNotebook}
+              onSetDragOverPath={onSetDragOverPath}
+              onSetDraggingFile={onSetDraggingFile}
+              onStartUpload={onStartUpload}
+              onToggleNotebook={onToggleNotebook}
+              onUploadFiles={onUploadFiles}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">
+          No notebooks in this group.
+        </div>
+      )}
     </section>
   );
 }
@@ -1321,5 +1604,229 @@ function SidebarContextMenu({
         </>
       )}
     </div>
+  );
+}
+
+function NotebookViewOptionsDialog({
+  error,
+  submitting,
+  tree,
+  onClose,
+  onSubmit,
+}: {
+  error: string;
+  submitting: boolean;
+  tree: LiberaTree;
+  onClose: () => void;
+  onSubmit: (viewOptions: LiberaNotebookViewOptions) => void;
+}) {
+  const [hiddenGroupIds, setHiddenGroupIds] = useState(
+    () => new Set(tree.notebookViewOptions.hiddenGroupIds),
+  );
+  const [hiddenNotebookNames, setHiddenNotebookNames] = useState(
+    () => new Set(tree.notebookViewOptions.hiddenNotebookNames),
+  );
+  const groupsById = new Map(tree.notebookGroups.map((group) => [group.id, group]));
+  const topLevelNotebooks = tree.notebooks
+    .filter((notebook) => !notebook.groupId || !groupsById.has(notebook.groupId))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const groupedSections = [...tree.notebookGroups]
+    .sort((left, right) => left.title.localeCompare(right.title))
+    .map((group) => ({
+      group,
+      notebooks: tree.notebooks
+        .filter((notebook) => notebook.groupId === group.id)
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    }));
+
+  function groupNotebookNames(groupId: string) {
+    return tree.notebooks
+      .filter((notebook) => notebook.groupId === groupId)
+      .map((notebook) => notebook.name);
+  }
+
+  function toggleGroup(groupId: string) {
+    setHiddenGroupIds((current) => {
+      const next = new Set(current);
+
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+
+      return next;
+    });
+    setHiddenNotebookNames((current) => {
+      const next = new Set(current);
+
+      for (const notebookName of groupNotebookNames(groupId)) {
+        next.delete(notebookName);
+      }
+
+      return next;
+    });
+  }
+
+  function toggleNotebook(notebookName: string) {
+    setHiddenNotebookNames((current) => {
+      const next = new Set(current);
+
+      if (next.has(notebookName)) {
+        next.delete(notebookName);
+      } else {
+        next.add(notebookName);
+      }
+
+      return next;
+    });
+  }
+
+  function submitViewOptions() {
+    onSubmit({
+      hiddenGroupIds: [...hiddenGroupIds],
+      hiddenNotebookNames: [...hiddenNotebookNames],
+    });
+  }
+
+  return (
+    <ModalDialog
+      open
+      title="View Options"
+      description="Choose which notebooks and groups appear in the Notebook panel."
+      panelClassName="max-w-lg"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            type="button"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            type="button"
+            disabled={submitting}
+            onClick={submitViewOptions}
+          >
+            {submitting ? "Saving" : "Save options"}
+          </button>
+        </>
+      }
+    >
+      <div className="max-h-[60vh] space-y-4 overflow-auto pr-1">
+        {topLevelNotebooks.length ? (
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Notebooks
+            </h3>
+            <div className="rounded-lg border border-border">
+              {topLevelNotebooks.map((notebook) => (
+                <NotebookViewOptionRow
+                  key={notebook.name}
+                  checked={!hiddenNotebookNames.has(notebook.name)}
+                  label={notebook.name}
+                  swatchColor={notebook.color}
+                  swatchText={notebook.emoji}
+                  onChange={() => toggleNotebook(notebook.name)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {groupedSections.map(({ group, notebooks }) => {
+          const groupChecked = !hiddenGroupIds.has(group.id);
+
+          return (
+            <div key={group.id}>
+              <label className="mb-2 flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2 hover:bg-muted">
+                <input
+                  className="mt-0.5 h-4 w-4 rounded border-input"
+                  type="checkbox"
+                  checked={groupChecked}
+                  onChange={() => toggleGroup(group.id)}
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{group.title}</span>
+                  {group.description ? (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {group.description}
+                    </span>
+                  ) : null}
+                </span>
+              </label>
+              {notebooks.length ? (
+                <div className="ml-6 rounded-lg border border-border">
+                  {notebooks.map((notebook) => (
+                    <NotebookViewOptionRow
+                      key={notebook.name}
+                      checked={groupChecked && !hiddenNotebookNames.has(notebook.name)}
+                      disabled={!groupChecked}
+                      label={notebook.name}
+                      swatchColor={notebook.color}
+                      swatchText={notebook.emoji}
+                      onChange={() => toggleNotebook(notebook.name)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="ml-6 rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">
+                  No notebooks in this group.
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {!topLevelNotebooks.length && !groupedSections.length ? (
+          <div className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">
+            No notebooks or groups are available.
+          </div>
+        ) : null}
+      </div>
+      {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
+    </ModalDialog>
+  );
+}
+
+function NotebookViewOptionRow({
+  checked,
+  disabled,
+  label,
+  swatchColor,
+  swatchText,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  swatchColor: string;
+  swatchText: string;
+  onChange: () => void;
+}) {
+  return (
+    <label
+      className={`flex items-center gap-3 border-b border-border px-3 py-2 text-sm last:border-b-0 ${
+        disabled ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:bg-muted"
+      }`}
+    >
+      <input
+        className="h-4 w-4 rounded border-input"
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <span
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-xs"
+        style={{ backgroundColor: swatchColor, color: "#ffffff" }}
+      >
+        {swatchText}
+      </span>
+      <span className="min-w-0 truncate">{label}</span>
+    </label>
   );
 }

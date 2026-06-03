@@ -4,6 +4,7 @@ const PDF_EXTENSIONS = new Set([".pdf"]);
 
 export const ADMIN_USER = "admin";
 export const NOTEBOOK_METADATA_FILE = ".libera-notebook.json";
+export const WORKSPACE_METADATA_FILE = ".libera-workspace.json";
 export const PDF_ANNOTATIONS_SUFFIX = ".libera-pdf-annotations.json";
 export const IMAGE_ANNOTATIONS_SUFFIX = ".libera-image-annotations.json";
 export const LIBERA_SYSTEM_DIR = ".libera";

@@ -57,6 +57,20 @@ export type LiberaNotebookMetadata = {
   createdAt: string;
   color: string;
   emoji: string;
+  groupId: string | null;
+};
+
+export type LiberaNotebookGroup = {
+  id: string;
+  title: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LiberaNotebookViewOptions = {
+  hiddenGroupIds: string[];
+  hiddenNotebookNames: string[];
 };
 
 export type LiberaNotebookNode = {
@@ -66,12 +80,15 @@ export type LiberaNotebookNode = {
   createdAt: string;
   color: string;
   emoji: string;
+  groupId: string | null;
   updatedAt: string;
   children: LiberaTreeNode[];
 };
 
 export type LiberaTree = {
   root: string;
+  notebookGroups: LiberaNotebookGroup[];
+  notebookViewOptions: LiberaNotebookViewOptions;
   notebooks: LiberaNotebookNode[];
 };
 

@@ -24,6 +24,11 @@ export function encodeFilePath(filePath: string) {
 export function emptyTree(): LiberaTree {
   return {
     root: "",
+    notebookGroups: [],
+    notebookViewOptions: {
+      hiddenGroupIds: [],
+      hiddenNotebookNames: [],
+    },
     notebooks: [],
   };
 }

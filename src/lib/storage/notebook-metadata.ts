@@ -26,6 +26,11 @@ function normalizeNotebookEmoji(emoji: string | undefined) {
   return Array.from(trimmed).slice(0, 2).join("");
 }
 
+function normalizeNotebookGroupId(groupId: string | null | undefined) {
+  const trimmed = groupId?.trim();
+  return trimmed || null;
+}
+
 export function normalizeNotebookMetadata(
   input: Partial<LiberaNotebookMetadata> | undefined,
   fallbackCreatedAt: string,
@@ -37,6 +42,7 @@ export function normalizeNotebookMetadata(
         : fallbackCreatedAt,
     color: normalizeNotebookColor(input?.color),
     emoji: normalizeNotebookEmoji(input?.emoji),
+    groupId: normalizeNotebookGroupId(input?.groupId),
   };
 }
 
