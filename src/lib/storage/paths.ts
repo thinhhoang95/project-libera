@@ -14,7 +14,15 @@ import {
 import { StorageError } from "@/lib/storage/errors";
 
 function getDataRoot() {
-  return path.resolve(process.env.LIBERA_DATA_DIR ?? "data/libera");
+  const configuredDataRoot = process.env.LIBERA_DATA_DIR;
+
+  if (!configuredDataRoot) {
+    return path.join(process.cwd(), "data", "libera");
+  }
+
+  return path.isAbsolute(configuredDataRoot)
+    ? configuredDataRoot
+    : path.join(/*turbopackIgnore: true*/ process.cwd(), configuredDataRoot);
 }
 
 export function getAdminRoot() {

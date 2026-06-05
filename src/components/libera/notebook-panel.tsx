@@ -746,6 +746,7 @@ export function NotebookPanel({
               selectedNotebookName={selectedNotebookName}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
+              onCreateSlides={onCreateSlides}
               onContextMenu={openContextMenu}
               onDeleteGroup={onDeleteNotebookGroup}
               onDeleteNotebook={onDeleteNotebook}
@@ -1091,6 +1092,7 @@ function NotebookGroupSection({
   selectedNotebookName,
   onCreateFolder,
   onCreateMarkdown,
+  onCreateSlides,
   onContextMenu,
   onDeleteGroup,
   onDeleteNotebook,
@@ -1115,6 +1117,7 @@ function NotebookGroupSection({
   selectedNotebookName: string;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteGroup: (group: LiberaNotebookGroup) => Promise<void>;
   onDeleteNotebook: (notebook: string) => Promise<void>;
@@ -1182,6 +1185,7 @@ function NotebookGroupSection({
               notebook={notebook}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
+              onCreateSlides={onCreateSlides}
               onContextMenu={onContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDownloadNotebook={onDownloadNotebook}

@@ -3,6 +3,16 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distAppRoot = path.join(projectRoot, ".electron-build", "app");
+const requiredPackages = new Map([
+  ["baseline-browser-mapping", path.join(projectRoot, "node_modules", "baseline-browser-mapping")],
+  ["caniuse-lite", path.join(projectRoot, "node_modules", "caniuse-lite")],
+  ["nanoid", path.join(projectRoot, "node_modules", "nanoid")],
+  ["picocolors", path.join(projectRoot, "node_modules", "picocolors")],
+  ["postcss", path.join(projectRoot, "node_modules", "next", "node_modules", "postcss")],
+  ["scheduler", path.join(projectRoot, "node_modules", "scheduler")],
+  ["source-map-js", path.join(projectRoot, "node_modules", "source-map-js")],
+  ["tslib", path.join(projectRoot, "node_modules", "tslib")],
+]);
 
 async function copy(source, destination) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -32,6 +42,30 @@ async function removeAppleDoubleFiles(directory) {
 
 async function removeIfPresent(targetPath) {
   await fs.rm(targetPath, { force: true, recursive: true });
+}
+
+async function copyPackage(packageName, source, destinationNodeModules) {
+  const packagePathParts = packageName.split("/");
+  const destination = path.join(destinationNodeModules, ...packagePathParts);
+
+  try {
+    await fs.access(destination);
+    return;
+  } catch {
+    await copy(source, destination);
+  }
+}
+
+async function readPackageVersion(nodeModulesRoot, packageName) {
+  try {
+    const packageJson = JSON.parse(
+      await fs.readFile(path.join(nodeModulesRoot, ...packageName.split("/"), "package.json")),
+    );
+
+    return typeof packageJson.version === "string" ? packageJson.version : "";
+  } catch {
+    return "";
+  }
 }
 
 async function removeStandalonePackagingNoise(standaloneAppRoot) {
@@ -76,6 +110,18 @@ async function main() {
     path.join(distAppRoot, ".next", "standalone", "node_modules"),
     path.join(distAppRoot, "node_modules"),
   );
+  const distNodeModulesRoot = path.join(distAppRoot, "node_modules");
+
+  for (const [packageName, source] of requiredPackages) {
+    await copyPackage(packageName, source, distNodeModulesRoot);
+  }
+
+  const dependencies = {
+    next: await readPackageVersion(distNodeModulesRoot, "next"),
+    "pdfjs-dist": await readPackageVersion(distNodeModulesRoot, "pdfjs-dist"),
+    react: await readPackageVersion(distNodeModulesRoot, "react"),
+  };
+
   await fs.symlink(
     path.join("..", "..", "node_modules"),
     path.join(distAppRoot, ".next", "standalone", "node_modules"),
@@ -88,13 +134,11 @@ async function main() {
         name: "libera",
         productName: "Libera by Thinh Hoang",
         version: "0.3.0",
+        description: "A local-first notetaking app.",
+        author: "Thinh Hoang",
         private: true,
         main: "electron/main.cjs",
-        dependencies: {
-          next: "16.2.6",
-          react: "19.2.4",
-          "react-dom": "19.2.4",
-        },
+        dependencies,
       },
       null,
       2,

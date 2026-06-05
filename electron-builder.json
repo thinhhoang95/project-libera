@@ -2,6 +2,7 @@
   "appId": "com.libera.notes",
   "productName": "Libera by Thinh Hoang",
   "asar": false,
+  "npmRebuild": false,
   "directories": {
     "app": ".electron-build/app",
     "output": "dist-electron"
