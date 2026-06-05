@@ -126,6 +126,7 @@ function createMarkdownSlidesContent(name: string) {
 
   return [
     `$title = ${JSON.stringify(title)}`,
+    "$subtitle = \"\"",
     "$author = []",
     "$affiliation = []",
     "$date = \"\"",

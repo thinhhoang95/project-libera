@@ -45,6 +45,7 @@ New decks start with a minimal default template:
 
 ```markdown
 $title = "Untitled"
+$subtitle = ""
 $author = []
 $affiliation = []
 $date = ""
@@ -67,6 +68,7 @@ Example:
 
 ```markdown
 $title = "Presentation Title"
+$subtitle = "Optional Presentation Subtitle"
 $author = ["Slide Author 1", "Slide Author 2"]
 $affiliation = ["Affiliation of Author 1", "Affiliation of Author 2"]
 $date = "01/01/2024"
@@ -129,6 +131,7 @@ Valid examples:
 
 ```markdown
 $title = "Aerospace Systems"
+$subtitle = "Flight Mechanics and Design"
 $author = ["Nguyen An", "Tran Binh"]
 $affiliation = ["VLU", "VLU"]
 $date = "2026-06-05"
@@ -155,11 +158,12 @@ Supported deck-level fields:
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `$title` | string | Deck title shown on the title slide and used as a fallback footer label. |
+| `$subtitle` | string | Optional subtitle shown under the cover slide title. |
 | `$author` | string or string array | Author list shown on the title slide and bottom-right slide footer. |
 | `$affiliation` | string or string array | Affiliation list shown on the title slide. |
 | `$date` | string | Date shown on the title slide. |
 | `$template` | string | Built-in template id. Defaults to `"default"`. |
-| `$fontsize` | number | Base font size for the whole deck. Defaults to `16`. |
+| `$fontsize` | number | Base font size for slide body Markdown across the deck. Defaults to `16`. |
 
 Unknown fields are preserved by the parser for future templates, but the current
 default template does not display them.
@@ -171,7 +175,7 @@ Supported slide-level fields:
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `$title` | string | Slide title shown at the top of the slide sheet. |
-| `$fontsize` | number | Base font size for this slide, overriding the deck font size. |
+| `$fontsize` | number | Base font size for this slide's body Markdown, overriding the deck font size. |
 
 Unknown slide metadata is preserved for templates. It is not displayed by the
 default template.
@@ -219,7 +223,8 @@ for normal Markdown notes.
 
 ## Font size
 
-Set `$fontsize` in the title slide block to control the whole deck:
+Set `$fontsize` in the title slide block to control body Markdown across the
+whole deck:
 
 ```markdown
 $title = "Large Type Deck"
@@ -240,8 +245,17 @@ $fontsize = 12
 This slide uses a smaller base font size.
 ```
 
-The value must be a positive JSON number. Libera applies it to the slide
-template and the Markdown body content.
+The value must be a positive JSON number. Libera applies it to Markdown body
+content only. Template chrome such as slide titles, title-slide metadata,
+counters, and footers stays fixed.
+
+In the default template, fixed chrome sizes are:
+
+- Cover slide title: 48pt
+- Cover slide subtitle: 32pt
+- Cover slide metadata/body chrome outside the title: 24pt
+- Content slide title: 32pt
+- Header and footer chrome: at least 18pt
 
 ## Preview behavior
 
@@ -258,6 +272,11 @@ The preview pane shows:
 All preview sheets use the same width in the preview canvas. Slide height is
 automatic, so larger fonts or longer content can expand the sheet and remain
 visible in the preview.
+
+Slide sheets always use a light presentation theme, even when the Libera app is
+in dark mode. This keeps slide background, text, code blocks, and borders
+consistent between preview and presentation. The default template renders slide
+text in black regardless of the surrounding app theme.
 
 Regular `.md` files keep the existing Markdown preview behavior, including
 editor/preview scroll sync and double-click source positioning.
@@ -300,7 +319,8 @@ Keyboard controls:
 | End | Last slide |
 | Escape | Exit presentation |
 
-The presenter also includes previous, next, and exit buttons.
+The presenter uses keyboard navigation for slide changes. A visible exit button
+is available in the bottom-right corner.
 
 Libera remembers the active slide index in the open tab view state. If you leave
 the presenter and return later, the same tab can reopen at the last slide.
@@ -318,7 +338,7 @@ The default template provides:
 - A fixed-width white slide sheet with natural height in preview
 - A fixed 16:9 slide sheet fitted to the viewport in presentation mode
 - A title slide rendered from the first block before `---`
-- A slide title header
+- A fixed 32pt slide title header
 - Body content aligned with the slide title and spanning the slide interior
 - A footer with the slide title on the left and author names on the right
 - A slide counter
@@ -355,6 +375,7 @@ This text appears on the next slide.
 
 ```markdown
 $title = "Markdown Slides in Libera"
+$subtitle = "A single-file deck format"
 $author = ["A. Researcher", "B. Engineer"]
 $affiliation = ["Libera Lab", "Libera Lab"]
 $date = "2026-06-05"

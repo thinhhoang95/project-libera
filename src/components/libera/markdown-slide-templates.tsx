@@ -38,7 +38,7 @@ function DefaultMarkdownSlideTemplate({
   } as CSSProperties;
   const authorLine = deck.author.join(", ");
   const sheetClassName = classNames(
-    "flex flex-col border border-zinc-200 bg-white text-zinc-950 shadow-sm",
+    "markdown-slide-light flex flex-col border border-zinc-200 bg-white text-zinc-950 shadow-sm",
     isPresenter
       ? "aspect-video overflow-hidden markdown-slide-presenter-sheet"
       : "overflow-visible markdown-slide-preview-sheet",
@@ -66,12 +66,17 @@ function DefaultMarkdownSlideTemplate({
         >
           <div className="w-full max-w-[980px]">
             {deck.title ? (
-              <h1 className="text-[calc(2.75rem*var(--markdown-slide-font-scale))] font-semibold leading-tight tracking-tight text-zinc-950">
+              <h1 className="text-[4rem] font-semibold leading-tight tracking-tight text-zinc-950">
                 {deck.title}
               </h1>
             ) : null}
+            {deck.subtitle ? (
+              <p className="mt-4 text-[2.667rem] font-medium leading-tight tracking-tight text-zinc-950">
+                {deck.subtitle}
+              </p>
+            ) : null}
             {details.length ? (
-              <div className="mt-6 space-y-2 text-[calc(1rem*var(--markdown-slide-font-scale))] leading-7 text-zinc-600">
+              <div className="mt-6 space-y-2 text-[2rem] leading-tight text-zinc-950">
                 {details.map((detail) => (
                   <p key={detail}>{detail}</p>
                 ))}
@@ -93,16 +98,16 @@ function DefaultMarkdownSlideTemplate({
       <header className="flex min-h-20 shrink-0 items-start justify-between gap-6 border-b border-zinc-100 px-12 py-7">
         <div className="min-w-0">
           {slide.title ? (
-            <h2 className="truncate text-[calc(1.5rem*var(--markdown-slide-font-scale))] font-semibold tracking-tight text-zinc-950">
+            <h2 className="truncate text-[2.667rem] font-semibold tracking-tight text-zinc-950">
               {slide.title}
             </h2>
           ) : deck.title ? (
-            <p className="truncate text-[calc(0.875rem*var(--markdown-slide-font-scale))] font-medium uppercase text-zinc-500">
+            <p className="truncate text-2xl font-medium uppercase text-zinc-950">
               {deck.title}
             </p>
           ) : null}
         </div>
-        <span className="shrink-0 text-[calc(0.875rem*var(--markdown-slide-font-scale))] tabular-nums text-zinc-400">
+        <span className="shrink-0 text-2xl tabular-nums text-zinc-950">
           {slideNumber}/{slideCount}
         </span>
       </header>
@@ -120,7 +125,7 @@ function DefaultMarkdownSlideTemplate({
       </div>
 
       {slide.title || deck.title || authorLine ? (
-        <footer className="flex h-11 shrink-0 items-center justify-between gap-6 border-t border-zinc-100 px-12 text-[calc(0.75rem*var(--markdown-slide-font-scale))] font-medium uppercase text-zinc-400">
+        <footer className="flex h-14 shrink-0 items-center justify-between gap-6 border-t border-zinc-100 px-12 text-2xl font-medium uppercase text-zinc-950">
           <span className="min-w-0 truncate">{slide.title ?? deck.title}</span>
           {authorLine ? (
             <span className="shrink-0 truncate text-right normal-case">

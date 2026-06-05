@@ -27,6 +27,7 @@ export type MarkdownSlideDeck = {
   fontSize?: number;
   metadata: MarkdownSlideMetadata;
   slides: MarkdownSlide[];
+  subtitle?: string;
   template: MarkdownSlideTemplateId;
   title?: string;
 };
@@ -210,6 +211,7 @@ function fontSizeValue(metadata: MarkdownSlideMetadata) {
 function hasTitleSlideContent(deckMetadata: MarkdownSlideMetadata, content: string) {
   return Boolean(
     stringValue(deckMetadata.title) ||
+      stringValue(deckMetadata.subtitle) ||
       stringListValue(deckMetadata.author).length ||
       stringListValue(deckMetadata.affiliation).length ||
       stringValue(deckMetadata.date) ||
@@ -270,6 +272,7 @@ export function parseMarkdownSlides(source: string): MarkdownSlideDeck {
     fontSize: deckFontSize,
     metadata: parsedDeckMetadata.metadata,
     slides,
+    subtitle: stringValue(parsedDeckMetadata.metadata.subtitle),
     template: stringValue(parsedDeckMetadata.metadata.template) ?? DEFAULT_TEMPLATE_ID,
     title: stringValue(parsedDeckMetadata.metadata.title),
   };

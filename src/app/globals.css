@@ -319,6 +319,96 @@ button.border[class*="border-white"]:hover {
   width: min(100vw, calc(100vh * 16 / 9));
 }
 
+.dark .markdown-slide-light,
+.markdown-slide-light {
+  --accent: #09090b;
+  --background: #ffffff;
+  --border: #e4e4e7;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --foreground: #09090b;
+  --input: #d4d4d8;
+  --muted: #f4f4f5;
+  --muted-foreground: #09090b;
+  background-color: #ffffff;
+  color: #09090b;
+  color-scheme: light;
+}
+
+.dark .markdown-slide-light :where(*),
+.markdown-slide-light :where(*) {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .bg-white,
+.markdown-slide-light .bg-white {
+  background-color: #ffffff;
+}
+
+.dark .markdown-slide-light .bg-zinc-50,
+.markdown-slide-light .bg-zinc-50 {
+  background-color: #fafafa;
+}
+
+.dark .markdown-slide-light .bg-zinc-100,
+.markdown-slide-light .bg-zinc-100 {
+  background-color: #f4f4f5;
+}
+
+.dark .markdown-slide-light .border-zinc-100,
+.markdown-slide-light .border-zinc-100 {
+  border-color: #f4f4f5;
+}
+
+.dark .markdown-slide-light .border-zinc-200,
+.markdown-slide-light .border-zinc-200 {
+  border-color: #e4e4e7;
+}
+
+.dark .markdown-slide-light .border-zinc-300,
+.markdown-slide-light .border-zinc-300 {
+  border-color: #d4d4d8;
+}
+
+.dark .markdown-slide-light .text-zinc-950,
+.dark .markdown-slide-light .text-zinc-900,
+.dark .markdown-slide-light .text-zinc-800,
+.markdown-slide-light .text-zinc-950,
+.markdown-slide-light .text-zinc-900,
+.markdown-slide-light .text-zinc-800 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .text-zinc-700,
+.markdown-slide-light .text-zinc-700 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .text-zinc-600,
+.markdown-slide-light .text-zinc-600 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .text-zinc-500,
+.markdown-slide-light .text-zinc-500 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .text-zinc-400,
+.markdown-slide-light .text-zinc-400 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .text-teal-700,
+.markdown-slide-light .text-teal-700 {
+  color: #09090b;
+}
+
+.dark .markdown-slide-light .hover\:text-teal-900:hover,
+.markdown-slide-light .hover\:text-teal-900:hover {
+  color: #09090b;
+}
+
 .markdown-preview-pane {
   overflow-anchor: none;
   padding-bottom: max(12rem, 70vh);

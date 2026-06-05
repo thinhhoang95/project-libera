@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
@@ -300,28 +300,6 @@ export function MarkdownSlidesPresenter({
           {deck.slides.length ? slideIndex + 1 : 0} / {deck.slides.length}
         </p>
       </div>
-
-      <button
-        className="absolute left-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-black/35 text-white shadow-lg backdrop-blur hover:bg-black/50 disabled:cursor-not-allowed disabled:opacity-25"
-        type="button"
-        aria-label="Previous slide"
-        title="Previous slide"
-        disabled={!deck.slides.length || slideIndex === 0}
-        onClick={() => goToSlide(slideIndex - 1)}
-      >
-        <ChevronLeft aria-hidden className="h-5 w-5" />
-      </button>
-
-      <button
-        className="absolute right-4 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-black/35 text-white shadow-lg backdrop-blur hover:bg-black/50 disabled:cursor-not-allowed disabled:opacity-25"
-        type="button"
-        aria-label="Next slide"
-        title="Next slide"
-        disabled={!deck.slides.length || slideIndex === deck.slides.length - 1}
-        onClick={() => goToSlide(slideIndex + 1)}
-      >
-        <ChevronRight aria-hidden className="h-5 w-5" />
-      </button>
 
       <button
         className="absolute right-4 bottom-4 inline-flex h-9 w-9 items-center justify-center rounded-md border border-white/15 bg-black/35 text-white shadow-lg backdrop-blur hover:bg-black/50"
