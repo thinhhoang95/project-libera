@@ -23,8 +23,12 @@ export function NoteDialog({
   return (
     <ModalDialog
       open
-      title="New note"
-      description={`Create a Markdown note in ${dialog.parentPath ?? dialog.notebook}.`}
+      title={dialog.mode === "slides" ? "New slides" : "New note"}
+      description={
+        dialog.mode === "slides"
+          ? `Create a Markdown slide deck in ${dialog.parentPath ?? dialog.notebook}.`
+          : `Create a Markdown note in ${dialog.parentPath ?? dialog.notebook}.`
+      }
       onClose={onClose}
       footer={
         <>
@@ -41,15 +45,21 @@ export function NoteDialog({
             type="submit"
             disabled={submitting}
           >
-            {submitting ? "Creating" : "Create note"}
+            {submitting
+              ? "Creating"
+              : dialog.mode === "slides"
+                ? "Create slides"
+                : "Create note"}
           </button>
         </>
       }
     >
       <NoteDialogForm
-        key={`${dialog.notebook}:${dialog.parentPath ?? ""}`}
+        key={`${dialog.notebook}:${dialog.parentPath ?? ""}:${dialog.mode}`}
         error={dialog.error}
-        initialValues={{ name: "Untitled.md" }}
+        initialValues={{
+          name: dialog.mode === "slides" ? "Untitled.slides.md" : "Untitled.md",
+        }}
         onSubmit={onSubmit}
       />
     </ModalDialog>

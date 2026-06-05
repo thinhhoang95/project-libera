@@ -17,6 +17,7 @@ export type MarkdownLinkViewState = {
     previewScrollTop?: number;
     selectionEnd?: number;
     selectionStart?: number;
+    slideIndex?: number;
     zoom?: number;
   };
   pdf?: {

@@ -10,11 +10,15 @@ import type {
   RefObject,
   UIEvent as ReactUIEvent,
 } from "react";
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import {
+  MarkdownSlidesPresenter,
+  MarkdownSlidesPreview,
+} from "@/components/libera/markdown-slides-viewer";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
@@ -39,6 +43,10 @@ import {
   MARKDOWN_SOURCE_BLOCK_SELECTOR,
   MARKDOWN_SOURCE_SELECTOR,
 } from "@/lib/markdown-source-map";
+import {
+  isMarkdownSlidesPath,
+  parseMarkdownSlides,
+} from "@/lib/markdown-slides";
 import {
   getTextareaVisibleStartOffset,
   scrollTextareaToOffset,
@@ -69,6 +77,7 @@ type WorkspacePanelProps = {
     prompt: string,
   ) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
   onCompleteScreenshotSnip: (file: File) => Promise<void>;
@@ -285,6 +294,7 @@ export function WorkspacePanel({
   onAiImageToMarkdown,
   onAiRewriteSelection,
   onCreateMarkdown,
+  onCreateSlides,
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
@@ -321,9 +331,12 @@ export function WorkspacePanel({
   const activeTabId = activeTab?.id;
   const activeMarkdownPath =
     activeFileType === "markdown" ? activeTab?.file.path : undefined;
+  const activeMarkdownIsSlides =
+    activeTab?.file.fileType === "markdown" && isMarkdownSlidesPath(activeTab.file.path);
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
   const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
+  const markdownSlideIndex = activeMarkdownViewState?.slideIndex ?? 0;
   const activePdfViewState =
     activeTab?.file.fileType === "pdf" ? activeTab.viewState?.pdf : undefined;
   const activeImageViewState =
@@ -332,8 +345,18 @@ export function WorkspacePanel({
     activeMarkdownDraft,
     activeTabId,
   );
+  const activeMarkdownSlidesDeck = useMemo(
+    () => (activeMarkdownIsSlides ? parseMarkdownSlides(activeMarkdownDraft) : undefined),
+    [activeMarkdownDraft, activeMarkdownIsSlides],
+  );
   const previewFullscreen =
-    activeTab?.file.fileType === "markdown" && activePreviewTabId === activeTab.id;
+    activeTab?.file.fileType === "markdown" &&
+    !activeMarkdownIsSlides &&
+    activePreviewTabId === activeTab.id;
+  const markdownSlidesPresenting =
+    activeTab?.file.fileType === "markdown" &&
+    activeMarkdownIsSlides &&
+    activePreviewTabId === activeTab.id;
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
@@ -473,7 +496,12 @@ export function WorkspacePanel({
   }, []);
 
   useEffect(() => {
-    if (activeFileType !== "markdown" || !activeTabId || previewFullscreen) {
+    if (
+      activeFileType !== "markdown" ||
+      !activeTabId ||
+      previewFullscreen ||
+      activeMarkdownIsSlides
+    ) {
       return;
     }
 
@@ -544,6 +572,7 @@ export function WorkspacePanel({
     activeFileType,
     activeTabId,
     markEditorActivity,
+    activeMarkdownIsSlides,
     previewFullscreen,
     syncMarkdownPreviewToTextarea,
     syncTextareaToMarkdownPreview,
@@ -552,7 +581,12 @@ export function WorkspacePanel({
   ]);
 
   useEffect(() => {
-    if (activeFileType !== "markdown" || !activeTabId || previewFullscreen) {
+    if (
+      activeFileType !== "markdown" ||
+      !activeTabId ||
+      previewFullscreen ||
+      activeMarkdownIsSlides
+    ) {
       return;
     }
 
@@ -564,6 +598,7 @@ export function WorkspacePanel({
   }, [
     activeFileType,
     activeTabId,
+    activeMarkdownIsSlides,
     previewMarkdownDraft,
     previewFullscreen,
     syncMarkdownPreviewToActiveEditorPosition,
@@ -579,7 +614,7 @@ export function WorkspacePanel({
       const preview = markdownPreviewRef.current;
       const viewState = markdownRestoreViewStateRef.current;
 
-      if (textarea && !previewFullscreen) {
+      if (textarea && !previewFullscreen && !markdownSlidesPresenting) {
         markProgrammaticEditorScroll();
         textarea.scrollLeft = viewState?.editorScrollLeft ?? 0;
         textarea.scrollTop = viewState?.editorScrollTop ?? 0;
@@ -611,6 +646,7 @@ export function WorkspacePanel({
     activeTabId,
     markProgrammaticEditorScroll,
     markProgrammaticPreviewScroll,
+    markdownSlidesPresenting,
     previewFullscreen,
     textareaRef,
   ]);
@@ -917,6 +953,7 @@ export function WorkspacePanel({
         <NotebookHome
           notebook={selectedNotebook}
           onCreateMarkdown={onCreateMarkdown}
+          onCreateSlides={onCreateSlides}
           onOpenFile={onOpenFile}
         />
       );
@@ -930,14 +967,24 @@ export function WorkspacePanel({
             Create a notebook, add Markdown notes, or upload images and PDFs from the explorer.
           </p>
           {firstNotebook ? (
-            <button
-              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              type="button"
-              onClick={() => onCreateMarkdown(firstNotebook)}
-            >
-              <FilePlus2 aria-hidden className="h-4 w-4" />
-              New note in {firstNotebook}
-            </button>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <button
+                className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-50"
+                type="button"
+                onClick={() => onCreateMarkdown(firstNotebook)}
+              >
+                <FilePlus2 aria-hidden className="h-4 w-4" />
+                New note
+              </button>
+              <button
+                className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+                type="button"
+                onClick={() => onCreateSlides(firstNotebook)}
+              >
+                <FilePlus2 aria-hidden className="h-4 w-4" />
+                New slides
+              </button>
+            </div>
           ) : (
             <button
               className="mt-5 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
@@ -965,6 +1012,7 @@ export function WorkspacePanel({
         <>
           <MarkdownToolbar
             canStartScreenshotSnip={canStartScreenshotSnip}
+            isSlideDeck={activeMarkdownIsSlides}
             markdownZoom={markdownZoom}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onFixChatGptEquations={fixActiveChatGptEquations}
@@ -979,7 +1027,7 @@ export function WorkspacePanel({
                 current === activeTab.id ? null : activeTab.id,
               )
             }
-            previewFullscreen={previewFullscreen}
+            previewFullscreen={previewFullscreen || markdownSlidesPresenting}
           />
           {previewFullscreen ? (
             <article
@@ -1044,21 +1092,57 @@ export function WorkspacePanel({
               </div>
               <article
                 ref={markdownPreviewRef}
-                className="markdown-preview-pane min-h-0 min-w-0 overflow-auto bg-card p-6"
-                onDoubleClick={handleMarkdownPreviewDoubleClick}
+                className={`min-h-0 min-w-0 overflow-auto ${
+                  activeMarkdownIsSlides
+                    ? "bg-zinc-100"
+                    : "markdown-preview-pane bg-card p-6"
+                }`}
+                onDoubleClick={
+                  activeMarkdownIsSlides ? undefined : handleMarkdownPreviewDoubleClick
+                }
                 onPointerDown={handleMarkdownPreviewPointerDown}
+                onScroll={handleMarkdownPreviewScroll}
                 onTouchStart={markPreviewUserScrollIntent}
                 onWheel={markPreviewUserScrollIntent}
               >
-                <MarkdownRenderer
-                  content={previewMarkdownDraft}
-                  documentPath={activeTab.file.path}
-                  onOpenFileLink={handleOpenMarkdownFileLink}
-                  textScale={markdownZoom / 100}
-                />
+                {activeMarkdownIsSlides && activeMarkdownSlidesDeck ? (
+                  <MarkdownSlidesPreview
+                    activeSlideIndex={markdownSlideIndex}
+                    deck={activeMarkdownSlidesDeck}
+                    documentPath={activeTab.file.path}
+                    onOpenFileLink={(href) =>
+                      onOpenMarkdownFileLink(activeTab.file.path, href)
+                    }
+                    textScale={markdownZoom / 100}
+                  />
+                ) : (
+                  <MarkdownRenderer
+                    content={previewMarkdownDraft}
+                    documentPath={activeTab.file.path}
+                    onOpenFileLink={(href) =>
+                      onOpenMarkdownFileLink(activeTab.file.path, href)
+                    }
+                    textScale={markdownZoom / 100}
+                  />
+                )}
               </article>
             </div>
           )}
+          {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
+            <MarkdownSlidesPresenter
+              deck={activeMarkdownSlidesDeck}
+              documentPath={activeTab.file.path}
+              initialSlideIndex={markdownSlideIndex}
+              onExit={() => setActivePreviewTabId(null)}
+              onOpenFileLink={(href) =>
+                onOpenMarkdownFileLink(activeTab.file.path, href)
+              }
+              onSlideIndexChange={(slideIndex) =>
+                updateMarkdownViewState({ slideIndex })
+              }
+              textScale={markdownZoom / 100}
+            />
+          ) : null}
           <ExistingImageDialog
             notebook={selectedNotebook}
             open={existingImageDialogOpen}

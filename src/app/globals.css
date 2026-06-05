@@ -306,6 +306,19 @@ button.border[class*="border-white"]:hover {
   touch-action: none;
 }
 
+.markdown-slide-preview-sheet {
+  aspect-ratio: auto;
+  height: auto;
+  width: 100%;
+}
+
+.markdown-slide-presenter-sheet {
+  aspect-ratio: 16 / 9;
+  border: 0;
+  height: min(100vh, calc(100vw * 9 / 16));
+  width: min(100vw, calc(100vh * 16 / 9));
+}
+
 .markdown-preview-pane {
   overflow-anchor: none;
   padding-bottom: max(12rem, 70vh);

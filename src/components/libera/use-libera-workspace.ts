@@ -88,6 +88,56 @@ function markdownPdfFileName(name: string) {
   return `${markdownExportBaseName(name)}.pdf`;
 }
 
+function markdownTitleFromName(name: string) {
+  return (
+    name
+      .replace(/\.slides\.(md|markdown)$/i, "")
+      .replace(/\.(md|markdown)$/i, "")
+      .trim() || "Untitled"
+  );
+}
+
+function ensureMarkdownSlidesName(name: string) {
+  if (/\.slides\.(md|markdown)$/i.test(name)) {
+    return name;
+  }
+
+  if (/\.markdown$/i.test(name)) {
+    return name.replace(/\.markdown$/i, ".slides.markdown");
+  }
+
+  if (/\.md$/i.test(name)) {
+    return name.replace(/\.md$/i, ".slides.md");
+  }
+
+  if (/\.slides$/i.test(name)) {
+    return `${name}.md`;
+  }
+
+  return `${name}.slides.md`;
+}
+
+function createMarkdownNoteContent(name: string) {
+  return `# ${markdownTitleFromName(name)}\n`;
+}
+
+function createMarkdownSlidesContent(name: string) {
+  const title = markdownTitleFromName(name);
+
+  return [
+    `$title = ${JSON.stringify(title)}`,
+    "$author = []",
+    "$affiliation = []",
+    "$date = \"\"",
+    "$template = \"default\"",
+    "---",
+    "$title = \"First Slide\"",
+    "",
+    "Start your slide content here.",
+    "",
+  ].join("\n");
+}
+
 function clampTextOffset(value: number, textLength: number) {
   return Math.max(0, Math.min(value, textLength));
 }
@@ -681,6 +731,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
                 previewScrollTop: viewState.markdown?.previewScrollTop ?? 0,
                 selectionEnd: viewState.markdown?.selectionEnd,
                 selectionStart: viewState.markdown?.selectionStart,
+                slideIndex: viewState.markdown?.slideIndex,
                 zoom: viewState.markdown?.zoom,
               }
             : undefined,
@@ -1523,10 +1574,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function createMarkdownFromPrompt(notebook: string, parentPath?: string) {
     setWorkspaceError("");
     setSelectedNotebookName(notebook);
-    setNoteDialog({ notebook, parentPath });
+    setNoteDialog({ mode: "markdown", notebook, parentPath });
     if (parentPath) {
       setExpanded((current) => new Set(current).add(parentPath));
     }
+  }
+
+  async function createMarkdownSlidesFromPrompt(notebook: string) {
+    setWorkspaceError("");
+    setSelectedNotebookName(notebook);
+    setNoteDialog({ mode: "slides", notebook });
   }
 
   async function submitNoteDialog(values: NoteFormValues) {
@@ -1534,12 +1591,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const name = values.name.trim();
+    const requestedName = values.name.trim();
 
-    if (!name) {
+    if (!requestedName) {
       setNoteDialogError("Note name is required.");
       return;
     }
+
+    const name =
+      noteDialog.mode === "slides"
+        ? ensureMarkdownSlidesName(requestedName)
+        : requestedName;
 
     setNoteDialogSubmitting(true);
 
@@ -1551,7 +1613,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           notebook: noteDialog.notebook,
           parentPath,
           name,
-          content: `# ${name.replace(/\.(md|markdown)$/i, "")}\n`,
+          content:
+            noteDialog.mode === "slides"
+              ? createMarkdownSlidesContent(name)
+              : createMarkdownNoteContent(name),
         }),
       });
       await refreshTree(noteDialog.notebook);
@@ -2302,6 +2367,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       copyFileFromPrompt,
       createFolderFromPrompt,
       createMarkdownFromPrompt,
+      createMarkdownSlidesFromPrompt,
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
       deleteNotebookGroup,

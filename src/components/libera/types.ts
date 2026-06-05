@@ -27,6 +27,7 @@ export type MarkdownTabViewState = {
   previewScrollTop?: number;
   selectionEnd?: number;
   selectionStart?: number;
+  slideIndex?: number;
   zoom?: number;
 };
 
@@ -98,6 +99,7 @@ export type NoteFormValues = {
 };
 
 export type NoteDialogState = {
+  mode: "markdown" | "slides";
   notebook: string;
   parentPath?: string;
   error?: string;
@@ -237,6 +239,7 @@ export type LiberaWorkspace = {
   cancelScreenshotSnip: () => void;
   completeScreenshotSnip: (file: File) => Promise<void>;
   createMarkdownFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
+  createMarkdownSlidesFromPrompt: (notebook: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;

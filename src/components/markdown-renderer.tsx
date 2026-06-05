@@ -13,6 +13,7 @@ import {
 import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 
 type MarkdownRendererProps = {
+  className?: string;
   content: string;
   documentPath?: string;
   onOpenExternalLink?: (href: string) => void;
@@ -99,6 +100,7 @@ function openExternalLink(href: string) {
 }
 
 function MarkdownRendererContent({
+  className,
   content,
   documentPath,
   onOpenExternalLink,
@@ -110,7 +112,7 @@ function MarkdownRendererContent({
   } as CSSProperties;
 
   return (
-    <div style={scaledFontStyle}>
+    <div className={className} style={scaledFontStyle}>
       <ReactMarkdown
         remarkPlugins={[remarkMarkdownSourceMap, remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}

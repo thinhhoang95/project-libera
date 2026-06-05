@@ -22,6 +22,7 @@ import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enu
 
 type MarkdownToolbarProps = {
   canStartScreenshotSnip: boolean;
+  isSlideDeck?: boolean;
   markdownZoom: number;
   onEnumerateHeadings: (
     scope: MarkdownHeadingEnumerationScope,
@@ -43,6 +44,7 @@ const ENUMERATE_HEADINGS_MENU_GAP = 6;
 
 export function MarkdownToolbar({
   canStartScreenshotSnip,
+  isSlideDeck = false,
   markdownZoom,
   onEnumerateHeadings,
   onFixChatGptEquations,
@@ -166,6 +168,14 @@ export function MarkdownToolbar({
     setEnumerateMenuOpen(false);
     onEnumerateHeadings(scope, startAt);
   }
+
+  const fullscreenLabel = isSlideDeck
+    ? previewFullscreen
+      ? "Exit presentation"
+      : "Present slides"
+    : previewFullscreen
+      ? "Exit preview-only mode"
+      : "Preview only";
 
   async function handleImageChange() {
     const file = imageInputRef.current?.files?.[0];
@@ -403,11 +413,11 @@ export function MarkdownToolbar({
         <span className="min-w-10 text-right tabular-nums">{markdownZoom}%</span>
       </label>
       <button
-        aria-label={previewFullscreen ? "Exit preview-only mode" : "Preview only"}
+        aria-label={fullscreenLabel}
         className="toolbar-button"
         type="button"
         aria-pressed={previewFullscreen}
-        title={previewFullscreen ? "Exit preview-only mode" : "Preview only"}
+        title={fullscreenLabel}
         onClick={onTogglePreviewFullscreen}
       >
         {previewFullscreen ? (

@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FilePlus2,
   FileText,
   Image as ImageIcon,
   RotateCcw,
@@ -31,6 +32,7 @@ const ZOOM_STEP = 0.25;
 type NotebookHomeProps = {
   notebook: LiberaNotebookNode;
   onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
 };
 
@@ -78,6 +80,7 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
 export function NotebookHome({
   notebook,
   onCreateMarkdown,
+  onCreateSlides,
   onOpenFile,
 }: NotebookHomeProps) {
   const { files, notes, images } = useMemo(
@@ -124,14 +127,24 @@ export function NotebookHome({
               </p>
             </div>
           </div>
-          <button
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            type="button"
-            onClick={() => onCreateMarkdown(notebook.name)}
-          >
-            <FileText aria-hidden className="h-4 w-4" />
-            New note
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50"
+              type="button"
+              onClick={() => onCreateMarkdown(notebook.name)}
+            >
+              <FileText aria-hidden className="h-4 w-4" />
+              New note
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+              type="button"
+              onClick={() => onCreateSlides(notebook.name)}
+            >
+              <FilePlus2 aria-hidden className="h-4 w-4" />
+              New slides
+            </button>
+          </div>
         </header>
 
         <section className="py-4 text-center">
