@@ -20,6 +20,7 @@ import { useRef } from "react";
 
 type MarkdownToolbarProps = {
   canStartScreenshotSnip: boolean;
+  isSlideDeck?: boolean;
   markdownZoom: number;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
@@ -34,6 +35,7 @@ type MarkdownToolbarProps = {
 
 export function MarkdownToolbar({
   canStartScreenshotSnip,
+  isSlideDeck = false,
   markdownZoom,
   onFixChatGptEquations,
   onInsert,
@@ -46,6 +48,13 @@ export function MarkdownToolbar({
   previewFullscreen,
 }: MarkdownToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const fullscreenLabel = isSlideDeck
+    ? previewFullscreen
+      ? "Exit presentation"
+      : "Present slides"
+    : previewFullscreen
+      ? "Exit preview-only mode"
+      : "Preview only";
 
   async function handleImageChange() {
     const file = imageInputRef.current?.files?.[0];
@@ -211,11 +220,11 @@ export function MarkdownToolbar({
         <span className="min-w-10 text-right tabular-nums">{markdownZoom}%</span>
       </label>
       <button
-        aria-label={previewFullscreen ? "Exit preview-only mode" : "Preview only"}
+        aria-label={fullscreenLabel}
         className="toolbar-button"
         type="button"
         aria-pressed={previewFullscreen}
-        title={previewFullscreen ? "Exit preview-only mode" : "Preview only"}
+        title={fullscreenLabel}
         onClick={onTogglePreviewFullscreen}
       >
         {previewFullscreen ? (

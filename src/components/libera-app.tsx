@@ -58,6 +58,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onCopyFile={workspace.copyFileFromPrompt}
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
+          onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
           onDeleteFolder={workspace.deleteFolderFromPrompt}
@@ -118,6 +119,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
             onAiRewriteSelection={workspace.rewriteSelectionWithAi}
             onCreateMarkdown={workspace.createMarkdownFromPrompt}
+            onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
             onCreateNotebook={workspace.openCreateNotebookDialog}
             onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
             onCompleteScreenshotSnip={workspace.completeScreenshotSnip}

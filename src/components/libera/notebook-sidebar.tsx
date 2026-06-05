@@ -55,6 +55,7 @@ type NotebookSidebarProps = {
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDeleteFile: (file: LiberaFileNode) => Promise<void>;
@@ -303,6 +304,7 @@ export function NotebookSidebar({
   onCopyFile,
   onCreateFolder,
   onCreateMarkdown,
+  onCreateSlides,
   onCreateNotebook,
   onDeleteFile,
   onDeleteFolder,
@@ -620,6 +622,7 @@ export function NotebookSidebar({
               notebook={notebook}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
+              onCreateSlides={onCreateSlides}
               onContextMenu={openContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDropFile={dropFileOnPath}
@@ -674,6 +677,7 @@ function NotebookSection({
   notebook,
   onCreateFolder,
   onCreateMarkdown,
+  onCreateSlides,
   onContextMenu,
   onDeleteNotebook,
   onDropFile,
@@ -696,6 +700,7 @@ function NotebookSection({
   notebook: LiberaTree["notebooks"][number];
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDropFile: (destinationPath: string) => Promise<void>;
@@ -887,6 +892,7 @@ function NotebookSection({
           onClose={() => setActionMenuPosition(null)}
           onCreateFolder={onCreateFolder}
           onCreateMarkdown={onCreateMarkdown}
+          onCreateSlides={onCreateSlides}
           onDeleteNotebook={onDeleteNotebook}
           onDownloadNotebook={onDownloadNotebook}
           onEditNotebook={onEditNotebook}
@@ -951,6 +957,7 @@ function NotebookActionsMenu({
   onClose,
   onCreateFolder,
   onCreateMarkdown,
+  onCreateSlides,
   onDeleteNotebook,
   onDownloadNotebook,
   onEditNotebook,
@@ -963,6 +970,7 @@ function NotebookActionsMenu({
   onClose: () => void;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
+  onCreateSlides: (notebook: string) => Promise<void>;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDownloadNotebook: (notebook: string) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
@@ -990,6 +998,15 @@ function NotebookActionsMenu({
       >
         <FilePlus2 aria-hidden className="h-4 w-4 text-zinc-500" />
         New note
+      </button>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        type="button"
+        role="menuitem"
+        onClick={() => runAction(() => onCreateSlides(notebook.name))}
+      >
+        <FilePlus2 aria-hidden className="h-4 w-4 text-zinc-500" />
+        New slides
       </button>
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"

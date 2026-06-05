@@ -233,6 +233,19 @@ button.border[class*="border-white"]:hover {
   touch-action: none;
 }
 
+.markdown-slide-preview-sheet {
+  aspect-ratio: auto;
+  height: auto;
+  width: 100%;
+}
+
+.markdown-slide-presenter-sheet {
+  aspect-ratio: 16 / 9;
+  border: 0;
+  height: min(100vh, calc(100vw * 9 / 16));
+  width: min(100vw, calc(100vh * 16 / 9));
+}
+
 @media (min-width: 1024px) {
   .markdown-split-grid {
     grid-template-columns: var(--markdown-split) 0.375rem minmax(0, 1fr);
