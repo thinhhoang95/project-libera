@@ -51,7 +51,7 @@ async function main() {
       {
         name: "libera",
         productName: "Libera",
-        version: "0.2.0",
+        version: "0.3.0",
         private: true,
         main: "electron/main.cjs",
         dependencies: {
