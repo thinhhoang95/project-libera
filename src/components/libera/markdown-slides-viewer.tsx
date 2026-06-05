@@ -47,7 +47,7 @@ function MarkdownSlideContent({
   slide: MarkdownSlide;
   slideNumber: number;
 }) {
-  const slideFontSize = slide.fontSize ?? deck.fontSize ?? 16;
+  const slideFontSize = slide.fontSize ?? deck.fontSize ?? 21;
   const slideTextScale = textScale * (slideFontSize / 16);
 
   return renderMarkdownSlideTemplate(deck.template, {
@@ -113,7 +113,11 @@ export function MarkdownSlidesPreview({
       <MarkdownSlidesDiagnostics deck={deck} />
       {deck.slides.length ? (
         deck.slides.map((slide, index) => (
-          <div key={slideKey(slide, index)} className="w-full max-w-[960px]">
+          <div
+            key={slideKey(slide, index)}
+            className="w-full max-w-[960px]"
+            data-markdown-slide-preview-index={index}
+          >
             <div
               className={
                 index === clampedActiveSlideIndex

@@ -131,6 +131,7 @@ function createMarkdownSlidesContent(name: string) {
     "$affiliation = []",
     "$date = \"\"",
     "$template = \"default\"",
+    "$fontsize = 21",
     "---",
     "$title = \"First Slide\"",
     "",

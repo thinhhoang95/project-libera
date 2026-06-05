@@ -50,7 +50,7 @@ $author = []
 $affiliation = []
 $date = ""
 $template = "default"
-$fontsize = 16
+$fontsize = 21
 ---
 $title = "First Slide"
 
@@ -73,7 +73,7 @@ $author = ["Slide Author 1", "Slide Author 2"]
 $affiliation = ["Affiliation of Author 1", "Affiliation of Author 2"]
 $date = "01/01/2024"
 $template = "default"
-$fontsize = 16
+$fontsize = 21
 ---
 $title = "Slide Title"
 
@@ -136,7 +136,7 @@ $author = ["Nguyen An", "Tran Binh"]
 $affiliation = ["VLU", "VLU"]
 $date = "2026-06-05"
 $template = "default"
-$fontsize = 16
+$fontsize = 21
 $draft = true
 $duration = 20
 ```
@@ -163,7 +163,7 @@ Supported deck-level fields:
 | `$affiliation` | string or string array | Affiliation list shown on the title slide. |
 | `$date` | string | Date shown on the title slide. |
 | `$template` | string | Built-in template id. Defaults to `"default"`. |
-| `$fontsize` | number | Base font size for slide body Markdown across the deck. Defaults to `16`. |
+| `$fontsize` | number | Base font size for slide body Markdown across the deck. Defaults to `21`. |
 
 Unknown fields are preserved by the parser for future templates, but the current
 default template does not display them.

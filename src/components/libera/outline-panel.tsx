@@ -10,11 +10,13 @@ import {
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
 import {
   PDF_ANNOTATIONS_UPDATED_EVENT,
   type PdfAnnotationsUpdatedDetail,
 } from "@/components/libera/pdf-annotation-events";
 import type { OpenTab } from "@/components/libera/types";
+import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload } from "@/lib/types";
 
@@ -423,7 +425,14 @@ export function OutlinePanel({
         </h2>
       </div>
       <div className="min-h-0 flex-1 space-y-4 overflow-auto px-3 py-3">
-        {activeTab?.file.fileType === "markdown" ? (
+        {activeTab?.file.fileType === "markdown" &&
+        isMarkdownSlidesPath(activeTab.file.path) ? (
+          <MarkdownSlidesOutlinePreview
+            activeTab={activeTab}
+            textareaRef={textareaRef}
+            onOpenFile={onOpenFile}
+          />
+        ) : activeTab?.file.fileType === "markdown" ? (
           <MarkdownOutline
             activeTab={activeTab}
             textareaRef={textareaRef}
