@@ -303,5 +303,6 @@ export type LiberaWorkspace = {
   submitNoteDialog: (values: NoteFormValues) => Promise<void>;
   submitWorkspaceConfirmDialog: () => Promise<void>;
   submitWorkspaceInputDialog: (values: WorkspaceInputDialogValues) => Promise<void>;
+  toggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
   toggleNotebook: (notebook: string) => void;
 };

@@ -16,6 +16,7 @@ import {
   MoreHorizontal,
   Pencil,
   Settings2,
+  Star,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -74,6 +75,7 @@ export type NotebookPanelProps = {
   onSelectNotebook: (notebook: string) => void;
   onSelectSearchResult: (result: SearchResult) => void;
   onStartUpload: (notebook: string) => void;
+  onToggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
   onUploadFiles: (
@@ -360,6 +362,38 @@ function groupNotebookSections(
   };
 }
 
+function collectFilesByPath(nodes: LiberaTreeNode[], filesByPath: Map<string, LiberaFileNode>) {
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      filesByPath.set(node.path, node);
+      continue;
+    }
+
+    collectFilesByPath(node.children, filesByPath);
+  }
+}
+
+function collectStarredFilesForPanel(tree: LiberaTree) {
+  const filesByPath = new Map<string, LiberaFileNode>();
+
+  for (const notebook of tree.notebooks) {
+    if (!isNotebookVisibleInPanel(notebook, tree.notebookViewOptions)) {
+      continue;
+    }
+
+    collectFilesByPath(notebook.children, filesByPath);
+  }
+
+  return tree.starredFilePaths
+    .map((filePath) => filesByPath.get(filePath))
+    .filter((file): file is LiberaFileNode => Boolean(file));
+}
+
+function parentPathForSidebarFile(file: LiberaFileNode) {
+  const parts = file.path.split("/");
+  return parts.slice(0, -1).join("/") || file.notebook;
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -391,6 +425,7 @@ export function NotebookPanel({
   onSelectNotebook,
   onSelectSearchResult,
   onStartUpload,
+  onToggleFileStar,
   onToggleNotebook,
   onUploadChange,
   onUploadFiles,
@@ -421,6 +456,14 @@ export function NotebookPanel({
   const { groupedSections, topLevelNotebooks } = useMemo(
     () => groupNotebookSections(sortedTree),
     [sortedTree],
+  );
+  const starredFiles = useMemo(
+    () => collectStarredFilesForPanel(sortedTree),
+    [sortedTree],
+  );
+  const starredFilePaths = useMemo(
+    () => new Set(sortedTree.starredFilePaths),
+    [sortedTree.starredFilePaths],
   );
   const hasPanelItems =
     Boolean(sortedTree.notebooks.length) || Boolean(sortedTree.notebookGroups.length);
@@ -707,6 +750,20 @@ export function NotebookPanel({
         ) : null}
 
         <div className="space-y-2">
+          <StarredFilesSection
+            activeTabId={activeTabId}
+            dragOverPath={dragOverPath}
+            draggingFile={draggingFile}
+            expanded={expanded}
+            files={starredFiles}
+            starredFilePaths={starredFilePaths}
+            onContextMenu={openContextMenu}
+            onDropFile={dropFileOnPath}
+            onOpenFile={onOpenFile}
+            onSetDragOverPath={setDragOverPath}
+            onSetDraggingFile={setDraggingFile}
+            onUploadFiles={onUploadFiles}
+          />
           {topLevelNotebooks.map((notebook) => (
             <NotebookSection
               key={notebook.name}
@@ -717,6 +774,7 @@ export function NotebookPanel({
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
               notebook={notebook}
+              starredFilePaths={starredFilePaths}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -744,6 +802,7 @@ export function NotebookPanel({
               group={group}
               notebooks={notebooks}
               selectedNotebookName={selectedNotebookName}
+              starredFilePaths={starredFilePaths}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -778,8 +837,10 @@ export function NotebookPanel({
           onDelete={onDeleteFile}
           onDeleteFolder={onDeleteFolder}
           onDownloadFile={onDownloadFile}
+          onToggleFileStar={onToggleFileStar}
           onRenameFolder={onRenameFolder}
           onRename={onRenameFile}
+          starredFilePaths={starredFilePaths}
         />
       ) : null}
       {deepSearchOpen ? (
@@ -802,6 +863,73 @@ export function NotebookPanel({
   );
 }
 
+function StarredFilesSection({
+  activeTabId,
+  dragOverPath,
+  draggingFile,
+  expanded,
+  files,
+  starredFilePaths,
+  onContextMenu,
+  onDropFile,
+  onOpenFile,
+  onSetDragOverPath,
+  onSetDraggingFile,
+  onUploadFiles,
+}: {
+  activeTabId: string;
+  dragOverPath: string;
+  draggingFile: LiberaFileNode | null;
+  expanded: Set<string>;
+  files: LiberaFileNode[];
+  starredFilePaths: Set<string>;
+  onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
+  onDropFile: (destinationPath: string) => Promise<void>;
+  onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onSetDragOverPath: (path: string) => void;
+  onSetDraggingFile: (file: LiberaFileNode | null) => void;
+  onUploadFiles: (
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ) => Promise<void>;
+}) {
+  if (!files.length) {
+    return null;
+  }
+
+  return (
+    <section className="space-y-1 pb-2">
+      <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Starred
+      </h3>
+      <div className="space-y-1">
+        {files.map((file) => (
+          <TreeNodeRow
+            key={file.path}
+            activeTabId={activeTabId}
+            depth={0}
+            dragOverPath={dragOverPath}
+            draggingFile={draggingFile}
+            expanded={expanded}
+            node={file}
+            parentPath={parentPathForSidebarFile(file)}
+            showNotebookName
+            starredFilePaths={starredFilePaths}
+            onContextMenu={onContextMenu}
+            onDropFile={onDropFile}
+            onOpenFile={onOpenFile}
+            onSetDragOverPath={onSetDragOverPath}
+            onSetDraggingFile={onSetDraggingFile}
+            onTogglePath={() => undefined}
+            onUploadFiles={onUploadFiles}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function NotebookSection({
   activeTabId,
   dragOverPath,
@@ -810,6 +938,7 @@ function NotebookSection({
   isExpanded,
   isSelected,
   notebook,
+  starredFilePaths,
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
@@ -833,6 +962,7 @@ function NotebookSection({
   isExpanded: boolean;
   isSelected: boolean;
   notebook: LiberaTree["notebooks"][number];
+  starredFilePaths: Set<string>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -1062,6 +1192,7 @@ function NotebookSection({
                 draggingFile={draggingFile}
                 expanded={expanded}
                 node={node}
+                starredFilePaths={starredFilePaths}
                 onContextMenu={onContextMenu}
                 onDropFile={onDropFile}
                 onOpenFile={onOpenFile}
@@ -1090,6 +1221,7 @@ function NotebookGroupSection({
   group,
   notebooks,
   selectedNotebookName,
+  starredFilePaths,
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
@@ -1115,6 +1247,7 @@ function NotebookGroupSection({
   group: LiberaNotebookGroup;
   notebooks: LiberaNotebookNode[];
   selectedNotebookName: string;
+  starredFilePaths: Set<string>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -1183,6 +1316,7 @@ function NotebookGroupSection({
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
               notebook={notebook}
+              starredFilePaths={starredFilePaths}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -1270,7 +1404,7 @@ function NotebookActionsMenu({
         New slides
       </button>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-100"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
         type="button"
         role="menuitem"
         onClick={() => runAction(() => onCreateFolder(notebook.path))}
@@ -1342,6 +1476,8 @@ function TreeNodeRow({
   onTogglePath,
   onUploadFiles,
   parentPath,
+  showNotebookName = false,
+  starredFilePaths,
 }: {
   activeTabId: string;
   depth: number;
@@ -1349,6 +1485,7 @@ function TreeNodeRow({
   draggingFile: LiberaFileNode | null;
   expanded: Set<string>;
   node: LiberaTreeNode;
+  starredFilePaths: Set<string>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDropFile: (destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
@@ -1361,6 +1498,7 @@ function TreeNodeRow({
     destinationPath?: string,
   ) => Promise<void>;
   parentPath: string;
+  showNotebookName?: boolean;
 }) {
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
@@ -1443,6 +1581,8 @@ function TreeNodeRow({
                 draggingFile={draggingFile}
                 expanded={expanded}
                 node={child}
+                showNotebookName={showNotebookName}
+                starredFilePaths={starredFilePaths}
                 onContextMenu={onContextMenu}
                 onDropFile={onDropFile}
                 onOpenFile={onOpenFile}
@@ -1458,6 +1598,8 @@ function TreeNodeRow({
       </div>
     );
   }
+
+  const isStarred = starredFilePaths.has(node.path);
 
   return (
     <button
@@ -1495,7 +1637,18 @@ function TreeNodeRow({
         {fileTypeLabel(node.fileType)}
       </span>
       <FileTypeIcon fileType={node.fileType} />
-      <span className="min-w-0 truncate">{node.name}</span>
+      <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      {showNotebookName ? (
+        <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
+          {node.notebook}
+        </span>
+      ) : null}
+      {isStarred ? (
+        <Star
+          aria-hidden
+          className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500"
+        />
+      ) : null}
     </button>
   );
 }
@@ -1511,8 +1664,10 @@ function SidebarContextMenu({
   onDelete,
   onDeleteFolder,
   onDownloadFile,
+  onToggleFileStar,
   onRenameFolder,
   onRename,
+  starredFilePaths,
 }: {
   target: SidebarMenuTarget;
   x: number;
@@ -1524,13 +1679,18 @@ function SidebarContextMenu({
   onDelete: (file: LiberaFileNode) => Promise<void>;
   onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
   onDownloadFile: (file: LiberaFileNode) => void;
+  onToggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
   onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
   onRename: (file: LiberaFileNode) => Promise<void>;
+  starredFilePaths: Set<string>;
 }) {
   async function runAction(action: () => Promise<void>) {
     onClose();
     await action();
   }
+
+  const fileIsStarred =
+    target.kind === "file" ? starredFilePaths.has(target.file.path) : false;
 
   return (
     <div
@@ -1542,6 +1702,22 @@ function SidebarContextMenu({
     >
       {target.kind === "file" ? (
         <>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
+            type="button"
+            role="menuitem"
+            onClick={() => runAction(() => onToggleFileStar(target.file, !fileIsStarred))}
+          >
+            <Star
+              aria-hidden
+              className={`h-4 w-4 ${
+                fileIsStarred
+                  ? "fill-amber-400 text-amber-500"
+                  : "text-muted-foreground"
+              }`}
+            />
+            {fileIsStarred ? "Unstar" : "Star"}
+          </button>
           <button
             className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
             type="button"

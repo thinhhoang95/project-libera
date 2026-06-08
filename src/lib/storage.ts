@@ -35,6 +35,9 @@ export {
   updateNotebookViewOptions,
 } from "@/lib/storage/notebook-groups";
 export {
+  updateStarredFile,
+} from "@/lib/storage/starred-files";
+export {
   ensureAdminRoot,
   getAdminRoot,
 } from "@/lib/storage/paths";

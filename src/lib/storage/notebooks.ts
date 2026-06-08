@@ -8,7 +8,12 @@ import {
 } from "@/lib/storage/notebook-metadata";
 import { ensureAdminRoot, notebookPath } from "@/lib/storage/paths";
 import { getTree } from "@/lib/storage/tree";
-import { readWorkspaceMetadata, writeWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
+import {
+  readWorkspaceMetadata,
+  removeStarredFilePathPrefix,
+  renameStarredFilePathPrefix,
+  writeWorkspaceMetadata,
+} from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
 
 export async function createNotebook(
@@ -66,6 +71,7 @@ export async function renameNotebook(
     ),
   );
   await renameNotebookViewOption(currentName, nextName);
+  await renameStarredFilePathPrefix(currentName, nextName);
 
   return getTree();
 }
@@ -74,6 +80,7 @@ export async function deleteNotebook(name: string) {
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
+  await removeStarredFilePathPrefix(name);
 
   return getTree();
 }

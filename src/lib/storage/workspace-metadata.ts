@@ -8,11 +8,18 @@ import type {
 export type LiberaWorkspaceMetadata = {
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
+  starredFilePaths: string[];
 };
 
 const DEFAULT_NOTEBOOK_VIEW_OPTIONS: LiberaNotebookViewOptions = {
   hiddenGroupIds: [],
   hiddenNotebookNames: [],
+};
+
+const DEFAULT_WORKSPACE_METADATA: LiberaWorkspaceMetadata = {
+  notebookGroups: [],
+  notebookViewOptions: DEFAULT_NOTEBOOK_VIEW_OPTIONS,
+  starredFilePaths: [],
 };
 
 function normalizeDate(value: unknown, fallback: string) {
@@ -97,10 +104,7 @@ export function normalizeNotebookViewOptions(
 
 export function normalizeWorkspaceMetadata(value: unknown): LiberaWorkspaceMetadata {
   if (!value || typeof value !== "object") {
-    return {
-      notebookGroups: [],
-      notebookViewOptions: DEFAULT_NOTEBOOK_VIEW_OPTIONS,
-    };
+    return DEFAULT_WORKSPACE_METADATA;
   }
 
   const candidate = value as Partial<LiberaWorkspaceMetadata>;
@@ -108,6 +112,7 @@ export function normalizeWorkspaceMetadata(value: unknown): LiberaWorkspaceMetad
   return {
     notebookGroups: normalizeNotebookGroups(candidate.notebookGroups),
     notebookViewOptions: normalizeNotebookViewOptions(candidate.notebookViewOptions),
+    starredFilePaths: normalizeStringArray(candidate.starredFilePaths),
   };
 }
 
@@ -127,4 +132,95 @@ export async function writeWorkspaceMetadata(metadata: LiberaWorkspaceMetadata) 
     `${JSON.stringify(normalizeWorkspaceMetadata(metadata), null, 2)}\n`,
     "utf8",
   );
+}
+
+export async function setStarredFilePath(filePath: string, starred: boolean) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const starredFilePaths = workspaceMetadata.starredFilePaths.filter(
+    (starredFilePath) => starredFilePath !== filePath,
+  );
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    starredFilePaths: starred ? [filePath, ...starredFilePaths] : starredFilePaths,
+  });
+}
+
+export async function renameStarredFilePath(currentPath: string, nextPath: string) {
+  if (currentPath === nextPath) {
+    return;
+  }
+
+  const workspaceMetadata = await readWorkspaceMetadata();
+
+  if (!workspaceMetadata.starredFilePaths.includes(currentPath)) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    starredFilePaths: workspaceMetadata.starredFilePaths.map((starredFilePath) =>
+      starredFilePath === currentPath ? nextPath : starredFilePath,
+    ),
+  });
+}
+
+export async function removeStarredFilePath(filePath: string) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+
+  if (!workspaceMetadata.starredFilePaths.includes(filePath)) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    starredFilePaths: workspaceMetadata.starredFilePaths.filter(
+      (starredFilePath) => starredFilePath !== filePath,
+    ),
+  });
+}
+
+export async function renameStarredFilePathPrefix(
+  currentPrefix: string,
+  nextPrefix: string,
+) {
+  if (currentPrefix === nextPrefix) {
+    return;
+  }
+
+  const workspaceMetadata = await readWorkspaceMetadata();
+  let changed = false;
+  const starredFilePaths = workspaceMetadata.starredFilePaths.map((starredFilePath) => {
+    if (!starredFilePath.startsWith(`${currentPrefix}/`)) {
+      return starredFilePath;
+    }
+
+    changed = true;
+    return `${nextPrefix}/${starredFilePath.slice(currentPrefix.length + 1)}`;
+  });
+
+  if (!changed) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    starredFilePaths,
+  });
+}
+
+export async function removeStarredFilePathPrefix(prefix: string) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const starredFilePaths = workspaceMetadata.starredFilePaths.filter(
+    (starredFilePath) => !starredFilePath.startsWith(`${prefix}/`),
+  );
+
+  if (starredFilePaths.length === workspaceMetadata.starredFilePaths.length) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    starredFilePaths,
+  });
 }

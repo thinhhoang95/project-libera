@@ -82,6 +82,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onSelectSearchResult={workspace.selectSearchResult}
           onSetDraft={workspace.setActiveDraft}
           onStartUpload={workspace.startUpload}
+          onToggleFileStar={workspace.toggleFileStar}
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}

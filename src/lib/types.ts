@@ -89,6 +89,7 @@ export type LiberaTree = {
   root: string;
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
+  starredFilePaths: string[];
   notebooks: LiberaNotebookNode[];
 };
 

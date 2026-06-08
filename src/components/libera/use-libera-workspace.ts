@@ -1487,6 +1487,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setTree(nextTree);
   }
 
+  async function toggleFileStar(file: LiberaFileNode, starred: boolean) {
+    setWorkspaceError("");
+
+    try {
+      const nextTree = await apiRequest<LiberaTree>("/api/starred-files", {
+        method: "PATCH",
+        body: JSON.stringify({
+          path: file.path,
+          starred,
+        }),
+      });
+
+      setTree(nextTree);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not update star.");
+    }
+  }
+
   async function deleteNotebookFromPrompt(notebook: string) {
     setWorkspaceConfirmDialog({ mode: "delete-notebook", notebook });
   }
@@ -2417,6 +2435,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       submitNoteDialog,
       submitWorkspaceConfirmDialog,
       submitWorkspaceInputDialog,
+      toggleFileStar,
       toggleNotebook,
       updateNotebookViewOptions,
     },

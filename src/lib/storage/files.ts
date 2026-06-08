@@ -41,6 +41,12 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { getTree, getFileNode } from "@/lib/storage/tree";
+import {
+  removeStarredFilePath,
+  removeStarredFilePathPrefix,
+  renameStarredFilePath,
+  renameStarredFilePathPrefix,
+} from "@/lib/storage/workspace-metadata";
 import type { LiberaFilePayload } from "@/lib/types";
 
 export async function readLiberaFile(relativePath: string): Promise<LiberaFilePayload> {
@@ -124,6 +130,8 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   const nextParts =
     current.notebook === safeNextNotebook ? [...currentDirectory, safeNextName] : [safeNextName];
   const nextPath = filePathFromParts(safeNextNotebook, nextParts);
+  const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextRelativePath = relativeFilePath(safeNextNotebook, nextParts);
 
   if (await pathExists(nextPath)) {
     throw new StorageError("Destination file already exists.", 409);
@@ -140,8 +148,9 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     currentFileType,
     nextFileType,
   );
+  await renameStarredFilePath(currentRelativePath, nextRelativePath);
 
-  return readLiberaFile(relativeFilePath(safeNextNotebook, nextParts));
+  return readLiberaFile(nextRelativePath);
 }
 
 function suggestedCopyName(name: string) {
@@ -180,7 +189,8 @@ export async function renameFolder(relativePath: string, nextName: string) {
   const safeNextName = assertSafeSegment(nextName, "Folder name");
   const parentParts = current.pathParts.slice(0, -1);
   const currentPath = itemPath(current.notebook, current.pathParts);
-  const nextPath = itemPath(current.notebook, [...parentParts, safeNextName]);
+  const nextParts = [...parentParts, safeNextName];
+  const nextPath = itemPath(current.notebook, nextParts);
 
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
@@ -204,6 +214,10 @@ export async function renameFolder(relativePath: string, nextName: string) {
       safeNextName,
     ]),
   );
+  await renameStarredFilePathPrefix(
+    relativeFilePath(current.notebook, current.pathParts),
+    relativeFilePath(current.notebook, nextParts),
+  );
 
   return getTree();
 }
@@ -224,6 +238,7 @@ export async function deleteFolder(relativePath: string) {
     force: true,
     recursive: true,
   });
+  await removeStarredFilePathPrefix(relativeFilePath(current.notebook, current.pathParts));
 
   return getTree();
 }
@@ -248,9 +263,11 @@ export async function moveFileToDirectory(
   const currentPath = filePathFromParts(current.notebook, current.pathParts);
   const nextParts = [...destination.pathParts, safeNextName];
   const nextPath = filePathFromParts(destination.notebook, nextParts);
+  const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextRelativePath = relativeFilePath(destination.notebook, nextParts);
 
   if (currentPath === nextPath) {
-    return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
+    return readLiberaFile(nextRelativePath);
   }
 
   if (await pathExists(nextPath)) {
@@ -268,8 +285,9 @@ export async function moveFileToDirectory(
     currentFileType,
     nextFileType,
   );
+  await renameStarredFilePath(currentRelativePath, nextRelativePath);
 
-  return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
+  return readLiberaFile(nextRelativePath);
 }
 
 export async function copyFileToDirectory(
@@ -335,6 +353,7 @@ export async function deleteFile(relativePath: string) {
       recursive: true,
     });
   }
+  await removeStarredFilePath(relativeFilePath(notebook, pathParts));
 
   return getTree();
 }

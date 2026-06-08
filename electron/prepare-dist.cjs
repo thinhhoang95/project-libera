@@ -133,7 +133,7 @@ async function main() {
       {
         name: "libera",
         productName: "Libera by Thinh Hoang",
-        version: "0.3.0",
+        version: "0.3.1",
         description: "A local-first notetaking app.",
         author: "Thinh Hoang",
         private: true,

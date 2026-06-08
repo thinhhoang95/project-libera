@@ -94,6 +94,17 @@ function latestTreeNodeUpdatedAt(nodes: LiberaTreeNode[]) {
   return nodes.map((node) => node.updatedAt);
 }
 
+function collectFilePaths(nodes: LiberaTreeNode[], filePaths: Set<string>) {
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      filePaths.add(node.path);
+      continue;
+    }
+
+    collectFilePaths(node.children, filePaths);
+  }
+}
+
 function normalizeTreeViewOptions({
   notebookNames,
   validGroupIds,
@@ -194,6 +205,7 @@ export async function getTree(): Promise<LiberaTree> {
   );
   const entries = await readdir(getAdminRoot(), { withFileTypes: true });
   const notebooks: LiberaNotebookNode[] = [];
+  const filePaths = new Set<string>();
 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) {
@@ -225,6 +237,7 @@ export async function getTree(): Promise<LiberaTree> {
       ),
       children,
     });
+    collectFilePaths(children, filePaths);
   }
 
   return {
@@ -235,6 +248,9 @@ export async function getTree(): Promise<LiberaTree> {
       validGroupIds,
       viewOptions: workspaceMetadata.notebookViewOptions,
     }),
+    starredFilePaths: workspaceMetadata.starredFilePaths.filter((filePath) =>
+      filePaths.has(filePath),
+    ),
     notebooks: notebooks.sort((left, right) => left.name.localeCompare(right.name)),
   };
 }
