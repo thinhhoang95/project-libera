@@ -6,7 +6,7 @@ import { getConfiguredThemePreference } from "@/lib/theme-config";
 import { THEME_STORAGE_KEY } from "@/lib/theme";
 
 export const metadata: Metadata = {
-  title: "Libera",
+  title: "Libera for Vy Tran",
   description: "A liberal notetaking app.",
 };
 
