@@ -22,6 +22,7 @@ import {
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
+import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import type {
   ImageTabViewState,
   MarkdownFileLinkRange,
@@ -112,13 +113,6 @@ function clampMarkdownSplitPercent(value: number) {
   return Math.min(
     MAX_MARKDOWN_SPLIT_PERCENT,
     Math.max(MIN_MARKDOWN_SPLIT_PERCENT, value),
-  );
-}
-
-function fixChatGptEquationBlocks(value: string) {
-  return value.replace(
-    /(^|\n)[ \t]*\[[ \t]*\n([\s\S]*?)\n[ \t]*\][ \t]*(?=\n|$)/g,
-    (_, prefix: string, equation: string) => `${prefix}$$\n${equation.trim()}\n$$`,
   );
 }
 
@@ -826,7 +820,7 @@ export function WorkspacePanel({
     const selectionStart = textarea?.selectionStart ?? 0;
     const selectionEnd = textarea?.selectionEnd ?? selectionStart;
 
-    onSetDraft(fixChatGptEquationBlocks(draft));
+    onSetDraft(normalizeChatGptCopiedMarkdown(draft));
 
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;

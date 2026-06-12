@@ -3,6 +3,7 @@ import {
   Code2,
   Heading1,
   Heading2,
+  Highlighter,
   ImagePlus,
   Images,
   Italic,
@@ -226,6 +227,15 @@ export function MarkdownToolbar({
         onClick={() => onInsert("<u>", "</u>")}
       >
         <Underline aria-hidden className="h-4 w-4" />
+      </button>
+      <button
+        aria-label="Highlight"
+        className="toolbar-button"
+        title="Highlight"
+        type="button"
+        onClick={() => onInsert(">>> ", " <<<", "highlight")}
+      >
+        <Highlighter aria-hidden className="h-4 w-4" />
       </button>
       <button
         aria-label="Heading 1"

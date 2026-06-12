@@ -23,6 +23,8 @@
   --markdown-editor-heading-4: #047857;
   --markdown-editor-blockquote: #0f766e;
   --markdown-editor-selection: color-mix(in srgb, var(--accent) 24%, transparent);
+  --markdown-highlight: #fef08a;
+  --markdown-highlight-foreground: #422006;
   --radius: 0.625rem;
 }
 
@@ -49,6 +51,8 @@
   --markdown-editor-heading-4: #86efac;
   --markdown-editor-blockquote: #5eead4;
   --markdown-editor-selection: color-mix(in srgb, var(--accent) 30%, transparent);
+  --markdown-highlight: color-mix(in srgb, #facc15 38%, transparent);
+  --markdown-highlight-foreground: #fef9c3;
 }
 
 @theme inline {

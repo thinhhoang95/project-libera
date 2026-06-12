@@ -1,11 +1,15 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import {
+  normalizeMarkdownHighlightDelimiters,
+  remarkMarkdownHighlights,
+} from "@/lib/markdown-highlights";
 import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
@@ -20,6 +24,13 @@ type MarkdownRendererProps = {
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
 };
+
+const remarkPlugins = [
+  remarkGfm,
+  remarkMath,
+  remarkMarkdownHighlights,
+  remarkMarkdownSourceMap,
+];
 
 function resolveMarkdownImageSource(src: string | undefined, documentPath: string | undefined) {
   if (
@@ -107,6 +118,10 @@ function MarkdownRendererContent({
   onOpenFileLink,
   textScale = 1,
 }: MarkdownRendererProps) {
+  const normalizedContent = useMemo(
+    () => normalizeMarkdownHighlightDelimiters(content),
+    [content],
+  );
   const scaledFontStyle = {
     "--markdown-text-scale": textScale,
   } as CSSProperties;
@@ -114,7 +129,7 @@ function MarkdownRendererContent({
   return (
     <div className={className} style={scaledFontStyle}>
       <ReactMarkdown
-        remarkPlugins={[remarkMarkdownSourceMap, remarkGfm, remarkMath]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}
         components={{
           h1: ({ children, className, ...props }) => (
@@ -240,6 +255,17 @@ function MarkdownRendererContent({
               {children}
             </code>
           ),
+          mark: ({ children, className, ...props }) => (
+            <mark
+              {...markdownElementProps(props)}
+              className={classNames(
+                "box-decoration-clone rounded bg-[var(--markdown-highlight)] px-1 py-0.5 text-[var(--markdown-highlight-foreground)]",
+                className,
+              )}
+            >
+              {children}
+            </mark>
+          ),
           table: ({ children, className, ...props }) => (
             <div className="mb-4 overflow-x-auto rounded-lg border border-border">
               <table
@@ -342,7 +368,7 @@ function MarkdownRendererContent({
           ),
         }}
       >
-        {content}
+        {normalizedContent}
       </ReactMarkdown>
     </div>
   );
