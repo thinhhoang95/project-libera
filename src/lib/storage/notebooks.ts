@@ -9,8 +9,10 @@ import {
 import { ensureAdminRoot, notebookPath } from "@/lib/storage/paths";
 import { getTree } from "@/lib/storage/tree";
 import {
+  removeNotebookPanelExpandedPathPrefix,
   readWorkspaceMetadata,
   removeStarredFilePathPrefix,
+  renameNotebookPanelExpandedPathPrefix,
   renameStarredFilePathPrefix,
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
@@ -71,6 +73,7 @@ export async function renameNotebook(
     ),
   );
   await renameNotebookViewOption(currentName, nextName);
+  await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await renameStarredFilePathPrefix(currentName, nextName);
 
   return getTree();
@@ -80,6 +83,7 @@ export async function deleteNotebook(name: string) {
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
+  await removeNotebookPanelExpandedPathPrefix(name);
   await removeStarredFilePathPrefix(name);
 
   return getTree();

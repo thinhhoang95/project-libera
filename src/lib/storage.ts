@@ -38,6 +38,9 @@ export {
   updateStarredFile,
 } from "@/lib/storage/starred-files";
 export {
+  setNotebookPanelExpandedPaths,
+} from "@/lib/storage/workspace-metadata";
+export {
   ensureAdminRoot,
   getAdminRoot,
 } from "@/lib/storage/paths";

@@ -105,6 +105,17 @@ function collectFilePaths(nodes: LiberaTreeNode[], filePaths: Set<string>) {
   }
 }
 
+function collectExpandablePaths(nodes: LiberaTreeNode[], paths: Set<string>) {
+  for (const node of nodes) {
+    if (node.kind !== "folder") {
+      continue;
+    }
+
+    paths.add(node.path);
+    collectExpandablePaths(node.children, paths);
+  }
+}
+
 function normalizeTreeViewOptions({
   notebookNames,
   validGroupIds,
@@ -206,6 +217,7 @@ export async function getTree(): Promise<LiberaTree> {
   const entries = await readdir(getAdminRoot(), { withFileTypes: true });
   const notebooks: LiberaNotebookNode[] = [];
   const filePaths = new Set<string>();
+  const expandablePaths = new Set<string>();
 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) {
@@ -238,10 +250,18 @@ export async function getTree(): Promise<LiberaTree> {
       children,
     });
     collectFilePaths(children, filePaths);
+    expandablePaths.add(entry.name);
+    collectExpandablePaths(children, expandablePaths);
   }
 
   return {
     root: getAdminRoot(),
+    notebookPanelExpandedPaths:
+      workspaceMetadata.notebookPanelExpandedPaths === null
+        ? null
+        : workspaceMetadata.notebookPanelExpandedPaths.filter((expandedPath) =>
+            expandablePaths.has(expandedPath),
+          ),
     notebookGroups: workspaceMetadata.notebookGroups,
     notebookViewOptions: normalizeTreeViewOptions({
       notebookNames: new Set(notebooks.map((notebook) => notebook.name)),

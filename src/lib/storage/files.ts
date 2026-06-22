@@ -42,8 +42,10 @@ import {
 } from "@/lib/storage/paths";
 import { getTree, getFileNode } from "@/lib/storage/tree";
 import {
+  removeNotebookPanelExpandedPathPrefix,
   removeStarredFilePath,
   removeStarredFilePathPrefix,
+  renameNotebookPanelExpandedPathPrefix,
   renameStarredFilePath,
   renameStarredFilePathPrefix,
 } from "@/lib/storage/workspace-metadata";
@@ -218,6 +220,10 @@ export async function renameFolder(relativePath: string, nextName: string) {
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
   );
+  await renameNotebookPanelExpandedPathPrefix(
+    relativeFilePath(current.notebook, current.pathParts),
+    relativeFilePath(current.notebook, nextParts),
+  );
 
   return getTree();
 }
@@ -239,6 +245,9 @@ export async function deleteFolder(relativePath: string) {
     recursive: true,
   });
   await removeStarredFilePathPrefix(relativeFilePath(current.notebook, current.pathParts));
+  await removeNotebookPanelExpandedPathPrefix(
+    relativeFilePath(current.notebook, current.pathParts),
+  );
 
   return getTree();
 }

@@ -203,6 +203,42 @@ function createMarkdownImageInsertion(
   };
 }
 
+function collectExpandablePanelPaths(tree: LiberaTree) {
+  const paths = new Set<string>();
+
+  function collect(nodes: LiberaTreeNode[]) {
+    for (const node of nodes) {
+      if (node.kind !== "folder") {
+        continue;
+      }
+
+      paths.add(node.path);
+      collect(node.children);
+    }
+  }
+
+  for (const notebook of tree.notebooks) {
+    paths.add(notebook.name);
+    collect(notebook.children);
+  }
+
+  return paths;
+}
+
+function setsEqual(left: Set<string>, right: Set<string>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const item of left) {
+    if (!right.has(item)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
@@ -245,6 +281,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const openingFilePathsRef = useRef<Set<string>>(new Set());
   const pendingOpenViewStateByPathRef = useRef<Record<string, OpenTabViewState | undefined>>({});
+  const expandedRef = useRef<Set<string>>(new Set());
+  const treeLoadedRef = useRef(false);
+  const expansionSaveInFlightRef = useRef(false);
+  const queuedExpansionSaveRef = useRef<string[] | null>(null);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const firstNotebook = tree.notebooks[0]?.name ?? "";
@@ -309,6 +349,82 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return results.slice(0, 12);
   }, [query, tree]);
 
+  async function flushNotebookPanelExpansionSave() {
+    if (expansionSaveInFlightRef.current || !queuedExpansionSaveRef.current) {
+      return;
+    }
+
+    const expandedPaths = queuedExpansionSaveRef.current;
+    queuedExpansionSaveRef.current = null;
+    expansionSaveInFlightRef.current = true;
+
+    try {
+      await apiRequest<LiberaTree>("/api/notebook-panel-expansion", {
+        method: "PATCH",
+        body: JSON.stringify({ expandedPaths }),
+      });
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error
+          ? error.message
+          : "Could not save notebook panel expansion state.",
+      );
+    } finally {
+      expansionSaveInFlightRef.current = false;
+      void flushNotebookPanelExpansionSave();
+    }
+  }
+
+  function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
+    queuedExpansionSaveRef.current = [...nextExpanded];
+    void flushNotebookPanelExpansionSave();
+  }
+
+  function applyExpanded(nextExpanded: Set<string>, options?: { persist?: boolean }) {
+    if (setsEqual(expandedRef.current, nextExpanded)) {
+      return;
+    }
+
+    expandedRef.current = nextExpanded;
+    setExpanded(nextExpanded);
+
+    if (options?.persist) {
+      persistNotebookPanelExpansion(nextExpanded);
+    }
+  }
+
+  function updateExpanded(
+    updater: (current: Set<string>) => Set<string>,
+    options: { persist?: boolean } = { persist: true },
+  ) {
+    applyExpanded(updater(new Set(expandedRef.current)), options);
+  }
+
+  function reconcileExpandedWithTree(
+    nextTree: LiberaTree,
+    options?: { expandPaths?: string[]; persist?: boolean },
+  ) {
+    const validPaths = collectExpandablePanelPaths(nextTree);
+    const sourceExpanded = treeLoadedRef.current
+      ? expandedRef.current
+      : new Set(
+          nextTree.notebookPanelExpandedPaths ??
+            nextTree.notebooks.map((notebook) => notebook.name),
+        );
+    const nextExpanded = new Set(
+      [...sourceExpanded].filter((expandedPath) => validPaths.has(expandedPath)),
+    );
+
+    for (const expandPath of options?.expandPaths ?? []) {
+      if (validPaths.has(expandPath)) {
+        nextExpanded.add(expandPath);
+      }
+    }
+
+    treeLoadedRef.current = true;
+    applyExpanded(nextExpanded, { persist: options?.persist });
+  }
+
   async function refreshTree(expandNotebook?: string) {
     const nextTree = await apiRequest<LiberaTree>("/api/tree");
     setTree(nextTree);
@@ -319,18 +435,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       return nextTree.notebooks[0]?.name ?? "";
     });
-    setExpanded((current) => {
-      const nextExpanded = new Set(current);
-
-      if (!current.size) {
-        nextTree.notebooks.forEach((notebook) => nextExpanded.add(notebook.name));
-      }
-
-      if (expandNotebook) {
-        nextExpanded.add(expandNotebook);
-      }
-
-      return nextExpanded;
+    reconcileExpandedWithTree(nextTree, {
+      expandPaths: expandNotebook ? [expandNotebook] : [],
+      persist: Boolean(expandNotebook),
     });
     return nextTree;
   }
@@ -372,6 +479,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setTabs([]);
     setActiveTabId("");
     setSelectedNotebookName("");
+    expandedRef.current = new Set();
+    treeLoadedRef.current = false;
+    queuedExpansionSaveRef.current = null;
+    setExpanded(new Set());
   }
 
   function updateTab(tabId: string, updater: (tab: OpenTab) => OpenTab) {
@@ -1347,7 +1458,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         setTree(nextTree);
         setSelectedNotebookName(nextName);
         setActiveTabId("");
-        setExpanded((current) => new Set(current).add(nextName));
+        updateExpanded((current) => new Set(current).add(nextName));
       } else {
         const previousName = notebookDialog.notebook.name;
         const nextTree = await apiRequest<LiberaTree>("/api/notebooks", {
@@ -1358,9 +1469,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           }),
         });
         setTree(nextTree);
-        setExpanded((current) => {
-          const next = new Set(current);
-          next.delete(previousName);
+        updateExpanded((current) => {
+          const next = new Set<string>();
+
+          for (const expandedPath of current) {
+            if (expandedPath === previousName) {
+              next.add(nextName);
+            } else if (expandedPath.startsWith(`${previousName}/`)) {
+              next.add(`${nextName}/${expandedPath.slice(previousName.length + 1)}`);
+            } else {
+              next.add(expandedPath);
+            }
+          }
+
           next.add(nextName);
           return next;
         });
@@ -1448,7 +1569,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       setTree(nextTree);
       setNotebookGroupDialog(null);
-      setExpanded((current) => {
+      updateExpanded((current) => {
         const next = new Set(current);
         values.notebookNames.forEach((notebookName) => next.add(notebookName));
         return next;
@@ -1519,11 +1640,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setSelectedNotebookName((current) =>
         current === notebook ? nextTree.notebooks[0]?.name ?? "" : current,
       );
-      setExpanded((current) => {
-        const next = new Set(current);
-        next.delete(notebook);
-        return next;
-      });
+      updateExpanded((current) =>
+        new Set(
+          [...current].filter(
+            (expandedPath) =>
+              expandedPath !== notebook && !expandedPath.startsWith(`${notebook}/`),
+          ),
+        ),
+      );
       tabs.forEach((tab) => {
         if (tab.file.notebook === notebook) {
           forgetTabDraft(tab.id);
@@ -1596,7 +1720,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setSelectedNotebookName(notebook);
     setNoteDialog({ mode: "markdown", notebook, parentPath });
     if (parentPath) {
-      setExpanded((current) => new Set(current).add(parentPath));
+      updateExpanded((current) => new Set(current).add(parentPath));
     }
   }
 
@@ -1641,7 +1765,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       await refreshTree(noteDialog.notebook);
       if (parentPath) {
-        setExpanded((current) => new Set(current).add(parentPath));
+        updateExpanded((current) => new Set(current).add(parentPath));
       }
       setNoteDialog(null);
       await openFile(payload.file);
@@ -1667,7 +1791,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
       setTree(nextTree);
-      setExpanded((current) => {
+      updateExpanded((current) => {
         const next = new Set(current);
         next.add(parentPath.split("/")[0] ?? parentPath);
         next.add(parentPath);
@@ -1699,7 +1823,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
       await refreshTree(payload.file.notebook);
-      setExpanded((current) => {
+      updateExpanded((current) => {
         const next = new Set(current);
         next.add(destinationDirectory.split("/")[0] ?? destinationDirectory);
         next.add(destinationDirectory);
@@ -1831,7 +1955,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       );
       setActiveTabId((current) => (current === file.path ? nextId : current));
       await refreshTree(payload.file.notebook);
-      setExpanded((current) => {
+      updateExpanded((current) => {
         const next = new Set(current);
         next.add(normalizedDestination.split("/")[0] ?? normalizedDestination);
         next.add(normalizedDestination);
@@ -1888,11 +2012,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
       setTree(nextTree);
-      setExpanded((current) => {
-        const next = new Set(current);
+      updateExpanded((current) => {
+        const next = new Set<string>();
 
-        if (next.delete(folder.path)) {
-          next.add(nextPath);
+        for (const expandedPath of current) {
+          if (expandedPath === folder.path) {
+            next.add(nextPath);
+          } else if (expandedPath.startsWith(`${folder.path}/`)) {
+            next.add(`${nextPath}/${expandedPath.slice(folder.path.length + 1)}`);
+          } else {
+            next.add(expandedPath);
+          }
         }
 
         next.add(parentPath);
@@ -2035,11 +2165,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         { method: "DELETE" },
       );
       setTree(nextTree);
-      setExpanded((current) => {
-        const next = new Set(current);
-        next.delete(folder.path);
-        return next;
-      });
+      updateExpanded((current) =>
+        new Set(
+          [...current].filter(
+            (expandedPath) =>
+              expandedPath !== folder.path && !expandedPath.startsWith(`${folder.path}/`),
+          ),
+        ),
+      );
       tabs.forEach((tab) => {
         if (tab.file.path.startsWith(`${folder.path}/`)) {
           forgetTabDraft(tab.id);
@@ -2134,7 +2267,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         body: formData,
       });
       setTree(payload.tree);
-      setExpanded((current) => {
+      updateExpanded((current) => {
         const next = new Set(current).add(notebook);
 
         if (destinationPath) {
@@ -2166,7 +2299,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function selectSearchResult(result: SearchResult) {
     setQuery("");
-    setExpanded((current) => new Set(current).add(result.notebook));
+    updateExpanded((current) => new Set(current).add(result.notebook));
 
     if (result.type === "file") {
       openFile(result.file);
@@ -2178,11 +2311,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function selectNotebook(notebook: string) {
     setSelectedNotebookName(notebook);
     setActiveTabId("");
-    setExpanded((current) => new Set(current).add(notebook));
+    updateExpanded((current) => new Set(current).add(notebook));
   }
 
   function toggleNotebook(notebook: string) {
-    setExpanded((current) => {
+    updateExpanded((current) => {
       const next = new Set(current);
       if (next.has(notebook)) {
         next.delete(notebook);

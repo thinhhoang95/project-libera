@@ -49,6 +49,10 @@ Markdown rendering is wired through:
 
 Use `$...$` for inline math and `$$...$$` for block math.
 
+Use `[color=#dc2626]colored text[/color]` for inline text color.
+Use `>>>highlight<<<` or `y>>>highlight<<<` for yellow highlights, and
+prefix other highlight colors by shortcut, such as `r>>>red highlight<<<`.
+
 ## Scripts
 
 ```bash

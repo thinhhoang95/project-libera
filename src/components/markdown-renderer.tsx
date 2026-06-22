@@ -11,6 +11,10 @@ import {
   remarkMarkdownHighlights,
 } from "@/lib/markdown-highlights";
 import {
+  isSafeMarkdownTextColor,
+  remarkMarkdownTextColors,
+} from "@/lib/markdown-colors";
+import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
@@ -29,6 +33,7 @@ const remarkPlugins = [
   remarkGfm,
   remarkMath,
   remarkMarkdownHighlights,
+  remarkMarkdownTextColors,
   remarkMarkdownSourceMap,
 ];
 
@@ -87,6 +92,15 @@ function markdownElementProps<T extends { node?: unknown }>(props: T) {
   void node;
 
   return elementProps;
+}
+
+function dataAttribute(
+  props: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = props[key];
+
+  return typeof value === "string" ? value : undefined;
 }
 
 function parseExtendedMarkdownHeading(children: unknown) {
@@ -255,17 +269,65 @@ function MarkdownRendererContent({
               {children}
             </code>
           ),
-          mark: ({ children, className, ...props }) => (
-            <mark
-              {...markdownElementProps(props)}
-              className={classNames(
-                "box-decoration-clone rounded bg-[var(--markdown-highlight)] px-1 py-0.5 text-[var(--markdown-highlight-foreground)]",
-                className,
-              )}
-            >
-              {children}
-            </mark>
-          ),
+          mark: ({ children, className, style, ...props }) => {
+            const elementProps = markdownElementProps(props);
+            const highlightColor = dataAttribute(
+              elementProps as Record<string, unknown>,
+              "data-markdown-highlight-color",
+            );
+            const highlightForeground = dataAttribute(
+              elementProps as Record<string, unknown>,
+              "data-markdown-highlight-foreground",
+            );
+            const customHighlightStyle =
+              highlightColor &&
+              highlightForeground &&
+              isSafeMarkdownTextColor(highlightColor) &&
+              isSafeMarkdownTextColor(highlightForeground)
+                ? {
+                    ...style,
+                    backgroundColor: highlightColor,
+                    color: highlightForeground,
+                  }
+                : style;
+
+            return (
+              <mark
+                {...elementProps}
+                className={classNames(
+                  "box-decoration-clone rounded bg-[var(--markdown-highlight)] px-1 py-0.5 text-[var(--markdown-highlight-foreground)]",
+                  className,
+                )}
+                style={customHighlightStyle}
+              >
+                {children}
+              </mark>
+            );
+          },
+          span: ({ children, className, style, ...props }) => {
+            const elementProps = markdownElementProps(props);
+            const markdownColor = dataAttribute(
+              elementProps as Record<string, unknown>,
+              "data-markdown-color",
+            );
+            const textColor =
+              markdownColor && isSafeMarkdownTextColor(markdownColor)
+                ? markdownColor
+                : undefined;
+
+            return (
+              <span
+                {...elementProps}
+                className={classNames(
+                  textColor ? "markdown-text-color" : undefined,
+                  className,
+                )}
+                style={textColor ? { ...style, color: textColor } : style}
+              >
+                {children}
+              </span>
+            );
+          },
           table: ({ children, className, ...props }) => (
             <div className="mb-4 overflow-x-auto rounded-lg border border-border">
               <table

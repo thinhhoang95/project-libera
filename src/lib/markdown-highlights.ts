@@ -1,3 +1,10 @@
+import {
+  getMarkdownHighlightColorByShortcut,
+  MARKDOWN_DEFAULT_HIGHLIGHT_COLOR,
+  MARKDOWN_HIGHLIGHT_COLORS,
+  type MarkdownHighlightColor,
+} from "@/lib/markdown-colors";
+
 const HIGHLIGHT_OPEN = ">>>";
 const HIGHLIGHT_CLOSE = "<<<";
 const HIGHLIGHT_OPEN_SENTINEL = "\uE000\uE000\uE000";
@@ -23,11 +30,20 @@ type MarkdownAstNode = {
   value?: string;
 };
 
-type HighlightMarker = {
-  kind: "close" | "open";
+type HighlightOpenMarker = {
+  color: MarkdownHighlightColor;
+  kind: "open";
   raw: string;
   value: string;
 };
+
+type HighlightCloseMarker = {
+  kind: "close";
+  raw: string;
+  value: string;
+};
+
+type HighlightMarker = HighlightCloseMarker | HighlightOpenMarker;
 
 type SplitPart =
   | {
@@ -36,10 +52,37 @@ type SplitPart =
     }
   | HighlightMarker;
 
+const COLOR_HIGHLIGHT_OPEN_MARKERS: HighlightOpenMarker[] =
+  MARKDOWN_HIGHLIGHT_COLORS.flatMap((color) => [
+    {
+      color,
+      kind: "open" as const,
+      raw: `${color.shortcut}${HIGHLIGHT_OPEN}`,
+      value: `${color.shortcut}${HIGHLIGHT_OPEN_SENTINEL}`,
+    },
+    {
+      color,
+      kind: "open" as const,
+      raw: `${color.shortcut}${HIGHLIGHT_OPEN}`,
+      value: `${color.shortcut}${HIGHLIGHT_OPEN}`,
+    },
+  ]);
+
 const MARKERS: HighlightMarker[] = [
-  { kind: "open", raw: HIGHLIGHT_OPEN, value: HIGHLIGHT_OPEN_SENTINEL },
+  {
+    color: MARKDOWN_DEFAULT_HIGHLIGHT_COLOR,
+    kind: "open",
+    raw: HIGHLIGHT_OPEN,
+    value: HIGHLIGHT_OPEN_SENTINEL,
+  },
   { kind: "close", raw: HIGHLIGHT_CLOSE, value: HIGHLIGHT_CLOSE_SENTINEL },
-  { kind: "open", raw: HIGHLIGHT_OPEN, value: HIGHLIGHT_OPEN },
+  ...COLOR_HIGHLIGHT_OPEN_MARKERS,
+  {
+    color: MARKDOWN_DEFAULT_HIGHLIGHT_COLOR,
+    kind: "open",
+    raw: HIGHLIGHT_OPEN,
+    value: HIGHLIGHT_OPEN,
+  },
   { kind: "close", raw: HIGHLIGHT_CLOSE, value: HIGHLIGHT_CLOSE },
 ];
 
@@ -92,6 +135,26 @@ function blockStartingHighlightIndex(line: string) {
   while (index >= 0) {
     if (isBlockStartingHighlightPrefix(line.slice(0, index))) {
       return index;
+    }
+
+    index = line.indexOf(HIGHLIGHT_OPEN, index + HIGHLIGHT_OPEN.length);
+  }
+
+  return -1;
+}
+
+function colorBlockStartingHighlightIndex(line: string) {
+  let index = line.indexOf(HIGHLIGHT_OPEN);
+
+  while (index > 0) {
+    const shortcut = line[index - 1];
+    const markerStart = index - 1;
+
+    if (
+      getMarkdownHighlightColorByShortcut(shortcut) &&
+      isBlockStartingHighlightPrefix(line.slice(0, markerStart))
+    ) {
+      return markerStart;
     }
 
     index = line.indexOf(HIGHLIGHT_OPEN, index + HIGHLIGHT_OPEN.length);
@@ -158,14 +221,29 @@ export function normalizeMarkdownHighlightDelimiters(content: string) {
       continue;
     }
 
-    const openIndex = blockStartingHighlightIndex(line);
+    const colorOpenIndex = colorBlockStartingHighlightIndex(line);
+    const defaultOpenIndex = blockStartingHighlightIndex(line);
+    const openIndex =
+      colorOpenIndex >= 0 &&
+      (defaultOpenIndex < 0 || colorOpenIndex <= defaultOpenIndex)
+        ? colorOpenIndex
+        : defaultOpenIndex;
 
     if (openIndex >= 0) {
+      const markerRaw =
+        line.slice(openIndex, openIndex + 1 + HIGHLIGHT_OPEN.length).endsWith(
+          HIGHLIGHT_OPEN,
+        ) && getMarkdownHighlightColorByShortcut(line[openIndex])
+          ? `${line[openIndex]}${HIGHLIGHT_OPEN}`
+          : HIGHLIGHT_OPEN;
+
       line = replaceAt(
         line,
         openIndex,
-        HIGHLIGHT_OPEN,
-        HIGHLIGHT_OPEN_SENTINEL,
+        markerRaw,
+        markerRaw === HIGHLIGHT_OPEN
+          ? HIGHLIGHT_OPEN_SENTINEL
+          : `${markerRaw[0]}${HIGHLIGHT_OPEN_SENTINEL}`,
       );
 
       const closeIndex = line.indexOf(
@@ -218,13 +296,23 @@ function nextMarker(value: string, start: number) {
   let next: { index: number; marker: HighlightMarker } | null = null;
 
   for (const marker of MARKERS) {
-    const index = value.indexOf(marker.value, start);
+    let index = value.indexOf(marker.value, start);
 
-    if (index < 0) {
-      continue;
+    while (index >= 0) {
+      const previousCharacter = value[index - 1] ?? "";
+
+      if (
+        marker.kind !== "open" ||
+        marker.raw === HIGHLIGHT_OPEN ||
+        !/[A-Za-z0-9_-]/.test(previousCharacter)
+      ) {
+        break;
+      }
+
+      index = value.indexOf(marker.value, index + marker.value.length);
     }
 
-    if (!next || index < next.index) {
+    if (index >= 0 && (!next || index < next.index)) {
       next = { index, marker };
     }
   }
@@ -270,14 +358,24 @@ function pushNode(target: MarkdownAstNode[], node: MarkdownAstNode) {
   target.push(node);
 }
 
-function highlightNode(children: MarkdownAstNode[]): MarkdownAstNode {
+function highlightNode(
+  color: MarkdownHighlightColor,
+  children: MarkdownAstNode[],
+): MarkdownAstNode {
+  const hProperties: Record<string, string> = {
+    className: "markdown-highlight",
+  };
+
+  if (!color.useDefaultThemeColors) {
+    hProperties["data-markdown-highlight-color"] = color.value;
+    hProperties["data-markdown-highlight-foreground"] = color.foreground;
+  }
+
   return {
     children,
     data: {
       hName: "mark",
-      hProperties: {
-        className: "markdown-highlight",
-      },
+      hProperties,
     },
     type: "liberaHighlight",
   };
@@ -285,7 +383,7 @@ function highlightNode(children: MarkdownAstNode[]): MarkdownAstNode {
 
 function transformHighlightChildren(children: MarkdownAstNode[]) {
   const transformed: MarkdownAstNode[] = [];
-  let openMarker: HighlightMarker | null = null;
+  let openMarker: HighlightOpenMarker | null = null;
   let highlighted: MarkdownAstNode[] | null = null;
 
   for (const child of children) {
@@ -311,12 +409,12 @@ function transformHighlightChildren(children: MarkdownAstNode[]) {
         continue;
       }
 
-      if (!highlighted) {
+      if (!highlighted || !openMarker) {
         pushNode(transformed, markerTextNode(part));
         continue;
       }
 
-      pushNode(transformed, highlightNode(highlighted));
+      pushNode(transformed, highlightNode(openMarker.color, highlighted));
       openMarker = null;
       highlighted = null;
     }

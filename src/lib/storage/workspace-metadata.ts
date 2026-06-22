@@ -6,6 +6,7 @@ import type {
 } from "@/lib/types";
 
 export type LiberaWorkspaceMetadata = {
+  notebookPanelExpandedPaths: string[] | null;
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
   starredFilePaths: string[];
@@ -17,6 +18,7 @@ const DEFAULT_NOTEBOOK_VIEW_OPTIONS: LiberaNotebookViewOptions = {
 };
 
 const DEFAULT_WORKSPACE_METADATA: LiberaWorkspaceMetadata = {
+  notebookPanelExpandedPaths: null,
   notebookGroups: [],
   notebookViewOptions: DEFAULT_NOTEBOOK_VIEW_OPTIONS,
   starredFilePaths: [],
@@ -110,6 +112,9 @@ export function normalizeWorkspaceMetadata(value: unknown): LiberaWorkspaceMetad
   const candidate = value as Partial<LiberaWorkspaceMetadata>;
 
   return {
+    notebookPanelExpandedPaths: Array.isArray(candidate.notebookPanelExpandedPaths)
+      ? normalizeStringArray(candidate.notebookPanelExpandedPaths)
+      : null,
     notebookGroups: normalizeNotebookGroups(candidate.notebookGroups),
     notebookViewOptions: normalizeNotebookViewOptions(candidate.notebookViewOptions),
     starredFilePaths: normalizeStringArray(candidate.starredFilePaths),
@@ -132,6 +137,81 @@ export async function writeWorkspaceMetadata(metadata: LiberaWorkspaceMetadata) 
     `${JSON.stringify(normalizeWorkspaceMetadata(metadata), null, 2)}\n`,
     "utf8",
   );
+}
+
+export async function setNotebookPanelExpandedPaths(expandedPaths: string[]) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    notebookPanelExpandedPaths: normalizeStringArray(expandedPaths),
+  });
+}
+
+export async function renameNotebookPanelExpandedPathPrefix(
+  currentPrefix: string,
+  nextPrefix: string,
+) {
+  if (currentPrefix === nextPrefix) {
+    return;
+  }
+
+  const workspaceMetadata = await readWorkspaceMetadata();
+
+  if (!workspaceMetadata.notebookPanelExpandedPaths) {
+    return;
+  }
+
+  let changed = false;
+  const notebookPanelExpandedPaths = workspaceMetadata.notebookPanelExpandedPaths.map(
+    (expandedPath) => {
+      if (expandedPath === currentPrefix) {
+        changed = true;
+        return nextPrefix;
+      }
+
+      if (expandedPath.startsWith(`${currentPrefix}/`)) {
+        changed = true;
+        return `${nextPrefix}/${expandedPath.slice(currentPrefix.length + 1)}`;
+      }
+
+      return expandedPath;
+    },
+  );
+
+  if (!changed) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    notebookPanelExpandedPaths,
+  });
+}
+
+export async function removeNotebookPanelExpandedPathPrefix(prefix: string) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+
+  if (!workspaceMetadata.notebookPanelExpandedPaths) {
+    return;
+  }
+
+  const notebookPanelExpandedPaths = workspaceMetadata.notebookPanelExpandedPaths.filter(
+    (expandedPath) =>
+      expandedPath !== prefix && !expandedPath.startsWith(`${prefix}/`),
+  );
+
+  if (
+    notebookPanelExpandedPaths.length ===
+    workspaceMetadata.notebookPanelExpandedPaths.length
+  ) {
+    return;
+  }
+
+  await writeWorkspaceMetadata({
+    ...workspaceMetadata,
+    notebookPanelExpandedPaths,
+  });
 }
 
 export async function setStarredFilePath(filePath: string, starred: boolean) {
