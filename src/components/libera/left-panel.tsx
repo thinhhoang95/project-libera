@@ -88,7 +88,7 @@ export function LeftPanel({
   }, [collapsed, onToggleCollapsed]);
 
   return (
-    <aside className="flex min-h-0 max-h-[40vh] overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
+    <aside className="libera-glass-panel libera-left-panel flex min-h-0 max-h-[40vh] overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
       <LeftPanelRail
         activePanel={activePanel}
         collapsed={collapsed}
@@ -128,7 +128,7 @@ function LeftPanelRail({
   onToggleCollapsed: () => void;
 }) {
   return (
-    <div className="flex w-14 shrink-0 flex-col border-r border-border bg-card">
+    <div className="libera-glass-chrome flex w-14 shrink-0 flex-col border-r border-border bg-card">
       <div className="border-b border-border px-2 py-2">
         <button
           className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"

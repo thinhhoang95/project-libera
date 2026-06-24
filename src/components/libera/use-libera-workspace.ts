@@ -683,12 +683,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }));
   }
 
-  function setActiveTabViewState(viewState: OpenTabViewState) {
-    if (!activeTab) {
+  function setActiveTabViewState(viewState: OpenTabViewState, tabId?: string) {
+    const targetTabId = tabId ?? activeTab?.id;
+
+    if (!targetTabId) {
       return;
     }
 
-    updateTab(activeTab.id, (tab) => {
+    updateTab(targetTabId, (tab) => {
       const nextViewState: OpenTabViewState = {
         ...tab.viewState,
         image: viewState.image

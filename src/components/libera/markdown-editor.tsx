@@ -115,6 +115,8 @@ const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
 const PENDING_PARENT_DRAFT_TIMEOUT_MS = 1000;
 const SELECTION_CHANGE_DEBOUNCE_MS = 120;
+const FIND_MATCH_CLASS_NAME = "markdown-editor-find-match";
+const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
 
 type HeadingLevelChangeDirection = "indent" | "unindent";
 
@@ -396,6 +398,10 @@ function appendHighlightChunk(
   className: string | undefined,
   text: string,
 ) {
+  if (!text) {
+    return;
+  }
+
   const previousChunk = chunks.at(-1);
 
   if (previousChunk && previousChunk.className === className) {
@@ -406,19 +412,133 @@ function appendHighlightChunk(
   chunks.push({ className, text });
 }
 
-function renderHighlightedMarkdown(value: string) {
+function getFindMatchClassName(
+  baseClassName: string | undefined,
+  matchIndex: number,
+  activeMatchIndex: number,
+) {
+  return [
+    baseClassName,
+    FIND_MATCH_CLASS_NAME,
+    matchIndex === activeMatchIndex ? ACTIVE_FIND_MATCH_CLASS_NAME : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function appendTextWithFindMatches({
+  activeMatchIndex,
+  baseClassName,
+  chunks,
+  matchCursor,
+  matches,
+  sourceStart,
+  text,
+}: {
+  activeMatchIndex: number;
+  baseClassName: string | undefined;
+  chunks: HighlightChunk[];
+  matchCursor: { index: number };
+  matches: TextMatch[];
+  sourceStart: number;
+  text: string;
+}) {
+  const sourceEnd = sourceStart + text.length;
+  let textIndex = 0;
+
+  while (
+    matchCursor.index < matches.length &&
+    matches[matchCursor.index].end <= sourceStart
+  ) {
+    matchCursor.index += 1;
+  }
+
+  let currentMatchIndex = matchCursor.index;
+
+  while (currentMatchIndex < matches.length) {
+    const match = matches[currentMatchIndex];
+
+    if (match.start >= sourceEnd) {
+      break;
+    }
+
+    const matchStartInText = Math.max(0, match.start - sourceStart);
+    const matchEndInText = Math.min(text.length, match.end - sourceStart);
+
+    if (textIndex < matchStartInText) {
+      appendHighlightChunk(chunks, baseClassName, text.slice(textIndex, matchStartInText));
+    }
+
+    if (matchEndInText > matchStartInText) {
+      appendHighlightChunk(
+        chunks,
+        getFindMatchClassName(baseClassName, currentMatchIndex, activeMatchIndex),
+        text.slice(matchStartInText, matchEndInText),
+      );
+      textIndex = matchEndInText;
+    }
+
+    if (match.end > sourceEnd) {
+      break;
+    }
+
+    currentMatchIndex += 1;
+    matchCursor.index = currentMatchIndex;
+  }
+
+  if (textIndex < text.length) {
+    appendHighlightChunk(chunks, baseClassName, text.slice(textIndex));
+  }
+}
+
+function renderHighlightedMarkdown(
+  value: string,
+  matches: TextMatch[] = [],
+  activeMatchIndex = 0,
+) {
   const lines = value.split("\n");
   const chunks: HighlightChunk[] = [];
+  const matchCursor = { index: 0 };
+  const normalizedActiveMatchIndex = matches.length
+    ? (activeMatchIndex + matches.length) % matches.length
+    : -1;
+  let lineOffset = 0;
   let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
 
   lines.forEach((line, index) => {
     const highlight = getMarkdownEditorLineHighlight(line, state);
-    const lineText = `${line || EMPTY_EDITOR_LINE}${
-      index < lines.length - 1 ? "\n" : ""
-    }`;
+    const lineClassName = getHighlightClassName(highlight.tone);
+    const hasTrailingNewline = index < lines.length - 1;
 
     state = highlight.nextState;
-    appendHighlightChunk(chunks, getHighlightClassName(highlight.tone), lineText);
+
+    if (line) {
+      appendTextWithFindMatches({
+        activeMatchIndex: normalizedActiveMatchIndex,
+        baseClassName: lineClassName,
+        chunks,
+        matchCursor,
+        matches,
+        sourceStart: lineOffset,
+        text: line,
+      });
+    } else {
+      appendHighlightChunk(chunks, lineClassName, EMPTY_EDITOR_LINE);
+    }
+
+    if (hasTrailingNewline) {
+      appendTextWithFindMatches({
+        activeMatchIndex: normalizedActiveMatchIndex,
+        baseClassName: lineClassName,
+        chunks,
+        matchCursor,
+        matches,
+        sourceStart: lineOffset + line.length,
+        text: "\n",
+      });
+    }
+
+    lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
   });
 
   return chunks.map((chunk, index) => {
@@ -487,8 +607,13 @@ export function MarkdownEditor({
     [findQuery, editorValue],
   );
   const highlightedMarkdown = useMemo(
-    () => renderHighlightedMarkdown(editorValue),
-    [editorValue],
+    () =>
+      renderHighlightedMarkdown(
+        editorValue,
+        findOpen ? textMatches : [],
+        activeMatchIndex,
+      ),
+    [activeMatchIndex, editorValue, findOpen, textMatches],
   );
   const fileLinkSections = useMemo(
     () =>

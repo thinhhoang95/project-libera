@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import type { OpenTab } from "@/components/libera/types";
+import { WindowControls } from "@/components/libera/window-controls";
 
 type TabStripProps = {
   activeTab?: OpenTab;
@@ -197,6 +198,7 @@ export function TabStrip({
           onRenameFile={onRenameFile}
           onSave={onSave}
         />
+        <WindowControls />
       </div>
     </div>
   );

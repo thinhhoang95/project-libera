@@ -1,9 +1,10 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell } = require("electron");
 const { randomBytes, scryptSync } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
@@ -534,6 +535,46 @@ function installExportHandlers() {
   ipcMain.handle("export:markdown-pdf", exportMarkdownPdf);
 }
 
+function getWindowFromIpcEvent(event) {
+  const window = BrowserWindow.fromWebContents(event.sender);
+
+  return window && !window.isDestroyed() ? window : null;
+}
+
+function installWindowControlHandlers() {
+  ipcMain.handle("window:minimize", (event) => {
+    getWindowFromIpcEvent(event)?.minimize();
+  });
+
+  ipcMain.handle("window:toggle-maximize", (event) => {
+    const window = getWindowFromIpcEvent(event);
+
+    if (!window) {
+      return;
+    }
+
+    if (window.isMaximized()) {
+      window.unmaximize();
+      return;
+    }
+
+    window.maximize();
+  });
+
+  ipcMain.handle("window:close", (event) => {
+    getWindowFromIpcEvent(event)?.close();
+  });
+
+  // Drive the native appearance from the renderer's resolved theme. This makes
+  // the macOS vibrancy material render dark in dark mode (and light in light
+  // mode), so light text keeps contrast against the glass instead of sitting on
+  // a washed-out light material.
+  ipcMain.handle("window:set-theme", (_event, theme) => {
+    nativeTheme.themeSource =
+      theme === "dark" ? "dark" : theme === "light" ? "light" : "system";
+  });
+}
+
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -701,8 +742,28 @@ async function clearLoginCookies() {
   });
 }
 
+// Describe the native "liquid glass" backdrop available on this platform.
+// macOS uses NSVisualEffectView vibrancy; Windows 11 (build 22000+) uses the
+// acrylic system backdrop. Everything else falls back to the opaque UI.
+function getDesktopGlass() {
+  if (process.platform === "darwin") {
+    return { platform: "darwin", enabled: true };
+  }
+
+  if (process.platform === "win32") {
+    const buildNumber = Number.parseInt(os.release().split(".")[2] ?? "", 10);
+    return { platform: "win32", enabled: Number.isFinite(buildNumber) && buildNumber >= 22000 };
+  }
+
+  return { platform: process.platform, enabled: false };
+}
+
 async function createMainWindow(url) {
   await clearLoginCookies();
+
+  const glass = getDesktopGlass();
+  const isMacGlass = glass.enabled && glass.platform === "darwin";
+  const isWindowsGlass = glass.enabled && glass.platform === "win32";
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -712,10 +773,27 @@ async function createMainWindow(url) {
     minHeight: 640,
     autoHideMenuBar: false,
     title: APP_DISPLAY_NAME,
+    backgroundColor: glass.enabled ? "#00000000" : undefined,
+    // On macOS the vibrancy view *is* the window background, so we don't need a
+    // transparent window — and `transparent: true` would strip the native
+    // rounded corners and force square edges. `titleBarStyle: "hidden"` removes
+    // the title bar while keeping the rounded corners, the traffic-light buttons
+    // and the system drag region at the top of the window.
+    titleBarStyle: isMacGlass ? "hidden" : undefined,
+    // Vertically centre the traffic lights in the 36px (.libera-titlebar) drag
+    // strip: (36 - 12) / 2 = 12.
+    trafficLightPosition: isMacGlass ? { x: 16, y: 12 } : undefined,
+    vibrancy: isMacGlass ? "under-window" : undefined,
+    visualEffectState: isMacGlass ? "active" : undefined,
+    backgroundMaterial: isWindowsGlass ? "acrylic" : undefined,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: [
+        `--libera-platform=${glass.platform}`,
+        `--libera-glass=${glass.enabled ? "1" : "0"}`,
+      ],
     },
   });
 
@@ -772,6 +850,7 @@ async function bootstrap() {
     const url = await startNextServer(config);
     nextServerUrl = url;
     installExportHandlers();
+    installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);
   } catch (error) {

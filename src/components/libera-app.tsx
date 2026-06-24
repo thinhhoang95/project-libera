@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { LeftPanel } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -19,6 +19,27 @@ type LiberaAppProps = {
 export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
+
+  useEffect(() => {
+    const platformInfo = window.liberaPlatform;
+
+    if (!platformInfo?.isElectron) {
+      return;
+    }
+
+    const root = document.documentElement;
+    const platformClass = `libera-platform-${platformInfo.platform}`;
+
+    root.classList.add(platformClass);
+
+    if (platformInfo.glass) {
+      root.classList.add("libera-glass");
+    }
+
+    return () => {
+      root.classList.remove(platformClass, "libera-glass");
+    };
+  }, []);
   const notebookColors = useMemo(
     () =>
       Object.fromEntries(
@@ -40,7 +61,8 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
   }
 
   return (
-    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+    <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      <div className="libera-titlebar" aria-hidden />
       <div
         className={`grid min-h-0 flex-1 overflow-hidden ${
           notebooksCollapsed ? "lg:grid-cols-[56px_1fr]" : "lg:grid-cols-[320px_1fr]"
@@ -90,7 +112,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
         />
 
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
             activeTab={workspace.activeTab}
             activeTabId={workspace.activeTabId}

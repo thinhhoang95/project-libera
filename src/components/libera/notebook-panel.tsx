@@ -1058,7 +1058,7 @@ function NotebookSection({
 
   return (
     <section
-      className={`rounded-lg border border-border transition-shadow ${
+      className={`libera-glass-card rounded-lg border border-border transition-shadow ${
         isSelected || isUploadTarget ? "shadow-md" : ""
       }`}
       onDragOver={(event) => {

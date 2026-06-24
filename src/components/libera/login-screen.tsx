@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import { WindowControls } from "@/components/libera/window-controls";
 
 type LoginScreenProps = {
   authError: string;
@@ -17,6 +18,9 @@ export function LoginScreen({
 }: LoginScreenProps) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-6 py-10 text-foreground">
+      <div className="fixed right-3 top-3 z-50">
+        <WindowControls />
+      </div>
       <section className="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-sm">
         <p className="text-sm font-medium text-muted-foreground">Libera</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">Sign in</h1>

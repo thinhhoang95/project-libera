@@ -32,6 +32,9 @@ function storedThemePreference(): ThemePreference {
 function applyThemePreference(theme: ThemePreference) {
   document.documentElement.classList.toggle("dark", theme === "dark");
   document.documentElement.style.colorScheme = theme;
+  // In the Electron glass build, mirror the theme onto the native window so the
+  // vibrancy material renders dark/light to match (keeps text contrast on glass).
+  window.liberaWindow?.setTheme(theme);
 }
 
 export function SidebarAppMenu({
@@ -128,7 +131,7 @@ export function SidebarAppMenu({
   return (
     <>
       <div
-        className={`relative border-t border-border bg-card ${
+        className={`libera-glass-chrome relative border-t border-border bg-card ${
           collapsed ? "px-2 py-2" : "px-3 py-2"
         }`}
         ref={menuRef}

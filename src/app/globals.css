@@ -23,6 +23,9 @@
   --markdown-editor-heading-4: #047857;
   --markdown-editor-blockquote: #0f766e;
   --markdown-editor-selection: color-mix(in srgb, var(--accent) 24%, transparent);
+  --markdown-editor-find-match: color-mix(in srgb, #facc15 42%, transparent);
+  --markdown-editor-find-match-active: color-mix(in srgb, #f97316 58%, transparent);
+  --markdown-editor-find-match-active-ring: color-mix(in srgb, #c2410c 70%, transparent);
   --markdown-highlight: #fef08a;
   --markdown-highlight-foreground: #422006;
   --radius: 0.625rem;
@@ -34,7 +37,7 @@
   --card: #18181b;
   --card-foreground: #f4f4f5;
   --muted: #27272a;
-  --muted-foreground: #a1a1aa;
+  --muted-foreground: #c4c4cd; /* brightened for readability on dark surfaces */
   --border: #27272a;
   --input: #3f3f46;
   --ring: #2dd4bf;
@@ -51,6 +54,9 @@
   --markdown-editor-heading-4: #86efac;
   --markdown-editor-blockquote: #5eead4;
   --markdown-editor-selection: color-mix(in srgb, var(--accent) 30%, transparent);
+  --markdown-editor-find-match: color-mix(in srgb, #fde047 34%, transparent);
+  --markdown-editor-find-match-active: color-mix(in srgb, #fb923c 55%, transparent);
+  --markdown-editor-find-match-active-ring: color-mix(in srgb, #fdba74 72%, transparent);
   --markdown-highlight: color-mix(in srgb, #facc15 38%, transparent);
   --markdown-highlight-foreground: #fef9c3;
 }
@@ -82,6 +88,163 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+/* ---------------------------------------------------------------------------
+   Liquid glass side panel (Electron desktop only)
+
+   When the native backdrop is available (macOS vibrancy / Windows 11 acrylic),
+   `html.libera-glass` is set by the renderer. We then make the window content
+   transparent down to the notebook/outline side panel so the system material
+   shows through it, while the editor region stays fully opaque so only the
+   side panel is translucent.
+   --------------------------------------------------------------------------- */
+html.libera-glass,
+html.libera-glass body,
+html.libera-glass .libera-app-shell {
+  background: transparent;
+}
+
+/* Frameless macOS window (titleBarStyle: "hidden"): the content now runs to the
+   top edge, so we add a slim draggable strip that doubles as breathing room for
+   the traffic-light buttons. Only the desktop glass build needs it; the web and
+   Windows builds keep their own chrome. */
+.libera-titlebar {
+  display: none;
+}
+
+html.libera-platform-darwin.libera-glass .libera-titlebar {
+  display: block;
+  height: 2.25rem;
+  flex-shrink: 0;
+  /* Make this the window's drag handle; interactive controls below default to
+     no-drag, so only this empty strip moves the window. */
+  -webkit-app-region: drag;
+}
+
+html.libera-glass .libera-workspace-region {
+  background: var(--background);
+  /* The transparent (vibrancy) panel and the opaque editor meet here. The
+     panel's backdrop-filter blur leaves a bright fringe at its right edge, which
+     reads as a white seam against the dark editor. Pull the opaque editor a
+     hair over that edge so it masks the fringe entirely. */
+  position: relative;
+  z-index: 1;
+  margin-left: -2px;
+}
+
+/* The icon rail and footer menu drop their opaque card fill so the single
+   frosted layer behind the panel reads uniformly through them. */
+html.libera-glass .libera-glass-chrome {
+  background-color: transparent;
+}
+
+html.libera-glass .libera-glass-panel {
+  position: relative;
+  /* Own stacking context for the ::before glass layer without making the panel
+     a containing block for its `position: fixed` context menus. */
+  isolation: isolate;
+  background-color: transparent;
+  /* Re-tint the structural tokens inside the panel so every control that reads
+     them — separators (`--border`), control outlines (`--input`), button
+     fills / badges / selection / hover (`--muted`) — becomes a soft translucent
+     hairline or frost instead of an opaque box on the glass. `--card` is left
+     alone on purpose: the search dropdown and context menus are DOM descendants
+     and must stay solid for readability. */
+  --border: color-mix(in srgb, var(--foreground) 12%, transparent);
+  --input: color-mix(in srgb, var(--foreground) 16%, transparent);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+
+/* In dark mode the vibrancy material can pick up a light desktop behind the
+   window, washing out light text. Rather than darkening the whole panel (which
+   kills the glass look), keep a light tint for real translucency and give the
+   text itself a subtle shadow — the same trick macOS uses to keep vibrant labels
+   legible over an unpredictable backdrop. */
+html.dark.libera-glass .libera-glass-panel {
+  /* The native vibrancy now renders dark (its appearance follows the app theme),
+     so light text already has contrast against the glass. Keep only a whisper of
+     shadow to anchor text over brighter patches of the frosted desktop. */
+  text-shadow: 0 1px 1px color-mix(in srgb, #000 30%, transparent);
+}
+
+/* The whole window is the glass: the native macOS vibrancy material renders the
+   frosted desktop behind every transparent pixel. The panel sits directly on
+   that single glass surface, so we no longer paint our own `backdrop-filter`
+   layer here (which only stacked a second frosting on top and killed the
+   see-through). The pseudo-element survives purely for the faint top sheen. */
+html.libera-glass .libera-glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-color: transparent;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html.libera-glass .libera-glass-panel::before {
+    background-color: color-mix(in srgb, var(--card) 62%, transparent);
+  }
+}
+
+/* Text inputs inside the panel (notebook search, inline rename) carry an
+   explicit `bg-card`; swap it for a translucent frost so it doesn't read as a
+   solid black box on the glass. */
+html.libera-glass .libera-glass-panel input {
+  background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+/* Notebook cards get a barely-there fill so each one lifts off the panel as its
+   own glass tile; the softened `--border` above supplies the hairline edge. */
+html.libera-glass .libera-glass-card {
+  background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+}
+
+@media (min-width: 1024px) {
+  .libera-left-panel {
+    border-right-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+    box-shadow: none;
+  }
+
+  /* On glass the panel is transparent, so a hard border would catch the light as
+     a bright seam against the opaque editor. Use a single, very faint hairline
+     and skip the light drop shadow that previously bloomed into a white glow. */
+  html.libera-glass .libera-left-panel {
+    border-right-color: transparent;
+    box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent);
+  }
+}
+
+.libera-window-control-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius) - 0.25rem);
+  color: var(--muted-foreground);
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  padding: 0;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+  width: 2rem;
+}
+
+.libera-window-control-button:hover {
+  background: color-mix(in srgb, var(--foreground) 9%, transparent);
+  color: var(--foreground);
+}
+
+.libera-window-control-button-close:hover {
+  background: color-mix(in srgb, var(--destructive) 16%, transparent);
+  color: var(--destructive);
+}
+
+.libera-window-control-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 html.libera-markdown-export-mode {
@@ -215,6 +378,19 @@ textarea::placeholder {
 
 .markdown-editor-highlight-tone-blockquote {
   color: var(--markdown-editor-blockquote);
+}
+
+.markdown-editor-find-match {
+  -webkit-box-decoration-break: clone;
+  background: var(--markdown-editor-find-match);
+  border-radius: 0.125rem;
+  box-decoration-break: clone;
+}
+
+.markdown-editor-find-match-active {
+  background: var(--markdown-editor-find-match-active);
+  outline: 1px solid var(--markdown-editor-find-match-active-ring);
+  outline-offset: -1px;
 }
 
 textarea.markdown-editor-input {
@@ -414,6 +590,7 @@ button.border[class*="border-white"]:hover {
 }
 
 .markdown-preview-pane {
+  box-sizing: border-box;
   overflow-anchor: none;
   padding-bottom: max(12rem, 70vh);
 }

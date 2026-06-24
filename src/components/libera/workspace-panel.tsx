@@ -93,7 +93,7 @@ type WorkspacePanelProps = {
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
-  onSetViewState: (viewState: OpenTabViewState) => void;
+  onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
 };
@@ -108,6 +108,15 @@ const MAX_MARKDOWN_SPLIT_PERCENT = 76;
 const MIN_MARKDOWN_SPLIT_PERCENT = 24;
 
 type PreviewScrollBlock = "nearest" | "start";
+
+type VisibleRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+};
 
 function clampMarkdownSplitPercent(value: number) {
   return Math.min(
@@ -130,16 +139,64 @@ function getPreviewPadding(preview: HTMLElement) {
   };
 }
 
+function visibleRectFromEdges(left: number, top: number, right: number, bottom: number) {
+  return {
+    bottom,
+    height: Math.max(0, bottom - top),
+    left,
+    right,
+    top,
+    width: Math.max(0, right - left),
+  };
+}
+
+function getElementVisibleRect(element: HTMLElement): VisibleRect {
+  const rect = element.getBoundingClientRect();
+  let left = Math.max(0, rect.left);
+  let right = Math.min(window.innerWidth, rect.right);
+  let top = Math.max(0, rect.top);
+  let bottom = Math.min(window.innerHeight, rect.bottom);
+  let ancestor = element.parentElement;
+
+  while (ancestor) {
+    const styles = window.getComputedStyle(ancestor);
+    const clipsX = styles.overflowX !== "visible";
+    const clipsY = styles.overflowY !== "visible";
+
+    if (clipsX || clipsY) {
+      const ancestorRect = ancestor.getBoundingClientRect();
+
+      if (clipsX) {
+        left = Math.max(left, ancestorRect.left);
+        right = Math.min(right, ancestorRect.right);
+      }
+
+      if (clipsY) {
+        top = Math.max(top, ancestorRect.top);
+        bottom = Math.min(bottom, ancestorRect.bottom);
+      }
+    }
+
+    ancestor = ancestor.parentElement;
+  }
+
+  return visibleRectFromEdges(left, top, right, bottom);
+}
+
 function findPreviewSourceElementAtY(
   preview: HTMLElement,
   clientY: number,
   selector = MARKDOWN_SOURCE_BLOCK_SELECTOR,
 ) {
   const previewRect = preview.getBoundingClientRect();
+  const visibleRect = getElementVisibleRect(preview);
   const padding = getPreviewPadding(preview);
   const clientX = Math.min(
-    previewRect.right - 1,
-    Math.max(previewRect.left + 1, previewRect.left + padding.left + 8),
+    visibleRect.right - 1,
+    Math.max(
+      visibleRect.left + 1,
+      Math.min(previewRect.right - 1, previewRect.left + padding.left + 8),
+    ),
   );
 
   for (const element of document.elementsFromPoint(clientX, clientY)) {
@@ -183,9 +240,18 @@ function getPreviewSourceOffsetAtY(preview: HTMLElement, clientY: number) {
 
 function getPreviewVisibleStartOffset(preview: HTMLElement) {
   const previewRect = preview.getBoundingClientRect();
+  const visibleRect = getElementVisibleRect(preview);
   const padding = getPreviewPadding(preview);
+  const clientY = Math.min(
+    visibleRect.bottom - 1,
+    Math.max(visibleRect.top + 1, previewRect.top + padding.top + 1),
+  );
 
-  return getPreviewSourceOffsetAtY(preview, previewRect.top + padding.top + 1);
+  if (visibleRect.height <= 1) {
+    return null;
+  }
+
+  return getPreviewSourceOffsetAtY(preview, clientY);
 }
 
 function getMarkdownLineForOffset(value: string, offset: number) {
@@ -207,6 +273,7 @@ function scrollPreviewToSourceOffset(
   }
 
   const previewRect = preview.getBoundingClientRect();
+  const visibleRect = getElementVisibleRect(preview);
   const sourceRect = sourceElement.getBoundingClientRect();
   const padding = getPreviewPadding(preview);
   const sourceSpan = Math.max(1, sourceRange.end - sourceRange.start);
@@ -219,9 +286,9 @@ function scrollPreviewToSourceOffset(
 
   if (block === "nearest") {
     const targetClientY = sourceRect.top + offsetWithinElement;
-    const margin = Math.min(96, Math.max(24, preview.clientHeight * 0.2));
-    const topLimit = previewRect.top + padding.top + margin;
-    const bottomLimit = previewRect.bottom - margin;
+    const margin = Math.min(96, Math.max(24, visibleRect.height * 0.2));
+    const topLimit = Math.max(previewRect.top + padding.top, visibleRect.top) + margin;
+    const bottomLimit = visibleRect.bottom - margin;
 
     if (targetClientY < topLimit) {
       preview.scrollTop = Math.max(0, preview.scrollTop + targetClientY - topLimit);
@@ -237,7 +304,10 @@ function scrollPreviewToSourceOffset(
 
   preview.scrollTop = Math.max(
     0,
-    preview.scrollTop + sourceRect.top - previewRect.top + offsetWithinElement - padding.top,
+    preview.scrollTop +
+      sourceRect.top +
+      offsetWithinElement -
+      Math.max(previewRect.top + padding.top, visibleRect.top),
   );
 }
 
@@ -354,23 +424,35 @@ export function WorkspacePanel({
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
-      onSetViewState({ markdown: patch });
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ markdown: patch }, activeTabId);
     },
-    [onSetViewState],
+    [activeTabId, onSetViewState],
   );
 
   const updatePdfViewState = useCallback(
     (patch: PdfTabViewState) => {
-      onSetViewState({ pdf: patch });
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ pdf: patch }, activeTabId);
     },
-    [onSetViewState],
+    [activeTabId, onSetViewState],
   );
 
   const updateImageViewState = useCallback(
     (patch: ImageTabViewState) => {
-      onSetViewState({ image: patch });
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ image: patch }, activeTabId);
     },
-    [onSetViewState],
+    [activeTabId, onSetViewState],
   );
 
   useEffect(() => {
@@ -438,11 +520,11 @@ export function WorkspacePanel({
     const textarea = textareaRef.current;
     const now = window.performance.now();
 
-    if (now <= previewUserScrollUntilRef.current) {
-      return;
-    }
-
     if (!textarea) {
+      if (now <= previewUserScrollUntilRef.current) {
+        return;
+      }
+
       syncMarkdownPreviewToTextarea();
       return;
     }
@@ -452,6 +534,10 @@ export function WorkspacePanel({
         block: "nearest",
         offset: textarea.selectionStart,
       });
+      return;
+    }
+
+    if (now <= previewUserScrollUntilRef.current) {
       return;
     }
 
@@ -1025,6 +1111,7 @@ export function WorkspacePanel({
           />
           {previewFullscreen ? (
             <article
+              key={`${activeTab.id}-fullscreen-preview`}
               ref={markdownPreviewRef}
               className="markdown-preview-pane min-h-0 flex-1 overflow-auto bg-card p-6"
               onPointerDown={handleMarkdownPreviewPointerDown}
@@ -1052,6 +1139,7 @@ export function WorkspacePanel({
               }
             >
               <MarkdownEditor
+                key={activeTab.id}
                 activeFilePath={activeTab.file.path}
                 files={files}
                 formatting={aiFormatting}
@@ -1085,6 +1173,7 @@ export function WorkspacePanel({
                 <span className="h-1 w-10 rounded-full bg-input transition group-hover:bg-muted-foreground group-focus-visible:bg-muted-foreground lg:h-10 lg:w-1" />
               </div>
               <article
+                key={`${activeTab.id}-preview`}
                 ref={markdownPreviewRef}
                 className={`min-h-0 min-w-0 overflow-auto ${
                   activeMarkdownIsSlides
@@ -1149,6 +1238,7 @@ export function WorkspacePanel({
         </>
       ) : activeTab.file.fileType === "image" ? (
         <ImageViewer
+          key={activeTab.id}
           src={activeTab.rawUrl}
           alt={activeTab.file.name}
           filePath={activeTab.file.path}
