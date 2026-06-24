@@ -1,6 +1,6 @@
 export const appMetadata = {
   name: "LiBERA by Thinh Hoang",
-  version: "0.3.4",
+  version: "0.4",
   author: "Thinh Hoang - dthoang@intuelle.com",
-  releaseDate: "Jun 22, 2026",
+  releaseDate: "Jun 24, 2026",
 } as const;
