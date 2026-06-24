@@ -3,6 +3,7 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distAppRoot = path.join(projectRoot, ".electron-build", "app");
+const appPackage = require(path.join(projectRoot, "package.json"));
 const requiredPackages = new Map([
   ["baseline-browser-mapping", path.join(projectRoot, "node_modules", "baseline-browser-mapping")],
   ["caniuse-lite", path.join(projectRoot, "node_modules", "caniuse-lite")],
@@ -132,8 +133,8 @@ async function main() {
     `${JSON.stringify(
       {
         name: "libera",
-        productName: "Libera by Thinh Hoang",
-        version: "0.4",
+        productName: appPackage.productName,
+        version: appPackage.version,
         description: "A local-first notetaking app.",
         author: "Thinh Hoang",
         private: true,
