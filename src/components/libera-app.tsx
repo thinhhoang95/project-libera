@@ -62,10 +62,9 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
 
   return (
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
-      <div className="libera-titlebar" aria-hidden />
       <div
         className={`grid min-h-0 flex-1 overflow-hidden ${
-          notebooksCollapsed ? "lg:grid-cols-[56px_1fr]" : "lg:grid-cols-[320px_1fr]"
+          notebooksCollapsed ? "lg:grid-cols-[48px_1fr]" : "lg:grid-cols-[320px_1fr]"
         }`}
       >
         <LeftPanel
@@ -119,6 +118,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             notebookColors={notebookColors}
             tabs={workspace.tabs}
             onActivateTab={workspace.setActiveTabId}
+            onCloseOtherTabs={workspace.closeOtherTabs}
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
             onDownloadFile={workspace.downloadFile}

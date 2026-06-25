@@ -18,6 +18,17 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState) {
         confirmLabel: "Close without saving",
         destructive: true,
       };
+    case "close-tabs": {
+      const tabLabel = dialog.tabCount === 1 ? "tab" : "tabs";
+      const dirtyTabVerb = dialog.dirtyTabCount === 1 ? "has" : "have";
+
+      return {
+        title: "Close other tabs",
+        description: `${dialog.dirtyTabCount} of the ${dialog.tabCount} other ${tabLabel} ${dirtyTabVerb} unsaved edits.`,
+        confirmLabel: `Close ${dialog.tabCount} ${tabLabel} without saving`,
+        destructive: true,
+      };
+    }
     case "delete-file":
       return {
         title: "Delete file",

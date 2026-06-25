@@ -105,20 +105,21 @@ html.libera-glass .libera-app-shell {
   background: transparent;
 }
 
-/* Frameless macOS window (titleBarStyle: "hidden"): the content now runs to the
-   top edge, so we add a slim draggable strip that doubles as breathing room for
-   the traffic-light buttons. Only the desktop glass build needs it; the web and
-   Windows builds keep their own chrome. */
-.libera-titlebar {
+/* Frameless macOS window (titleBarStyle: "hidden"): there is no system title
+   bar, so the sidebar/editor split runs to the top edge of the window. We add a
+   slim draggable strip at the top of the sidebar that hosts the native
+   traffic-light buttons and doubles as the window drag handle. Only the desktop
+   glass build needs it; the web and Windows builds keep their own chrome. */
+.libera-sidebar-titlebar {
   display: none;
 }
 
-html.libera-platform-darwin.libera-glass .libera-titlebar {
+html.libera-platform-darwin.libera-glass .libera-sidebar-titlebar {
   display: block;
   height: 2.25rem;
   flex-shrink: 0;
-  /* Make this the window's drag handle; interactive controls below default to
-     no-drag, so only this empty strip moves the window. */
+  /* Make this the window's drag handle; interactive controls elsewhere default
+     to no-drag, so only this empty strip moves the window. */
   -webkit-app-region: drag;
 }
 
@@ -235,6 +236,30 @@ html.libera-glass .libera-glass-card {
 .libera-window-control-button:hover {
   background: color-mix(in srgb, var(--foreground) 9%, transparent);
   color: var(--foreground);
+}
+
+.libera-sidebar-icon-button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  transition:
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.libera-sidebar-icon-button:hover,
+.libera-sidebar-icon-button[aria-selected="true"] {
+  background: transparent;
+  color: var(--accent);
+}
+
+.libera-sidebar-icon-button[data-tone="destructive"]:hover {
+  color: var(--destructive);
+}
+
+.libera-sidebar-icon-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .libera-window-control-button-close:hover {

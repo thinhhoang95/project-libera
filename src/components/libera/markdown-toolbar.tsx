@@ -14,6 +14,7 @@ import {
   ListOrdered,
   Maximize2,
   Minimize2,
+  NotebookText,
   Palette,
   Scissors,
   Sigma,
@@ -23,6 +24,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ColorPalette } from "@/components/libera/color-palette";
+import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
   MARKDOWN_HIGHLIGHT_COLORS,
   MARKDOWN_TEXT_COLORS,
@@ -34,6 +36,8 @@ import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enu
 type MarkdownToolbarProps = {
   canStartScreenshotSnip: boolean;
   isSlideDeck?: boolean;
+  getSelectedMarkdownText: () => string;
+  markdownContent: string;
   markdownZoom: number;
   onEnumerateHeadings: (
     scope: MarkdownHeadingEnumerationScope,
@@ -54,7 +58,16 @@ const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 17;
+const FULL_TOOLBAR_BUTTON_COUNT = 18;
+
+type MarkdownWordCountStats = {
+  characters: number;
+  charactersNoSpaces: number;
+  lines: number;
+  paragraphs: number;
+  readingMinutes: number;
+  words: number;
+};
 
 function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
   if (!button) {
@@ -73,9 +86,116 @@ function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
   };
 }
 
+function countMarkdownWords(content: string) {
+  const visibleText = content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[\s>*+-]*\[[ xX]\]\s+/gm, "")
+    .replace(/^[\s>*+-]+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/[*_~=#|[\]()>-]/g, " ");
+
+  return visibleText.match(/[\p{L}\p{N}]+(?:['’.-][\p{L}\p{N}]+)*/gu)?.length ?? 0;
+}
+
+function countMarkdownParagraphs(content: string) {
+  return content
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean).length;
+}
+
+function getMarkdownWordCountStats(content: string): MarkdownWordCountStats {
+  const words = countMarkdownWords(content);
+
+  return {
+    characters: content.length,
+    charactersNoSpaces: content.replace(/\s/g, "").length,
+    lines: content ? content.split(/\r\n|\r|\n/).length : 0,
+    paragraphs: countMarkdownParagraphs(content),
+    readingMinutes: words ? Math.max(1, Math.ceil(words / 200)) : 0,
+    words,
+  };
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat().format(value);
+}
+
+function WordCountDialog({
+  content,
+  open,
+  selectedContent,
+  onClose,
+}: {
+  content: string;
+  open: boolean;
+  selectedContent: string;
+  onClose: () => void;
+}) {
+  const documentStats = getMarkdownWordCountStats(content);
+  const selectedStats = selectedContent
+    ? getMarkdownWordCountStats(selectedContent)
+    : null;
+
+  function renderStatsSection(title: string, stats: MarkdownWordCountStats) {
+    return (
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {wordCountStatItems(stats).map((item) => (
+            <div
+              className="rounded-lg border border-border bg-muted/40 px-4 py-3"
+              key={item.label}
+            >
+              <dt className="text-sm text-muted-foreground">{item.label}</dt>
+              <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">
+                {formatCount(item.value)}
+                {item.suffix ?? ""}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+    );
+  }
+
+  return (
+    <ModalDialog
+      open={open}
+      title="Word count"
+      description="Counts are based on the current Markdown draft."
+      panelClassName="max-w-2xl"
+      onClose={onClose}
+    >
+      <div className="space-y-6">
+        {renderStatsSection("Whole document", documentStats)}
+        {selectedStats ? renderStatsSection("Selected text", selectedStats) : null}
+      </div>
+    </ModalDialog>
+  );
+}
+
+function wordCountStatItems(stats: MarkdownWordCountStats) {
+  return [
+    { label: "Words", value: stats.words },
+    { label: "Characters", value: stats.characters },
+    { label: "Characters without spaces", value: stats.charactersNoSpaces },
+    { label: "Paragraphs", value: stats.paragraphs },
+    { label: "Lines", value: stats.lines },
+    { label: "Reading time", value: stats.readingMinutes, suffix: " min" },
+  ];
+}
+
 export function MarkdownToolbar({
   canStartScreenshotSnip,
+  getSelectedMarkdownText,
   isSlideDeck = false,
+  markdownContent,
   markdownZoom,
   onEnumerateHeadings,
   onFixChatGptEquations,
@@ -115,6 +235,8 @@ export function MarkdownToolbar({
   const [selectedHeadingStart, setSelectedHeadingStart] = useState("1");
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
+  const [wordCountOpen, setWordCountOpen] = useState(false);
+  const [wordCountSelectedContent, setWordCountSelectedContent] = useState("");
 
   const getEnumerateMenuPosition = useCallback(() => {
     return getFloatingMenuPosition(
@@ -316,6 +438,14 @@ export function MarkdownToolbar({
     setToolbarExpanded((current) => !current);
   }
 
+  function openWordCount() {
+    setHighlightMenuOpen(false);
+    setTextColorMenuOpen(false);
+    setEnumerateMenuOpen(false);
+    setWordCountSelectedContent(getSelectedMarkdownText());
+    setWordCountOpen(true);
+  }
+
   function selectedHeadingStartValue() {
     const parsed = Number(selectedHeadingStart);
 
@@ -462,6 +592,15 @@ export function MarkdownToolbar({
           onClick={toggleEnumerateMenu}
         >
           <ListOrdered aria-hidden className="h-4 w-4" />
+        </button>
+        <button
+          aria-label="Word count"
+          className="toolbar-button"
+          title="Word count"
+          type="button"
+          onClick={openWordCount}
+        >
+          <NotebookText aria-hidden className="h-4 w-4" />
         </button>
         {renderZoomControl()}
       </>
@@ -718,6 +857,12 @@ export function MarkdownToolbar({
           </form>
         </div>
       ) : null}
+      <WordCountDialog
+        content={markdownContent}
+        open={wordCountOpen}
+        selectedContent={wordCountSelectedContent}
+        onClose={() => setWordCountOpen(false)}
+      />
     </div>
   );
 }

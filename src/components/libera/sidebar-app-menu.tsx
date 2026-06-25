@@ -113,8 +113,8 @@ export function SidebarAppMenu({
   return (
     <>
       <div
-        className={`libera-glass-chrome relative border-t border-border bg-card ${
-          collapsed ? "px-2 py-2" : "px-3 py-2"
+        className={`libera-glass-chrome relative bg-card ${
+          collapsed ? "py-2" : "px-3 py-2"
         }`}
       >
         {collapsed ? (
@@ -123,7 +123,7 @@ export function SidebarAppMenu({
               aria-expanded={menuOpen}
               aria-haspopup="menu"
               aria-label="LiBERA menu"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold text-foreground hover:bg-muted"
+              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold"
               title="LiBERA menu"
               type="button"
               onClick={(event) => void openMenu(event)}
@@ -132,7 +132,7 @@ export function SidebarAppMenu({
             </button>
             <button
               aria-label="Logout"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted hover:text-foreground"
+              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
               title="Logout"
               type="button"
               onClick={() => void onLogout()}
@@ -145,7 +145,7 @@ export function SidebarAppMenu({
             <button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              className="min-w-0 rounded-lg px-2 py-1.5 text-left text-sm font-semibold tracking-tight text-foreground hover:bg-muted"
+              className="libera-sidebar-icon-button min-w-0 rounded-lg px-2 py-1.5 text-left text-sm font-semibold tracking-tight"
               type="button"
               onClick={(event) => void openMenu(event)}
             >
@@ -153,7 +153,7 @@ export function SidebarAppMenu({
             </button>
             <button
               aria-label="Logout"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted hover:text-foreground"
+              className="libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
               title="Logout"
               type="button"
               onClick={() => void onLogout()}

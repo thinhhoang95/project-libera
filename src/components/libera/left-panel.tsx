@@ -88,28 +88,34 @@ export function LeftPanel({
   }, [collapsed, onToggleCollapsed]);
 
   return (
-    <aside className="libera-glass-panel libera-left-panel flex min-h-0 max-h-[40vh] overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
-      <LeftPanelRail
-        activePanel={activePanel}
-        collapsed={collapsed}
-        onLogout={onLogout}
-        onSelectPanel={selectPanel}
-        onToggleCollapsed={onToggleCollapsed}
-      />
-      {!collapsed ? (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {activePanel === "notebook" ? (
-            <NotebookPanel {...notebookPanelProps} />
-          ) : (
-            <OutlinePanel
-              activeTab={activeTab}
-              textareaRef={textareaRef}
-              onOpenFile={notebookPanelProps.onOpenFile}
-              onSetDraft={onSetDraft}
-            />
-          )}
-        </div>
-      ) : null}
+    <aside className="libera-glass-panel libera-left-panel flex min-h-0 max-h-[40vh] flex-col overflow-hidden border-b border-border bg-card lg:max-h-none lg:border-b-0 lg:border-r">
+      {/* Frameless macOS window: this strip carries the native traffic-light
+          buttons and doubles as the window drag handle. It is hidden on web and
+          non-macOS builds, which keep their own title bar. */}
+      <div className="libera-sidebar-titlebar" aria-hidden />
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <LeftPanelRail
+          activePanel={activePanel}
+          collapsed={collapsed}
+          onLogout={onLogout}
+          onSelectPanel={selectPanel}
+          onToggleCollapsed={onToggleCollapsed}
+        />
+        {!collapsed ? (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col pr-1.5">
+            {activePanel === "notebook" ? (
+              <NotebookPanel {...notebookPanelProps} />
+            ) : (
+              <OutlinePanel
+                activeTab={activeTab}
+                textareaRef={textareaRef}
+                onOpenFile={notebookPanelProps.onOpenFile}
+                onSetDraft={onSetDraft}
+              />
+            )}
+          </div>
+        ) : null}
+      </div>
     </aside>
   );
 }
@@ -128,10 +134,10 @@ function LeftPanelRail({
   onToggleCollapsed: () => void;
 }) {
   return (
-    <div className="libera-glass-chrome flex w-14 shrink-0 flex-col border-r border-border bg-card">
-      <div className="border-b border-border px-2 py-2">
+    <div className="libera-glass-chrome flex w-12 shrink-0 flex-col bg-card">
+      <div className="flex justify-center py-2">
         <button
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
+          className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
           type="button"
           aria-label={collapsed ? "Expand left panel" : "Collapse left panel"}
           title={collapsed ? "Expand left panel" : "Collapse left panel"}
@@ -147,7 +153,7 @@ function LeftPanelRail({
 
       <div
         aria-label="Left panel tabs"
-        className="flex flex-col gap-1 px-2 py-2"
+        className="flex flex-col items-center gap-1 py-2"
         role="tablist"
       >
         {LEFT_PANEL_TABS.map((tab) => {
@@ -159,21 +165,8 @@ function LeftPanelRail({
               key={tab.id}
               aria-label={`${tab.label} tab`}
               aria-selected={selected}
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border text-foreground ${
-                selected
-                  ? "border-accent bg-accent text-accent-foreground"
-                  : "border-transparent hover:border-input hover:bg-muted"
-              }`}
+              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
               role="tab"
-              style={
-                selected
-                  ? {
-                      backgroundColor: "var(--accent)",
-                      borderColor: "var(--accent)",
-                      color: "var(--accent-foreground)",
-                    }
-                  : undefined
-              }
               title={tab.label}
               type="button"
               onClick={() => onSelectPanel(tab.id)}

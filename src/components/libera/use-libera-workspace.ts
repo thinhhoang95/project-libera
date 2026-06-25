@@ -636,24 +636,39 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return true;
   }
 
-  const closeTabWithoutConfirm = useCallback((tabId: string) => {
-    const tab = tabs.find((currentTab) => currentTab.id === tabId);
+  const closeTabsWithoutConfirm = useCallback((tabIds: string[]) => {
+    const closingTabIds = new Set(tabIds);
 
-    forgetTabDraft(tabId);
-    setTabs((currentTabs) => currentTabs.filter((currentTab) => currentTab.id !== tabId));
+    if (!closingTabIds.size) {
+      return;
+    }
 
-    if (activeTabId === tabId) {
-      const remainingTabs = tabs.filter((currentTab) => currentTab.id !== tabId);
+    const closingTabs = tabs.filter((currentTab) => closingTabIds.has(currentTab.id));
+
+    closingTabs.forEach((tab) => forgetTabDraft(tab.id));
+    setTabs((currentTabs) =>
+      currentTabs.filter((currentTab) => !closingTabIds.has(currentTab.id)),
+    );
+
+    if (closingTabIds.has(activeTabId)) {
+      const remainingTabs = tabs.filter((currentTab) => !closingTabIds.has(currentTab.id));
       const nextActiveTab = remainingTabs.at(-1);
+      const activeClosingTab = closingTabs.find((tab) => tab.id === activeTabId);
+      const fallbackTab = activeClosingTab ?? closingTabs.at(-1);
+
       setActiveTabId(nextActiveTab?.id ?? "");
 
       if (nextActiveTab) {
         setSelectedNotebookName(nextActiveTab.file.notebook);
-      } else if (tab) {
-        setSelectedNotebookName(tab.file.notebook);
+      } else if (fallbackTab) {
+        setSelectedNotebookName(fallbackTab.file.notebook);
       }
     }
   }, [activeTabId, tabs]);
+
+  const closeTabWithoutConfirm = useCallback((tabId: string) => {
+    closeTabsWithoutConfirm([tabId]);
+  }, [closeTabsWithoutConfirm]);
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
@@ -670,6 +685,35 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     closeTabWithoutConfirm(tabId);
   }, [closeTabWithoutConfirm, tabs]);
 
+  const closeOtherTabs = useCallback((tabId: string) => {
+    const tab = tabs.find((currentTab) => currentTab.id === tabId);
+
+    if (!tab) {
+      return;
+    }
+
+    const otherTabs = tabs.filter((currentTab) => currentTab.id !== tabId);
+
+    if (!otherTabs.length) {
+      return;
+    }
+
+    const dirtyTabCount = otherTabs.filter((currentTab) => currentTab.status === "dirty").length;
+    const otherTabIds = otherTabs.map((currentTab) => currentTab.id);
+
+    if (dirtyTabCount > 0) {
+      setWorkspaceConfirmDialog({
+        mode: "close-tabs",
+        tabIds: otherTabIds,
+        tabCount: otherTabs.length,
+        dirtyTabCount,
+      });
+      return;
+    }
+
+    closeTabsWithoutConfirm(otherTabIds);
+  }, [closeTabsWithoutConfirm, tabs]);
+
   function setActiveDraft(value: string) {
     if (!activeTab) {
       return;
@@ -684,41 +728,44 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }));
   }
 
-  function setActiveTabViewState(viewState: OpenTabViewState, tabId?: string) {
-    const targetTabId = tabId ?? activeTab?.id;
+  const setActiveTabViewState = useCallback(
+    (viewState: OpenTabViewState, tabId?: string) => {
+      const targetTabId = tabId ?? activeTabId;
 
-    if (!targetTabId) {
-      return;
-    }
-
-    updateTab(targetTabId, (tab) => {
-      const nextViewState: OpenTabViewState = {
-        ...tab.viewState,
-        image: viewState.image
-          ? { ...tab.viewState?.image, ...viewState.image }
-          : tab.viewState?.image,
-        markdown: viewState.markdown
-          ? { ...tab.viewState?.markdown, ...viewState.markdown }
-          : tab.viewState?.markdown,
-        pdf: viewState.pdf
-          ? { ...tab.viewState?.pdf, ...viewState.pdf }
-          : tab.viewState?.pdf,
-      };
-
-      if (
-        shallowEqualRecord(tab.viewState?.image, nextViewState.image) &&
-        shallowEqualRecord(tab.viewState?.markdown, nextViewState.markdown) &&
-        shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf)
-      ) {
-        return tab;
+      if (!targetTabId) {
+        return;
       }
 
-      return {
-        ...tab,
-        viewState: nextViewState,
-      };
-    });
-  }
+      updateTab(targetTabId, (tab) => {
+        const nextViewState: OpenTabViewState = {
+          ...tab.viewState,
+          image: viewState.image
+            ? { ...tab.viewState?.image, ...viewState.image }
+            : tab.viewState?.image,
+          markdown: viewState.markdown
+            ? { ...tab.viewState?.markdown, ...viewState.markdown }
+            : tab.viewState?.markdown,
+          pdf: viewState.pdf
+            ? { ...tab.viewState?.pdf, ...viewState.pdf }
+            : tab.viewState?.pdf,
+        };
+
+        if (
+          shallowEqualRecord(tab.viewState?.image, nextViewState.image) &&
+          shallowEqualRecord(tab.viewState?.markdown, nextViewState.markdown) &&
+          shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf)
+        ) {
+          return tab;
+        }
+
+        return {
+          ...tab,
+          viewState: nextViewState,
+        };
+      });
+    },
+    [activeTabId],
+  );
 
   function restoreMarkdownTextarea(options: {
     scrollLeft?: number;
@@ -2259,6 +2306,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         closeTabWithoutConfirm(workspaceConfirmDialog.tabId);
       }
 
+      if (workspaceConfirmDialog.mode === "close-tabs") {
+        closeTabsWithoutConfirm(workspaceConfirmDialog.tabIds);
+      }
+
       if (workspaceConfirmDialog.mode === "delete-file") {
         await deleteFileNode(workspaceConfirmDialog.file);
       }
@@ -2569,6 +2620,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       workspaceInputDialog,
       workspaceInputDialogSubmitting,
       workspaceError,
+      closeOtherTabs,
       closeTab,
       closeNotebookDialog,
       closeNotebookGroupDialog,

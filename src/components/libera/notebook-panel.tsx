@@ -680,7 +680,7 @@ export function NotebookPanel({
           <button
             aria-haspopup="menu"
             aria-label="Sort notebooks and files"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
+            className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
             title="Sort notebooks and files"
             type="button"
             onClick={(event) => void openSortMenu(event)}
@@ -689,7 +689,7 @@ export function NotebookPanel({
           </button>
           <button
             aria-label="New group"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input hover:bg-muted"
+            className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
             title="New group"
             type="button"
             onClick={onCreateNotebookGroup}
@@ -698,7 +698,7 @@ export function NotebookPanel({
           </button>
           <button
             aria-label="New notebook"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input hover:bg-muted"
+            className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
             title="New notebook"
             type="button"
             onClick={onCreateNotebook}
@@ -1046,7 +1046,7 @@ function NotebookSection({
         }}
       >
         <button
-          className="h-7 w-7 rounded text-sm hover:bg-muted"
+          className="libera-sidebar-icon-button h-7 w-7 rounded text-sm"
           type="button"
           onClick={() => onToggleNotebook(notebook.name)}
         >
@@ -1077,7 +1077,7 @@ function NotebookSection({
         <button
           aria-haspopup="menu"
           aria-label={`Notebook actions for ${notebook.name}`}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground hover:bg-muted"
+          className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
           title="Notebook actions"
           type="button"
           onClick={openNotebookActionsMenu}
@@ -1209,7 +1209,7 @@ function NotebookGroupSection({
         <div className="flex shrink-0 items-center gap-1">
           <button
             aria-label={`Edit ${group.title}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground"
             title="Edit group"
             type="button"
             onClick={() => onEditGroup(group)}
@@ -1218,7 +1218,8 @@ function NotebookGroupSection({
           </button>
           <button
             aria-label={`Delete ${group.title}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive-muted hover:text-destructive"
+            className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground"
+            data-tone="destructive"
             title="Delete group"
             type="button"
             onClick={() => void onDeleteGroup(group)}

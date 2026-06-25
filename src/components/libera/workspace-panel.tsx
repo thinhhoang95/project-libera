@@ -10,7 +10,14 @@ import type {
   RefObject,
   UIEvent as ReactUIEvent,
 } from "react";
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
@@ -114,6 +121,11 @@ type PreviewScrollBlock = "nearest" | "start";
 type PreviewSourcePosition = {
   progress: number;
   range: MarkdownSourceRange;
+};
+
+type PendingMarkdownScrollState = {
+  tabId: string;
+  viewState: MarkdownTabViewState;
 };
 
 type VisibleRect = {
@@ -446,6 +458,7 @@ export function WorkspacePanel({
   // syncing scroll against it is both wasteful and inaccurate — skip it and let
   // the post-render re-sync (keyed on previewMarkdownDraft) catch up.
   const previewContentStaleRef = useRef(false);
+  const pendingStaleEditorScrollStateRef = useRef<PendingMarkdownScrollState | null>(null);
   const markdownRestoreViewStateRef = useRef<MarkdownTabViewState | undefined>(undefined);
   const activeFileType = activeTab?.file.fileType;
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
@@ -516,7 +529,25 @@ export function WorkspacePanel({
 
   useEffect(() => {
     previewContentStaleRef.current = previewContentStale;
-  }, [previewContentStale]);
+
+    if (previewContentStale) {
+      return;
+    }
+
+    const pendingScrollState = pendingStaleEditorScrollStateRef.current;
+
+    if (!pendingScrollState) {
+      return;
+    }
+
+    pendingStaleEditorScrollStateRef.current = null;
+
+    if (pendingScrollState.tabId !== activeTabId) {
+      return;
+    }
+
+    updateMarkdownViewState(pendingScrollState.viewState);
+  }, [activeTabId, previewContentStale, updateMarkdownViewState]);
 
   useEffect(() => {
     activeMarkdownPathRef.current = activeMarkdownPath;
@@ -678,17 +709,25 @@ export function WorkspacePanel({
 
       // While the user is actively typing, the debounced preview has not
       // rendered the latest text yet, so its source map cannot be measured
-      // accurately. Persist scroll position only and let the post-render
+      // accurately. Keep scroll position in a ref and let the post-render
       // re-sync align the panes once the preview catches up.
       if (previewContentStaleRef.current) {
-        updateMarkdownViewState({
-          editorScrollLeft: editor.scrollLeft,
-          editorScrollTop: editor.scrollTop,
-          previewScrollLeft: previewPane.scrollLeft,
-          previewScrollTop: previewPane.scrollTop,
-        });
+        if (activeTabId) {
+          pendingStaleEditorScrollStateRef.current = {
+            tabId: activeTabId,
+            viewState: {
+              editorScrollLeft: editor.scrollLeft,
+              editorScrollTop: editor.scrollTop,
+              previewScrollLeft: previewPane.scrollLeft,
+              previewScrollTop: previewPane.scrollTop,
+            },
+          };
+        }
+
         return;
       }
+
+      pendingStaleEditorScrollStateRef.current = null;
 
       const syncAnchorOffset = getTextareaViewportAnchorOffset(
         editor,
@@ -919,6 +958,23 @@ export function WorkspacePanel({
     updateMarkdownViewState({ zoom: value });
   }
 
+  function getSelectedMarkdownText() {
+    const textarea = textareaRef.current;
+    const markdownDraft = textarea?.value ?? activeMarkdownDraft;
+    const selectionStart =
+      textarea?.selectionStart ?? activeMarkdownViewState?.selectionStart ?? 0;
+    const selectionEnd =
+      textarea?.selectionEnd ?? activeMarkdownViewState?.selectionEnd ?? selectionStart;
+    const start = Math.max(0, Math.min(selectionStart, selectionEnd, markdownDraft.length));
+    const end = Math.max(0, Math.min(Math.max(selectionStart, selectionEnd), markdownDraft.length));
+
+    if (start === end) {
+      return "";
+    }
+
+    return markdownDraft.slice(start, end);
+  }
+
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
 
@@ -930,6 +986,7 @@ export function WorkspacePanel({
   }
 
   function handleMarkdownDraftChange(value: string) {
+    previewContentStaleRef.current = value !== previewMarkdownDraft;
     onSetDraft(value);
   }
 
@@ -1219,7 +1276,9 @@ export function WorkspacePanel({
         <>
           <MarkdownToolbar
             canStartScreenshotSnip={canStartScreenshotSnip}
+            getSelectedMarkdownText={getSelectedMarkdownText}
             isSlideDeck={activeMarkdownIsSlides}
+            markdownContent={activeTab.draft}
             markdownZoom={markdownZoom}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onFixChatGptEquations={fixActiveChatGptEquations}
@@ -1311,7 +1370,7 @@ export function WorkspacePanel({
                   activeMarkdownIsSlides ? undefined : handleMarkdownPreviewDoubleClick
                 }
                 onPointerDown={handleMarkdownPreviewPointerDown}
-                onScroll={handleMarkdownPreviewScroll}
+                onScroll={activeMarkdownIsSlides ? handleMarkdownPreviewScroll : undefined}
                 onTouchStart={markPreviewUserScrollIntent}
                 onWheel={markPreviewUserScrollIntent}
               >
@@ -1329,9 +1388,7 @@ export function WorkspacePanel({
                   <MarkdownRenderer
                     content={previewMarkdownDraft}
                     documentPath={activeTab.file.path}
-                    onOpenFileLink={(href) =>
-                      onOpenMarkdownFileLink(activeTab.file.path, href)
-                    }
+                    onOpenFileLink={handleOpenMarkdownFileLink}
                     textScale={markdownZoom / 100}
                   />
                 )}

@@ -12,6 +12,7 @@ type TabStripProps = {
   notebookColors: Record<string, string>;
   tabs: OpenTab[];
   onActivateTab: (tabId: string) => void;
+  onCloseOtherTabs: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
   onDownloadFile: (file: OpenTab["file"], content?: string) => void;
@@ -58,12 +59,20 @@ function nativeMenuPointFromButton(button: HTMLElement) {
   };
 }
 
+function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
+  return {
+    x: Math.round(event.clientX),
+    y: Math.round(event.clientY),
+  };
+}
+
 export function TabStrip({
   activeTab,
   activeTabId,
   notebookColors,
   tabs,
   onActivateTab,
+  onCloseOtherTabs,
   onCloseTab,
   onDeleteFile,
   onDownloadFile,
@@ -79,6 +88,37 @@ export function TabStrip({
   function clearDragState() {
     setDraggingTabId("");
     setDragOverTabId("");
+  }
+
+  async function openTabContextMenu(event: MouseEvent<HTMLButtonElement>, tab: OpenTab) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const menu = window.liberaMenu;
+
+    if (!menu) {
+      return;
+    }
+
+    const selectedItemId = await menu
+      .popup({
+        ...nativeMenuPointFromMouseEvent(event),
+        items: [
+          { id: "close-tab", label: "Close Tab" },
+          {
+            id: "close-others",
+            label: "Close Others",
+            enabled: tabs.length > 1,
+          },
+        ],
+      })
+      .catch(() => null);
+
+    if (selectedItemId === "close-tab") {
+      onCloseTab(tab.id);
+    } else if (selectedItemId === "close-others") {
+      onCloseOtherTabs(tab.id);
+    }
   }
 
   return (
@@ -145,6 +185,7 @@ export function TabStrip({
                 }}
                 type="button"
                 onClick={() => onActivateTab(tab.id)}
+                onContextMenu={(event) => void openTabContextMenu(event, tab)}
                 onMouseDown={(event) => {
                   if (event.button === 1) {
                     event.preventDefault();

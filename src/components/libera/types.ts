@@ -145,6 +145,12 @@ export type WorkspaceConfirmDialogState =
       fileName: string;
     }
   | {
+      mode: "close-tabs";
+      tabIds: string[];
+      tabCount: number;
+      dirtyTabCount: number;
+    }
+  | {
       mode: "delete-file";
       file: LiberaFileNode;
     }
@@ -230,6 +236,7 @@ export type LiberaWorkspace = {
   workspaceInputDialog: WorkspaceInputDialogState | null;
   workspaceInputDialogSubmitting: boolean;
   workspaceError: string;
+  closeOtherTabs: (tabId: string) => void;
   closeTab: (tabId: string) => void;
   closeNotebookDialog: () => void;
   closeNotebookGroupDialog: () => void;
