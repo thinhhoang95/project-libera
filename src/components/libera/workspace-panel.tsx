@@ -39,17 +39,19 @@ import type {
 } from "@/lib/markdown-heading-enumeration";
 import {
   findMarkdownSourceElementForOffset,
-  getMarkdownSourceOffsetAtPoint,
   getMarkdownSourceRange,
   MARKDOWN_SOURCE_BLOCK_SELECTOR,
   MARKDOWN_SOURCE_SELECTOR,
+  type MarkdownSourceRange,
 } from "@/lib/markdown-source-map";
 import {
   isMarkdownSlidesPath,
   parseMarkdownSlides,
 } from "@/lib/markdown-slides";
 import {
-  getTextareaVisibleStartOffset,
+  getTextareaOffsetAtVisualProgress,
+  getTextareaViewportAnchorOffset,
+  getTextareaVisualProgressForRange,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
 import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
@@ -99,15 +101,20 @@ type WorkspacePanelProps = {
 };
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
-const MARKDOWN_EDITOR_ACTIVITY_GRACE_MS = 1200;
 const MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS = 250;
 const MARKDOWN_PREVIEW_RENDER_DELAY_MS = 250;
 const MARKDOWN_PREVIEW_USER_SCROLL_GRACE_MS = 1000;
+const MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS = 0.6;
 const MARKDOWN_SPLIT_STORAGE_KEY = "libera.markdownEditorPreviewSplitPercent";
 const MAX_MARKDOWN_SPLIT_PERCENT = 76;
 const MIN_MARKDOWN_SPLIT_PERCENT = 24;
 
 type PreviewScrollBlock = "nearest" | "start";
+
+type PreviewSourcePosition = {
+  progress: number;
+  range: MarkdownSourceRange;
+};
 
 type VisibleRect = {
   bottom: number;
@@ -224,34 +231,60 @@ function findPreviewSourceElementAtY(
   return previousElement;
 }
 
-function getPreviewSourceOffsetAtY(preview: HTMLElement, clientY: number) {
+function getPreviewSourceProgressAtY(element: HTMLElement, clientY: number) {
+  const rect = element.getBoundingClientRect();
+  const height = Math.max(1, rect.height);
+
+  return Math.min(1, Math.max(0, (clientY - rect.top) / height));
+}
+
+function getPreviewSourcePositionAtY(
+  preview: HTMLElement,
+  clientY: number,
+): PreviewSourcePosition | null {
   const sourceElement = findPreviewSourceElementAtY(preview, clientY);
 
   if (!sourceElement) {
     return null;
   }
 
-  return (
-    getMarkdownSourceOffsetAtPoint(sourceElement, clientY) ??
-    getMarkdownSourceRange(sourceElement)?.start ??
-    null
-  );
+  const range = getMarkdownSourceRange(sourceElement);
+
+  if (!range) {
+    return null;
+  }
+
+  const progress = getPreviewSourceProgressAtY(sourceElement, clientY);
+
+  return {
+    progress,
+    range,
+  };
 }
 
-function getPreviewVisibleStartOffset(preview: HTMLElement) {
+function getPreviewViewportAnchorPosition(
+  preview: HTMLElement,
+  viewportProgress: number,
+): PreviewSourcePosition | null {
   const previewRect = preview.getBoundingClientRect();
   const visibleRect = getElementVisibleRect(preview);
   const padding = getPreviewPadding(preview);
+  const contentTop = Math.max(previewRect.top + padding.top, visibleRect.top);
+  const contentHeight = Math.max(1, visibleRect.bottom - contentTop);
   const clientY = Math.min(
     visibleRect.bottom - 1,
-    Math.max(visibleRect.top + 1, previewRect.top + padding.top + 1),
+    Math.max(
+      contentTop + 1,
+      contentTop +
+        contentHeight * Math.min(1, Math.max(0, viewportProgress)),
+    ),
   );
 
   if (visibleRect.height <= 1) {
     return null;
   }
 
-  return getPreviewSourceOffsetAtY(preview, clientY);
+  return getPreviewSourcePositionAtY(preview, clientY);
 }
 
 function getMarkdownLineForOffset(value: string, offset: number) {
@@ -263,7 +296,11 @@ function getMarkdownLineForOffset(value: string, offset: number) {
 function scrollPreviewToSourceOffset(
   preview: HTMLElement,
   offset: number,
-  options: { block?: PreviewScrollBlock } = {},
+  options: {
+    block?: PreviewScrollBlock;
+    sourceProgress?: number;
+    viewportProgress?: number;
+  } = {},
 ) {
   const sourceElement = findMarkdownSourceElementForOffset(preview, offset);
   const sourceRange = getMarkdownSourceRange(sourceElement);
@@ -277,12 +314,27 @@ function scrollPreviewToSourceOffset(
   const sourceRect = sourceElement.getBoundingClientRect();
   const padding = getPreviewPadding(preview);
   const sourceSpan = Math.max(1, sourceRange.end - sourceRange.start);
-  const progress = Math.min(
-    1,
-    Math.max(0, (offset - sourceRange.start) / sourceSpan),
-  );
+  const progress =
+    typeof options.sourceProgress === "number"
+      ? Math.min(1, Math.max(0, options.sourceProgress))
+      : Math.min(1, Math.max(0, (offset - sourceRange.start) / sourceSpan));
   const offsetWithinElement = sourceRect.height * progress;
   const block = options.block ?? "start";
+
+  if (typeof options.viewportProgress === "number") {
+    const targetClientY = sourceRect.top + offsetWithinElement;
+    const contentTop = Math.max(previewRect.top + padding.top, visibleRect.top);
+    const contentHeight = Math.max(1, visibleRect.bottom - contentTop);
+    const targetViewportY =
+      contentTop +
+      contentHeight * Math.min(1, Math.max(0, options.viewportProgress));
+
+    preview.scrollTop = Math.max(
+      0,
+      preview.scrollTop + targetClientY - targetViewportY,
+    );
+    return;
+  }
 
   if (block === "nearest") {
     const targetClientY = sourceRect.top + offsetWithinElement;
@@ -383,7 +435,6 @@ export function WorkspacePanel({
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
-  const editorActivityUntilRef = useRef(0);
   const openMarkdownFileLinkRef = useRef(onOpenMarkdownFileLink);
   const previewUserScrollUntilRef = useRef(0);
   const programmaticEditorScrollUntilRef = useRef(0);
@@ -477,11 +528,6 @@ export function WorkspacePanel({
     markdownRestoreViewStateRef.current = activeMarkdownViewState;
   }, [activeMarkdownViewState]);
 
-  const markEditorActivity = useCallback(() => {
-    editorActivityUntilRef.current =
-      window.performance.now() + MARKDOWN_EDITOR_ACTIVITY_GRACE_MS;
-  }, []);
-
   const markPreviewUserScrollIntent = useCallback(() => {
     previewUserScrollUntilRef.current =
       window.performance.now() + MARKDOWN_PREVIEW_USER_SCROLL_GRACE_MS;
@@ -500,6 +546,7 @@ export function WorkspacePanel({
   const syncMarkdownPreviewToTextarea = useCallback((options: {
     block?: PreviewScrollBlock;
     offset?: number;
+    viewportProgress?: number;
   } = {}) => {
     const textarea = textareaRef.current;
     const preview = markdownPreviewRef.current;
@@ -508,41 +555,36 @@ export function WorkspacePanel({
       return;
     }
 
-    markProgrammaticPreviewScroll();
-    scrollPreviewToSourceOffset(
-      preview,
-      options.offset ?? getTextareaVisibleStartOffset(textarea),
-      { block: options.block },
+    const viewportProgress =
+      options.viewportProgress ?? MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS;
+    const sourceOffset =
+      options.offset ?? getTextareaViewportAnchorOffset(textarea, viewportProgress);
+    const sourceRange = getMarkdownSourceRange(
+      findMarkdownSourceElementForOffset(preview, sourceOffset),
     );
+    const sourceProgress = sourceRange
+      ? getTextareaVisualProgressForRange(textarea, sourceOffset, sourceRange)
+      : undefined;
+
+    markProgrammaticPreviewScroll();
+    scrollPreviewToSourceOffset(preview, sourceOffset, {
+      block: options.block,
+      sourceProgress,
+      viewportProgress,
+    });
   }, [markProgrammaticPreviewScroll, textareaRef]);
 
   const syncMarkdownPreviewToActiveEditorPosition = useCallback(() => {
-    const textarea = textareaRef.current;
     const now = window.performance.now();
-
-    if (!textarea) {
-      if (now <= previewUserScrollUntilRef.current) {
-        return;
-      }
-
-      syncMarkdownPreviewToTextarea();
-      return;
-    }
-
-    if (document.activeElement === textarea || now <= editorActivityUntilRef.current) {
-      syncMarkdownPreviewToTextarea({
-        block: "nearest",
-        offset: textarea.selectionStart,
-      });
-      return;
-    }
 
     if (now <= previewUserScrollUntilRef.current) {
       return;
     }
 
-    syncMarkdownPreviewToTextarea();
-  }, [syncMarkdownPreviewToTextarea, textareaRef]);
+    syncMarkdownPreviewToTextarea({
+      viewportProgress: MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
+    });
+  }, [syncMarkdownPreviewToTextarea]);
 
   const syncTextareaToMarkdownPreview = useCallback(() => {
     const textarea = textareaRef.current;
@@ -552,14 +594,25 @@ export function WorkspacePanel({
       return;
     }
 
-    const sourceOffset = getPreviewVisibleStartOffset(preview);
+    const sourcePosition = getPreviewViewportAnchorPosition(
+      preview,
+      MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
+    );
 
-    if (sourceOffset === null) {
+    if (!sourcePosition) {
       return;
     }
 
+    const sourceOffset = getTextareaOffsetAtVisualProgress(
+      textarea,
+      sourcePosition.range,
+      sourcePosition.progress,
+    );
+
     markProgrammaticEditorScroll();
-    scrollTextareaToOffset(textarea, sourceOffset, { block: "start" });
+    scrollTextareaToOffset(textarea, sourceOffset, {
+      viewportProgress: MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
+    });
   }, [markProgrammaticEditorScroll, textareaRef]);
 
   useEffect(() => {
@@ -602,17 +655,19 @@ export function WorkspacePanel({
         return;
       }
 
-      markEditorActivity();
-      const visibleStartOffset = getTextareaVisibleStartOffset(editor);
+      const syncAnchorOffset = getTextareaViewportAnchorOffset(
+        editor,
+        MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
+      );
 
       syncMarkdownPreviewToTextarea({
-        block: "start",
-        offset: visibleStartOffset,
+        offset: syncAnchorOffset,
+        viewportProgress: MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
       });
       updateMarkdownViewState({
         editorScrollLeft: editor.scrollLeft,
         editorScrollTop: editor.scrollTop,
-        line: getMarkdownLineForOffset(editor.value, visibleStartOffset),
+        line: getMarkdownLineForOffset(editor.value, syncAnchorOffset),
         previewScrollLeft: previewPane.scrollLeft,
         previewScrollTop: previewPane.scrollTop,
       });
@@ -620,7 +675,17 @@ export function WorkspacePanel({
 
     function handlePreviewScroll() {
       const now = window.performance.now();
-      const sourceOffset = getPreviewVisibleStartOffset(previewPane);
+      const sourcePosition = getPreviewViewportAnchorPosition(
+        previewPane,
+        MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
+      );
+      const sourceOffset = sourcePosition
+        ? getTextareaOffsetAtVisualProgress(
+            editor,
+            sourcePosition.range,
+            sourcePosition.progress,
+          )
+        : null;
       const hasPreviewUserIntent =
         now > programmaticPreviewScrollUntilRef.current &&
         now <= previewUserScrollUntilRef.current;
@@ -651,7 +716,6 @@ export function WorkspacePanel({
   }, [
     activeFileType,
     activeTabId,
-    markEditorActivity,
     activeMarkdownIsSlides,
     previewFullscreen,
     syncMarkdownPreviewToTextarea,
@@ -681,6 +745,7 @@ export function WorkspacePanel({
     activeMarkdownIsSlides,
     previewMarkdownDraft,
     previewFullscreen,
+    markdownZoom,
     syncMarkdownPreviewToActiveEditorPosition,
   ]);
 
@@ -796,7 +861,6 @@ export function WorkspacePanel({
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
 
-    markEditorActivity();
     updateMarkdownViewState({
       line: getMarkdownLineForOffset(markdownDraft, selection.start),
       selectionEnd: selection.end,
@@ -805,7 +869,6 @@ export function WorkspacePanel({
   }
 
   function handleMarkdownDraftChange(value: string) {
-    markEditorActivity();
     onSetDraft(value);
   }
 
@@ -1010,14 +1073,17 @@ export function WorkspacePanel({
       return;
     }
 
-    const sourceOffset =
-      getMarkdownSourceOffsetAtPoint(sourceElement, event.clientY) ??
-      getMarkdownSourceRange(sourceElement)?.start;
+    const sourceRange = getMarkdownSourceRange(sourceElement);
 
-    if (sourceOffset === undefined) {
+    if (!sourceRange) {
       return;
     }
 
+    const sourceOffset = getTextareaOffsetAtVisualProgress(
+      textarea,
+      sourceRange,
+      getPreviewSourceProgressAtY(sourceElement, event.clientY),
+    );
     const clampedOffset = Math.max(0, Math.min(sourceOffset, textarea.value.length));
 
     event.preventDefault();

@@ -43,6 +43,7 @@ import {
   getTextareaOffsetAtPoint,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
+import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import {
   getMarkdownEditorLineHighlight,
   initialMarkdownEditorHighlightState,
@@ -137,6 +138,18 @@ type HeadingLevelChangeResult = {
   nextEnd: number;
   nextStart: number;
   nextValue: string;
+};
+
+type MarkdownFormat = {
+  after: string;
+  before: string;
+  placeholder?: string;
+};
+
+const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
+  b: { before: "**", after: "**" },
+  i: { before: "_", after: "_" },
+  u: { before: "<u>", after: "</u>" },
 };
 
 function findTextMatches(value: string, query: string): TextMatch[] {
@@ -1092,6 +1105,51 @@ export function MarkdownEditor({
     await onInsertImageFile(imageFiles[0], selection);
   }
 
+  function applyMarkdownFormat(
+    textarea: HTMLTextAreaElement,
+    { after, before, placeholder = "text" }: MarkdownFormat,
+  ) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const currentValue = editorValueRef.current;
+    const selectedText = currentValue.slice(start, end) || placeholder;
+    const replacement = `${before}${selectedText}${after}`;
+    const nextValue = `${currentValue.slice(0, start)}${replacement}${currentValue.slice(end)}`;
+    const nextSelectionStart = start + before.length;
+    const nextSelectionEnd = nextSelectionStart + selectedText.length;
+
+    setContextMenu(null);
+    closeFileLinkPopup();
+
+    if (
+      !replaceTextareaSelectionWithUndo(textarea, {
+        nextSelectionEnd,
+        nextSelectionStart,
+        replacement,
+        scrollLeft: textarea.scrollLeft,
+        scrollTop: textarea.scrollTop,
+        selectionEnd: end,
+        selectionStart: start,
+      })
+    ) {
+      commitEditorValue(textarea, nextValue);
+    }
+
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+
+      if (!nextTextarea) {
+        return;
+      }
+
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+      scheduleFileLinkPopupRefresh(nextTextarea, nextValue);
+    });
+  }
+
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (fileLinkPopup) {
       if (event.key === "Escape") {
@@ -1117,6 +1175,17 @@ export function MarkdownEditor({
       if (fileLinkOptions.length && event.key === "Enter") {
         event.preventDefault();
         insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        return;
+      }
+    }
+
+    if ((event.metaKey || event.ctrlKey) && !event.altKey) {
+      const shortcut = event.key.toLowerCase();
+      const format = MARKDOWN_SHORTCUT_FORMATS[shortcut];
+
+      if (format) {
+        event.preventDefault();
+        applyMarkdownFormat(event.currentTarget, format);
         return;
       }
     }

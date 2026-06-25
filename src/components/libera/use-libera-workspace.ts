@@ -34,6 +34,7 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -763,13 +764,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
-    const draft = getTabDraft(activeTab);
+    const draft = textarea?.value ?? getTabDraft(activeTab);
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
     const selectedText = draft.slice(start, end) || placeholder;
-    const nextDraft = `${draft.slice(0, start)}${before}${selectedText}${after}${draft.slice(end)}`;
+    const replacement = `${before}${selectedText}${after}`;
+    const nextDraft = `${draft.slice(0, start)}${replacement}${draft.slice(end)}`;
     const nextSelectionStart = start + before.length;
     const nextSelectionEnd = nextSelectionStart + selectedText.length;
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd,
+        nextSelectionStart,
+        replacement,
+        selectionEnd: end,
+        selectionStart: start,
+      })
+    ) {
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: nextSelectionStart,
+        selectionEnd: nextSelectionEnd,
+      });
+      return;
+    }
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
@@ -786,13 +807,32 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
-    const draft = getTabDraft(activeTab);
+    const draft = textarea?.value ?? getTabDraft(activeTab);
     const start = textarea?.selectionStart ?? draft.length;
     const end = textarea?.selectionEnd ?? draft.length;
     const selectedText = draft.slice(start, end) || "link";
     const insertion = `[${selectedText}]()`;
     const nextDraft = `${draft.slice(0, start)}${insertion}${draft.slice(end)}`;
     const destinationOffset = start + selectedText.length + 3;
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd: destinationOffset,
+        nextSelectionStart: destinationOffset,
+        replacement: insertion,
+        selectionEnd: end,
+        selectionStart: start,
+      })
+    ) {
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: destinationOffset,
+        selectionEnd: destinationOffset,
+      });
+      return;
+    }
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({
@@ -878,9 +918,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       sourcePath: activeTab.file.path,
       targetPath: selection.file.path,
     });
-    const draft = getTabDraft(activeTab);
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
     const start = clampTextOffset(
       range?.start ?? textarea?.selectionStart ?? draft.length,
       draft.length,
@@ -891,16 +931,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     );
     const destinationCloseIndex = draft.indexOf(")", start);
     const hasLinkShell = start >= 2 && draft.slice(start - 2, start) === "](";
-    const nextDraft =
+    const replacement =
       hasLinkShell && (destinationCloseIndex < 0 || destinationCloseIndex >= end)
-        ? `${draft.slice(0, start)}${destination}${
-            destinationCloseIndex < 0 ? ")" : ""
-          }${draft.slice(end)}`
-        : `${draft.slice(0, start)}[${selection.file.name}](${destination})${draft.slice(end)}`;
+        ? `${destination}${destinationCloseIndex < 0 ? ")" : ""}`
+        : `[${selection.file.name}](${destination})`;
+    const nextDraft = `${draft.slice(0, start)}${replacement}${draft.slice(end)}`;
     const nextSelectionStart = hasLinkShell ? start : start + 1;
     const nextSelectionEnd = hasLinkShell
       ? start + destination.length
       : start + 1 + selection.file.name.length;
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd,
+        nextSelectionStart,
+        replacement,
+        selectionEnd: end,
+        selectionStart: start,
+      })
+    ) {
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: nextSelectionStart,
+        selectionEnd: nextSelectionEnd,
+      });
+      return;
+    }
 
     setActiveDraft(nextDraft);
     restoreMarkdownTextarea({

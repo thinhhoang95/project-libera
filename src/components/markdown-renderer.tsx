@@ -19,6 +19,7 @@ import {
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
 import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
+import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
 
 type MarkdownRendererProps = {
   className?: string;
@@ -34,6 +35,7 @@ const remarkPlugins = [
   remarkMath,
   remarkMarkdownHighlights,
   remarkMarkdownTextColors,
+  remarkMarkdownUnderlines,
   remarkMarkdownSourceMap,
 ];
 
@@ -328,6 +330,17 @@ function MarkdownRendererContent({
               </span>
             );
           },
+          u: ({ children, className, ...props }) => (
+            <u
+              {...markdownElementProps(props)}
+              className={classNames(
+                "underline decoration-foreground/60 underline-offset-2",
+                className,
+              )}
+            >
+              {children}
+            </u>
+          ),
           table: ({ children, className, ...props }) => (
             <div className="mb-4 overflow-x-auto rounded-lg border border-border">
               <table

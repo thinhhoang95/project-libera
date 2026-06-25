@@ -513,7 +513,7 @@ export function MarkdownToolbar({
         <button
           aria-label="Bold"
           className="toolbar-button"
-          title="Bold"
+          title="Bold (Ctrl/Cmd+B)"
           type="button"
           onClick={() => onInsert("**", "**")}
         >
@@ -522,7 +522,7 @@ export function MarkdownToolbar({
         <button
           aria-label="Italic"
           className="toolbar-button"
-          title="Italic"
+          title="Italic (Ctrl/Cmd+I)"
           type="button"
           onClick={() => onInsert("_", "_")}
         >
@@ -531,7 +531,7 @@ export function MarkdownToolbar({
         <button
           aria-label="Underline"
           className="toolbar-button"
-          title="Underline"
+          title="Underline (Ctrl/Cmd+U)"
           type="button"
           onClick={() => onInsert("<u>", "</u>")}
         >
