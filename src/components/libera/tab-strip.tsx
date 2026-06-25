@@ -1,16 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  Download,
-  FileDown,
-  FileText,
-  MoveRight,
-  Pencil,
-  Save,
-  Trash2,
-  X,
-} from "lucide-react";
+import { useState } from "react";
+import type { MouseEvent } from "react";
+import { Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
 import type { OpenTab } from "@/components/libera/types";
 import { WindowControls } from "@/components/libera/window-controls";
 
@@ -55,6 +47,15 @@ function readableTextColor(backgroundColor: string) {
   const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
 
   return luminance > 0.58 ? "#18181b" : "#ffffff";
+}
+
+function nativeMenuPointFromButton(button: HTMLElement) {
+  const rect = button.getBoundingClientRect();
+
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.bottom),
+  };
 }
 
 export function TabStrip({
@@ -213,43 +214,7 @@ function ActiveFileActions({
   onRenameFile,
   onSave,
 }: ActiveFileActionsProps) {
-  const [downloadMenuTabId, setDownloadMenuTabId] = useState<string | null>(null);
-  const downloadMenuRef = useRef<HTMLDivElement | null>(null);
-  const downloadMenuOpen = Boolean(activeTab && downloadMenuTabId === activeTab.id);
-
-  useEffect(() => {
-    if (!downloadMenuOpen) {
-      return;
-    }
-
-    function closeOnPointerDown(event: PointerEvent) {
-      if (!downloadMenuRef.current?.contains(event.target as Node)) {
-        setDownloadMenuTabId(null);
-      }
-    }
-
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setDownloadMenuTabId(null);
-      }
-    }
-
-    function closeMenu() {
-      setDownloadMenuTabId(null);
-    }
-
-    window.addEventListener("pointerdown", closeOnPointerDown);
-    window.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("resize", closeMenu);
-    window.addEventListener("scroll", closeMenu, true);
-
-    return () => {
-      window.removeEventListener("pointerdown", closeOnPointerDown);
-      window.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("resize", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
-    };
-  }, [downloadMenuOpen]);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
 
   if (!activeTab) {
     return null;
@@ -257,6 +222,40 @@ function ActiveFileActions({
 
   const isMarkdown = activeTab.file.fileType === "markdown";
   const downloadContent = isMarkdown ? activeTab.draft : undefined;
+
+  async function openDownloadMenu(event: MouseEvent<HTMLButtonElement>) {
+    if (!activeTab) {
+      return;
+    }
+
+    const menu = window.liberaMenu;
+
+    if (!menu) {
+      return;
+    }
+
+    const point = nativeMenuPointFromButton(event.currentTarget);
+
+    setDownloadMenuOpen(true);
+
+    const selectedItemId = await menu
+      .popup({
+        ...point,
+        items: [
+          { id: "markdown-file", label: "Markdown file" },
+          { id: "pdf-file", label: "PDF file" },
+        ],
+      })
+      .catch(() => null);
+
+    setDownloadMenuOpen(false);
+
+    if (selectedItemId === "markdown-file") {
+      onDownloadFile(activeTab.file, downloadContent);
+    } else if (selectedItemId === "pdf-file") {
+      await onDownloadMarkdownPdf(activeTab);
+    }
+  }
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
@@ -273,55 +272,17 @@ function ActiveFileActions({
         </button>
       ) : null}
       {isMarkdown ? (
-        <div ref={downloadMenuRef} className="relative">
-          <button
-            aria-expanded={downloadMenuOpen}
-            aria-haspopup="menu"
-            aria-label="Download"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            title="Download"
-            type="button"
-            onClick={() =>
-              setDownloadMenuTabId((current) =>
-                current === activeTab.id ? null : activeTab.id,
-              )
-            }
-          >
-            <Download aria-hidden className="h-4 w-4" />
-          </button>
-          {downloadMenuOpen ? (
-            <div
-              className="absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
-              role="menu"
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <button
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-muted"
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setDownloadMenuTabId(null);
-                  onDownloadFile(activeTab.file, downloadContent);
-                }}
-              >
-                <FileText aria-hidden className="h-4 w-4 text-muted-foreground" />
-                Markdown file
-              </button>
-              <button
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-muted"
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setDownloadMenuTabId(null);
-                  void onDownloadMarkdownPdf(activeTab);
-                }}
-              >
-                <FileDown aria-hidden className="h-4 w-4 text-muted-foreground" />
-                PDF file
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <button
+          aria-expanded={downloadMenuOpen}
+          aria-haspopup="menu"
+          aria-label="Download"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          title="Download"
+          type="button"
+          onClick={(event) => void openDownloadMenu(event)}
+        >
+          <Download aria-hidden className="h-4 w-4" />
+        </button>
       ) : (
         <button
           aria-label="Download"

@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useEffect, useId } from "react";
+import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 
 type ModalDialogProps = {
@@ -43,7 +44,7 @@ export function ModalDialog({
     return null;
   }
 
-  return (
+  const dialog = (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
       role="presentation"
@@ -89,4 +90,6 @@ export function ModalDialog({
       </section>
     </div>
   );
+
+  return typeof document !== "undefined" ? createPortal(dialog, document.body) : null;
 }

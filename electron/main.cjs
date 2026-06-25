@@ -13,6 +13,10 @@ const SERVER_READY_TIMEOUT_MS = 90_000;
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
+const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
+const MAX_NATIVE_MENU_ITEMS = 64;
+const MAX_NATIVE_MENU_ID_LENGTH = 128;
+const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
 
 function applyApplicationIdentity() {
   app.setName(APP_DISPLAY_NAME);
@@ -541,6 +545,114 @@ function getWindowFromIpcEvent(event) {
   return window && !window.isDestroyed() ? window : null;
 }
 
+function normalizeNativeMenuString(value, maxLength) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const normalized = value.trim();
+
+  return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+}
+
+function normalizeNativeMenuCoordinate(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round(value));
+}
+
+function buildNativeMenuTemplate(items, selectItem) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const template = [];
+
+  for (const item of items.slice(0, MAX_NATIVE_MENU_ITEMS)) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    if (item.type === "separator") {
+      if (template.length && template.at(-1).type !== "separator") {
+        template.push({ type: "separator" });
+      }
+
+      continue;
+    }
+
+    const id = normalizeNativeMenuString(item.id, MAX_NATIVE_MENU_ID_LENGTH);
+    const label = normalizeNativeMenuString(item.label, MAX_NATIVE_MENU_LABEL_LENGTH);
+
+    if (!id || !label) {
+      continue;
+    }
+
+    const type = NATIVE_MENU_ITEM_TYPES.has(item.type) ? item.type : "normal";
+    const menuItem = {
+      id,
+      label,
+      type,
+      enabled: item.enabled !== false,
+      click: () => selectItem(id),
+    };
+
+    if (type === "checkbox" || type === "radio") {
+      menuItem.checked = Boolean(item.checked);
+    }
+
+    template.push(menuItem);
+  }
+
+  while (template.at(-1)?.type === "separator") {
+    template.pop();
+  }
+
+  return template;
+}
+
+function installNativeMenuHandlers() {
+  ipcMain.handle("menu:popup", (event, input) => {
+    const window = getWindowFromIpcEvent(event);
+
+    if (!window) {
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      let selectedItemId = null;
+      const template = buildNativeMenuTemplate(input?.items, (id) => {
+        selectedItemId = id;
+      });
+
+      if (!template.length) {
+        resolve(null);
+        return;
+      }
+
+      const x = normalizeNativeMenuCoordinate(input?.x);
+      const y = normalizeNativeMenuCoordinate(input?.y);
+      const popupOptions = {
+        window,
+        callback: () => resolve(selectedItemId),
+      };
+
+      if (typeof x === "number" && typeof y === "number") {
+        popupOptions.x = x;
+        popupOptions.y = y;
+      }
+
+      if (event.senderFrame) {
+        popupOptions.frame = event.senderFrame;
+      }
+
+      Menu.buildFromTemplate(template).popup(popupOptions);
+    });
+  });
+}
+
 function installWindowControlHandlers() {
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();
@@ -850,6 +962,7 @@ async function bootstrap() {
     const url = await startNextServer(config);
     nextServerUrl = url;
     installExportHandlers();
+    installNativeMenuHandlers();
     installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);

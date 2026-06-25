@@ -16,6 +16,24 @@ type LiberaMarkdownPdfRenderInput = {
   title?: string;
 };
 
+type LiberaNativeMenuItem =
+  | {
+      checked?: boolean;
+      enabled?: boolean;
+      id: string;
+      label: string;
+      type?: "normal" | "checkbox" | "radio";
+    }
+  | {
+      type: "separator";
+    };
+
+type LiberaNativeMenuInput = {
+  items: LiberaNativeMenuItem[];
+  x?: number;
+  y?: number;
+};
+
 declare global {
   interface Window {
     liberaPlatform?: {
@@ -27,6 +45,9 @@ declare global {
       exportMarkdownPdf: (
         input: LiberaMarkdownPdfExportInput,
       ) => Promise<LiberaMarkdownPdfExportResult>;
+    };
+    liberaMenu?: {
+      popup: (input: LiberaNativeMenuInput) => Promise<string | null>;
     };
     liberaWindow?: {
       close: () => Promise<void>;

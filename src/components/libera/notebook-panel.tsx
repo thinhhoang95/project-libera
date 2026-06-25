@@ -1,24 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
   BookPlus,
   ChevronDown,
   ChevronRight,
-  Check,
-  Copy,
-  Download,
-  FilePlus2,
   Folder,
   FolderPlus,
   MoreHorizontal,
   Pencil,
-  Settings2,
   Star,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
@@ -39,7 +33,19 @@ type SidebarMenuTarget =
   | { kind: "file"; file: LiberaFileNode }
   | { kind: "folder"; folder: LiberaFolderNode };
 
-type MenuPosition = {
+type NativeMenuItem =
+  | {
+      checked?: boolean;
+      enabled?: boolean;
+      id: string;
+      label: string;
+      type?: "normal" | "checkbox" | "radio";
+    }
+  | {
+      type: "separator";
+    };
+
+type NativeMenuPoint = {
   x: number;
   y: number;
 };
@@ -394,6 +400,36 @@ function parentPathForSidebarFile(file: LiberaFileNode) {
   return parts.slice(0, -1).join("/") || file.notebook;
 }
 
+async function showNativeMenu(items: NativeMenuItem[], point: NativeMenuPoint) {
+  const menu = window.liberaMenu;
+
+  if (!menu) {
+    return null;
+  }
+
+  try {
+    return await menu.popup({ items, ...point });
+  } catch {
+    return null;
+  }
+}
+
+function nativeMenuPointFromButton(button: HTMLElement): NativeMenuPoint {
+  const rect = button.getBoundingClientRect();
+
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.bottom),
+  };
+}
+
+function nativeMenuPointFromMouseEvent(event: MouseEvent): NativeMenuPoint {
+  return {
+    x: Math.round(event.clientX),
+    y: Math.round(event.clientY),
+  };
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -431,24 +467,15 @@ export function NotebookPanel({
   onUploadFiles,
   onUpdateNotebookViewOptions,
 }: NotebookPanelProps) {
-  const [contextMenu, setContextMenu] = useState<{
-    target: SidebarMenuTarget;
-    x: number;
-    y: number;
-  } | null>(null);
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
-  const [sortMenuPosition, setSortMenuPosition] = useState<MenuPosition | null>(null);
   const [sortPreference, setSortPreference] =
     useState<SidebarSortPreference>(DEFAULT_SIDEBAR_SORT);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
   const [viewOptionsError, setViewOptionsError] = useState("");
-  const sortMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const sortMenuRef = useRef<HTMLDivElement | null>(null);
-  const sortMenuOpen = Boolean(sortMenuPosition);
   const sortedTree = useMemo(
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
@@ -471,36 +498,6 @@ export function NotebookPanel({
     Boolean(topLevelNotebooks.length) || Boolean(groupedSections.length);
 
   useEffect(() => {
-    if (!contextMenu) {
-      return;
-    }
-
-    function closeMenu() {
-      setContextMenu(null);
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setContextMenu(null);
-      }
-    }
-
-    window.addEventListener("click", closeMenu);
-    window.addEventListener("contextmenu", closeMenu);
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", closeMenu);
-    window.addEventListener("scroll", closeMenu, true);
-
-    return () => {
-      window.removeEventListener("click", closeMenu);
-      window.removeEventListener("contextmenu", closeMenu);
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
-    };
-  }, [contextMenu]);
-
-  useEffect(() => {
     const animationFrame = window.requestAnimationFrame(() => {
       try {
         setSortPreference(
@@ -516,55 +513,10 @@ export function NotebookPanel({
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
 
-  useEffect(() => {
-    if (!sortMenuOpen) {
-      return;
-    }
-
-    function closeSortMenu() {
-      setSortMenuPosition(null);
-    }
-
-    function handlePointerDown(event: PointerEvent) {
-      const target = event.target as Node;
-
-      if (
-        sortMenuRef.current?.contains(target) ||
-        sortMenuButtonRef.current?.contains(target)
-      ) {
-        return;
-      }
-
-      closeSortMenu();
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeSortMenu();
-      }
-    }
-
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("scroll", closeSortMenu, true);
-    window.addEventListener("resize", closeSortMenu);
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("scroll", closeSortMenu, true);
-      window.removeEventListener("resize", closeSortMenu);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [sortMenuOpen]);
-
   function openContextMenu(event: MouseEvent, target: SidebarMenuTarget) {
     event.preventDefault();
     event.stopPropagation();
-    setContextMenu({
-      target,
-      x: event.clientX,
-      y: event.clientY,
-    });
+    void openSidebarNativeMenu(target, nativeMenuPointFromMouseEvent(event));
   }
 
   async function dropFileOnPath(destinationPath: string) {
@@ -584,7 +536,6 @@ export function NotebookPanel({
 
   function applySortPreference(nextSortPreference: SidebarSortPreference) {
     setSortPreference(nextSortPreference);
-    setSortMenuPosition(null);
     window.localStorage.setItem(
       SIDEBAR_SORT_STORAGE_KEY,
       JSON.stringify(nextSortPreference),
@@ -607,23 +558,108 @@ export function NotebookPanel({
     }
   }
 
-  function toggleSortMenu(event: MouseEvent<HTMLButtonElement>) {
-    if (sortMenuPosition) {
-      setSortMenuPosition(null);
+  async function openSidebarNativeMenu(
+    target: SidebarMenuTarget,
+    point: NativeMenuPoint,
+  ) {
+    const fileIsStarred =
+      target.kind === "file" ? starredFilePaths.has(target.file.path) : false;
+    const selectedItemId = await showNativeMenu(
+      target.kind === "file"
+        ? [
+            {
+              id: "toggle-star",
+              label: fileIsStarred ? "Unstar" : "Star",
+              type: "checkbox",
+              checked: fileIsStarred,
+            },
+            { type: "separator" },
+            { id: "download", label: "Download" },
+            { id: "copy", label: "Copy" },
+            { id: "rename", label: "Rename" },
+            { type: "separator" },
+            { id: "delete", label: "Delete" },
+          ]
+        : [
+            { id: "add-note", label: "Add Note" },
+            { id: "new-folder", label: "New folder" },
+            { type: "separator" },
+            { id: "rename", label: "Rename" },
+            { type: "separator" },
+            { id: "delete", label: "Delete" },
+          ],
+      point,
+    );
+
+    if (!selectedItemId) {
       return;
     }
 
-    const rect = event.currentTarget.getBoundingClientRect();
-    const menuWidth = 288;
-    const menuHeight = SORT_OPTIONS.length * 40 + 48;
-    const x = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8));
-    const preferredY = rect.bottom + 8;
-    const y =
-      preferredY + menuHeight > window.innerHeight - 8
-        ? Math.max(8, rect.top - menuHeight - 8)
-        : preferredY;
+    if (target.kind === "file") {
+      if (selectedItemId === "toggle-star") {
+        await onToggleFileStar(target.file, !fileIsStarred);
+      } else if (selectedItemId === "download") {
+        onDownloadFile(target.file);
+      } else if (selectedItemId === "copy") {
+        await onCopyFile(target.file);
+      } else if (selectedItemId === "rename") {
+        await onRenameFile(target.file);
+      } else if (selectedItemId === "delete") {
+        await onDeleteFile(target.file);
+      }
 
-    setSortMenuPosition({ x, y });
+      return;
+    }
+
+    if (selectedItemId === "add-note") {
+      await onCreateMarkdown(target.folder.notebook, target.folder.path);
+    } else if (selectedItemId === "new-folder") {
+      await onCreateFolder(target.folder.path);
+    } else if (selectedItemId === "rename") {
+      await onRenameFolder(target.folder);
+    } else if (selectedItemId === "delete") {
+      await onDeleteFolder(target.folder);
+    }
+  }
+
+  async function openSortMenu(event: MouseEvent<HTMLButtonElement>) {
+    const selectedItemId = await showNativeMenu(
+      [
+        ...SORT_OPTIONS.map((option) => ({
+          id: `sort:${option.key}:${option.direction}`,
+          label: option.label,
+          type: "radio" as const,
+          checked:
+            option.key === sortPreference.key &&
+            option.direction === sortPreference.direction,
+        })),
+        { type: "separator" as const },
+        { id: "view-options", label: "View Options" },
+      ],
+      nativeMenuPointFromButton(event.currentTarget),
+    );
+
+    if (!selectedItemId) {
+      return;
+    }
+
+    if (selectedItemId === "view-options") {
+      setViewOptionsError("");
+      setViewOptionsOpen(true);
+      return;
+    }
+
+    const [, key, direction] = selectedItemId.split(":");
+
+    if (
+      (key === "name" ||
+        key === "createdAt" ||
+        key === "updatedAt" ||
+        key === "interactedAt") &&
+      (direction === "asc" || direction === "desc")
+    ) {
+      applySortPreference({ key, direction });
+    }
   }
 
   return (
@@ -641,72 +677,16 @@ export function NotebookPanel({
           Notebook
         </h2>
         <div className="flex items-center gap-2">
-          <div>
-            <button
-              ref={sortMenuButtonRef}
-              aria-expanded={sortMenuOpen}
-              aria-haspopup="menu"
-              aria-label="Sort notebooks and files"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
-              title="Sort notebooks and files"
-              type="button"
-              onClick={toggleSortMenu}
-            >
-              <ArrowDownUp aria-hidden className="h-4 w-4" />
-            </button>
-            {sortMenuPosition ? (
-              <div
-                ref={sortMenuRef}
-                className="fixed z-50 w-[288px] overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
-                role="menu"
-                style={{
-                  left: sortMenuPosition.x,
-                  top: sortMenuPosition.y,
-                }}
-              >
-                {SORT_OPTIONS.map((option) => {
-                  const selected =
-                    option.key === sortPreference.key &&
-                    option.direction === sortPreference.direction;
-
-                  return (
-                    <button
-                      key={`${option.key}:${option.direction}`}
-                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={selected}
-                      onClick={() =>
-                        applySortPreference({
-                          key: option.key,
-                          direction: option.direction,
-                        })
-                      }
-                    >
-                      <span>{option.label}</span>
-                      {selected ? (
-                        <Check aria-hidden className="h-4 w-4 text-muted-foreground" />
-                      ) : null}
-                    </button>
-                  );
-                })}
-                <div className="my-1 border-t border-border" />
-                <button
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setSortMenuPosition(null);
-                    setViewOptionsError("");
-                    setViewOptionsOpen(true);
-                  }}
-                >
-                  <Settings2 aria-hidden className="h-4 w-4 text-muted-foreground" />
-                  View Options
-                </button>
-              </div>
-            ) : null}
-          </div>
+          <button
+            aria-haspopup="menu"
+            aria-label="Sort notebooks and files"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input text-foreground hover:bg-muted"
+            title="Sort notebooks and files"
+            type="button"
+            onClick={(event) => void openSortMenu(event)}
+          >
+            <ArrowDownUp aria-hidden className="h-4 w-4" />
+          </button>
           <button
             aria-label="New group"
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-input hover:bg-muted"
@@ -825,24 +805,6 @@ export function NotebookPanel({
         </div>
       </div>
 
-      {contextMenu ? (
-        <SidebarContextMenu
-          target={contextMenu.target}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onCopyFile={onCopyFile}
-          onCreateFolder={onCreateFolder}
-          onCreateMarkdown={onCreateMarkdown}
-          onDelete={onDeleteFile}
-          onDeleteFolder={onDeleteFolder}
-          onDownloadFile={onDownloadFile}
-          onToggleFileStar={onToggleFileStar}
-          onRenameFolder={onRenameFolder}
-          onRename={onRenameFile}
-          starredFilePaths={starredFilePaths}
-        />
-      ) : null}
       {deepSearchOpen ? (
         <DeepSearchDialog
           initialQuery={deepSearchQuery}
@@ -985,75 +947,53 @@ function NotebookSection({
 }) {
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
-  const [actionMenuPosition, setActionMenuPosition] = useState<MenuPosition | null>(
-    null,
-  );
-  const actionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!actionMenuPosition) {
-      return;
-    }
-
-    function closeActionMenu() {
-      setActionMenuPosition(null);
-    }
-
-    function handlePointerDown(event: PointerEvent) {
-      const target = event.target as Node;
-
-      if (
-        actionMenuRef.current?.contains(target) ||
-        actionMenuButtonRef.current?.contains(target)
-      ) {
-        return;
-      }
-
-      closeActionMenu();
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeActionMenu();
-      }
-    }
-
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("scroll", closeActionMenu, true);
-    window.addEventListener("resize", closeActionMenu);
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("scroll", closeActionMenu, true);
-      window.removeEventListener("resize", closeActionMenu);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [actionMenuPosition]);
-
-  function toggleActionMenu(event: MouseEvent<HTMLButtonElement>) {
-    event.stopPropagation();
-
-    if (actionMenuPosition) {
-      setActionMenuPosition(null);
-      return;
-    }
-
-    const rect = event.currentTarget.getBoundingClientRect();
-    const menuWidth = 184;
-    const menuHeight = 248;
-    const x = Math.max(
-      8,
-      Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+  async function openNotebookActionsAtPoint(point: NativeMenuPoint) {
+    const selectedItemId = await showNativeMenu(
+      [
+        { id: "new-note", label: "New note" },
+        { id: "new-slides", label: "New slides" },
+        { id: "new-folder", label: "New folder" },
+        { id: "upload", label: "Upload" },
+        { type: "separator" },
+        { id: "edit", label: "Edit" },
+        { id: "download", label: "Download" },
+        { type: "separator" },
+        { id: "delete", label: "Delete" },
+      ],
+      point,
     );
-    const preferredY = rect.bottom + 6;
-    const y =
-      preferredY + menuHeight > window.innerHeight - 8
-        ? Math.max(8, rect.top - menuHeight - 6)
-        : preferredY;
 
-    setActionMenuPosition({ x, y });
+    if (!selectedItemId) {
+      return;
+    }
+
+    if (selectedItemId === "new-note") {
+      await onCreateMarkdown(notebook.name);
+    } else if (selectedItemId === "new-slides") {
+      await onCreateSlides(notebook.name);
+    } else if (selectedItemId === "new-folder") {
+      await onCreateFolder(notebook.path);
+    } else if (selectedItemId === "upload") {
+      onStartUpload(notebook.name);
+    } else if (selectedItemId === "edit") {
+      onEditNotebook(notebook);
+    } else if (selectedItemId === "download") {
+      onDownloadNotebook(notebook.name);
+    } else if (selectedItemId === "delete") {
+      await onDeleteNotebook(notebook.name);
+    }
+  }
+
+  function openNotebookActionsMenu(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    void openNotebookActionsAtPoint(nativeMenuPointFromButton(event.currentTarget));
+  }
+
+  function openNotebookContextMenu(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    void openNotebookActionsAtPoint(nativeMenuPointFromMouseEvent(event));
   }
 
   return (
@@ -1090,6 +1030,7 @@ function NotebookSection({
         className={`flex items-center gap-2 border-b border-border px-2 py-2 ${
           isDragTarget || isUploadTarget || isSelected ? "bg-accent/8" : ""
         }`}
+        onContextMenu={openNotebookContextMenu}
         onDragOver={(event) => {
           if (!draggingFile) {
             return;
@@ -1134,34 +1075,16 @@ function NotebookSection({
           </span>
         </button>
         <button
-          ref={actionMenuButtonRef}
-          aria-expanded={Boolean(actionMenuPosition)}
           aria-haspopup="menu"
           aria-label={`Notebook actions for ${notebook.name}`}
           className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-foreground hover:bg-muted"
           title="Notebook actions"
           type="button"
-          onClick={toggleActionMenu}
+          onClick={openNotebookActionsMenu}
         >
           <MoreHorizontal aria-hidden className="h-4 w-4" />
         </button>
       </div>
-      {actionMenuPosition ? (
-        <NotebookActionsMenu
-          menuRef={actionMenuRef}
-          notebook={notebook}
-          x={actionMenuPosition.x}
-          y={actionMenuPosition.y}
-          onClose={() => setActionMenuPosition(null)}
-          onCreateFolder={onCreateFolder}
-          onCreateMarkdown={onCreateMarkdown}
-          onCreateSlides={onCreateSlides}
-          onDeleteNotebook={onDeleteNotebook}
-          onDownloadNotebook={onDownloadNotebook}
-          onEditNotebook={onEditNotebook}
-          onStartUpload={onStartUpload}
-        />
-      ) : null}
       {isExpanded ? (
         <div
           className={`px-2 py-2 ${isDragTarget ? "bg-accent/10/60" : ""}`}
@@ -1341,123 +1264,6 @@ function NotebookGroupSection({
         </div>
       )}
     </section>
-  );
-}
-
-function NotebookActionsMenu({
-  menuRef,
-  notebook,
-  x,
-  y,
-  onClose,
-  onCreateFolder,
-  onCreateMarkdown,
-  onCreateSlides,
-  onDeleteNotebook,
-  onDownloadNotebook,
-  onEditNotebook,
-  onStartUpload,
-}: {
-  menuRef: RefObject<HTMLDivElement | null>;
-  notebook: LiberaNotebookNode;
-  x: number;
-  y: number;
-  onClose: () => void;
-  onCreateFolder: (parentPath: string) => Promise<void>;
-  onCreateMarkdown: (notebook: string) => Promise<void>;
-  onCreateSlides: (notebook: string) => Promise<void>;
-  onDeleteNotebook: (notebook: string) => Promise<void>;
-  onDownloadNotebook: (notebook: string) => void;
-  onEditNotebook: (notebook: LiberaNotebookNode) => void;
-  onStartUpload: (notebook: string) => void;
-}) {
-  async function runAction(action: () => void | Promise<void>) {
-    onClose();
-    await action();
-  }
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 w-[184px] overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
-      style={{ left: x, top: y }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => runAction(() => onCreateMarkdown(notebook.name))}
-      >
-        <FilePlus2 aria-hidden className="h-4 w-4 text-muted-foreground" />
-        New note
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => runAction(() => onCreateSlides(notebook.name))}
-      >
-        <FilePlus2 aria-hidden className="h-4 w-4 text-zinc-500" />
-        New slides
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => runAction(() => onCreateFolder(notebook.path))}
-      >
-        <FolderPlus aria-hidden className="h-4 w-4 text-muted-foreground" />
-        New folder
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => {
-          onClose();
-          onStartUpload(notebook.name);
-        }}
-      >
-        <Upload aria-hidden className="h-4 w-4 text-muted-foreground" />
-        Upload
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => {
-          onClose();
-          onEditNotebook(notebook);
-        }}
-      >
-        <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
-        Edit
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => {
-          onClose();
-          onDownloadNotebook(notebook.name);
-        }}
-      >
-        <Download aria-hidden className="h-4 w-4 text-muted-foreground" />
-        Download
-      </button>
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
-        type="button"
-        role="menuitem"
-        onClick={() => runAction(() => onDeleteNotebook(notebook.name))}
-      >
-        <Trash2 aria-hidden className="h-4 w-4" />
-        Delete
-      </button>
-    </div>
   );
 }
 
@@ -1650,157 +1456,6 @@ function TreeNodeRow({
         />
       ) : null}
     </button>
-  );
-}
-
-function SidebarContextMenu({
-  target,
-  x,
-  y,
-  onClose,
-  onCopyFile,
-  onCreateFolder,
-  onCreateMarkdown,
-  onDelete,
-  onDeleteFolder,
-  onDownloadFile,
-  onToggleFileStar,
-  onRenameFolder,
-  onRename,
-  starredFilePaths,
-}: {
-  target: SidebarMenuTarget;
-  x: number;
-  y: number;
-  onClose: () => void;
-  onCopyFile: (file: LiberaFileNode) => Promise<void>;
-  onCreateFolder: (parentPath: string) => Promise<void>;
-  onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
-  onDelete: (file: LiberaFileNode) => Promise<void>;
-  onDeleteFolder: (folder: LiberaFolderNode) => Promise<void>;
-  onDownloadFile: (file: LiberaFileNode) => void;
-  onToggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
-  onRenameFolder: (folder: LiberaFolderNode) => Promise<void>;
-  onRename: (file: LiberaFileNode) => Promise<void>;
-  starredFilePaths: Set<string>;
-}) {
-  async function runAction(action: () => Promise<void>) {
-    onClose();
-    await action();
-  }
-
-  const fileIsStarred =
-    target.kind === "file" ? starredFilePaths.has(target.file.path) : false;
-
-  return (
-    <div
-      className="fixed z-50 min-w-40 overflow-hidden rounded-lg border border-border bg-card py-1 text-sm shadow-lg"
-      style={{ left: x, top: y }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      {target.kind === "file" ? (
-        <>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onToggleFileStar(target.file, !fileIsStarred))}
-          >
-            <Star
-              aria-hidden
-              className={`h-4 w-4 ${
-                fileIsStarred
-                  ? "fill-amber-400 text-amber-500"
-                  : "text-muted-foreground"
-              }`}
-            />
-            {fileIsStarred ? "Unstar" : "Star"}
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onClose();
-              onDownloadFile(target.file);
-            }}
-          >
-            <Download aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Download
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onCopyFile(target.file))}
-          >
-            <Copy aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Copy
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onRename(target.file))}
-          >
-            <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Rename
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onDelete(target.file))}
-          >
-            <Trash2 aria-hidden className="h-4 w-4" />
-            Delete
-          </button>
-        </>
-      ) : (
-        <>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() =>
-              runAction(() => onCreateMarkdown(target.folder.notebook, target.folder.path))
-            }
-          >
-            <FilePlus2 aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Add Note
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onCreateFolder(target.folder.path))}
-          >
-            <FolderPlus aria-hidden className="h-4 w-4 text-muted-foreground" />
-            New folder
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onRenameFolder(target.folder))}
-          >
-            <Pencil aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Rename
-          </button>
-          <button
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-destructive hover:bg-destructive-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(() => onDeleteFolder(target.folder))}
-          >
-            <Trash2 aria-hidden className="h-4 w-4" />
-            Delete
-          </button>
-        </>
-      )}
-    </div>
   );
 }
 

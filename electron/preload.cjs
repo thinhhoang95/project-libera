@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld("liberaExport", {
   exportMarkdownPdf: (input) => ipcRenderer.invoke("export:markdown-pdf", input),
 });
 
+contextBridge.exposeInMainWorld("liberaMenu", {
+  popup: (input) => ipcRenderer.invoke("menu:popup", input),
+});
+
 contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
