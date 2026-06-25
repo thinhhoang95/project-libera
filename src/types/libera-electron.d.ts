@@ -49,6 +49,9 @@ declare global {
     liberaMenu?: {
       popup: (input: LiberaNativeMenuInput) => Promise<string | null>;
     };
+    liberaFileExplorer?: {
+      revealNotebook: (notebook: string) => Promise<void>;
+    };
     liberaWindow?: {
       close: () => Promise<void>;
       minimize: () => Promise<void>;

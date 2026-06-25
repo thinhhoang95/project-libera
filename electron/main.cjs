@@ -12,6 +12,7 @@ const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
+const ADMIN_USER = "admin";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
 const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
@@ -39,6 +40,31 @@ function getAppRoot() {
 
 function getConfigPath() {
   return path.join(app.getPath("userData"), CONFIG_FILE_NAME);
+}
+
+function assertSafePathSegment(segment, label) {
+  const trimmed = typeof segment === "string" ? segment.trim() : "";
+
+  if (
+    !trimmed ||
+    trimmed === "." ||
+    trimmed === ".." ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("\0")
+  ) {
+    throw new Error(`${label} is invalid.`);
+  }
+
+  return trimmed;
+}
+
+function assertPathInside(parentPath, targetPath) {
+  const relativePath = path.relative(parentPath, targetPath);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error("Target path is outside the Libera data directory.");
+  }
 }
 
 function getIconPath() {
@@ -653,6 +679,34 @@ function installNativeMenuHandlers() {
   });
 }
 
+function installFileExplorerHandlers() {
+  ipcMain.handle("file-explorer:reveal-notebook", async (_event, notebook) => {
+    const config = readConfig();
+    const dataDir = typeof config.dataDir === "string" ? config.dataDir : "";
+
+    if (!dataDir) {
+      throw new Error("Libera data directory is not configured.");
+    }
+
+    const safeNotebook = assertSafePathSegment(notebook, "Notebook name");
+    const adminRoot = path.join(dataDir, "users", ADMIN_USER);
+    const notebookDirectory = path.join(adminRoot, safeNotebook);
+    assertPathInside(adminRoot, notebookDirectory);
+
+    const stats = await fsp.stat(notebookDirectory);
+
+    if (!stats.isDirectory()) {
+      throw new Error("Notebook directory was not found.");
+    }
+
+    const errorMessage = await shell.openPath(notebookDirectory);
+
+    if (errorMessage) {
+      throw new Error(errorMessage);
+    }
+  });
+}
+
 function installWindowControlHandlers() {
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();
@@ -963,6 +1017,7 @@ async function bootstrap() {
     nextServerUrl = url;
     installExportHandlers();
     installNativeMenuHandlers();
+    installFileExplorerHandlers();
     installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);

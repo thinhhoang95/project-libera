@@ -430,6 +430,16 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent): NativeMenuPoint {
   };
 }
 
+async function revealNotebookInFileExplorer(notebook: string) {
+  const fileExplorer = window.liberaFileExplorer;
+
+  if (!fileExplorer) {
+    return;
+  }
+
+  await fileExplorer.revealNotebook(notebook);
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -958,6 +968,11 @@ function NotebookSection({
         { type: "separator" },
         { id: "edit", label: "Edit" },
         { id: "download", label: "Download" },
+        {
+          id: "reveal-in-file-explorer",
+          label: "Reveal in File Explorer",
+          enabled: Boolean(window.liberaFileExplorer),
+        },
         { type: "separator" },
         { id: "delete", label: "Delete" },
       ],
@@ -980,6 +995,8 @@ function NotebookSection({
       onEditNotebook(notebook);
     } else if (selectedItemId === "download") {
       onDownloadNotebook(notebook.name);
+    } else if (selectedItemId === "reveal-in-file-explorer") {
+      await revealNotebookInFileExplorer(notebook.name);
     } else if (selectedItemId === "delete") {
       await onDeleteNotebook(notebook.name);
     }

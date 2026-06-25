@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld("liberaMenu", {
   popup: (input) => ipcRenderer.invoke("menu:popup", input),
 });
 
+contextBridge.exposeInMainWorld("liberaFileExplorer", {
+  revealNotebook: (notebook) => ipcRenderer.invoke("file-explorer:reveal-notebook", notebook),
+});
+
 contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
