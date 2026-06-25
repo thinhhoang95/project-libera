@@ -298,11 +298,13 @@ function scrollPreviewToSourceOffset(
   offset: number,
   options: {
     block?: PreviewScrollBlock;
+    sourceElement?: HTMLElement | null;
     sourceProgress?: number;
     viewportProgress?: number;
   } = {},
 ) {
-  const sourceElement = findMarkdownSourceElementForOffset(preview, offset);
+  const sourceElement =
+    options.sourceElement ?? findMarkdownSourceElementForOffset(preview, offset);
   const sourceRange = getMarkdownSourceRange(sourceElement);
 
   if (!sourceElement || !sourceRange) {
@@ -439,6 +441,11 @@ export function WorkspacePanel({
   const previewUserScrollUntilRef = useRef(0);
   const programmaticEditorScrollUntilRef = useRef(0);
   const programmaticPreviewScrollUntilRef = useRef(0);
+  // True while the editor has unsaved keystrokes the debounced preview has not
+  // rendered yet. The preview's source map is stale during this window, so
+  // syncing scroll against it is both wasteful and inaccurate — skip it and let
+  // the post-render re-sync (keyed on previewMarkdownDraft) catch up.
+  const previewContentStaleRef = useRef(false);
   const markdownRestoreViewStateRef = useRef<MarkdownTabViewState | undefined>(undefined);
   const activeFileType = activeTab?.file.fileType;
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
@@ -460,6 +467,7 @@ export function WorkspacePanel({
     activeMarkdownDraft,
     activeTabId,
   );
+  const previewContentStale = previewMarkdownDraft !== activeMarkdownDraft;
   const activeMarkdownSlidesDeck = useMemo(
     () => (activeMarkdownIsSlides ? parseMarkdownSlides(activeMarkdownDraft) : undefined),
     [activeMarkdownDraft, activeMarkdownIsSlides],
@@ -505,6 +513,10 @@ export function WorkspacePanel({
     },
     [activeTabId, onSetViewState],
   );
+
+  useEffect(() => {
+    previewContentStaleRef.current = previewContentStale;
+  }, [previewContentStale]);
 
   useEffect(() => {
     activeMarkdownPathRef.current = activeMarkdownPath;
@@ -559,9 +571,8 @@ export function WorkspacePanel({
       options.viewportProgress ?? MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS;
     const sourceOffset =
       options.offset ?? getTextareaViewportAnchorOffset(textarea, viewportProgress);
-    const sourceRange = getMarkdownSourceRange(
-      findMarkdownSourceElementForOffset(preview, sourceOffset),
-    );
+    const sourceElement = findMarkdownSourceElementForOffset(preview, sourceOffset);
+    const sourceRange = getMarkdownSourceRange(sourceElement);
     const sourceProgress = sourceRange
       ? getTextareaVisualProgressForRange(textarea, sourceOffset, sourceRange)
       : undefined;
@@ -569,6 +580,7 @@ export function WorkspacePanel({
     markProgrammaticPreviewScroll();
     scrollPreviewToSourceOffset(preview, sourceOffset, {
       block: options.block,
+      sourceElement,
       sourceProgress,
       viewportProgress,
     });
@@ -648,10 +660,33 @@ export function WorkspacePanel({
     const editor = textarea;
     const previewPane = preview;
 
-    function handleEditorScroll() {
+    // Scroll events fire faster than once per frame, and each editor sync forces
+    // a full-document mirror reflow plus preview source-map queries. Coalesce
+    // bursts into a single rAF so the work runs at most once per frame and off
+    // the input's critical path.
+    let editorScrollFrame = 0;
+    let previewScrollFrame = 0;
+
+    function runEditorScrollSync() {
+      editorScrollFrame = 0;
+
       const now = window.performance.now();
 
       if (now <= programmaticEditorScrollUntilRef.current) {
+        return;
+      }
+
+      // While the user is actively typing, the debounced preview has not
+      // rendered the latest text yet, so its source map cannot be measured
+      // accurately. Persist scroll position only and let the post-render
+      // re-sync align the panes once the preview catches up.
+      if (previewContentStaleRef.current) {
+        updateMarkdownViewState({
+          editorScrollLeft: editor.scrollLeft,
+          editorScrollTop: editor.scrollTop,
+          previewScrollLeft: previewPane.scrollLeft,
+          previewScrollTop: previewPane.scrollTop,
+        });
         return;
       }
 
@@ -673,7 +708,9 @@ export function WorkspacePanel({
       });
     }
 
-    function handlePreviewScroll() {
+    function runPreviewScrollSync() {
+      previewScrollFrame = 0;
+
       const now = window.performance.now();
       const sourcePosition = getPreviewViewportAnchorPosition(
         previewPane,
@@ -706,12 +743,36 @@ export function WorkspacePanel({
       });
     }
 
+    function handleEditorScroll() {
+      if (editorScrollFrame) {
+        return;
+      }
+
+      editorScrollFrame = window.requestAnimationFrame(runEditorScrollSync);
+    }
+
+    function handlePreviewScroll() {
+      if (previewScrollFrame) {
+        return;
+      }
+
+      previewScrollFrame = window.requestAnimationFrame(runPreviewScrollSync);
+    }
+
     editor.addEventListener("scroll", handleEditorScroll, { passive: true });
     previewPane.addEventListener("scroll", handlePreviewScroll, { passive: true });
 
     return () => {
       editor.removeEventListener("scroll", handleEditorScroll);
       previewPane.removeEventListener("scroll", handlePreviewScroll);
+
+      if (editorScrollFrame) {
+        window.cancelAnimationFrame(editorScrollFrame);
+      }
+
+      if (previewScrollFrame) {
+        window.cancelAnimationFrame(previewScrollFrame);
+      }
     };
   }, [
     activeFileType,
