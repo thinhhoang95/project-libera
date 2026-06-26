@@ -101,7 +101,8 @@ body {
    --------------------------------------------------------------------------- */
 html.libera-glass,
 html.libera-glass body,
-html.libera-glass .libera-app-shell {
+html.libera-glass .libera-app-shell,
+html.libera-glass .libera-login-screen {
   background: transparent;
 }
 

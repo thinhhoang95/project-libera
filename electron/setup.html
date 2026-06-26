@@ -215,6 +215,23 @@
         margin-top: 6px;
       }
 
+      .password-locked-row {
+        align-items: flex-start;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        margin-top: 18px;
+      }
+
+      .password-locked-row .locked {
+        margin-top: 0;
+      }
+
+      .password-locked-row button {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
       .hidden {
         display: none;
       }
@@ -242,7 +259,7 @@
           <h1 id="form-title">Set Up Libera by Thinh Hoang</h1>
           <p id="form-description">
             Choose the fixed Libera by Thinh Hoang Master directory, enter the required API key,
-            and create the password used by the app login screen.
+            and create the master password used by the app login screen.
           </p>
         </div>
 
@@ -271,7 +288,7 @@
             <section class="settings-section" data-section="general">
               <h2>General</h2>
               <p class="settings-section-description">
-                Configure the local data directory, OpenRouter model, API key, and app password.
+                Configure the local data directory, OpenRouter model, API key, and master password.
               </p>
 
               <label for="data-dir">Libera by Thinh Hoang Master directory</label>
@@ -298,15 +315,37 @@
               </p>
 
               <div id="password-fields">
-                <label for="password">App password</label>
+                <label for="password">Master password</label>
                 <input id="password" autocomplete="new-password" type="password" />
 
-                <label for="password-confirmation">Confirm app password</label>
+                <label for="password-confirmation">Confirm master password</label>
                 <input id="password-confirmation" autocomplete="new-password" type="password" />
               </div>
-              <div id="password-locked" class="locked hidden">
-                An app password is already configured. The login screen will ask for it every
-                time Libera by Thinh Hoang starts.
+              <div id="password-locked" class="password-locked-row hidden">
+                <div class="locked">
+                  A master password is already configured. The login screen will ask for it every
+                  time Libera by Thinh Hoang starts.
+                </div>
+                <button id="change-password-button" class="secondary" type="button">
+                  Change password
+                </button>
+              </div>
+              <div id="change-password-fields" class="hidden">
+                <label for="current-password">Current master password</label>
+                <input id="current-password" autocomplete="current-password" type="password" />
+
+                <label for="new-password">New master password</label>
+                <input id="new-password" autocomplete="new-password" type="password" />
+
+                <label for="new-password-confirmation">Confirm new master password</label>
+                <input
+                  id="new-password-confirmation"
+                  autocomplete="new-password"
+                  type="password"
+                />
+                <p class="field-help">
+                  Password changes are applied after restarting Libera by Thinh Hoang.
+                </p>
               </div>
             </section>
 
@@ -394,6 +433,13 @@
       const openRouterModelInput = document.querySelector("#openrouter-model");
       const passwordFields = document.querySelector("#password-fields");
       const passwordLocked = document.querySelector("#password-locked");
+      const changePasswordButton = document.querySelector("#change-password-button");
+      const changePasswordFields = document.querySelector("#change-password-fields");
+      const currentPasswordInput = document.querySelector("#current-password");
+      const newPasswordInput = document.querySelector("#new-password");
+      const newPasswordConfirmationInput = document.querySelector(
+        "#new-password-confirmation",
+      );
       const passwordInput = document.querySelector("#password");
       const passwordConfirmationInput = document.querySelector("#password-confirmation");
       const markdownBaseFontSizeInput = document.querySelector("#markdown-base-font-size");
@@ -465,6 +511,13 @@
         }
       }
 
+      changePasswordButton.addEventListener("click", () => {
+        clearError();
+        passwordLocked.classList.add("hidden");
+        changePasswordFields.classList.remove("hidden");
+        currentPasswordInput.focus();
+      });
+
       navButtons.forEach((button) => {
         button.addEventListener("click", () => {
           clearError();
@@ -497,6 +550,8 @@
 
         try {
           await window.liberaSetup.save({
+            changePassword: !changePasswordFields.classList.contains("hidden"),
+            currentPassword: currentPasswordInput.value,
             dataDir: dataDirInput.value,
             markdownBaseFontSize: markdownBaseFontSizeInput.value,
             markdownBaseLineHeight: markdownBaseLineHeightInput.value,
@@ -504,8 +559,12 @@
             markdownPdfBaseLineHeight: markdownPdfBaseLineHeightInput.value,
             openaiApiKey: apiKeyInput.value,
             openRouterModel: openRouterModelInput.value,
-            password: passwordInput.value,
-            passwordConfirmation: passwordConfirmationInput.value,
+            password: changePasswordFields.classList.contains("hidden")
+              ? passwordInput.value
+              : newPasswordInput.value,
+            passwordConfirmation: changePasswordFields.classList.contains("hidden")
+              ? passwordConfirmationInput.value
+              : newPasswordConfirmationInput.value,
           });
         } catch (error) {
           const message = error.message || "Unable to save setup.";

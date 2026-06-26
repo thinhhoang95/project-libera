@@ -34,22 +34,6 @@ type ActiveFileActionsProps = Pick<
   | "onSave"
 >;
 
-function readableTextColor(backgroundColor: string) {
-  const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(backgroundColor);
-
-  if (!match) {
-    return "#ffffff";
-  }
-
-  const [, redHex, greenHex, blueHex] = match;
-  const red = Number.parseInt(redHex, 16);
-  const green = Number.parseInt(greenHex, 16);
-  const blue = Number.parseInt(blueHex, 16);
-  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
-
-  return luminance > 0.58 ? "#18181b" : "#ffffff";
-}
-
 function nativeMenuPointFromButton(button: HTMLElement) {
   const rect = button.getBoundingClientRect();
 
@@ -122,31 +106,30 @@ export function TabStrip({
   }
 
   return (
-    <div className="border-b border-border bg-card shadow-sm">
+    <div className="border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
-            const textColor = readableTextColor(tabColor);
             const isActive = activeTabId === tab.id;
             const isDragging = draggingTabId === tab.id;
             const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
+            const isDirty = tab.status === "dirty";
 
             return (
               <button
                 key={tab.id}
-                className={`flex max-w-64 shrink-0 cursor-grab items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition active:cursor-grabbing ${
+                className={`group relative flex min-w-0 max-w-56 shrink-0 cursor-grab items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors active:cursor-grabbing ${
                   isActive
-                    ? "shadow-sm ring-2 ring-foreground/20"
-                    : "opacity-85 hover:opacity-100"
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 } ${
-                  isDragTarget
-                    ? "outline outline-2 outline-offset-2 outline-foreground/30"
-                    : ""
-                } ${isDragging ? "opacity-50" : ""}`}
+                  isDragTarget ? "ring-2 ring-inset ring-accent/60" : ""
+                } ${isDragging ? "opacity-40" : ""}`}
                 draggable
                 data-tab-id={tab.id}
                 aria-label={`Open ${tab.file.name}`}
+                aria-current={isActive ? "page" : undefined}
                 aria-describedby={isDragTarget ? `${tab.id}-drop-target` : undefined}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "move";
@@ -178,11 +161,14 @@ export function TabStrip({
                   clearDragState();
                 }}
                 onDragEnd={clearDragState}
-                style={{
-                  backgroundColor: tabColor,
-                  borderColor: tabColor,
-                  color: textColor,
-                }}
+                style={
+                  isActive
+                    ? {
+                        backgroundColor: `color-mix(in srgb, ${tabColor} 14%, transparent)`,
+                        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${tabColor} 28%, transparent)`,
+                      }
+                    : undefined
+                }
                 type="button"
                 onClick={() => onActivateTab(tab.id)}
                 onContextMenu={(event) => void openTabContextMenu(event, tab)}
@@ -201,31 +187,48 @@ export function TabStrip({
                   onCloseTab(tab.id);
                 }}
               >
+                <span
+                  aria-hidden
+                  className="h-2 w-2 shrink-0 rounded-full transition-opacity"
+                  style={{
+                    backgroundColor: tabColor,
+                    opacity: isActive ? 1 : 0.65,
+                  }}
+                />
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
                   <span id={`${tab.id}-drop-target`} className="sr-only">
                     Drop to swap tabs
                   </span>
                 ) : null}
-                {tab.status === "dirty" ? <span aria-label="Unsaved">*</span> : null}
-                <span
-                  className="ml-1 rounded p-0.5 hover:bg-black/10"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Close ${tab.file.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onCloseTab(tab.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
+                <span className="relative ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                  {isDirty ? (
+                    <span
+                      aria-label="Unsaved"
+                      className="h-1.5 w-1.5 rounded-full bg-current opacity-70 transition-opacity group-hover:opacity-0"
+                    />
+                  ) : null}
+                  <span
+                    className={`absolute inset-0 flex items-center justify-center rounded transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      isActive ? "opacity-60 hover:opacity-100" : "opacity-0"
+                    } group-hover:opacity-100`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Close ${tab.file.name}`}
+                    onClick={(event) => {
                       event.stopPropagation();
                       onCloseTab(tab.id);
-                    }
-                  }}
-                >
-                  <X aria-hidden className="h-3.5 w-3.5" />
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onCloseTab(tab.id);
+                      }
+                    }}
+                  >
+                    <X aria-hidden className="h-3.5 w-3.5" />
+                  </span>
                 </span>
               </button>
             );

@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell } = require("electron");
-const { randomBytes, scryptSync } = require("node:crypto");
+const { createHash, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const http = require("node:http");
@@ -83,6 +83,45 @@ function createPasswordHash(password) {
   const hash = scryptSync(password, salt, 64).toString("hex");
 
   return `scrypt:${salt}:${hash}`;
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+function hashWithScrypt(password, salt) {
+  return scryptSync(password, salt, 64).toString("hex");
+}
+
+function verifyPasswordHash(password, configuredHash) {
+  if (!configuredHash) {
+    return false;
+  }
+
+  if (configuredHash.startsWith("scrypt:")) {
+    const [, salt, expectedHash] = configuredHash.split(":");
+
+    return Boolean(
+      salt &&
+        expectedHash &&
+        safeEqual(hashWithScrypt(password, salt), expectedHash),
+    );
+  }
+
+  if (configuredHash.startsWith("sha256:")) {
+    const expectedHash = configuredHash.slice("sha256:".length);
+    const actualHash = createHash("sha256").update(password).digest("hex");
+
+    return safeEqual(actualHash, expectedHash);
+  }
+
+  return false;
 }
 
 function createSessionSecret() {
@@ -188,9 +227,12 @@ function validateSetupInput(input, existingConfig) {
   const dataDir = typeof input?.dataDir === "string" ? input.dataDir.trim() : "";
   const openaiApiKey =
     typeof input?.openaiApiKey === "string" ? input.openaiApiKey.trim() : "";
+  const currentPassword =
+    typeof input?.currentPassword === "string" ? input.currentPassword : "";
   const password = typeof input?.password === "string" ? input.password : "";
   const passwordConfirmation =
     typeof input?.passwordConfirmation === "string" ? input.passwordConfirmation : "";
+  const changingPassword = Boolean(input?.changePassword);
   const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
   const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
   const markdownPdfBaseFontSize = normalizeMarkdownBaseFontSize(
@@ -209,17 +251,28 @@ function validateSetupInput(input, existingConfig) {
     throw new Error("Enter an OPENAI_API_KEY before continuing.");
   }
 
-  if (!existingConfig.passwordHash) {
+  if (!existingConfig.passwordHash || changingPassword) {
+    if (
+      existingConfig.passwordHash &&
+      !verifyPasswordHash(currentPassword, existingConfig.passwordHash)
+    ) {
+      throw new Error("Enter the current master password before changing it.");
+    }
+
     if (!password) {
-      throw new Error("Create an app password before continuing.");
+      throw new Error(
+        existingConfig.passwordHash
+          ? "Enter a new master password before continuing."
+          : "Create a master password before continuing.",
+      );
     }
 
     if (password.length < 8) {
-      throw new Error("Use an app password with at least 8 characters.");
+      throw new Error("Use a master password with at least 8 characters.");
     }
 
     if (password !== passwordConfirmation) {
-      throw new Error("The password confirmation does not match.");
+      throw new Error("The master password confirmation does not match.");
     }
   }
 
@@ -231,7 +284,10 @@ function validateSetupInput(input, existingConfig) {
     markdownPdfBaseLineHeight,
     openaiApiKey,
     openRouterModel,
-    password,
+    passwordHash:
+      existingConfig.passwordHash && !changingPassword
+        ? existingConfig.passwordHash
+        : createPasswordHash(password),
   };
 }
 
@@ -283,7 +339,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
-        passwordHash: existingConfig.passwordHash || createPasswordHash(validated.password),
+        passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
 
