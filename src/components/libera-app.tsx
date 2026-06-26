@@ -11,12 +11,17 @@ import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 
 type LiberaAppProps = {
   initialAuthenticated: boolean;
+  markdownPreferences: MarkdownPreferences;
 };
 
-export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
+export function LiberaApp({
+  initialAuthenticated,
+  markdownPreferences,
+}: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
 
@@ -142,6 +147,7 @@ export function LiberaApp({ initialAuthenticated }: LiberaAppProps) {
             files={workspace.files}
             firstNotebook={workspace.firstNotebook}
             imageMarkdownConverting={workspace.imageMarkdownConverting}
+            markdownPreferences={markdownPreferences}
             recentFiles={workspace.recentFiles}
             screenshotSnipSession={workspace.screenshotSnipSession}
             selectedNotebook={workspace.selectedNotebook}

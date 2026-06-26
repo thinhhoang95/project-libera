@@ -1,6 +1,6 @@
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
-export const OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
 
 const OPENROUTER_API_KEY_ENV_NAMES = [
   "OPENROUTER_API_KEY",
@@ -65,6 +65,10 @@ export function getOpenRouterApiKey() {
   return "";
 }
 
+export function getOpenRouterModel() {
+  return process.env.LIBERA_OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+}
+
 function extractMessageContent(content: OpenRouterMessageContent | undefined) {
   if (typeof content === "string") {
     return content;
@@ -120,7 +124,7 @@ export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMes
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Libera",
     },
     body: JSON.stringify({
-      model: OPENROUTER_MODEL,
+      model: getOpenRouterModel(),
       messages,
       temperature: 0,
     }),

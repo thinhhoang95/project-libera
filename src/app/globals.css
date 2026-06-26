@@ -330,7 +330,7 @@ html.libera-markdown-export-mode body {
 
 @page {
   background: #ffffff;
-  margin: 18mm;
+  margin: 18mm 18mm 24mm;
   size: A4;
 }
 
@@ -416,6 +416,50 @@ textarea::placeholder {
   background: var(--markdown-editor-find-match-active);
   outline: 1px solid var(--markdown-editor-find-match-active-ring);
   outline-offset: -1px;
+}
+
+.markdown-renderer {
+  font-size: var(--markdown-body-font-size);
+  line-height: var(--markdown-body-line-height);
+}
+
+.markdown-renderer :where(p, blockquote, ul, ol) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.markdown-renderer :where(li, th, td) {
+  line-height: inherit;
+}
+
+.markdown-renderer :where(table) {
+  font-size: var(--markdown-small-font-size);
+  line-height: var(--markdown-body-line-height);
+}
+
+.markdown-renderer :where(code) {
+  font-size: var(--markdown-small-font-size);
+  line-height: inherit;
+}
+
+.markdown-renderer :where(h1) {
+  font-size: var(--markdown-h1-font-size);
+  line-height: 1.2;
+}
+
+.markdown-renderer :where(h2) {
+  font-size: var(--markdown-h2-font-size);
+  line-height: 1.3;
+}
+
+.markdown-renderer :where(h3) {
+  font-size: var(--markdown-h3-font-size);
+  line-height: 1.35;
+}
+
+.markdown-renderer :where(h4, h5, h6, [role="heading"]) {
+  font-size: var(--markdown-body-font-size);
+  line-height: 1.4;
 }
 
 textarea.markdown-editor-input {

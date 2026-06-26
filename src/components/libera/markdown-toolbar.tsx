@@ -37,6 +37,7 @@ type MarkdownToolbarProps = {
   canStartScreenshotSnip: boolean;
   isSlideDeck?: boolean;
   getSelectedMarkdownText: () => string;
+  markdownBaseFontSize: number;
   markdownContent: string;
   markdownZoom: number;
   onEnumerateHeadings: (
@@ -195,6 +196,7 @@ export function MarkdownToolbar({
   canStartScreenshotSnip,
   getSelectedMarkdownText,
   isSlideDeck = false,
+  markdownBaseFontSize,
   markdownContent,
   markdownZoom,
   onEnumerateHeadings,
@@ -497,11 +499,16 @@ export function MarkdownToolbar({
   }
 
   function renderZoomControl() {
+    const markdownFontSize = markdownBaseFontSize * (markdownZoom / 100);
+    const formattedFontSize = Number.isInteger(markdownFontSize)
+      ? String(markdownFontSize)
+      : markdownFontSize.toFixed(1);
+
     return (
       <label
-        aria-label={`Rendered Markdown text zoom: ${markdownZoom}%`}
+        aria-label={`Rendered Markdown text size: ${formattedFontSize}px at ${markdownZoom}% zoom`}
         className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-border bg-muted px-3 text-sm font-medium text-foreground"
-        title={`Rendered Markdown text zoom: ${markdownZoom}%`}
+        title={`Rendered Markdown text size: ${formattedFontSize}px at ${markdownZoom}% zoom`}
       >
         <ZoomIn aria-hidden className="h-4 w-4" />
         <input
@@ -514,7 +521,9 @@ export function MarkdownToolbar({
           aria-label="Rendered Markdown text zoom"
           onChange={(event) => onMarkdownZoomChange(Number(event.target.value))}
         />
-        <span className="min-w-10 text-right tabular-nums">{markdownZoom}%</span>
+        <span className="min-w-20 text-right tabular-nums">
+          {markdownZoom}% / {formattedFontSize}px
+        </span>
       </label>
     );
   }

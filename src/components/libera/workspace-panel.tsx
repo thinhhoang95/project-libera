@@ -55,6 +55,7 @@ import {
   isMarkdownSlidesPath,
   parseMarkdownSlides,
 } from "@/lib/markdown-slides";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import {
   getTextareaOffsetAtVisualProgress,
   getTextareaViewportAnchorOffset,
@@ -70,6 +71,7 @@ type WorkspacePanelProps = {
   canStartScreenshotSnip: boolean;
   firstNotebook: string;
   imageMarkdownConverting: boolean;
+  markdownPreferences: MarkdownPreferences;
   recentFiles: LiberaFileNode[];
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   selectedNotebook?: LiberaNotebookNode;
@@ -415,6 +417,7 @@ export function WorkspacePanel({
   canStartScreenshotSnip,
   firstNotebook,
   imageMarkdownConverting,
+  markdownPreferences,
   recentFiles,
   screenshotSnipSession,
   selectedNotebook,
@@ -471,6 +474,12 @@ export function WorkspacePanel({
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
   const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
+  const markdownZoomScale = markdownZoom / 100;
+  const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
+  const markdownLineHeightPx =
+    markdownPreferences.baseFontSize *
+    markdownPreferences.baseLineHeight *
+    markdownZoomScale;
   const markdownSlideIndex = activeMarkdownViewState?.slideIndex ?? 0;
   const activePdfViewState =
     activeTab?.file.fileType === "pdf" ? activeTab.viewState?.pdf : undefined;
@@ -1278,6 +1287,7 @@ export function WorkspacePanel({
             canStartScreenshotSnip={canStartScreenshotSnip}
             getSelectedMarkdownText={getSelectedMarkdownText}
             isSlideDeck={activeMarkdownIsSlides}
+            markdownBaseFontSize={markdownPreferences.baseFontSize}
             markdownContent={activeTab.draft}
             markdownZoom={markdownZoom}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
@@ -1307,9 +1317,11 @@ export function WorkspacePanel({
             >
               <MarkdownRenderer
                 content={activeTab.draft}
+                baseFontSize={markdownPreferences.baseFontSize}
+                baseLineHeight={markdownPreferences.baseLineHeight}
                 documentPath={activeTab.file.path}
                 onOpenFileLink={handleOpenMarkdownFileLink}
-                textScale={markdownZoom / 100}
+                textScale={markdownZoomScale}
               />
             </article>
           ) : (
@@ -1332,7 +1344,8 @@ export function WorkspacePanel({
                 imageConverting={imageMarkdownConverting}
                 openTabs={tabs}
                 recentFiles={recentFiles}
-                textScale={markdownZoom / 100}
+                fontSizePx={markdownFontSizePx}
+                lineHeightPx={markdownLineHeightPx}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}
@@ -1377,19 +1390,22 @@ export function WorkspacePanel({
                 {activeMarkdownIsSlides && activeMarkdownSlidesDeck ? (
                   <MarkdownSlidesPreview
                     activeSlideIndex={markdownSlideIndex}
+                    baseLineHeight={markdownPreferences.baseLineHeight}
                     deck={activeMarkdownSlidesDeck}
                     documentPath={activeTab.file.path}
                     onOpenFileLink={(href) =>
                       onOpenMarkdownFileLink(activeTab.file.path, href)
                     }
-                    textScale={markdownZoom / 100}
+                    textScale={markdownZoomScale}
                   />
                 ) : (
                   <MarkdownRenderer
                     content={previewMarkdownDraft}
+                    baseFontSize={markdownPreferences.baseFontSize}
+                    baseLineHeight={markdownPreferences.baseLineHeight}
                     documentPath={activeTab.file.path}
                     onOpenFileLink={handleOpenMarkdownFileLink}
-                    textScale={markdownZoom / 100}
+                    textScale={markdownZoomScale}
                   />
                 )}
               </article>
@@ -1397,6 +1413,7 @@ export function WorkspacePanel({
           )}
           {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
             <MarkdownSlidesPresenter
+              baseLineHeight={markdownPreferences.baseLineHeight}
               deck={activeMarkdownSlidesDeck}
               documentPath={activeTab.file.path}
               initialSlideIndex={markdownSlideIndex}
@@ -1407,7 +1424,7 @@ export function WorkspacePanel({
               onSlideIndexChange={(slideIndex) =>
                 updateMarkdownViewState({ slideIndex })
               }
-              textScale={markdownZoom / 100}
+              textScale={markdownZoomScale}
             />
           ) : null}
           <ExistingImageDialog

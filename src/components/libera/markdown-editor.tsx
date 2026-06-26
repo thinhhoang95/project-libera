@@ -79,10 +79,11 @@ type MarkdownEditorProps = {
   activeFilePath?: string;
   files: LiberaFileNode[];
   formatting: boolean;
+  fontSizePx: number;
   imageConverting: boolean;
+  lineHeightPx: number;
   openTabs: OpenTab[];
   recentFiles: LiberaFileNode[];
-  textScale?: number;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
@@ -580,10 +581,11 @@ export function MarkdownEditor({
   activeFilePath,
   files,
   formatting,
+  fontSizePx,
   imageConverting,
+  lineHeightPx,
   openTabs,
   recentFiles,
-  textScale = 1,
   textareaRef,
   value,
   onAiFormatSelection,
@@ -1334,8 +1336,8 @@ export function MarkdownEditor({
         aria-hidden="true"
         className="markdown-editor-highlight-layer pointer-events-none absolute inset-0 z-0 h-full w-full overflow-auto border-b border-transparent p-5 font-mono text-sm leading-6 lg:border-b-0 lg:border-r"
         style={{
-          fontSize: `${0.875 * textScale}rem`,
-          lineHeight: `${1.5 * textScale}rem`,
+          fontSize: `${fontSizePx}px`,
+          lineHeight: `${lineHeightPx}px`,
         }}
       >
         {highlightedMarkdown}
@@ -1344,8 +1346,8 @@ export function MarkdownEditor({
         ref={textareaRef}
         className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
-          fontSize: `${0.875 * textScale}rem`,
-          lineHeight: `${1.5 * textScale}rem`,
+          fontSize: `${fontSizePx}px`,
+          lineHeight: `${lineHeightPx}px`,
         }}
         value={editorValue}
         onBlur={(event) => flushSelectionChange(event.currentTarget)}

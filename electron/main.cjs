@@ -18,6 +18,13 @@ const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
 const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
+const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_MARKDOWN_BASE_FONT_SIZE = 16;
+const DEFAULT_MARKDOWN_BASE_LINE_HEIGHT = 1.75;
+const MAX_MARKDOWN_BASE_FONT_SIZE = 32;
+const MAX_MARKDOWN_BASE_LINE_HEIGHT = 2.4;
+const MIN_MARKDOWN_BASE_FONT_SIZE = 10;
+const MIN_MARKDOWN_BASE_LINE_HEIGHT = 1.1;
 
 function applyApplicationIdentity() {
   app.setName(APP_DISPLAY_NAME);
@@ -95,6 +102,43 @@ function normalizeThemePreference(themePreference) {
   return THEME_PREFERENCES.has(themePreference) ? themePreference : "";
 }
 
+function normalizeOpenRouterModel(model) {
+  const trimmed = typeof model === "string" ? model.trim() : "";
+
+  return trimmed || DEFAULT_OPENROUTER_MODEL;
+}
+
+function normalizeNumber(value, fallback) {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseFloat(value)
+        : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeMarkdownBaseFontSize(value) {
+  return clamp(
+    normalizeNumber(value, DEFAULT_MARKDOWN_BASE_FONT_SIZE),
+    MIN_MARKDOWN_BASE_FONT_SIZE,
+    MAX_MARKDOWN_BASE_FONT_SIZE,
+  );
+}
+
+function normalizeMarkdownBaseLineHeight(value) {
+  return clamp(
+    normalizeNumber(value, DEFAULT_MARKDOWN_BASE_LINE_HEIGHT),
+    MIN_MARKDOWN_BASE_LINE_HEIGHT,
+    MAX_MARKDOWN_BASE_LINE_HEIGHT,
+  );
+}
+
 async function writeConfig(config) {
   await fsp.mkdir(path.dirname(getConfigPath()), { recursive: true });
   await fsp.writeFile(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`, {
@@ -109,6 +153,11 @@ function getConfigStatus(config = readConfig()) {
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
       typeof config.passwordHash === "string" && config.passwordHash.trim().length > 0,
+    markdownBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
+    markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
+    markdownPdfBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownPdfBaseFontSize),
+    markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownPdfBaseLineHeight),
+    openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
   };
 }
 
@@ -142,6 +191,15 @@ function validateSetupInput(input, existingConfig) {
   const password = typeof input?.password === "string" ? input.password : "";
   const passwordConfirmation =
     typeof input?.passwordConfirmation === "string" ? input.passwordConfirmation : "";
+  const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
+  const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
+  const markdownPdfBaseFontSize = normalizeMarkdownBaseFontSize(
+    input?.markdownPdfBaseFontSize,
+  );
+  const markdownPdfBaseLineHeight = normalizeMarkdownBaseLineHeight(
+    input?.markdownPdfBaseLineHeight,
+  );
+  const openRouterModel = normalizeOpenRouterModel(input?.openRouterModel);
 
   if (!dataDir) {
     throw new Error("Choose a data directory before continuing.");
@@ -167,7 +225,12 @@ function validateSetupInput(input, existingConfig) {
 
   return {
     dataDir,
+    markdownBaseFontSize,
+    markdownBaseLineHeight,
+    markdownPdfBaseFontSize,
+    markdownPdfBaseLineHeight,
     openaiApiKey,
+    openRouterModel,
     password,
   };
 }
@@ -181,15 +244,15 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
   activeSetupPromise = new Promise((resolve, reject) => {
     let savedConfig = null;
     const setupWindow = new BrowserWindow({
-      width: 560,
-      height: 660,
+      width: 860,
+      height: 700,
       icon: getIconPath(),
       modal: Boolean(parentWindow),
       parent: parentWindow ?? undefined,
       resizable: false,
       title:
         mode === "configuration"
-          ? `${APP_DISPLAY_NAME} Configuration`
+          ? `${APP_DISPLAY_NAME} Preferences`
           : `Set Up ${APP_DISPLAY_NAME}`,
       webPreferences: {
         contextIsolation: true,
@@ -214,7 +277,12 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       const nextConfig = {
         ...existingConfig,
         dataDir: validated.dataDir,
+        markdownBaseFontSize: validated.markdownBaseFontSize,
+        markdownBaseLineHeight: validated.markdownBaseLineHeight,
+        markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
+        markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
+        openRouterModel: validated.openRouterModel,
         passwordHash: existingConfig.passwordHash || createPasswordHash(validated.password),
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -277,6 +345,12 @@ function sanitizePdfFileName(fileName) {
 
   return /\.pdf$/i.test(safeFileName) ? safeFileName : `${safeFileName}.pdf`;
 }
+
+const MARKDOWN_PDF_FOOTER_TEMPLATE = `
+  <div style="box-sizing: border-box; color: #71717a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 9px; padding: 0 18mm; text-align: center; width: 100%;">
+    ${APP_DISPLAY_NAME} &middot; Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+  </div>
+`;
 
 function normalizeMarkdownPdfExportInput(input) {
   if (!input || typeof input !== "object") {
@@ -376,6 +450,9 @@ async function exportMarkdownPdf(event, input) {
     });
 
     const pdf = await exportWindow.webContents.printToPDF({
+      displayHeaderFooter: true,
+      footerTemplate: MARKDOWN_PDF_FOOTER_TEMPLATE,
+      headerTemplate: "<span></span>",
       pageSize: "A4",
       preferCSSPageSize: true,
       printBackground: true,
@@ -450,10 +527,10 @@ async function openConfigurationWindow() {
       buttons: ["Restart Now", "Later"],
       cancelId: 1,
       defaultId: 0,
-      message: `Restart ${APP_DISPLAY_NAME} to apply configuration changes.`,
+      message: `Restart ${APP_DISPLAY_NAME} to apply preference changes.`,
       detail:
-        `The ${APP_DISPLAY_NAME} Master directory and API key are applied when the local server starts.`,
-      title: "Configuration Saved",
+        `General and Markdown preferences are applied when the local server starts.`,
+      title: "Preferences Saved",
     });
 
     if (result.response === 0) {
@@ -463,7 +540,7 @@ async function openConfigurationWindow() {
     }
   } catch (error) {
     if (error.message !== "Setup was canceled.") {
-      dialog.showErrorBox("Unable to update configuration", error.message);
+      dialog.showErrorBox("Unable to update preferences", error.message);
     }
   }
 }
@@ -475,7 +552,7 @@ function installApplicationMenu() {
   const configurationMenuItem = {
     accelerator: "CmdOrCtrl+,",
     click: () => void openConfigurationWindow(),
-    label: "Configuration...",
+    label: "Preferences...",
   };
   const closeTabMenuItem = {
     accelerator: "CmdOrCtrl+W",
@@ -842,7 +919,20 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_MARKDOWN_BASE_FONT_SIZE: String(
+      normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
+    ),
+    LIBERA_MARKDOWN_BASE_LINE_HEIGHT: String(
+      normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
+    ),
+    LIBERA_MARKDOWN_PDF_BASE_FONT_SIZE: String(
+      normalizeMarkdownBaseFontSize(config.markdownPdfBaseFontSize),
+    ),
+    LIBERA_MARKDOWN_PDF_BASE_LINE_HEIGHT: String(
+      normalizeMarkdownBaseLineHeight(config.markdownPdfBaseLineHeight),
+    ),
     LIBERA_PASSWORD_HASH: config.passwordHash,
+    LIBERA_OPENROUTER_MODEL: normalizeOpenRouterModel(config.openRouterModel),
     LIBERA_SESSION_SECRET: config.sessionSecret,
     LIBERA_THEME: normalizeThemePreference(config.themePreference),
     NODE_ENV: mode === "dev" ? "development" : "production",

@@ -22,6 +22,8 @@ import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
 
 type MarkdownRendererProps = {
+  baseFontSize?: number;
+  baseLineHeight?: number;
   className?: string;
   content: string;
   documentPath?: string;
@@ -127,6 +129,8 @@ function openExternalLink(href: string) {
 }
 
 function MarkdownRendererContent({
+  baseFontSize = 16,
+  baseLineHeight = 1.75,
   className,
   content,
   documentPath,
@@ -138,12 +142,18 @@ function MarkdownRendererContent({
     () => normalizeMarkdownHighlightDelimiters(content),
     [content],
   );
+  const bodyFontSize = baseFontSize * textScale;
   const scaledFontStyle = {
-    "--markdown-text-scale": textScale,
+    "--markdown-body-font-size": `${bodyFontSize}px`,
+    "--markdown-body-line-height": `${baseFontSize * baseLineHeight * textScale}px`,
+    "--markdown-h1-font-size": `${bodyFontSize * 1.875}px`,
+    "--markdown-h2-font-size": `${bodyFontSize * 1.25}px`,
+    "--markdown-h3-font-size": `${bodyFontSize * 1.125}px`,
+    "--markdown-small-font-size": `${bodyFontSize * 0.875}px`,
   } as CSSProperties;
 
   return (
-    <div className={className} style={scaledFontStyle}>
+    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}

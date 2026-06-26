@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 
 type MarkdownPdfExportPayload = {
   content: string;
@@ -12,6 +13,10 @@ type MarkdownPdfExportPayload = {
 type PendingRender = {
   reject: (reason?: unknown) => void;
   resolve: () => void;
+};
+
+type MarkdownPdfExportPageProps = {
+  markdownPreferences: MarkdownPreferences;
 };
 
 function normalizePayload(payload: MarkdownPdfExportPayload): MarkdownPdfExportPayload {
@@ -56,7 +61,9 @@ async function waitForExportReady(root: HTMLElement) {
   await nextFrame();
 }
 
-export function MarkdownPdfExportPage() {
+export function MarkdownPdfExportPage({
+  markdownPreferences,
+}: MarkdownPdfExportPageProps) {
   const [payload, setPayload] = useState<MarkdownPdfExportPayload | null>(null);
   const pendingRendersRef = useRef<PendingRender[]>([]);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -131,6 +138,8 @@ export function MarkdownPdfExportPage() {
       <article ref={rootRef} className="markdown-pdf-export-document">
         {payload ? (
           <MarkdownRenderer
+            baseFontSize={markdownPreferences.pdfExportBaseFontSize}
+            baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
             content={payload.content}
             documentPath={payload.documentPath}
           />

@@ -10,6 +10,7 @@ import {
 import type { MarkdownSlide, MarkdownSlideDeck } from "@/lib/markdown-slides";
 
 type MarkdownSlidesViewerProps = {
+  baseLineHeight?: number;
   deck: MarkdownSlideDeck;
   documentPath?: string;
   onOpenFileLink?: (href: string) => Promise<boolean>;
@@ -35,6 +36,7 @@ function slideKey(slide: MarkdownSlide, index: number) {
 }
 
 function MarkdownSlideContent({
+  baseLineHeight,
   deck,
   documentPath,
   mode,
@@ -53,6 +55,7 @@ function MarkdownSlideContent({
   return renderMarkdownSlideTemplate(deck.template, {
     children: slide.content.trim() ? (
       <MarkdownRenderer
+        baseLineHeight={baseLineHeight}
         className="[&>*:last-child]:mb-0"
         content={slide.content}
         documentPath={documentPath}
@@ -101,6 +104,7 @@ function MarkdownSlidesDiagnostics({ deck }: { deck: MarkdownSlideDeck }) {
 
 export function MarkdownSlidesPreview({
   activeSlideIndex,
+  baseLineHeight,
   deck,
   documentPath,
   onOpenFileLink,
@@ -127,6 +131,7 @@ export function MarkdownSlidesPreview({
             >
               <MarkdownSlideContent
                 deck={deck}
+                baseLineHeight={baseLineHeight}
                 documentPath={documentPath}
                 mode="preview"
                 onOpenFileLink={onOpenFileLink}
@@ -147,6 +152,7 @@ export function MarkdownSlidesPreview({
 }
 
 export function MarkdownSlidesPresenter({
+  baseLineHeight,
   deck,
   documentPath,
   initialSlideIndex,
@@ -281,8 +287,9 @@ export function MarkdownSlidesPresenter({
       aria-label={deck.title ? `${deck.title} presentation` : "Markdown slides presentation"}
     >
       {activeSlide ? (
-        <MarkdownSlideContent
-          deck={deck}
+          <MarkdownSlideContent
+            baseLineHeight={baseLineHeight}
+            deck={deck}
           documentPath={documentPath}
           mode="presenter"
           onOpenFileLink={onOpenFileLink}
