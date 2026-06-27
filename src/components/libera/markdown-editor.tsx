@@ -605,6 +605,7 @@ export function MarkdownEditor({
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLInputElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
@@ -909,6 +910,19 @@ export function MarkdownEditor({
       setContextMenu(null);
     }
 
+    function handleScroll(event: Event) {
+      const target = event.target;
+
+      if (
+        target instanceof Node &&
+        contextMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+
+      closeContextMenu();
+    }
+
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         closeContextMenu();
@@ -916,13 +930,13 @@ export function MarkdownEditor({
     }
 
     window.addEventListener("pointerdown", closeContextMenu);
-    window.addEventListener("scroll", closeContextMenu, true);
+    window.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", closeContextMenu);
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       window.removeEventListener("pointerdown", closeContextMenu);
-      window.removeEventListener("scroll", closeContextMenu, true);
+      window.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", closeContextMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
@@ -1430,6 +1444,7 @@ export function MarkdownEditor({
 
       {contextMenu ? (
         <div
+          ref={contextMenuRef}
           className="fixed z-50 w-72 rounded-lg border border-border bg-card p-1 shadow-lg"
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}

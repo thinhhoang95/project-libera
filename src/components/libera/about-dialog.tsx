@@ -10,6 +10,7 @@ const ABOUT_ROWS = [
   ["App name", appMetadata.name],
   ["Version", appMetadata.version],
   ["Author", appMetadata.author],
+  ["Customized for", appMetadata.customizedFor],
   ["Release date", appMetadata.releaseDate],
 ] as const;
 
