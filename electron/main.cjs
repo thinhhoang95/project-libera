@@ -1143,7 +1143,7 @@ async function createMainWindow(url) {
     minHeight: 640,
     autoHideMenuBar: isWindowsGlass,
     title: APP_DISPLAY_NAME,
-    show: isWindowsGlass ? false : undefined,
+    show: !isWindowsGlass,
     accentColor: isWindowsGlass ? false : undefined,
     backgroundColor: glass.enabled ? "#00000000" : undefined,
     // Windows transparency only works for frameless windows. Without this, the
