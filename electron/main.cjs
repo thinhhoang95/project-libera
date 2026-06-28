@@ -13,6 +13,7 @@ const SERVER_READY_TIMEOUT_MS = 90_000;
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
 const ADMIN_USER = "admin";
+const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark"]);
 const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
@@ -64,6 +65,44 @@ function assertSafePathSegment(segment, label) {
   }
 
   return trimmed;
+}
+
+function assertSafeUserPathSegment(segment, label) {
+  const trimmed = assertSafePathSegment(segment, label);
+
+  if (
+    trimmed.startsWith(".") ||
+    trimmed === "__MACOSX" ||
+    trimmed === MARKDOWN_ASSETS_DIR
+  ) {
+    throw new Error(`${label} is invalid.`);
+  }
+
+  return trimmed;
+}
+
+function splitNotebookItemPath(relativePath) {
+  const normalizedPath = typeof relativePath === "string" ? relativePath.trim() : "";
+
+  if (
+    !normalizedPath ||
+    normalizedPath.includes("\\") ||
+    normalizedPath.includes("\0") ||
+    path.isAbsolute(normalizedPath)
+  ) {
+    throw new Error("Item path is invalid.");
+  }
+
+  const [notebook, ...pathParts] = normalizedPath.split("/").filter(Boolean);
+
+  if (!notebook || !pathParts.length) {
+    throw new Error("Item path must include a notebook and item.");
+  }
+
+  return {
+    notebook: assertSafePathSegment(notebook, "Notebook name"),
+    pathParts: pathParts.map((part) => assertSafeUserPathSegment(part, "Path segment")),
+  };
 }
 
 function assertPathInside(parentPath, targetPath) {
@@ -813,7 +852,7 @@ function installNativeMenuHandlers() {
 }
 
 function installFileExplorerHandlers() {
-  ipcMain.handle("file-explorer:reveal-notebook", async (_event, notebook) => {
+  function getAdminRootFromConfig() {
     const config = readConfig();
     const dataDir = typeof config.dataDir === "string" ? config.dataDir : "";
 
@@ -821,8 +860,12 @@ function installFileExplorerHandlers() {
       throw new Error("Libera data directory is not configured.");
     }
 
+    return path.join(dataDir, "users", ADMIN_USER);
+  }
+
+  ipcMain.handle("file-explorer:reveal-notebook", async (_event, notebook) => {
     const safeNotebook = assertSafePathSegment(notebook, "Notebook name");
-    const adminRoot = path.join(dataDir, "users", ADMIN_USER);
+    const adminRoot = getAdminRootFromConfig();
     const notebookDirectory = path.join(adminRoot, safeNotebook);
     assertPathInside(adminRoot, notebookDirectory);
 
@@ -837,6 +880,21 @@ function installFileExplorerHandlers() {
     if (errorMessage) {
       throw new Error(errorMessage);
     }
+  });
+
+  ipcMain.handle("file-explorer:reveal-item", async (_event, relativePath) => {
+    const { notebook, pathParts } = splitNotebookItemPath(relativePath);
+    const adminRoot = getAdminRootFromConfig();
+    const targetPath = path.join(adminRoot, notebook, ...pathParts);
+    assertPathInside(adminRoot, targetPath);
+
+    const stats = await fsp.stat(targetPath);
+
+    if (!stats.isFile() && !stats.isDirectory()) {
+      throw new Error("Item was not found.");
+    }
+
+    shell.showItemInFolder(targetPath);
   });
 }
 
@@ -1055,8 +1113,8 @@ async function clearLoginCookies() {
 }
 
 // Describe the native "liquid glass" backdrop available on this platform.
-// macOS uses NSVisualEffectView vibrancy; Windows 11 (build 22000+) uses the
-// acrylic system backdrop. Everything else falls back to the opaque UI.
+// macOS uses NSVisualEffectView vibrancy; Windows 11 22H2+ uses the acrylic
+// system backdrop. Everything else falls back to the opaque UI.
 function getDesktopGlass() {
   if (process.platform === "darwin") {
     return { platform: "darwin", enabled: true };
@@ -1064,7 +1122,7 @@ function getDesktopGlass() {
 
   if (process.platform === "win32") {
     const buildNumber = Number.parseInt(os.release().split(".")[2] ?? "", 10);
-    return { platform: "win32", enabled: Number.isFinite(buildNumber) && buildNumber >= 22000 };
+    return { platform: "win32", enabled: Number.isFinite(buildNumber) && buildNumber >= 22621 };
   }
 
   return { platform: process.platform, enabled: false };
@@ -1083,9 +1141,17 @@ async function createMainWindow(url) {
     icon: getIconPath(),
     minWidth: 960,
     minHeight: 640,
-    autoHideMenuBar: false,
+    autoHideMenuBar: isWindowsGlass,
     title: APP_DISPLAY_NAME,
+    show: isWindowsGlass ? false : undefined,
+    accentColor: isWindowsGlass ? false : undefined,
     backgroundColor: glass.enabled ? "#00000000" : undefined,
+    // Windows transparency only works for frameless windows. Without this, the
+    // renderer's transparent sidebar falls through to a plain white client area
+    // instead of the DWM acrylic backdrop.
+    frame: isWindowsGlass ? false : undefined,
+    thickFrame: isWindowsGlass ? false : undefined,
+    transparent: isWindowsGlass ? true : undefined,
     // On macOS the vibrancy view *is* the window background, so we don't need a
     // transparent window — and `transparent: true` would strip the native
     // rounded corners and force square edges. `titleBarStyle: "hidden"` removes
@@ -1109,7 +1175,15 @@ async function createMainWindow(url) {
     },
   });
 
-  mainWindow.setMenuBarVisibility(true);
+  mainWindow.setMenuBarVisibility(!isWindowsGlass);
+  if (isWindowsGlass) {
+    mainWindow.once("ready-to-show", () => {
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.show();
+      }
+    });
+  }
+
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (
       input.type !== "keyDown" ||

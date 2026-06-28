@@ -123,10 +123,13 @@ async function main() {
     react: await readPackageVersion(distNodeModulesRoot, "react"),
   };
 
-  await fs.symlink(
-    path.join("..", "..", "node_modules"),
-    path.join(distAppRoot, ".next", "standalone", "node_modules"),
-  );
+  if (process.platform !== "win32") {
+    await fs.symlink(
+      path.join("..", "..", "node_modules"),
+      path.join(distAppRoot, ".next", "standalone", "node_modules"),
+      "dir",
+    );
+  }
 
   await fs.writeFile(
     path.join(distAppRoot, "package.json"),

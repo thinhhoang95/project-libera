@@ -53,11 +53,38 @@ async function waitForImages(root: HTMLElement) {
   );
 }
 
+function fitOversizedDisplayMath(root: HTMLElement) {
+  const displayMathElements = Array.from(
+    root.querySelectorAll<HTMLElement>(".katex-display"),
+  );
+
+  for (const displayMathElement of displayMathElements) {
+    displayMathElement.style.removeProperty("font-size");
+  }
+
+  for (const displayMathElement of displayMathElements) {
+    const mathElement =
+      displayMathElement.querySelector<HTMLElement>(".katex-html") ??
+      displayMathElement.querySelector<HTMLElement>(".katex");
+    const availableWidth =
+      displayMathElement.clientWidth || displayMathElement.getBoundingClientRect().width;
+    const contentWidth =
+      mathElement?.scrollWidth || mathElement?.getBoundingClientRect().width || 0;
+
+    if (availableWidth <= 0 || contentWidth <= availableWidth) {
+      continue;
+    }
+
+    displayMathElement.style.fontSize = `${(availableWidth - 1) / contentWidth}em`;
+  }
+}
+
 async function waitForExportReady(root: HTMLElement) {
   await nextFrame();
   await nextFrame();
   await document.fonts?.ready;
   await waitForImages(root);
+  fitOversizedDisplayMath(root);
   await nextFrame();
 }
 

@@ -109,8 +109,8 @@ html.libera-glass .libera-login-screen {
 /* Frameless macOS window (titleBarStyle: "hidden"): there is no system title
    bar, so the sidebar/editor split runs to the top edge of the window. We add a
    slim draggable strip at the top of the sidebar that hosts the native
-   traffic-light buttons and doubles as the window drag handle. Only the desktop
-   glass build needs it; the web and Windows builds keep their own chrome. */
+   traffic-light buttons and doubles as the window drag handle. Windows acrylic
+   uses a separate frameless path with custom controls in the tab strip. */
 .libera-sidebar-titlebar {
   display: none;
 }
@@ -122,6 +122,18 @@ html.libera-platform-darwin.libera-glass .libera-sidebar-titlebar {
   /* Make this the window's drag handle; interactive controls elsewhere default
      to no-drag, so only this empty strip moves the window. */
   -webkit-app-region: drag;
+}
+
+html.libera-platform-win32.libera-glass .libera-window-drag-region {
+  -webkit-app-region: drag;
+}
+
+html.libera-platform-win32.libera-glass .libera-window-no-drag,
+html.libera-platform-win32.libera-glass button,
+html.libera-platform-win32.libera-glass input,
+html.libera-platform-win32.libera-glass select,
+html.libera-platform-win32.libera-glass textarea {
+  -webkit-app-region: no-drag;
 }
 
 html.libera-glass .libera-workspace-region {
@@ -182,6 +194,26 @@ html.libera-glass .libera-glass-panel::before {
   z-index: -1;
   background-color: transparent;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+/* Windows acrylic is not the same as macOS vibrancy: fully transparent pixels
+   can reveal strong colors from windows behind Libera. Keep the Windows-only
+   panel translucent, but add enough app-tinted frost that external title bars or
+   wallpaper cannot read as UI inside our sidebar/login glass. */
+html.libera-platform-win32.libera-glass .libera-glass-panel::before {
+  background-color: color-mix(in srgb, var(--card) 68%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  backdrop-filter: blur(24px) saturate(135%);
+}
+
+html.dark.libera-platform-win32.libera-glass .libera-glass-panel::before {
+  background-color: color-mix(in srgb, var(--background) 72%, transparent);
+}
+
+html.libera-platform-win32.libera-glass .libera-login-screen {
+  background-color: color-mix(in srgb, var(--background) 76%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(130%);
+  backdrop-filter: blur(28px) saturate(130%);
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -274,6 +306,7 @@ html.libera-glass .libera-glass-card {
 }
 
 html.libera-markdown-export-mode {
+  --markdown-pdf-export-content-width: 174mm;
   --background: #ffffff;
   --foreground: #18181b;
   --card: #ffffff;
@@ -312,7 +345,8 @@ html.libera-markdown-export-mode body {
 
 .markdown-pdf-export-document {
   margin: 0 auto;
-  max-width: 760px;
+  max-width: var(--markdown-pdf-export-content-width);
+  width: 100%;
 }
 
 .markdown-pdf-export-loading {
@@ -351,11 +385,31 @@ html.libera-markdown-export-mode body {
   }
 
   .markdown-pdf-export-document {
-    max-width: none;
+    max-width: var(--markdown-pdf-export-content-width);
+    overflow-x: clip;
+    width: var(--markdown-pdf-export-content-width);
   }
 
   .markdown-pdf-export-document a {
     color: inherit;
+  }
+
+  .markdown-pdf-export-document pre {
+    max-width: 100%;
+    overflow-x: clip;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .markdown-pdf-export-document pre code {
+    overflow-wrap: inherit;
+    white-space: inherit;
+    word-break: inherit;
+  }
+
+  .markdown-pdf-export-document .katex-display {
+    max-width: 100%;
+    overflow-x: clip;
   }
 }
 

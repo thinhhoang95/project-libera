@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("liberaMenu", {
 
 contextBridge.exposeInMainWorld("liberaFileExplorer", {
   revealNotebook: (notebook) => ipcRenderer.invoke("file-explorer:reveal-notebook", notebook),
+  revealItem: (relativePath) => ipcRenderer.invoke("file-explorer:reveal-item", relativePath),
 });
 
 contextBridge.exposeInMainWorld("liberaWindow", {

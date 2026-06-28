@@ -23,7 +23,7 @@ export function WindowControls() {
   }
 
   return (
-    <div className="libera-window-controls flex shrink-0 items-center gap-1 pl-2">
+    <div className="libera-window-controls libera-window-no-drag flex shrink-0 items-center gap-1 pl-2">
       <button
         aria-label="Minimize window"
         className="libera-window-control-button"

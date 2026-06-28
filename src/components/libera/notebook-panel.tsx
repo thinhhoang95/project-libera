@@ -440,6 +440,16 @@ async function revealNotebookInFileExplorer(notebook: string) {
   await fileExplorer.revealNotebook(notebook);
 }
 
+async function revealItemInFileExplorer(relativePath: string) {
+  const fileExplorer = window.liberaFileExplorer;
+
+  if (!fileExplorer?.revealItem) {
+    return;
+  }
+
+  await fileExplorer.revealItem(relativePath);
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -587,6 +597,11 @@ export function NotebookPanel({
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
             { id: "rename", label: "Rename" },
+            {
+              id: "reveal-in-file-explorer",
+              label: "Reveal in File Explorer",
+              enabled: Boolean(window.liberaFileExplorer?.revealItem),
+            },
             { type: "separator" },
             { id: "delete", label: "Delete" },
           ]
@@ -595,6 +610,11 @@ export function NotebookPanel({
             { id: "new-folder", label: "New folder" },
             { type: "separator" },
             { id: "rename", label: "Rename" },
+            {
+              id: "reveal-in-file-explorer",
+              label: "Reveal in File Explorer",
+              enabled: Boolean(window.liberaFileExplorer?.revealItem),
+            },
             { type: "separator" },
             { id: "delete", label: "Delete" },
           ],
@@ -614,6 +634,8 @@ export function NotebookPanel({
         await onCopyFile(target.file);
       } else if (selectedItemId === "rename") {
         await onRenameFile(target.file);
+      } else if (selectedItemId === "reveal-in-file-explorer") {
+        await revealItemInFileExplorer(target.file.path);
       } else if (selectedItemId === "delete") {
         await onDeleteFile(target.file);
       }
@@ -627,6 +649,8 @@ export function NotebookPanel({
       await onCreateFolder(target.folder.path);
     } else if (selectedItemId === "rename") {
       await onRenameFolder(target.folder);
+    } else if (selectedItemId === "reveal-in-file-explorer") {
+      await revealItemInFileExplorer(target.folder.path);
     } else if (selectedItemId === "delete") {
       await onDeleteFolder(target.folder);
     }

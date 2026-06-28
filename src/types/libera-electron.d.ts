@@ -51,6 +51,7 @@ declare global {
     };
     liberaFileExplorer?: {
       revealNotebook: (notebook: string) => Promise<void>;
+      revealItem: (relativePath: string) => Promise<void>;
     };
     liberaWindow?: {
       close: () => Promise<void>;

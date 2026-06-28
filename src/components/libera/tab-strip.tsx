@@ -106,9 +106,9 @@ export function TabStrip({
   }
 
   return (
-    <div className="border-b border-border bg-card">
+    <div className="libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="libera-window-no-drag flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
             const isActive = activeTabId === tab.id;
