@@ -10,6 +10,7 @@ export const IMAGE_ANNOTATIONS_SUFFIX = ".libera-image-annotations.json";
 export const LIBERA_SYSTEM_DIR = ".libera";
 export const ANNOTATIONS_DIR = "annotations";
 export const PDF_TEXT_CACHE_DIR = "pdf-text";
+export const ARCHIVE_DIR = "_archive";
 export const MARKDOWN_ASSETS_DIR = "_assets";
 export const DEFAULT_NOTEBOOK_COLOR = "#64748b";
 export const DEFAULT_NOTEBOOK_EMOJI = "📓";

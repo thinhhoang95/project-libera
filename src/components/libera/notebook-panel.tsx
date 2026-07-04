@@ -18,6 +18,7 @@ import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
+import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import type { OpenTabViewState, SearchResult } from "@/components/libera/types";
 import type {
   LiberaFileNode,
@@ -60,6 +61,8 @@ export type NotebookPanelProps = {
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
+  onArchiveFile: (file: LiberaFileNode) => Promise<void>;
+  onArchiveFolder: (folder: LiberaFolderNode) => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -400,6 +403,12 @@ function parentPathForSidebarFile(file: LiberaFileNode) {
   return parts.slice(0, -1).join("/") || file.notebook;
 }
 
+function isArchivedItemPath(node: LiberaFileNode | LiberaFolderNode) {
+  const archivePath = `${node.notebook}/${ARCHIVE_DIR}`;
+
+  return node.path === archivePath || node.path.startsWith(`${archivePath}/`);
+}
+
 async function showNativeMenu(items: NativeMenuItem[], point: NativeMenuPoint) {
   const menu = window.liberaMenu;
 
@@ -460,6 +469,8 @@ export function NotebookPanel({
   tree,
   uploadInputRef,
   onCopyFile,
+  onArchiveFile,
+  onArchiveFolder,
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
@@ -578,12 +589,23 @@ export function NotebookPanel({
     }
   }
 
+  async function toggleShowArchive() {
+    await onUpdateNotebookViewOptions({
+      ...tree.notebookViewOptions,
+      showArchive: !tree.notebookViewOptions.showArchive,
+    });
+  }
+
   async function openSidebarNativeMenu(
     target: SidebarMenuTarget,
     point: NativeMenuPoint,
   ) {
     const fileIsStarred =
       target.kind === "file" ? starredFilePaths.has(target.file.path) : false;
+    const isArchivedItem =
+      target.kind === "file"
+        ? isArchivedItemPath(target.file)
+        : isArchivedItemPath(target.folder);
     const selectedItemId = await showNativeMenu(
       target.kind === "file"
         ? [
@@ -597,6 +619,7 @@ export function NotebookPanel({
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
             { id: "rename", label: "Rename" },
+            { id: "archive", label: "Archive", enabled: !isArchivedItem },
             {
               id: "reveal-in-file-explorer",
               label: "Reveal in File Explorer",
@@ -610,6 +633,7 @@ export function NotebookPanel({
             { id: "new-folder", label: "New folder" },
             { type: "separator" },
             { id: "rename", label: "Rename" },
+            { id: "archive", label: "Archive", enabled: !isArchivedItem },
             {
               id: "reveal-in-file-explorer",
               label: "Reveal in File Explorer",
@@ -634,6 +658,8 @@ export function NotebookPanel({
         await onCopyFile(target.file);
       } else if (selectedItemId === "rename") {
         await onRenameFile(target.file);
+      } else if (selectedItemId === "archive") {
+        await onArchiveFile(target.file);
       } else if (selectedItemId === "reveal-in-file-explorer") {
         await revealItemInFileExplorer(target.file.path);
       } else if (selectedItemId === "delete") {
@@ -649,6 +675,8 @@ export function NotebookPanel({
       await onCreateFolder(target.folder.path);
     } else if (selectedItemId === "rename") {
       await onRenameFolder(target.folder);
+    } else if (selectedItemId === "archive") {
+      await onArchiveFolder(target.folder);
     } else if (selectedItemId === "reveal-in-file-explorer") {
       await revealItemInFileExplorer(target.folder.path);
     } else if (selectedItemId === "delete") {
@@ -788,7 +816,9 @@ export function NotebookPanel({
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
               notebook={notebook}
+              showArchive={tree.notebookViewOptions.showArchive}
               starredFilePaths={starredFilePaths}
+              onArchiveVisibilityToggle={toggleShowArchive}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -816,7 +846,9 @@ export function NotebookPanel({
               group={group}
               notebooks={notebooks}
               selectedNotebookName={selectedNotebookName}
+              showArchive={tree.notebookViewOptions.showArchive}
               starredFilePaths={starredFilePaths}
+              onArchiveVisibilityToggle={toggleShowArchive}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -934,7 +966,9 @@ function NotebookSection({
   isExpanded,
   isSelected,
   notebook,
+  showArchive,
   starredFilePaths,
+  onArchiveVisibilityToggle,
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
@@ -958,7 +992,9 @@ function NotebookSection({
   isExpanded: boolean;
   isSelected: boolean;
   notebook: LiberaTree["notebooks"][number];
+  showArchive: boolean;
   starredFilePaths: Set<string>;
+  onArchiveVisibilityToggle: () => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -990,6 +1026,13 @@ function NotebookSection({
         { id: "new-folder", label: "New folder" },
         { id: "upload", label: "Upload" },
         { type: "separator" },
+        {
+          id: "show-archive",
+          label: "Show Archive",
+          type: "checkbox",
+          checked: showArchive,
+        },
+        { type: "separator" },
         { id: "edit", label: "Edit" },
         { id: "download", label: "Download" },
         {
@@ -1015,6 +1058,8 @@ function NotebookSection({
       await onCreateFolder(notebook.path);
     } else if (selectedItemId === "upload") {
       onStartUpload(notebook.name);
+    } else if (selectedItemId === "show-archive") {
+      await onArchiveVisibilityToggle();
     } else if (selectedItemId === "edit") {
       onEditNotebook(notebook);
     } else if (selectedItemId === "download") {
@@ -1185,7 +1230,9 @@ function NotebookGroupSection({
   group,
   notebooks,
   selectedNotebookName,
+  showArchive,
   starredFilePaths,
+  onArchiveVisibilityToggle,
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
@@ -1211,7 +1258,9 @@ function NotebookGroupSection({
   group: LiberaNotebookGroup;
   notebooks: LiberaNotebookNode[];
   selectedNotebookName: string;
+  showArchive: boolean;
   starredFilePaths: Set<string>;
+  onArchiveVisibilityToggle: () => Promise<void>;
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -1281,7 +1330,9 @@ function NotebookGroupSection({
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
               notebook={notebook}
+              showArchive={showArchive}
               starredFilePaths={starredFilePaths}
+              onArchiveVisibilityToggle={onArchiveVisibilityToggle}
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
@@ -1580,6 +1631,7 @@ function NotebookViewOptionsDialog({
     onSubmit({
       hiddenGroupIds: [...hiddenGroupIds],
       hiddenNotebookNames: [...hiddenNotebookNames],
+      showArchive: tree.notebookViewOptions.showArchive,
     });
   }
 

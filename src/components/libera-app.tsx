@@ -84,6 +84,8 @@ export function LiberaApp({
           tree={workspace.tree}
           textareaRef={workspace.textareaRef}
           uploadInputRef={workspace.uploadInputRef}
+          onArchiveFile={workspace.archiveFileNode}
+          onArchiveFolder={workspace.archiveFolderNode}
           onCopyFile={workspace.copyFileFromPrompt}
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}

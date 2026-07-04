@@ -214,6 +214,7 @@ export async function deleteNotebookGroup(id: string) {
         (groupId) => groupId !== id,
       ),
       hiddenNotebookNames: metadata.notebookViewOptions.hiddenNotebookNames,
+      showArchive: metadata.notebookViewOptions.showArchive,
     },
   });
   await unassignDeletedGroup(id);
@@ -227,7 +228,10 @@ export async function updateNotebookViewOptions(
   await ensureAdminRoot();
 
   const metadata = await readWorkspaceMetadata();
-  const notebookViewOptions = normalizeNotebookViewOptions(input);
+  const notebookViewOptions = normalizeNotebookViewOptions({
+    ...metadata.notebookViewOptions,
+    ...input,
+  });
 
   await writeWorkspaceMetadata({
     ...metadata,

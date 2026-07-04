@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import {
+  archiveFile,
   copyFileToDirectory,
   createMarkdownFile,
   deleteFile,
@@ -76,7 +77,12 @@ export async function PATCH(request: NextRequest) {
       destinationName?: string;
       destinationDirectory?: string;
       copy?: boolean;
+      archive?: boolean;
     };
+
+    if (body.archive) {
+      return NextResponse.json(await archiveFile(body.path ?? ""));
+    }
 
     if (body.copy && body.destinationDirectory) {
       return NextResponse.json(

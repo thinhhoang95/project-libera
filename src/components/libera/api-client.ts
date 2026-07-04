@@ -29,6 +29,7 @@ export function emptyTree(): LiberaTree {
     notebookViewOptions: {
       hiddenGroupIds: [],
       hiddenNotebookNames: [],
+      showArchive: false,
     },
     starredFilePaths: [],
     notebooks: [],

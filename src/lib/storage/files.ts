@@ -1,5 +1,6 @@
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import {
   assertSupportedFileName,
@@ -228,6 +229,59 @@ export async function renameFolder(relativePath: string, nextName: string) {
   return getTree();
 }
 
+async function findAvailableDirectoryPath(directory: string, directoryName: string) {
+  let candidateName = directoryName;
+  let candidatePath = path.join(directory, candidateName);
+  let index = 1;
+
+  while (await pathExists(candidatePath)) {
+    candidateName = `${directoryName}-${index}`;
+    candidatePath = path.join(directory, candidateName);
+    index += 1;
+  }
+
+  return {
+    name: candidateName,
+    path: candidatePath,
+  };
+}
+
+export async function archiveFolder(relativePath: string) {
+  await ensureAdminRoot();
+  const current = splitDirectoryPath(relativePath);
+
+  if (!current.pathParts.length) {
+    throw new StorageError("Use notebook delete to remove a notebook.");
+  }
+
+  if (current.pathParts[0] === ARCHIVE_DIR) {
+    throw new StorageError("Folder is already archived.");
+  }
+
+  const currentPath = itemPath(current.notebook, current.pathParts);
+  await assertDirectoryExists(currentPath, "Folder was not found.");
+
+  const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
+  await mkdir(archiveDirectoryPath, { recursive: true });
+
+  const currentName = current.pathParts.at(-1) ?? "";
+  const available = await findAvailableDirectoryPath(archiveDirectoryPath, currentName);
+  const nextParts = [ARCHIVE_DIR, available.name];
+  const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextRelativePath = relativeFilePath(current.notebook, nextParts);
+
+  await rename(currentPath, available.path);
+  await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
+  await moveFileIfExists(
+    markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
+    markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
+  );
+  await renameStarredFilePathPrefix(currentRelativePath, nextRelativePath);
+  await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
+
+  return getTree();
+}
+
 export async function deleteFolder(relativePath: string) {
   await ensureAdminRoot();
   const current = splitDirectoryPath(relativePath);
@@ -289,6 +343,42 @@ export async function moveFileToDirectory(
     current.name,
     current.pathParts,
     destination.notebook,
+    safeNextName,
+    nextParts,
+    currentFileType,
+    nextFileType,
+  );
+  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+
+  return readLiberaFile(nextRelativePath);
+}
+
+export async function archiveFile(relativePath: string) {
+  await ensureAdminRoot();
+  const current = splitFilePath(relativePath);
+
+  if (current.pathParts[0] === ARCHIVE_DIR) {
+    throw new StorageError("File is already archived.");
+  }
+
+  const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
+  await mkdir(archiveDirectoryPath, { recursive: true });
+
+  const currentFileType = assertSupportedFileName(current.name);
+  const available = await findAvailableFilePath(archiveDirectoryPath, current.name);
+  const safeNextName = available.name;
+  const nextFileType = assertSupportedFileName(safeNextName);
+  const nextParts = [ARCHIVE_DIR, safeNextName];
+  const currentPath = filePathFromParts(current.notebook, current.pathParts);
+  const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextRelativePath = relativeFilePath(current.notebook, nextParts);
+
+  await rename(currentPath, available.path);
+  await moveRelatedMetadata(
+    current.notebook,
+    current.name,
+    current.pathParts,
+    current.notebook,
     safeNextName,
     nextParts,
     currentFileType,

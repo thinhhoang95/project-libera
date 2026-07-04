@@ -71,6 +71,7 @@ export type LiberaNotebookGroup = {
 export type LiberaNotebookViewOptions = {
   hiddenGroupIds: string[];
   hiddenNotebookNames: string[];
+  showArchive: boolean;
 };
 
 export type LiberaNotebookNode = {

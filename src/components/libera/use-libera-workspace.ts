@@ -77,6 +77,10 @@ function parentPathForFile(file: LiberaFileNode) {
   return parts.slice(0, -1).join("/") || file.notebook;
 }
 
+function isPathWithinPrefix(path: string, prefix: string) {
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
 function imageAltText(name: string) {
   return name.replace(/\.[^.]+$/, "") || "image";
 }
@@ -2101,6 +2105,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  async function archiveFileNode(file: LiberaFileNode) {
+    const openTab = tabs.find((tab) => tab.file.path === file.path);
+
+    if (openTab?.status === "dirty") {
+      setWorkspaceError("Save or close the file before archiving it.");
+      return;
+    }
+
+    try {
+      await apiRequest<LiberaFilePayload>("/api/files", {
+        method: "PATCH",
+        body: JSON.stringify({
+          path: file.path,
+          archive: true,
+        }),
+      });
+      forgetTabDraft(file.path);
+      setTabs((currentTabs) =>
+        currentTabs.filter((currentTab) => currentTab.file.path !== file.path),
+      );
+      setActiveTabId((current) => (current === file.path ? "" : current));
+      await refreshTree(file.notebook);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not archive file.");
+    }
+  }
+
   async function renameFolderFromPrompt(folder: LiberaFolderNode) {
     setWorkspaceError("");
     setWorkspaceInputDialog({ mode: "rename-folder", folder });
@@ -2291,6 +2322,47 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       setActiveTabId((current) => (current.startsWith(`${folder.path}/`) ? "" : current));
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not delete folder.");
+    }
+  }
+
+  async function archiveFolderNode(folder: LiberaFolderNode) {
+    const dirtyTabCount = tabs.filter(
+      (tab) => isPathWithinPrefix(tab.file.path, folder.path) && tab.status === "dirty",
+    ).length;
+
+    if (dirtyTabCount > 0) {
+      setWorkspaceError("Save or close files in the folder before archiving it.");
+      return;
+    }
+
+    try {
+      const nextTree = await apiRequest<LiberaTree>("/api/folders", {
+        method: "PATCH",
+        body: JSON.stringify({
+          path: folder.path,
+          archive: true,
+        }),
+      });
+      setTree(nextTree);
+      updateExpanded((current) =>
+        new Set(
+          [...current].filter(
+            (expandedPath) =>
+              expandedPath !== folder.path && !expandedPath.startsWith(`${folder.path}/`),
+          ),
+        ),
+      );
+      tabs.forEach((tab) => {
+        if (isPathWithinPrefix(tab.file.path, folder.path)) {
+          forgetTabDraft(tab.id);
+        }
+      });
+      setTabs((currentTabs) =>
+        currentTabs.filter((currentTab) => !isPathWithinPrefix(currentTab.file.path, folder.path)),
+      );
+      setActiveTabId((current) => (isPathWithinPrefix(current, folder.path) ? "" : current));
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not archive folder.");
     }
   }
 
@@ -2627,6 +2699,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       closeNoteDialog,
       closeWorkspaceConfirmDialog,
       closeWorkspaceInputDialog,
+      archiveFileNode,
+      archiveFolderNode,
       cancelScreenshotSnip,
       completeScreenshotSnip,
       copyFileFromPrompt,

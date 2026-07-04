@@ -3,6 +3,8 @@ export { createNotebookZip } from "@/lib/storage/download";
 export { deepSearch } from "@/lib/storage/deep-search";
 export { StorageError, toStorageError } from "@/lib/storage/errors";
 export {
+  archiveFile,
+  archiveFolder,
   copyFileToDirectory,
   createFolder,
   createMarkdownFile,

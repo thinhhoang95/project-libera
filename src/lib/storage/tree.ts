@@ -1,5 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
-import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
@@ -26,12 +26,13 @@ import type {
   LiberaTreeNode,
 } from "@/lib/types";
 
-function shouldSkipTreeEntry(name: string) {
+function shouldSkipTreeEntry(name: string, options?: { showArchive?: boolean }) {
   return (
     name.startsWith(".") ||
     name.startsWith("._") ||
     name === "__MACOSX" ||
-    name === MARKDOWN_ASSETS_DIR
+    name === MARKDOWN_ASSETS_DIR ||
+    (name === ARCHIVE_DIR && !options?.showArchive)
   );
 }
 
@@ -132,6 +133,7 @@ function normalizeTreeViewOptions({
     hiddenNotebookNames: viewOptions.hiddenNotebookNames.filter((notebookName) =>
       notebookNames.has(notebookName),
     ),
+    showArchive: viewOptions.showArchive,
   };
 }
 
@@ -169,13 +171,14 @@ export async function getFileNode(
 async function readTreeDirectory(
   notebook: string,
   parentParts: string[],
+  options: { showArchive?: boolean } = {},
 ): Promise<LiberaTreeNode[]> {
   const directoryPath = itemPath(notebook, parentParts);
   const entries = await readdir(directoryPath, { withFileTypes: true });
   const children: LiberaTreeNode[] = [];
 
   for (const entry of entries) {
-    if (shouldSkipTreeEntry(entry.name)) {
+    if (shouldSkipTreeEntry(entry.name, options)) {
       continue;
     }
 
@@ -183,7 +186,7 @@ async function readTreeDirectory(
 
     if (entry.isDirectory()) {
       const stats = await stat(itemPath(notebook, childParts));
-      const grandChildren = await readTreeDirectory(notebook, childParts);
+      const grandChildren = await readTreeDirectory(notebook, childParts, options);
       children.push({
         kind: "folder",
         name: entry.name,
@@ -230,7 +233,9 @@ export async function getTree(): Promise<LiberaTree> {
       entry.name,
       notebookStats.birthtime.toISOString(),
     );
-    const children = await readTreeDirectory(entry.name, []);
+    const children = await readTreeDirectory(entry.name, [], {
+      showArchive: workspaceMetadata.notebookViewOptions.showArchive,
+    });
 
     notebooks.push({
       kind: "notebook",
