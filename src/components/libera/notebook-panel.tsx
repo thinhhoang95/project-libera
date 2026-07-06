@@ -110,6 +110,8 @@ const DEFAULT_SIDEBAR_SORT: SidebarSortPreference = {
   key: "updatedAt",
   direction: "desc",
 };
+const SIDEBAR_PAGE_SIZE = 20;
+const STARRED_FILES_PAGINATION_KEY = "__starred-files__";
 
 const SORT_OPTIONS: Array<{
   direction: SidebarSortDirection;
@@ -507,6 +509,7 @@ export function NotebookPanel({
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
   const [viewOptionsError, setViewOptionsError] = useState("");
+  const [visibleNodeLimits, setVisibleNodeLimits] = useState<Record<string, number>>({});
   const sortedTree = useMemo(
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
@@ -571,6 +574,17 @@ export function NotebookPanel({
       SIDEBAR_SORT_STORAGE_KEY,
       JSON.stringify(nextSortPreference),
     );
+  }
+
+  function visibleNodeLimitForPath(path: string) {
+    return visibleNodeLimits[path] ?? SIDEBAR_PAGE_SIZE;
+  }
+
+  function showMoreNodes(path: string) {
+    setVisibleNodeLimits((current) => ({
+      ...current,
+      [path]: (current[path] ?? SIDEBAR_PAGE_SIZE) + SIDEBAR_PAGE_SIZE,
+    }));
   }
 
   async function saveViewOptions(viewOptions: LiberaNotebookViewOptions) {
@@ -802,9 +816,11 @@ export function NotebookPanel({
             onContextMenu={openContextMenu}
             onDropFile={dropFileOnPath}
             onOpenFile={onOpenFile}
+            onShowMore={() => showMoreNodes(STARRED_FILES_PAGINATION_KEY)}
             onSetDragOverPath={setDragOverPath}
             onSetDraggingFile={setDraggingFile}
             onUploadFiles={onUploadFiles}
+            visibleLimit={visibleNodeLimitForPath(STARRED_FILES_PAGINATION_KEY)}
           />
           {topLevelNotebooks.map((notebook) => (
             <NotebookSection
@@ -829,11 +845,13 @@ export function NotebookPanel({
               onEditNotebook={onEditNotebook}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
+              onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
               onSetDraggingFile={setDraggingFile}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
+              visibleNodeLimitForPath={visibleNodeLimitForPath}
             />
           ))}
           {groupedSections.map(({ group, notebooks }) => (
@@ -861,11 +879,13 @@ export function NotebookPanel({
               onEditNotebook={onEditNotebook}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
+              onShowMoreNodes={showMoreNodes}
               onSetDragOverPath={setDragOverPath}
               onSetDraggingFile={setDraggingFile}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
+              visibleNodeLimitForPath={visibleNodeLimitForPath}
             />
           ))}
         </div>
@@ -901,9 +921,11 @@ function StarredFilesSection({
   onContextMenu,
   onDropFile,
   onOpenFile,
+  onShowMore,
   onSetDragOverPath,
   onSetDraggingFile,
   onUploadFiles,
+  visibleLimit,
 }: {
   activeTabId: string;
   dragOverPath: string;
@@ -914,6 +936,7 @@ function StarredFilesSection({
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDropFile: (destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onShowMore: () => void;
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onUploadFiles: (
@@ -921,10 +944,14 @@ function StarredFilesSection({
     files: File[],
     destinationPath?: string,
   ) => Promise<void>;
+  visibleLimit: number;
 }) {
   if (!files.length) {
     return null;
   }
+
+  const visibleFiles = files.slice(0, visibleLimit);
+  const remainingCount = files.length - visibleFiles.length;
 
   return (
     <section className="space-y-1 pb-2">
@@ -932,7 +959,7 @@ function StarredFilesSection({
         Starred
       </h3>
       <div className="space-y-1">
-        {files.map((file) => (
+        {visibleFiles.map((file) => (
           <TreeNodeRow
             key={file.path}
             activeTabId={activeTabId}
@@ -947,14 +974,44 @@ function StarredFilesSection({
             onContextMenu={onContextMenu}
             onDropFile={onDropFile}
             onOpenFile={onOpenFile}
+            onShowMoreNodes={() => undefined}
             onSetDragOverPath={onSetDragOverPath}
             onSetDraggingFile={onSetDraggingFile}
             onTogglePath={() => undefined}
             onUploadFiles={onUploadFiles}
+            visibleNodeLimitForPath={() => SIDEBAR_PAGE_SIZE}
           />
         ))}
+        {remainingCount > 0 ? (
+          <ShowMoreNodesButton
+            depth={0}
+            remainingCount={remainingCount}
+            onClick={onShowMore}
+          />
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function ShowMoreNodesButton({
+  depth,
+  remainingCount,
+  onClick,
+}: {
+  depth: number;
+  remainingCount: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs font-medium text-accent hover:bg-muted"
+      style={{ paddingLeft: `${8 + depth * 16}px` }}
+      type="button"
+      onClick={onClick}
+    >
+      Show more... ({Math.min(SIDEBAR_PAGE_SIZE, remainingCount)} more)
+    </button>
   );
 }
 
@@ -979,11 +1036,13 @@ function NotebookSection({
   onEditNotebook,
   onOpenFile,
   onSelectNotebook,
+  onShowMoreNodes,
   onSetDragOverPath,
   onSetDraggingFile,
   onStartUpload,
   onToggleNotebook,
   onUploadFiles,
+  visibleNodeLimitForPath,
 }: {
   activeTabId: string;
   dragOverPath: string;
@@ -1005,6 +1064,7 @@ function NotebookSection({
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
+  onShowMoreNodes: (path: string) => void;
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onStartUpload: (notebook: string) => void;
@@ -1014,9 +1074,15 @@ function NotebookSection({
     files: File[],
     destinationPath?: string,
   ) => Promise<void>;
+  visibleNodeLimitForPath: (path: string) => number;
 }) {
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
+  const visibleChildren = notebook.children.slice(
+    0,
+    visibleNodeLimitForPath(notebook.path),
+  );
+  const remainingChildrenCount = notebook.children.length - visibleChildren.length;
 
   async function openNotebookActionsAtPoint(point: NativeMenuPoint) {
     const selectedItemId = await showNativeMenu(
@@ -1192,7 +1258,7 @@ function NotebookSection({
           }
         >
           <div className="space-y-1">
-            {notebook.children.map((node) => (
+            {visibleChildren.map((node) => (
               <TreeNodeRow
                 key={node.path}
                 activeTabId={activeTabId}
@@ -1205,13 +1271,22 @@ function NotebookSection({
                 onContextMenu={onContextMenu}
                 onDropFile={onDropFile}
                 onOpenFile={onOpenFile}
+                onShowMoreNodes={onShowMoreNodes}
                 onSetDragOverPath={onSetDragOverPath}
                 onSetDraggingFile={onSetDraggingFile}
                 onTogglePath={onToggleNotebook}
                 onUploadFiles={onUploadFiles}
                 parentPath={notebook.path}
+                visibleNodeLimitForPath={visibleNodeLimitForPath}
               />
             ))}
+            {remainingChildrenCount > 0 ? (
+              <ShowMoreNodesButton
+                depth={0}
+                remainingCount={remainingChildrenCount}
+                onClick={() => onShowMoreNodes(notebook.path)}
+              />
+            ) : null}
             {!notebook.children.length ? (
               <p className="px-2 py-2 text-sm text-muted-foreground">No files.</p>
             ) : null}
@@ -1245,11 +1320,13 @@ function NotebookGroupSection({
   onEditNotebook,
   onOpenFile,
   onSelectNotebook,
+  onShowMoreNodes,
   onSetDragOverPath,
   onSetDraggingFile,
   onStartUpload,
   onToggleNotebook,
   onUploadFiles,
+  visibleNodeLimitForPath,
 }: {
   activeTabId: string;
   dragOverPath: string;
@@ -1273,6 +1350,7 @@ function NotebookGroupSection({
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
+  onShowMoreNodes: (path: string) => void;
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onStartUpload: (notebook: string) => void;
@@ -1282,6 +1360,7 @@ function NotebookGroupSection({
     files: File[],
     destinationPath?: string,
   ) => Promise<void>;
+  visibleNodeLimitForPath: (path: string) => number;
 }) {
   return (
     <section className="space-y-2 pt-2">
@@ -1343,11 +1422,13 @@ function NotebookGroupSection({
               onEditNotebook={onEditNotebook}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
+              onShowMoreNodes={onShowMoreNodes}
               onSetDragOverPath={onSetDragOverPath}
               onSetDraggingFile={onSetDraggingFile}
               onStartUpload={onStartUpload}
               onToggleNotebook={onToggleNotebook}
               onUploadFiles={onUploadFiles}
+              visibleNodeLimitForPath={visibleNodeLimitForPath}
             />
           ))}
         </div>
@@ -1370,6 +1451,7 @@ function TreeNodeRow({
   onContextMenu,
   onDropFile,
   onOpenFile,
+  onShowMoreNodes,
   onSetDragOverPath,
   onSetDraggingFile,
   onTogglePath,
@@ -1377,6 +1459,7 @@ function TreeNodeRow({
   parentPath,
   showNotebookName = false,
   starredFilePaths,
+  visibleNodeLimitForPath,
 }: {
   activeTabId: string;
   depth: number;
@@ -1388,6 +1471,7 @@ function TreeNodeRow({
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDropFile: (destinationPath: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onShowMoreNodes: (path: string) => void;
   onSetDragOverPath: (path: string) => void;
   onSetDraggingFile: (file: LiberaFileNode | null) => void;
   onTogglePath: (path: string) => void;
@@ -1398,11 +1482,14 @@ function TreeNodeRow({
   ) => Promise<void>;
   parentPath: string;
   showNotebookName?: boolean;
+  visibleNodeLimitForPath: (path: string) => number;
 }) {
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
     const isDragTarget = draggingFile && dragOverPath === node.path;
     const isUploadTarget = !draggingFile && dragOverPath === node.path;
+    const visibleChildren = node.children.slice(0, visibleNodeLimitForPath(node.path));
+    const remainingChildrenCount = node.children.length - visibleChildren.length;
 
     return (
       <div>
@@ -1471,7 +1558,7 @@ function TreeNodeRow({
               handleFileDropOnDirectory(event, draggingFile, node.path, onDropFile)
             }
           >
-            {node.children.map((child) => (
+            {visibleChildren.map((child) => (
               <TreeNodeRow
                 key={child.path}
                 activeTabId={activeTabId}
@@ -1485,13 +1572,22 @@ function TreeNodeRow({
                 onContextMenu={onContextMenu}
                 onDropFile={onDropFile}
                 onOpenFile={onOpenFile}
+                onShowMoreNodes={onShowMoreNodes}
                 onSetDragOverPath={onSetDragOverPath}
                 onSetDraggingFile={onSetDraggingFile}
                 onTogglePath={onTogglePath}
                 onUploadFiles={onUploadFiles}
                 parentPath={node.path}
+                visibleNodeLimitForPath={visibleNodeLimitForPath}
               />
             ))}
+            {remainingChildrenCount > 0 ? (
+              <ShowMoreNodesButton
+                depth={depth + 1}
+                remainingCount={remainingChildrenCount}
+                onClick={() => onShowMoreNodes(node.path)}
+              />
+            ) : null}
           </div>
         ) : null}
       </div>
