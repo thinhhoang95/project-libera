@@ -55,7 +55,10 @@ import {
   isMarkdownSlidesPath,
   parseMarkdownSlides,
 } from "@/lib/markdown-slides";
-import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import {
+  getMarkdownEditorFontStack,
+  type MarkdownPreferences,
+} from "@/lib/markdown-preferences";
 import {
   getTextareaOffsetAtVisualProgress,
   getTextareaViewportAnchorOffset,
@@ -476,6 +479,9 @@ export function WorkspacePanel({
   const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
+  const markdownEditorFontFamily = getMarkdownEditorFontStack(
+    markdownPreferences.editorFontFamily,
+  );
   const markdownLineHeightPx =
     markdownPreferences.baseFontSize *
     markdownPreferences.baseLineHeight *
@@ -1344,6 +1350,7 @@ export function WorkspacePanel({
                 imageConverting={imageMarkdownConverting}
                 openTabs={tabs}
                 recentFiles={recentFiles}
+                fontFamily={markdownEditorFontFamily}
                 fontSizePx={markdownFontSizePx}
                 lineHeightPx={markdownLineHeightPx}
                 textareaRef={textareaRef}

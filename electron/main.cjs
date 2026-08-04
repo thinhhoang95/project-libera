@@ -20,6 +20,8 @@ const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
 const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
+const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
 const DEFAULT_MARKDOWN_BASE_FONT_SIZE = 16;
 const DEFAULT_MARKDOWN_BASE_LINE_HEIGHT = 1.75;
 const MAX_MARKDOWN_BASE_FONT_SIZE = 32;
@@ -209,6 +211,20 @@ function normalizeMarkdownBaseFontSize(value) {
   );
 }
 
+function normalizeMarkdownEditorFontFamily(value) {
+  const fontFamily = typeof value === "string" ? value.trim() : "";
+
+  if (
+    !fontFamily ||
+    fontFamily.length > MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(fontFamily)
+  ) {
+    return DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY;
+  }
+
+  return fontFamily;
+}
+
 function normalizeMarkdownBaseLineHeight(value) {
   return clamp(
     normalizeNumber(value, DEFAULT_MARKDOWN_BASE_LINE_HEIGHT),
@@ -231,6 +247,9 @@ function getConfigStatus(config = readConfig()) {
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
       typeof config.passwordHash === "string" && config.passwordHash.trim().length > 0,
+    markdownEditorFontFamily: normalizeMarkdownEditorFontFamily(
+      config.markdownEditorFontFamily,
+    ),
     markdownBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
     markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
     markdownPdfBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownPdfBaseFontSize),
@@ -272,6 +291,9 @@ function validateSetupInput(input, existingConfig) {
   const passwordConfirmation =
     typeof input?.passwordConfirmation === "string" ? input.passwordConfirmation : "";
   const changingPassword = Boolean(input?.changePassword);
+  const markdownEditorFontFamily = normalizeMarkdownEditorFontFamily(
+    input?.markdownEditorFontFamily,
+  );
   const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
   const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
   const markdownPdfBaseFontSize = normalizeMarkdownBaseFontSize(
@@ -317,6 +339,7 @@ function validateSetupInput(input, existingConfig) {
 
   return {
     dataDir,
+    markdownEditorFontFamily,
     markdownBaseFontSize,
     markdownBaseLineHeight,
     markdownPdfBaseFontSize,
@@ -372,6 +395,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       const nextConfig = {
         ...existingConfig,
         dataDir: validated.dataDir,
+        markdownEditorFontFamily: validated.markdownEditorFontFamily,
         markdownBaseFontSize: validated.markdownBaseFontSize,
         markdownBaseLineHeight: validated.markdownBaseLineHeight,
         markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
@@ -1033,6 +1057,9 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
+      config.markdownEditorFontFamily,
+    ),
     LIBERA_MARKDOWN_BASE_FONT_SIZE: String(
       normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
     ),

@@ -79,6 +79,7 @@ type MarkdownEditorProps = {
   activeFilePath?: string;
   files: LiberaFileNode[];
   formatting: boolean;
+  fontFamily: string;
   fontSizePx: number;
   imageConverting: boolean;
   lineHeightPx: number;
@@ -581,6 +582,7 @@ export function MarkdownEditor({
   activeFilePath,
   files,
   formatting,
+  fontFamily,
   fontSizePx,
   imageConverting,
   lineHeightPx,
@@ -1350,6 +1352,7 @@ export function MarkdownEditor({
         aria-hidden="true"
         className="markdown-editor-highlight-layer pointer-events-none absolute inset-0 z-0 h-full w-full overflow-auto border-b border-transparent p-5 font-mono text-sm leading-6 lg:border-b-0 lg:border-r"
         style={{
+          fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
         }}
@@ -1360,6 +1363,7 @@ export function MarkdownEditor({
         ref={textareaRef}
         className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
+          fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
         }}

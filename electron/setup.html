@@ -141,17 +141,20 @@
         font-weight: 600;
       }
 
-      input {
+      input,
+      select {
         width: 100%;
         border: 1px solid #d4d4d8;
         border-radius: 6px;
+        background: #ffffff;
         color: #18181b;
         font: inherit;
         outline: none;
         padding: 10px 12px;
       }
 
-      input:focus {
+      input:focus,
+      select:focus {
         border-color: #2563eb;
         box-shadow: 0 0 0 3px rgb(37 99 235 / 0.15);
       }
@@ -161,6 +164,12 @@
         color: #71717a;
         font-size: 12px;
         line-height: 1.4;
+      }
+
+      .font-picker-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
       }
 
       .directory-row {
@@ -355,6 +364,21 @@
                 Set the default typography used by Markdown editing, preview, and PDF export.
               </p>
 
+              <h3>Source editor</h3>
+              <label for="markdown-editor-font-family">Font family</label>
+              <div class="font-picker-row">
+                <select id="markdown-editor-font-family">
+                  <option value="system-monospace">System monospace (default)</option>
+                </select>
+                <button id="load-system-fonts-button" class="secondary" type="button">
+                  Load system fonts
+                </button>
+              </div>
+              <p id="system-fonts-status" class="field-help">
+                Load the fonts installed on this computer, then choose one for the Markdown
+                source editor. Preview and PDF fonts are not affected.
+              </p>
+
               <h3>Editor and preview</h3>
               <label for="markdown-base-font-size">Base font size</label>
               <input
@@ -442,6 +466,11 @@
       );
       const passwordInput = document.querySelector("#password");
       const passwordConfirmationInput = document.querySelector("#password-confirmation");
+      const markdownEditorFontFamilyInput = document.querySelector(
+        "#markdown-editor-font-family",
+      );
+      const loadSystemFontsButton = document.querySelector("#load-system-fonts-button");
+      const systemFontsStatus = document.querySelector("#system-fonts-status");
       const markdownBaseFontSizeInput = document.querySelector("#markdown-base-font-size");
       const markdownBaseLineHeightInput = document.querySelector("#markdown-base-line-height");
       const markdownPdfBaseFontSizeInput = document.querySelector("#markdown-pdf-base-font-size");
@@ -488,11 +517,80 @@
         errorBox.style.display = "none";
       }
 
+      function addFontFamilyOption(fontFamily, label = fontFamily) {
+        if (
+          !fontFamily ||
+          Array.from(markdownEditorFontFamilyInput.options).some(
+            (option) => option.value === fontFamily,
+          )
+        ) {
+          return;
+        }
+
+        const option = document.createElement("option");
+
+        option.value = fontFamily;
+        option.textContent = label;
+        markdownEditorFontFamilyInput.append(option);
+      }
+
+      async function loadSystemFonts() {
+        if (typeof window.queryLocalFonts !== "function") {
+          systemFontsStatus.textContent =
+            "System font discovery is unavailable in this version of Electron.";
+          return;
+        }
+
+        const selectedFontFamily = markdownEditorFontFamilyInput.value;
+
+        loadSystemFontsButton.disabled = true;
+        loadSystemFontsButton.textContent = "Loading…";
+        systemFontsStatus.textContent = "Reading fonts installed on this computer…";
+
+        try {
+          const localFonts = await window.queryLocalFonts();
+          const fontFamilies = Array.from(
+            new Set(
+              localFonts
+                .map((font) => (typeof font.family === "string" ? font.family.trim() : ""))
+                .filter(Boolean),
+            ),
+          ).sort((left, right) => left.localeCompare(right));
+
+          markdownEditorFontFamilyInput.replaceChildren();
+          addFontFamilyOption("system-monospace", "System monospace (default)");
+          fontFamilies.forEach((fontFamily) => addFontFamilyOption(fontFamily));
+
+          if (selectedFontFamily !== "system-monospace") {
+            addFontFamilyOption(selectedFontFamily, `${selectedFontFamily} (unavailable)`);
+          }
+
+          markdownEditorFontFamilyInput.value = selectedFontFamily;
+          systemFontsStatus.textContent = `${fontFamilies.length} installed font families found. This setting affects the Markdown source editor only.`;
+        } catch (error) {
+          systemFontsStatus.textContent =
+            error?.name === "NotAllowedError"
+              ? "Font access was not allowed. Try loading system fonts again and grant access."
+              : "Unable to read the fonts installed on this computer.";
+        } finally {
+          loadSystemFontsButton.disabled = false;
+          loadSystemFontsButton.textContent = "Reload system fonts";
+        }
+      }
+
       async function loadState() {
         const state = await window.liberaSetup.getState();
 
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
+        const configuredFontFamily =
+          state.markdownEditorFontFamily || "system-monospace";
+
+        if (configuredFontFamily !== "system-monospace") {
+          addFontFamilyOption(configuredFontFamily, `${configuredFontFamily} (selected)`);
+        }
+
+        markdownEditorFontFamilyInput.value = configuredFontFamily;
         markdownBaseFontSizeInput.value = String(state.markdownBaseFontSize || 16);
         markdownBaseLineHeightInput.value = String(state.markdownBaseLineHeight || 1.75);
         markdownPdfBaseFontSizeInput.value = String(state.markdownPdfBaseFontSize || 16);
@@ -516,6 +614,11 @@
         passwordLocked.classList.add("hidden");
         changePasswordFields.classList.remove("hidden");
         currentPasswordInput.focus();
+      });
+
+      loadSystemFontsButton.addEventListener("click", () => {
+        clearError();
+        void loadSystemFonts();
       });
 
       navButtons.forEach((button) => {
@@ -553,6 +656,7 @@
             changePassword: !changePasswordFields.classList.contains("hidden"),
             currentPassword: currentPasswordInput.value,
             dataDir: dataDirInput.value,
+            markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             markdownBaseFontSize: markdownBaseFontSizeInput.value,
             markdownBaseLineHeight: markdownBaseLineHeightInput.value,
             markdownPdfBaseFontSize: markdownPdfBaseFontSizeInput.value,
