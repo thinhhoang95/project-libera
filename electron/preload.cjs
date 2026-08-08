@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld("liberaFileExplorer", {
   revealItem: (relativePath) => ipcRenderer.invoke("file-explorer:reveal-item", relativePath),
 });
 
+contextBridge.exposeInMainWorld("liberaClipboard", {
+  copyItemPath: (relativePath, mode) =>
+    ipcRenderer.invoke("clipboard:copy-item-path", relativePath, mode),
+});
+
 contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),

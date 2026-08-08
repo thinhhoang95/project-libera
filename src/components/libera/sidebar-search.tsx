@@ -1,5 +1,6 @@
-import { BookOpen, FileSearch, Search } from "lucide-react";
+import { BookOpen, FileSearch, Search, X } from "lucide-react";
 import { FileTypeIcon } from "@/components/libera/file-type";
+import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import type { SearchResult } from "@/components/libera/types";
 
 type SidebarSearchProps = {
@@ -33,12 +34,24 @@ export function SidebarSearch({
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
       />
+      {query ? (
+        <button
+          aria-label="Clear search"
+          className="absolute right-5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+          type="button"
+          onClick={() => onQueryChange("")}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <X aria-hidden className="h-4 w-4" />
+        </button>
+      ) : null}
       {suggestionsOpen ? (
         <div className="absolute left-3 right-3 top-[2.875rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
           {searchResults.map((result) => (
-            <button
+            <SidebarNameTooltipButton
               key={`${result.type}:${result.label}`}
               className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
+              fullName={result.label}
               type="button"
               onClick={() => onSelectSearchResult(result)}
             >
@@ -53,7 +66,7 @@ export function SidebarSearch({
               <span className="shrink-0 text-xs uppercase text-muted-foreground">
                 {result.type}
               </span>
-            </button>
+            </SidebarNameTooltipButton>
           ))}
           <button
             className="flex w-full items-center justify-between gap-3 border-t border-border px-3 py-2 text-left text-sm font-medium hover:bg-muted"

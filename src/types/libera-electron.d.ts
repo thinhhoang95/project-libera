@@ -53,6 +53,12 @@ declare global {
       revealNotebook: (notebook: string) => Promise<void>;
       revealItem: (relativePath: string) => Promise<void>;
     };
+    liberaClipboard?: {
+      copyItemPath: (
+        relativePath: string,
+        mode: "relative" | "absolute",
+      ) => Promise<void>;
+    };
     liberaWindow?: {
       close: () => Promise<void>;
       minimize: () => Promise<void>;

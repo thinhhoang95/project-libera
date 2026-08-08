@@ -1,4 +1,14 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, session, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  session,
+  shell,
+} = require("electron");
 const { createHash, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -919,6 +929,25 @@ function installFileExplorerHandlers() {
     }
 
     shell.showItemInFolder(targetPath);
+  });
+
+  ipcMain.handle("clipboard:copy-item-path", async (_event, relativePath, mode) => {
+    if (mode !== "relative" && mode !== "absolute") {
+      throw new Error("Copy path mode is invalid.");
+    }
+
+    const { notebook, pathParts } = splitNotebookItemPath(relativePath);
+    const adminRoot = getAdminRootFromConfig();
+    const targetPath = path.join(adminRoot, notebook, ...pathParts);
+    assertPathInside(adminRoot, targetPath);
+
+    const stats = await fsp.stat(targetPath);
+
+    if (!stats.isFile()) {
+      throw new Error("File was not found.");
+    }
+
+    clipboard.writeText(mode === "absolute" ? targetPath : relativePath);
   });
 }
 

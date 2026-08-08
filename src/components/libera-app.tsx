@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { LeftPanel } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -18,12 +19,32 @@ type LiberaAppProps = {
   markdownPreferences: MarkdownPreferences;
 };
 
+const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
+const DEFAULT_SIDEBAR_WIDTH = 320;
+const MIN_SIDEBAR_WIDTH = 240;
+const MAX_SIDEBAR_WIDTH = 560;
+const MIN_WORKSPACE_WIDTH = 480;
+
+function clampSidebarWidth(width: number, layoutWidth?: number) {
+  const maximumWidth = layoutWidth
+    ? Math.max(
+        MIN_SIDEBAR_WIDTH,
+        Math.min(MAX_SIDEBAR_WIDTH, layoutWidth - MIN_WORKSPACE_WIDTH),
+      )
+    : MAX_SIDEBAR_WIDTH;
+
+  return Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(maximumWidth, width)));
+}
+
 export function LiberaApp({
   initialAuthenticated,
   markdownPreferences,
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const mainLayoutRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const platformInfo = window.liberaPlatform;
@@ -45,6 +66,60 @@ export function LiberaApp({
       root.classList.remove(platformClass, "libera-glass");
     };
   }, []);
+
+  useEffect(() => {
+    const animationFrame = window.requestAnimationFrame(() => {
+      const storedWidth = Number.parseFloat(
+        window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) ?? "",
+      );
+
+      if (Number.isFinite(storedWidth)) {
+        setSidebarWidth(clampSidebarWidth(storedWidth));
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarResizing) {
+      return;
+    }
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [sidebarResizing]);
+
+  function sidebarWidthFromPointer(clientX: number) {
+    const layoutBounds = mainLayoutRef.current?.getBoundingClientRect();
+
+    return clampSidebarWidth(
+      clientX - (layoutBounds?.left ?? 0),
+      layoutBounds?.width,
+    );
+  }
+
+  function resizeSidebar(event: ReactPointerEvent<HTMLDivElement>) {
+    setSidebarWidth(sidebarWidthFromPointer(event.clientX));
+  }
+
+  function finishSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const nextWidth = sidebarWidthFromPointer(event.clientX);
+    setSidebarWidth(nextWidth);
+    setSidebarResizing(false);
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
   const notebookColors = useMemo(
     () =>
       Object.fromEntries(
@@ -68,9 +143,13 @@ export function LiberaApp({
   return (
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
-        className={`grid min-h-0 flex-1 overflow-hidden ${
-          notebooksCollapsed ? "lg:grid-cols-[48px_1fr]" : "lg:grid-cols-[320px_1fr]"
-        }`}
+        ref={mainLayoutRef}
+        className="relative grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[var(--libera-sidebar-width)_minmax(0,1fr)]"
+        style={
+          {
+            "--libera-sidebar-width": `${notebooksCollapsed ? 48 : sidebarWidth}px`,
+          } as CSSProperties
+        }
       >
         <LeftPanel
           activeTab={workspace.activeTab}
@@ -176,6 +255,31 @@ export function LiberaApp({
             onStartScreenshotSnip={workspace.startScreenshotSnip}
           />
         </section>
+
+        {!notebooksCollapsed ? (
+          <div
+            aria-hidden
+            className="absolute bottom-0 top-0 z-40 hidden w-1.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
+            style={{ left: sidebarWidth }}
+            onLostPointerCapture={() => setSidebarResizing(false)}
+            onPointerCancel={() => setSidebarResizing(false)}
+            onPointerDown={(event) => {
+              if (event.button !== 0) {
+                return;
+              }
+
+              event.preventDefault();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setSidebarResizing(true);
+            }}
+            onPointerMove={(event) => {
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                resizeSidebar(event);
+              }
+            }}
+            onPointerUp={finishSidebarResize}
+          />
+        ) : null}
       </div>
 
       <NotebookDialog

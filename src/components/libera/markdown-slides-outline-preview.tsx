@@ -3,6 +3,7 @@
 import { Presentation } from "lucide-react";
 import { useMemo } from "react";
 import type { RefObject } from "react";
+import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import type { OpenTab } from "@/components/libera/types";
 import {
   parseMarkdownSlides,
@@ -193,7 +194,7 @@ export function MarkdownSlidesOutlinePreview({
             const isActive = activeSlideIndex === slide.index;
 
             return (
-              <button
+              <SidebarNameTooltipButton
                 key={`${slide.sourceStart}:${slide.sourceEnd}:${slide.index}`}
                 className={`w-full rounded-lg border px-3 py-2.5 text-left transition hover:border-input hover:bg-muted ${
                   isActive
@@ -201,7 +202,7 @@ export function MarkdownSlidesOutlinePreview({
                     : "border-border bg-card"
                 }`}
                 aria-current={isActive ? "location" : undefined}
-                title={`${slide.index + 1}. ${title}`}
+                fullName={title}
                 type="button"
                 onClick={() => void navigateToSlide(slide)}
               >
@@ -216,7 +217,7 @@ export function MarkdownSlidesOutlinePreview({
                 <span className="line-clamp-3 block text-xs leading-5 text-muted-foreground">
                   {preview}
                 </span>
-              </button>
+              </SidebarNameTooltipButton>
             );
           })}
         </div>

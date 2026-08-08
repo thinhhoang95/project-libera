@@ -17,6 +17,7 @@ import {
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { ModalDialog } from "@/components/libera/modal-dialog";
+import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import type { OpenTabViewState, SearchResult } from "@/components/libera/types";
@@ -461,6 +462,13 @@ async function revealItemInFileExplorer(relativePath: string) {
   await fileExplorer.revealItem(relativePath);
 }
 
+async function copyItemPath(
+  relativePath: string,
+  mode: "relative" | "absolute",
+) {
+  await window.liberaClipboard?.copyItemPath(relativePath, mode);
+}
+
 export function NotebookPanel({
   activeTabId,
   expanded,
@@ -632,6 +640,18 @@ export function NotebookPanel({
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
+            { type: "separator" },
+            {
+              id: "copy-relative-path",
+              label: "Copy Relative Path",
+              enabled: Boolean(window.liberaClipboard?.copyItemPath),
+            },
+            {
+              id: "copy-absolute-path",
+              label: "Copy Absolute Path",
+              enabled: Boolean(window.liberaClipboard?.copyItemPath),
+            },
+            { type: "separator" },
             { id: "rename", label: "Rename" },
             { id: "archive", label: "Archive", enabled: !isArchivedItem },
             {
@@ -670,6 +690,10 @@ export function NotebookPanel({
         onDownloadFile(target.file);
       } else if (selectedItemId === "copy") {
         await onCopyFile(target.file);
+      } else if (selectedItemId === "copy-relative-path") {
+        await copyItemPath(target.file.path, "relative");
+      } else if (selectedItemId === "copy-absolute-path") {
+        await copyItemPath(target.file.path, "absolute");
       } else if (selectedItemId === "rename") {
         await onRenameFile(target.file);
       } else if (selectedItemId === "archive") {
@@ -1493,10 +1517,11 @@ function TreeNodeRow({
 
     return (
       <div>
-        <button
+        <SidebarNameTooltipButton
           className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
             isDragTarget || isUploadTarget ? "bg-accent/10 ring-1 ring-accent" : ""
           }`}
+          fullName={node.name}
           style={{ paddingLeft: `${8 + depth * 16}px` }}
           type="button"
           onClick={() => onTogglePath(node.path)}
@@ -1536,7 +1561,7 @@ function TreeNodeRow({
           )}
           <Folder aria-hidden className="h-4 w-4 shrink-0 text-accent" />
           <span className="min-w-0 truncate">{node.name}</span>
-        </button>
+        </SidebarNameTooltipButton>
 
         {isExpanded ? (
           <div
@@ -1597,11 +1622,12 @@ function TreeNodeRow({
   const isStarred = starredFilePaths.has(node.path);
 
   return (
-    <button
+    <SidebarNameTooltipButton
       className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
         activeTabId === node.path ? "bg-muted" : ""
       }`}
       draggable
+      fullName={node.name}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
       type="button"
       onClick={() => onOpenFile(node)}
@@ -1644,7 +1670,7 @@ function TreeNodeRow({
           className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500"
         />
       ) : null}
-    </button>
+    </SidebarNameTooltipButton>
   );
 }
 

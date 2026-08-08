@@ -11,6 +11,7 @@ import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
+import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import {
   PDF_ANNOTATIONS_UPDATED_EVENT,
   type PdfAnnotationsUpdatedDetail,
@@ -727,7 +728,7 @@ function MarkdownOutline({
             const isActive = activeHeadingId === heading.id;
 
             return (
-              <button
+              <SidebarNameTooltipButton
                 key={heading.id}
                 className={`relative flex w-full items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
                   outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
@@ -746,7 +747,7 @@ function MarkdownOutline({
                     : undefined),
                 }}
                 aria-current={isActive ? "location" : undefined}
-                title={heading.text}
+                fullName={heading.text}
                 type="button"
                 draggable={outlineIsCurrent}
                 onClick={() => void navigateToHeading(heading)}
@@ -774,7 +775,7 @@ function MarkdownOutline({
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {heading.line}
                 </span>
-              </button>
+              </SidebarNameTooltipButton>
             );
           })}
         </div>
@@ -936,10 +937,10 @@ function PdfOutline({
             const label = annotationLabel(annotation);
 
             return (
-              <button
+              <SidebarNameTooltipButton
                 key={annotation.id}
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                title={label}
+                fullName={label}
                 type="button"
                 onClick={() => void navigateToAnnotation(annotation)}
               >
@@ -948,7 +949,7 @@ function PdfOutline({
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
                   p. {annotation.pageNumber}
                 </span>
-              </button>
+              </SidebarNameTooltipButton>
             );
           })}
         </div>
