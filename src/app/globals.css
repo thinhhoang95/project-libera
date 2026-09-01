@@ -126,6 +126,7 @@ html.libera-platform-darwin.libera-glass .libera-sidebar-titlebar {
 
 html.libera-platform-win32.libera-glass .libera-window-drag-region {
   -webkit-app-region: drag;
+  user-select: none;
 }
 
 html.libera-platform-win32.libera-glass .libera-window-no-drag,

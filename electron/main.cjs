@@ -17,6 +17,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { createUpdaterService } = require("./updater.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
@@ -53,6 +54,10 @@ let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
+const updaterService = createUpdaterService({
+  getMainWindow: () => mainWindow,
+  onBeforeInstall: prepareToQuit,
+});
 
 function getAppRoot() {
   return app.getAppPath();
@@ -692,6 +697,11 @@ function installApplicationMenu() {
     click: showAboutDialog,
     label: `About ${APP_DISPLAY_NAME}`,
   };
+  const checkForUpdatesMenuItem = {
+    click: () => void updaterService.check(),
+    enabled: app.isPackaged,
+    label: "Check for Updates...",
+  };
   const template = [
     ...(isMac
       ? [
@@ -699,6 +709,7 @@ function installApplicationMenu() {
             label: APP_DISPLAY_NAME,
             submenu: [
               aboutMenuItem,
+              checkForUpdatesMenuItem,
               { type: "separator" },
               configurationMenuItem,
               { type: "separator" },
@@ -759,7 +770,7 @@ function installApplicationMenu() {
       : [
           {
             label: "Help",
-            submenu: [aboutMenuItem],
+            submenu: [checkForUpdatesMenuItem, { type: "separator" }, aboutMenuItem],
           },
         ]),
   ];
@@ -1197,6 +1208,9 @@ async function createMainWindow(url) {
     icon: getIconPath(),
     minWidth: 960,
     minHeight: 640,
+    minimizable: isWindowsGlass ? true : undefined,
+    movable: isWindowsGlass ? true : undefined,
+    resizable: isWindowsGlass ? true : undefined,
     autoHideMenuBar: isWindowsGlass,
     title: APP_DISPLAY_NAME,
     show: !isWindowsGlass,
@@ -1206,7 +1220,10 @@ async function createMainWindow(url) {
     // renderer's transparent sidebar falls through to a plain white client area
     // instead of the DWM acrylic backdrop.
     frame: isWindowsGlass ? false : undefined,
-    thickFrame: isWindowsGlass ? false : undefined,
+    // Keep the native Windows sizing frame underneath our frameless UI. It
+    // supplies edge/corner resize hit targets, the DWM border and shadow, and
+    // minimize/restore animations without bringing back the native title bar.
+    thickFrame: isWindowsGlass ? true : undefined,
     transparent: isWindowsGlass ? true : undefined,
     // On macOS the vibrancy view *is* the window background, so we don't need a
     // transparent window — and `transparent: true` would strip the native
@@ -1297,6 +1314,7 @@ async function bootstrap() {
     installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);
+    updaterService.initialize();
   } catch (error) {
     if (error.message !== "Setup was canceled.") {
       dialog.showErrorBox(`Unable to start ${APP_DISPLAY_NAME}`, error.message);
@@ -1308,13 +1326,18 @@ async function bootstrap() {
 
 app.on("ready", bootstrap);
 
-app.on("before-quit", () => {
+function prepareToQuit() {
   isQuitting = true;
+  updaterService.dispose();
 
   if (nextProcess) {
     nextProcess.kill();
     nextProcess = null;
   }
+}
+
+app.on("before-quit", () => {
+  prepareToQuit();
 });
 
 app.on("window-all-closed", () => {

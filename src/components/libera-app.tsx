@@ -68,6 +68,14 @@ export function LiberaApp({
   }, []);
 
   useEffect(() => {
+    const unsavedDocumentCount = workspace.tabs.filter(
+      (tab) => tab.file.fileType === "markdown" && tab.draft !== tab.saved,
+    ).length;
+
+    void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
+  }, [workspace.tabs]);
+
+  useEffect(() => {
     const animationFrame = window.requestAnimationFrame(() => {
       const storedWidth = Number.parseFloat(
         window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) ?? "",

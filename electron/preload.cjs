@@ -45,3 +45,17 @@ contextBridge.exposeInMainWorld("liberaWindow", {
   // sync with the in-app theme so the glass renders dark in dark mode.
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
 });
+
+contextBridge.exposeInMainWorld("liberaUpdater", {
+  getState: () => ipcRenderer.invoke("updater:get-state"),
+  check: () => ipcRenderer.invoke("updater:check"),
+  restartAndInstall: () => ipcRenderer.invoke("updater:restart-and-install"),
+  setDirtyDocumentCount: (count) =>
+    ipcRenderer.invoke("updater:set-dirty-document-count", count),
+  onStateChanged: (listener) => {
+    const handler = (_event, state) => listener(state);
+    ipcRenderer.on("updater:state-changed", handler);
+
+    return () => ipcRenderer.removeListener("updater:state-changed", handler);
+  },
+});

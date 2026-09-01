@@ -63,9 +63,43 @@ npm run lint
 npm run electron:dev
 npm run electron:start
 npm run electron:dist
+npm run electron:dist:mac:unsigned
 ```
 
+`electron:dist:mac:unsigned` builds the Apple Silicon DMG and ZIP without
+discovering a signing identity or submitting the app for notarization. It is
+intended for local/testing distribution and does not support macOS automatic
+updates.
+
 ## Electron App
+
+### Dependencies shared between macOS and Windows
+
+Native packages in `node_modules` cannot be shared directly between operating
+systems. Electron and Next.js both install platform-specific binaries. Set up
+the dependency cache once on each machine instead:
+
+```bash
+npm run deps:setup
+```
+
+This creates a separate ignored cache for the current OS and CPU architecture
+(for example, `.platform-deps/win32-x64` or
+`.platform-deps/darwin-arm64`) and moves the active dependency directory into
+the project. Running the command again reuses that cache immediately. It only runs `npm ci` again when
+`package.json` or `package-lock.json` changes. The first run preserves an
+existing real `node_modules` directory under `.platform-deps/legacy-*`.
+
+Check which cache is active with `npm run deps:status`. On Windows, the complete
+safe setup-and-build command is:
+
+```powershell
+npm run electron:dist:win:safe
+```
+
+The Windows installer is written to `dist-electron/`. Build macOS packages on
+macOS and Windows packages on Windows; the caches avoid reinstalling dependencies
+but do not make native code-signing tools cross-platform.
 
 Run the desktop app in development with:
 
@@ -87,6 +121,68 @@ and an app password. These values are stored in the Electron user-data directory
 instead of `.env`, then injected into the local Next.js server at startup. The
 desktop shell clears the Libera session cookie on every launch, so the password
 login screen is shown each time the app starts.
+
+## Electron automatic updates
+
+Packaged macOS ARM64 and Windows x64 applications check the platform-specific
+feed at `https://libera.intuelle.com/stable/`, download newer versions in the
+background, and offer to restart after the download finishes. Update restarts
+are disabled while an open Markdown document has unsaved edits.
+
+Configure nginx and the Let's Encrypt certificate once from a machine with the
+server SSH key:
+
+```bash
+npm run electron:update-server:setup
+```
+
+The command defaults to `root@185.214.135.181`, `~/.ssh/id_ed25519`, and
+`/srv/libera-updates`. Override those values when needed:
+
+```bash
+LIBERA_UPDATE_SSH_TARGET=root@example.com \
+LIBERA_UPDATE_SSH_KEY=/path/to/id_ed25519 \
+LIBERA_UPDATE_REMOTE_ROOT=/srv/libera-updates \
+npm run electron:update-server:setup
+```
+
+Before releasing, bump the stable semantic version in `package.json` and commit
+the release. The release scripts reject dirty tracked files and versions that
+are not newer than their respective remote feed.
+
+Build, sign, notarize, and publish Apple Silicon macOS from the Mac build
+machine:
+
+```bash
+export CSC_LINK=/path/to/developer-id-application.p12
+export CSC_KEY_PASSWORD='certificate password'
+export APPLE_API_KEY=/path/to/AuthKey_KEYID.p8
+export APPLE_API_KEY_ID=KEYID
+export APPLE_API_ISSUER=ISSUER_UUID
+export APPLE_TEAM_ID=TEAMID
+npm run electron:release:mac
+```
+
+Build, sign, and publish Windows x64 from the Windows build machine:
+
+```powershell
+$env:WIN_CSC_LINK = "C:\secure\authenticode.pfx"
+$env:WIN_CSC_KEY_PASSWORD = "certificate password"
+npm run electron:release:win
+```
+
+Append `-- --dry-run` to build and verify without contacting the update server.
+Append `-- --allow-dirty` only when intentionally releasing uncommitted tracked
+changes. Both machines require OpenSSH/SCP and must trust the server host key.
+Certificates, passwords, API keys, and SSH keys must remain outside the repo.
+
+Release artifacts are uploaded to a staging directory. Binaries and blockmaps
+are installed first and updater metadata is replaced atomically last. The five
+most recently activated releases for each platform are retained on the server.
+
+Existing macOS users must manually install one signed and notarized baseline
+release before automatic updates can work; Squirrel.Mac cannot update an
+unsigned application. After that baseline, keep using the same signing identity.
 
 ## Tooling
 

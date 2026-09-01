@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "/*": [
       "./.electron-build/**/*",
+      "./.platform-deps/**/*",
       "./.env*",
       "./.git/**/*",
       "./.next/dev/**/*",

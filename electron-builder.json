@@ -3,13 +3,21 @@
   "productName": "Libera by Thinh Hoang",
   "asar": false,
   "npmRebuild": false,
+  "artifactName": "Libera-${version}-${os}-${arch}.${ext}",
+  "electronUpdaterCompatibility": ">=2.16",
+  "publish": {
+    "provider": "generic",
+    "url": "https://libera.intuelle.com/stable/${os}/${arch}"
+  },
   "directories": {
     "app": ".electron-build/app",
     "output": "dist-electron"
   },
   "mac": {
     "icon": "assets/libera-icon.icns",
-    "identity": null
+    "hardenedRuntime": true,
+    "notarize": true,
+    "target": ["dmg", "zip"]
   },
   "win": {
     "icon": "assets/libera-icon.ico",

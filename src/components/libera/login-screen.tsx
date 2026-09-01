@@ -18,6 +18,7 @@ export function LoginScreen({
 }: LoginScreenProps) {
   return (
     <main className="libera-login-screen flex min-h-screen items-center justify-center bg-background px-6 py-10 text-foreground">
+      <div className="libera-window-drag-region fixed inset-x-0 top-0 h-12" aria-hidden />
       <div className="fixed right-3 top-3 z-50">
         <WindowControls />
       </div>

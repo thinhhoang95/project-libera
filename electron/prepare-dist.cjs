@@ -14,6 +14,7 @@ const requiredPackages = new Map([
   ["source-map-js", path.join(projectRoot, "node_modules", "source-map-js")],
   ["tslib", path.join(projectRoot, "node_modules", "tslib")],
 ]);
+const electronRuntimePackages = ["electron-log", "electron-updater"];
 
 async function copy(source, destination) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -54,6 +55,61 @@ async function copyPackage(packageName, source, destinationNodeModules) {
     return;
   } catch {
     await copy(source, destination);
+  }
+}
+
+function resolvePackageDirectory(packageName, searchDirectory) {
+  const packageJsonPath = require.resolve(`${packageName}/package.json`, {
+    paths: [searchDirectory],
+  });
+
+  return path.dirname(packageJsonPath);
+}
+
+async function readPackageDependencies(packageDirectory) {
+  const packageJson = JSON.parse(
+    await fs.readFile(path.join(packageDirectory, "package.json"), "utf8"),
+  );
+
+  return {
+    ...packageJson.dependencies,
+    ...packageJson.optionalDependencies,
+  };
+}
+
+async function copyRuntimePackageTree(
+  packageName,
+  searchDirectory,
+  destinationNodeModules,
+  ancestry = new Set(),
+) {
+  const source = resolvePackageDirectory(packageName, searchDirectory);
+  const destination = path.join(destinationNodeModules, ...packageName.split("/"));
+
+  await removeIfPresent(destination);
+  await copy(source, destination);
+
+  if (ancestry.has(source)) {
+    return;
+  }
+
+  const nextAncestry = new Set(ancestry).add(source);
+  const dependencies = await readPackageDependencies(source);
+  const nestedNodeModules = path.join(destination, "node_modules");
+
+  for (const dependencyName of Object.keys(dependencies).sort()) {
+    try {
+      await copyRuntimePackageTree(
+        dependencyName,
+        source,
+        nestedNodeModules,
+        nextAncestry,
+      );
+    } catch (error) {
+      if (!error || error.code !== "MODULE_NOT_FOUND") {
+        throw error;
+      }
+    }
   }
 }
 
@@ -117,7 +173,13 @@ async function main() {
     await copyPackage(packageName, source, distNodeModulesRoot);
   }
 
+  for (const packageName of electronRuntimePackages) {
+    await copyRuntimePackageTree(packageName, projectRoot, distNodeModulesRoot);
+  }
+
   const dependencies = {
+    "electron-log": await readPackageVersion(distNodeModulesRoot, "electron-log"),
+    "electron-updater": await readPackageVersion(distNodeModulesRoot, "electron-updater"),
     next: await readPackageVersion(distNodeModulesRoot, "next"),
     "pdfjs-dist": await readPackageVersion(distNodeModulesRoot, "pdfjs-dist"),
     react: await readPackageVersion(distNodeModulesRoot, "react"),

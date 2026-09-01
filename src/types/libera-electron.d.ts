@@ -35,6 +35,26 @@ type LiberaNativeMenuInput = {
 };
 
 declare global {
+  type LiberaUpdaterStatus =
+    | "unsupported"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "up-to-date"
+    | "error";
+
+  type LiberaUpdaterState = {
+    status: LiberaUpdaterStatus;
+    currentVersion: string;
+    availableVersion?: string;
+    error?: string;
+    hasUnsavedDocuments?: boolean;
+    manual?: boolean;
+    percent?: number;
+  };
+
   interface Window {
     liberaPlatform?: {
       isElectron: boolean;
@@ -64,6 +84,13 @@ declare global {
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<void>;
       setTheme: (theme: "light" | "dark") => Promise<void>;
+    };
+    liberaUpdater?: {
+      getState: () => Promise<LiberaUpdaterState>;
+      check: () => Promise<LiberaUpdaterState>;
+      restartAndInstall: () => Promise<void>;
+      setDirtyDocumentCount: (count: number) => Promise<void>;
+      onStateChanged: (listener: (state: LiberaUpdaterState) => void) => () => void;
     };
     liberaMarkdownPdfExport?: {
       render: (input: LiberaMarkdownPdfRenderInput) => Promise<void>;
