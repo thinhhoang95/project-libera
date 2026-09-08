@@ -204,3 +204,17 @@ You can generate one from the project with:
 ```bash
 node -e "const { randomBytes, scryptSync } = require('crypto'); const password = process.argv[1]; const salt = randomBytes(16).toString('hex'); console.log(`scrypt:${salt}:${scryptSync(password, salt, 64).toString('hex')}`);" "your-password"
 ```
+
+### Visual Markdown editing
+
+Markdown notes open in the **Visual** editor, powered by the open-source TipTap editor. Select text to apply bold, italic, underline, text colors, colored highlights, or font sizes. **Line spacing** formats the selected text, or the current paragraph when the caret is collapsed. The editor respects the workspace's default font size and line spacing.
+
+Drop or paste PNG, JPEG, GIF, or WebP photos into a note, or use **Insert image**. Images are saved through the existing Markdown asset API and keep relative asset paths in the Markdown file. Upload errors appear above the editor. Click a rendered equation or use **Insert or edit equation** to edit LaTeX with a live KaTeX preview; both inline and display equations are supported.
+
+Use **Enumerate Headings** in the visual toolbar to number all headings or selected headings with a custom starting value. The same actions are available in the right-click menu, along with **Indent Headings**, **Unindent Headings**, **AI Format**, and **AI Rewrite**. Right-click a photo for **AI Image to Markdown**. Numbering preserves heading formatting and supports undo. AI results replace the original selection while preserving edits elsewhere; if that selection changes during the request, retry on the updated text.
+
+Use **Source** to access the existing source/preview workflow, screenshot insertion, file-link picker, and slide controls. Slide decks continue using the source editor. Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
+
+Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`) retain their existing syntax. Underlines use `<u>text</u>`. Font size and line spacing use safe numeric span attributes, for example `<span data-font-size="24" data-line-height="2">text</span>`, supported by both the visual editor and Markdown preview/export. Other Markdown viewers may ignore these presentation attributes.
+
+Run the editor's Markdown round-trip regression tests with `npm run test:editor`.

@@ -1,7 +1,7 @@
 {
   "name": "project-libera",
   "productName": "Libera by Thinh Hoang",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -22,9 +22,22 @@
     "electron:release:win": "node scripts/release-electron.cjs --platform win",
     "electron:update-server:setup": "node scripts/setup-update-server.cjs",
     "test:electron-release": "node --test scripts/**/*.test.cjs",
+    "test:editor": "node --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint"
   },
   "dependencies": {
+    "@tiptap/core": "^3.31.3",
+    "@tiptap/extension-highlight": "^3.31.3",
+    "@tiptap/extension-image": "^3.31.3",
+    "@tiptap/extension-list": "^3.31.3",
+    "@tiptap/extension-mathematics": "^3.31.3",
+    "@tiptap/extension-table": "^3.31.3",
+    "@tiptap/extension-text-style": "^3.31.3",
+    "@tiptap/extension-underline": "^3.31.3",
+    "@tiptap/markdown": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/react": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",
     "jszip": "^3.10.1",
@@ -41,6 +54,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
@@ -50,8 +64,10 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "js-yaml": "^4.3.1",
+    "jsdom": "^26.1.0",
     "semver": "^7.8.5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   },
   "optionalDependencies": {

@@ -27,7 +27,7 @@ type MarkdownHeadingLine = {
 
 const MARKDOWN_HEADING_LINE_REGEX = /^( {0,3})(#{1,6})([ \t]+|$)(.*)$/;
 const HEADING_NUMBER_PREFIX_REGEX =
-  /^(?:\d+(?:\.\d+)*\.|\d+(?:\.\d+)+)\s+/;
+  /^(?:\d+(?:\.\d+)*\.|\d+(?:\.\d+)+)(?:\s+|$)/;
 const MAX_HEADING_LEVEL = 6;
 
 function normalizeEnumerationStart(value: number | undefined) {
@@ -113,6 +113,35 @@ function advanceHeadingCounters(counters: number[], level: number) {
   return `${counters.slice(0, level).join(".")}.`;
 }
 
+export function headingNumberPrefixLength(text: string) {
+  return text.match(HEADING_NUMBER_PREFIX_REGEX)?.[0].length ?? 0;
+}
+
+/** Shared numbering rules for source lines and rich-text heading nodes. */
+export function getHeadingEnumerationNumbers(
+  levels: number[],
+  options: { scope: MarkdownHeadingEnumerationScope; selectedIndexes?: number[]; startAt?: number },
+) {
+  const indexes = options.scope === "all"
+    ? levels.map((_, index) => index)
+    : (options.selectedIndexes ?? []).filter((index) => index >= 0 && index < levels.length);
+  const numbers = new Map<number, string>();
+  if (!indexes.length) return numbers;
+  const firstIndex = indexes[0];
+  const baseLevel = options.scope === "selected" ? levels[firstIndex] : 1;
+  const counters = Array.from({ length: MAX_HEADING_LEVEL }, () => 0);
+  if (options.scope === "selected") {
+    levels.slice(0, firstIndex).forEach((level) => advanceHeadingCounters(counters, level));
+    for (let index = 0; index < baseLevel - 1; index += 1) {
+      if (!counters[index]) counters[index] = 1;
+    }
+  }
+  counters[baseLevel - 1] = normalizeEnumerationStart(options.startAt) - 1;
+  for (let index = baseLevel; index < counters.length; index += 1) counters[index] = 0;
+  for (const index of indexes) numbers.set(index, advanceHeadingCounters(counters, levels[index]));
+  return numbers;
+}
+
 function enumerateHeadingLine(line: string, numbering: string) {
   const match = line.match(MARKDOWN_HEADING_LINE_REGEX);
 
@@ -137,54 +166,24 @@ export function enumerateMarkdownHeadings(
   value: string,
   options: MarkdownHeadingEnumerationOptions,
 ) {
-  const startAt = normalizeEnumerationStart(options.startAt);
   const selection = normalizeSelection(value.length, options.selection);
   const headingLines = parseMarkdownHeadingLines(value);
-  const targetHeadingLines =
-    options.scope === "all"
-      ? headingLines.filter((line) => line.heading)
-      : headingLines.filter((line) => line.heading && isLineSelected(line, selection));
-
-  if (!targetHeadingLines.length) {
-    return value;
-  }
-
-  const firstTargetHeading = targetHeadingLines[0];
-  const baseLevel =
-    options.scope === "selected"
-      ? firstTargetHeading.heading?.level ?? 1
-      : 1;
-  const targetIndexes = new Set(targetHeadingLines.map((line) => line.index));
-  const counters = Array.from({ length: MAX_HEADING_LEVEL }, () => 0);
-
-  if (options.scope === "selected") {
-    for (const line of headingLines.slice(0, firstTargetHeading.index)) {
-      if (line.heading) {
-        advanceHeadingCounters(counters, line.heading.level);
-      }
-    }
-
-    for (let index = 0; index < baseLevel - 1; index += 1) {
-      if (counters[index] === 0) {
-        counters[index] = 1;
-      }
-    }
-  }
-
-  counters[baseLevel - 1] = startAt - 1;
-
-  for (let index = baseLevel; index < counters.length; index += 1) {
-    counters[index] = 0;
-  }
+  const headings = headingLines.filter((line) => line.heading);
+  const numbering = getHeadingEnumerationNumbers(headings.map((line) => line.heading!.level), {
+    ...options,
+    selectedIndexes: headings.flatMap((line, index) => isLineSelected(line, selection) ? [index] : []),
+  });
+  const numbersByLine = new Map(headings.map((line, index) => [line.index, numbering.get(index)]));
 
   const nextLines = headingLines.map((line) => {
-    if (!line.heading || !targetIndexes.has(line.index)) {
+    const number = numbersByLine.get(line.index);
+    if (!number) {
       return line.line;
     }
 
     return enumerateHeadingLine(
       line.line,
-      advanceHeadingCounters(counters, line.heading.level),
+      number,
     );
   });
 

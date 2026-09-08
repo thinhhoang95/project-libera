@@ -1208,9 +1208,13 @@ async function createMainWindow(url) {
     icon: getIconPath(),
     minWidth: 960,
     minHeight: 640,
-    minimizable: isWindowsGlass ? true : undefined,
-    movable: isWindowsGlass ? true : undefined,
-    resizable: isWindowsGlass ? true : undefined,
+    // Native boolean options must be explicit: passing undefined can coerce to
+    // false and disable resizing/zoom and native fullscreen on macOS.
+    minimizable: true,
+    movable: true,
+    resizable: true,
+    maximizable: true,
+    fullscreenable: true,
     autoHideMenuBar: isWindowsGlass,
     title: APP_DISPLAY_NAME,
     show: !isWindowsGlass,
@@ -1219,12 +1223,12 @@ async function createMainWindow(url) {
     // Windows transparency only works for frameless windows. Without this, the
     // renderer's transparent sidebar falls through to a plain white client area
     // instead of the DWM acrylic backdrop.
-    frame: isWindowsGlass ? false : undefined,
+    frame: !isWindowsGlass,
     // Keep the native Windows sizing frame underneath our frameless UI. It
     // supplies edge/corner resize hit targets, the DWM border and shadow, and
     // minimize/restore animations without bringing back the native title bar.
-    thickFrame: isWindowsGlass ? true : undefined,
-    transparent: isWindowsGlass ? true : undefined,
+    thickFrame: true,
+    transparent: isWindowsGlass,
     // On macOS the vibrancy view *is* the window background, so we don't need a
     // transparent window — and `transparent: true` would strip the native
     // rounded corners and force square edges. `titleBarStyle: "hidden"` removes

@@ -13,6 +13,7 @@ import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-di
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import type { MarkdownEditorMode } from "@/components/libera/types";
 
 type LiberaAppProps = {
   initialAuthenticated: boolean;
@@ -42,6 +43,8 @@ export function LiberaApp({
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
+  const [markdownEditorMode, setMarkdownEditorMode] = useState<MarkdownEditorMode>("visual");
+  const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const mainLayoutRef = useRef<HTMLDivElement>(null);
@@ -207,6 +210,11 @@ export function LiberaApp({
 
         <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
+            markdownEditorMode={markdownEditorMode}
+            onMarkdownEditorModeChange={(mode) => {
+              setMarkdownEditorMode(mode);
+              setActivePreviewTabId(null);
+            }}
             activeTab={workspace.activeTab}
             activeTabId={workspace.activeTabId}
             notebookColors={notebookColors}
@@ -230,6 +238,9 @@ export function LiberaApp({
           ) : null}
 
           <WorkspacePanel
+            markdownEditorMode={markdownEditorMode}
+            activePreviewTabId={activePreviewTabId}
+            onActivePreviewTabIdChange={setActivePreviewTabId}
             activeTab={workspace.activeTab}
             aiFormatting={workspace.aiFormatting}
             canStartScreenshotSnip={workspace.canStartScreenshotSnip}

@@ -7,10 +7,12 @@ import {
 } from "lucide-react";
 import type {
   CSSProperties,
+  Dispatch,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   RefObject,
+  SetStateAction,
   UIEvent as ReactUIEvent,
 } from "react";
 import {
@@ -25,6 +27,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import {
   MarkdownSlidesPresenter,
   MarkdownSlidesPreview,
@@ -37,6 +40,7 @@ import type {
   ImageTabViewState,
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
+  MarkdownEditorMode,
   MarkdownTabViewState,
   MarkdownScreenshotSnipSession,
   OpenTab,
@@ -71,6 +75,9 @@ import {
 import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
+  markdownEditorMode: MarkdownEditorMode;
+  activePreviewTabId: string | null;
+  onActivePreviewTabIdChange: Dispatch<SetStateAction<string | null>>;
   activeTab?: OpenTab;
   files: LiberaFileNode[];
   aiFormatting: boolean;
@@ -465,6 +472,9 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
 }
 
 export function WorkspacePanel({
+  markdownEditorMode,
+  activePreviewTabId,
+  onActivePreviewTabIdChange: setActivePreviewTabId,
   activeTab,
   files,
   aiFormatting,
@@ -502,7 +512,6 @@ export function WorkspacePanel({
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
-  const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
@@ -883,6 +892,7 @@ export function WorkspacePanel({
     activeFileType,
     activeTabId,
     activeMarkdownIsSlides,
+    markdownEditorMode,
     previewFullscreen,
     syncMarkdownPreviewToTextarea,
     syncTextareaToMarkdownPreview,
@@ -958,6 +968,7 @@ export function WorkspacePanel({
     markProgrammaticEditorScroll,
     markProgrammaticPreviewScroll,
     markdownSlidesPresenting,
+    markdownEditorMode,
     previewFullscreen,
     textareaRef,
   ]);
@@ -985,7 +996,7 @@ export function WorkspacePanel({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [previewFullscreen, textareaRef]);
+  }, [previewFullscreen, setActivePreviewTabId, textareaRef]);
 
   useEffect(() => {
     if (activeFileType !== "markdown" || !activeTabId) {
@@ -1340,6 +1351,14 @@ export function WorkspacePanel({
 
       {activeTab.file.fileType === "markdown" ? (
         <>
+          {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
+            <TiptapMarkdownEditor key={activeTab.id} documentPath={activeTab.file.path}
+              value={activeTab.draft} fontSizePx={markdownFontSizePx}
+              lineHeight={markdownPreferences.baseLineHeight}
+              markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
+              onChange={handleMarkdownDraftChange} onSave={onSave}
+              onOpenFileLink={handleOpenMarkdownFileLink} />
+          ) : <>
           <MarkdownToolbar
             canStartScreenshotSnip={canStartScreenshotSnip}
             getSelectedMarkdownText={getSelectedMarkdownText}
@@ -1512,6 +1531,7 @@ export function WorkspacePanel({
               setExistingImageDialogOpen(false);
             }}
           />
+          </>}
         </>
       ) : activeTab.file.fileType === "image" ? (
         <ImageViewer

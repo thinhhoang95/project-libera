@@ -3,10 +3,13 @@
 import { useState } from "react";
 import type { MouseEvent } from "react";
 import { Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
-import type { OpenTab } from "@/components/libera/types";
+import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { WindowControls } from "@/components/libera/window-controls";
+import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
 type TabStripProps = {
+  markdownEditorMode: MarkdownEditorMode;
+  onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => void;
   activeTab?: OpenTab;
   activeTabId: string;
   notebookColors: Record<string, string>;
@@ -26,6 +29,8 @@ type TabStripProps = {
 type ActiveFileActionsProps = Pick<
   TabStripProps,
   | "activeTab"
+  | "markdownEditorMode"
+  | "onMarkdownEditorModeChange"
   | "onDeleteFile"
   | "onDownloadFile"
   | "onDownloadMarkdownPdf"
@@ -51,6 +56,8 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
 }
 
 export function TabStrip({
+  markdownEditorMode,
+  onMarkdownEditorModeChange,
   activeTab,
   activeTabId,
   notebookColors,
@@ -235,6 +242,8 @@ export function TabStrip({
           })}
         </div>
         <ActiveFileActions
+          markdownEditorMode={markdownEditorMode}
+          onMarkdownEditorModeChange={onMarkdownEditorModeChange}
           activeTab={activeTab}
           onDeleteFile={onDeleteFile}
           onDownloadFile={onDownloadFile}
@@ -250,6 +259,8 @@ export function TabStrip({
 }
 
 function ActiveFileActions({
+  markdownEditorMode,
+  onMarkdownEditorModeChange,
   activeTab,
   onDeleteFile,
   onDownloadFile,
@@ -303,6 +314,17 @@ function ActiveFileActions({
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
+      {isMarkdown && !isMarkdownSlidesPath(activeTab.file.path) ? (
+        <div role="group" aria-label="Markdown editing mode" className="mr-1 inline-flex h-8 shrink-0 items-center rounded-lg border border-border p-0.5">
+          {(["visual", "source"] as const).map((mode) => (
+            <button key={mode} type="button" aria-pressed={markdownEditorMode === mode}
+              className="h-full rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+              onClick={() => onMarkdownEditorModeChange(mode)}>
+              {mode === "visual" ? "Visual" : "Source"}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {isMarkdown ? (
         <button
           aria-label="Save"

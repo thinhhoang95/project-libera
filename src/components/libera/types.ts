@@ -8,6 +8,8 @@ import type {
   LiberaTree,
 } from "@/lib/types";
 
+export type MarkdownEditorMode = "visual" | "source";
+
 export type OpenTab = {
   id: string;
   file: LiberaFileNode;

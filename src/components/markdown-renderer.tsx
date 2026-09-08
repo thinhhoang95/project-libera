@@ -20,6 +20,7 @@ import {
 } from "@/lib/markdown-file-links";
 import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
 import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
+import { remarkMarkdownTextStyles } from "@/lib/markdown-text-styles";
 
 type MarkdownRendererProps = {
   baseFontSize?: number;
@@ -38,6 +39,7 @@ const remarkPlugins = [
   remarkMarkdownHighlights,
   remarkMarkdownTextColors,
   remarkMarkdownUnderlines,
+  remarkMarkdownTextStyles,
   remarkMarkdownSourceMap,
 ];
 
@@ -318,6 +320,9 @@ function MarkdownRendererContent({
           },
           span: ({ children, className, style, ...props }) => {
             const elementProps = markdownElementProps(props);
+            const attributes = elementProps as Record<string, unknown>;
+            const fontSize = Number(attributes["data-font-size"]);
+            const lineHeight = Number(attributes["data-line-height"]);
             const markdownColor = dataAttribute(
               elementProps as Record<string, unknown>,
               "data-markdown-color",
@@ -334,7 +339,12 @@ function MarkdownRendererContent({
                   textColor ? "markdown-text-color" : undefined,
                   className,
                 )}
-                style={textColor ? { ...style, color: textColor } : style}
+                style={{
+                  ...style,
+                  ...(textColor ? { color: textColor } : {}),
+                  ...(fontSize >= 8 && fontSize <= 96 ? { fontSize: `${fontSize * textScale}px` } : {}),
+                  ...(lineHeight >= 1 && lineHeight <= 3 ? { lineHeight } : {}),
+                }}
               >
                 {children}
               </span>
