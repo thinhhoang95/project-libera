@@ -19,6 +19,7 @@ import {
 import type { OpenTab } from "@/components/libera/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload } from "@/lib/types";
 
 type OutlinePanelProps = {
@@ -519,7 +520,7 @@ function MarkdownOutline({
   }, [contextMenu]);
 
   async function navigateToHeading(heading: MarkdownHeading) {
-    if (!activeTab) {
+    if (!activeTab || !outlineIsCurrent) {
       return;
     }
 
@@ -537,6 +538,9 @@ function MarkdownOutline({
       const textarea = textareaRef.current;
 
       if (!textarea) {
+        window.dispatchEvent(new CustomEvent<MarkdownOutlineNavigateDetail>(MARKDOWN_OUTLINE_NAVIGATE_EVENT, {
+          detail: { documentPath: activeTab.file.path, markdown: outlineState.draft, offset: heading.offset },
+        }));
         return;
       }
 
@@ -771,7 +775,7 @@ function MarkdownOutline({
                 <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
                   H{heading.level}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{heading.text}</span>
+                <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{heading.text}</span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {heading.line}
                 </span>
@@ -945,7 +949,7 @@ function PdfOutline({
                 onClick={() => void navigateToAnnotation(annotation)}
               >
                 {annotationIcon(annotation)}
-                <span className="min-w-0 flex-1 truncate">{label}</span>
+                <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
                 <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
                   p. {annotation.pageNumber}
                 </span>

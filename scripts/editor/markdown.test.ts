@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
+import { HighlightTool, highlightToolKey } from "../../src/lib/tiptap-highlight-tool";
 import { remarkMarkdownTextStyles } from "../../src/lib/markdown-text-styles";
 import { enumerateMarkdownHeadings } from "../../src/lib/markdown-heading-enumeration";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../../src/lib/tiptap-editor-actions";
 import { TiptapEditorActions } from "../../src/components/libera/tiptap-editor-actions";
 import { TiptapMarkdownEditor } from "../../src/components/libera/tiptap-markdown-editor";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT } from "../../src/lib/markdown-outline-navigation";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element", "Node", "MouseEvent", "KeyboardEvent", "DOMParser", "MutationObserver", "getComputedStyle"] as const) {
@@ -32,6 +34,52 @@ after(() => dom.window.close());
 function create(content: string) {
   return new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), Mathematics], content, contentType: "markdown" });
 }
+
+test("visual outline navigation scrolls to repeated formatted headings without changing content", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const markdown = 'Setext\n======\n\n> ## Nested\n\n```md\n## **Repeated**\n```\n\n## **Repeated**\n\nFirst section\n\n## **Repeated**\n\nSecond section';
+  const changes: string[] = [];
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/outline.md", value: markdown,
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const headings = Array.from(host.querySelectorAll<HTMLElement>(".libera-tiptap h1, .libera-tiptap h2"));
+    assert.equal(headings.length, 4);
+    const scrolled: HTMLElement[] = [];
+    headings.forEach((heading) => {
+      heading.scrollIntoView = (options) => {
+        assert.deepEqual(options, { block: "start", inline: "nearest" });
+        scrolled.push(heading);
+      };
+    });
+    async function navigate(documentPath: string, source = markdown) {
+      await act(async () => {
+        window.dispatchEvent(new dom.window.CustomEvent(MARKDOWN_OUTLINE_NAVIGATE_EVENT, {
+          detail: { documentPath, markdown: source, offset: markdown.lastIndexOf("## **Repeated**") },
+        }));
+      });
+    }
+    await navigate("Notebook/other.md");
+    await navigate("Notebook/outline.md", "stale source");
+    assert.equal(scrolled.length, 0);
+    await navigate("Notebook/outline.md");
+    await navigate("Notebook/outline.md");
+    assert.deepEqual(scrolled, [headings[3], headings[3]]);
+    assert.equal(window.getSelection()?.anchorNode?.parentElement?.closest("h2"), headings[3]);
+    assert.equal(document.activeElement, host.querySelector(".libera-tiptap"));
+    assert.deepEqual(changes, []);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
 
 function roundTrip(markdown: string) {
   const first = create(markdown);
@@ -86,6 +134,49 @@ test("opening a document does not emit a change and formatting supports undo", (
   editor.commands.undo();
   assert.equal(editor.getMarkdown(), "hello");
   editor.destroy();
+});
+
+test("highlight tool remembers its color, paints successive selections, and stops without erasing marks", async () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), HighlightTool], content: "one two three", contentType: "markdown" });
+  document.body.append(editor.view.dom);
+  const colorAt = (pos: number) => editor.state.doc.nodeAt(pos)?.marks.find((mark) => mark.type.name === "highlight")?.attrs.color;
+  try {
+    editor.commands.setTextSelection({ from: 1, to: 4 });
+    editor.commands.setHighlightToolColor("#15803d");
+    assert.equal(editor.getMarkdown(), "one two three");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+    editor.commands.setHighlightToolActive(true);
+    assert.equal(colorAt(1), "#15803d");
+    editor.commands.setHighlightToolColor("#2563eb");
+    assert.equal(colorAt(1), "#15803d", "Choosing a color must not repaint an existing selection");
+
+    editor.commands.setTextSelection({ from: 5, to: 8 });
+    editor.view.focus();
+    editor.view.dom.dispatchEvent(new dom.window.Event("pointerup", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(colorAt(5), "#2563eb");
+    editor.commands.setTextSelection({ from: 9, to: 14 });
+    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(colorAt(9), "#2563eb");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, true);
+
+    editor.commands.setTextSelection(14);
+    editor.view.dispatch(editor.state.tr.insertText("!"));
+    assert.equal(colorAt(14), "#2563eb");
+    editor.commands.setTextSelection({ from: 5, to: 8 });
+    const highlighted = editor.getMarkdown();
+    editor.commands.setHighlightToolActive(false);
+    assert.equal(editor.getMarkdown(), highlighted);
+    editor.commands.setTextSelection(15);
+    editor.view.dispatch(editor.state.tr.insertText("?"));
+    assert.equal(colorAt(15), undefined);
+
+    editor.commands.setHighlightToolActive(true);
+    editor.view.dom.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+    assert.equal(highlightToolKey.getState(editor.state)?.color, "#2563eb");
+  } finally { editor.destroy(); }
 });
 
 test("image assets retain portable relative paths when serialized", () => {
@@ -298,6 +389,22 @@ test("visual editor mounts after deferred initialization in React Strict Mode wi
     assert.match(editable.textContent ?? '', /Editable text/);
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Text style"]')?.value, '1');
     assert.equal(changes.length, 0, 'Mounting must not rewrite or dirty the document');
+    const highlightColor = host.querySelector<HTMLSelectElement>('[aria-label="Highlight color"]')!;
+    const highlightButton = host.querySelector<HTMLButtonElement>('[aria-label="Highlight"]')!;
+    await act(async () => {
+      highlightColor.value = '#15803d';
+      highlightColor.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    });
+    assert.equal(highlightColor.value, '#15803d');
+    assert.equal(highlightButton.getAttribute('aria-pressed'), 'false');
+    assert.equal(changes.length, 0, 'Choosing a highlight color must not edit the document');
+    await act(async () => { highlightButton.click(); });
+    assert.equal(highlightButton.getAttribute('aria-pressed'), 'true');
+    await act(async () => {
+      highlightColor.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    assert.equal(highlightButton.getAttribute('aria-pressed'), 'false');
+    assert.equal(highlightColor.value, '#15803d');
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Bold"]')!.click(); });
     assert.equal(host.querySelector('[aria-label="Bold"]')?.getAttribute('aria-pressed'), 'true', 'Toolbar subscriptions must still update after mounting');
     await act(async () => {
@@ -311,6 +418,116 @@ test("visual editor mounts after deferred initialization in React Strict Mode wi
     assert.ok(host.querySelector('[role="textbox"][contenteditable="true"]'), 'An empty note must also mount after switching documents');
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Text style"]')?.value, '0');
     assert.equal(changes.length, 0, 'Opening a second note must not rewrite it');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual editor renders tagged block equations in display mode and keeps inline math inline", async () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: 'Notebook/math.md',
+        value: String.raw`Inline $x^2$.
+
+$$
+E = mc^2 \tag{1}
+$$
+
+$$
+a = b \tag*{Custom}
+$$`,
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    assert.equal(host.querySelectorAll('.katex-error').length, 0, 'Valid tagged equations must not produce KaTeX errors');
+    const blocks = host.querySelectorAll('[data-type="block-math"]');
+    assert.equal(blocks.length, 2);
+    for (const block of blocks) {
+      assert.ok(block.querySelector('.katex-display .tag'), 'Block equations must render their tags in display mode');
+    }
+    const inline = host.querySelector('[data-type="inline-math"]');
+    assert.ok(inline?.querySelector('.katex'));
+    assert.equal(inline?.querySelector('.katex-display'), null);
+    assert.equal(changes.length, 0, 'Rendering must preserve the original Markdown');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual equation fixer sits between Save and zoom, converts ChatGPT source, and supports undo", async () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: 'Notebook/chatgpt.md',
+        value: String.raw`A TV plan for \(v\):
+
+\[
+(w^v,h^v,y^v,z^v)\in P_v
+\]`,
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="Fix ChatGPT equations"]')!;
+    assert.ok(button);
+    assert.equal(button.previousElementSibling?.getAttribute('aria-label'), 'Save document');
+    assert.ok(button.nextElementSibling?.querySelector('[aria-label="Rendered Markdown text zoom"]'));
+    const original = host.querySelector('.libera-tiptap')!.innerHTML;
+    await act(async () => { button.click(); });
+    assert.equal(host.querySelectorAll('[data-type="inline-math"]').length, 1);
+    assert.equal(host.querySelectorAll('[data-type="block-math"]').length, 1);
+    assert.match(changes.at(-1)!, /\$v\$/);
+    assert.match(changes.at(-1)!, /\$\$\n/);
+    assert.equal(host.querySelectorAll('.katex-error').length, 0);
+    const changeCount = changes.length;
+    await act(async () => { button.click(); });
+    assert.equal(changes.length, changeCount, 'Repeated fixing must not emit an update');
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    assert.equal(host.querySelector('.libera-tiptap')!.innerHTML, original);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual equation fixer handles escaped serialization of pasted literal delimiters", async () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: 'Notebook/pasted.md',
+        value: String.raw`**Keep bold** and \\(v\\).
+
+\\[
+x = y
+\\]`,
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Fix ChatGPT equations"]')!.click(); });
+    assert.equal(host.querySelectorAll('[data-type="inline-math"]').length, 1);
+    assert.equal(host.querySelectorAll('[data-type="block-math"]').length, 1);
+    assert.equal(host.querySelector('.libera-tiptap strong')?.textContent, 'Keep bold');
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    assert.equal(host.querySelectorAll('[data-type="inline-math"], [data-type="block-math"]').length, 0);
   } finally {
     await act(async () => root.unmount());
     host.remove();

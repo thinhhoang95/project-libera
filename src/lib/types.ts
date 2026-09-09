@@ -87,6 +87,7 @@ export type LiberaNotebookNode = {
 };
 
 export type LiberaTree = {
+  lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;
   notebookGroups: LiberaNotebookGroup[];

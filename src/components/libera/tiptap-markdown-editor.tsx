@@ -1,13 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { MarkdownTabViewState } from "@/components/libera/types";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { Mathematics } from "@tiptap/extension-mathematics";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save } from "lucide-react";
+import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles } from "lucide-react";
 import katex from "katex";
+import { closeHistory } from "@tiptap/pm/history";
+import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
+import { LatexExportButton } from "@/components/libera/latex-export-button";
+import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
@@ -15,10 +22,13 @@ import type { MarkdownImageAssetPayload } from "@/lib/types";
 
 type Props = {
   documentPath: string;
+  untitled?: boolean;
   value: string;
   fontSizePx: number;
   lineHeight: number;
   markdownZoom: number;
+  initialViewState?: MarkdownTabViewState;
+  onViewStateChange?: (patch: MarkdownTabViewState) => void;
   onMarkdownZoomChange: (zoom: number) => void;
   onChange: (value: string) => void;
   onSave: () => Promise<void>;
@@ -30,21 +40,29 @@ const buttonClass = "rounded-md p-2 text-muted-foreground hover:bg-muted hover:t
 const selectClass = "rounded-md border border-border bg-card px-2 py-1.5 text-xs";
 const isImage = (file: File) => /^image\/(png|jpe?g|gif|webp)$/i.test(file.type) || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
 
-export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeight, markdownZoom, onMarkdownZoomChange, onChange, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const initialViewStateRef = useRef(initialViewState);
   const lastValue = useRef(value);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
   const extensions = useMemo(() => [
     ...createMarkdownExtensions(documentPath),
-    Mathematics.configure({
-      katexOptions: { throwOnError: false, trust: false },
-      inlineOptions: { onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }) },
-      blockOptions: { onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }) },
+    HighlightTool,
+    InlineMath.configure({
+      katexOptions: { displayMode: false, throwOnError: false, trust: false },
+      onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
+    }),
+    BlockMath.configure({
+      // KaTeX requires display mode for equation tags; the combined Mathematics
+      // extension passes the same rendering options to both kinds of node.
+      katexOptions: { displayMode: true, throwOnError: false, trust: false },
+      onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
   ], [documentPath]);
 
@@ -101,15 +119,24 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
     return current ? {
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
-    blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"), highlight: current.isActive("highlight"),
+    blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
+    highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
     heading: current.isActive("heading") ? String(current.getAttributes("heading").level) : "0",
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
     lineHeight: current.getAttributes("textStyle").lineHeight ?? "",
     color: current.getAttributes("textStyle").color ?? "",
-    highlightColor: current.getAttributes("highlight").color ?? "#fef08a",
     undo: current.can().undo(), redo: current.can().redo(),
     } : null;
   } });
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!editor || !container) return;
+    // TipTap renders asynchronously. Restore after EditorContent mounts, once
+    // per editor mount, so scrolling and edits never reapply an old position.
+    container.scrollLeft = initialViewStateRef.current?.visualScrollLeft ?? 0;
+    container.scrollTop = initialViewStateRef.current?.visualScrollTop ?? 0;
+  }, [editor]);
 
   useEffect(() => {
     if (!editor || value === lastValue.current) return;
@@ -124,6 +151,17 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
     return () => { for (const upload of pending) upload.controller.abort(); };
   }, []);
 
+  useEffect(() => {
+    if (!editor) return;
+    function navigate(event: Event) {
+      const detail = (event as CustomEvent<MarkdownOutlineNavigateDetail>).detail;
+      if (detail.documentPath !== documentPath || detail.markdown !== lastValue.current) return;
+      navigateTiptapToMarkdownHeading(editor!, detail.markdown, detail.offset);
+    }
+    window.addEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
+    return () => window.removeEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
+  }, [documentPath, editor]);
+
   async function insertImages(files: File[], pos: number) {
     if (!editor || editor.isDestroyed) return;
     const images = files.filter(isImage);
@@ -137,7 +175,14 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
         const formData = new FormData();
         formData.append("documentPath", documentPath);
         formData.append("file", file);
-        const payload = await apiRequest<MarkdownImageAssetPayload>("/api/markdown-assets", { method: "POST", body: formData, signal: upload.controller.signal });
+        const payload = untitled
+          ? { assetPath: await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = () => reject(new Error("Could not read image."));
+              reader.readAsDataURL(file);
+            }) }
+          : await apiRequest<MarkdownImageAssetPayload>("/api/markdown-assets", { method: "POST", body: formData, signal: upload.controller.signal });
         if (editor.isDestroyed || upload.controller.signal.aborted) return;
         // The position is mapped through edits made while the upload is pending.
         editor.chain().insertContentAt(upload.pos, { type: "image", attrs: { src: payload.assetPath, alt: file.name.replace(/\.[^.]+$/, "") } }).run();
@@ -161,6 +206,43 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
 
   if (!editor || !state) return <div className="p-6 text-sm text-muted-foreground">Loading visual editor…</div>;
 
+  function fixChatGptEquations() {
+    if (!editor) return;
+    // Keep the original source until the first edit: Markdown parsing consumes
+    // the backslashes in ChatGPT's delimiters when displaying them as text.
+    const normalized = normalizeChatGptCopiedMarkdown(lastValue.current);
+    if (normalized === lastValue.current) {
+      // Pasted plain text is escaped during Markdown serialization. Read its
+      // literal delimiters from text blocks and replace only the math ranges.
+      const replacements: { from: number; to: number; type: string; latex: string }[] = [];
+      editor.state.doc.descendants((node, pos) => {
+        if (!node.isTextblock || node.type.spec.code) return;
+        const text = node.textBetween(0, node.content.size, "\n", "\n");
+        for (const match of text.matchAll(/\\\[([\s\S]*?)\\\]|\\\(([^\n]*?)\\\)/g)) {
+          const from = pos + 1 + match.index;
+          const to = from + match[0].length;
+          let protectedText = false;
+          editor!.state.doc.nodesBetween(from, to, (child) => {
+            if (child.marks.some((mark) => mark.type.name === "code" || mark.type.name === "link")) protectedText = true;
+          });
+          if (!protectedText) replacements.push({ from, to, type: match[1] !== undefined ? "blockMath" : "inlineMath", latex: (match[1] ?? match[2]).trim() });
+        }
+        return false;
+      });
+      if (!replacements.length) return;
+      const chain = editor.chain().command(({ tr }) => { closeHistory(tr); return true; });
+      for (const { from, to, type, latex } of replacements.reverse()) {
+        chain.insertContentAt({ from, to }, { type, attrs: { latex } });
+      }
+      chain.run();
+      return;
+    }
+    editor.chain()
+      .command(({ tr }) => { closeHistory(tr); return true; })
+      .setContent(normalized, { contentType: "markdown" })
+      .run();
+  }
+
   function openMath() {
     if (!editor) return;
     const { from, to } = editor.state.selection;
@@ -170,10 +252,11 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
+      if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
+    }}>
       <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
         className="flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
-        <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
@@ -202,13 +285,13 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
-          { title: "Highlight", icon: Highlighter, active: state.highlight, run: () => editor.chain().focus().toggleHighlight({ color: state.highlightColor }).run() },
+          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active, run: () => editor.chain().focus().setHighlightToolActive(!state.highlightTool.active).run() },
           { title: "Bullet list", icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
           { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
           { title: "Quote", icon: Quote, active: state.blockquote, run: () => editor.chain().focus().toggleBlockquote().run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
-        <select aria-label="Highlight color" className={selectClass} value={state.highlightColor} onChange={(event) => editor.chain().focus().setHighlight({ color: event.target.value }).run()}>
+        <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
           {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}
         </select>
         <select aria-label="Text color" className={selectClass} value={state.color} onChange={(event) => event.target.value ? editor.chain().focus().setColor(event.target.value).run() : editor.chain().focus().unsetColor().run()}>
@@ -222,10 +305,17 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => void onSave()}><Save className="h-4 w-4" /></button>
+        <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
+        <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
+        <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
-      <div className={`min-h-0 flex-1 overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
+      <div ref={scrollContainerRef} className={`min-h-0 flex-1 overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
+        onScroll={(event) => onViewStateChange?.({
+          visualScrollLeft: event.currentTarget.scrollLeft,
+          visualScrollTop: event.currentTarget.scrollTop,
+        })}
         onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
         onDrop={(event) => {
@@ -239,7 +329,7 @@ export function TiptapMarkdownEditor({ documentPath, value, fontSizePx, lineHeig
         }}>
         <EditorContent editor={editor} />
       </div>
-      <div role="status" className="border-t border-border px-4 py-1.5 text-xs text-muted-foreground">{uploadCount ? "Uploading images…" : "Drop or paste photos · Click an equation to edit · ⌘/Ctrl-click a link to open"}</div>
+      <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding dollar signs." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {

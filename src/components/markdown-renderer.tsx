@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from "react";
 import { memo, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -157,6 +157,7 @@ function MarkdownRendererContent({
   return (
     <div className={classNames("markdown-renderer", className)} style={scaledFontStyle}>
       <ReactMarkdown
+        urlTransform={(url, key) => key === "src" && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(url) ? url : defaultUrlTransform(url)}
         remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}
         components={{

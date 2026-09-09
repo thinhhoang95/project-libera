@@ -149,6 +149,6 @@ export function createMarkdownExtensions(documentPath: string) {
           return { dom: image };
         };
       },
-    }),
+    }).configure({ allowBase64: true }),
   ];
 }

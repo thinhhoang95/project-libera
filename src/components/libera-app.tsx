@@ -7,13 +7,13 @@ import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
+import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
 import { TabStrip } from "@/components/libera/tab-strip";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
-import type { MarkdownEditorMode } from "@/components/libera/types";
 
 type LiberaAppProps = {
   initialAuthenticated: boolean;
@@ -43,7 +43,7 @@ export function LiberaApp({
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
-  const [markdownEditorMode, setMarkdownEditorMode] = useState<MarkdownEditorMode>("visual");
+  const markdownEditorMode = workspace.activeTab?.viewState?.markdown?.editorMode ?? "visual";
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
@@ -210,9 +210,10 @@ export function LiberaApp({
 
         <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
+            onCreateUntitled={() => workspace.createUntitledFile()}
             markdownEditorMode={markdownEditorMode}
             onMarkdownEditorModeChange={(mode) => {
-              setMarkdownEditorMode(mode);
+              workspace.setActiveTabViewState({ markdown: { editorMode: mode } });
               setActivePreviewTabId(null);
             }}
             activeTab={workspace.activeTab}
@@ -315,6 +316,7 @@ export function LiberaApp({
         onClose={workspace.closeNotebookGroupDialog}
         onSubmit={workspace.submitNotebookGroupDialog}
       />
+      {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.tree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
       <NoteDialog
         dialog={workspace.noteDialog}
         submitting={workspace.noteDialogSubmitting}

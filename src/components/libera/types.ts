@@ -16,12 +16,16 @@ export type OpenTab = {
   draft: string;
   saved: string;
   rawUrl?: string;
+  untitled?: boolean;
+  standaloneSaveId?: string;
+  saveDirectory?: string;
   status: "clean" | "dirty" | "saving" | "error";
   error?: string;
   viewState?: OpenTabViewState;
 };
 
 export type MarkdownTabViewState = {
+  editorMode?: MarkdownEditorMode;
   editorScrollLeft?: number;
   editorScrollTop?: number;
   line?: number;
@@ -30,6 +34,8 @@ export type MarkdownTabViewState = {
   selectionEnd?: number;
   selectionStart?: number;
   slideIndex?: number;
+  visualScrollLeft?: number;
+  visualScrollTop?: number;
   zoom?: number;
 };
 

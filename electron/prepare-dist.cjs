@@ -177,7 +177,10 @@ async function main() {
     await copyRuntimePackageTree(packageName, projectRoot, distNodeModulesRoot);
   }
 
+  const externalPackages = JSON.parse(await fs.readFile(path.join(distAppRoot, ".next", "standalone", ".libera-external-packages.json"), "utf8"));
   const dependencies = {
+    ...externalPackages,
+    sharp: await readPackageVersion(distNodeModulesRoot, "sharp"),
     "electron-log": await readPackageVersion(distNodeModulesRoot, "electron-log"),
     "electron-updater": await readPackageVersion(distNodeModulesRoot, "electron-updater"),
     next: await readPackageVersion(distNodeModulesRoot, "next"),
@@ -212,6 +215,10 @@ async function main() {
   );
 
   await removeAppleDoubleFiles(distAppRoot);
+  // Load the staged endpoint without making API calls. This catches missing
+  // native modules/aliases before electron-builder produces an unusable release.
+  require(path.join(distAppRoot, ".next", "standalone", ".next", "server", "app", "api", "latex-export", "route.js"));
+  console.log("Packaged LaTeX endpoint loaded successfully.");
 }
 
 main().catch((error) => {

@@ -22,7 +22,7 @@ type OpenRouterContentPart =
     };
 
 export type OpenRouterMessage = {
-  role: "system" | "user";
+  role: "system" | "user" | "assistant";
   content: string | OpenRouterContentPart[];
 };
 
@@ -38,6 +38,7 @@ type OpenRouterMessageContent =
 
 type OpenRouterResponse = {
   choices?: Array<{
+    finish_reason?: string;
     message?: {
       content?: OpenRouterMessageContent;
     };
@@ -104,7 +105,10 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMessage[]) {
+export async function createOpenRouterCompletion(
+  messages: OpenRouterMessage[],
+  options: { model?: string; reasoning?: { effort: "low" }; maxTokens?: number; signal?: AbortSignal } = {},
+) {
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey) {
@@ -123,8 +127,11 @@ export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMes
       "HTTP-Referer": process.env.OPENROUTER_SITE_URL ?? "http://localhost:3000",
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Libera",
     },
+    signal: options.signal,
     body: JSON.stringify({
-      model: getOpenRouterModel(),
+      model: options.model ?? getOpenRouterModel(),
+      ...(options.reasoning ? { reasoning: options.reasoning } : {}),
+      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       messages,
       temperature: 0,
     }),
@@ -135,7 +142,13 @@ export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMes
   }
 
   const payload = (await response.json()) as OpenRouterResponse;
-  return normalizeMarkdownOutput(
-    extractMessageContent(payload.choices?.[0]?.message?.content),
-  );
+  if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
+  return {
+    content: extractMessageContent(payload.choices?.[0]?.message?.content),
+    finishReason: payload.choices?.[0]?.finish_reason,
+  };
+}
+
+export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMessage[]) {
+  return normalizeMarkdownOutput((await createOpenRouterCompletion(messages)).content);
 }

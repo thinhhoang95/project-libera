@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { FilePlus2, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
 type TabStripProps = {
+  onCreateUntitled: () => void;
   markdownEditorMode: MarkdownEditorMode;
   onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => void;
   activeTab?: OpenTab;
@@ -56,6 +57,7 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
 }
 
 export function TabStrip({
+  onCreateUntitled,
   markdownEditorMode,
   onMarkdownEditorModeChange,
   activeTab,
@@ -115,6 +117,7 @@ export function TabStrip({
   return (
     <div className="libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
+        <button type="button" aria-label="New untitled file" title="New untitled file" onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><FilePlus2 aria-hidden className="h-4 w-4" /></button>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
@@ -208,15 +211,15 @@ export function TabStrip({
                     Drop to swap tabs
                   </span>
                 ) : null}
-                <span className="relative ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                <span className="ml-0.5 flex shrink-0 items-center gap-2">
                   {isDirty ? (
                     <span
                       aria-label="Unsaved"
-                      className="h-1.5 w-1.5 rounded-full bg-current opacity-70 transition-opacity group-hover:opacity-0"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70"
                     />
                   ) : null}
                   <span
-                    className={`absolute inset-0 flex items-center justify-center rounded transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       isActive ? "opacity-60 hover:opacity-100" : "opacity-0"
                     } group-hover:opacity-100`}
                     role="button"
@@ -329,7 +332,7 @@ function ActiveFileActions({
         <button
           aria-label="Save"
           className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={activeTab.status === "saving" || activeTab.status === "clean"}
+          disabled={activeTab.status === "saving" || (!activeTab.untitled && activeTab.status === "clean")}
           title="Save"
           type="button"
           onClick={onSave}

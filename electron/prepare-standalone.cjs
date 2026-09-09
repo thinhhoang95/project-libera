@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { copyTurbopackExternals } = require("./package-externals.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
 const standaloneRoot = path.join(projectRoot, ".next", "standalone");
@@ -17,6 +18,7 @@ async function copyIfPresent(source, destination) {
 }
 
 async function main() {
+  await copyTurbopackExternals(path.join(projectRoot, ".next"), standaloneRoot);
   await copyIfPresent(
     path.join(projectRoot, ".next", "server"),
     path.join(standaloneRoot, ".next", "server"),

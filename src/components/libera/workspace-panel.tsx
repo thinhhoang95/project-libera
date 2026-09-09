@@ -33,6 +33,7 @@ import {
   MarkdownSlidesPreview,
 } from "@/components/libera/markdown-slides-viewer";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
+import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
@@ -1035,23 +1036,6 @@ export function WorkspacePanel({
     updateMarkdownViewState({ zoom: value });
   }
 
-  function getSelectedMarkdownText() {
-    const textarea = textareaRef.current;
-    const markdownDraft = textarea?.value ?? activeMarkdownDraft;
-    const selectionStart =
-      textarea?.selectionStart ?? activeMarkdownViewState?.selectionStart ?? 0;
-    const selectionEnd =
-      textarea?.selectionEnd ?? activeMarkdownViewState?.selectionEnd ?? selectionStart;
-    const start = Math.max(0, Math.min(selectionStart, selectionEnd, markdownDraft.length));
-    const end = Math.max(0, Math.min(Math.max(selectionStart, selectionEnd), markdownDraft.length));
-
-    if (start === end) {
-      return "";
-    }
-
-    return markdownDraft.slice(start, end);
-  }
-
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
 
@@ -1352,16 +1336,19 @@ export function WorkspacePanel({
       {activeTab.file.fileType === "markdown" ? (
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
-            <TiptapMarkdownEditor key={activeTab.id} documentPath={activeTab.file.path}
+            <TiptapMarkdownEditor
+                untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
               lineHeight={markdownPreferences.baseLineHeight}
               markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
+              initialViewState={activeMarkdownViewState}
+              onViewStateChange={updateMarkdownViewState}
               onChange={handleMarkdownDraftChange} onSave={onSave}
               onOpenFileLink={handleOpenMarkdownFileLink} />
           ) : <>
           <MarkdownToolbar
+            documentPath={activeTab.file.path}
             canStartScreenshotSnip={canStartScreenshotSnip}
-            getSelectedMarkdownText={getSelectedMarkdownText}
             isSlideDeck={activeMarkdownIsSlides}
             markdownBaseFontSize={markdownPreferences.baseFontSize}
             markdownContent={activeTab.draft}
@@ -1506,6 +1493,7 @@ export function WorkspacePanel({
               </div>
             </div>
           )}
+          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} />
           {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
             <MarkdownSlidesPresenter
               baseLineHeight={markdownPreferences.baseLineHeight}

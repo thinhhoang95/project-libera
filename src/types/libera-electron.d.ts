@@ -62,6 +62,7 @@ declare global {
       glass: boolean;
     };
     liberaExport?: {
+      saveMarkdownFile: (input: { content: string; fileName: string; saveId?: string }) => Promise<{ canceled: boolean; saveId?: string; fileName?: string }>;
       exportMarkdownPdf: (
         input: LiberaMarkdownPdfExportInput,
       ) => Promise<LiberaMarkdownPdfExportResult>;

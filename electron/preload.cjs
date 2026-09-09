@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
 });
 
 contextBridge.exposeInMainWorld("liberaExport", {
+  saveMarkdownFile: (input) => ipcRenderer.invoke("export:markdown-file", input),
   exportMarkdownPdf: (input) => ipcRenderer.invoke("export:markdown-pdf", input),
 });
 

@@ -1,3 +1,4 @@
+import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import { readdir, stat } from "node:fs/promises";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
@@ -261,6 +262,7 @@ export async function getTree(): Promise<LiberaTree> {
 
   return {
     root: getAdminRoot(),
+    lastNotebookName: await readLastNotebookName(),
     notebookPanelExpandedPaths:
       workspaceMetadata.notebookPanelExpandedPaths === null
         ? null

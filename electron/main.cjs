@@ -779,6 +779,29 @@ function installApplicationMenu() {
 }
 
 function installExportHandlers() {
+  const standaloneMarkdownFiles = new Map();
+  ipcMain.handle("export:markdown-file", async (event, input) => {
+    if (!input || typeof input.content !== "string" || typeof input.fileName !== "string") {
+      throw new Error("Invalid Markdown file.");
+    }
+    const previous = standaloneMarkdownFiles.get(input.saveId);
+    if (previous && previous.senderId === event.sender.id) {
+      await fsp.writeFile(previous.filePath, input.content, "utf8");
+      return { canceled: false, saveId: input.saveId, fileName: path.basename(previous.filePath) };
+    }
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    const result = await dialog.showSaveDialog(parentWindow, {
+      defaultPath: path.join(app.getPath("documents"), path.basename(input.fileName)),
+      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+      title: "Save Markdown file",
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fsp.writeFile(result.filePath, input.content, "utf8");
+    const saveId = randomBytes(24).toString("hex");
+    standaloneMarkdownFiles.set(saveId, { filePath: result.filePath, senderId: event.sender.id });
+    event.sender.once("destroyed", () => standaloneMarkdownFiles.delete(saveId));
+    return { canceled: false, saveId, fileName: path.basename(result.filePath) };
+  });
   ipcMain.handle("export:markdown-pdf", exportMarkdownPdf);
 }
 
