@@ -4,18 +4,20 @@ const { mkdtempSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { JSDOM } = require('jsdom');
-const { AI_FUNCTIONS, normalizeAiPreferences, aiPreferencesEnvironment } = require('../../electron/ai-preferences.cjs');
+const { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, normalizeAiPreferences, aiPreferencesEnvironment } = require('../../electron/ai-preferences.cjs');
 
 test('AI preferences migrate legacy models and survive a config file round trip', () => {
   const legacy = normalizeAiPreferences(undefined, 'existing/model');
   assert.equal(legacy.formatting.model, 'existing/model');
   assert.equal(legacy.rewrite.model, 'existing/model');
   assert.equal(legacy.chat.model, 'existing/model');
+  assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium' });
   assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
   assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low' });
-  const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name, i) => [name, {
+  const efforts = { formatting: 'low', rewrite: 'high', chat: 'xhigh', imageToMarkdown: 'medium', latex: 'max' };
+  const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
     model: `provider/${name}`,
-    reasoningEffort: ['low', 'high', 'xhigh', 'max'][i],
+    reasoningEffort: efforts[name],
     ...(name === 'chat' ? { customInstruction: 'Prefer concise answers.' } : {}),
   }]));
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
@@ -26,13 +28,13 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     assert.deepEqual(normalizeAiPreferences(restarted.aiFunctions), aiFunctions);
     const env = aiPreferencesEnvironment(restarted.aiFunctions);
     for (const name of AI_FUNCTIONS) {
-      assert.equal(env[`LIBERA_AI_${name.toUpperCase()}_MODEL`], aiFunctions[name].model);
-      assert.equal(env[`LIBERA_AI_${name.toUpperCase()}_REASONING_EFFORT`], aiFunctions[name].reasoningEffort);
+      assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_MODEL`], aiFunctions[name].model);
+      assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`], aiFunctions[name].reasoningEffort);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('Preferences UI loads and saves all four function settings', async () => {
+test('Preferences UI loads and saves all five function settings', async () => {
   const aiFunctions = normalizeAiPreferences({ chat: { customInstruction: 'Prefer concise answers.' } });
   let saved;
   const dom = new JSDOM(readFileSync(path.join(__dirname, '../../electron/setup.html'), 'utf8'), {
@@ -51,6 +53,7 @@ test('Preferences UI loads and saves all four function settings', async () => {
     const document = dom.window.document;
     document.querySelector('[data-section-button="ai"]').click();
     assert.equal(document.querySelector('[data-section="ai"]').classList.contains('hidden'), false);
+    assert.equal(document.querySelector('label[for="openrouter-model"]').textContent, 'Fallback OpenRouter model');
     for (const name of AI_FUNCTIONS) {
       assert.equal(document.querySelector(`#ai-${name}-model`).value, aiFunctions[name].model);
       assert.deepEqual(Array.from(document.querySelector(`#ai-${name}-effort`).options, (option) => option.value), ['low', 'medium', 'high', 'xhigh', 'max']);

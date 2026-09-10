@@ -98,17 +98,6 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(rendered.querySelector("script"), null);
     assert.equal(rendered.querySelector("img"), null);
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')?.disabled, false);
-    const regenerate = host.querySelector<HTMLButtonElement>('[aria-label="Regenerate response"]');
-    assert.ok(regenerate);
-    assert.ok(regenerate.classList.contains("bg-transparent"));
-    assert.ok(regenerate.classList.contains("border-0"));
-    assert.ok(regenerate.classList.contains("outline-none"));
-    await click("Regenerate response");
-    await settle();
-    assert.equal(requests.length, 2);
-    assert.equal(requests[1].messages.length, 1, "Regeneration must omit the previous assistant answer");
-    assert.equal(requests[1].messages.at(-1)?.contexts[0].text, tab.draft);
-    assert.equal(stored().chats[0].messages.filter((message) => message.role === "assistant").length, 1);
     menuAction = "save-md";
     await click("Chat settings");
     assert.ok(exported);

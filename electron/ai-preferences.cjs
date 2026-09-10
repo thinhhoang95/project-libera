@@ -1,4 +1,11 @@
-const AI_FUNCTIONS = ["formatting", "rewrite", "chat", "latex"];
+const AI_FUNCTIONS = ["formatting", "rewrite", "chat", "imageToMarkdown", "latex"];
+const AI_FUNCTION_ENV_NAMES = {
+  formatting: "FORMATTING",
+  rewrite: "REWRITE",
+  chat: "CHAT",
+  imageToMarkdown: "IMAGE_TO_MARKDOWN",
+  latex: "LATEX",
+};
 const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash") {
@@ -17,8 +24,8 @@ function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash")
 
 function aiPreferencesEnvironment(preferences, defaultModel) {
   return Object.fromEntries(Object.entries(normalizeAiPreferences(preferences, defaultModel)).flatMap(([name, value]) => [
-    [`LIBERA_AI_${name.toUpperCase()}_MODEL`, value.model],
-    [`LIBERA_AI_${name.toUpperCase()}_REASONING_EFFORT`, value.reasoningEffort],
+    [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_MODEL`, value.model],
+    [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`, value.reasoningEffort],
   ]));
 }
-module.exports = { AI_FUNCTIONS, REASONING_EFFORTS, normalizeAiPreferences, aiPreferencesEnvironment };
+module.exports = { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, REASONING_EFFORTS, normalizeAiPreferences, aiPreferencesEnvironment };

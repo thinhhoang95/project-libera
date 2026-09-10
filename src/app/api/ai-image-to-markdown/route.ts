@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 import { getMarkdownImageAssetBySource, toStorageError } from "@/lib/storage";
 
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
           },
         ],
       },
-    ]);
+    ], getAiFunctionOptions("imageToMarkdown"));
 
     if (!markdown.trim()) {
       return jsonError("AI image conversion returned an empty response.", 502);

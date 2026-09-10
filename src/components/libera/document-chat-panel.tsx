@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Plus, RefreshCw, Settings, Send, Square, X } from "lucide-react";
+import { ChevronDown, Plus, Settings, Send, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -153,26 +153,12 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
     const photos = chat.photos ?? [];
     const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), photos, contexts: [...newDocumentContext(chat.messages, includedDocument), ...selections] };
     const messages = [...chat.messages, message];
-    updateChat(id, (current) => ({ ...current, title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages, prompt: "", selections: [], photos: [] }));
-    await requestAnswer(chat, messages, crypto.randomUUID(), () => {
-      updateChat(id, (current) => ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
-    }, "Response stopped. Your prompt is ready to send again.");
-  }
-
-  async function regenerate() {
-    if (!chat || requestRef.current || loadingPhotos) return;
-    const assistant = chat.messages.at(-1);
-    const messages = chat.messages.slice(0, -1);
-    if (assistant?.role !== "assistant" || messages.at(-1)?.role !== "user") return;
-    await requestAnswer(chat, messages, assistant.id, undefined, "Response stopped. Previous response kept.");
-  }
-
-  async function requestAnswer(selectedChat: DocumentChat, messages: DocumentChat["messages"], assistantId: string, onNoAnswer?: () => void, stoppedMessage = "Response stopped.") {
-    const id = selectedChat.id;
     const controller = new AbortController();
     requestRef.current = controller;
     setPending(id);
     setError("");
+    updateChat(id, (current) => ({ ...current, title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages, prompt: "", selections: [], photos: [] }));
+    const assistantId = crypto.randomUUID();
     let answer = "";
     let updateTimer: number | undefined;
     function publish(status?: "streaming" | "interrupted") {
@@ -190,7 +176,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
     try {
       const response = await fetch("/api/document-chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stream: true, messages: messagesWithoutExcludedDocuments(messages, selectedChat.excludedDocumentPaths), reasoningEffort: selectedChat.reasoningEffort }),
+        body: JSON.stringify({ stream: true, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), reasoningEffort: chat.reasoningEffort }),
         signal: controller.signal,
       });
       await readChatResponse(response, controller.signal, (text) => {
@@ -207,8 +193,8 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
         publish("interrupted");
         setError(controller.signal.aborted ? "" : cause instanceof Error ? cause.message : "Chat failed.");
       } else {
-        setError(controller.signal.aborted ? stoppedMessage : cause instanceof Error ? cause.message : "Chat failed.");
-        onNoAnswer?.();
+        setError(controller.signal.aborted ? "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
+        updateChat(id, (current) => ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
@@ -304,7 +290,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
           }}
         >
           {!chat?.messages.length && <div className="mx-auto my-auto w-full max-w-xs shrink-0 space-y-3 text-center text-sm text-muted-foreground"><p>Ask a question about your document.</p><p>The current Markdown document, including unsaved edits, is sent with your prompt.</p><p>Select paragraphs in either editor and press <kbd>⌘/Ctrl + Shift + L</kbd> to add them to your prompt.</p></div>}
-          {chat?.messages.map((message, messageIndex) => <article key={message.id} className="min-w-0 space-y-2 text-sm"><p className="text-xs font-semibold text-muted-foreground">{message.role === "user" ? "You" : "Assistant"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
+          {chat?.messages.map((message) => <article key={message.id} className="min-w-0 space-y-2 text-sm"><p className="text-xs font-semibold text-muted-foreground">{message.role === "user" ? "You" : "Assistant"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
           </div>)}<MarkdownRenderer
@@ -313,7 +299,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
             baseLineHeight={1.6}
             renderImages={false}
             content={message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming") : message.text}
-          />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}{message.role === "assistant" && messageIndex === chat.messages.length - 1 && <button type="button" aria-label="Regenerate response" title="Regenerate response" disabled={!!pending || loadingPhotos} onClick={() => void regenerate()} className="inline-flex h-7 w-7 appearance-none items-center justify-center border-0 bg-transparent p-0 text-muted-foreground shadow-none outline-none hover:text-foreground focus-visible:text-foreground disabled:opacity-40"><RefreshCw aria-hidden size={14} /></button>}</article>)}
+          />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
         <form className="space-y-2 border-t border-border p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>

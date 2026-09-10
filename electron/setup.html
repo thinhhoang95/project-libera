@@ -412,7 +412,7 @@
             <section class="settings-section hidden" data-section="ai">
               <h2>AI</h2>
               <p>Choose a model and reasoning effort for each function. Settings are saved across app restarts.</p>
-              <label for="openrouter-model">Default OpenRouter model (other AI tools)</label>
+              <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
                 autocomplete="off"
@@ -420,7 +420,7 @@
                 type="text"
               />
               <p class="field-help">
-                Enter any OpenRouter model string, for example google/gemini-3.5-flash.
+                Used only when a non-LaTeX function-specific model is unavailable. Each AI function can be configured independently below; LaTeX/PDF retains its own fallback.
               </p>
 
               <fieldset class="ai-function-settings">
@@ -435,6 +435,20 @@
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
                 </select>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>AI Image to Markdown</legend>
+                <label for="ai-imageToMarkdown-model">Model</label>
+                <input id="ai-imageToMarkdown-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-imageToMarkdown-effort">Reasoning effort</label>
+                <select id="ai-imageToMarkdown-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <p class="field-help">Choose a model that supports image input.</p>
               </fieldset>
               <fieldset class="ai-function-settings">
                 <legend>AI Rewrite</legend>
@@ -600,7 +614,7 @@
       const apiKeyInput = document.querySelector("#openai-api-key");
       const apiKeyLocked = document.querySelector("#api-key-locked");
       const openRouterModelInput = document.querySelector("#openrouter-model");
-      const aiFunctionNames = ["formatting", "rewrite", "chat", "latex"];
+      const aiFunctionNames = ["formatting", "rewrite", "chat", "imageToMarkdown", "latex"];
       const aiFunctionInputs = Object.fromEntries(aiFunctionNames.map((name) => [name, {
         model: document.querySelector(`#ai-${name}-model`),
         effort: document.querySelector(`#ai-${name}-effort`),

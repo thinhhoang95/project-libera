@@ -1,12 +1,19 @@
 import { readFileSync } from "node:fs";
 import { getOpenRouterModel } from "./openrouter";
 
-export type AiFunction = "formatting" | "rewrite" | "chat" | "latex";
+export type AiFunction = "formatting" | "rewrite" | "chat" | "imageToMarkdown" | "latex";
 export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
+const ENV_NAMES: Record<AiFunction, string> = {
+  formatting: "FORMATTING",
+  rewrite: "REWRITE",
+  chat: "CHAT",
+  imageToMarkdown: "IMAGE_TO_MARKDOWN",
+  latex: "LATEX",
+};
 
 export function getAiFunctionOptions(name: AiFunction) {
-  const prefix = `LIBERA_AI_${name.toUpperCase()}`;
+  const prefix = `LIBERA_AI_${ENV_NAMES[name]}`;
   const model = process.env[`${prefix}_MODEL`]?.trim() || (name === "latex" ? "openai/gpt-5.6-luna" : getOpenRouterModel());
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
   const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" ? "low" : "medium";
