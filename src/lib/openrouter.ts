@@ -1,3 +1,5 @@
+import { readSseData } from "./text-stream";
+
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
@@ -105,9 +107,10 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-export async function createOpenRouterCompletion(
-  messages: OpenRouterMessage[],
-  options: { model?: string; reasoning?: { effort: "low" }; maxTokens?: number; signal?: AbortSignal } = {},
+type CompletionOptions = { model?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal };
+
+async function requestOpenRouterCompletion(
+  messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
 ) {
   const apiKey = getOpenRouterApiKey();
 
@@ -134,6 +137,7 @@ export async function createOpenRouterCompletion(
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       messages,
       temperature: 0,
+      ...(stream ? { stream: true } : {}),
     }),
   });
 
@@ -141,6 +145,11 @@ export async function createOpenRouterCompletion(
     throw new Error(await readOpenRouterError(response));
   }
 
+  return response;
+}
+
+export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}) {
+  const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
   return {
@@ -149,6 +158,24 @@ export async function createOpenRouterCompletion(
   };
 }
 
-export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMessage[]) {
-  return normalizeMarkdownOutput((await createOpenRouterCompletion(messages)).content);
+export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMessage[], options: Parameters<typeof createOpenRouterCompletion>[1] = {}) {
+  return normalizeMarkdownOutput((await createOpenRouterCompletion(messages, options)).content);
+}
+
+export async function* streamOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}) {
+  const response = await requestOpenRouterCompletion(messages, options, true);
+  if (!response.body) throw new Error("The model returned no response stream.");
+  for await (const data of readSseData(response.body, options.signal)) {
+    if (data.trim() === "[DONE]") return;
+    const payload = JSON.parse(data) as {
+      error?: { message?: string };
+      choices?: { delta?: { content?: OpenRouterMessageContent }; finish_reason?: string }[];
+    };
+    if (payload.error) throw new Error(payload.error.message || "The model stream failed.");
+    const choice = payload.choices?.[0];
+    if (choice?.finish_reason === "error") throw new Error("The model stream failed.");
+    const text = extractMessageContent(choice?.delta?.content);
+    if (text) yield text;
+  }
+  throw new Error("The model connection ended before the response was complete.");
 }

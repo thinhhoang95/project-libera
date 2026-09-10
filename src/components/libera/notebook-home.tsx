@@ -30,6 +30,7 @@ const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.25;
 
 type NotebookHomeProps = {
+  yourName: string;
   notebook: LiberaNotebookNode;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
@@ -78,6 +79,7 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
 }
 
 export function NotebookHome({
+  yourName,
   notebook,
   onCreateMarkdown,
   onCreateSlides,
@@ -148,8 +150,8 @@ export function NotebookHome({
         </header>
 
         <section className="py-4 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-            What&apos;s next for {notebook.name}
+          <h1 className="wrap-break-word text-3xl font-semibold tracking-tight sm:text-4xl">
+            What&apos;s next for {notebook.name}{yourName ? `, ${yourName}?` : ""}
           </h1>
           <div className="relative mx-auto mt-5 max-w-3xl text-left">
             <Search

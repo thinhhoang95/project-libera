@@ -1,0 +1,58 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const { mkdtempSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { JSDOM } = require('jsdom');
+const { AI_FUNCTIONS, normalizeAiPreferences, aiPreferencesEnvironment } = require('../../electron/ai-preferences.cjs');
+
+test('AI preferences migrate legacy models and survive a config file round trip', () => {
+  const legacy = normalizeAiPreferences(undefined, 'existing/model');
+  assert.equal(legacy.formatting.model, 'existing/model');
+  assert.equal(legacy.rewrite.model, 'existing/model');
+  assert.equal(legacy.chat.model, 'existing/model');
+  assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low' });
+  const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name, i) => [name, { model: `provider/${name}`, reasoningEffort: ['low', 'high', 'xhigh', 'max'][i] }]));
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
+  try {
+    const configPath = path.join(directory, 'libera-electron-config.json');
+    writeFileSync(configPath, JSON.stringify({ aiFunctions: normalizeAiPreferences(aiFunctions) }));
+    const restarted = JSON.parse(readFileSync(configPath, 'utf8'));
+    assert.deepEqual(normalizeAiPreferences(restarted.aiFunctions), aiFunctions);
+    const env = aiPreferencesEnvironment(restarted.aiFunctions);
+    for (const name of AI_FUNCTIONS) {
+      assert.equal(env[`LIBERA_AI_${name.toUpperCase()}_MODEL`], aiFunctions[name].model);
+      assert.equal(env[`LIBERA_AI_${name.toUpperCase()}_REASONING_EFFORT`], aiFunctions[name].reasoningEffort);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Preferences UI loads and saves all four function settings', async () => {
+  const aiFunctions = normalizeAiPreferences();
+  let saved;
+  const dom = new JSDOM(readFileSync(path.join(__dirname, '../../electron/setup.html'), 'utf8'), {
+    url: 'http://localhost/?mode=configuration', runScripts: 'dangerously',
+    beforeParse(window) {
+      window.matchMedia = () => ({ matches: false, addEventListener() {} });
+      window.liberaSetup = {
+        getState: async () => ({ aiFunctions, hasApiKey: true, hasPasswordHash: true, dataDir: '/tmp/notebooks' }),
+        save: async (input) => { saved = JSON.parse(JSON.stringify(input)); },
+      };
+    },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const document = dom.window.document;
+    document.querySelector('[data-section-button="ai"]').click();
+    assert.equal(document.querySelector('[data-section="ai"]').classList.contains('hidden'), false);
+    for (const name of AI_FUNCTIONS) {
+      assert.equal(document.querySelector(`#ai-${name}-model`).value, aiFunctions[name].model);
+      assert.deepEqual(Array.from(document.querySelector(`#ai-${name}-effort`).options, (option) => option.value), ['low', 'medium', 'high', 'xhigh', 'max']);
+      document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
+      document.querySelector(`#ai-${name}-effort`).value = 'max';
+    }
+    document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const name of AI_FUNCTIONS) assert.deepEqual(saved.aiFunctions[name], { model: `custom/${name}`, reasoningEffort: 'max' });
+  } finally { dom.window.close(); }
+});

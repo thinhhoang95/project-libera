@@ -18,6 +18,7 @@ type LiberaMarkdownPdfRenderInput = {
 
 type LiberaNativeMenuItem =
   | {
+      submenu?: LiberaNativeMenuItem[];
       checked?: boolean;
       enabled?: boolean;
       id: string;
@@ -84,7 +85,8 @@ declare global {
       close: () => Promise<void>;
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<void>;
-      setTheme: (theme: "light" | "dark") => Promise<void>;
+      setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
+      onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
     };
     liberaUpdater?: {
       getState: () => Promise<LiberaUpdaterState>;

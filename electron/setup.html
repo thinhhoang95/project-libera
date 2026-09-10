@@ -18,6 +18,31 @@
         color: #18181b;
       }
 
+      :root[data-theme="dark"] { color-scheme: dark; background: #18181b; color: #fafafa; }
+      :root[data-theme="dark"] body,
+      :root[data-theme="dark"] .settings-sidebar { background: #18181b; }
+      :root[data-theme="dark"] form,
+      :root[data-theme="dark"] input,
+      :root[data-theme="dark"] select,
+      :root[data-theme="dark"] button.secondary,
+      :root[data-theme="dark"] .nav-item.active { background: #27272a; color: #fafafa; }
+      :root[data-theme="dark"] p,
+      :root[data-theme="dark"] label,
+      :root[data-theme="dark"] .nav-item,
+      :root[data-theme="dark"] .settings-section h3 { color: #d4d4d8; }
+      :root[data-theme="dark"] .field-help,
+      :root[data-theme="dark"] .locked,
+      :root[data-theme="dark"] .settings-sidebar-title { color: #a1a1aa; }
+      :root[data-theme="dark"] .dialog-header,
+      :root[data-theme="dark"] .settings-sidebar,
+      :root[data-theme="dark"] .actions,
+      :root[data-theme="dark"] input,
+      :root[data-theme="dark"] select,
+      :root[data-theme="dark"] button.secondary,
+      :root[data-theme="dark"] .nav-item.active { border-color: #52525b; }
+      :root[data-theme="dark"] .nav-item:hover { background: #3f3f46; }
+      :root[data-theme="dark"] #save-button { background: #fafafa; color: #18181b; }
+
       * {
         box-sizing: border-box;
       }
@@ -259,6 +284,9 @@
           border-bottom: 1px solid #e4e4e7;
         }
       }
+      .ai-function-settings { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; margin: 16px 0; }
+      .ai-function-settings legend { padding: 0 4px; font-size: 14px; font-weight: 600; }
+      :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
     </style>
   </head>
   <body>
@@ -291,13 +319,30 @@
             >
               Markdown
             </button>
+            <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
           </nav>
 
           <div class="settings-detail">
             <section class="settings-section" data-section="general">
               <h2>General</h2>
               <p class="settings-section-description">
-                Configure the local data directory, OpenRouter model, API key, and master password.
+                Personalize Libera and configure your local data directory, OpenRouter model, API key, and master password.
+              </p>
+
+              <label for="theme-preference">Theme</label>
+              <select id="theme-preference" aria-describedby="theme-help">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="system">System</option>
+              </select>
+              <p id="theme-help" class="field-help">
+                System follows your device’s appearance. Theme changes apply when saved.
+              </p>
+
+              <label for="your-name">Your name</label>
+              <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" />
+              <p id="your-name-help" class="field-help">
+                Optional. Adds a personal greeting to your notebooks and sign-in screen.
               </p>
 
               <label for="data-dir">Libera by Thinh Hoang Master directory</label>
@@ -311,17 +356,6 @@
               <div id="api-key-locked" class="locked hidden">
                 An API key is already saved. Leave this field blank to keep it.
               </div>
-
-              <label for="openrouter-model">OpenRouter model</label>
-              <input
-                id="openrouter-model"
-                autocomplete="off"
-                spellcheck="false"
-                type="text"
-              />
-              <p class="field-help">
-                Enter any OpenRouter model string, for example google/gemini-3.5-flash.
-              </p>
 
               <div id="password-fields">
                 <label for="password">Master password</label>
@@ -356,6 +390,76 @@
                   Password changes are applied after restarting Libera by Thinh Hoang.
                 </p>
               </div>
+            </section>
+
+            <section class="settings-section hidden" data-section="ai">
+              <h2>AI</h2>
+              <p>Choose a model and reasoning effort for each function. Settings are saved across app restarts.</p>
+              <label for="openrouter-model">Default OpenRouter model (other AI tools)</label>
+              <input
+                id="openrouter-model"
+                autocomplete="off"
+                spellcheck="false"
+                type="text"
+              />
+              <p class="field-help">
+                Enter any OpenRouter model string, for example google/gemini-3.5-flash.
+              </p>
+
+              <fieldset class="ai-function-settings">
+                <legend>AI Formatting</legend>
+                <label for="ai-formatting-model">Model</label>
+                <input id="ai-formatting-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-formatting-effort">Reasoning effort</label>
+                <select id="ai-formatting-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>AI Rewrite</legend>
+                <label for="ai-rewrite-model">Model</label>
+                <input id="ai-rewrite-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-rewrite-effort">Reasoning effort</label>
+                <select id="ai-rewrite-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>AI Chat</legend>
+                <label for="ai-chat-model">Model</label>
+                <input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-chat-effort">Reasoning effort</label>
+                <select id="ai-chat-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>Convert Markdown to LaTeX/PDF</legend>
+                <label for="ai-latex-model">Model</label>
+                <input id="ai-latex-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-latex-effort">Reasoning effort</label>
+                <select id="ai-latex-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+              </fieldset>
+              <p class="field-help">Enter OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
+
             </section>
 
             <section class="settings-section hidden" data-section="markdown">
@@ -450,11 +554,27 @@
       const form = document.querySelector("#setup-form");
       const formTitle = document.querySelector("#form-title");
       const formDescription = document.querySelector("#form-description");
+      const themePreferenceInput = document.querySelector("#theme-preference");
+      const systemAppearance = window.matchMedia("(prefers-color-scheme: dark)");
+      function updateAppearance() {
+        const preference = themePreferenceInput.value;
+        document.documentElement.dataset.theme = preference === "system"
+          ? systemAppearance.matches ? "dark" : "light"
+          : preference;
+      }
+      themePreferenceInput.addEventListener("change", updateAppearance);
+      systemAppearance.addEventListener("change", updateAppearance);
+      const yourNameInput = document.querySelector("#your-name");
       const dataDirInput = document.querySelector("#data-dir");
       const browseButton = document.querySelector("#browse-button");
       const apiKeyInput = document.querySelector("#openai-api-key");
       const apiKeyLocked = document.querySelector("#api-key-locked");
       const openRouterModelInput = document.querySelector("#openrouter-model");
+      const aiFunctionNames = ["formatting", "rewrite", "chat", "latex"];
+      const aiFunctionInputs = Object.fromEntries(aiFunctionNames.map((name) => [name, {
+        model: document.querySelector(`#ai-${name}-model`),
+        effort: document.querySelector(`#ai-${name}-effort`),
+      }]));
       const passwordFields = document.querySelector("#password-fields");
       const passwordLocked = document.querySelector("#password-locked");
       const changePasswordButton = document.querySelector("#change-password-button");
@@ -489,7 +609,7 @@
         document.title = "Libera by Thinh Hoang Preferences";
         formTitle.textContent = "Preferences";
         formDescription.textContent =
-          "Change Libera by Thinh Hoang settings. Saved changes apply after restarting Libera by Thinh Hoang.";
+          "Change Libera by Thinh Hoang settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera by Thinh Hoang.";
         closeButton.classList.remove("hidden");
         saveButton.textContent = "Save Preferences";
       }
@@ -581,8 +701,15 @@
       async function loadState() {
         const state = await window.liberaSetup.getState();
 
+        themePreferenceInput.value = state.themePreference || "system";
+        updateAppearance();
+        yourNameInput.value = state.yourName || "";
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
+        for (const name of aiFunctionNames) {
+          aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
+          aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (name === "latex" ? "low" : "medium");
+        }
         const configuredFontFamily =
           state.markdownEditorFontFamily || "system-monospace";
 
@@ -655,6 +782,8 @@
           await window.liberaSetup.save({
             changePassword: !changePasswordFields.classList.contains("hidden"),
             currentPassword: currentPasswordInput.value,
+            themePreference: themePreferenceInput.value,
+            yourName: yourNameInput.value,
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             markdownBaseFontSize: markdownBaseFontSizeInput.value,
@@ -663,6 +792,10 @@
             markdownPdfBaseLineHeight: markdownPdfBaseLineHeightInput.value,
             openaiApiKey: apiKeyInput.value,
             openRouterModel: openRouterModelInput.value,
+            aiFunctions: Object.fromEntries(aiFunctionNames.map((name) => [name, {
+              model: aiFunctionInputs[name].model.value,
+              reasoningEffort: aiFunctionInputs[name].effort.value,
+            }])),
             password: changePasswordFields.classList.contains("hidden")
               ? passwordInput.value
               : newPasswordInput.value,

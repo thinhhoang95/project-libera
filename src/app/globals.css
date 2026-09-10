@@ -802,3 +802,33 @@ button.border[class*="border-white"]:hover {
 :is(.libera-tiptap, .markdown-renderer) :is(p, h1, h2, h3, h4, h5, h6):has(span[data-line-height="2"]) { line-height: 2; }
 :is(.libera-tiptap, .markdown-renderer) :is(p, h1, h2, h3, h4, h5, h6):has(span[data-line-height="2.5"]) { line-height: 2.5; }
 :is(.libera-tiptap, .markdown-renderer) :is(p, h1, h2, h3, h4, h5, h6):has(span[data-line-height="3"]) { line-height: 3; }
+
+/* Chat shares the native sidebar material; only the editor remains opaque. */
+.libera-chat-markdown > :first-child { margin-top: 0; }
+.libera-chat-markdown > :last-child { margin-bottom: 0; }
+.libera-chat-markdown pre { overflow-x: auto; margin-block: 0.75em; padding: 0.75em; background: var(--muted); border-radius: 0.5rem; }
+.libera-chat-markdown pre > code { padding: 0; background: transparent; }
+.libera-chat-markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding-block: 0.25em; }
+@media (width < 64rem) {
+  .libera-main-layout { grid-template-columns: minmax(0, 1fr) min(var(--libera-chat-width), 45vw); grid-template-rows: auto minmax(0, 1fr); }
+  .libera-main-layout > .libera-left-panel { grid-column: 1 / -1; }
+  .libera-main-layout > .libera-chat-panel { grid-column: 2; grid-row: 2; }
+}
+
+@keyframes libera-chat-shimmer {
+  from { background-position: 200% center; }
+  to { background-position: -200% center; }
+}
+
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  @supports (background-clip: text) or (-webkit-background-clip: text) {
+    .libera-chat-thinking {
+      background-image: linear-gradient(100deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%);
+      background-size: 200% 100%;
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      animation: libera-chat-shimmer 2s linear infinite;
+    }
+  }
+}

@@ -14,6 +14,7 @@ export default async function Home() {
 
   return (
     <LiberaApp
+      yourName={process.env.LIBERA_YOUR_NAME?.trim() ?? ""}
       initialAuthenticated={initialAuthenticated}
       markdownPreferences={markdownPreferences}
     />

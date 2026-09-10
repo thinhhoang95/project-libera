@@ -85,6 +85,7 @@ type WorkspacePanelProps = {
   canStartScreenshotSnip: boolean;
   firstNotebook: string;
   imageMarkdownConverting: boolean;
+  yourName: string;
   markdownPreferences: MarkdownPreferences;
   recentFiles: LiberaFileNode[];
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
@@ -482,6 +483,7 @@ export function WorkspacePanel({
   canStartScreenshotSnip,
   firstNotebook,
   imageMarkdownConverting,
+  yourName,
   markdownPreferences,
   recentFiles,
   screenshotSnipSession,
@@ -1276,6 +1278,7 @@ export function WorkspacePanel({
     if (selectedNotebook) {
       return (
         <NotebookHome
+          yourName={yourName}
           notebook={selectedNotebook}
           onCreateMarkdown={onCreateMarkdown}
           onCreateSlides={onCreateSlides}

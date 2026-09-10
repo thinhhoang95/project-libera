@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { apiRequest } from "@/components/libera/api-client";
+import { DocumentChatPanel } from "@/components/libera/document-chat-panel";
 import { LeftPanel } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -16,6 +18,7 @@ import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 
 type LiberaAppProps = {
+  yourName?: string;
   initialAuthenticated: boolean;
   markdownPreferences: MarkdownPreferences;
 };
@@ -38,6 +41,7 @@ function clampSidebarWidth(width: number, layoutWidth?: number) {
 }
 
 export function LiberaApp({
+  yourName = "",
   initialAuthenticated,
   markdownPreferences,
 }: LiberaAppProps) {
@@ -47,6 +51,9 @@ export function LiberaApp({
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [sidebarResizing, setSidebarResizing] = useState(false);
+  const [chatWidth, setChatWidth] = useState(360);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatResizing, setChatResizing] = useState(false);
   const mainLayoutRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -93,7 +100,7 @@ export function LiberaApp({
   }, []);
 
   useEffect(() => {
-    if (!sidebarResizing) {
+    if (!sidebarResizing && !chatResizing) {
       return;
     }
 
@@ -106,14 +113,52 @@ export function LiberaApp({
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
     };
-  }, [sidebarResizing]);
+  }, [sidebarResizing, chatResizing]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let disposed = false;
+    void apiRequest<{ panel: { width: number; collapsed: boolean } | null }>("/api/document-chat/state").then(({ panel }) => {
+      if (disposed || !panel) return;
+      if (Number.isFinite(panel.width)) setChatWidth(Math.max(280, Math.min(560, panel.width)));
+      setChatCollapsed(panel.collapsed === true);
+    }).catch(() => undefined);
+    return () => { disposed = true; };
+  }, [authenticated]);
+
+  const saveChatPanel = useCallback((width: number, collapsed: boolean) => {
+    void apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "panel", value: { width, collapsed } }), keepalive: true }).catch(() => undefined);
+  }, []);
+
+  const changeChatCollapsed = useCallback((collapsed: boolean) => {
+    setChatCollapsed(collapsed);
+    saveChatPanel(chatWidth, collapsed);
+  }, [chatWidth, saveChatPanel]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    function toggleChat(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.code !== "KeyB" || event.repeat || event.isComposing) return;
+      event.preventDefault();
+      changeChatCollapsed(!chatCollapsed);
+      if (!chatCollapsed) document.querySelector<HTMLButtonElement>('[aria-label="Toggle document chat"]')?.focus();
+    }
+    window.addEventListener("keydown", toggleChat, true);
+    return () => window.removeEventListener("keydown", toggleChat, true);
+  }, [authenticated, chatCollapsed, changeChatCollapsed]);
+
+  function chatWidthFromPointer(clientX: number) {
+    const bounds = mainLayoutRef.current?.getBoundingClientRect();
+    const available = (bounds?.width ?? 1200) - (notebooksCollapsed ? 48 : sidebarWidth) - 320;
+    return Math.round(Math.max(280, Math.min(560, available, (bounds?.right ?? clientX + chatWidth) - clientX)));
+  }
 
   function sidebarWidthFromPointer(clientX: number) {
     const layoutBounds = mainLayoutRef.current?.getBoundingClientRect();
 
     return clampSidebarWidth(
       clientX - (layoutBounds?.left ?? 0),
-      layoutBounds?.width,
+      layoutBounds ? layoutBounds.width - (chatCollapsed ? 0 : chatWidth) : undefined,
     );
   }
 
@@ -142,6 +187,7 @@ export function LiberaApp({
   if (!authenticated) {
     return (
       <LoginScreen
+        yourName={yourName}
         authError={workspace.authError}
         busy={workspace.busy}
         password={workspace.password}
@@ -155,10 +201,11 @@ export function LiberaApp({
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
         ref={mainLayoutRef}
-        className="relative grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[var(--libera-sidebar-width)_minmax(0,1fr)]"
+        className="relative grid min-h-0 flex-1 overflow-hidden libera-main-layout lg:grid-cols-[var(--libera-sidebar-width)_minmax(0,1fr)_var(--libera-chat-width)]"
         style={
           {
             "--libera-sidebar-width": `${notebooksCollapsed ? 48 : sidebarWidth}px`,
+            "--libera-chat-width": `${chatCollapsed ? 0 : chatWidth}px`,
           } as CSSProperties
         }
       >
@@ -210,6 +257,8 @@ export function LiberaApp({
 
         <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
           <TabStrip
+            chatOpen={!chatCollapsed}
+            onToggleChat={() => changeChatCollapsed(!chatCollapsed)}
             onCreateUntitled={() => workspace.createUntitledFile()}
             markdownEditorMode={markdownEditorMode}
             onMarkdownEditorModeChange={(mode) => {
@@ -239,6 +288,7 @@ export function LiberaApp({
           ) : null}
 
           <WorkspacePanel
+            yourName={yourName}
             markdownEditorMode={markdownEditorMode}
             activePreviewTabId={activePreviewTabId}
             onActivePreviewTabIdChange={setActivePreviewTabId}
@@ -275,6 +325,24 @@ export function LiberaApp({
             onStartScreenshotSnip={workspace.startScreenshotSnip}
           />
         </section>
+
+        <DocumentChatPanel onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} onCollapsedChange={changeChatCollapsed} />
+        {!chatCollapsed && <div
+          role="separator" aria-label="Resize document chat" aria-orientation="vertical"
+          aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
+          className="absolute bottom-0 top-0 z-40 hidden w-1.5 translate-x-1/2 cursor-col-resize touch-none focus-visible:bg-accent lg:block"
+          style={{ right: chatWidth }}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const width = Math.max(280, Math.min(560, chatWidth + (event.key === "ArrowLeft" ? 16 : -16)));
+            setChatWidth(width); saveChatPanel(width, chatCollapsed);
+          }}
+          onLostPointerCapture={() => setChatResizing(false)} onPointerCancel={() => setChatResizing(false)}
+          onPointerDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setChatResizing(true); }}
+          onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) setChatWidth(chatWidthFromPointer(event.clientX)); }}
+          onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const width = chatWidthFromPointer(event.clientX); setChatWidth(width); setChatResizing(false); saveChatPanel(width, chatCollapsed); event.currentTarget.releasePointerCapture(event.pointerId); }}
+        />}
 
         {!notebooksCollapsed ? (
           <div

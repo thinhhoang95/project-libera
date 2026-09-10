@@ -33,7 +33,12 @@ async function readConfig(configPath: string): Promise<ElectronConfig> {
   }
 }
 
-export function getConfiguredThemePreference() {
+export async function getConfiguredThemePreference() {
+  const configPath = getConfigPath();
+  if (configPath) {
+    const config = await readConfig(configPath);
+    return themePreferenceOrUndefined(config.themePreference) ?? "system";
+  }
   return themePreferenceOrUndefined(process.env.LIBERA_THEME);
 }
 

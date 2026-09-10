@@ -17,6 +17,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
@@ -25,7 +26,7 @@ const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
 const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
-const THEME_PREFERENCES = new Set(["light", "dark"]);
+const THEME_PREFERENCES = new Set(["light", "dark", "system"]);
 const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
@@ -193,8 +194,12 @@ function readConfig() {
   }
 }
 
+function normalizeYourName(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function normalizeThemePreference(themePreference) {
-  return THEME_PREFERENCES.has(themePreference) ? themePreference : "";
+  return THEME_PREFERENCES.has(themePreference) ? themePreference : "system";
 }
 
 function normalizeOpenRouterModel(model) {
@@ -258,6 +263,8 @@ async function writeConfig(config) {
 
 function getConfigStatus(config = readConfig()) {
   return {
+    themePreference: normalizeThemePreference(config.themePreference),
+    yourName: normalizeYourName(config.yourName),
     dataDir: typeof config.dataDir === "string" ? config.dataDir : "",
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
@@ -270,6 +277,7 @@ function getConfigStatus(config = readConfig()) {
     markdownPdfBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownPdfBaseFontSize),
     markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownPdfBaseLineHeight),
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
+    aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
   };
 }
 
@@ -353,6 +361,8 @@ function validateSetupInput(input, existingConfig) {
   }
 
   return {
+    themePreference: normalizeThemePreference(input?.themePreference),
+    yourName: normalizeYourName(input?.yourName),
     dataDir,
     markdownEditorFontFamily,
     markdownBaseFontSize,
@@ -361,6 +371,7 @@ function validateSetupInput(input, existingConfig) {
     markdownPdfBaseLineHeight,
     openaiApiKey,
     openRouterModel,
+    aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -409,6 +420,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
 
       const nextConfig = {
         ...existingConfig,
+        themePreference: validated.themePreference,
+        yourName: validated.yourName,
         dataDir: validated.dataDir,
         markdownEditorFontFamily: validated.markdownEditorFontFamily,
         markdownBaseFontSize: validated.markdownBaseFontSize,
@@ -417,11 +430,14 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
+        aiFunctions: validated.aiFunctions,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
 
       await writeConfig(nextConfig);
+      nativeTheme.themeSource = nextConfig.themePreference;
+      mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
       savedConfig = nextConfig;
       setupWindow.close();
 
@@ -647,6 +663,7 @@ function dispatchCloseTabToFocusedWindow() {
 
 async function openConfigurationWindow() {
   try {
+    const previousConfig = readConfig();
     const updatedConfig = await createSetupWindow({
       mode: "configuration",
       parentWindow: mainWindow,
@@ -656,6 +673,13 @@ async function openConfigurationWindow() {
       return;
     }
 
+    const requiresRestart = Object.keys(updatedConfig).some(
+      (key) => key !== "themePreference" && (key === "aiFunctions"
+        ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
+        : updatedConfig[key] !== previousConfig[key]),
+    );
+    if (!requiresRestart) return;
+
     const result = await showMessageBox(mainWindow, {
       type: "info",
       buttons: ["Restart Now", "Later"],
@@ -663,7 +687,7 @@ async function openConfigurationWindow() {
       defaultId: 0,
       message: `Restart ${APP_DISPLAY_NAME} to apply preference changes.`,
       detail:
-        `General and Markdown preferences are applied when the local server starts.`,
+        `Theme changes apply immediately. Other General and Markdown preferences are applied when the local server starts.`,
       title: "Preferences Saved",
     });
 
@@ -829,8 +853,8 @@ function normalizeNativeMenuCoordinate(value) {
   return Math.max(0, Math.round(value));
 }
 
-function buildNativeMenuTemplate(items, selectItem) {
-  if (!Array.isArray(items)) {
+function buildNativeMenuTemplate(items, selectItem, depth = 0) {
+  if (!Array.isArray(items) || depth > 3) {
     return [];
   }
 
@@ -853,6 +877,12 @@ function buildNativeMenuTemplate(items, selectItem) {
     const label = normalizeNativeMenuString(item.label, MAX_NATIVE_MENU_LABEL_LENGTH);
 
     if (!id || !label) {
+      continue;
+    }
+
+    if (Array.isArray(item.submenu)) {
+      const submenu = buildNativeMenuTemplate(item.submenu, selectItem, depth + 1);
+      if (submenu.length) template.push({ id, label, enabled: item.enabled !== false, submenu });
       continue;
     }
 
@@ -1120,6 +1150,7 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
       config.markdownEditorFontFamily,
     ),
@@ -1137,6 +1168,7 @@ async function startNextServer(config) {
     ),
     LIBERA_PASSWORD_HASH: config.passwordHash,
     LIBERA_OPENROUTER_MODEL: normalizeOpenRouterModel(config.openRouterModel),
+    ...aiPreferencesEnvironment(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     LIBERA_SESSION_SECRET: config.sessionSecret,
     LIBERA_THEME: normalizeThemePreference(config.themePreference),
     NODE_ENV: mode === "dev" ? "development" : "production",

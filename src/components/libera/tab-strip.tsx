@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { FilePlus2, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { FilePlus2, MessageSquare, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
 type TabStripProps = {
+  chatOpen: boolean;
+  onToggleChat: () => void;
   onCreateUntitled: () => void;
   markdownEditorMode: MarkdownEditorMode;
   onMarkdownEditorModeChange: (mode: MarkdownEditorMode) => void;
@@ -57,6 +59,8 @@ function nativeMenuPointFromMouseEvent(event: MouseEvent<HTMLElement>) {
 }
 
 export function TabStrip({
+  chatOpen,
+  onToggleChat,
   onCreateUntitled,
   markdownEditorMode,
   onMarkdownEditorModeChange,
@@ -255,6 +259,18 @@ export function TabStrip({
           onRenameFile={onRenameFile}
           onSave={onSave}
         />
+        <button
+          type="button"
+          aria-label="Toggle document chat"
+          aria-expanded={chatOpen}
+          aria-controls="document-chat-panel"
+          aria-keyshortcuts="Meta+Shift+B Control+Shift+B"
+          title="Toggle document chat (⌘/Ctrl+Shift+B)"
+          onClick={onToggleChat}
+          className={`libera-window-no-drag shrink-0 rounded-lg p-2 hover:bg-muted hover:text-foreground ${chatOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
+        >
+          <MessageSquare aria-hidden className="h-4 w-4" />
+        </button>
         <WindowControls />
       </div>
     </div>

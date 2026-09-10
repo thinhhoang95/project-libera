@@ -45,6 +45,11 @@ contextBridge.exposeInMainWorld("liberaWindow", {
   // Keep the native window appearance (and therefore the vibrancy material) in
   // sync with the in-app theme so the glass renders dark in dark mode.
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),
+  onThemeChanged: (listener) => {
+    const handler = (_event, theme) => listener(theme);
+    ipcRenderer.on("theme:changed", handler);
+    return () => ipcRenderer.removeListener("theme:changed", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("liberaUpdater", {

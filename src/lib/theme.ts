@@ -1,9 +1,9 @@
-export type ThemePreference = "light" | "dark";
+export type ThemePreference = "light" | "dark" | "system";
 
 export const THEME_STORAGE_KEY = "libera.theme";
 
 export function isThemePreference(value: unknown): value is ThemePreference {
-  return value === "dark" || value === "light";
+  return value === "dark" || value === "light" || value === "system";
 }
 
 export function themePreferenceOrUndefined(value: unknown): ThemePreference | undefined {

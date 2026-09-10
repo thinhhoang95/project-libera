@@ -31,6 +31,7 @@ type MarkdownRendererProps = {
   onOpenExternalLink?: (href: string) => void;
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
+  renderImages?: boolean;
 };
 
 const remarkPlugins = [
@@ -139,6 +140,7 @@ function MarkdownRendererContent({
   onOpenExternalLink,
   onOpenFileLink,
   textScale = 1,
+  renderImages = true,
 }: MarkdownRendererProps) {
   const normalizedContent = useMemo(
     () => normalizeMarkdownHighlightDelimiters(content),
@@ -415,7 +417,7 @@ function MarkdownRendererContent({
               {children}
             </tr>
           ),
-          img: ({ alt, className, src, ...props }) => (
+          img: ({ alt, className, src, ...props }) => renderImages ? (
             // eslint-disable-next-line @next/next/no-img-element -- Markdown images may be authenticated local assets.
             <img
               {...markdownElementProps(props)}
@@ -429,7 +431,7 @@ function MarkdownRendererContent({
               )}
               alt={alt ?? ""}
             />
-          ),
+          ) : null,
           a: ({ children, className, href, ...props }) => (
             <a
               {...markdownElementProps(props)}

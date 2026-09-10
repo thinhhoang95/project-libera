@@ -2850,6 +2850,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       convertImageToMarkdownWithAi,
       formatSelectionWithAi,
       rewriteSelectionWithAi,
+      refreshTree,
       handleLogin,
       handleLogout,
       handleUploadChange,

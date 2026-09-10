@@ -4,8 +4,10 @@ import {
   FileText,
   GripVertical,
   Highlighter,
+  Search,
   StickyNote,
   Trash2,
+  X,
 } from "lucide-react";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
@@ -436,6 +438,7 @@ export function OutlinePanel({
           />
         ) : activeTab?.file.fileType === "markdown" ? (
           <MarkdownOutline
+            key={activeTab.id}
             activeTab={activeTab}
             textareaRef={textareaRef}
             onOpenFile={onOpenFile}
@@ -475,6 +478,12 @@ function MarkdownOutline({
 }) {
   const outlineState = useMarkdownOutline(activeTab);
   const headings = outlineState.headings;
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredHeadings = useMemo(
+    () => headings.filter((heading) => heading.text.toLowerCase().includes(normalizedQuery)),
+    [headings, normalizedQuery],
+  );
   const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
   const activeMarkdownLine =
     activeTab?.viewState?.markdown?.line ??
@@ -719,13 +728,46 @@ function MarkdownOutline({
         <FileText aria-hidden className="h-3.5 w-3.5" />
         Markdown Outlines
       </div>
+      <div className="relative mb-3">
+        <Search
+          aria-hidden
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <input
+          aria-label="Search Markdown headings"
+          className="h-9 w-full rounded-full border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+          placeholder="Search headings"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Escape") {
+              setQuery("");
+            } else if (event.key === "Enter" && filteredHeadings[0]) {
+              event.preventDefault();
+              void navigateToHeading(filteredHeadings[0]);
+            }
+          }}
+        />
+        {query ? (
+          <button
+            aria-label="Clear heading search"
+            className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+            type="button"
+            onClick={() => setQuery("")}
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <X aria-hidden className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
       {!activeTab ? (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
           Open a Markdown file to see headings.
         </p>
-      ) : headings.length ? (
+      ) : filteredHeadings.length ? (
         <div className="space-y-1">
-          {headings.map((heading) => {
+          {filteredHeadings.map((heading) => {
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
             const isDragging = draggingHeadingId === heading.id;
@@ -785,7 +827,7 @@ function MarkdownOutline({
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          No headings in this Markdown file.
+          {headings.length ? "No matching headings." : "No headings in this Markdown file."}
         </p>
       )}
       {contextMenu ? (

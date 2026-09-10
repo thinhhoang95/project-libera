@@ -1,3 +1,4 @@
+import { getAiFunctionOptions } from "./ai-preferences";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import JSZip from "jszip";
@@ -36,7 +37,7 @@ export async function generateLatex(
     signal.throwIfAborted();
     progress(`Generating LaTeX · part ${part} of up to 3…`);
     const result = await complete(messages, {
-      model: "openai/gpt-5.6-luna", reasoning: { effort: "low" }, maxTokens: 16000, signal,
+      ...getAiFunctionOptions("latex"), maxTokens: 16000, signal,
     });
     if (!result.content.trim()) throw new Error("OpenRouter returned an empty LaTeX response.");
     const parsed = parseLatexPart(result.content);

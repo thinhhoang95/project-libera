@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 
 export const runtime = "nodejs";
@@ -67,7 +68,7 @@ ${prompt}
 Selected Markdown:
 ${text}`,
       },
-    ]);
+    ], getAiFunctionOptions("rewrite"));
 
     if (!rewrittenText.trim()) {
       return jsonError("AI rewrite returned an empty response.", 502);

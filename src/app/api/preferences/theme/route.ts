@@ -16,7 +16,7 @@ export async function PATCH(request: NextRequest) {
   const theme = body?.theme;
 
   if (!isThemePreference(theme)) {
-    return jsonError("Theme must be light or dark.", 400);
+    return jsonError("Theme must be light, dark, or system.", 400);
   }
 
   try {

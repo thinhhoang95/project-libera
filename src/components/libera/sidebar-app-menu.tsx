@@ -4,30 +4,12 @@ import type { MouseEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { AboutDialog } from "@/components/libera/about-dialog";
 import type { ThemePreference } from "@/lib/theme";
-import { isThemePreference, THEME_STORAGE_KEY } from "@/lib/theme";
+import { applyThemePreference } from "@/components/libera/theme-sync";
 
 type SidebarAppMenuProps = {
   collapsed?: boolean;
   onLogout: () => Promise<void>;
 };
-
-function systemThemePreference(): ThemePreference {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function storedThemePreference(): ThemePreference {
-  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-
-  return isThemePreference(savedTheme) ? savedTheme : systemThemePreference();
-}
-
-function applyThemePreference(theme: ThemePreference) {
-  document.documentElement.classList.toggle("dark", theme === "dark");
-  document.documentElement.style.colorScheme = theme;
-  // In the Electron glass build, mirror the theme onto the native window so the
-  // vibrancy material renders dark/light to match (keeps text contrast on glass).
-  window.liberaWindow?.setTheme(theme);
-}
 
 function nativeMenuPointFromButton(button: HTMLElement) {
   const rect = button.getBoundingClientRect();
@@ -47,14 +29,15 @@ export function SidebarAppMenu({
   const [theme, setTheme] = useState<ThemePreference>("light");
 
   useEffect(() => {
-    const animationFrame = window.requestAnimationFrame(() => {
-      const nextTheme = storedThemePreference();
-
-      applyThemePreference(nextTheme);
-      setTheme(nextTheme);
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
+    const syncTheme = () => {
+      setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
+    };
+    const animationFrame = window.requestAnimationFrame(syncTheme);
+    window.addEventListener("libera:theme-changed", syncTheme);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("libera:theme-changed", syncTheme);
+    };
   }, []);
 
   function openAboutDialog() {
@@ -65,7 +48,6 @@ export function SidebarAppMenu({
   function toggleDarkMode() {
     const nextTheme = theme === "dark" ? "light" : "dark";
 
-    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
     applyThemePreference(nextTheme);
     setTheme(nextTheme);
     void apiRequest<{ theme: ThemePreference }>("/api/preferences/theme", {

@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import { WindowControls } from "@/components/libera/window-controls";
 
 type LoginScreenProps = {
+  yourName: string;
   authError: string;
   busy: boolean;
   password: string;
@@ -10,6 +11,7 @@ type LoginScreenProps = {
 };
 
 export function LoginScreen({
+  yourName,
   authError,
   busy,
   password,
@@ -24,7 +26,14 @@ export function LoginScreen({
       </div>
       <section className="libera-glass-panel w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-sm">
         <p className="text-sm font-medium text-muted-foreground">Libera</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Sign in</h1>
+        <h1 className="mt-1 wrap-break-word text-2xl font-semibold tracking-tight">
+          {yourName ? `Welcome, ${yourName}` : "Sign in"}
+        </h1>
+        {yourName ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Sign in to continue to your notebooks.
+          </p>
+        ) : null}
         <form className="mt-6 space-y-4" onSubmit={onLogin}>
           <label className="block text-sm font-medium text-foreground" htmlFor="password">
             Password

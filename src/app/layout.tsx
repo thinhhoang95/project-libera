@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
+import { ThemeSync } from "@/components/libera/theme-sync";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 import { getConfiguredThemePreference } from "@/lib/theme-config";
@@ -19,18 +20,13 @@ function themeScript(configuredTheme?: string) {
     var storageKey = ${JSON.stringify(THEME_STORAGE_KEY)};
     var configuredTheme = ${JSON.stringify(configuredTheme ?? "")};
     var savedTheme = window.localStorage.getItem(storageKey);
-    var theme =
-      savedTheme === "dark" || savedTheme === "light"
-        ? savedTheme
-        : configuredTheme === "dark" || configuredTheme === "light"
-          ? configuredTheme
-          : window.matchMedia("(prefers-color-scheme: dark)").matches
-            ? "dark"
-            : "light";
-
-    if (savedTheme !== theme) {
-      window.localStorage.setItem(storageKey, theme);
-    }
+    var valid = function (value) { return value === "light" || value === "dark" || value === "system"; };
+    var preference = valid(configuredTheme) ? configuredTheme : valid(savedTheme) ? savedTheme : "system";
+    var theme = preference === "system"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+      : preference;
+    document.documentElement.dataset.themePreference = preference;
+    window.localStorage.setItem(storageKey, preference);
 
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.style.colorScheme = theme;
@@ -39,16 +35,17 @@ function themeScript(configuredTheme?: string) {
 `;
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const configuredTheme = getConfiguredThemePreference();
+  const configuredTheme = await getConfiguredThemePreference();
 
   return (
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
       <body className="flex h-full flex-col overflow-hidden font-sans">
+        <ThemeSync />
         {children}
         <Script
           id="libera-theme"

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 
 export const runtime = "nodejs";
@@ -43,7 +44,7 @@ export async function POST(request: NextRequest) {
         role: "user",
         content: text,
       },
-    ]);
+    ], getAiFunctionOptions("formatting"));
 
     if (!formattedText.trim()) {
       return jsonError("AI formatting returned an empty response.", 502);
