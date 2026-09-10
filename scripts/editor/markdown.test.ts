@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
-import { act, createElement, StrictMode } from "react";
+import { act, createElement, createRef, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { HighlightTool, highlightToolKey } from "../../src/lib/tiptap-highlight-tool";
+import { findTiptapTextMatches } from "../../src/lib/tiptap-find";
+import { findTextMatches, replaceTextMatches } from "../../src/lib/text-find";
 import { remarkMarkdownTextStyles } from "../../src/lib/markdown-text-styles";
 import { enumerateMarkdownHeadings } from "../../src/lib/markdown-heading-enumeration";
 import {
@@ -15,6 +17,7 @@ import {
 } from "../../src/lib/tiptap-editor-actions";
 import { TiptapEditorActions } from "../../src/components/libera/tiptap-editor-actions";
 import { TiptapMarkdownEditor } from "../../src/components/libera/tiptap-markdown-editor";
+import { MarkdownEditor } from "../../src/components/libera/markdown-editor";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT } from "../../src/lib/markdown-outline-navigation";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
@@ -22,17 +25,38 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
   Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
 }
 Object.assign(globalThis, { requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
+Object.assign(dom.window, { requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
 Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true });
 // jsdom has no layout; these shims let ProseMirror focus the tested menus.
 Object.assign(dom.window.Range.prototype, {
   getClientRects: () => [],
   getBoundingClientRect: () => new dom.window.DOMRect(),
 });
+// React's legacy input-event fallback expects these IE hooks when jsdom moves
+// focus into a controlled input.
+Object.assign(dom.window.HTMLElement.prototype, {
+  attachEvent(this: HTMLElement, name: string, listener: EventListener) {
+    this.addEventListener(name.replace(/^on/, ""), listener);
+  },
+  detachEvent(this: HTMLElement, name: string, listener: EventListener) {
+    this.removeEventListener(name.replace(/^on/, ""), listener);
+  },
+});
 Object.assign(globalThis, { innerHeight: 768, innerWidth: 1024 });
 after(() => dom.window.close());
 
 function create(content: string) {
   return new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), Mathematics], content, contentType: "markdown" });
+}
+
+async function setControlledInput(input: HTMLInputElement, value: string) {
+  await act(async () => { input.focus(); });
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const event = new dom.window.Event("propertychange", { bubbles: true });
+    Object.defineProperty(event, "propertyName", { value: "value" });
+    input.dispatchEvent(event);
+  });
 }
 
 test("visual outline navigation scrolls to repeated formatted headings without changing content", async () => {
@@ -177,6 +201,37 @@ test("highlight tool remembers its color, paints successive selections, and stop
     assert.equal(highlightToolKey.getState(editor.state)?.active, false);
     assert.equal(highlightToolKey.getState(editor.state)?.color, "#2563eb");
   } finally { editor.destroy(); }
+});
+
+test("visual find matches case-insensitively across inline formatting but not across blocks", () => {
+  const editor = create("One **two** one\n\nONE");
+  try {
+    assert.equal(findTiptapTextMatches(editor.state.doc, "one").length, 3);
+    assert.equal(findTiptapTextMatches(editor.state.doc, "ONE TWO").length, 1);
+    assert.equal(findTiptapTextMatches(editor.state.doc, "one one").length, 0);
+    assert.equal(findTiptapTextMatches(editor.state.doc, "o?e", { wildcards: true }).length, 3);
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("wildcard find supports star, question mark, escaping, and literal replacement", () => {
+  const value = "file-01.md file-aa.md file-123.md\na*b a?b axb";
+  assert.deepEqual(
+    findTextMatches(value, "file-??.md", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
+    ["file-01.md", "file-aa.md"],
+  );
+  assert.deepEqual(
+    findTextMatches(value, "a\\*b", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
+    ["a*b"],
+  );
+  assert.deepEqual(
+    findTextMatches(value, "a\\?b", { wildcards: true }).map((match) => value.slice(match.start, match.end)),
+    ["a?b"],
+  );
+  assert.equal(findTextMatches("start here\nend there", "start*end", { wildcards: true }).length, 0);
+  const matches = findTextMatches("one ONE one", "one");
+  assert.equal(replaceTextMatches("one ONE one", matches, "two"), "two two two");
 });
 
 test("image assets retain portable relative paths when serialized", () => {
@@ -418,6 +473,166 @@ test("visual editor mounts after deferred initialization in React Strict Mode wi
     assert.ok(host.querySelector('[role="textbox"][contenteditable="true"]'), 'An empty note must also mount after switching documents');
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Text style"]')?.value, '0');
     assert.equal(changes.length, 0, 'Opening a second note must not rewrite it');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual editor opens find with Mod-F, highlights matches, navigates, and closes without editing", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/find.md", value: "Alpha **beta Alpha** alpha",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const editable = host.querySelector<HTMLElement>('[role="textbox"][contenteditable="true"]')!;
+    await act(async () => {
+      editable.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const input = host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!;
+    assert.ok(input, "Mod-F must open the visual editor's find panel");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!.call(input, "alpha");
+      const event = new dom.window.Event("propertychange", { bubbles: true });
+      Object.defineProperty(event, "propertyName", { value: "value" });
+      input.dispatchEvent(event);
+    });
+    assert.match(host.textContent ?? "", /1\/3/);
+    assert.equal(host.querySelectorAll(".markdown-editor-find-match-active").length, 1);
+    assert.equal(host.querySelectorAll(".markdown-editor-find-match").length, 3);
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Next match"]')!.click(); });
+    assert.match(host.textContent ?? "", /2\/3/);
+    assert.ok(host.querySelector("strong .markdown-editor-find-match-active"));
+    await act(async () => {
+      input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    assert.match(host.textContent ?? "", /3\/3/);
+    const scrollContainer = editable.parentElement!.parentElement! as HTMLElement;
+    const originalFocus = editable.focus.bind(editable);
+    scrollContainer.scrollLeft = 45;
+    scrollContainer.scrollTop = 420;
+    editable.focus = (options?: FocusOptions) => {
+      scrollContainer.scrollLeft = 5;
+      scrollContainer.scrollTop = 20;
+      originalFocus(options);
+    };
+    await act(async () => {
+      input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    assert.equal(host.querySelector('[aria-label="Find in note"]'), null);
+    assert.equal(host.querySelectorAll(".markdown-editor-find-match").length, 0);
+    assert.equal(scrollContainer.scrollLeft, 45);
+    assert.equal(scrollContainer.scrollTop, 420, "Closing find must keep the matched text in view");
+    assert.deepEqual(changes, [], "Finding must not change or dirty the Markdown");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual find replaces one or all wildcard matches in single undoable edits", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  const original = "Alpha **beta Alpha** alpha";
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/replace.md", value: original,
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const editable = host.querySelector<HTMLElement>('[role="textbox"][contenteditable="true"]')!;
+    await act(async () => {
+      editable.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!, "A?pha");
+    await act(async () => { host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
+    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "Z");
+    assert.match(host.textContent ?? "", /1\/3/);
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Next match"]')!.click(); });
+    // Select the explicit Replace button rather than relying on toolbar order.
+    const replaceButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace")!;
+    await act(async () => { replaceButton.click(); });
+    assert.equal(changes.at(-1), "Alpha **beta Z** alpha");
+    assert.equal(host.querySelector("strong")?.textContent, "beta Z");
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    assert.equal(changes.at(-1), original);
+
+    const replaceAllButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all")!;
+    await act(async () => { replaceAllButton.click(); });
+    assert.equal(changes.at(-1), "Z **beta Z** Z");
+    assert.match(host.textContent ?? "", /0\/0/);
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    assert.equal(changes.at(-1), original, "Replace All must undo in one step");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("source find replaces wildcard matches without affecting unmatched Markdown", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/source.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "item-01; item-aa; item-123;",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    await act(async () => {
+      textareaRef.current!.focus();
+      textareaRef.current!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!, "item-??;");
+    await act(async () => { host.querySelector<HTMLInputElement>('[aria-label="Wildcard matches"]')!.click(); });
+    await setControlledInput(host.querySelector<HTMLInputElement>('[aria-label="Replace with"]')!, "X");
+    assert.match(host.textContent ?? "", /1\/2/);
+    const replaceAll = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all")!;
+    await act(async () => { replaceAll.click(); });
+    assert.equal(changes.at(-1), "X X item-123;");
+    assert.equal(textareaRef.current?.value, "X X item-123;");
+    const textarea = textareaRef.current!;
+    const findInput = host.querySelector<HTMLInputElement>('[aria-label="Find in note"]')!;
+    const originalFocus = textarea.focus.bind(textarea);
+    let preventedScroll = false;
+    textarea.scrollLeft = 35;
+    textarea.scrollTop = 360;
+    textarea.focus = (options?: FocusOptions) => {
+      preventedScroll = options?.preventScroll === true;
+      textarea.scrollLeft = 3;
+      textarea.scrollTop = 12;
+      originalFocus(options);
+    };
+    await act(async () => {
+      findInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    assert.equal(preventedScroll, true);
+    assert.equal(textarea.scrollLeft, 35);
+    assert.equal(textarea.scrollTop, 360, "Closing source find must preserve its current viewport");
   } finally {
     await act(async () => root.unmount());
     host.remove();

@@ -11,8 +11,13 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   assert.equal(legacy.formatting.model, 'existing/model');
   assert.equal(legacy.rewrite.model, 'existing/model');
   assert.equal(legacy.chat.model, 'existing/model');
+  assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
   assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low' });
-  const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name, i) => [name, { model: `provider/${name}`, reasoningEffort: ['low', 'high', 'xhigh', 'max'][i] }]));
+  const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name, i) => [name, {
+    model: `provider/${name}`,
+    reasoningEffort: ['low', 'high', 'xhigh', 'max'][i],
+    ...(name === 'chat' ? { customInstruction: 'Prefer concise answers.' } : {}),
+  }]));
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
     const configPath = path.join(directory, 'libera-electron-config.json');
@@ -28,7 +33,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
 });
 
 test('Preferences UI loads and saves all four function settings', async () => {
-  const aiFunctions = normalizeAiPreferences();
+  const aiFunctions = normalizeAiPreferences({ chat: { customInstruction: 'Prefer concise answers.' } });
   let saved;
   const dom = new JSDOM(readFileSync(path.join(__dirname, '../../electron/setup.html'), 'utf8'), {
     url: 'http://localhost/?mode=configuration', runScripts: 'dangerously',
@@ -37,6 +42,7 @@ test('Preferences UI loads and saves all four function settings', async () => {
       window.liberaSetup = {
         getState: async () => ({ aiFunctions, hasApiKey: true, hasPasswordHash: true, dataDir: '/tmp/notebooks' }),
         save: async (input) => { saved = JSON.parse(JSON.stringify(input)); },
+        loadAiChatCustomInstructionFile: async () => ({ canceled: false, content: 'Instruction loaded from a file.' }),
       };
     },
   });
@@ -51,8 +57,16 @@ test('Preferences UI loads and saves all four function settings', async () => {
       document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
       document.querySelector(`#ai-${name}-effort`).value = 'max';
     }
+    assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Prefer concise answers.');
+    document.querySelector('#load-ai-chat-instruction-button').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Instruction loaded from a file.');
     document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    for (const name of AI_FUNCTIONS) assert.deepEqual(saved.aiFunctions[name], { model: `custom/${name}`, reasoningEffort: 'max' });
+    for (const name of AI_FUNCTIONS) assert.deepEqual(saved.aiFunctions[name], {
+      model: `custom/${name}`,
+      reasoningEffort: 'max',
+      ...(name === 'chat' ? { customInstruction: 'Instruction loaded from a file.' } : {}),
+    });
   } finally { dom.window.close(); }
 });

@@ -296,6 +296,26 @@ async function selectDataDir(parentWindow) {
   return result.canceled ? "" : result.filePaths[0] ?? "";
 }
 
+async function loadAiChatCustomInstructionFile(parentWindow) {
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Load AI Chat custom instruction",
+    properties: ["openFile"],
+    filters: [
+      { name: "Text files", extensions: ["txt", "md", "markdown"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  return {
+    canceled: false,
+    content: await fsp.readFile(result.filePaths[0], "utf8"),
+  };
+}
+
 function showMessageBox(parentWindow, options) {
   if (parentWindow && !parentWindow.isDestroyed()) {
     return dialog.showMessageBox(parentWindow, options);
@@ -412,6 +432,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
 
+    ipcMain.handle("setup:load-ai-chat-custom-instruction-file", () =>
+      loadAiChatCustomInstructionFile(setupWindow),
+    );
+
     ipcMain.handle("setup:save", async (_event, input) => {
       const existingConfig = readConfig();
       const validated = validateSetupInput(input, existingConfig);
@@ -447,6 +471,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
     setupWindow.on("closed", () => {
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
+      ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
       ipcMain.removeHandler("setup:save");
       activeSetupPromise = null;
       activeSetupWindow = null;

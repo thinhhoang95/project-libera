@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { getOpenRouterModel } from "./openrouter";
 
 export type AiFunction = "formatting" | "rewrite" | "chat" | "latex";
@@ -10,4 +11,24 @@ export function getAiFunctionOptions(name: AiFunction) {
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
   const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" ? "low" : "medium";
   return { model, reasoning: { effort } };
+}
+
+export function getAiChatCustomInstruction() {
+  if (typeof process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION === "string") {
+    return process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
+  }
+
+  const configPath = process.env.LIBERA_CONFIG_PATH;
+  if (!configPath) return "";
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as {
+      aiFunctions?: { chat?: { customInstruction?: unknown } };
+    };
+    const customInstruction = config.aiFunctions?.chat?.customInstruction;
+
+    return typeof customInstruction === "string" ? customInstruction : "";
+  } catch {
+    return "";
+  }
 }

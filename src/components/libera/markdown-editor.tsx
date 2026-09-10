@@ -53,16 +53,12 @@ import type {
   MarkdownEditorLineTone,
 } from "@/lib/markdown-editor-highlighting";
 import type { LiberaFileNode } from "@/lib/types";
+import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
 
 type EditorContextMenuState = {
   image?: MarkdownImageSelection;
   x: number;
   y: number;
-  start: number;
-  end: number;
-};
-
-type TextMatch = {
   start: number;
   end: number;
 };
@@ -153,31 +149,6 @@ const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
   i: { before: "_", after: "_" },
   u: { before: "<u>", after: "</u>" },
 };
-
-function findTextMatches(value: string, query: string): TextMatch[] {
-  const normalizedQuery = query.toLowerCase();
-
-  if (!normalizedQuery) {
-    return [];
-  }
-
-  const normalizedValue = value.toLowerCase();
-  const matches: TextMatch[] = [];
-  let searchFrom = 0;
-
-  while (searchFrom <= normalizedValue.length) {
-    const start = normalizedValue.indexOf(normalizedQuery, searchFrom);
-
-    if (start === -1) {
-      break;
-    }
-
-    matches.push({ start, end: start + query.length });
-    searchFrom = start + normalizedQuery.length;
-  }
-
-  return matches;
-}
 
 function findMarkdownImageInText(
   value: string,
@@ -604,11 +575,14 @@ export function MarkdownEditor({
   const [draggingImage, setDraggingImage] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
+  const [replaceQuery, setReplaceQuery] = useState("");
+  const [wildcardMatches, setWildcardMatches] = useState(false);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLInputElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
@@ -621,8 +595,8 @@ export function MarkdownEditor({
   const selectionChangeTimeoutRef = useRef<number | null>(null);
   const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(
-    () => findTextMatches(editorValue, findQuery),
-    [findQuery, editorValue],
+    () => findTextMatches(editorValue, findQuery, { wildcards: wildcardMatches }),
+    [findQuery, editorValue, wildcardMatches],
   );
   const highlightedMarkdown = useMemo(
     () =>
@@ -768,7 +742,7 @@ export function MarkdownEditor({
     setFindOpen(true);
 
     if (query) {
-      const matches = findTextMatches(editorValue, query);
+      const matches = findTextMatches(editorValue, query, { wildcards: wildcardMatches });
       setFindQuery(query);
       selectMatch(0, matches);
     }
@@ -780,12 +754,21 @@ export function MarkdownEditor({
   }
 
   function closeFind() {
+    const textarea = textareaRef.current;
+    const scrollLeft = textarea?.scrollLeft ?? 0;
+    const scrollTop = textarea?.scrollTop ?? 0;
     setFindOpen(false);
-    textareaRef.current?.focus();
+    textarea?.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => {
+      if (!textarea) return;
+      textarea.scrollLeft = scrollLeft;
+      textarea.scrollTop = scrollTop;
+      syncHighlightLayerScroll(textarea);
+    });
   }
 
   function updateFindQuery(query: string) {
-    const matches = findTextMatches(editorValue, query);
+    const matches = findTextMatches(editorValue, query, { wildcards: wildcardMatches });
     setFindQuery(query);
     setActiveMatchIndex(0);
 
@@ -800,6 +783,63 @@ export function MarkdownEditor({
 
   function findPrevious() {
     selectMatch(activeMatchIndex - 1);
+  }
+
+  function updateWildcardMatches(enabled: boolean) {
+    const matches = findTextMatches(editorValue, findQuery, { wildcards: enabled });
+    setWildcardMatches(enabled);
+    setActiveMatchIndex(0);
+    if (matches.length) selectMatch(0, matches);
+  }
+
+  function replaceMatches(matches: TextMatch[]) {
+    const textarea = textareaRef.current;
+    if (!textarea || !matches.length) return;
+
+    const first = matches[0];
+    const last = matches.at(-1)!;
+    const relativeMatches = matches.map((match) => ({
+      start: match.start - first.start,
+      end: match.end - first.start,
+    }));
+    const replacement = replaceTextMatches(
+      editorValue.slice(first.start, last.end),
+      relativeMatches,
+      replaceQuery,
+    );
+    const nextValue = `${editorValue.slice(0, first.start)}${replacement}${editorValue.slice(last.end)}`;
+    const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: first.start,
+      selectionEnd: last.end,
+      replacement,
+      nextSelectionStart: first.start + replacement.length,
+      nextSelectionEnd: first.start + replacement.length,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    });
+
+    if (!usedNativeUndo) commitEditorValue(textarea, nextValue);
+
+    const nextMatches = findTextMatches(nextValue, findQuery, { wildcards: wildcardMatches });
+    const replacedOne = matches.length === 1;
+    const nextOffset = first.start + replaceQuery.length;
+    const nextIndex = replacedOne
+      ? Math.max(0, nextMatches.findIndex((match) => match.start >= nextOffset))
+      : 0;
+    setActiveMatchIndex(nextIndex);
+    if (nextMatches.length) selectMatch(nextIndex, nextMatches);
+
+    window.requestAnimationFrame(() => focusedElement?.focus());
+  }
+
+  function replaceCurrent() {
+    const match = textMatches[activeMatchIndex];
+    if (match) replaceMatches([match]);
+  }
+
+  function replaceAll() {
+    replaceMatches(textMatches);
   }
 
   const getFileLinkPopupContext = useCallback(
@@ -1341,6 +1381,16 @@ export function MarkdownEditor({
     }
   }
 
+  function handleReplaceKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      replaceCurrent();
+    }
+  }
+
   const currentMatchNumber = textMatches.length
     ? Math.min(activeMatchIndex + 1, textMatches.length)
     : 0;
@@ -1388,48 +1438,48 @@ export function MarkdownEditor({
       />
 
       {findOpen ? (
-        <div className="absolute right-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
-          <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-          <input
-            ref={findInputRef}
-            className="h-8 w-48 min-w-0 border-0 px-1 text-sm outline-none"
-            value={findQuery}
-            placeholder="Find in note"
-            onChange={(event) => updateFindQuery(event.target.value)}
-            onKeyDown={handleFindKeyDown}
-          />
-          <span className="min-w-16 text-center text-xs text-muted-foreground">
-            {findQuery ? `${currentMatchNumber}/${textMatches.length}` : "0/0"}
-          </span>
-          <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-            type="button"
-            aria-label="Previous match"
-            title="Previous match"
-            disabled={!textMatches.length}
-            onClick={findPrevious}
-          >
-            <ChevronUp aria-hidden className="h-4 w-4" />
-          </button>
-          <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-            type="button"
-            aria-label="Next match"
-            title="Next match"
-            disabled={!textMatches.length}
-            onClick={findNext}
-          >
-            <ChevronDown aria-hidden className="h-4 w-4" />
-          </button>
-          <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted"
-            type="button"
-            aria-label="Close find"
-            title="Close"
-            onClick={closeFind}
-          >
-            <X aria-hidden className="h-4 w-4" />
-          </button>
+        <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
+          <div className="flex min-w-0 items-center gap-1">
+            <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+            <input
+              ref={findInputRef}
+              aria-label="Find in note"
+              className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
+              value={findQuery}
+              placeholder="Find in note"
+              onChange={(event) => updateFindQuery(event.target.value)}
+              onKeyDown={handleFindKeyDown}
+            />
+            <span className="min-w-16 text-center text-xs text-muted-foreground">
+              {findQuery ? `${currentMatchNumber}/${textMatches.length}` : "0/0"}
+            </span>
+            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40" type="button" aria-label="Previous match" title="Previous match" disabled={!textMatches.length} onClick={findPrevious}>
+              <ChevronUp aria-hidden className="h-4 w-4" />
+            </button>
+            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40" type="button" aria-label="Next match" title="Next match" disabled={!textMatches.length} onClick={findNext}>
+              <ChevronDown aria-hidden className="h-4 w-4" />
+            </button>
+            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" type="button" aria-label="Close find" title="Close" onClick={closeFind}>
+              <X aria-hidden className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex min-w-0 items-center gap-1 pl-7">
+            <input
+              ref={replaceInputRef}
+              aria-label="Replace with"
+              className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
+              value={replaceQuery}
+              placeholder="Replace with"
+              onChange={(event) => setReplaceQuery(event.target.value)}
+              onKeyDown={handleReplaceKeyDown}
+            />
+            <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!textMatches.length} onClick={replaceCurrent}>Replace</button>
+            <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!textMatches.length} onClick={replaceAll}>Replace all</button>
+            <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title="Use * for any text and ? for one character">
+              <input type="checkbox" aria-label="Wildcard matches" checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
+              Wildcards
+            </label>
+          </div>
         </div>
       ) : null}
 

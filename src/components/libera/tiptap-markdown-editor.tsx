@@ -1,16 +1,17 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
 import katex from "katex";
 import { closeHistory } from "@tiptap/pm/history";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
+import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
@@ -46,7 +47,12 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
   const [error, setError] = useState("");
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [replaceQuery, setReplaceQuery] = useState("");
+  const [wildcardMatches, setWildcardMatches] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const initialViewStateRef = useRef(initialViewState);
   const lastValue = useRef(value);
@@ -54,6 +60,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
   const extensions = useMemo(() => [
     ...createMarkdownExtensions(documentPath),
     HighlightTool,
+    TiptapFind,
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -121,6 +128,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
+    find: tiptapFindPluginKey.getState(current.state),
     heading: current.isActive("heading") ? String(current.getAttributes("heading").level) : "0",
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
     lineHeight: current.getAttributes("textStyle").lineHeight ?? "",
@@ -206,6 +214,109 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
 
   if (!editor || !state) return <div className="p-6 text-sm text-muted-foreground">Loading visual editor…</div>;
 
+  function scrollToActiveFindMatch() {
+    requestAnimationFrame(() => {
+      scrollContainerRef.current
+        ?.querySelector<HTMLElement>(".markdown-editor-find-match-active")
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+  }
+
+  function selectFindMatch(matchIndex: number, matches = state?.find?.matches ?? []) {
+    if (!editor || !matches.length) return;
+    const normalizedIndex = (matchIndex + matches.length) % matches.length;
+    const match = matches[normalizedIndex];
+    editor.commands.setTextSelection(match);
+    updateTiptapFind(editor, { activeMatchIndex: normalizedIndex });
+    scrollToActiveFindMatch();
+  }
+
+  function openFind() {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    const selectedText = editor.state.doc.textBetween(from, to, "\n", "\n");
+    const query = selectedText && !selectedText.includes("\n") ? selectedText : findQuery;
+    setFindOpen(true);
+    if (query !== findQuery) setFindQuery(query);
+    updateTiptapFind(editor, { query, wildcards: wildcardMatches, activeMatchIndex: 0 });
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+      scrollToActiveFindMatch();
+    });
+  }
+
+  function closeFind() {
+    if (!editor) return;
+    const container = scrollContainerRef.current;
+    const scrollLeft = container?.scrollLeft ?? 0;
+    const scrollTop = container?.scrollTop ?? 0;
+    setFindOpen(false);
+    updateTiptapFind(editor, { query: "", activeMatchIndex: 0 });
+    editor.commands.focus(undefined, { scrollIntoView: false });
+    requestAnimationFrame(() => {
+      if (!container) return;
+      container.scrollLeft = scrollLeft;
+      container.scrollTop = scrollTop;
+    });
+  }
+
+  function updateFindQuery(query: string) {
+    if (!editor) return;
+    setFindQuery(query);
+    updateTiptapFind(editor, { query, wildcards: wildcardMatches, activeMatchIndex: 0 });
+    if (query) scrollToActiveFindMatch();
+  }
+
+  function updateWildcardMatches(enabled: boolean) {
+    if (!editor) return;
+    setWildcardMatches(enabled);
+    updateTiptapFind(editor, { query: findQuery, wildcards: enabled, activeMatchIndex: 0 });
+    if (findQuery) scrollToActiveFindMatch();
+  }
+
+  function replaceMatches(replaceAll: boolean) {
+    if (!editor) return;
+    const find = tiptapFindPluginKey.getState(editor.state);
+    if (!find?.matches.length) return;
+    const matches = replaceAll ? find.matches : [find.matches[find.activeMatchIndex]];
+    let transaction = editor.state.tr;
+    for (const match of matches.toReversed()) {
+      transaction = transaction.insertText(replaceQuery, match.from, match.to);
+    }
+    transaction.setMeta(tiptapFindPluginKey, { activeMatchIndex: 0 });
+    editor.view.dispatch(transaction);
+    if (!replaceAll) {
+      const nextFind = tiptapFindPluginKey.getState(editor.state);
+      const nextOffset = matches[0].from + replaceQuery.length;
+      const followingIndex = nextFind?.matches.findIndex((match) => match.from >= nextOffset) ?? -1;
+      updateTiptapFind(editor, { activeMatchIndex: followingIndex < 0 ? 0 : followingIndex });
+    }
+    scrollToActiveFindMatch();
+  }
+
+  function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (!editor) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const activeMatchIndex = tiptapFindPluginKey.getState(editor.state)?.activeMatchIndex ?? 0;
+      selectFindMatch(activeMatchIndex + (event.shiftKey ? -1 : 1));
+    }
+  }
+
+  function handleReplaceKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      replaceMatches(false);
+    }
+  }
+
   function fixChatGptEquations() {
     if (!editor) return;
     // Keep the original source until the first edit: Markdown parsing consumes
@@ -251,8 +362,18 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     setMathDraft({ from, to: existing ? from + node!.nodeSize : to, existing, display: node?.type.name === "blockMath", latex: existing ? node!.attrs.latex : editor.state.doc.textBetween(from, to) });
   }
 
+  const findMatches = state.find?.matches ?? [];
+  const currentFindMatchNumber = findMatches.length
+    ? (state.find?.activeMatchIndex ?? 0) + 1
+    : 0;
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        openFind();
+        return;
+      }
       if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
     }}>
       <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
@@ -311,23 +432,60 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
-      <div ref={scrollContainerRef} className={`min-h-0 flex-1 overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
-        onScroll={(event) => onViewStateChange?.({
-          visualScrollLeft: event.currentTarget.scrollLeft,
-          visualScrollTop: event.currentTarget.scrollTop,
-        })}
-        onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
-        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
-        onDrop={(event) => {
-          setDragging(false);
-          // Also accept drops on the empty space below the editable document.
-          if (!event.defaultPrevented && event.dataTransfer.files.length) {
-            event.preventDefault();
-            const pos = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? editor.state.doc.content.size;
-            void insertImages(Array.from(event.dataTransfer.files), pos);
-          }
-        }}>
-        <EditorContent editor={editor} />
+      <div className="relative min-h-0 flex-1">
+        <div ref={scrollContainerRef} className={`h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
+          onScroll={(event) => onViewStateChange?.({
+            visualScrollLeft: event.currentTarget.scrollLeft,
+            visualScrollTop: event.currentTarget.scrollTop,
+          })}
+          onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+          onDrop={(event) => {
+            setDragging(false);
+            // Also accept drops on the empty space below the editable document.
+            if (!event.defaultPrevented && event.dataTransfer.files.length) {
+              event.preventDefault();
+              const pos = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? editor.state.doc.content.size;
+              void insertImages(Array.from(event.dataTransfer.files), pos);
+            }
+          }}>
+          <EditorContent editor={editor} />
+        </div>
+        {findOpen ? (
+          <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
+            <div className="flex min-w-0 items-center gap-1">
+              <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+              <input ref={findInputRef} aria-label="Find in note" className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
+                value={findQuery} placeholder="Find in note" onChange={(event) => updateFindQuery(event.target.value)} onKeyDown={handleFindKeyDown} />
+              <span className="min-w-16 text-center text-xs text-muted-foreground">
+                {findQuery ? `${currentFindMatchNumber}/${findMatches.length}` : "0/0"}
+              </span>
+              <button type="button" aria-label="Previous match" title="Previous match" disabled={!findMatches.length}
+                className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) - 1)}>
+                <ChevronUp aria-hidden className="h-4 w-4" />
+              </button>
+              <button type="button" aria-label="Next match" title="Next match" disabled={!findMatches.length}
+                className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => selectFindMatch((state.find?.activeMatchIndex ?? 0) + 1)}>
+                <ChevronDown aria-hidden className="h-4 w-4" />
+              </button>
+              <button type="button" aria-label="Close find" title="Close" className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" onClick={closeFind}>
+                <X aria-hidden className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex min-w-0 items-center gap-1 pl-7">
+              <input aria-label="Replace with" className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
+                value={replaceQuery} placeholder="Replace with" onChange={(event) => setReplaceQuery(event.target.value)} onKeyDown={handleReplaceKeyDown} />
+              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(false)}>Replace</button>
+              <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!findMatches.length} onClick={() => replaceMatches(true)}>Replace all</button>
+              <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title="Use * for any text and ? for one character">
+                <input type="checkbox" aria-label="Wildcard matches" checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
+                Wildcards
+              </label>
+            </div>
+          </div>
+        ) : null}
       </div>
       <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding dollar signs." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
