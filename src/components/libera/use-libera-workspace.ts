@@ -738,6 +738,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     closeTabsWithoutConfirm(otherTabIds);
   }, [closeTabsWithoutConfirm, tabs]);
 
+  function getReviewDraft(tabId: string) {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab) throw new Error("The review document is no longer open.");
+    return tabId === activeTabId && textareaRef.current ? textareaRef.current.value : getTabDraft(tab);
+  }
+
+  function applyReviewDraft(tabId: string, before: string, after: string) {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab || getReviewDraft(tabId) !== before) return false;
+    rememberTabDraft(tabId, after);
+    updateTab(tabId, (current) => ({ ...current, draft: after, status: after === current.saved ? "clean" : "dirty", error: undefined }));
+    return true;
+  }
+
   function setActiveDraft(value: string) {
     if (!activeTab) {
       return;
@@ -1479,16 +1493,23 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
-  function createUntitledFile(notebook = "", parentPath?: string) {
-    const id = `untitled-${crypto.randomUUID()}.md`;
+  function recoverReviewDraft(key: string, content: string) {
+    if (!key.startsWith("draft:")) return;
+    const id = key.slice(6);
+    if (tabs.some((tab) => tab.id === id)) { setActiveTabId(id); return; }
+    createUntitledFile("", undefined, { fileName: "Recovered review.md", content }, id);
+  }
+
+  function createUntitledFile(notebook = "", parentPath?: string, initial?: { fileName: string; content: string }, restoredId?: string) {
+    const id = restoredId ?? `untitled-${crypto.randomUUID()}.md`;
     const now = new Date().toISOString();
     const tab: OpenTab = {
       id, untitled: true, saveDirectory: parentPath || notebook,
-      file: { kind: "file", name: "Untitled.md", path: id, notebook: "",
+      file: { kind: "file", name: initial?.fileName ?? "Untitled.md", path: id, notebook: "",
         fileType: "markdown", createdAt: now, updatedAt: now, size: 0 },
-      draft: "", saved: "", status: "clean",
+      draft: initial?.content ?? "", saved: "", status: initial?.content ? "dirty" : "clean",
     };
-    rememberTabDraft(id, "");
+    rememberTabDraft(id, tab.draft);
     setTabs((current) => [...current, tab]);
     setActiveTabId(id);
     setWorkspaceError("");
@@ -1533,6 +1554,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           body: JSON.stringify({ notebook: directory.split("/")[0], parentPath: directory, name: fileName, content: draft }),
         });
         const latestDraft = getTabDraft(tab);
+        await apiRequest("/api/markdown-reviews", { method: "POST", body: JSON.stringify({ action: "migrate-path", from: tab.standaloneSaveId ? `standalone:${tab.standaloneSaveId}` : `draft:${tab.id}`, to: payload.file.path, snapshot: latestDraft }) });
         rememberTabDraft(payload.file.path, latestDraft);
         updateTab(tab.id, (current) => ({ ...current, id: payload.file.path,
           file: payload.file, untitled: false, standaloneSaveId: undefined, draft: latestDraft, saved: draft,
@@ -2876,6 +2898,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectSearchResult,
       selectNotebook,
       setActiveDraft,
+      getReviewDraft,
+      recoverReviewDraft,
+      applyReviewDraft,
       setActiveTabId: activateTab,
       setActiveTabViewState,
       setPassword,

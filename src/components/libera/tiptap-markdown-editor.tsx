@@ -1,7 +1,11 @@
 "use client";
 
+import { TiptapReview } from "@/lib/tiptap-review";
+import { useTiptapReview } from "./use-editor-review";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
+import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
+import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
 import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
@@ -61,6 +65,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     ...createMarkdownExtensions(documentPath),
     HighlightTool,
     TiptapFind,
+    TiptapReview,
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -80,6 +85,16 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     immediatelyRender: false,
     editorProps: {
       attributes: { class: "libera-tiptap", role: "textbox", "aria-label": "Visual Markdown editor", "aria-multiline": "true" },
+      handleDOMEvents: {
+        copy(view, event): boolean {
+          if (!editor || view.state.selection.empty) return false;
+          // Selection.content retains heading/list ancestors and respects
+          // rectangular table selections as well as text and node selections.
+          const content = view.state.selection.content().content.toJSON();
+          const markdown = editor.markdown?.serialize({ type: "doc", content: content ?? [] }) ?? "";
+          return writeMarkdownClipboard(event, markdown);
+        },
+      },
       handleDrop(view, event, _slice, moved) {
         if (moved || !event.dataTransfer?.files.length) return false;
         event.preventDefault();
@@ -88,12 +103,23 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         void insertImages(Array.from(event.dataTransfer.files), pos);
         return true;
       },
-      handlePaste(view, event) {
+      handlePaste(view, event): boolean {
         const files = Array.from(event.clipboardData?.files ?? []);
-        if (!files.some(isImage)) return false;
-        event.preventDefault();
-        void insertImages(files, view.state.selection.from);
-        return true;
+        if (files.some(isImage)) {
+          event.preventDefault();
+          void insertImages(files, view.state.selection.from);
+          return true;
+        }
+        if (!editor || editor.isActive("codeBlock") || editor.isActive("code")) return false;
+        const markdown = event.clipboardData?.getData("text/markdown");
+        // Keep native rich-text paste, while plain source (including Libera's
+        // Copy as Markdown) is parsed into editable document content.
+        if (!markdown && event.clipboardData?.getData("text/html")) return false;
+        const text = markdown || event.clipboardData?.getData("text/plain");
+        if (!text?.trim()) return false;
+        const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
+        if (inserted) event.preventDefault();
+        return inserted;
       },
       handleClick(_view, _pos, event) {
         const anchor = (event.target as HTMLElement).closest("a");
@@ -117,6 +143,8 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
     },
   });
+
+  useTiptapReview(editor, lastValue);
 
   const state = useEditorState({ editor, selector: ({ editor: observedEditor }) => {
     // With deferred rendering, TipTap's state subscription can still hold its
@@ -368,7 +396,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     : 0;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
+    <div className="libera-visual-editor flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         openFind();
@@ -377,7 +405,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
     }}>
       <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
-        className="flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
+        className="libera-editor-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
         <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
@@ -433,7 +461,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className={`h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
+        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
           onScroll={(event) => onViewStateChange?.({
             visualScrollLeft: event.currentTarget.scrollLeft,
             visualScrollTop: event.currentTarget.scrollTop,

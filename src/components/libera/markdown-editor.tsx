@@ -1,5 +1,6 @@
 "use client";
 
+import { useSourceReview } from "./use-editor-review";
 import {
   ChevronDown,
   ChevronUp,
@@ -481,6 +482,7 @@ function renderHighlightedMarkdown(
   value: string,
   matches: TextMatch[] = [],
   activeMatchIndex = 0,
+  reviewRanges: { start: number; end: number }[] = [],
 ) {
   const lines = value.split("\n");
   const chunks: HighlightChunk[] = [];
@@ -493,7 +495,7 @@ function renderHighlightedMarkdown(
 
   lines.forEach((line, index) => {
     const highlight = getMarkdownEditorLineHighlight(line, state);
-    const lineClassName = getHighlightClassName(highlight.tone);
+    const lineClassName = [getHighlightClassName(highlight.tone), reviewRanges.some((r) => r.start < lineOffset + line.length && r.end > lineOffset) ? "review-source-highlight" : ""].filter(Boolean).join(" ");
     const hasTrailingNewline = index < lines.length - 1;
 
     state = highlight.nextState;
@@ -593,6 +595,16 @@ export function MarkdownEditor({
   const previousActiveFilePathRef = useRef(activeFilePath);
   const propValueRef = useRef(value);
   const selectionChangeTimeoutRef = useRef<number | null>(null);
+  const review = useSourceReview(textareaRef, (text) => {
+    pendingEditorValueRef.current = null;
+    editorValueRef.current = text;
+    setEditorValue(text);
+  });
+  const reviewRanges = useMemo(() => review?.enabled ? [
+    ...(review.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+    ...(review.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+    ...(review.selection ? [review.selection.range] : []),
+  ] : [], [review]);
   const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(
     () => findTextMatches(editorValue, findQuery, { wildcards: wildcardMatches }),
@@ -604,8 +616,9 @@ export function MarkdownEditor({
         editorValue,
         findOpen ? textMatches : [],
         activeMatchIndex,
+        reviewRanges,
       ),
-    [activeMatchIndex, editorValue, findOpen, textMatches],
+    [activeMatchIndex, editorValue, findOpen, textMatches, reviewRanges],
   );
   const fileLinkSections = useMemo(
     () =>
@@ -1411,6 +1424,8 @@ export function MarkdownEditor({
       </pre>
       <textarea
         ref={textareaRef}
+        aria-label="Source Markdown editor"
+        readOnly={review?.locked}
         className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
           fontFamily,

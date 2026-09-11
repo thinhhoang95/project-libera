@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { FileText, LoaderCircle, SlidersHorizontal } from "lucide-react";
 import { DEFAULT_LATEX_OPTIONS, MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH, latexToday, parseLatexOptions, type LatexOptions } from "@/lib/latex-options";
 import { apiRequest } from "./api-client";
 import { ModalDialog } from "./modal-dialog";
@@ -105,8 +105,13 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
       {(busy || loadingSettings) && <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />}
       LATEX
     </button>
-    <ModalDialog open={settingsOpen} title="LaTeX options" description="Choose the page layout and add custom instructions for your PDF." panelClassName="max-w-xl" onClose={() => { if (!savingSettings) setSettingsOpen(false); }}>
-      <form className="max-h-[70vh] space-y-5 overflow-y-auto" onSubmit={async (event) => {
+    <ModalDialog icon={<SlidersHorizontal aria-hidden />} open={settingsOpen} title="LaTeX options" description="Choose the page layout and add custom instructions for your PDF." panelClassName="max-w-xl" onClose={() => { if (!savingSettings) setSettingsOpen(false); }}
+      footer={<>
+        <button type="button" disabled={savingSettings} onClick={() => setSettingsOpen(false)}>Cancel</button>
+        <button type="submit" form="latex-options-form" disabled={savingSettings} className="libera-dialog-primary">{savingSettings ? "Saving settings…" : "Generate PDF"}</button>
+      </>}>
+
+      <form id="latex-options-form" className="space-y-5" onSubmit={async (event) => {
         event.preventDefault();
         if (savingSettings) return;
         const data = new FormData(event.currentTarget);
@@ -187,13 +192,10 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
           <span className="block text-xs text-muted-foreground">Tell the model how to prepare your document. Saved for future exports. Up to 10,000 characters; selected page settings take precedence.</span>
         </label>
         {settingsError && <p role="alert" className="text-sm text-red-600">{settingsError}</p>}
-        <div className="flex justify-end gap-2 border-t border-border pt-4">
-          <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" disabled={savingSettings} onClick={() => setSettingsOpen(false)}>Cancel</button>
-          <button type="submit" disabled={savingSettings} className="rounded-md bg-foreground px-3 py-2 text-sm text-background">{savingSettings ? "Saving settings…" : "Generate PDF"}</button>
-        </div>
+
       </form>
     </ModalDialog>
-    <ModalDialog open={open} title="LaTeX PDF export" panelClassName="max-w-5xl" onClose={close}
+    <ModalDialog icon={<FileText aria-hidden />} open={open} title="LaTeX PDF export" panelClassName="max-w-5xl" onClose={close}
       footer={<>
         {result && <><a className="rounded-md border border-border px-3 py-2 text-sm" href={result.source} download={result.archive ? "document-latex.zip" : "document.tex"}>{result.archive ? "Save LaTeX + images" : "Save LaTeX"}</a><a className="rounded-md bg-foreground px-3 py-2 text-sm text-background" href={result.pdf} download="document.pdf">Save PDF</a></>}
         {error && <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => void start()}>Retry</button>}

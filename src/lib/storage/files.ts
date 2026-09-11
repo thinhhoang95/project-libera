@@ -1,3 +1,4 @@
+import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
@@ -151,6 +152,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     currentFileType,
     nextFileType,
   );
+  await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameStarredFilePath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
@@ -217,6 +219,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
       safeNextName,
     ]),
   );
+  await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameStarredFilePathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
@@ -276,6 +279,7 @@ export async function archiveFolder(relativePath: string) {
     markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
     markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
   );
+  await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameStarredFilePathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
 
@@ -298,6 +302,7 @@ export async function deleteFolder(relativePath: string) {
     force: true,
     recursive: true,
   });
+  await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
   await removeStarredFilePathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
@@ -348,6 +353,7 @@ export async function moveFileToDirectory(
     currentFileType,
     nextFileType,
   );
+  await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameStarredFilePath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
@@ -384,6 +390,7 @@ export async function archiveFile(relativePath: string) {
     currentFileType,
     nextFileType,
   );
+  await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameStarredFilePath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
@@ -421,6 +428,7 @@ export async function copyFileToDirectory(
     currentFileType,
   );
 
+  await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
   return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
 }
 
@@ -452,6 +460,7 @@ export async function deleteFile(relativePath: string) {
       recursive: true,
     });
   }
+  await deleteReviewPath(relativeFilePath(notebook, pathParts));
   await removeStarredFilePath(relativeFilePath(notebook, pathParts));
 
   return getTree();

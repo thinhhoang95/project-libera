@@ -23,6 +23,7 @@ import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
 import { remarkMarkdownTextStyles } from "@/lib/markdown-text-styles";
 
 type MarkdownRendererProps = {
+  copyAsMarkdown?: boolean;
   baseFontSize?: number;
   baseLineHeight?: number;
   className?: string;
@@ -132,6 +133,7 @@ function openExternalLink(href: string) {
 }
 
 function MarkdownRendererContent({
+  copyAsMarkdown = false,
   baseFontSize = 16,
   baseLineHeight = 1.75,
   className,
@@ -157,7 +159,7 @@ function MarkdownRendererContent({
   } as CSSProperties;
 
   return (
-    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle}>
+    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
       <ReactMarkdown
         urlTransform={(url, key) => key === "src" && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(url) ? url : defaultUrlTransform(url)}
         remarkPlugins={remarkPlugins}

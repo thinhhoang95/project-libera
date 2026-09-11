@@ -700,7 +700,8 @@ test("visual equation fixer sits between Save and zoom, converts ChatGPT source,
     const button = host.querySelector<HTMLButtonElement>('[aria-label="Fix ChatGPT equations"]')!;
     assert.ok(button);
     assert.equal(button.previousElementSibling?.getAttribute('aria-label'), 'Save document');
-    assert.ok(button.nextElementSibling?.querySelector('[aria-label="Rendered Markdown text zoom"]'));
+    const zoom = host.querySelector('[aria-label="Rendered Markdown text zoom"]')!;
+    assert.ok(zoom && (button.compareDocumentPosition(zoom) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING), 'Zoom remains after the equation fixer, including the LaTeX export control');
     const original = host.querySelector('.libera-tiptap')!.innerHTML;
     await act(async () => { button.click(); });
     assert.equal(host.querySelectorAll('[data-type="inline-math"]').length, 1);
@@ -743,6 +744,83 @@ x = y
     assert.equal(host.querySelector('.libera-tiptap strong')?.textContent, 'Keep bold');
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
     assert.equal(host.querySelectorAll('[data-type="inline-math"], [data-type="block-math"]').length, 0);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual editor native copy writes Markdown without editing the document", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/copy.md", value: "# **Heading**\n\nAfter",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    const surface = host.querySelector<HTMLElement>(".libera-tiptap")!;
+    const editor = (surface as HTMLElement & { editor: Editor }).editor;
+    await act(async () => { editor.commands.setTextSelection({ from: 1, to: 8 }); });
+    const event = new dom.window.Event("copy", { bubbles: true, cancelable: true });
+    const data = new Map<string, string>();
+    Object.defineProperty(event, "clipboardData", { value: { clearData: () => data.clear(), setData: (type: string, value: string) => data.set(type, value) } });
+    surface.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+    assert.deepEqual([...data], [["text/plain", "# **Heading**"]]);
+    assert.deepEqual(changes, []);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("visual editor pastes Markdown as formatting, replaces selections and supports undo", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/paste.md", value: "Before selected after",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    const surface = host.querySelector<HTMLElement>(".libera-tiptap")!;
+    const editor = (surface as HTMLElement & { editor: Editor }).editor;
+    async function paste(text: string, html = "", markdown = "") {
+      const event = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: { files: [], getData: (type: string) => type === "text/plain" ? text : type === "text/html" ? html : type === "text/markdown" ? markdown : "" } });
+      await act(async () => { surface.dispatchEvent(event); });
+      assert.equal(event.defaultPrevented, true);
+    }
+    await act(async () => { editor.commands.setTextSelection({ from: 8, to: 16 }); });
+    await paste("**bold** and [link](https://example.com)");
+    assert.equal(editor.getMarkdown(), "Before **bold** and [link](https://example.com) after");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "Before selected after");
+    await act(async () => { editor.commands.setContent("", { contentType: "markdown" }); });
+    await paste("# Heading\n\n- First\n- Second\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n```js\nconst x = 1;\n```\n\n$x^2$");
+    assert.equal(surface.querySelector("h1")?.textContent, "Heading");
+    assert.equal(surface.querySelectorAll("li").length, 2);
+    assert.ok(surface.querySelector("table"));
+    assert.match(surface.querySelector("pre")?.textContent ?? "", /const x = 1/);
+    assert.ok(surface.querySelector('[data-type="inline-math"]'));
+    await act(async () => { editor.commands.setContent("", { contentType: "markdown" }); });
+    await paste("**plain**", "<p><em>Rich text</em></p>");
+    assert.equal(editor.getMarkdown(), "*Rich text*");
+    await act(async () => { editor.commands.setContent("", { contentType: "markdown" }); });
+    await paste("fallback", "<p>HTML</p>", "**Explicit Markdown**");
+    assert.equal(editor.getMarkdown(), "**Explicit Markdown**");
+    await act(async () => { editor.commands.setContent("```\ncode\n```", { contentType: "markdown" }); editor.commands.setTextSelection({ from: 1, to: 5 }); });
+    await paste("**literal**");
+    assert.equal(surface.querySelector("pre")?.textContent, "**literal**");
+    assert.equal(surface.querySelector("strong"), null);
   } finally {
     await act(async () => root.unmount());
     host.remove();

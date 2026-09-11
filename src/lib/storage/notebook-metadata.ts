@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { isNotebookIllustration, legacyNotebookIllustration } from "@/lib/notebook-illustrations";
 import {
   DEFAULT_NOTEBOOK_COLOR,
   DEFAULT_NOTEBOOK_EMOJI,
@@ -43,6 +44,9 @@ export function normalizeNotebookMetadata(
     color: normalizeNotebookColor(input?.color),
     emoji: normalizeNotebookEmoji(input?.emoji),
     groupId: normalizeNotebookGroupId(input?.groupId),
+    illustration: isNotebookIllustration(input?.illustration)
+      ? input.illustration
+      : legacyNotebookIllustration(input?.createdAt?.trim() || fallbackCreatedAt),
   };
 }
 

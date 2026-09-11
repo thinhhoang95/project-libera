@@ -54,6 +54,7 @@ export type LiberaFolderNode = {
 export type LiberaTreeNode = LiberaFileNode | LiberaFolderNode;
 
 export type LiberaNotebookMetadata = {
+  illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
   createdAt: string;
   color: string;
   emoji: string;
@@ -75,6 +76,7 @@ export type LiberaNotebookViewOptions = {
 };
 
 export type LiberaNotebookNode = {
+  illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
   kind: "notebook";
   name: string;
   path: string;

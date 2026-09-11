@@ -245,6 +245,7 @@ export async function getTree(): Promise<LiberaTree> {
       createdAt: metadata.createdAt,
       color: metadata.color,
       emoji: metadata.emoji,
+      illustration: metadata.illustration,
       groupId:
         metadata.groupId && validGroupIds.has(metadata.groupId)
           ? metadata.groupId

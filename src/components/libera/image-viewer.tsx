@@ -383,8 +383,8 @@ export function ImageViewer({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
+    <div className="libera-media-viewer libera-image-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
+      <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
         <div className="flex min-w-0 items-center gap-1">
           <Move aria-hidden className="h-4 w-4 shrink-0" />
           <button
@@ -394,6 +394,8 @@ export function ImageViewer({
                 : "border-input hover:bg-muted"
             }`}
             type="button"
+            aria-pressed={tool === "select"}
+            data-viewer-tool="select"
             onClick={() => {
               setTool("select");
               updateViewState({ tool: "select" });
@@ -409,6 +411,8 @@ export function ImageViewer({
                 : "border-input hover:bg-muted"
             }`}
             type="button"
+            aria-pressed={tool === "text"}
+            data-viewer-tool="text"
             onClick={() => {
               setTool("text");
               updateViewState({ tool: "text" });
@@ -512,7 +516,7 @@ export function ImageViewer({
         {src ? (
           <div
             ref={imageFrameRef}
-            className="relative inline-block rounded-lg bg-card shadow-sm"
+            className="libera-photo-frame relative inline-block rounded-lg bg-card shadow-sm"
             style={{
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
               transition: isPanning ? "none" : "transform 120ms ease-out",

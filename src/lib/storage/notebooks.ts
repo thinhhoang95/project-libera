@@ -1,3 +1,6 @@
+import { moveReviewPath, deleteReviewPath } from "./markdown-reviews";
+import { randomInt } from "node:crypto";
+import { NOTEBOOK_ILLUSTRATION_IDS } from "@/lib/notebook-illustrations";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists } from "@/lib/storage/fs-utils";
@@ -32,7 +35,10 @@ export async function createNotebook(
   await mkdir(targetPath);
   await writeNotebookMetadata(
     name,
-    normalizeNotebookMetadata(metadataInput, new Date().toISOString()),
+    normalizeNotebookMetadata({
+      ...metadataInput,
+      illustration: NOTEBOOK_ILLUSTRATION_IDS[randomInt(NOTEBOOK_ILLUSTRATION_IDS.length)],
+    }, new Date().toISOString()),
   );
 
   return getTree();
@@ -74,6 +80,7 @@ export async function renameNotebook(
   );
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
+  await moveReviewPath(currentName, nextName);
   await renameStarredFilePathPrefix(currentName, nextName);
 
   return getTree();
@@ -84,6 +91,7 @@ export async function deleteNotebook(name: string) {
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
   await removeNotebookPanelExpandedPathPrefix(name);
+  await deleteReviewPath(name);
   await removeStarredFilePathPrefix(name);
 
   return getTree();

@@ -1,11 +1,17 @@
 "use client";
 
+import { useMarkdownReview } from "./markdown-review-context";
+import { ReviewChatPanel } from "./markdown-review-ui";
+
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, Settings, Send, Square, X } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
+import { ChatFileComposer } from "./chat-file-composer";
+import type { LiberaFileNode } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { readChatResponse } from "./chat-stream-client";
 import { apiRequest } from "./api-client";
@@ -13,12 +19,13 @@ import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, expo
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 
-const buttonClass = "libera-sidebar-icon-button inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg disabled:opacity-40";
+const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40";
 function createChat(): DocumentChat {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
 }
 
-export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onExportSaved }: { onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; onCollapsedChange: (value: boolean) => void }) {
+export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; onCollapsedChange: (value: boolean) => void }) {
+  const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
@@ -37,6 +44,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
   const saveQueue = useRef(Promise.resolve());
   const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadingPhotos, setLoadingPhotos] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -59,7 +67,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
       restored.chats = restored.chats.map((item) => {
         item = { ...item, messages: item.messages.map((message) => message.status === "streaming" ? { ...message, status: "interrupted" as const } : message) };
         const last = item.messages.at(-1);
-        return last?.role === "user" ? { ...item, messages: item.messages.slice(0, -1), prompt: item.prompt || last.text, photos: [...(last.photos ?? []), ...(item.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...(last.contexts ?? []).filter((context) => context.kind === "selection"), ...item.selections] } : item;
+        return last?.role === "user" ? { ...item, messages: item.messages.slice(0, -1), prompt: item.prompt || last.text, photos: [...(last.photos ?? []), ...(item.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...(last.contexts ?? []), ...item.selections] } : item;
       });
       setStore(restored);
     }).catch(() => { if (!disposed) setStorageError("Saved chats could not be loaded. Reload the app to retry."); });
@@ -152,12 +160,12 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
   }
 
   async function send() {
-    if (!chat || (!chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos) return;
+    if (!chat || (!chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
     const id = chat.id;
     const prompt = chat.prompt;
     const selections = chat.selections;
     const photos = chat.photos ?? [];
-    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), photos, contexts: [...newDocumentContext(chat.messages, includedDocument), ...selections] };
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), photos, contexts: [...newDocumentContext(chat.messages, includedDocument).filter((context) => !selections.some((item) => item.kind === "document" && item.path === context.path)), ...selections] };
     const messages = [...chat.messages, message];
     const controller = new AbortController();
     requestRef.current = controller;
@@ -225,8 +233,9 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
       return;
     }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
-    if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook")) return;
+    if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook" && action !== "create-draft")) return;
     const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat) };
+    if (action === "create-draft") { onCreateDraft(snapshot); return; }
     if (action === "save-notebook") { setExportSnapshot(snapshot); return; }
     setExporting(true);
     setError("");
@@ -253,6 +262,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
         items: [
           { id: "manage-chats", label: "Manage Chats" },
           { id: "export-chat", label: "Export Chat", enabled: !!chat?.messages.length, submenu: [
+            { id: "create-draft", label: "Create a new draft" },
             { id: "save-md", label: "Save MD file" },
             { id: "save-notebook", label: "Save to Notebook (or Notebook Folder)" },
           ] },
@@ -282,10 +292,12 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
 
   // Keep chat state and selection shortcuts alive while removing all panel UI.
   if (collapsed) return null;
+  if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
 
   return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="libera-window-drag-region flex h-12 shrink-0 items-center gap-2 px-2">
+      <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
+        <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>
         <label className="sr-only" htmlFor="document-chat-history">Chat history</label>
         <div className="libera-window-no-drag relative min-w-0 flex-1">
           <select
@@ -302,19 +314,38 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         </div>
         <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={() => { if (!chat?.messages.length) return; const next = createChat(); setStore((current) => current && ({ chats: [next, ...current.chats], activeId: next.id })); setError(""); }}><Plus size={16} /></button>
-        <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><Settings size={16} /></button>
+        <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
+        <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
-        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
+        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
             const log = event.currentTarget;
             followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
           }}
+          onCopy={(event) => { copyRenderedMarkdownSelection(event.currentTarget, event); }}
         >
-          {!chat?.messages.length && <div className="mx-auto my-auto w-full max-w-xs shrink-0 space-y-3 text-center text-sm text-muted-foreground"><p>Ask a question about your document.</p><p>The current Markdown document, including unsaved edits, is sent with your prompt.</p><p>Select paragraphs in either editor and press <kbd>⌘/Ctrl + Shift + L</kbd> to add them to your prompt.</p></div>}
-          {chat?.messages.map((message) => <article key={message.id} className="min-w-0 space-y-2 text-sm"><p className="text-xs font-semibold text-muted-foreground">{message.role === "user" ? "You" : "Assistant"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
+          {!chat?.messages.length && <div className="libera-chat-welcome">
+            <span className="libera-ai-orb" aria-hidden><Sparkles size={30} strokeWidth={1.5} /></span>
+            <h2>A little clarity.<br />A new possibility.</h2>
+            <p>Think it through with your AI companion.</p>
+            <div className="libera-chat-starters">
+              {(includedDocument ? [
+                { icon: BookOpen, label: "Summarize this document", prompt: "Summarize the key ideas in this document." },
+                { icon: Lightbulb, label: "Explain the key ideas", prompt: "Explain the key ideas in this document in simple terms." },
+                { icon: ListChecks, label: "Find questions to explore", prompt: "What questions or gaps in this document are worth exploring further?" },
+              ] : [
+                { icon: Lightbulb, label: "Explore a new idea", prompt: "Help me think through an idea: " },
+                { icon: BookOpen, label: "Make sense of a topic", prompt: "Help me understand this topic: " },
+              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+            </div>
+            <p className="libera-chat-context-hint">{includedDocument ? "Your current Markdown draft is included." : "Type @ to bring a Markdown file into the conversation."}</p>
+            <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
+          </div>}
+          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
           </div>)}<MarkdownRenderer
+            copyAsMarkdown
             className="libera-chat-markdown min-w-0 break-normal"
             baseFontSize={fontSize}
             baseLineHeight={1.6}
@@ -323,10 +354,10 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
           />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
-        <form className="space-y-2 border-t border-border p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+        <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
           {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-          {includedDocument && <div className="flex items-center gap-1">
+          {includedDocument && <div className="libera-chat-context flex items-center gap-1"><BookOpen aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? " (current draft)" : " (already included)"}`}</p>
             <button type="button" className={buttonClass} aria-label="Remove document context" title="Remove document context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))}><X size={12} /></button>
           </div>}
@@ -339,16 +370,23 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
           </div>}
           <input ref={photoInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" aria-label="Attach photos" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attachPhotos(files); }} />
 
-          {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.text}>{context.name}: {context.text}</span><button type="button" className={buttonClass} aria-label={`Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
-          <div className="flex flex-col gap-0.5">
-          <textarea ref={composerRef} aria-label="Chat prompt" placeholder="Ask about your document…" rows={3} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent" value={chat?.prompt ?? ""} disabled={!chat} onChange={(event) => chat && updateChat(chat.id, (current) => ({ ...current, prompt: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-          <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Enter to send · Shift+Enter for newline</span><div className="flex items-center gap-1"><select
+          {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "document" ? context.path : context.text}>{context.kind === "document" ? `File: ${context.name}` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
+          <div className="libera-chat-composer flex flex-col gap-0.5">
+          <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} tabs={tabs}
+            onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }))}
+            onLoading={setLoadingFiles} onError={setError} onSend={() => void send()}
+            onAttach={(context) => chat && updateChat(chat.id, (current) => ({ ...current,
+              selections: [...current.selections.filter((item) => item.kind !== "document" || item.path !== context.path), context],
+              excludedDocumentPaths: current.excludedDocumentPaths?.filter((path) => path !== context.path),
+            }))} />
+          <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><select
             aria-label="Reasoning effort" title="Reasoning effort"
             className="w-auto max-w-24 cursor-pointer appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none focus-visible:underline"
             value={chat?.reasoningEffort ?? defaultReasoningEffort} disabled={!chat}
             onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
-          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={buttonClass} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Plus size={16} /></button>{pending ? <button type="button" className={buttonClass} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={buttonClass} aria-label="Send message" disabled={loadingPhotos || (!chat?.prompt.trim() && !chat?.photos?.length)}><Send size={16} /></button>}</div></div>
+          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length)}><ArrowUp size={18} /></button>}</div></div>
           </div>
+          <p className="libera-chat-key-hint">Enter to send · Shift + Enter for a new line</p>
         </form>
     </div>
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>
@@ -357,6 +395,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={fontSizeSaving || fontSize >= MAX_CHAT_FONT_SIZE} onClick={() => void handleChatAction("increase-font-size")}>Increase Font Size</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={fontSizeSaving || fontSize <= MIN_CHAT_FONT_SIZE} onClick={() => void handleChatAction("decrease-font-size")}>Decrease Font Size</button>
         <p className="px-2 text-xs text-muted-foreground">Export Chat</p>
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("create-draft")}>Create a new draft</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-md")}>Save MD file</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook (or Notebook Folder)</button>
       </div>

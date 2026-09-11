@@ -14,17 +14,19 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const requests: { reasoningEffort?: string; messages: { contexts: { text: string; kind: string }[]; photos?: { dataUrl: string; name: string }[] }[] }[] = [];
   let menuAction = "manage-chats";
   let exported: { fileName: string; content: string } | null = null;
+  let createdDraft: { fileName: string; content: string } | null = null;
   let notebookExport: { parentPath: string; content: string; name: string } | null = null;
   window.liberaMenu = { popup: async (menu) => {
     assert.equal(menu.items[0].type !== "separator" && menu.items[0].label, "Manage Chats");
     const exportItem = menu.items[1];
-    assert.ok(exportItem.type !== "separator" && exportItem.submenu?.length === 2);
+    assert.ok(exportItem.type !== "separator" && exportItem.submenu?.length === 3);
     return menuAction;
   } };
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
   let savedFontSize: number | null = null;
   let savedHistory: ChatStore | null = null;
   globalThis.fetch = async (input, init) => {
+    if (String(input).startsWith("/api/files?")) return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" });
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
@@ -46,7 +48,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const tab = { id: "draft-1", file: { name: "Draft.md", path: "notes/Draft.md", fileType: "markdown" }, draft: "# Unsaved document", saved: "# Saved", status: "dirty" } as OpenTab;
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, collapsed: false, onCollapsedChange: () => undefined }))); await settle(); }
+  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
@@ -99,9 +101,16 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(rendered.querySelector("script"), null);
     assert.equal(rendered.querySelector("img"), null);
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')?.disabled, false);
+    menuAction = "create-draft";
+    await click("Chat settings");
+    assert.ok(createdDraft);
+    assert.equal(exported, null);
+    assert.equal(notebookExport, null);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
     menuAction = "save-md";
     await click("Chat settings");
     assert.ok(exported);
+    assert.deepEqual(createdDraft, exported);
     assert.ok((exported as { content: string }).content.includes("## User\n\nExplain this"));
     assert.ok((exported as { content: string }).content.includes("## Assistant\n\n# A helpful answer"));
     menuAction = "save-notebook";
@@ -145,6 +154,15 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     });
     assert.equal(savedFontSize, 14);
     assert.equal(host.querySelector<HTMLElement>(".libera-chat-markdown")?.style.getPropertyValue("--markdown-body-font-size"), "14px");
+    createdDraft = null;
+    await click("Chat settings");
+    await act(async () => {
+      const createDraft = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((button) => button.textContent === "Create a new draft");
+      assert.ok(createDraft);
+      createDraft.click();
+    });
+    assert.deepEqual(createdDraft, exported);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
     window.liberaMenu = nativeMenu;
     menuAction = "manage-chats";
     assert.equal(stored().activeId, firstId);
@@ -240,6 +258,37 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.ok(host.querySelector('img[alt="photo.png"]'));
 
 
+
+    // References attach complete file snapshots, including unsaved open tabs.
+    async function mentionFile(query: string) {
+      await act(async () => {
+        const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, query);
+        prompt.setSelectionRange(query.length, query.length);
+        prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      assert.ok(host.querySelector('[role="listbox"]'));
+      await act(async () => host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, key: "Enter" })));
+      await settle();
+    }
+    const beforeReferences = requests.length;
+    await mentionFile("Compare @cu");
+    assert.equal(requests.length, beforeReferences, "Enter selects a file without sending");
+    assert.equal(stored().chats[0].selections[0].text, "# Curated reference");
+    await mentionFile("Compare @curated.md with @dr");
+    assert.equal(stored().chats[0].selections[1].text, "# Unsaved document");
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await mount();
+    assert.ok(host.textContent?.includes("File: curated.md"));
+    await click("Remove file: Draft.md");
+    await mentionFile("Compare @curated.md with @dr");
+    await click("Send message");
+    await settle();
+    const referenced = requests.at(-1)!.messages.at(-1)!.contexts;
+    assert.equal(referenced.filter((context) => context.text === "# Unsaved document").length, 1);
+    assert.ok(referenced.some((context) => context.text === "# Curated reference"));
+    assert.equal(stored().chats[0].selections.length, 0);
 
     let streamController: ReadableStreamDefaultController<Uint8Array>;
     let streamCanceled = false;

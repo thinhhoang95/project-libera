@@ -29,7 +29,7 @@ export function SidebarSearch({
       />
       <input
         aria-label="Search notebooks and files"
-        className="h-9 w-full rounded-full border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+        className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
         placeholder="Search notebooks and files"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
@@ -46,7 +46,7 @@ export function SidebarSearch({
         </button>
       ) : null}
       {suggestionsOpen ? (
-        <div className="absolute left-3 right-3 top-[2.875rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
+        <div className="absolute left-3 right-3 top-[3.125rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
           {searchResults.map((result) => (
             <SidebarNameTooltipButton
               key={`${result.type}:${result.label}`}

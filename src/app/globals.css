@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./workspace-surfaces.css";
 
 :root {
   --background: #fafafa; /* app canvas */
@@ -145,13 +146,8 @@ html.libera-platform-win32.libera-glass textarea {
 
 html.libera-glass .libera-workspace-region {
   background: var(--background);
-  /* The transparent (vibrancy) panel and the opaque editor meet here. The
-     panel's backdrop-filter blur leaves a bright fringe at its right edge, which
-     reads as a white seam against the dark editor. Pull the opaque editor a
-     hair over that edge so it masks the fringe entirely. */
   position: relative;
   z-index: 1;
-  margin-left: -2px;
 }
 
 /* The icon rail and footer menu drop their opaque card fill so the single
@@ -240,21 +236,6 @@ html.libera-glass .libera-glass-panel input {
    own glass tile; the softened `--border` above supplies the hairline edge. */
 html.libera-glass .libera-glass-card {
   background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
-}
-
-@media (min-width: 1024px) {
-  .libera-left-panel {
-    border-right-color: color-mix(in srgb, var(--foreground) 8%, transparent);
-    box-shadow: none;
-  }
-
-  /* On glass the panel is transparent, so a hard border would catch the light as
-     a bright seam against the opaque editor. Use a single, very faint hairline
-     and skip the light drop shadow that previously bloomed into a white glow. */
-  html.libera-glass .libera-left-panel {
-    border-right-color: transparent;
-    box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent);
-  }
 }
 
 .libera-window-control-button {
@@ -835,3 +816,84 @@ button.border[class*="border-white"]:hover {
     }
   }
 }
+
+/* Review annotations are UI decorations, never serialized document content. */
+.review-comments { overflow: hidden; }
+.review-comment-card { background: var(--card); overflow-wrap: anywhere; }
+.review-comment-actions { display: flex; align-items: center; gap: .5rem; }
+.review-comment-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 2rem; height: 2rem; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: .55rem; background: color-mix(in srgb, currentColor 8%, var(--card)); cursor: pointer; transition: background .15s, opacity .15s; }
+.review-comment-icon[data-tone="blue"] { color: light-dark(#2563eb, #93b4ff); }
+.review-comment-icon[data-tone="green"] { color: light-dark(#15803d, #86d8a0); }
+.review-comment-icon[data-tone="violet"] { color: light-dark(#7c3aed, #c4a5ff); }
+.review-comment-icon[data-tone="red"] { color: light-dark(#dc2626, #fca5a5); }
+.review-comment-icon:hover:not(:disabled) { background: color-mix(in srgb, currentColor 16%, var(--card)); }
+.review-comment-icon:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.review-comment-icon:disabled { opacity: .4; cursor: default; }
+.review-comment-delete { margin-left: auto; }
+.review-button[aria-pressed="true"] { background: var(--muted); color: var(--accent); border-color: var(--accent); }
+.review-button { display: inline-flex; align-items: center; justify-content: center; gap: .3rem; padding: .35rem .55rem; border: 1px solid var(--border); border-radius: .4rem; font-size: .75rem; background: var(--card); cursor: pointer; }
+.review-button:hover { background: var(--muted); }
+.review-button:disabled { opacity: .45; cursor: default; }
+.libera-chat-panel .review-button { min-height: 1.75rem; padding: .2rem .6rem; border-radius: 9999px; font-size: .6875rem; line-height: 1rem; }
+.libera-chat-panel .review-button svg { width: .75rem; height: .75rem; }
+.review-button:focus-visible, .review-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.review-textarea { display: block; width: 100%; min-height: 4rem; padding: .5rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--muted); font-size: .875rem; }
+.review-popover { position: fixed; z-index: 100; width: min(360px, calc(100vw - 16px)); max-height: min(70vh, 600px); overflow: auto; padding: .75rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--card); color: var(--foreground); box-shadow: 0 12px 40px #0003; }
+.review-suggestion { margin-block: .5rem; padding: .75rem; border: 1px solid var(--border); border-radius: .65rem; font-size: .875rem; }
+.review-diff { margin-block: .5rem; border: 1px solid var(--border); border-radius: .35rem; overflow: hidden; }
+.review-diff > div:first-child { background: color-mix(in srgb, #ef4444 9%, var(--card)); }
+.review-diff > div:last-child { background: color-mix(in srgb, #22c55e 10%, var(--card)); border-top: 1px solid var(--border); }
+.review-diff pre { margin: 0; padding: .4rem .5rem; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: .8rem; }
+.review-diff-label { display: block; padding: .2rem .5rem 0; font-size: .65rem; font-weight: 600; opacity: .7; }
+.review-source-highlight, .review-visual-highlight { background: color-mix(in srgb, #fbbf24 24%, transparent); box-shadow: inset 0 -2px color-mix(in srgb, #f59e0b 70%, transparent); }
+.review-suggestion.review-visual-highlight { margin: 0; padding: 0; border: 0; border-radius: 0; background: color-mix(in srgb, #38bdf8 20%, transparent); }
+
+/* Brighter notebook navigation. The native material still shows through the
+   translucent sheen; dropdowns retain their solid card surface. */
+.libera-left-panel {
+  --muted-foreground: #77829b;
+  --border: #e4eaf3;
+  --input: #dce3ef;
+  color: #27334e;
+  background: linear-gradient(155deg, #eff6ffed, #f8f6fbed 68%, #efedffed);
+}
+html.libera-glass .libera-left-panel::before {
+  background: linear-gradient(155deg, #f5faff9e, #ffffff70 55%, #ede9ff60);
+  box-shadow: inset 0 1px 0 #ffffff66;
+}
+html.libera-glass .libera-left-panel {
+  --border: #94a8ce20;
+  --input: #91a4c52e;
+  --muted: #7392d111;
+}
+.libera-sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 16px 22px 15px; }
+.libera-brand-icon { width: 39px; height: 41px; display: grid; place-items: center; flex-shrink: 0; border-radius: 12px; background: linear-gradient(135deg, #75b7ff, #3776f5 65%, #655ce2); color: white; box-shadow: inset 0 1px 1px #ffffff80, 0 4px 9px #347cf525; }
+.libera-sidebar-brand strong { font-size: 18px; font-weight: 700; letter-spacing: -.6px; color: #172039; }
+.libera-sidebar-brand p { font-size: 11px; color: var(--muted-foreground); margin-top: 1px; }
+html.libera-glass .libera-left-panel .libera-sidebar-search-input,
+.libera-left-panel .libera-sidebar-search-input { background: #ffffff85; font-size: 12px; box-shadow: 0 2px 5px #4e699a03; }
+.libera-left-panel .libera-sidebar-icon-button { color: #75839e; }
+.libera-left-panel .libera-sidebar-icon-button:hover { background: #728fce12; color: #457be6; }
+.libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { background: #d8e7ff9e; color: #3979e8; box-shadow: inset 0 1px 0 #ffffff6b; }
+.libera-notebook-heading > div { gap: 0; }
+.libera-notebook-heading .libera-sidebar-icon-button { width: 29px; height: 29px; }
+.libera-notebook-section { border: 0; border-radius: 10px; background: transparent; }
+.libera-notebook-row { border-radius: 10px; background: transparent; transition: background 150ms; }
+.libera-notebook-row:hover { background: #ffffff44; }
+.libera-notebook-section[data-selected="true"] > .libera-notebook-row { background: color-mix(in srgb, var(--notebook-color) 10%, transparent); }
+.libera-notebook-emoji { background-image: linear-gradient(145deg, #ffffff66, transparent 65%, #0000000d); box-shadow: inset 0 1px 1px #ffffff80, 0 2px 4px #273a5710; }
+.libera-notebook-children { margin: 6px 0 4px 13px; border-left: 1px solid #96a9cd29; }
+.libera-notebook-children .text-sm { font-size: 12px; }
+.libera-folder-icon { color: #29a9ce; fill: #7fdaef55; }
+.libera-tree-file-icon { display: inline-flex; flex-shrink: 0; color: #778bb2; }
+.libera-tree-file-icon[data-type="image"] { color: #4caa85; }
+.libera-tree-file-icon[data-type="pdf"] { color: #d08178; }
+html.dark .libera-left-panel { --muted-foreground: #adb9d1; --border: #8298cb22; --input: #8298cb33; background: linear-gradient(155deg, #222c3ee0, #29273be0); color: #e1e8f7; }
+html.dark.libera-glass .libera-left-panel { background: transparent; }
+html.dark.libera-glass .libera-left-panel::before { background: linear-gradient(155deg, #31415b55, #342b4940); }
+html.dark .libera-sidebar-brand strong { color: #eff3ff; }
+html.dark .libera-left-panel .libera-sidebar-search-input { background: #b3c8ef0d; }
+html.dark .libera-left-panel .libera-sidebar-icon-button { color: #a7b7d2; }
+html.dark .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { color: #a2c9ff; background: #678dcc26; box-shadow: none; }
+html.dark .libera-notebook-row:hover { background: #a3bbef0c; }
+html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row { background: color-mix(in srgb, var(--notebook-color) 18%, transparent); }

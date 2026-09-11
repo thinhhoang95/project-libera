@@ -1329,7 +1329,7 @@ export function WorkspacePanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="libera-document-workspace flex h-full min-h-0 flex-col overflow-hidden">
       {activeTab.error ? (
         <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           {activeTab.error}
