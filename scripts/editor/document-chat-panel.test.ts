@@ -22,13 +22,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     return menuAction;
   } };
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
+  let savedFontSize: number | null = null;
   let savedHistory: ChatStore | null = null;
   globalThis.fetch = async (input, init) => {
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
-      if (init?.method === "PUT") { savedHistory = JSON.parse(String(init.body)).value; return Response.json({ saved: true }); }
-      return Response.json({ history: savedHistory, panel: null, defaultReasoningEffort: "max" });
+      if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else savedHistory = body.value; return Response.json({ saved: true }); }
+      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
       "````markdown", "# A helpful answer", "", "**Bold** and *italic* with `inline code`.", "",
@@ -126,6 +127,26 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
+    menuAction = "increase-font-size";
+    await click("Chat settings");
+    assert.equal(savedFontSize, 15);
+    assert.equal(host.querySelector<HTMLElement>(".libera-chat-markdown")?.style.getPropertyValue("--markdown-body-font-size"), "15px");
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await mount();
+    assert.equal(host.querySelector<HTMLElement>(".libera-chat-markdown")?.style.getPropertyValue("--markdown-body-font-size"), "15px");
+    const nativeMenu = window.liberaMenu;
+    delete window.liberaMenu;
+    await click("Chat settings");
+    await act(async () => {
+      const decrease = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((button) => button.textContent === "Decrease Font Size");
+      assert.ok(decrease);
+      decrease.click();
+    });
+    assert.equal(savedFontSize, 14);
+    assert.equal(host.querySelector<HTMLElement>(".libera-chat-markdown")?.style.getPropertyValue("--markdown-body-font-size"), "14px");
+    window.liberaMenu = nativeMenu;
+    menuAction = "manage-chats";
     assert.equal(stored().activeId, firstId);
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "high");
     assert.ok(host.textContent?.includes("A helpful answer"));

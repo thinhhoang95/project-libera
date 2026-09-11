@@ -427,8 +427,8 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => void onSave()}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
-        <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
+        <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}

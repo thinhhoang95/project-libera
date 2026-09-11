@@ -804,6 +804,9 @@ button.border[class*="border-white"]:hover {
 :is(.libera-tiptap, .markdown-renderer) :is(p, h1, h2, h3, h4, h5, h6):has(span[data-line-height="3"]) { line-height: 3; }
 
 /* Chat shares the native sidebar material; only the editor remains opaque. */
+.libera-chat-panel .text-sm { font-size: var(--chat-font-size, 14px); line-height: 1.6; }
+.libera-chat-panel .text-xs { font-size: var(--chat-small-font-size, 12px); line-height: 1.5; }
+
 .libera-chat-markdown > :first-child { margin-top: 0; }
 .libera-chat-markdown > :last-child { margin-bottom: 0; }
 .libera-chat-markdown pre { overflow-x: auto; margin-block: 0.75em; padding: 0.75em; background: var(--muted); border-radius: 0.5rem; }

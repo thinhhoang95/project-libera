@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getAdminRoot } from "./paths";
 
-export type ChatStateKind = "history" | "panel";
+export type ChatStateKind = "history" | "panel" | "font-size";
 function statePath(kind: ChatStateKind) { return path.join(getAdminRoot(), ".libera", `document-chat-${kind}.json`); }
 export async function readChatState(kind: ChatStateKind): Promise<unknown> {
   try { return JSON.parse(await readFile(statePath(kind), "utf8")); }

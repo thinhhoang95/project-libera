@@ -13,11 +13,13 @@ test("history and panel settings persist independently in workspace data", async
     assert.equal(await readChatState("history"), null);
     const history = { chats: [{ id: "chat-1", title: "Question", messages: [], selections: [], prompt: "Draft prompt" }], activeId: "chat-1" };
     await writeChatState("history", history);
+    await writeChatState("font-size", 18);
     await writeChatState("panel", { width: 432, collapsed: true });
     assert.deepEqual(await readChatState("history"), history);
     assert.deepEqual(await readChatState("panel"), { width: 432, collapsed: true });
     await writeChatState("panel", { width: 320, collapsed: false });
     assert.deepEqual(await readChatState("history"), history);
+    assert.equal(await readChatState("font-size"), 18);
   } finally {
     if (previousRoot === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previousRoot;
     await rm(directory, { recursive: true, force: true });

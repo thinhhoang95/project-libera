@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, Plus, Settings, Send, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
@@ -11,6 +11,8 @@ import { readChatResponse } from "./chat-stream-client";
 import { apiRequest } from "./api-client";
 import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 
+import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
+
 const buttonClass = "libera-sidebar-icon-button inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg disabled:opacity-40";
 function createChat(): DocumentChat {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
@@ -18,6 +20,9 @@ function createChat(): DocumentChat {
 
 export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onExportSaved }: { onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; onCollapsedChange: (value: boolean) => void }) {
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
+  const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
+  const [fontSizeSaving, setFontSizeSaving] = useState(false);
+  const [fontSizeError, setFontSizeError] = useState("");
   const [store, setStore] = useState<ChatStore | null>(null);
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
@@ -44,8 +49,9 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
 
   useEffect(() => {
     let disposed = false;
-    void apiRequest<{ history: ChatStore | null; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, defaultReasoningEffort: configuredEffort }) => {
+    void apiRequest<{ history: ChatStore | null; fontSize?: unknown; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, fontSize: savedFontSize, defaultReasoningEffort: configuredEffort }) => {
       if (disposed) return;
+      if (isChatFontSize(savedFontSize)) setFontSize(savedFontSize);
       if (isChatReasoningEffort(configuredEffort)) setDefaultReasoningEffort(configuredEffort);
       if (history != null && !validateChatStore(history)) throw new Error("Saved chat history is invalid.");
       const first = createChat();
@@ -205,6 +211,19 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
 
   async function handleChatAction(action: string | null, selectedChat = chat) {
     setMenuOpen(false);
+    if (action === "increase-font-size" || action === "decrease-font-size") {
+      if (fontSizeSaving) return;
+      const next = Math.min(MAX_CHAT_FONT_SIZE, Math.max(MIN_CHAT_FONT_SIZE, fontSize + (action === "increase-font-size" ? 1 : -1)));
+      if (next === fontSize) return;
+      setFontSizeSaving(true);
+      setFontSizeError("");
+      try {
+        await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "font-size", value: next }) });
+        setFontSize(next);
+      } catch { setFontSizeError("Chat font size could not be saved. Please try again."); }
+      finally { setFontSizeSaving(false); }
+      return;
+    }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
     if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook")) return;
     const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat) };
@@ -237,6 +256,8 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
             { id: "save-md", label: "Save MD file" },
             { id: "save-notebook", label: "Save to Notebook (or Notebook Folder)" },
           ] },
+          { id: "increase-font-size", label: "Increase Font Size", enabled: !fontSizeSaving && fontSize < MAX_CHAT_FONT_SIZE },
+          { id: "decrease-font-size", label: "Decrease Font Size", enabled: !fontSizeSaving && fontSize > MIN_CHAT_FONT_SIZE },
         ],
       });
       await handleChatAction(action);
@@ -262,7 +283,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
   // Keep chat state and selection shortcuts alive while removing all panel UI.
   if (collapsed) return null;
 
-  return <aside id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card">
+  return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-window-drag-region flex h-12 shrink-0 items-center gap-2 px-2">
         <label className="sr-only" htmlFor="document-chat-history">Chat history</label>
@@ -295,7 +316,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
           </div>)}<MarkdownRenderer
             className="libera-chat-markdown min-w-0 break-normal"
-            baseFontSize={14}
+            baseFontSize={fontSize}
             baseLineHeight={1.6}
             renderImages={false}
             content={message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming") : message.text}
@@ -303,6 +324,7 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
         <form className="space-y-2 border-t border-border p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+          {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
           {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{error && <p role="alert" className="text-xs text-destructive">{error}</p>}
           {includedDocument && <div className="flex items-center gap-1">
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? " (current draft)" : " (already included)"}`}</p>
@@ -332,6 +354,8 @@ export function DocumentChatPanel({ activeTab, collapsed, onCollapsedChange, onE
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>
       <div className="flex flex-col gap-2">
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("manage-chats")}>Manage Chats</button>
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={fontSizeSaving || fontSize >= MAX_CHAT_FONT_SIZE} onClick={() => void handleChatAction("increase-font-size")}>Increase Font Size</button>
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={fontSizeSaving || fontSize <= MIN_CHAT_FONT_SIZE} onClick={() => void handleChatAction("decrease-font-size")}>Decrease Font Size</button>
         <p className="px-2 text-xs text-muted-foreground">Export Chat</p>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-md")}>Save MD file</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook (or Notebook Folder)</button>
