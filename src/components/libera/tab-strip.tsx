@@ -1,5 +1,6 @@
 "use client";
 
+import { ReviewToggle } from "./markdown-review-ui";
 import { useState } from "react";
 import type { MouseEvent } from "react";
 import { FilePlus2, MessageSquare, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
@@ -344,6 +345,7 @@ function ActiveFileActions({
           ))}
         </div>
       ) : null}
+      {isMarkdown ? <ReviewToggle /> : null}
       {isMarkdown ? (
         <button
           aria-label="Save"

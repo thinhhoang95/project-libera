@@ -1,3 +1,4 @@
+import { moveReviewPath, deleteReviewPath } from "./markdown-reviews";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists } from "@/lib/storage/fs-utils";
@@ -74,6 +75,7 @@ export async function renameNotebook(
   );
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
+  await moveReviewPath(currentName, nextName);
   await renameStarredFilePathPrefix(currentName, nextName);
 
   return getTree();
@@ -84,6 +86,7 @@ export async function deleteNotebook(name: string) {
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
   await removeNotebookPanelExpandedPathPrefix(name);
+  await deleteReviewPath(name);
   await removeStarredFilePathPrefix(name);
 
   return getTree();

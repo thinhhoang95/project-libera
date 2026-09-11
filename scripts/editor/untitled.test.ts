@@ -30,7 +30,19 @@ test("untitled files edit, export, cancel, and save to a folder without losing i
   const root = createRoot(document.getElementById("root")!);
   try {
     await act(async () => { root.render(createElement(Harness)); });
+    await act(async () => { workspace.createUntitledFile("", undefined, { fileName: "Chat notes.md", content: "# Chat notes\n\nAn answer" }); });
+    const chatDraftId = workspace!.activeTab!.id;
+    assert.equal(workspace!.activeTab!.file.name, "Chat notes.md");
+    assert.equal(workspace!.activeTab!.draft, "# Chat notes\n\nAn answer");
+    assert.equal(workspace!.activeTab!.saved, "");
+    assert.equal(workspace!.activeTab!.status, "dirty");
+    assert.equal(workspace!.activeTab!.untitled, true);
+    assert.equal(workspace!.saveDraftTab, undefined);
+    assert.equal(posted, undefined);
+    await act(async () => { workspace.setActiveDraft("Edited chat"); });
+    assert.equal(workspace!.activeTab!.draft, "Edited chat");
     await act(async () => { workspace.createUntitledFile(); });
+    assert.notEqual(workspace!.activeTab!.id, chatDraftId);
     assert.equal(workspace!.activeTab!.draft, "");
     assert.equal(workspace!.activeTab!.untitled, true);
     assert.equal(posted, undefined);

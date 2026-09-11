@@ -1,7 +1,11 @@
 "use client";
 
+import { TiptapReview } from "@/lib/tiptap-review";
+import { useTiptapReview } from "./use-editor-review";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
+import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
+import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
 import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
@@ -61,6 +65,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     ...createMarkdownExtensions(documentPath),
     HighlightTool,
     TiptapFind,
+    TiptapReview,
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -80,6 +85,16 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     immediatelyRender: false,
     editorProps: {
       attributes: { class: "libera-tiptap", role: "textbox", "aria-label": "Visual Markdown editor", "aria-multiline": "true" },
+      handleDOMEvents: {
+        copy(view, event): boolean {
+          if (!editor || view.state.selection.empty) return false;
+          // Selection.content retains heading/list ancestors and respects
+          // rectangular table selections as well as text and node selections.
+          const content = view.state.selection.content().content.toJSON();
+          const markdown = editor.markdown?.serialize({ type: "doc", content: content ?? [] }) ?? "";
+          return writeMarkdownClipboard(event, markdown);
+        },
+      },
       handleDrop(view, event, _slice, moved) {
         if (moved || !event.dataTransfer?.files.length) return false;
         event.preventDefault();
@@ -88,12 +103,23 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         void insertImages(Array.from(event.dataTransfer.files), pos);
         return true;
       },
-      handlePaste(view, event) {
+      handlePaste(view, event): boolean {
         const files = Array.from(event.clipboardData?.files ?? []);
-        if (!files.some(isImage)) return false;
-        event.preventDefault();
-        void insertImages(files, view.state.selection.from);
-        return true;
+        if (files.some(isImage)) {
+          event.preventDefault();
+          void insertImages(files, view.state.selection.from);
+          return true;
+        }
+        if (!editor || editor.isActive("codeBlock") || editor.isActive("code")) return false;
+        const markdown = event.clipboardData?.getData("text/markdown");
+        // Keep native rich-text paste, while plain source (including Libera's
+        // Copy as Markdown) is parsed into editable document content.
+        if (!markdown && event.clipboardData?.getData("text/html")) return false;
+        const text = markdown || event.clipboardData?.getData("text/plain");
+        if (!text?.trim()) return false;
+        const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
+        if (inserted) event.preventDefault();
+        return inserted;
       },
       handleClick(_view, _pos, event) {
         const anchor = (event.target as HTMLElement).closest("a");
@@ -117,6 +143,8 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
     },
   });
+
+  useTiptapReview(editor, lastValue);
 
   const state = useEditorState({ editor, selector: ({ editor: observedEditor }) => {
     // With deferred rendering, TipTap's state subscription can still hold its

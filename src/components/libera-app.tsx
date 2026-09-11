@@ -1,10 +1,13 @@
 "use client";
 
+import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
+import { ReviewPopover } from "@/components/libera/markdown-review-ui";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { DocumentChatPanel } from "@/components/libera/document-chat-panel";
-import { LeftPanel } from "@/components/libera/left-panel";
+import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
@@ -47,6 +50,11 @@ export function LiberaApp({
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
+  const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
+  const openComments = useCallback(() => {
+    setActiveLeftPanel("comments");
+    setNotebooksCollapsed(false);
+  }, []);
   const markdownEditorMode = workspace.activeTab?.viewState?.markdown?.editorMode ?? "visual";
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -198,6 +206,7 @@ export function LiberaApp({
   }
 
   return (
+    <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
         ref={mainLayoutRef}
@@ -210,6 +219,8 @@ export function LiberaApp({
         }
       >
         <LeftPanel
+          activePanel={activeLeftPanel}
+          onPanelChange={setActiveLeftPanel}
           activeTab={workspace.activeTab}
           activeTabId={workspace.activeTabId}
           collapsed={notebooksCollapsed}
@@ -326,7 +337,7 @@ export function LiberaApp({
           />
         </section>
 
-        <DocumentChatPanel onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
@@ -403,6 +414,8 @@ export function LiberaApp({
         onClose={workspace.closeWorkspaceConfirmDialog}
         onConfirm={workspace.submitWorkspaceConfirmDialog}
       />
+      <ReviewPopover />
     </main>
+    </MarkdownReviewProvider>
   );
 }
