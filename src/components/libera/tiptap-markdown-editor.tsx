@@ -396,7 +396,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     : 0;
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
+    <div className="libera-visual-editor flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         openFind();
@@ -405,7 +405,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
     }}>
       <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
-        className="flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
+        className="libera-editor-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
         <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
@@ -461,7 +461,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className={`h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
+        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
           onScroll={(event) => onViewStateChange?.({
             visualScrollLeft: event.currentTarget.scrollLeft,
             visualScrollTop: event.currentTarget.scrollTop,

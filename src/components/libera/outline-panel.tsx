@@ -735,7 +735,7 @@ function MarkdownOutline({
         />
         <input
           aria-label="Search Markdown headings"
-          className="h-9 w-full rounded-full border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+          className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
           placeholder="Search headings"
           value={query}
           onChange={(event) => setQuery(event.target.value)}

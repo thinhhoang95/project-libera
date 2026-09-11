@@ -6,8 +6,8 @@ import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
 
-export function ChatFileComposer({ chatId, value, disabled, files, tabs, composerRef, onChange, onAttach, onLoading, onError, onSend }: {
-  chatId: string; value: string; disabled: boolean; files: LiberaFileNode[]; tabs: OpenTab[];
+export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ to add files", disabled, files, tabs, composerRef, onChange, onAttach, onLoading, onError, onSend }: {
+  chatId: string; value: string; placeholder?: string; disabled: boolean; files: LiberaFileNode[]; tabs: OpenTab[];
   composerRef: RefObject<HTMLTextAreaElement | null>; onChange: (value: string) => void;
   onAttach: (context: ChatContext) => void; onLoading: (loading: boolean) => void;
   onError: (message: string) => void; onSend: () => void;
@@ -56,7 +56,7 @@ export function ChatFileComposer({ chatId, value, disabled, files, tabs, compose
       ><span className="block truncate font-medium">{file.name}</span><span className="block truncate text-muted-foreground">{file.path}</span></button>) : <p className="p-2 text-xs text-muted-foreground">No matching Markdown files</p>}
     </div>}
     <textarea ref={composerRef} aria-label="Chat prompt" aria-autocomplete="list" aria-controls={mention ? `chat-files-${chatId}` : undefined} aria-activedescendant={mention && matches.length ? `chat-file-${chatId}-${index}` : undefined}
-      placeholder="Ask about your document… Type @ to add files" rows={3} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent"
+      placeholder={placeholder} rows={3} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent"
       value={value} disabled={disabled || loading} onChange={(event) => { onChange(event.target.value); locate(event.currentTarget); }}
       onSelect={(event) => locate(event.currentTarget)} onBlur={() => setMention(null)}
       onKeyDown={(event) => {

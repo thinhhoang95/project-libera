@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Check, Palette } from "lucide-react";
+import { BookOpen, Check, Palette } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { NotebookDialogState, NotebookFormValues } from "@/components/libera/types";
 import type { LiberaNotebookGroup } from "@/lib/types";
@@ -54,6 +54,7 @@ export function NotebookDialog({
   return (
     <ModalDialog
       open
+      icon={<BookOpen aria-hidden />}
       title={dialog.mode === "create" ? "New notebook" : "Edit notebook"}
       description="Choose a name, group, color, and emoji for this notebook."
       onClose={onClose}

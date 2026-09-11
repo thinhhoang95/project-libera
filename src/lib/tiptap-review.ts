@@ -32,7 +32,15 @@ export function tiptapReviewBlocks(editor: Editor, source: string) {
     catch { return []; }
     const size = parsed.content.size;
     if (!size) continue;
-    if (cursor + size > editor.state.doc.content.size || !editor.state.doc.slice(cursor, cursor + size).content.eq(parsed.content)) return [];
+    const matches = () => cursor + size <= editor.state.doc.content.size && editor.state.doc.slice(cursor, cursor + size).content.eq(parsed.content);
+    // Tiptap preserves extra blank lines as empty paragraphs; remark's source
+    // blocks omit that whitespace. Advance past only these unanchored nodes,
+    // keeping nonempty blocks in strict order (including repeated passages).
+    while (!matches()) {
+      const node = editor.state.doc.nodeAt(cursor);
+      if (!node || node.type.name !== "paragraph" || node.content.size !== 0) return [];
+      cursor += node.nodeSize;
+    }
     mapped.push({ start: block.start, end: block.end, from: cursor, to: cursor + size });
     cursor += size;
   }

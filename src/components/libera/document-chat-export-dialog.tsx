@@ -60,7 +60,7 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved }: {
         {loading && <p role="status" className="text-sm text-muted-foreground">Loading notebooks…</p>}
         {!loading && !directories.length && !error && <p className="text-sm text-muted-foreground">Create a notebook to save your chat here.</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        <div className="flex justify-end gap-2"><button type="button" className="rounded-lg border border-border px-3 py-2 text-sm" onClick={onClose}>Cancel</button><button type="submit" className="rounded-lg bg-accent px-3 py-2 text-sm text-accent-foreground disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? "Saving…" : "Save"}</button></div>
+        <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? "Saving…" : "Save"}</button></div>
       </fieldset>
     </form>
   </ModalDialog>;

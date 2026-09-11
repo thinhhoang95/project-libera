@@ -1,12 +1,18 @@
 "use client";
 
 import {
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
   FilePlus2,
   FileText,
+  FolderOpen,
   Image as ImageIcon,
+  LayoutGrid,
+  List,
+  Sparkles,
+  ArrowUpRight,
   RotateCcw,
   Search,
   X,
@@ -14,6 +20,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import {
+  type CSSProperties,
   PointerEvent,
   WheelEvent,
   useEffect,
@@ -24,6 +31,9 @@ import {
 import { encodeFilePath } from "@/components/libera/api-client";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
+
+import styles from "./notebook-home.module.css";
+import { notebookIllustrationUrl } from "@/lib/notebook-illustrations";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -54,10 +64,12 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
   const files: LiberaFileNode[] = [];
   const notes: LiberaFileNode[] = [];
   const images: LiberaFileNode[] = [];
+  let folders = 0;
 
   for (const node of nodes) {
     if (node.kind === "folder") {
       const nested = collectNotebookFiles(node.children);
+      folders += 1 + nested.folders;
       files.push(...nested.files);
       notes.push(...nested.notes);
       images.push(...nested.images);
@@ -75,17 +87,16 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
     }
   }
 
-  return { files, notes, images };
+  return { files, notes, images, folders };
 }
 
 export function NotebookHome({
-  yourName,
   notebook,
   onCreateMarkdown,
   onCreateSlides,
   onOpenFile,
 }: NotebookHomeProps) {
-  const { files, notes, images } = useMemo(
+  const { files, notes, images, folders } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
   );
@@ -102,6 +113,21 @@ export function NotebookHome({
       .filter((file) => file.name.toLowerCase().includes(normalizedQuery))
       .slice(0, 10);
   }, [fileSearchQuery, files]);
+  const [sort, setSort] = useState("updated");
+  const [view, setView] = useState<"list" | "grid">("list");
+  const sortedFiles = useMemo(() => [...files].sort((a, b) =>
+    sort === "name" ? a.name.localeCompare(b.name) :
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+  ), [files, sort]);
+  const updatedAt = files.reduce((latest, file) =>
+    new Date(file.updatedAt) > new Date(latest) ? file.updatedAt : latest,
+    notebook.updatedAt,
+  );
+  const formatDate = (value: string) => new Date(value).toLocaleDateString(undefined, {
+    day: "numeric", month: "short", year: "numeric",
+  });
+  const relativePath = (file: LiberaFileNode) => file.path.startsWith(`${notebook.path}/`)
+    ? file.path.slice(notebook.path.length + 1) : file.path;
   const trimmedFileSearchQuery = fileSearchQuery.trim();
 
   function openSearchResult(file: LiberaFileNode) {
@@ -110,192 +136,126 @@ export function NotebookHome({
   }
 
   return (
-    <div className="h-full min-h-0 overflow-auto bg-muted px-5 py-5">
-      <div className="mx-auto flex max-w-6xl flex-col gap-5">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-xl"
-              style={{ backgroundColor: notebook.color, color: "#ffffff" }}
-            >
+    <div className={styles.home}>
+      <div className={styles.content}>
+        <header className={styles.header}>
+          <div className={styles.identity}>
+            <span className={styles.notebookIcon} style={{ backgroundColor: notebook.color }}>
               {notebook.emoji}
             </span>
             <div className="min-w-0">
-              <h2 className="truncate text-xl font-semibold tracking-tight">
-                {notebook.name}
-              </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {notes.length} notes · {images.length} images
+              <h2 className={styles.title}>{notebook.name}</h2>
+              <p className={styles.metadata}>
+                <FileText aria-hidden size={15} /> {notes.length} {notes.length === 1 ? "note" : "notes"}
+                <span aria-hidden>·</span> Updated {formatDate(updatedAt)}
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className="inline-flex items-center gap-2 rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50"
-              type="button"
-              onClick={() => onCreateMarkdown(notebook.name)}
-            >
-              <FileText aria-hidden className="h-4 w-4" />
-              New note
+          <div className={styles.actions}>
+            <button className={styles.secondaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}>
+              <FileText aria-hidden size={17} /> New note
             </button>
-            <button
-              className="inline-flex items-center gap-2 rounded-md bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800"
-              type="button"
-              onClick={() => onCreateSlides(notebook.name)}
-            >
-              <FilePlus2 aria-hidden className="h-4 w-4" />
-              New slides
+            <button className={styles.primaryButton} type="button" onClick={() => onCreateSlides(notebook.name)}>
+              <FilePlus2 aria-hidden size={17} /> New slides
             </button>
           </div>
         </header>
 
-        <section className="py-4 text-center">
-          <h1 className="wrap-break-word text-3xl font-semibold tracking-tight sm:text-4xl">
-            What&apos;s next for {notebook.name}{yourName ? `, ${yourName}?` : ""}
-          </h1>
-          <div className="relative mx-auto mt-5 max-w-3xl text-left">
-            <Search
-              aria-hidden
-              className="pointer-events-none absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground"
-            />
+        <section className={styles.hero} aria-labelledby="notebook-welcome"
+          style={{ "--notebook-illustration": `url("${notebookIllustrationUrl(notebook.illustration, notebook.createdAt)}")` } as CSSProperties}>
+          <div className={styles.heroCopy}>
+            <p className={styles.eyebrow}><Sparkles aria-hidden size={14} /> Keep exploring</p>
+            <h1 id="notebook-welcome">What&apos;s next for {notebook.name}?</h1>
+          </div>
+          <div className={styles.search}>
+            <Search aria-hidden className={styles.searchIcon} size={20} />
             <input
               aria-label={`Search files in ${notebook.name}`}
-              className="h-14 w-full rounded-lg border border-input bg-card px-12 text-base outline-none transition placeholder:text-muted-foreground focus:border-ring"
-              placeholder="Search files by name"
+              placeholder="Search files in this notebook…"
               value={fileSearchQuery}
               onChange={(event) => setFileSearchQuery(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && fileSearchResults[0]) {
-                  openSearchResult(fileSearchResults[0]);
-                }
+                if (event.key === "Escape") setFileSearchQuery("");
+                if (event.key === "Enter" && fileSearchResults[0]) openSearchResult(fileSearchResults[0]);
               }}
             />
             {trimmedFileSearchQuery ? (
-              <div className="absolute left-0 right-0 top-[3.75rem] z-30 overflow-hidden rounded-lg border border-border bg-card shadow-lg">
-                {fileSearchResults.length ? (
-                  fileSearchResults.map((file) => (
-                    <button
-                      key={file.path}
-                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted"
-                      type="button"
-                      onClick={() => openSearchResult(file)}
-                    >
-                      <span className="flex min-w-0 items-center gap-3">
-                        <span className="text-muted-foreground">
-                          <FileTypeIcon fileType={file.fileType} />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">
-                            {file.name}
-                          </span>
-                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                            {file.path}
-                          </span>
-                        </span>
-                      </span>
-                      <span className="shrink-0 text-xs uppercase text-muted-foreground">
-                        {fileTypeLabel(file.fileType)}
-                      </span>
+              <>
+                <button className={styles.clearSearch} type="button" aria-label="Clear notebook search" onClick={() => setFileSearchQuery("")}><X size={16} /></button>
+                <div className={styles.searchResults}>
+                  {fileSearchResults.length ? fileSearchResults.map((file) => (
+                    <button key={file.path} type="button" onClick={() => openSearchResult(file)}>
+                      <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                      <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
+                      <span className={styles.fileType}>{fileTypeLabel(file.fileType)}</span>
                     </button>
-                  ))
-                ) : (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">
-                    No files found in this notebook.
-                  </div>
-                )}
-              </div>
+                  )) : <p className={styles.noResults}>No files found in this notebook.</p>}
+                </div>
+              </>
             ) : null}
           </div>
         </section>
 
-        <section className="rounded-lg border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Note files
-            </h3>
-            <span className="text-xs text-muted-foreground">{notes.length}</span>
+        <section className={styles.stats} aria-label="Notebook overview">
+          <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>Notes</span></div></div>
+          <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>Images</span></div></div>
+          <div className={styles.stat} data-tone="amber"><span className={styles.statIcon}><FolderOpen aria-hidden /></span><div><strong>{folders}</strong><span>Folders</span></div></div>
+          <div className={styles.stat} data-tone="violet"><span className={styles.statIcon}><CalendarDays aria-hidden /></span><div><span>Last updated</span><strong className={styles.statDate}>{formatDate(updatedAt)}</strong></div></div>
+        </section>
+
+        <section aria-labelledby="notebook-files">
+          <div className={styles.sectionHeader}>
+            <h3 id="notebook-files">Files <span>{files.length}</span></h3>
+            <div className={styles.fileControls}>
+              <select aria-label="Sort notebook files" value={sort} onChange={(event) => setSort(event.target.value)}>
+                <option value="updated">Last modified</option><option value="name">Name</option>
+              </select>
+              <div className={styles.viewToggle} aria-label="File view" role="group">
+                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={17} /></button>
+                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={16} /></button>
+              </div>
+            </div>
           </div>
-          {notes.length ? (
-            <div className="divide-y divide-border">
-              {notes.map((note) => (
-                <button
-                  key={note.path}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted"
-                  type="button"
-                  onClick={() => onOpenFile(note)}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{note.name}</span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                      {note.path}
-                    </span>
+          {sortedFiles.length ? (
+            <div className={view === "list" ? styles.fileList : styles.fileGrid}>
+              {view === "list" ? <div className={styles.tableHeading}><span>Name</span><span>Last modified</span><span /></div> : null}
+              {sortedFiles.map((file) => (
+                <button key={file.path} className={styles.fileRow} type="button" onClick={() => onOpenFile(file)}>
+                  <span className={styles.fileDetails}>
+                    <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                    <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {new Date(note.updatedAt).toLocaleDateString()}
-                  </span>
+                  <time className={styles.fileDate} dateTime={file.updatedAt}>{formatDate(file.updatedAt)}</time>
+                  <ArrowUpRight aria-hidden className={styles.openArrow} size={16} />
                 </button>
               ))}
             </div>
           ) : (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No Markdown notes in this notebook.
+            <div className={styles.emptyState}>
+              <span className={styles.emptyIllustration}><FilePlus2 aria-hidden size={34} /><Sparkles aria-hidden size={20} /></span>
+              <h4>Big ideas start with a blank page.</h4>
+              <p>Create your first note and give this notebook a little life.</p>
+              <button className={styles.primaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}><FilePlus2 aria-hidden size={16} /> Create a note</button>
             </div>
           )}
         </section>
 
-        <section className="rounded-lg border border-border bg-card">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Image previews
-            </h3>
-            <span className="text-xs text-muted-foreground">{images.length}</span>
-          </div>
-          {images.length ? (
-            <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
+        {images.length ? (
+          <section aria-labelledby="notebook-images">
+            <div className={styles.sectionHeader}><h3 id="notebook-images">Image gallery <span>{images.length}</span></h3></div>
+            <div className={styles.gallery}>
               {images.map((image, index) => (
-                <figure
-                  key={image.path}
-                  className="overflow-hidden rounded-lg border border-border bg-muted"
-                >
-                  <button
-                    className="block aspect-[4/3] w-full bg-muted"
-                    type="button"
-                    onClick={() => setPreviewIndex(index)}
-                  >
+                <figure key={image.path}>
+                  <button className={styles.imagePreview} type="button" aria-label={`Preview ${image.name}`} onClick={() => setPreviewIndex(index)}>
                     {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
-                    <img
-                      alt={image.name}
-                      className="h-full w-full object-cover"
-                      src={rawFileUrl(image)}
-                    />
+                    <img alt={image.name} loading="lazy" src={rawFileUrl(image)} />
                   </button>
-                  <figcaption className="flex items-center justify-between gap-2 px-3 py-2">
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">{image.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {image.path}
-                      </span>
-                    </span>
-                    <button
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-input text-foreground hover:bg-card"
-                      type="button"
-                      aria-label={`Open ${image.name} in official viewer`}
-                      title="Open official viewer"
-                      onClick={() => onOpenFile(image)}
-                    >
-                      <ExternalLink aria-hidden className="h-4 w-4" />
-                    </button>
-                  </figcaption>
+                  <figcaption><span>{image.name}</span><button type="button" aria-label={`Open ${image.name} in official viewer`} onClick={() => onOpenFile(image)}><ExternalLink aria-hidden size={16} /></button></figcaption>
                 </figure>
               ))}
             </div>
-          ) : (
-            <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground">
-              <ImageIcon aria-hidden className="h-4 w-4" />
-              No image files in this notebook.
-            </div>
-          )}
-        </section>
+          </section>
+        ) : null}
       </div>
 
       {previewIndex !== null ? (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus } from "lucide-react";
+import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save } from "lucide-react";
 import type { ReviewSuggestion } from "@/lib/markdown-review";
 import { reviewIntent } from "@/lib/markdown-review";
 import { useMarkdownReview } from "./markdown-review-context";
@@ -53,12 +53,12 @@ export function ReviewComments() {
           {thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
         </button>
         {active?.id === thread.id && <div className="mt-2 space-y-2">
-          {thread.messages.map((m, i) => <div key={m.id}>{i > 0 && <p className="whitespace-pre-wrap">{m.text}</p>}<button className={button} onClick={() => { setEditing(m.id); setReply(m.text); }}>{i === 0 ? "Edit comment" : "Edit reply"}</button></div>)}
-          <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" value={reply} onChange={(e) => setReply(e.target.value)} />
-          <div className="flex flex-wrap gap-1"><button className={button} disabled={!reply.trim() || !!r.busy} onClick={async () => { if (await r.action(editing ? "edit" : "reply", { threadId: thread.id, messageId: editing, text: reply })) { setReply(""); setEditing(null); } }}>{editing ? "Save comment" : "Reply"}</button>
-          <button className={button} disabled={!!r.busy} onClick={() => void r.action("resolve", { threadId: thread.id, resolved: thread.status !== "resolved" })}>{thread.status === "resolved" ? "Reopen" : "Resolve"}</button>
-          <button className={button} disabled={!!r.busy || !r.selection} onClick={() => void r.action("reattach", { threadId: thread.id, range: r.selection?.range })}>Reattach to selection</button>
-          <button className={button} disabled={!!r.busy} onClick={() => void r.action("delete", { threadId: thread.id })}>Delete</button></div>
+          {thread.messages.map((m, i) => <div key={m.id}>{i > 0 && <p className="whitespace-pre-wrap">{m.text}</p>}<button type="button" className="review-comment-icon" data-tone="blue" aria-label={i === 0 ? "Edit comment" : "Edit reply"} title={i === 0 ? "Edit comment" : "Edit reply"} disabled={!!r.busy} onClick={() => { setEditing(m.id); setReply(m.text); }}><PencilLine aria-hidden size={16} /></button></div>)}
+          <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={reply} onChange={(e) => setReply(e.target.value)} />
+          <div className="review-comment-actions"><button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!reply.trim() || !!r.busy} onClick={async () => { if (await r.action(editing ? "edit" : "reply", { threadId: thread.id, messageId: editing, text: reply })) { setReply(""); setEditing(null); } }}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
+          <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "resolved" ? "Reopen" : "Resolve"} title={thread.status === "resolved" ? "Reopen" : "Resolve"} disabled={!!r.busy} onClick={() => void r.action("resolve", { threadId: thread.id, resolved: thread.status !== "resolved" })}>{thread.status === "resolved" ? <RotateCcw aria-hidden size={16} /> : <Check aria-hidden size={16} />}</button>
+          <button type="button" className="review-comment-icon" data-tone="violet" aria-label="Reattach to selection" title="Reattach to selection" disabled={!!r.busy || !r.selection} onClick={() => void r.action("reattach", { threadId: thread.id, range: r.selection?.range })}><Link2 aria-hidden size={16} /></button>
+          <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={!!r.busy} onClick={() => void r.action("delete", { threadId: thread.id })}><Trash2 aria-hidden size={16} /></button></div>
         </div>}
       </article>)}
     </div>
@@ -139,15 +139,31 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
     if (okay) setPrompt("");
   }
   return <aside id="document-chat-panel" aria-label="Agentic review" className="libera-glass-panel libera-chat-panel flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-card">
-    <header className="flex h-12 shrink-0 items-center gap-2 px-3">
-      <Sparkles size={16} /><strong className="flex-1 text-sm">Agentic review</strong>
+    <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-2 px-3">
+      <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>
+      <strong className="min-w-0 flex-1 text-sm">Agentic review</strong>
       <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40" aria-label="New review round" title="New review round" disabled={!doc || !!r.busy || attachmentBusy || r.recovery} onClick={() => void r.action("new-round")}><Plus aria-hidden size={16} /></button>
+      <button type="button" className="libera-sidebar-icon-button libera-window-no-drag inline-flex h-8 w-8 shrink-0 items-center justify-center" aria-label="Return to AI chat" title="Return to AI chat" onClick={() => r.setChatReview(false)}><ArrowLeft aria-hidden size={17} /></button>
     </header>
-    <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
-      {!doc ? <><p className="text-sm">Open a Markdown document to review.</p>{recoverable.length > 0 && <section className="space-y-2"><strong className="text-sm">Recover unsaved reviews</strong>{recoverable.map((draft) => <button key={draft.id} className="review-button w-full flex-col items-start text-left" onClick={() => r.recoverDraft(draft.key, draft.snapshot)}><span className="line-clamp-2">{draft.snapshot.slice(0, 120) || "Untitled review"}</span><span>{draft.commentCount} comments · restore draft</span></button>)}</section>}</> : <>
-      <p className="break-all text-xs text-muted-foreground">Reviewing: {doc.key} · round {doc.round ?? 1} · full current draft</p>
-      <details open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>
-      {!session && <p className="text-sm text-muted-foreground">First, the agent plans how to address your comments. Confirm the plan to generate changes, then accept or reject each change.</p>}
+    <div className={`libera-chat-log min-h-0 flex-1 space-y-3 overflow-auto p-3 ${!session ? "flex flex-col" : ""}`}>
+      {!session && <div className="libera-chat-welcome libera-review-welcome">
+        <span className="libera-ai-orb" aria-hidden><PencilLine size={30} strokeWidth={1.5} /></span>
+        <h2>A fresh perspective.<br />A stronger draft.</h2>
+        <p>{doc ? "Turn your ideas and feedback into thoughtful improvements." : "Open a Markdown document to start your next review."}</p>
+        {doc ? <div className="libera-chat-starters">
+          {[
+            { icon: PencilLine, label: "Make the writing clearer", prompt: "Review this draft for clarity. Suggest ways to make the writing easier to follow while preserving its meaning." },
+            { icon: ListChecks, label: "Strengthen the structure", prompt: "Review the structure and flow of this draft. Plan improvements to the organization and transitions." },
+            { icon: ShieldCheck, label: selectedIds.length ? "Work through my comments" : "Check for consistency", prompt: selectedIds.length ? "Plan how to address the selected review comments while preserving the intent of the draft." : "Review this draft for inconsistent terminology, gaps in the explanation, and unsupported claims. Plan targeted improvements." },
+          ].map(({icon: Icon, label, prompt: starter}) => <button key={label} type="button" disabled={!!r.busy || attachmentBusy || r.recovery} onClick={() => { setPrompt(starter); input.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+        </div> : <div className="libera-review-intro"><BookOpen aria-hidden size={18} /><span>Your document and comments stay at the heart of every review.</span></div>}
+        <p className="libera-chat-context-hint">Start with a plan. Confirm it to generate suggestions, then accept or reject each change.</p>
+        {doc && <p className="libera-chat-context-hint">Type @ to include a reference file.</p>}
+      </div>}
+
+      {!doc ? <>{recoverable.length > 0 && <section className="space-y-2"><strong className="text-sm">Recover unsaved reviews</strong>{recoverable.map((draft) => <button key={draft.id} className="review-button w-full flex-col items-start text-left" onClick={() => r.recoverDraft(draft.key, draft.snapshot)}><span className="line-clamp-2">{draft.snapshot.slice(0, 120) || "Untitled review"}</span><span>{draft.commentCount} comments · restore draft</span></button>)}</section>}</> : <>
+      {session && <p className="break-all text-xs text-muted-foreground">Reviewing: {doc.key} · round {doc.round ?? 1} · full current draft</p>}
+      {(session || doc.threads.some((thread) => thread.status === "open")) && <details className="libera-review-comment-picker" open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>}
       {!!doc.previousRounds?.length && <details>
         <summary className="cursor-pointer text-xs text-muted-foreground">Previous rounds ({doc.previousRounds.length})</summary>
         {doc.previousRounds.map((round) => <details key={round.session.id} className="mt-2 rounded-lg border border-border p-2 text-xs">
@@ -173,10 +189,17 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       {(r.error || error) && <p role="alert" className="text-sm text-destructive">{r.error || error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
       {!!r.busy && <p role="status" className="text-sm">{r.busy === "plan" ? "Planning…" : ["generate", "revise"].includes(r.busy) ? "Generating proposed changes…" : "Saving review…"} {["plan", "generate", "revise"].includes(r.busy) && <button className={button} onClick={r.stop}>Stop</button>}</p>}
     </div>
-    <form className="shrink-0 space-y-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+    <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      {doc && <div className="libera-chat-context flex items-center gap-2"><BookOpen aria-hidden size={13} className="shrink-0" /><p className="min-w-0 truncate" title={doc.key}>{doc.key.split("/").at(-1)} · Round {doc.round ?? 1}</p></div>}
       {references.map((ref) => <div key={ref.path} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate" title={ref.path}>@{ref.name}</span><button type="button" className={button} aria-label={`Remove reference ${ref.name}`} onClick={() => setReferences(references.filter((r) => r.path !== ref.path))}>×</button></div>)}
-      <ChatFileComposer chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={files} tabs={tabs} composerRef={input} onChange={setPrompt} onLoading={setAttachmentBusy} onError={setError} onSend={() => void send()} onAttach={(ref) => setReferences([...references.filter((r) => r.path !== ref.path), ref])} />
-      <button className={button} disabled={!doc || !!r.busy || attachmentBusy || (!prompt.trim() && !selectedIds.length)}>{session ? "Send review request" : "Plan review"}</button>
+      <div className="libera-chat-composer">
+      <ChatFileComposer placeholder={doc ? session ? "Ask a follow-up… Type @ to add files" : "What would you like to improve?" : "Open a Markdown document to begin"} chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={files} tabs={tabs} composerRef={input} onChange={setPrompt} onLoading={setAttachmentBusy} onError={setError} onSend={() => void send()} onAttach={(ref) => setReferences([...references.filter((r) => r.path !== ref.path), ref])} />
+      <div className="libera-chat-composer-actions flex items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">{session ? "Continue review" : "Plan review"}</span>
+        <button type="submit" className="libera-chat-send inline-flex h-8 w-8 shrink-0 items-center justify-center disabled:opacity-40" aria-label={session ? "Send review request" : "Plan review"} title={session ? "Send review request" : "Plan review"} disabled={!doc || !!r.busy || attachmentBusy || (!prompt.trim() && !selectedIds.length)}><ArrowUp aria-hidden size={18} /></button>
+      </div>
+      </div>
+      <p className="libera-chat-key-hint">Enter to send · Shift + Enter for a new line</p>
     </form>
   </aside>;
 }

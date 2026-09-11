@@ -1,6 +1,7 @@
 const {
   app,
   BrowserWindow,
+  WebContentsView,
   Menu,
   clipboard,
   dialog,
@@ -19,6 +20,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { createUpdaterService } = require("./updater.cjs");
+const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
@@ -407,7 +409,13 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
 
   activeSetupPromise = new Promise((resolve, reject) => {
     let savedConfig = null;
-    const setupWindow = new BrowserWindow({
+    const overlay = mode === "configuration" && parentWindow
+      ? createPreferencesOverlay(parentWindow, {
+          WebContentsView,
+          preload: path.join(__dirname, "preload.cjs"),
+        })
+      : null;
+    const setupWindow = overlay ? parentWindow : new BrowserWindow({
       width: 860,
       height: 700,
       icon: getIconPath(),
@@ -425,8 +433,13 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       },
     });
 
-    activeSetupWindow = setupWindow;
-    setupWindow.setMenuBarVisibility(false);
+    const setupHost = overlay ?? setupWindow;
+    activeSetupWindow = setupHost;
+    if (!overlay) setupWindow.setMenuBarVisibility(false);
+
+    ipcMain.handle("setup:close", (event) => {
+      if (event.sender === setupHost.webContents) setupHost.close();
+    });
 
     ipcMain.handle("setup:get-state", () => getConfigStatus());
 
@@ -463,12 +476,13 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       nativeTheme.themeSource = nextConfig.themePreference;
       mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
       savedConfig = nextConfig;
-      setupWindow.close();
+      setupHost.close();
 
       return { ok: true };
     });
 
-    setupWindow.on("closed", () => {
+    setupHost.on("closed", () => {
+      ipcMain.removeHandler("setup:close");
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
@@ -489,8 +503,11 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       resolve(null);
     });
 
-    setupWindow.loadFile(path.join(__dirname, "setup.html"), {
-      query: { mode },
+    setupHost.webContents.loadFile(path.join(__dirname, "setup.html"), {
+      query: { mode, presentation: overlay ? "overlay" : "window" },
+    }).catch((error) => {
+      reject(error);
+      setupHost.close();
     });
   });
 
@@ -681,6 +698,10 @@ function dispatchRendererCloseTabShortcut(webContents) {
 }
 
 function dispatchCloseTabToFocusedWindow() {
+  if (activeSetupWindow && !activeSetupWindow.isDestroyed()) {
+    activeSetupWindow.webContents.send("setup:request-close");
+    return;
+  }
   const focusedWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
 
   dispatchRendererCloseTabShortcut(focusedWindow?.webContents);

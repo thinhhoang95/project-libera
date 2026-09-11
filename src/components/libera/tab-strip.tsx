@@ -3,8 +3,9 @@
 import { ReviewToggle } from "./markdown-review-ui";
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { FilePlus2, MessageSquare, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { Plus, Sparkles, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
+import { FileTypeIcon } from "./file-type";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
@@ -67,7 +68,6 @@ export function TabStrip({
   onMarkdownEditorModeChange,
   activeTab,
   activeTabId,
-  notebookColors,
   tabs,
   onActivateTab,
   onCloseOtherTabs,
@@ -120,12 +120,11 @@ export function TabStrip({
   }
 
   return (
-    <div className="libera-window-drag-region border-b border-border bg-card">
+    <div className="libera-tab-strip libera-window-drag-region border-b border-border bg-card">
       <div className="flex min-h-12 items-center gap-2 px-3 py-2">
-        <button type="button" aria-label="New untitled file" title="New untitled file" onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><FilePlus2 aria-hidden className="h-4 w-4" /></button>
+        <button type="button" aria-label="New untitled file" title="New untitled file" onClick={onCreateUntitled} className="libera-window-no-drag-region rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"><Plus aria-hidden className="h-4 w-4" /></button>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
-            const tabColor = notebookColors[tab.file.notebook] ?? "#64748b";
             const isActive = activeTabId === tab.id;
             const isDragging = draggingTabId === tab.id;
             const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
@@ -134,7 +133,7 @@ export function TabStrip({
             return (
               <button
                 key={tab.id}
-                className={`group relative flex min-w-0 max-w-56 shrink-0 cursor-grab items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors active:cursor-grabbing ${
+                className={`libera-document-tab group relative flex min-w-0 max-w-56 shrink-0 cursor-grab items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors active:cursor-grabbing ${
                   isActive
                     ? "text-foreground"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -176,14 +175,6 @@ export function TabStrip({
                   clearDragState();
                 }}
                 onDragEnd={clearDragState}
-                style={
-                  isActive
-                    ? {
-                        backgroundColor: `color-mix(in srgb, ${tabColor} 14%, transparent)`,
-                        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${tabColor} 28%, transparent)`,
-                      }
-                    : undefined
-                }
                 type="button"
                 onClick={() => onActivateTab(tab.id)}
                 onContextMenu={(event) => void openTabContextMenu(event, tab)}
@@ -202,14 +193,9 @@ export function TabStrip({
                   onCloseTab(tab.id);
                 }}
               >
-                <span
-                  aria-hidden
-                  className="h-2 w-2 shrink-0 rounded-full transition-opacity"
-                  style={{
-                    backgroundColor: tabColor,
-                    opacity: isActive ? 1 : 0.65,
-                  }}
-                />
+                <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
+                  <FileTypeIcon fileType={tab.file.fileType} />
+                </span>
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
                   <span id={`${tab.id}-drop-target`} className="sr-only">
@@ -270,7 +256,7 @@ export function TabStrip({
           onClick={onToggleChat}
           className={`libera-window-no-drag shrink-0 rounded-lg p-2 hover:bg-muted hover:text-foreground ${chatOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
         >
-          <MessageSquare aria-hidden className="h-4 w-4" />
+          <Sparkles aria-hidden className="h-4 w-4" />
         </button>
         <WindowControls />
       </div>
@@ -333,9 +319,9 @@ function ActiveFileActions({
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
+    <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
       {isMarkdown && !isMarkdownSlidesPath(activeTab.file.path) ? (
-        <div role="group" aria-label="Markdown editing mode" className="mr-1 inline-flex h-8 shrink-0 items-center rounded-lg border border-border p-0.5">
+        <div role="group" aria-label="Markdown editing mode" className="libera-editor-mode mr-1 inline-flex h-8 shrink-0 items-center rounded-lg border border-border p-0.5">
           {(["visual", "source"] as const).map((mode) => (
             <button key={mode} type="button" aria-pressed={markdownEditorMode === mode}
               className="h-full rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"

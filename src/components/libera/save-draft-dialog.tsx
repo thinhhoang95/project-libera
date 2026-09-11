@@ -43,9 +43,9 @@ export function SaveDraftDialog({ tab, tree, error, submitting, onClose, onSubmi
             </select>
           </label>
           {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="libera-dialog-actions flex justify-end gap-2 pt-2">
             <button type="button" className="rounded-lg border border-border px-4 py-2 text-sm" onClick={onClose}>Cancel</button>
-            <button type="submit" className="rounded-lg bg-accent px-4 py-2 text-sm text-accent-foreground">{submitting ? "Saving…" : "Save"}</button>
+            <button type="submit" className="libera-dialog-primary">{submitting ? "Saving…" : "Save"}</button>
           </div>
         </fieldset>
       </form>

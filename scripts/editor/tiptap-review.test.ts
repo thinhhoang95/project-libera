@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
-import { TiptapReview, sourceRangeForTiptapSelection, tiptapReviewBlocks, tiptapReviewKey } from "../../src/lib/tiptap-review";
+import { TiptapReview, sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewKey } from "../../src/lib/tiptap-review";
 import { reviewBlocks } from "../../src/lib/markdown-review";
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle"] as const) Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
@@ -37,5 +37,43 @@ test("selecting from a preceding paragraph closing boundary targets only the sel
   try {
     const mapping = tiptapReviewBlocks(editor, source);
     assert.deepEqual(sourceRangeForTiptapSelection(editor, source, mapping[0].to - 1, mapping[1].to - 1), { start: mapping[1].start, end: mapping[1].end });
+  } finally { editor.destroy(); }
+});
+
+test("blank paragraphs do not break comments or shift repeated passages to the wrong source range", () => {
+  for (const source of [
+    "\n\nRepeated paragraph.\n\n\n\nRepeated paragraph.\n\n",
+    "# Title\r\n\r\n\r\n\r\nMath $x$ here.\r\n\r\n\r\n\r\nRepeated paragraph.",
+  ]) {
+    const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), Mathematics, TiptapReview], content: source, contentType: "markdown" });
+    try {
+      const before = editor.getJSON();
+      const expected = reviewBlocks(source);
+      const positions: { from: number; to: number }[] = [];
+      editor.state.doc.forEach((node, pos) => {
+        if (node.content.size) positions.push({ from: pos, to: pos + node.nodeSize });
+      });
+      assert.equal(positions.length, expected.length);
+      expected.forEach((block, index) => {
+        const position = positions[index];
+        assert.deepEqual(sourceRangeForTiptapSelection(editor, source, position.from + 1, position.to - 1), { start: block.start, end: block.end });
+        assert.deepEqual(tiptapRangeForSource(editor, source, block), position);
+      });
+      assert.deepEqual(editor.getJSON(), before, "mapping must not rewrite the document");
+      editor.commands.insertContentAt(positions[0].from + 1, "Edited ");
+      const draft = editor.getMarkdown();
+      const lastBlock = reviewBlocks(draft).at(-1)!;
+      const lastPosition = editor.state.doc.content.size - (source.endsWith("\n\n") ? 2 : 0);
+      assert.deepEqual(sourceRangeForTiptapSelection(editor, draft, lastPosition - 2, lastPosition - 1), { start: lastBlock.start, end: lastBlock.end });
+    } finally { editor.destroy(); }
+  }
+});
+
+test("mapping still refuses changed text instead of guessing between repeated passages", () => {
+  const source = "Repeated.\n\n\n\nRepeated.";
+  const editor = new Editor({ extensions: createMarkdownExtensions("Notes/a.md"), content: source, contentType: "markdown" });
+  try {
+    editor.commands.insertContentAt(1, "Changed ");
+    assert.deepEqual(tiptapReviewBlocks(editor, source), []);
   } finally { editor.destroy(); }
 });

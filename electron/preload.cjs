@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("liberaPlatform", {
 });
 
 contextBridge.exposeInMainWorld("liberaSetup", {
+  close: () => ipcRenderer.invoke("setup:close"),
+  onRequestClose: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("setup:request-close", handler);
+    return () => ipcRenderer.removeListener("setup:request-close", handler);
+  },
   getState: () => ipcRenderer.invoke("setup:get-state"),
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),

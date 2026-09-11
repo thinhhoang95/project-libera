@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DragEvent, MouseEvent, RefObject } from "react";
+import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
   BookPlus,
@@ -772,9 +772,9 @@ export function NotebookPanel({
         onSelectSearchResult={onSelectSearchResult}
       />
 
-      <div className="flex items-center justify-between border-b border-border px-4 py-2 shadow-sm">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Notebook
+      <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
+        <h2 className="text-sm font-semibold">
+          Notebooks
         </h2>
         <div className="flex items-center gap-2">
           <button
@@ -1174,9 +1174,9 @@ function NotebookSection({
 
   return (
     <section
-      className={`libera-glass-card rounded-lg border border-border transition-shadow ${
-        isSelected || isUploadTarget ? "shadow-md" : ""
-      }`}
+      className="libera-notebook-section"
+      data-selected={isSelected || isUploadTarget}
+      style={{ "--notebook-color": notebook.color } as CSSProperties}
       onDragOver={(event) => {
         if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
           return;
@@ -1203,7 +1203,7 @@ function NotebookSection({
       }}
     >
       <div
-        className={`flex items-center gap-2 border-b border-border px-2 py-2 ${
+        className={`libera-notebook-row flex items-center gap-2 px-1 py-2 ${
           isDragTarget || isUploadTarget || isSelected ? "bg-accent/8" : ""
         }`}
         onContextMenu={openNotebookContextMenu}
@@ -1222,8 +1222,10 @@ function NotebookSection({
         }}
       >
         <button
-          className="libera-sidebar-icon-button h-7 w-7 rounded text-sm"
+          className="libera-sidebar-icon-button h-5 w-5 shrink-0 rounded text-sm"
           type="button"
+          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${notebook.name}`}
+          aria-expanded={isExpanded}
           onClick={() => onToggleNotebook(notebook.name)}
         >
           {isExpanded ? (
@@ -1238,7 +1240,7 @@ function NotebookSection({
           onClick={() => onSelectNotebook(notebook.name)}
         >
           <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-sm"
+            className="libera-notebook-emoji flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm"
             style={{ backgroundColor: notebook.color, color: "#ffffff" }}
           >
             {notebook.emoji}
@@ -1246,7 +1248,7 @@ function NotebookSection({
           <span className="min-w-0">
             <span className="block truncate">{notebook.name}</span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
-              Created {new Date(notebook.createdAt).toLocaleDateString()}
+              Updated {new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
             </span>
           </span>
         </button>
@@ -1263,7 +1265,7 @@ function NotebookSection({
       </div>
       {isExpanded ? (
         <div
-          className={`px-2 py-2 ${isDragTarget ? "bg-accent/10/60" : ""}`}
+          className={`libera-notebook-children px-1 py-2 ${isDragTarget ? "bg-accent/10/60" : ""}`}
           onDragOver={(event) =>
             handleFileDragOverDirectory(
               event,
@@ -1559,7 +1561,7 @@ function TreeNodeRow({
           ) : (
             <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           )}
-          <Folder aria-hidden className="h-4 w-4 shrink-0 text-accent" />
+          <Folder aria-hidden className="libera-folder-icon h-4 w-4 shrink-0" />
           <span className="min-w-0 truncate">{node.name}</span>
         </SidebarNameTooltipButton>
 
@@ -1654,10 +1656,9 @@ function TreeNodeRow({
         onSetDragOverPath("");
       }}
     >
-      <span className="w-9 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-foreground">
-        {fileTypeLabel(node.fileType)}
+      <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType)}>
+        <FileTypeIcon fileType={node.fileType} />
       </span>
-      <FileTypeIcon fileType={node.fileType} />
       <span className="min-w-0 flex-1 truncate">{node.name}</span>
       {showNotebookName ? (
         <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
