@@ -1,8 +1,9 @@
 "use client";
 
 import { TiptapReview } from "@/lib/tiptap-review";
+import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
@@ -39,6 +40,7 @@ type Props = {
   onViewStateChange?: (patch: MarkdownTabViewState) => void;
   onMarkdownZoomChange: (zoom: number) => void;
   onChange: (value: string) => void;
+  onRegisterDraft?: (read: () => string) => () => void;
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
 };
@@ -88,7 +90,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -105,6 +107,20 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
   const visualOutlineMapRef = useRef<VisualOutlineMap>({ headingOffsets: [], markdown: "" });
   const initialViewStateRef = useRef(initialViewState);
   const lastValue = useRef(value);
+  const visualPositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastReportedLineRef = useRef<number | null>(null);
+  const reportVisualPosition = useCallback((current: Editor, markdown: string, position: number) => {
+    const line = markdownLineForTiptapPosition(
+      current,
+      markdown,
+      position,
+      getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+    );
+    if (line !== null && line !== lastReportedLineRef.current) {
+      lastReportedLineRef.current = line;
+      onViewStateChange?.({ line });
+    }
+  }, [onViewStateChange]);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
   const extensions = useMemo(() => [
     ...createMarkdownExtensions(documentPath),
@@ -128,6 +144,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     content: value,
     contentType: "markdown",
     immediatelyRender: false,
+    shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: { class: "libera-tiptap", role: "textbox", "aria-label": "Visual Markdown editor", "aria-multiline": "true" },
       handleDOMEvents: {
@@ -180,20 +197,18 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       },
     },
     onUpdate({ editor: current }) {
-      const markdown = current.getMarkdown();
-      lastValue.current = markdown;
-      reportVisualPosition(current, markdown, current.state.selection.from);
-      onChange(markdown);
+      scheduleVisualPosition(current);
     },
     onSelectionUpdate({ editor: current }) {
-      reportVisualPosition(current, lastValue.current, current.state.selection.from);
+      scheduleVisualPosition(current);
     },
     onTransaction({ transaction }) {
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
     },
   });
 
-  useTiptapReview(editor, lastValue);
+  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft);
+  useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
   const state = useEditorState({ editor, selector: ({ editor: observedEditor }) => {
     // With deferred rendering, TipTap's state subscription can still hold its
@@ -205,7 +220,11 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
-    find: tiptapFindPluginKey.getState(current.state),
+    // Subscribe only to UI data, never a DecorationSet containing document nodes.
+    find: (() => {
+      const find = tiptapFindPluginKey.getState(current.state);
+      return find ? { matches: find.matches, activeMatchIndex: find.activeMatchIndex } : undefined;
+    })(),
     heading: current.isActive("heading") ? String(current.getAttributes("heading").level) : "0",
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
     lineHeight: current.getAttributes("textStyle").lineHeight ?? "",
@@ -225,33 +244,30 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
       if (!editor.isDestroyed) {
         const markdown = lastValue.current;
-        onViewStateChange?.(getVisualViewportViewState(
+        const viewState = getVisualViewportViewState(
           editor,
           markdown,
           container,
           getVisualHeadingOffsets(visualOutlineMapRef, markdown),
-        ));
+        );
+        lastReportedLineRef.current = viewState.line ?? null;
+        onViewStateChange?.(viewState);
       }
     });
     visualScrollFrameRef.current = frame;
     return () => {
+      // A tab/mode switch can unmount before the next scroll frame runs.
+      onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
       window.cancelAnimationFrame(frame);
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
     };
   }, [editor, onViewStateChange]);
 
   useEffect(() => {
-    if (!editor || value === lastValue.current) return;
-    // Parent echoes must never reset the cursor or undo history. Only external
-    // document changes (e.g. source edits) replace the editor document.
-    lastValue.current = value;
-    editor.commands.setContent(value, { contentType: "markdown", emitUpdate: false });
-  }, [editor, value]);
-
-  useEffect(() => {
     const pending = uploads.current;
     return () => {
       for (const upload of pending) upload.controller.abort();
+      if (visualPositionTimerRef.current !== null) clearTimeout(visualPositionTimerRef.current);
       if (visualScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(visualScrollFrameRef.current);
       }
@@ -262,22 +278,26 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     if (!editor) return;
     function navigate(event: Event) {
       const detail = (event as CustomEvent<MarkdownOutlineNavigateDetail>).detail;
-      if (detail.documentPath !== documentPath || detail.markdown !== lastValue.current) return;
+      if (detail.documentPath !== documentPath || detail.markdown !== readMarkdown()) return;
       navigateTiptapToMarkdownHeading(editor!, detail.markdown, detail.offset);
+      // Explicit outline navigation should report its destination immediately.
+      reportVisualPosition(editor!, detail.markdown, editor!.state.selection.from);
     }
     window.addEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
     return () => window.removeEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
-  }, [documentPath, editor]);
+  }, [documentPath, editor, readMarkdown, reportVisualPosition]);
 
-  function reportVisualPosition(current: NonNullable<typeof editor>, markdown: string, position: number) {
-    const line = markdownLineForTiptapPosition(
-      current,
-      markdown,
-      position,
-      getVisualHeadingOffsets(visualOutlineMapRef, markdown),
-    );
-    if (line !== null) onViewStateChange?.({ line });
+  function scheduleVisualPosition(current: Editor) {
+    if (!onViewStateChange) return;
+    if (visualPositionTimerRef.current !== null) clearTimeout(visualPositionTimerRef.current);
+    visualPositionTimerRef.current = setTimeout(() => {
+      visualPositionTimerRef.current = null;
+      if (current.isDestroyed) return;
+      if (current.view.composing) { scheduleVisualPosition(current); return; }
+      reportVisualPosition(current, readMarkdown(), current.state.selection.from);
+    }, TIPTAP_DRAFT_DELAY_MS);
   }
+
 
   function handleVisualScroll(container: HTMLDivElement) {
     if (visualScrollFrameRef.current !== null) return;
@@ -286,13 +306,21 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       visualScrollFrameRef.current = null;
       const currentEditor = editor;
       if (!currentEditor || currentEditor.isDestroyed) return;
+      // Typing can scroll the caret. Keep scroll persistence cheap while the
+      // Markdown snapshot is pending; outline tracking runs after the pause.
+      if (pendingDraftRef.current) {
+        onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+        return;
+      }
       const markdown = lastValue.current;
-      onViewStateChange?.(getVisualViewportViewState(
+      const viewState = getVisualViewportViewState(
         currentEditor,
         markdown,
         container,
         getVisualHeadingOffsets(visualOutlineMapRef, markdown),
-      ));
+      );
+      lastReportedLineRef.current = viewState.line ?? null;
+      onViewStateChange?.(viewState);
     });
   }
 
@@ -447,7 +475,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     if (!editor) return;
     // Keep the original source until the first edit: Markdown parsing consumes
     // the backslashes in ChatGPT's delimiters when displaying them as text.
-    const normalized = normalizeChatGptCopiedMarkdown(lastValue.current);
+    const normalized = normalizeChatGptCopiedMarkdown(readMarkdown());
     if (normalized === lastValue.current) {
       // Pasted plain text is escaped during Markdown serialization. Read its
       // literal delimiters from text blocks and replace only the math ranges.
@@ -551,7 +579,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
-        <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => void onSave()}><Save className="h-4 w-4" /></button>
+        <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />

@@ -340,20 +340,6 @@
                 System follows your device’s appearance. Theme changes apply when saved.
               </p>
 
-              <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
-              <div class="font-picker-row">
-                <select id="wysiwyg-editor-font-family">
-                  <option value="system-sans">System sans serif (default)</option>
-                </select>
-                <button id="load-wysiwyg-system-fonts-button" class="secondary" type="button">
-                  Load system fonts
-                </button>
-              </div>
-              <p id="wysiwyg-system-fonts-status" class="field-help">
-                Choose the default font for the visual (TipTap) editor. The Markdown source
-                editor and PDF export are not affected.
-              </p>
-
               <label for="your-name">Your name</label>
               <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" />
               <p id="your-name-help" class="field-help">
@@ -521,6 +507,21 @@
               <h2>Markdown</h2>
               <p class="settings-section-description">
                 Set the default typography used by Markdown editing, preview, and PDF export.
+              </p>
+
+              <h3>Visual editor</h3>
+              <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
+              <div class="font-picker-row">
+                <select id="wysiwyg-editor-font-family">
+                  <option value="system-sans">System sans serif (default)</option>
+                </select>
+                <button id="load-wysiwyg-system-fonts-button" class="secondary" type="button">
+                  Load system fonts
+                </button>
+              </div>
+              <p id="wysiwyg-system-fonts-status" class="field-help">
+                Choose the default font for the visual (TipTap) editor. The Markdown source
+                editor and PDF export are not affected.
               </p>
 
               <h3>Source editor</h3>

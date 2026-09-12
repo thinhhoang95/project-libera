@@ -4,7 +4,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { JSDOM } = require("jsdom");
 
-test("General preferences loads installed fonts and saves the WYSIWYG font", async () => {
+test("Markdown preferences loads installed fonts and saves the WYSIWYG font", async () => {
   let saved;
   const dom = new JSDOM(
     readFileSync(path.join(__dirname, "../../electron/setup.html"), "utf8"),
@@ -36,8 +36,10 @@ test("General preferences loads installed fonts and saves the WYSIWYG font", asy
   try {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const { document, Event } = dom.window;
+    document.querySelector('[data-section-button="markdown"]').click();
     const select = document.querySelector("#wysiwyg-editor-font-family");
 
+    assert.equal(select.closest("[data-section]").dataset.section, "markdown");
     assert.equal(select.value, "Existing Serif");
     document.querySelector("#load-wysiwyg-system-fonts-button").click();
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -10,6 +10,21 @@ import {
 
 export type EditorRange = { from: number; to: number };
 
+// ProseMirror nodes are immutable: unchanged subtrees retain their identity.
+// Cache heading presence so toolbar subscriptions do not collect every heading
+// (or walk every text node) on every selection/typing transaction.
+const headingPresence = new WeakMap<Node, boolean>();
+export function hasTiptapHeadings(node: Node): boolean {
+  const cached = headingPresence.get(node);
+  if (cached !== undefined) return cached;
+  let found = node.type.name === "heading";
+  for (let index = 0; !found && index < node.childCount; index += 1) {
+    found = hasTiptapHeadings(node.child(index));
+  }
+  headingPresence.set(node, found);
+  return found;
+}
+
 export function getTiptapHeadings(editor: Editor, range: EditorRange) {
   const headings: { node: Node; pos: number; selected: boolean }[] = [];
   editor.state.doc.descendants((node, pos) => {

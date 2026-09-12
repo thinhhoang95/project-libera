@@ -332,6 +332,7 @@ export function LiberaApp({
             onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
+            onRegisterEditorDraft={workspace.registerEditorDraft}
             onSetViewState={workspace.setActiveTabViewState}
             onStartScreenshotSnip={workspace.startScreenshotSnip}
           />

@@ -27,6 +27,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import {
   MarkdownSlidesPresenter,
@@ -120,6 +121,7 @@ type WorkspacePanelProps = {
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
+  onRegisterEditorDraft?: RegisterEditorDraft;
   onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
@@ -507,6 +509,7 @@ export function WorkspacePanel({
   onOpenFile,
   onSave,
   onSetDraft,
+  onRegisterEditorDraft,
   onSetViewState,
   onOpenMarkdownFileLink,
   onStartScreenshotSnip,
@@ -575,6 +578,10 @@ export function WorkspacePanel({
     activeTab?.file.fileType === "markdown" &&
     activeMarkdownIsSlides &&
     activePreviewTabId === activeTab.id;
+
+  const registerVisualDraft = useCallback((read: () => string) => {
+    return (activeTabId && onRegisterEditorDraft?.(activeTabId, read)) || (() => {});
+  }, [activeTabId, onRegisterEditorDraft]);
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
@@ -1352,6 +1359,7 @@ export function WorkspacePanel({
               initialViewState={activeMarkdownViewState}
               onViewStateChange={updateMarkdownViewState}
               onChange={handleMarkdownDraftChange} onSave={onSave}
+              onRegisterDraft={registerVisualDraft}
               onOpenFileLink={handleOpenMarkdownFileLink} />
           ) : <>
           <MarkdownToolbar

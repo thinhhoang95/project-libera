@@ -10,6 +10,7 @@ import {
   changeTiptapHeadingLevels,
   enumerateTiptapHeadings,
   getTiptapHeadings,
+  hasTiptapHeadings,
   getTiptapSelectionMarkdown,
   replaceTiptapRangeWithMarkdown,
   trackTiptapRange,
@@ -38,7 +39,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
-  const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => getTiptapHeadings(current, current.state.selection).length > 0 });
+  const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
 
   useEffect(() => {
     function openContextMenu(event: MouseEvent | KeyboardEvent) {

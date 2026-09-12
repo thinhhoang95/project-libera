@@ -89,6 +89,9 @@ export const TiptapFind = Extension.create({
         apply: (transaction, previous) => {
           const update = transaction.getMeta(tiptapFindPluginKey) as TiptapFindUpdate | undefined;
           if (!transaction.docChanged && !update) return previous;
+          // An inactive find has no positions to map. Keep the shared empty
+          // snapshot instead of allocating a new state on every keystroke.
+          if (!previous.query && !update) return previous;
           return createFindState(
             transaction.doc,
             update?.query ?? previous.query,
