@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
   loadAiChatCustomInstructionFile: () =>
     ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),
+  loadAiRewriteCustomInstructionFile: () =>
+    ipcRenderer.invoke("setup:load-ai-rewrite-custom-instruction-file"),
 });
 
 contextBridge.exposeInMainWorld("liberaExport", {

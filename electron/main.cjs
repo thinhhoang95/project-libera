@@ -35,6 +35,7 @@ const MAX_NATIVE_MENU_ID_LENGTH = 128;
 const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
 const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
+const DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY = "system-sans";
 const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
 const DEFAULT_MARKDOWN_BASE_FONT_SIZE = 16;
 const DEFAULT_MARKDOWN_BASE_LINE_HEIGHT = 1.75;
@@ -247,6 +248,20 @@ function normalizeMarkdownEditorFontFamily(value) {
   return fontFamily;
 }
 
+function normalizeWysiwygEditorFontFamily(value) {
+  const fontFamily = typeof value === "string" ? value.trim() : "";
+
+  if (
+    !fontFamily ||
+    fontFamily.length > MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(fontFamily)
+  ) {
+    return DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY;
+  }
+
+  return fontFamily;
+}
+
 function normalizeMarkdownBaseLineHeight(value) {
   return clamp(
     normalizeNumber(value, DEFAULT_MARKDOWN_BASE_LINE_HEIGHT),
@@ -273,6 +288,9 @@ function getConfigStatus(config = readConfig()) {
       typeof config.passwordHash === "string" && config.passwordHash.trim().length > 0,
     markdownEditorFontFamily: normalizeMarkdownEditorFontFamily(
       config.markdownEditorFontFamily,
+    ),
+    wysiwygEditorFontFamily: normalizeWysiwygEditorFontFamily(
+      config.wysiwygEditorFontFamily,
     ),
     markdownBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
     markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
@@ -318,6 +336,26 @@ async function loadAiChatCustomInstructionFile(parentWindow) {
   };
 }
 
+async function loadAiRewriteCustomInstructionFile(parentWindow) {
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Load AI Rewrite custom instruction",
+    properties: ["openFile"],
+    filters: [
+      { name: "Text files", extensions: ["txt", "md", "markdown"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  return {
+    canceled: false,
+    content: await fsp.readFile(result.filePaths[0], "utf8"),
+  };
+}
+
 function showMessageBox(parentWindow, options) {
   if (parentWindow && !parentWindow.isDestroyed()) {
     return dialog.showMessageBox(parentWindow, options);
@@ -338,6 +376,9 @@ function validateSetupInput(input, existingConfig) {
   const changingPassword = Boolean(input?.changePassword);
   const markdownEditorFontFamily = normalizeMarkdownEditorFontFamily(
     input?.markdownEditorFontFamily,
+  );
+  const wysiwygEditorFontFamily = normalizeWysiwygEditorFontFamily(
+    input?.wysiwygEditorFontFamily,
   );
   const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
   const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
@@ -387,6 +428,7 @@ function validateSetupInput(input, existingConfig) {
     yourName: normalizeYourName(input?.yourName),
     dataDir,
     markdownEditorFontFamily,
+    wysiwygEditorFontFamily,
     markdownBaseFontSize,
     markdownBaseLineHeight,
     markdownPdfBaseFontSize,
@@ -449,6 +491,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       loadAiChatCustomInstructionFile(setupWindow),
     );
 
+    ipcMain.handle("setup:load-ai-rewrite-custom-instruction-file", () =>
+      loadAiRewriteCustomInstructionFile(setupWindow),
+    );
+
     ipcMain.handle("setup:save", async (_event, input) => {
       const existingConfig = readConfig();
       const validated = validateSetupInput(input, existingConfig);
@@ -461,6 +507,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         yourName: validated.yourName,
         dataDir: validated.dataDir,
         markdownEditorFontFamily: validated.markdownEditorFontFamily,
+        wysiwygEditorFontFamily: validated.wysiwygEditorFontFamily,
         markdownBaseFontSize: validated.markdownBaseFontSize,
         markdownBaseLineHeight: validated.markdownBaseLineHeight,
         markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
@@ -486,6 +533,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
+      ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");
       ipcMain.removeHandler("setup:save");
       activeSetupPromise = null;
       activeSetupWindow = null;
@@ -1199,6 +1247,9 @@ async function startNextServer(config) {
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
       config.markdownEditorFontFamily,
+    ),
+    LIBERA_WYSIWYG_EDITOR_FONT_FAMILY: normalizeWysiwygEditorFontFamily(
+      config.wysiwygEditorFontFamily,
     ),
     LIBERA_MARKDOWN_BASE_FONT_SIZE: String(
       normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),

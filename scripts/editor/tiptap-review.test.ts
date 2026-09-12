@@ -6,9 +6,29 @@ import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { TiptapReview, sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewKey } from "../../src/lib/tiptap-review";
 import { reviewBlocks } from "../../src/lib/markdown-review";
+import { markdownLineForTiptapPosition } from "../../src/lib/markdown-outline-navigation";
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle"] as const) Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
 after(() => dom.window.close());
+
+test("visual positions map to the corresponding Markdown heading line", () => {
+  const source = "# First\n\nIntro\n\n> ## Nested\n> Body\n\nSetext\n------\n\n## Last\n\nEnd";
+  const editor = new Editor({ extensions: createMarkdownExtensions("Notes/a.md"), content: source, contentType: "markdown" });
+  try {
+    const positions: number[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name === "heading") positions.push(pos + 1);
+    });
+    assert.deepEqual(
+      positions.map((position) => markdownLineForTiptapPosition(editor, source, position)),
+      [1, 5, 8, 11],
+    );
+    assert.equal(markdownLineForTiptapPosition(editor, source, editor.state.doc.content.size), 11);
+  } finally {
+    editor.destroy();
+  }
+});
+
 test("visual review maps repeated and rich Markdown blocks to exact source ranges without serializing annotations", () => {
   const sources = [
     "# Title\n\nRepeated paragraph.\n\nRepeated paragraph.",

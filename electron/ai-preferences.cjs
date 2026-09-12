@@ -15,7 +15,7 @@ function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash")
     return [name, {
       model: model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
       reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : name === "latex" ? "low" : "medium",
-      ...(name === "chat" ? {
+      ...(["rewrite", "chat"].includes(name) ? {
         customInstruction: typeof value?.customInstruction === "string" ? value.customInstruction : "",
       } : {}),
     }];

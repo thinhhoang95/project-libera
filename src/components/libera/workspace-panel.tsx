@@ -65,6 +65,7 @@ import {
 } from "@/lib/markdown-slides";
 import {
   getMarkdownEditorFontStack,
+  getWysiwygEditorFontStack,
   type MarkdownPreferences,
 } from "@/lib/markdown-preferences";
 import {
@@ -544,6 +545,9 @@ export function WorkspacePanel({
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
   const markdownEditorFontFamily = getMarkdownEditorFontStack(
     markdownPreferences.editorFontFamily,
+  );
+  const wysiwygEditorFontFamily = getWysiwygEditorFontStack(
+    markdownPreferences.wysiwygEditorFontFamily,
   );
   const markdownLineHeightPx =
     markdownPreferences.baseFontSize *
@@ -1342,6 +1346,7 @@ export function WorkspacePanel({
             <TiptapMarkdownEditor
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
+              fontFamily={wysiwygEditorFontFamily}
               lineHeight={markdownPreferences.baseLineHeight}
               markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
               initialViewState={activeMarkdownViewState}

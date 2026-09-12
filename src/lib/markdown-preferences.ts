@@ -1,5 +1,6 @@
 export type MarkdownPreferences = {
   editorFontFamily: string;
+  wysiwygEditorFontFamily: string;
   baseFontSize: number;
   baseLineHeight: number;
   pdfExportBaseFontSize: number;
@@ -8,9 +9,12 @@ export type MarkdownPreferences = {
 
 export const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
 export const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
+export const DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY = "system-sans";
 
 const DEFAULT_MARKDOWN_EDITOR_FONT_STACK =
   '"SFMono-Regular", ui-monospace, Menlo, Consolas, monospace';
+const DEFAULT_WYSIWYG_EDITOR_FONT_STACK =
+  'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
 export const DEFAULT_MARKDOWN_BASE_FONT_SIZE = 16;
 export const DEFAULT_MARKDOWN_BASE_LINE_HEIGHT = 1.75;
@@ -42,7 +46,7 @@ export function normalizeMarkdownBaseFontSize(value: unknown) {
   );
 }
 
-export function normalizeMarkdownEditorFontFamily(value: unknown) {
+function normalizeEditorFontFamily(value: unknown, fallback: string) {
   const fontFamily = typeof value === "string" ? value.trim() : "";
 
   if (
@@ -50,10 +54,14 @@ export function normalizeMarkdownEditorFontFamily(value: unknown) {
     fontFamily.length > MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH ||
     /[\u0000-\u001f\u007f]/.test(fontFamily)
   ) {
-    return DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY;
+    return fallback;
   }
 
   return fontFamily;
+}
+
+export function normalizeMarkdownEditorFontFamily(value: unknown) {
+  return normalizeEditorFontFamily(value, DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY);
 }
 
 export function getMarkdownEditorFontStack(fontFamily: string) {
@@ -64,6 +72,20 @@ export function getMarkdownEditorFontStack(fontFamily: string) {
   const escapedFontFamily = fontFamily.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 
   return `"${escapedFontFamily}", ui-monospace, monospace`;
+}
+
+export function normalizeWysiwygEditorFontFamily(value: unknown) {
+  return normalizeEditorFontFamily(value, DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY);
+}
+
+export function getWysiwygEditorFontStack(fontFamily: string) {
+  if (fontFamily === DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY) {
+    return DEFAULT_WYSIWYG_EDITOR_FONT_STACK;
+  }
+
+  const escapedFontFamily = fontFamily.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+
+  return `"${escapedFontFamily}", system-ui, sans-serif`;
 }
 
 export function normalizeMarkdownBaseLineHeight(value: unknown) {
@@ -77,6 +99,7 @@ export function normalizeMarkdownBaseLineHeight(value: unknown) {
 export function normalizeMarkdownPreferences(
   input: {
     editorFontFamily?: unknown;
+    wysiwygEditorFontFamily?: unknown;
     baseFontSize?: unknown;
     baseLineHeight?: unknown;
     pdfExportBaseFontSize?: unknown;
@@ -85,6 +108,9 @@ export function normalizeMarkdownPreferences(
 ): MarkdownPreferences {
   return {
     editorFontFamily: normalizeMarkdownEditorFontFamily(input.editorFontFamily),
+    wysiwygEditorFontFamily: normalizeWysiwygEditorFontFamily(
+      input.wysiwygEditorFontFamily,
+    ),
     baseFontSize: normalizeMarkdownBaseFontSize(input.baseFontSize),
     baseLineHeight: normalizeMarkdownBaseLineHeight(input.baseLineHeight),
     pdfExportBaseFontSize: normalizeMarkdownBaseFontSize(

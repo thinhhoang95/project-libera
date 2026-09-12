@@ -65,11 +65,13 @@ test("visual outline navigation scrolls to repeated formatted headings without c
   const root = createRoot(host);
   const markdown = 'Setext\n======\n\n> ## Nested\n\n```md\n## **Repeated**\n```\n\n## **Repeated**\n\nFirst section\n\n## **Repeated**\n\nSecond section';
   const changes: string[] = [];
+  const viewStateChanges: { line?: number }[] = [];
   try {
     await act(async () => {
       root.render(createElement(TiptapMarkdownEditor, {
         documentPath: "Notebook/outline.md", value: markdown,
         fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onViewStateChange: (patch) => viewStateChanges.push(patch),
         onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
       }));
     });
@@ -98,6 +100,7 @@ test("visual outline navigation scrolls to repeated formatted headings without c
     assert.deepEqual(scrolled, [headings[3], headings[3]]);
     assert.equal(window.getSelection()?.anchorNode?.parentElement?.closest("h2"), headings[3]);
     assert.equal(document.activeElement, host.querySelector(".libera-tiptap"));
+    assert.equal(viewStateChanges.at(-1)?.line, 13);
     assert.deepEqual(changes, []);
   } finally {
     await act(async () => root.unmount());

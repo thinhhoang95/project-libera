@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiFunctionOptions, getAiRewriteCustomInstruction } from "@/lib/ai-preferences";
 import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
 
 export const runtime = "nodejs";
@@ -16,6 +16,8 @@ async function readSystemPrompt() {
     "utf8",
   );
 
+  const customInstruction = getAiRewriteCustomInstruction().trim();
+
   return `${formatterPrompt}
 
 Rewrite mode override:
@@ -24,7 +26,10 @@ Rewrite mode override:
 * The rewrite instruction may change wording, length, tone, structure, or emphasis.
 * The rules above that say to preserve original content exactly and not rewrite are overridden only as needed to satisfy the user's rewrite instruction.
 * Keep all output-format rules from the formatter prompt: return only Markdown content, no explanations, no introductions, no closing remarks, and no code fences around the whole response.
-* Preserve Markdown validity and keep links, images, math delimiters, tables, and code syntax correct unless the user's rewrite instruction explicitly asks to change them.`;
+* Preserve Markdown validity and keep links, images, math delimiters, tables, and code syntax correct unless the user's rewrite instruction explicitly asks to change them.${customInstruction ? `
+
+User-configured custom instructions for every AI Rewrite request:
+${customInstruction}` : ""}`;
 }
 
 export async function POST(request: NextRequest) {

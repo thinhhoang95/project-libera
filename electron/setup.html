@@ -340,6 +340,20 @@
                 System follows your device’s appearance. Theme changes apply when saved.
               </p>
 
+              <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
+              <div class="font-picker-row">
+                <select id="wysiwyg-editor-font-family">
+                  <option value="system-sans">System sans serif (default)</option>
+                </select>
+                <button id="load-wysiwyg-system-fonts-button" class="secondary" type="button">
+                  Load system fonts
+                </button>
+              </div>
+              <p id="wysiwyg-system-fonts-status" class="field-help">
+                Choose the default font for the visual (TipTap) editor. The Markdown source
+                editor and PDF export are not affected.
+              </p>
+
               <label for="your-name">Your name</label>
               <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" />
               <p id="your-name-help" class="field-help">
@@ -446,6 +460,19 @@
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
                 </select>
+                <label for="ai-rewrite-custom-instruction">Custom instruction</label>
+                <textarea
+                  id="ai-rewrite-custom-instruction"
+                  autocomplete="off"
+                  placeholder="Add instructions that should apply to every AI Rewrite request."
+                  spellcheck="true"
+                ></textarea>
+                <div class="textarea-actions">
+                  <button id="load-ai-rewrite-instruction-button" class="secondary" type="button">Load from file</button>
+                </div>
+                <p id="ai-rewrite-instruction-help" class="field-help">
+                  Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.
+                </p>
               </fieldset>
               <fieldset class="ai-function-settings">
                 <legend>AI Chat</legend>
@@ -593,6 +620,15 @@
       themePreferenceInput.addEventListener("change", updateAppearance);
       systemAppearance.addEventListener("change", updateAppearance);
       const yourNameInput = document.querySelector("#your-name");
+      const wysiwygEditorFontFamilyInput = document.querySelector(
+        "#wysiwyg-editor-font-family",
+      );
+      const loadWysiwygSystemFontsButton = document.querySelector(
+        "#load-wysiwyg-system-fonts-button",
+      );
+      const wysiwygSystemFontsStatus = document.querySelector(
+        "#wysiwyg-system-fonts-status",
+      );
       const dataDirInput = document.querySelector("#data-dir");
       const browseButton = document.querySelector("#browse-button");
       const apiKeyInput = document.querySelector("#openai-api-key");
@@ -606,6 +642,9 @@
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
       const aiChatInstructionHelp = document.querySelector("#ai-chat-instruction-help");
+      const aiRewriteCustomInstructionInput = document.querySelector("#ai-rewrite-custom-instruction");
+      const loadAiRewriteInstructionButton = document.querySelector("#load-ai-rewrite-instruction-button");
+      const aiRewriteInstructionHelp = document.querySelector("#ai-rewrite-instruction-help");
       const passwordFields = document.querySelector("#password-fields");
       const passwordLocked = document.querySelector("#password-locked");
       const changePasswordButton = document.querySelector("#change-password-button");
@@ -689,6 +728,67 @@
         markdownEditorFontFamilyInput.append(option);
       }
 
+      function addWysiwygFontFamilyOption(fontFamily, label = fontFamily) {
+        if (
+          !fontFamily ||
+          Array.from(wysiwygEditorFontFamilyInput.options).some(
+            (option) => option.value === fontFamily,
+          )
+        ) {
+          return;
+        }
+
+        const option = document.createElement("option");
+
+        option.value = fontFamily;
+        option.textContent = label;
+        wysiwygEditorFontFamilyInput.append(option);
+      }
+
+      async function loadWysiwygSystemFonts() {
+        if (typeof window.queryLocalFonts !== "function") {
+          wysiwygSystemFontsStatus.textContent =
+            "System font discovery is unavailable in this version of Electron.";
+          return;
+        }
+
+        const selectedFontFamily = wysiwygEditorFontFamilyInput.value;
+
+        loadWysiwygSystemFontsButton.disabled = true;
+        loadWysiwygSystemFontsButton.textContent = "Loading…";
+        wysiwygSystemFontsStatus.textContent = "Reading fonts installed on this computer…";
+
+        try {
+          const localFonts = await window.queryLocalFonts();
+          const fontFamilies = Array.from(
+            new Set(
+              localFonts
+                .map((font) => (typeof font.family === "string" ? font.family.trim() : ""))
+                .filter(Boolean),
+            ),
+          ).sort((left, right) => left.localeCompare(right));
+
+          wysiwygEditorFontFamilyInput.replaceChildren();
+          addWysiwygFontFamilyOption("system-sans", "System sans serif (default)");
+          fontFamilies.forEach((fontFamily) => addWysiwygFontFamilyOption(fontFamily));
+
+          if (selectedFontFamily !== "system-sans") {
+            addWysiwygFontFamilyOption(selectedFontFamily, `${selectedFontFamily} (unavailable)`);
+          }
+
+          wysiwygEditorFontFamilyInput.value = selectedFontFamily;
+          wysiwygSystemFontsStatus.textContent = `${fontFamilies.length} installed font families found. This setting affects the visual (TipTap) editor only.`;
+        } catch (error) {
+          wysiwygSystemFontsStatus.textContent =
+            error?.name === "NotAllowedError"
+              ? "Font access was not allowed. Try loading system fonts again and grant access."
+              : "Unable to read the fonts installed on this computer.";
+        } finally {
+          loadWysiwygSystemFontsButton.disabled = false;
+          loadWysiwygSystemFontsButton.textContent = "Reload system fonts";
+        }
+      }
+
       async function loadSystemFonts() {
         if (typeof window.queryLocalFonts !== "function") {
           systemFontsStatus.textContent =
@@ -746,6 +846,18 @@
           aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (name === "latex" ? "low" : "medium");
         }
         aiChatCustomInstructionInput.value = state.aiFunctions?.chat?.customInstruction || "";
+        aiRewriteCustomInstructionInput.value = state.aiFunctions?.rewrite?.customInstruction || "";
+        const configuredWysiwygFontFamily =
+          state.wysiwygEditorFontFamily || "system-sans";
+
+        if (configuredWysiwygFontFamily !== "system-sans") {
+          addWysiwygFontFamilyOption(
+            configuredWysiwygFontFamily,
+            `${configuredWysiwygFontFamily} (selected)`,
+          );
+        }
+
+        wysiwygEditorFontFamilyInput.value = configuredWysiwygFontFamily;
         const configuredFontFamily =
           state.markdownEditorFontFamily || "system-monospace";
 
@@ -784,6 +896,11 @@
         void loadSystemFonts();
       });
 
+      loadWysiwygSystemFontsButton.addEventListener("click", () => {
+        clearError();
+        void loadWysiwygSystemFonts();
+      });
+
       loadAiChatInstructionButton.addEventListener("click", async () => {
         clearError();
         loadAiChatInstructionButton.disabled = true;
@@ -802,6 +919,27 @@
         } finally {
           loadAiChatInstructionButton.disabled = false;
           loadAiChatInstructionButton.textContent = "Load from file";
+        }
+      });
+
+      loadAiRewriteInstructionButton.addEventListener("click", async () => {
+        clearError();
+        loadAiRewriteInstructionButton.disabled = true;
+        loadAiRewriteInstructionButton.textContent = "Loading…";
+
+        try {
+          const result = await window.liberaSetup.loadAiRewriteCustomInstructionFile();
+
+          if (!result.canceled) {
+            aiRewriteCustomInstructionInput.value = result.content || "";
+            aiRewriteInstructionHelp.textContent = "File loaded. Save preferences to keep this instruction across app restarts.";
+            aiRewriteCustomInstructionInput.focus();
+          }
+        } catch (error) {
+          showError(error.message || "Unable to load the custom instruction file.");
+        } finally {
+          loadAiRewriteInstructionButton.disabled = false;
+          loadAiRewriteInstructionButton.textContent = "Load from file";
         }
       });
 
@@ -860,6 +998,7 @@
             yourName: yourNameInput.value,
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
+            wysiwygEditorFontFamily: wysiwygEditorFontFamilyInput.value,
             markdownBaseFontSize: markdownBaseFontSizeInput.value,
             markdownBaseLineHeight: markdownBaseLineHeightInput.value,
             markdownPdfBaseFontSize: markdownPdfBaseFontSizeInput.value,
@@ -870,6 +1009,7 @@
               model: aiFunctionInputs[name].model.value,
               reasoningEffort: aiFunctionInputs[name].effort.value,
               ...(name === "chat" ? { customInstruction: aiChatCustomInstructionInput.value } : {}),
+              ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
             }])),
             password: changePasswordFields.classList.contains("hidden")
               ? passwordInput.value
