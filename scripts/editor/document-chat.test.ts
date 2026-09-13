@@ -5,14 +5,14 @@ import { chatMessageContent, normalizeChatResponseMarkdown, newDocumentContext, 
 const document: ChatContext = { kind: "document", path: "notes/a.md", name: "a.md", text: "# Current draft" };
 const turn: ChatMessage = { id: "1", role: "user", text: "Summarize", contexts: [document] };
 
-test("attaches a document once and attaches new snapshots when the draft changes", () => {
+test("attaches a document only once even when its draft changes", () => {
   assert.deepEqual(newDocumentContext([], document), [document]);
   assert.deepEqual(newDocumentContext([turn], document), []);
   const edited = { ...document, text: "# Unsaved changes" };
-  assert.deepEqual(newDocumentContext([turn], edited), [edited]);
+  assert.deepEqual(newDocumentContext([turn], edited), []);
   const history = [turn, { ...turn, id: "2", contexts: [edited] }];
   assert.deepEqual(newDocumentContext(history, edited), []);
-  assert.deepEqual(newDocumentContext(history, document), [document]);
+  assert.deepEqual(newDocumentContext(history, document), []);
 });
 
 test("keeps documents with identical text but different paths separate", () => {

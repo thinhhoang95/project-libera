@@ -19,8 +19,8 @@ export type ChatStore = { chats: DocumentChat[]; activeId: string };
 
 export function newDocumentContext(messages: ChatMessage[], document: ChatContext | null): ChatContext[] {
   if (!document) return [];
-  const previous = messages.flatMap((message) => message.contexts ?? []).filter((context) => context.kind === "document" && context.path === document.path).at(-1);
-  return previous?.text === document.text ? [] : [document];
+  const alreadyIncluded = messages.some((message) => message.contexts?.some((context) => context.kind === "document" && context.path === document.path));
+  return alreadyIncluded ? [] : [document];
 }
 
 export function validateChatMessages(value: unknown, enforceLimits = true): value is ChatMessage[] {
