@@ -6,6 +6,8 @@ import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewKey } 
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
+const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
+
 export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | null>, apply: (text: string) => void) {
   const r = useMarkdownReview();
   const latest = useRef({ r, apply });
@@ -15,7 +17,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
     const input = textareaRef.current;
     if (!input || !register) return;
     let composing = false;
-    const unregister = register({ snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
+    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
     const start = () => { composing = true; }, end = () => { composing = false; };
@@ -40,7 +42,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
   }, [register, textareaRef]);
   return r;
 }
-export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>) {
+export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>, read: () => string, replace: (markdown: string) => void) {
   const r = useMarkdownReview();
   const latest = useRef(r);
   useLayoutEffect(() => { latest.current = r; }, [r]);
@@ -48,13 +50,12 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   useEffect(() => {
     if (!editor || !register) return;
     const root = editor.view.dom;
-    const unregister = register({ snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return lastValue.current; }, apply: (text) => {
+    const unregister = register({ isComposing: () => editor.view.composing, snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return read(); }, apply: (text) => {
       editor.view.dispatch(closeHistory(editor.state.tr));
-      lastValue.current = text;
-      editor.commands.setContent(text, { contentType: "markdown", emitUpdate: false });
+      replace(text);
       editor.view.dispatch(closeHistory(editor.state.tr));
     }, focus: (range) => {
-      const target = tiptapRangeForSource(editor, lastValue.current, range);
+      const target = tiptapRangeForSource(editor, read(), range);
       if (!target) return;
       editor.commands.setTextSelection({ from: target.from + 1, to: Math.max(target.from + 1, target.to - 1) });
       editor.commands.scrollIntoView(); editor.view.focus();
@@ -63,24 +64,26 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       const review = latest.current;
       if (!review?.enabled || editor!.view.composing) return;
       const { from, to } = editor!.state.selection;
-      const range = sourceRangeForTiptapSelection(editor!, lastValue.current, from, to);
-      if (range) review.select(range, x, y);
-      else review.reportError("This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.");
+      const range = sourceRangeForTiptapSelection(editor!, read(), from, to);
+      if (range) {
+        if (review.error === VISUAL_SELECTION_ERROR) review.reportError("");
+        review.select(range, x, y);
+      } else review.reportError(VISUAL_SELECTION_ERROR);
     }
     const mouse = (event: MouseEvent) => select(event.clientX, event.clientY);
     function key(event: KeyboardEvent) {
       const review = latest.current;
       if (!review?.enabled) return;
       if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "m") { event.preventDefault(); event.stopImmediatePropagation(); const rect = editor!.view.coordsAtPos(editor!.state.selection.from); select(rect.left, rect.bottom); }
-      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === lastValue.current) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === lastValue.current) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
       if (event.key === "Escape") review.clearSelection();
     }
     const changed = () => latest.current?.clearSelection();
     editor.on("update", changed);
     root.addEventListener("mouseup", mouse); root.addEventListener("keydown", key, true);
     return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); };
-  }, [editor, register, lastValue]);
+  }, [editor, register, lastValue, read, replace]);
   useEffect(() => { if (editor && editor.isEditable !== !r?.locked) editor.setEditable(!r?.locked, false); }, [editor, r?.locked]);
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;

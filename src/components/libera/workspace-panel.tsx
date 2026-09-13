@@ -27,6 +27,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import {
   MarkdownSlidesPresenter,
@@ -65,6 +66,8 @@ import {
 } from "@/lib/markdown-slides";
 import {
   getMarkdownEditorFontStack,
+  getRenderedMarkdownFontStack,
+  getWysiwygEditorFontStack,
   type MarkdownPreferences,
 } from "@/lib/markdown-preferences";
 import {
@@ -119,6 +122,7 @@ type WorkspacePanelProps = {
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
+  onRegisterEditorDraft?: RegisterEditorDraft;
   onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
@@ -506,6 +510,7 @@ export function WorkspacePanel({
   onOpenFile,
   onSave,
   onSetDraft,
+  onRegisterEditorDraft,
   onSetViewState,
   onOpenMarkdownFileLink,
   onStartScreenshotSnip,
@@ -545,6 +550,12 @@ export function WorkspacePanel({
   const markdownEditorFontFamily = getMarkdownEditorFontStack(
     markdownPreferences.editorFontFamily,
   );
+  const wysiwygEditorFontFamily = getWysiwygEditorFontStack(
+    markdownPreferences.wysiwygEditorFontFamily,
+  );
+  const renderedMarkdownFontFamily = getRenderedMarkdownFontStack(
+    markdownPreferences.renderedMarkdownFontFamily,
+  );
   const markdownLineHeightPx =
     markdownPreferences.baseFontSize *
     markdownPreferences.baseLineHeight *
@@ -571,6 +582,10 @@ export function WorkspacePanel({
     activeTab?.file.fileType === "markdown" &&
     activeMarkdownIsSlides &&
     activePreviewTabId === activeTab.id;
+
+  const registerVisualDraft = useCallback((read: () => string) => {
+    return (activeTabId && onRegisterEditorDraft?.(activeTabId, read)) || (() => {});
+  }, [activeTabId, onRegisterEditorDraft]);
 
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
@@ -1150,7 +1165,7 @@ export function WorkspacePanel({
     const selectionStart = textarea?.selectionStart ?? 0;
     const selectionEnd = textarea?.selectionEnd ?? selectionStart;
 
-    onSetDraft(normalizeChatGptCopiedMarkdown(draft));
+    onSetDraft(normalizeChatGptCopiedMarkdown(draft, markdownPreferences));
 
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;
@@ -1340,13 +1355,16 @@ export function WorkspacePanel({
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
+              mathMarkers={markdownPreferences}
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
+              fontFamily={wysiwygEditorFontFamily}
               lineHeight={markdownPreferences.baseLineHeight}
               markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
               initialViewState={activeMarkdownViewState}
               onViewStateChange={updateMarkdownViewState}
               onChange={handleMarkdownDraftChange} onSave={onSave}
+              onRegisterDraft={registerVisualDraft}
               onOpenFileLink={handleOpenMarkdownFileLink} />
           ) : <>
           <MarkdownToolbar
@@ -1386,10 +1404,12 @@ export function WorkspacePanel({
               >
                 <MarkdownPreviewMetadata file={activeTab.file} />
                 <MarkdownRenderer
+                  mathMarkers={markdownPreferences}
                   content={activeTab.draft}
                   baseFontSize={markdownPreferences.baseFontSize}
                   baseLineHeight={markdownPreferences.baseLineHeight}
                   documentPath={activeTab.file.path}
+                  fontFamily={renderedMarkdownFontFamily}
                   onOpenFileLink={handleOpenMarkdownFileLink}
                   textScale={markdownZoomScale}
                 />
@@ -1484,10 +1504,12 @@ export function WorkspacePanel({
                     />
                   ) : (
                     <MarkdownRenderer
+                      mathMarkers={markdownPreferences}
                       content={previewMarkdownDraft}
                       baseFontSize={markdownPreferences.baseFontSize}
                       baseLineHeight={markdownPreferences.baseLineHeight}
                       documentPath={activeTab.file.path}
+                      fontFamily={renderedMarkdownFontFamily}
                       onOpenFileLink={handleOpenMarkdownFileLink}
                       textScale={markdownZoomScale}
                     />

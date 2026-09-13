@@ -1,4 +1,5 @@
 import { normalizeChatGptCopiedMarkdown } from "./chatgpt-markdown-normalizer";
+import type { MathMarkerSettings } from "./math-markers";
 
 export const CHAT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ChatReasoningEffort = typeof CHAT_REASONING_EFFORTS[number];
@@ -44,10 +45,14 @@ export function validateChatStore(value: unknown): value is ChatStore {
 }
 
 // Some models wrap the whole answer as Markdown source. Preserve actual code fences.
-export function normalizeChatResponseMarkdown(content: string, streaming = false) {
+export function normalizeChatResponseMarkdown(
+  content: string,
+  streaming = false,
+  mathMarkers: MathMarkerSettings = {},
+) {
   const wrapper = content.trim().match(/^(`{3,}|~{3,})(?:markdown|md)[ \t]*\r?\n([\s\S]*?)\r?\n\1\s*$/i);
   const unwrapped = wrapper?.[2] ?? (streaming ? content.replace(/^\s*(?:`{3,}|~{3,})(?:markdown|md)[ \t]*\r?\n/i, "") : content);
-  return normalizeChatGptCopiedMarkdown(unwrapped);
+  return normalizeChatGptCopiedMarkdown(unwrapped, mathMarkers);
 }
 
 export function chatCompletionContent(message: ChatMessage) {
@@ -62,10 +67,10 @@ export function messagesWithoutExcludedDocuments(messages: ChatMessage[], exclud
   return messages.map((message) => ({ ...message, contexts: message.contexts?.filter((context) => context.kind !== "document" || !excludedPaths.includes(context.path)) }));
 }
 
-export function exportChatMarkdown(chat: DocumentChat) {
+export function exportChatMarkdown(chat: DocumentChat, mathMarkers: MathMarkerSettings = {}) {
   const title = chat.title.replace(/[\r\n]+/g, " ").replace(/([\\`*_[\]<>#])/g, "\\$1");
   const messages = chat.messages.map((message) => {
-    const content = message.role === "assistant" ? normalizeChatResponseMarkdown(message.text) : message.text;
+    const content = message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, false, mathMarkers) : message.text;
     const photos = (message.photos ?? []).map((photo) => `![${photo.name.replace(/[\[\]\r\n]/g, " ")}](${photo.dataUrl})`).join("\n\n");
     return `## ${message.role === "user" ? "User" : "Assistant"}\n\n${[content, photos].filter(Boolean).join("\n\n")}`;
   });

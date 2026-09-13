@@ -20,9 +20,10 @@ export function getAiFunctionOptions(name: AiFunction) {
   return { model, reasoning: { effort } };
 }
 
-export function getAiChatCustomInstruction() {
-  if (typeof process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION === "string") {
-    return process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
+function getAiCustomInstruction(name: "rewrite" | "chat") {
+  const environmentName = `LIBERA_AI_${ENV_NAMES[name]}_CUSTOM_INSTRUCTION`;
+  if (typeof process.env[environmentName] === "string") {
+    return process.env[environmentName];
   }
 
   const configPath = process.env.LIBERA_CONFIG_PATH;
@@ -30,12 +31,20 @@ export function getAiChatCustomInstruction() {
 
   try {
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
-      aiFunctions?: { chat?: { customInstruction?: unknown } };
+      aiFunctions?: Partial<Record<"rewrite" | "chat", { customInstruction?: unknown }>>;
     };
-    const customInstruction = config.aiFunctions?.chat?.customInstruction;
+    const customInstruction = config.aiFunctions?.[name]?.customInstruction;
 
     return typeof customInstruction === "string" ? customInstruction : "";
   } catch {
     return "";
   }
+}
+
+export function getAiChatCustomInstruction() {
+  return getAiCustomInstruction("chat");
+}
+
+export function getAiRewriteCustomInstruction() {
+  return getAiCustomInstruction("rewrite");
 }

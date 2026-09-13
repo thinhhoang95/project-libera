@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { ModalDialog } from "./modal-dialog";
 import type { DocumentChat } from "@/lib/document-chat";
 
@@ -53,7 +53,9 @@ export function DocumentChatSettingsDialog({ chats, activeId, onClose, onRename,
             <input aria-label={`Chat name: ${chat.title}`} value={title} maxLength={120} required className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm" onChange={(event) => setTitles((current) => ({ ...current, [chat.id]: event.target.value }))} />
             {chat.id === activeId && <span className="text-xs text-muted-foreground">Current chat</span>}
           </div>
-          <button type="submit" disabled={!title.trim() || title.trim() === chat.title} className="shrink-0 rounded-md px-2 py-1.5 text-sm hover:bg-muted disabled:opacity-40" aria-label={`Rename chat: ${chat.title}`}>Rename</button>
+          <button type="submit" disabled={!title.trim() || title.trim() === chat.title} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40" aria-label={`Rename chat: ${chat.title}`} title="Rename chat">
+            <Pencil aria-hidden size={16} />
+          </button>
         </form>;
       })}
     </div>

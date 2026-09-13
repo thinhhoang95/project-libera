@@ -20,6 +20,7 @@ type TabStripProps = {
   notebookColors: Record<string, string>;
   tabs: OpenTab[];
   onActivateTab: (tabId: string) => void;
+  onDuplicateMarkdown: (file: OpenTab["file"]) => void;
   onCloseOtherTabs: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
@@ -70,6 +71,7 @@ export function TabStrip({
   activeTabId,
   tabs,
   onActivateTab,
+  onDuplicateMarkdown,
   onCloseOtherTabs,
   onCloseTab,
   onDeleteFile,
@@ -102,6 +104,7 @@ export function TabStrip({
       .popup({
         ...nativeMenuPointFromMouseEvent(event),
         items: [
+          ...(tab.file.fileType === "markdown" ? [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }] : []),
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -112,7 +115,9 @@ export function TabStrip({
       })
       .catch(() => null);
 
-    if (selectedItemId === "close-tab") {
+    if (selectedItemId === "duplicate-markdown") {
+      onDuplicateMarkdown(tab.file);
+    } else if (selectedItemId === "close-tab") {
       onCloseTab(tab.id);
     } else if (selectedItemId === "close-others") {
       onCloseOtherTabs(tab.id);

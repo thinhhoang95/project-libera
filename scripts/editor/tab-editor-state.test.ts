@@ -65,12 +65,16 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     const { LiberaApp } = await import("../../src/components/libera-app");
     await act(async () => {
       root.render(createElement(StrictMode, null, createElement(LiberaApp, {
-        initialAuthenticated: true, markdownPreferences: normalizeMarkdownPreferences(),
+        initialAuthenticated: true,
+        markdownPreferences: normalizeMarkdownPreferences({
+          wysiwygEditorFontFamily: "Aptos",
+        }),
       })));
     });
     await settle();
     await click(host.querySelector<HTMLButtonElement>('[aria-label="New untitled file"]'));
     const firstTab = host.querySelector<HTMLButtonElement>("[data-tab-id]")!;
+    assert.match(visualScroller().style.fontFamily, /Aptos/);
     assertVisualScroll(0, 0);
     await scrollVisual(24, 640);
     await click(modeButton("Source"));

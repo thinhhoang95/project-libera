@@ -1,4 +1,5 @@
 import { Extension, type Editor } from "@tiptap/core";
+import { Fragment, type Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { reviewBlocks, type ReviewRange } from "./markdown-review";
@@ -16,23 +17,55 @@ export const TiptapReview = Extension.create({
     }, props: { decorations: (state) => tiptapReviewKey.getState(state) } })];
   },
 });
+type ReviewBlockMapping = { start: number; end: number; from: number; to: number };
+const reviewMappingCache = new WeakMap<Editor, { doc: ProseMirrorNode; source: string; blocks: ReviewBlockMapping[] }>();
+
+// One mapping per immutable document/source pair, shared by all comments and
+// selection decorations. Metadata-only transactions keep the document identity.
+export function tiptapReviewBlocks(editor: Editor, source: string) {
+  const cached = reviewMappingCache.get(editor);
+  if (cached?.doc === editor.state.doc && cached.source === source) return cached.blocks;
+  const blocks = mapReviewBlocks(editor, source);
+  reviewMappingCache.set(editor, { doc: editor.state.doc, source, blocks });
+  return blocks;
+}
+
 // Align parsed source blocks to the live ProseMirror document in order. Parsing
 // through the editor's own schema handles math, marks, images and nested lists.
 // Refuse mismatches rather than mapping a repeated paragraph to its first match.
-export function tiptapReviewBlocks(editor: Editor, source: string) {
+function mapReviewBlocks(editor: Editor, source: string): ReviewBlockMapping[] {
   if (!editor.markdown) return [];
   const blocks = reviewBlocks(source);
   const definitions = blocks.filter((b) => b.type === "definition").map((b) => b.text).join("\n\n");
-  const mapped: { start: number; end: number; from: number; to: number }[] = [];
+  const mapped: ReviewBlockMapping[] = [];
   let cursor = 0;
   for (const block of blocks) {
     if (block.type === "definition") continue;
     let parsed;
     try { parsed = editor.schema.nodeFromJSON(editor.markdown.parse(block.text + (definitions ? `\n\n${definitions}` : ""))); }
     catch { return []; }
-    const size = parsed.content.size;
-    if (!size) continue;
-    const matches = () => cursor + size <= editor.state.doc.content.size && editor.state.doc.slice(cursor, cursor + size).content.eq(parsed.content);
+    if (!parsed.content.size) continue;
+    let size = 0;
+    const matches = () => {
+      // Source and live nodes need not have identical sizes or marks. For
+      // example, Markdown moves a bold trailing space outside the **markers**,
+      // and a new paragraph may still contain leading spaces while typing.
+      const nodes = [];
+      size = 0;
+      for (let index = 0; index < parsed.childCount; index++) {
+        const node = editor.state.doc.nodeAt(cursor + size);
+        if (!node) return false;
+        nodes.push(node);
+        size += node.nodeSize;
+      }
+      const content = Fragment.fromArray(nodes);
+      if (content.eq(parsed.content)) return true;
+      // Compare canonical Markdown for these exact, ordered blocks. Never
+      // search by text or reparse/setContent on the live editor: repeated
+      // passages, selection, IME composition and undo history must stay intact.
+      const serialize = (fragment: Fragment) => editor.markdown!.serialize({ type: "doc", content: fragment.toJSON() ?? [] }).trim();
+      return serialize(content) === serialize(parsed.content);
+    };
     // Tiptap preserves extra blank lines as empty paragraphs; remark's source
     // blocks omit that whitespace. Advance past only these unanchored nodes,
     // keeping nonempty blocks in strict order (including repeated passages).

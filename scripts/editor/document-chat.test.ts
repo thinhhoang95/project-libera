@@ -42,6 +42,10 @@ test("response normalization unwraps Markdown but preserves code and math litera
   assert.equal(normalizeChatResponseMarkdown(code), code);
   const literal = "Use `\\(x\\)` in code.";
   assert.equal(normalizeChatResponseMarkdown(literal), literal);
+  assert.equal(
+    normalizeChatResponseMarkdown(String.raw`Inline \(x\) and \[y\]`, false, { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" }),
+    "Inline @@x@@ and \n\n%%\ny\n%%",
+  );
 });
 
 test("photos become model image parts and excluded documents leave outbound history", async () => {

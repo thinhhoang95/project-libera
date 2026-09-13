@@ -1,4 +1,5 @@
 import type { Editor, JSONContent } from "@tiptap/core";
+import { markdownHeadingOffsets } from "./markdown-review";
 
 export const MARKDOWN_OUTLINE_NAVIGATE_EVENT = "libera:markdown-outline-navigate";
 
@@ -7,6 +8,30 @@ export type MarkdownOutlineNavigateDetail = {
   markdown: string;
   offset: number;
 };
+
+export function markdownLineForTiptapPosition(
+  editor: Editor,
+  markdown: string,
+  position: number,
+  headingOffsets = markdownHeadingOffsets(markdown),
+) {
+  if (editor.isDestroyed) return null;
+
+  let precedingHeadings = 0;
+  const positionInDocument = Math.max(0, Math.min(position, editor.state.doc.content.size));
+  editor.state.doc.nodesBetween(0, positionInDocument, (node, pos) => {
+    if (node.type.name === "heading" && pos < position) {
+      precedingHeadings += 1;
+    }
+  });
+
+  const headingOffset = precedingHeadings
+    ? headingOffsets[precedingHeadings - 1]
+    : 0;
+
+  if (headingOffset === undefined) return null;
+  return markdown.slice(0, headingOffset).split("\n").length;
+}
 
 export function navigateTiptapToMarkdownHeading(editor: Editor, markdown: string, offset: number) {
   if (editor.isDestroyed || !editor.markdown || offset < 0 || offset >= markdown.length) return;

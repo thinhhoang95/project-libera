@@ -28,6 +28,29 @@ export function startReviewRound(doc: ReviewDocument): ReviewDocument {
 }
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
 
+type MarkdownAstNode = {
+  children?: MarkdownAstNode[];
+  position?: { start?: { offset?: number } };
+  type?: string;
+};
+
+export function markdownHeadingOffsets(text: string) {
+  const offsets: number[] = [];
+
+  function visit(node: MarkdownAstNode) {
+    const offset = node.position?.start?.offset;
+
+    if (node.type === "heading" && typeof offset === "number") {
+      offsets.push(offset);
+    }
+
+    node.children?.forEach(visit);
+  }
+
+  visit(parser.parse(text) as MarkdownAstNode);
+  return offsets;
+}
+
 export function reviewBlocks(text: string): ReviewBlock[] {
   return parser.parse(text).children.flatMap((node, index) => {
     const start = node.position?.start.offset, end = node.position?.end.offset;

@@ -10,6 +10,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   const legacy = normalizeAiPreferences(undefined, 'existing/model');
   assert.equal(legacy.formatting.model, 'existing/model');
   assert.equal(legacy.rewrite.model, 'existing/model');
+  assert.deepEqual(legacy.rewrite, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
   assert.equal(legacy.chat.model, 'existing/model');
   assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium' });
   assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
@@ -18,7 +19,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
     model: `provider/${name}`,
     reasoningEffort: efforts[name],
-    ...(name === 'chat' ? { customInstruction: 'Prefer concise answers.' } : {}),
+    ...(['rewrite', 'chat'].includes(name) ? { customInstruction: `Instructions for ${name}.` } : {}),
   }]));
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
@@ -35,7 +36,10 @@ test('AI preferences migrate legacy models and survive a config file round trip'
 });
 
 test('Preferences UI loads and saves all five function settings', async () => {
-  const aiFunctions = normalizeAiPreferences({ chat: { customInstruction: 'Prefer concise answers.' } });
+  const aiFunctions = normalizeAiPreferences({
+    chat: { customInstruction: 'Prefer concise answers.' },
+    rewrite: { customInstruction: 'Preserve the author voice.' },
+  });
   let saved;
   const dom = new JSDOM(readFileSync(path.join(__dirname, '../../electron/setup.html'), 'utf8'), {
     url: 'http://localhost/?mode=configuration', runScripts: 'dangerously',
@@ -45,6 +49,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
         getState: async () => ({ aiFunctions, hasApiKey: true, hasPasswordHash: true, dataDir: '/tmp/notebooks' }),
         save: async (input) => { saved = JSON.parse(JSON.stringify(input)); },
         loadAiChatCustomInstructionFile: async () => ({ canceled: false, content: 'Instruction loaded from a file.' }),
+        loadAiRewriteCustomInstructionFile: async () => ({ canceled: false, content: 'Rewrite instruction loaded from a file.' }),
       };
     },
   });
@@ -61,6 +66,10 @@ test('Preferences UI loads and saves all five function settings', async () => {
       document.querySelector(`#ai-${name}-effort`).value = 'max';
     }
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Prefer concise answers.');
+    assert.equal(document.querySelector('#ai-rewrite-custom-instruction').value, 'Preserve the author voice.');
+    document.querySelector('#load-ai-rewrite-instruction-button').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(document.querySelector('#ai-rewrite-custom-instruction').value, 'Rewrite instruction loaded from a file.');
     document.querySelector('#load-ai-chat-instruction-button').click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Instruction loaded from a file.');
@@ -70,6 +79,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
       model: `custom/${name}`,
       reasoningEffort: 'max',
       ...(name === 'chat' ? { customInstruction: 'Instruction loaded from a file.' } : {}),
+      ...(name === 'rewrite' ? { customInstruction: 'Rewrite instruction loaded from a file.' } : {}),
     });
   } finally { dom.window.close(); }
 });

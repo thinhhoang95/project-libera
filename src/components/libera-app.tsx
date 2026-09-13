@@ -234,6 +234,7 @@ export function LiberaApp({
           uploadInputRef={workspace.uploadInputRef}
           onArchiveFile={workspace.archiveFileNode}
           onArchiveFolder={workspace.archiveFolderNode}
+          onDuplicateMarkdown={workspace.duplicateMarkdown}
           onCopyFile={workspace.copyFileFromPrompt}
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
@@ -285,6 +286,7 @@ export function LiberaApp({
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
             onDownloadFile={workspace.downloadFile}
+            onDuplicateMarkdown={workspace.duplicateMarkdown}
             onDownloadMarkdownPdf={workspace.downloadMarkdownPdf}
             onMoveFile={workspace.moveFileFromPrompt}
             onRenameFile={workspace.renameFileFromPrompt}
@@ -332,12 +334,13 @@ export function LiberaApp({
             onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
             onSave={workspace.saveActiveTab}
             onSetDraft={workspace.setActiveDraft}
+            onRegisterEditorDraft={workspace.registerEditorDraft}
             onSetViewState={workspace.setActiveTabViewState}
             onStartScreenshotSnip={workspace.startScreenshotSnip}
           />
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}

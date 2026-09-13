@@ -1,3 +1,5 @@
+import { preferredMathMarkerPair, type MathMarkerSettings } from "./math-markers";
+
 type Placeholder = {
   token: string;
   value: string;
@@ -72,16 +74,30 @@ function restorePlaceholders(value: string, placeholders: Placeholder[]) {
 }
 
 // ChatGPT's source already contains LaTeX. Only translate its explicit math
-// delimiters to the dollar delimiters understood by the Markdown editors.
-export function normalizeChatGptCopiedMarkdown(value: string) {
+// delimiters to the configured canonical delimiters understood by both editors.
+export function normalizeChatGptCopiedMarkdown(
+  value: string,
+  mathMarkers: MathMarkerSettings = {},
+) {
   const placeholders: Placeholder[] = [];
   const protectedValue = protectNonTargets(value, placeholders);
+  const inlinePair = preferredMathMarkerPair(mathMarkers, false);
+  const displayPair = preferredMathMarkerPair(mathMarkers, true);
   const normalized = protectedValue.replace(
     /(?<!\\)\\\[([\s\S]*?)\\\]|(?<!\\)\\\(([^\n]*?)\\\)/g,
-    (_match, display: string | undefined, inline: string | undefined) =>
-      display !== undefined
-        ? `$$\n${display.trim()}\n$$`
-        : `$${inline!.trim()}$`,
+    (match, display: string | undefined, inline: string | undefined, offset: number) => {
+      if (display !== undefined) {
+        if (!displayPair) return match;
+        const before = protectedValue.slice(0, offset);
+        const after = protectedValue.slice(offset + match.length);
+        const leadingBreak = before && !/(?:^|\n)[ \t]*$/.test(before) ? "\n\n" : "";
+        const trailingBreak = after && !/^[ \t]*(?:\r?\n|$)/.test(after) ? "\n\n" : "";
+        return `${leadingBreak}${displayPair.open}\n${display.trim()}\n${displayPair.close}${trailingBreak}`;
+      }
+      return inlinePair
+        ? `${inlinePair.open}${inline!.trim()}${inlinePair.close}`
+        : match;
+    },
   );
 
   return restorePlaceholders(normalized, placeholders);

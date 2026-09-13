@@ -6,9 +6,29 @@ import { Mathematics } from "@tiptap/extension-mathematics";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { TiptapReview, sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewKey } from "../../src/lib/tiptap-review";
 import { reviewBlocks } from "../../src/lib/markdown-review";
+import { markdownLineForTiptapPosition } from "../../src/lib/markdown-outline-navigation";
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle"] as const) Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
 after(() => dom.window.close());
+
+test("visual positions map to the corresponding Markdown heading line", () => {
+  const source = "# First\n\nIntro\n\n> ## Nested\n> Body\n\nSetext\n------\n\n## Last\n\nEnd";
+  const editor = new Editor({ extensions: createMarkdownExtensions("Notes/a.md"), content: source, contentType: "markdown" });
+  try {
+    const positions: number[] = [];
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name === "heading") positions.push(pos + 1);
+    });
+    assert.deepEqual(
+      positions.map((position) => markdownLineForTiptapPosition(editor, source, position)),
+      [1, 5, 8, 11],
+    );
+    assert.equal(markdownLineForTiptapPosition(editor, source, editor.state.doc.content.size), 11);
+  } finally {
+    editor.destroy();
+  }
+});
+
 test("visual review maps repeated and rich Markdown blocks to exact source ranges without serializing annotations", () => {
   const sources = [
     "# Title\n\nRepeated paragraph.\n\nRepeated paragraph.",
@@ -75,5 +95,45 @@ test("mapping still refuses changed text instead of guessing between repeated pa
   try {
     editor.commands.insertContentAt(1, "Changed ");
     assert.deepEqual(tiptapReviewBlocks(editor, source), []);
+  } finally { editor.destroy(); }
+});
+
+test("review mapping tolerates live whitespace/mark normalization without rebuilding the editor", () => {
+  const edits: ((editor: Editor) => void)[] = [
+    (editor) => { editor.commands.insertContentAt(1, " "); },
+    (editor) => { editor.chain().setTextSelection({ from: 1, to: 7 }).toggleBold().run(); },
+    (editor) => { editor.chain().setTextSelection(6).splitBlock().run(); },
+  ];
+  for (const edit of edits) {
+    const editor = new Editor({ extensions: createMarkdownExtensions("Notes/a.md"), content: "Hello there\n\nSecond paragraph", contentType: "markdown" });
+    try {
+      edit(editor);
+      const source = editor.getMarkdown();
+      const before = editor.getJSON(), selection = editor.state.selection;
+      const blocks = reviewBlocks(source);
+      const mapped = tiptapReviewBlocks(editor, source);
+      assert.equal(mapped.length, blocks.length, source);
+      for (const block of mapped) {
+        assert.deepEqual(sourceRangeForTiptapSelection(editor, source, block.from + 1, block.to - 1), { start: block.start, end: block.end });
+        assert.deepEqual(tiptapRangeForSource(editor, source, block), { from: block.from, to: block.to });
+      }
+      assert.deepEqual(editor.getJSON(), before);
+      assert.equal(editor.state.selection, selection);
+    } finally { editor.destroy(); }
+  }
+});
+
+test("comments reuse block mappings and invalidate them on content/source changes", () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notes/a.md"), TiptapReview], content: "Hello\n\nRepeated\n\nRepeated", contentType: "markdown" });
+  try {
+    const source = editor.getMarkdown();
+    const mapping = tiptapReviewBlocks(editor, source);
+    editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, [{ from: 1, to: 6, kind: "comment" }]));
+    assert.equal(tiptapReviewBlocks(editor, source), mapping);
+    editor.commands.insertContentAt(1, "Changed ");
+    assert.deepEqual(tiptapReviewBlocks(editor, source), []);
+    const updated = tiptapReviewBlocks(editor, editor.getMarkdown());
+    assert.equal(updated.length, 3);
+    assert.notEqual(updated, mapping);
   } finally { editor.destroy(); }
 });

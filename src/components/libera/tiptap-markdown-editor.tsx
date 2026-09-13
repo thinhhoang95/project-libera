@@ -1,19 +1,22 @@
 "use client";
 
 import { TiptapReview } from "@/lib/tiptap-review";
+import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
-import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
+import type { Editor } from "@tiptap/core";
+import { createMathExtensions } from "@/lib/tiptap-math";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
 import katex from "katex";
 import { closeHistory } from "@tiptap/pm/history";
-import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
-import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { markdownHeadingOffsets } from "@/lib/markdown-review";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
@@ -28,7 +31,9 @@ import type { MarkdownImageAssetPayload } from "@/lib/types";
 type Props = {
   documentPath: string;
   untitled?: boolean;
+  mathMarkers?: MathMarkerSettings;
   value: string;
+  fontFamily?: string;
   fontSizePx: number;
   lineHeight: number;
   markdownZoom: number;
@@ -36,6 +41,7 @@ type Props = {
   onViewStateChange?: (patch: MarkdownTabViewState) => void;
   onMarkdownZoomChange: (zoom: number) => void;
   onChange: (value: string) => void;
+  onRegisterDraft?: (read: () => string) => () => void;
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
 };
@@ -43,9 +49,49 @@ type Props = {
 type MathDraft = { latex: string; display: boolean; from: number; to: number; existing: boolean };
 const buttonClass = "rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 aria-pressed:bg-muted aria-pressed:text-foreground";
 const selectClass = "rounded-md border border-border bg-card px-2 py-1.5 text-xs";
+const VISUAL_SCROLL_OUTLINE_ANCHOR_PROGRESS = 0.6;
 const isImage = (file: File) => /^image\/(png|jpe?g|gif|webp)$/i.test(file.type) || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
 
-export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onSave, onOpenFileLink }: Props) {
+type VisualOutlineMap = { headingOffsets: number[]; markdown: string };
+
+function getVisualHeadingOffsets(cache: { current: VisualOutlineMap }, markdown: string) {
+  if (cache.current.markdown !== markdown) {
+    cache.current = { headingOffsets: markdownHeadingOffsets(markdown), markdown };
+  }
+  return cache.current.headingOffsets;
+}
+
+function getVisualViewportViewState(
+  editor: Editor,
+  markdown: string,
+  container: HTMLDivElement,
+  headingOffsets: number[],
+): MarkdownTabViewState {
+  const containerRect = container.getBoundingClientRect();
+  const editorRect = editor.view.dom.getBoundingClientRect();
+  const visibleHeight = container.clientHeight || containerRect.height;
+  const top = containerRect.top + Math.max(1, visibleHeight * VISUAL_SCROLL_OUTLINE_ANCHOR_PROGRESS);
+  const left = Math.max(containerRect.left + 1, editorRect.left + 1);
+  let position: number | null = null;
+
+  try {
+    position = editor.view.posAtCoords({ left, top })?.pos ?? null;
+  } catch {
+    // The view can disappear between a queued scroll frame and unmount.
+  }
+
+  const line = position === null
+    ? null
+    : markdownLineForTiptapPosition(editor, markdown, position, headingOffsets);
+
+  return {
+    ...(line === null ? {} : { line }),
+    visualScrollLeft: container.scrollLeft,
+    visualScrollTop: container.scrollTop,
+  };
+}
+
+export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -58,10 +104,28 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
   const imageInput = useRef<HTMLInputElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const visualScrollFrameRef = useRef<number | null>(null);
+  const visualOutlineMapRef = useRef<VisualOutlineMap>({ headingOffsets: [], markdown: "" });
   const initialViewStateRef = useRef(initialViewState);
   const lastValue = useRef(value);
+  const visualPositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastReportedLineRef = useRef<number | null>(null);
+  const reportVisualPosition = useCallback((current: Editor, markdown: string, position: number) => {
+    const line = markdownLineForTiptapPosition(
+      current,
+      markdown,
+      position,
+      getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+    );
+    if (line !== null && line !== lastReportedLineRef.current) {
+      lastReportedLineRef.current = line;
+      onViewStateChange?.({ line });
+    }
+  }, [onViewStateChange]);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
-  const extensions = useMemo(() => [
+  const extensions = useMemo(() => {
+    const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
+    return [
     ...createMarkdownExtensions(documentPath),
     HighlightTool,
     TiptapFind,
@@ -76,13 +140,14 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ], [documentPath]);
+  ]; }, [documentPath, mathMarkers]);
 
   const editor = useEditor({
     extensions,
     content: value,
     contentType: "markdown",
     immediatelyRender: false,
+    shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: { class: "libera-tiptap", role: "textbox", "aria-label": "Visual Markdown editor", "aria-multiline": "true" },
       handleDOMEvents: {
@@ -135,16 +200,18 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       },
     },
     onUpdate({ editor: current }) {
-      const markdown = current.getMarkdown();
-      lastValue.current = markdown;
-      onChange(markdown);
+      scheduleVisualPosition(current);
+    },
+    onSelectionUpdate({ editor: current }) {
+      scheduleVisualPosition(current);
     },
     onTransaction({ transaction }) {
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
     },
   });
 
-  useTiptapReview(editor, lastValue);
+  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft);
+  useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
   const state = useEditorState({ editor, selector: ({ editor: observedEditor }) => {
     // With deferred rendering, TipTap's state subscription can still hold its
@@ -156,7 +223,11 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
-    find: tiptapFindPluginKey.getState(current.state),
+    // Subscribe only to UI data, never a DecorationSet containing document nodes.
+    find: (() => {
+      const find = tiptapFindPluginKey.getState(current.state);
+      return find ? { matches: find.matches, activeMatchIndex: find.activeMatchIndex } : undefined;
+    })(),
     heading: current.isActive("heading") ? String(current.getAttributes("heading").level) : "0",
     fontSize: current.getAttributes("textStyle").fontSize ?? "",
     lineHeight: current.getAttributes("textStyle").lineHeight ?? "",
@@ -172,31 +243,89 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     // per editor mount, so scrolling and edits never reapply an old position.
     container.scrollLeft = initialViewStateRef.current?.visualScrollLeft ?? 0;
     container.scrollTop = initialViewStateRef.current?.visualScrollTop ?? 0;
-  }, [editor]);
-
-  useEffect(() => {
-    if (!editor || value === lastValue.current) return;
-    // Parent echoes must never reset the cursor or undo history. Only external
-    // document changes (e.g. source edits) replace the editor document.
-    lastValue.current = value;
-    editor.commands.setContent(value, { contentType: "markdown", emitUpdate: false });
-  }, [editor, value]);
+    const frame = window.requestAnimationFrame(() => {
+      if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
+      if (!editor.isDestroyed) {
+        const markdown = lastValue.current;
+        const viewState = getVisualViewportViewState(
+          editor,
+          markdown,
+          container,
+          getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+        );
+        lastReportedLineRef.current = viewState.line ?? null;
+        onViewStateChange?.(viewState);
+      }
+    });
+    visualScrollFrameRef.current = frame;
+    return () => {
+      // A tab/mode switch can unmount before the next scroll frame runs.
+      onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+      window.cancelAnimationFrame(frame);
+      if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
+    };
+  }, [editor, onViewStateChange]);
 
   useEffect(() => {
     const pending = uploads.current;
-    return () => { for (const upload of pending) upload.controller.abort(); };
+    return () => {
+      for (const upload of pending) upload.controller.abort();
+      if (visualPositionTimerRef.current !== null) clearTimeout(visualPositionTimerRef.current);
+      if (visualScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(visualScrollFrameRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
     if (!editor) return;
     function navigate(event: Event) {
       const detail = (event as CustomEvent<MarkdownOutlineNavigateDetail>).detail;
-      if (detail.documentPath !== documentPath || detail.markdown !== lastValue.current) return;
+      if (detail.documentPath !== documentPath || detail.markdown !== readMarkdown()) return;
       navigateTiptapToMarkdownHeading(editor!, detail.markdown, detail.offset);
+      // Explicit outline navigation should report its destination immediately.
+      reportVisualPosition(editor!, detail.markdown, editor!.state.selection.from);
     }
     window.addEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
     return () => window.removeEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
-  }, [documentPath, editor]);
+  }, [documentPath, editor, readMarkdown, reportVisualPosition]);
+
+  function scheduleVisualPosition(current: Editor) {
+    if (!onViewStateChange) return;
+    if (visualPositionTimerRef.current !== null) clearTimeout(visualPositionTimerRef.current);
+    visualPositionTimerRef.current = setTimeout(() => {
+      visualPositionTimerRef.current = null;
+      if (current.isDestroyed) return;
+      if (current.view.composing) { scheduleVisualPosition(current); return; }
+      reportVisualPosition(current, readMarkdown(), current.state.selection.from);
+    }, TIPTAP_DRAFT_DELAY_MS);
+  }
+
+
+  function handleVisualScroll(container: HTMLDivElement) {
+    if (visualScrollFrameRef.current !== null) return;
+
+    visualScrollFrameRef.current = window.requestAnimationFrame(() => {
+      visualScrollFrameRef.current = null;
+      const currentEditor = editor;
+      if (!currentEditor || currentEditor.isDestroyed) return;
+      // Typing can scroll the caret. Keep scroll persistence cheap while the
+      // Markdown snapshot is pending; outline tracking runs after the pause.
+      if (pendingDraftRef.current) {
+        onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+        return;
+      }
+      const markdown = lastValue.current;
+      const viewState = getVisualViewportViewState(
+        currentEditor,
+        markdown,
+        container,
+        getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+      );
+      lastReportedLineRef.current = viewState.line ?? null;
+      onViewStateChange?.(viewState);
+    });
+  }
 
   async function insertImages(files: File[], pos: number) {
     if (!editor || editor.isDestroyed) return;
@@ -347,10 +476,6 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
 
   function fixChatGptEquations() {
     if (!editor) return;
-    // Keep the original source until the first edit: Markdown parsing consumes
-    // the backslashes in ChatGPT's delimiters when displaying them as text.
-    const normalized = normalizeChatGptCopiedMarkdown(lastValue.current);
-    if (normalized === lastValue.current) {
       // Pasted plain text is escaped during Markdown serialization. Read its
       // literal delimiters from text blocks and replace only the math ranges.
       const replacements: { from: number; to: number; type: string; latex: string }[] = [];
@@ -374,12 +499,6 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         chain.insertContentAt({ from, to }, { type, attrs: { latex } });
       }
       chain.run();
-      return;
-    }
-    editor.chain()
-      .command(({ tr }) => { closeHistory(tr); return true; })
-      .setContent(normalized, { contentType: "markdown" })
-      .run();
   }
 
   function openMath() {
@@ -453,7 +572,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
-        <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => void onSave()}><Save className="h-4 w-4" /></button>
+        <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
@@ -461,11 +580,8 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontSize: fontSizePx, lineHeight }}
-          onScroll={(event) => onViewStateChange?.({
-            visualScrollLeft: event.currentTarget.scrollLeft,
-            visualScrollTop: event.currentTarget.scrollTop,
-          })}
+        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
+          onScroll={(event) => handleVisualScroll(event.currentTarget)}
           onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
           onDrop={(event) => {
@@ -516,11 +632,13 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         ) : null}
       </div>
       <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
-      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding dollar signs." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
+      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {
           if (!mathDraft) return;
-          editor.chain().focus().insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type: mathDraft.display ? "blockMath" : "inlineMath", attrs: { latex: mathDraft.latex.trim() } }).run();
+          const type = mathDraft.display ? "blockMath" : "inlineMath";
+          const original = mathDraft.existing ? editor.state.doc.nodeAt(mathDraft.from) : null;
+          editor.chain().focus().insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type, attrs: { ...(original?.type.name === type ? original.attrs : {}), latex: mathDraft.latex.trim() } }).run();
           setMathDraft(null);
         }}>Apply equation</button>
       </>}>

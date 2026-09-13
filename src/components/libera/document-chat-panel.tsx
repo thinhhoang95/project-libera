@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, Square, X } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -18,13 +18,19 @@ import { apiRequest } from "./api-client";
 import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 
 const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40";
+function selectionExcerpt(text: string) {
+  const lines = text.split(/\r\n|\r|\n/);
+  return `${lines.slice(0, 2).join(" ")}${lines.length > 2 ? "…" : ""}`;
+}
+
 function createChat(): DocumentChat {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
 }
 
-export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; onCollapsedChange: (value: boolean) => void }) {
+export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
   const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
@@ -234,7 +240,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
     }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
     if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook" && action !== "create-draft")) return;
-    const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat) };
+    const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat, mathMarkers) };
     if (action === "create-draft") { onCreateDraft(snapshot); return; }
     if (action === "save-notebook") { setExportSnapshot(snapshot); return; }
     setExporting(true);
@@ -322,7 +328,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
             const log = event.currentTarget;
             followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
           }}
-          onCopy={(event) => { copyRenderedMarkdownSelection(event.currentTarget, event); }}
+          onCopy={(event) => { copyRenderedMarkdownSelection(event.currentTarget, event, mathMarkers); }}
         >
           {!chat?.messages.length && <div className="libera-chat-welcome">
             <span className="libera-ai-orb" aria-hidden><Sparkles size={30} strokeWidth={1.5} /></span>
@@ -341,16 +347,21 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
             <p className="libera-chat-context-hint">{includedDocument ? "Your current Markdown draft is included." : "Type @ to bring a Markdown file into the conversation."}</p>
             <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
           </div>}
-          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
+          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => {
+            const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
+            const ContextIcon = context.kind === "document" ? FileText : TextSelect;
+            return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
+          })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
           </div>)}<MarkdownRenderer
             copyAsMarkdown
+            mathMarkers={mathMarkers}
             className="libera-chat-markdown min-w-0 break-normal"
             baseFontSize={fontSize}
             baseLineHeight={1.6}
             renderImages={false}
-            content={message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming") : message.text}
+            content={message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text}
           />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>

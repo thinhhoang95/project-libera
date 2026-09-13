@@ -34,6 +34,7 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { useMarkdownWindows } from "./use-markdown-windows";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 
 function collectFileSearchResults(
@@ -287,6 +288,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [uploadNotebook, setUploadNotebook] = useState("");
   const activeTabHistoryRef = useRef<string[]>([]);
   const latestDraftByTabIdRef = useRef<Record<string, string>>({});
+  const editorDraftReadersRef = useRef(new Map<string, () => string>());
+  const registerEditorDraft = useCallback((tabId: string, read: () => string) => {
+    editorDraftReadersRef.current.set(tabId, read);
+    return () => {
+      if (editorDraftReadersRef.current.get(tabId) === read) editorDraftReadersRef.current.delete(tabId);
+    };
+  }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const openingFilePathsRef = useRef<Set<string>>(new Set());
@@ -525,8 +533,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function getTabDraft(tab: OpenTab) {
-    return latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
+    return editorDraftReadersRef.current.get(tab.id)?.() ?? latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
   }
+
+  const duplicateMarkdown = useMarkdownWindows(tabs, getTabDraft, setWorkspaceError);
 
   function recordFileInteraction(file: LiberaFileNode) {
     const interactedAt = new Date().toISOString();
@@ -1545,9 +1555,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         } else {
           downloadFile({ ...tab.file, name: fileName }, draft);
         }
+        const latestDraft = getTabDraft(tab);
         updateTab(tab.id, (current) => ({ ...current,
           standaloneSaveId, file: { ...current.file, name: savedFileName }, saved: draft,
-          status: getTabDraft(current) === draft ? "clean" : "dirty" }));
+          status: latestDraft === draft ? "clean" : "dirty" }));
       } else {
         const payload = await apiRequest<LiberaFilePayload>("/api/files", {
           method: "POST",
@@ -1586,9 +1597,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       updateTab(activeTab.id, (tab) => ({ ...tab, status: "saving", error: undefined }));
       try {
         const result = await window.liberaExport.saveMarkdownFile({ content: draft, fileName: activeTab.file.name, saveId: activeTab.standaloneSaveId });
+        const latestDraft = getTabDraft(activeTab);
         updateTab(activeTab.id, (tab) => ({ ...tab,
           saved: result.canceled ? tab.saved : draft,
-          status: getTabDraft(tab) === (result.canceled ? tab.saved : draft) ? "clean" : "dirty" }));
+          status: latestDraft === (result.canceled ? tab.saved : draft) ? "clean" : "dirty" }));
       } catch (error) {
         updateTab(activeTab.id, (tab) => ({ ...tab, status: "error", error: error instanceof Error ? error.message : "Save failed." }));
       } finally { savingDraftRef.current = false; }
@@ -1618,11 +1630,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
 
+      const latestDraft = getTabDraft(activeTab);
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         file: payload.file,
         saved: draft,
-        status: getTabDraft(tab) === draft ? "clean" : "dirty",
+        status: latestDraft === draft ? "clean" : "dirty",
       }));
       await refreshTree(activeTab.file.notebook);
     } catch (error) {
@@ -2796,7 +2809,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      if (tabs.some((tab) => (latestDraftByTabIdRef.current[tab.id] ?? tab.draft) !== tab.saved)) {
+      if (tabs.some((tab) => getTabDraft(tab) !== tab.saved)) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -2867,6 +2880,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       deleteNotebookGroup,
       downloadFile,
       downloadMarkdownPdf,
+      duplicateMarkdown,
       deleteNotebookFromPrompt,
       downloadNotebook,
       convertImageToMarkdownWithAi,
@@ -2898,6 +2912,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectSearchResult,
       selectNotebook,
       setActiveDraft,
+      registerEditorDraft,
       getReviewDraft,
       recoverReviewDraft,
       applyReviewDraft,

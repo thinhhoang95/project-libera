@@ -61,6 +61,7 @@ export type NotebookPanelProps = {
   selectedNotebookName: string;
   tree: LiberaTree;
   uploadInputRef: RefObject<HTMLInputElement | null>;
+  onDuplicateMarkdown: (file: LiberaFileNode) => void;
   onCopyFile: (file: LiberaFileNode) => Promise<void>;
   onArchiveFile: (file: LiberaFileNode) => Promise<void>;
   onArchiveFolder: (folder: LiberaFolderNode) => Promise<void>;
@@ -478,6 +479,7 @@ export function NotebookPanel({
   selectedNotebookName,
   tree,
   uploadInputRef,
+  onDuplicateMarkdown,
   onCopyFile,
   onArchiveFile,
   onArchiveFolder,
@@ -640,6 +642,7 @@ export function NotebookPanel({
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
+            ...(target.file.fileType === "markdown" ? [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }] : []),
             { type: "separator" },
             {
               id: "copy-relative-path",
@@ -684,7 +687,9 @@ export function NotebookPanel({
     }
 
     if (target.kind === "file") {
-      if (selectedItemId === "toggle-star") {
+      if (selectedItemId === "duplicate-markdown") {
+        onDuplicateMarkdown(target.file);
+      } else if (selectedItemId === "toggle-star") {
         await onToggleFileStar(target.file, !fileIsStarred);
       } else if (selectedItemId === "download") {
         onDownloadFile(target.file);

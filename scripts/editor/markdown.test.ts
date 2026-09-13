@@ -59,17 +59,24 @@ async function setControlledInput(input: HTMLInputElement, value: string) {
   });
 }
 
+async function settleVisualDraft() {
+  // The live document updates immediately; Markdown publication follows a pause.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+}
+
 test("visual outline navigation scrolls to repeated formatted headings without changing content", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   const markdown = 'Setext\n======\n\n> ## Nested\n\n```md\n## **Repeated**\n```\n\n## **Repeated**\n\nFirst section\n\n## **Repeated**\n\nSecond section';
   const changes: string[] = [];
+  const viewStateChanges: { line?: number }[] = [];
   try {
     await act(async () => {
       root.render(createElement(TiptapMarkdownEditor, {
         documentPath: "Notebook/outline.md", value: markdown,
         fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onViewStateChange: (patch) => viewStateChanges.push(patch),
         onChange: (value) => changes.push(value), onSave: async () => {}, onOpenFileLink: async () => false,
       }));
     });
@@ -98,6 +105,7 @@ test("visual outline navigation scrolls to repeated formatted headings without c
     assert.deepEqual(scrolled, [headings[3], headings[3]]);
     assert.equal(window.getSelection()?.anchorNode?.parentElement?.closest("h2"), headings[3]);
     assert.equal(document.activeElement, host.querySelector(".libera-tiptap"));
+    assert.equal(viewStateChanges.at(-1)?.line, markdown.slice(0, markdown.lastIndexOf("## **Repeated**")).split("\n").length);
     assert.deepEqual(changes, []);
   } finally {
     await act(async () => root.unmount());
@@ -568,16 +576,20 @@ test("visual find replaces one or all wildcard matches in single undoable edits"
     // Select the explicit Replace button rather than relying on toolbar order.
     const replaceButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace")!;
     await act(async () => { replaceButton.click(); });
+    await settleVisualDraft();
     assert.equal(changes.at(-1), "Alpha **beta Z** alpha");
     assert.equal(host.querySelector("strong")?.textContent, "beta Z");
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    await settleVisualDraft();
     assert.equal(changes.at(-1), original);
 
     const replaceAllButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Replace all")!;
     await act(async () => { replaceAllButton.click(); });
+    await settleVisualDraft();
     assert.equal(changes.at(-1), "Z **beta Z** Z");
     assert.match(host.textContent ?? "", /0\/0/);
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click(); });
+    await settleVisualDraft();
     assert.equal(changes.at(-1), original, "Replace All must undo in one step");
   } finally {
     await act(async () => root.unmount());
@@ -678,7 +690,7 @@ $$`,
   }
 });
 
-test("visual equation fixer sits between Save and zoom, converts ChatGPT source, and supports undo", async () => {
+test("visual editor renders ChatGPT markers directly and the equation fixer preserves recognized math", async () => {
   const host = document.createElement('div');
   document.body.append(host);
   const root = createRoot(host);
@@ -706,8 +718,8 @@ test("visual equation fixer sits between Save and zoom, converts ChatGPT source,
     await act(async () => { button.click(); });
     assert.equal(host.querySelectorAll('[data-type="inline-math"]').length, 1);
     assert.equal(host.querySelectorAll('[data-type="block-math"]').length, 1);
-    assert.match(changes.at(-1)!, /\$v\$/);
-    assert.match(changes.at(-1)!, /\$\$\n/);
+    await settleVisualDraft();
+    assert.deepEqual(changes, [], "Recognized equations need no conversion or source rewrite");
     assert.equal(host.querySelectorAll('.katex-error').length, 0);
     const changeCount = changes.length;
     await act(async () => { button.click(); });

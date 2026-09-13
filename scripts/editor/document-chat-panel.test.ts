@@ -6,7 +6,7 @@ import type { OpenTab } from "../../src/components/libera/types";
 import type { ChatStore } from "../../src/lib/document-chat";
 
 test("chat captures both editors, sends the draft, and restores saved conversations", async () => {
-  const dom = new JSDOM('<!doctype html><body><textarea class="markdown-editor-input">Source paragraph</textarea><div class="libera-tiptap" contenteditable="true">Visual paragraph</div><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
+  const dom = new JSDOM('<!doctype html><body><textarea class="markdown-editor-input">Source paragraph</textarea><div class="libera-tiptap" contenteditable="true">Visual\nparagraph\nhidden line</div><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
   for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "HTMLInputElement", "Element", "Node", "KeyboardEvent", "FileReader", "File"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   const { createRoot } = await import("react-dom/client");
@@ -46,9 +46,10 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const host = document.getElementById("root")!;
   let root = createRoot(host);
   const tab = { id: "draft-1", file: { name: "Draft.md", path: "notes/Draft.md", fileType: "markdown" }, draft: "# Unsaved document", saved: "# Saved", status: "dirty" } as OpenTab;
+  const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
@@ -72,7 +73,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
     await act(async () => { visual.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, code: "KeyL", metaKey: true, shiftKey: true })); });
     await settle();
-    assert.equal(stored().chats[0].selections[1].text, "Visual paragraph");
+    assert.equal(stored().chats[0].selections[1].text, "Visual\nparagraph\nhidden line");
     await click("Remove selection 1");
     assert.equal(stored().chats[0].selections.length, 1);
     const composer = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
@@ -84,7 +85,15 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await settle();
     assert.equal(requests.length, 1);
     assert.equal(requests[0].reasoningEffort, "high");
-    assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual paragraph"]);
+    assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual\nparagraph\nhidden line"]);
+    const contextSummaries = host.querySelectorAll<HTMLSummaryElement>(".libera-chat-message details summary");
+    assert.equal(contextSummaries[0]?.textContent, "Draft.md");
+    assert.equal(contextSummaries[0]?.getAttribute("aria-label"), "Document: Draft.md");
+    assert.ok(contextSummaries[0]?.querySelector("svg"));
+    assert.equal(contextSummaries[1]?.textContent, "Visual paragraph…");
+    assert.equal(contextSummaries[1]?.getAttribute("aria-label"), "Selection: Visual paragraph…");
+    assert.ok(contextSummaries[1]?.querySelector("svg"));
+    assert.equal(contextSummaries[1]?.querySelector(".inline-flex"), null, "The excerpt must flow beside the native disclosure marker");
     assert.ok(host.textContent?.includes("A helpful answer"));
     const rendered = host.querySelectorAll(".libera-chat-markdown")[1];
     assert.equal(rendered.querySelector("h1")?.textContent, "A helpful answer");
@@ -113,6 +122,8 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.deepEqual(createdDraft, exported);
     assert.ok((exported as { content: string }).content.includes("## User\n\nExplain this"));
     assert.ok((exported as { content: string }).content.includes("## Assistant\n\n# A helpful answer"));
+    assert.ok((exported as { content: string }).content.includes("Inline @@x^2@@"));
+    assert.ok((exported as { content: string }).content.includes("%%\nE=mc^2\n%%"));
     menuAction = "save-notebook";
     await click("Chat settings");
     await settle();

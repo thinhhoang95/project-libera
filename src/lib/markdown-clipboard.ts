@@ -1,10 +1,27 @@
 import { generateJSON } from "@tiptap/core";
-import { Mathematics } from "@tiptap/extension-mathematics";
 import { MarkdownManager } from "@tiptap/markdown";
+import type { MathMarkerSettings } from "./math-markers";
+import { createMathExtensions } from "./tiptap-math";
 import { createMarkdownExtensions } from "./tiptap-markdown";
 
-let serializer: MarkdownManager | undefined;
-const extensions = () => [...createMarkdownExtensions(""), Mathematics];
+const serializers = new Map<string, MarkdownManager>();
+const extensions = (mathMarkers: MathMarkerSettings = {}) => [
+  ...createMarkdownExtensions(""),
+  ...createMathExtensions(mathMarkers),
+];
+
+function serializerFor(mathMarkers: MathMarkerSettings) {
+  const key = JSON.stringify([
+    mathMarkers.inlineMathMarkers,
+    mathMarkers.blockMathMarkers,
+  ]);
+  let serializer = serializers.get(key);
+  if (!serializer) {
+    serializer = new MarkdownManager({ extensions: extensions(mathMarkers) });
+    serializers.set(key, serializer);
+  }
+  return serializer;
+}
 
 /** Clone only selected content, retaining its formatting ancestors. Math is an
  * atomic selection: copying any part copies the underlying LaTeX expression. */
@@ -49,12 +66,15 @@ function cloneSelected(node: Node, range: Range): Node | null {
   return clone;
 }
 
-export function getRenderedSelectionMarkdown(container: HTMLElement, range: Range): string {
+export function getRenderedSelectionMarkdown(
+  container: HTMLElement,
+  range: Range,
+  mathMarkers: MathMarkerSettings = {},
+): string {
   const clone = cloneSelected(container, range) as HTMLElement | null;
   if (!clone) return "";
-  const configured = extensions();
-  serializer ??= new MarkdownManager({ extensions: configured });
-  return serializer.serialize(generateJSON(clone.innerHTML, configured));
+  const configured = extensions(mathMarkers);
+  return serializerFor(mathMarkers).serialize(generateJSON(clone.innerHTML, configured));
 }
 
 type CopyEvent = Pick<ClipboardEvent, "clipboardData" | "preventDefault">;
@@ -68,14 +88,18 @@ export function writeMarkdownClipboard(event: CopyEvent, markdown: string): bool
 }
 
 /** Called on the chat log so a selection can span multiple responses. */
-export function copyRenderedMarkdownSelection(container: HTMLElement, event: CopyEvent): boolean {
+export function copyRenderedMarkdownSelection(
+  container: HTMLElement,
+  event: CopyEvent,
+  mathMarkers: MathMarkerSettings = {},
+): boolean {
   const selection = container.ownerDocument.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
   const range = selection.getRangeAt(0);
   if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return false;
   const markdown = Array.from(container.querySelectorAll<HTMLElement>("[data-copy-markdown]"))
     .filter((message) => range.intersectsNode(message))
-    .map((message) => getRenderedSelectionMarkdown(message, range))
+    .map((message) => getRenderedSelectionMarkdown(message, range, mathMarkers))
     .filter(Boolean)
     .join("\n\n");
   return writeMarkdownClipboard(event, markdown);
