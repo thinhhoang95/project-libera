@@ -46,9 +46,10 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const host = document.getElementById("root")!;
   let root = createRoot(host);
   const tab = { id: "draft-1", file: { name: "Draft.md", path: "notes/Draft.md", fileType: "markdown" }, draft: "# Unsaved document", saved: "# Saved", status: "dirty" } as OpenTab;
+  const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
@@ -121,6 +122,8 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.deepEqual(createdDraft, exported);
     assert.ok((exported as { content: string }).content.includes("## User\n\nExplain this"));
     assert.ok((exported as { content: string }).content.includes("## Assistant\n\n# A helpful answer"));
+    assert.ok((exported as { content: string }).content.includes("Inline @@x^2@@"));
+    assert.ok((exported as { content: string }).content.includes("%%\nE=mc^2\n%%"));
     menuAction = "save-notebook";
     await click("Chat settings");
     await settle();

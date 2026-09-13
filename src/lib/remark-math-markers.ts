@@ -57,10 +57,9 @@ function mathConstruct(pair: MathMarkerPair, name: TokenType, pairs: MathMarkerP
           if (!pair.display) return finish;
           return effects.check({ partial: true, tokenize(checkEffects, yes, no) {
             const tail: State = next => {
-              if (next === 32 || next === -2 || next === -1) { checkEffects.consume(next); return tail; }
               return next === null || next === -5 || next === -4 || next === -3 ? yes(next) : no(next);
             };
-            return tail;
+            return factorySpace(checkEffects, tail, "whitespace");
           } }, finish, nok);
         }
         return content;

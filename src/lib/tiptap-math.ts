@@ -2,14 +2,14 @@ import { InputRule } from '@tiptap/core';
 import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import { InlineMath, BlockMath } from '@tiptap/extension-mathematics';
-import { mathMarkerPairs, matchMath, escapedAt, type MathMarkerSettings } from './math-markers';
+import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerSettings } from './math-markers';
 
 export function createMathExtensions(settings: MathMarkerSettings = {}) {
   const pairs = mathMarkerPairs(settings);
   return [InlineMath, BlockMath].map((extension, index) => {
     const display = index === 1;
     const name = display ? 'blockMath' : 'inlineMath';
-    const relevant = pairs.filter(pair => pair.display === display);
+    const preferred = preferredMathMarkerPair(settings, display);
     return extension.extend({
       addAttributes() {
         return { ...this.parent?.(), mathOpen: { default: null }, mathClose: { default: null } };
@@ -18,8 +18,8 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
         return { type: name, attrs: { latex: token.latex, mathOpen: token.open, mathClose: token.close } };
       },
       renderMarkdown(node) {
-        const open = node.attrs?.mathOpen ?? relevant[0]?.open ?? (display ? '$$' : '$');
-        const close = node.attrs?.mathClose ?? relevant[0]?.close ?? open;
+        const open = node.attrs?.mathOpen ?? preferred?.open ?? (display ? '$$' : '$');
+        const close = node.attrs?.mathClose ?? preferred?.close ?? open;
         return display ? `${open}\n${node.attrs?.latex ?? ''}\n${close}` : `${open}${node.attrs?.latex ?? ''}${close}`;
       },
       markdownTokenizer: {

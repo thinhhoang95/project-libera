@@ -82,6 +82,7 @@ test('display math allows blank lines and leaves an unmatched opener as text', (
 
 test('display math accepts trailing whitespace but not trailing prose', () => {
   assert.equal(nodes(renderTree('\\[x\\]  \n\ntext'), 'math')[0].value, 'x');
+  assert.equal(nodes(renderTree('\\[x\\]\t\r\n\r\ntext'), 'math')[0].value, 'x');
   assert.equal(nodes(renderTree('\\[x\\] trailing prose'), 'math').length, 0);
 });
 

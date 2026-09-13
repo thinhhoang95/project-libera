@@ -1165,7 +1165,7 @@ export function WorkspacePanel({
     const selectionStart = textarea?.selectionStart ?? 0;
     const selectionEnd = textarea?.selectionEnd ?? selectionStart;
 
-    onSetDraft(normalizeChatGptCopiedMarkdown(draft));
+    onSetDraft(normalizeChatGptCopiedMarkdown(draft, markdownPreferences));
 
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;

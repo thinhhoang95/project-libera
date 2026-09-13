@@ -1,10 +1,47 @@
 import { DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } from '../../electron/math-markers.cjs';
 export type MathMarkerSettings = { inlineMathMarkers?: string; blockMathMarkers?: string };
 export type MathMarkerPair = { open: string; close: string; display: boolean };
-export function mathMarkerPairs(settings: MathMarkerSettings = {}): MathMarkerPair[] {
+
+function configuredMathMarkerPairs(settings: MathMarkerSettings = {}): MathMarkerPair[] {
   return [[settings.inlineMathMarkers ?? DEFAULT_INLINE_MATH_MARKERS, false], [settings.blockMathMarkers ?? DEFAULT_BLOCK_MATH_MARKERS, true]].flatMap(([text, display]) =>
     String(text).split('\n').filter(Boolean).map(line => { const [open, close] = line.trim().split(/\s+/); return { open, close, display: Boolean(display) }; })
-  ).sort((a, b) => b.open.length - a.open.length);
+  );
+}
+
+/** The first configured pair is the canonical pair for newly generated Markdown. */
+export function preferredMathMarkerPair(settings: MathMarkerSettings = {}, display: boolean) {
+  return configuredMathMarkerPairs(settings).find(pair => pair.display === display);
+}
+
+export function mathMarkerPairs(settings: MathMarkerSettings = {}): MathMarkerPair[] {
+  // Parsing still checks longer openers first so `$` cannot steal `$$`.
+  return configuredMathMarkerPairs(settings).sort((a, b) => b.open.length - a.open.length);
+}
+
+function promptPair(pair: MathMarkerPair) {
+  return `\`${pair.open}\` … \`${pair.close}\``;
+}
+
+/** Keep generated chat Markdown inside the exact math syntax accepted by the editors. */
+export function mathMarkerSystemInstruction(settings: MathMarkerSettings = {}) {
+  const pairs = configuredMathMarkerPairs(settings);
+  const inlinePairs = pairs.filter(pair => !pair.display);
+  const displayPairs = pairs.filter(pair => pair.display);
+  const preferredInline = inlinePairs[0];
+  const preferredDisplay = displayPairs[0];
+  const instructions = [
+    "When a response contains mathematics, use only Libera's configured equation markers so the Markdown can be pasted directly into the WYSIWYG and Source editors.",
+  ];
+
+  instructions.push(preferredInline
+    ? `Configured inline pairs: ${inlinePairs.map(promptPair).join(", ")}. For new inline equations, wrap the LaTeX with ${promptPair(preferredInline)} on the same line.`
+    : "Inline equation markers are disabled; do not emit inline equation delimiters.");
+  instructions.push(preferredDisplay
+    ? `Configured display pairs: ${displayPairs.map(promptPair).join(", ")}. For new display equations, put ${promptPair(preferredDisplay)} and the LaTeX on three separate lines, with each marker on its own line.`
+    : "Display equation markers are disabled; do not emit display equation delimiters.");
+  instructions.push("Do not substitute any other math delimiter pair.");
+
+  return instructions.join(" ");
 }
 export function escapedAt(source: string, index: number) {
   let backslashes = 0;

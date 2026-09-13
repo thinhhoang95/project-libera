@@ -13,6 +13,8 @@ test("chat authenticates, validates input, and uses the configured Preferences m
   const originalModel = process.env.LIBERA_OPENROUTER_MODEL;
   const originalInstruction = process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
   const originalConfigPath = process.env.LIBERA_CONFIG_PATH;
+  const originalInlineMarkers = process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS;
+  const originalBlockMarkers = process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS;
   const configDirectory = mkdtempSync(path.join(os.tmpdir(), "libera-chat-route-"));
   const configPath = path.join(configDirectory, "libera-electron-config.json");
   writeFileSync(configPath, JSON.stringify({ aiFunctions: { chat: { customInstruction: "Use a two-sentence maximum." } } }));
@@ -20,6 +22,8 @@ test("chat authenticates, validates input, and uses the configured Preferences m
   process.env.LIBERA_OPENROUTER_MODEL = "test/preferences-model";
   delete process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION;
   process.env.LIBERA_CONFIG_PATH = configPath;
+  process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS = "@@ @@\n\\( \\)";
+  process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS = "%% %%";
   let calls = 0;
   globalThis.fetch = async (_url, init) => {
     calls++;
@@ -27,7 +31,9 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     assert.equal(payload.model, "test/preferences-model");
     assert.equal(payload.reasoning.effort, "xhigh");
     assert.equal(payload.messages[0].role, "system");
-    assert.ok(payload.messages[0].content.includes("Keep every mathematical expression wrapped in $$...$$ delimiters."));
+    assert.ok(payload.messages[0].content.includes("Configured inline pairs: `@@` … `@@`, `\\(` … `\\)`"));
+    assert.ok(payload.messages[0].content.includes("For new display equations, put `%%` … `%%`"));
+    assert.ok(payload.messages[0].content.includes("pasted directly into the WYSIWYG and Source editors"));
     assert.ok(payload.messages[0].content.includes("Use a two-sentence maximum."));
     assert.ok(payload.messages[1].content.includes("Unsaved content"));
     return Response.json({ choices: [{ message: { content: "Answer from configured model" } }] });
@@ -50,6 +56,8 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     if (originalModel === undefined) delete process.env.LIBERA_OPENROUTER_MODEL; else process.env.LIBERA_OPENROUTER_MODEL = originalModel;
     if (originalInstruction === undefined) delete process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION; else process.env.LIBERA_AI_CHAT_CUSTOM_INSTRUCTION = originalInstruction;
     if (originalConfigPath === undefined) delete process.env.LIBERA_CONFIG_PATH; else process.env.LIBERA_CONFIG_PATH = originalConfigPath;
+    if (originalInlineMarkers === undefined) delete process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS; else process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS = originalInlineMarkers;
+    if (originalBlockMarkers === undefined) delete process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS; else process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS = originalBlockMarkers;
     rmSync(configDirectory, { recursive: true, force: true });
   }
 });

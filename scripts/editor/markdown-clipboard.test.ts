@@ -12,16 +12,16 @@ for (const key of ["window", "document", "Node", "Element", "HTMLElement", "DOMP
 }
 after(() => dom.window.close());
 
-function render(content: string) {
+function render(content: string, mathMarkers?: { inlineMathMarkers?: string; blockMathMarkers?: string }) {
   const host = document.createElement("div");
-  host.innerHTML = renderToStaticMarkup(createElement(MarkdownRenderer, { content, copyAsMarkdown: true, renderImages: false }));
+  host.innerHTML = renderToStaticMarkup(createElement(MarkdownRenderer, { content, copyAsMarkdown: true, renderImages: false, mathMarkers }));
   document.body.replaceChildren(host);
   return host.firstElementChild as HTMLElement;
 }
-function full(container: HTMLElement) {
+function full(container: HTMLElement, mathMarkers?: { inlineMathMarkers?: string; blockMathMarkers?: string }) {
   const range = document.createRange();
   range.selectNodeContents(container);
-  return getRenderedSelectionMarkdown(container, range);
+  return getRenderedSelectionMarkdown(container, range, mathMarkers);
 }
 
 test("chat copy retains headings, nested formatting, links, lists, code and tables", () => {
@@ -56,11 +56,20 @@ test("rendered equations copy LaTeX once, including when partially highlighted",
   const host = render('Inline $x^2$\n\n$$\nE=mc^2\n$$');
   const markdown = full(host);
   assert.match(markdown, /\$x\^2\$/);
-  assert.match(markdown, /\$\$\nE=mc\^2\n\$\$/);
+  assert.match(markdown, /\\\[\nE=mc\^2\n\\\]/);
   assert.doesNotMatch(markdown, /annotation|katex/);
   const range = document.createRange();
   range.selectNodeContents(host.querySelector('.katex-html .mord')!);
   assert.equal(getRenderedSelectionMarkdown(host, range), '$x^2$');
+});
+
+test("rendered equations copy with the preferred configured markers", () => {
+  const mathMarkers = { inlineMathMarkers: "@@ @@\n\\( \\)", blockMathMarkers: "%% %%" };
+  const host = render("Inline @@x^2@@\n\n%%\nE=mc^2\n%%", mathMarkers);
+  assert.equal(full(host, mathMarkers), "Inline @@x^2@@\n\n%%\nE=mc^2\n%%");
+  const range = document.createRange();
+  range.selectNodeContents(host.querySelector(".katex")!);
+  assert.equal(getRenderedSelectionMarkdown(host, range, mathMarkers), "@@x^2@@");
 });
 
 test("native copy writes only Markdown, spans messages and leaves outside selections alone", () => {

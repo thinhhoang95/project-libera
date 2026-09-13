@@ -340,7 +340,7 @@ export function LiberaApp({
           />
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
