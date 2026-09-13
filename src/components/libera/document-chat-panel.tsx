@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, Square, X } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -20,6 +20,11 @@ import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, expo
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 
 const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40";
+function selectionExcerpt(text: string) {
+  const lines = text.split(/\r\n|\r|\n/);
+  return `${lines.slice(0, 2).join(" ")}${lines.length > 2 ? "…" : ""}`;
+}
+
 function createChat(): DocumentChat {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
 }
@@ -341,7 +346,11 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
             <p className="libera-chat-context-hint">{includedDocument ? "Your current Markdown draft is included." : "Type @ to bring a Markdown file into the conversation."}</p>
             <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
           </div>}
-          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all">{context.kind === "document" ? "Document" : "Selection"}: {context.name}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>)}{message.photos?.map((photo) => <div key={photo.id}>
+          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => {
+            const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
+            const ContextIcon = context.kind === "document" ? FileText : TextSelect;
+            return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
+          })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
           </div>)}<MarkdownRenderer

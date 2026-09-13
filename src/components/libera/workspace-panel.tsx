@@ -66,6 +66,7 @@ import {
 } from "@/lib/markdown-slides";
 import {
   getMarkdownEditorFontStack,
+  getRenderedMarkdownFontStack,
   getWysiwygEditorFontStack,
   type MarkdownPreferences,
 } from "@/lib/markdown-preferences";
@@ -551,6 +552,9 @@ export function WorkspacePanel({
   );
   const wysiwygEditorFontFamily = getWysiwygEditorFontStack(
     markdownPreferences.wysiwygEditorFontFamily,
+  );
+  const renderedMarkdownFontFamily = getRenderedMarkdownFontStack(
+    markdownPreferences.renderedMarkdownFontFamily,
   );
   const markdownLineHeightPx =
     markdownPreferences.baseFontSize *
@@ -1351,6 +1355,7 @@ export function WorkspacePanel({
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
+              mathMarkers={markdownPreferences}
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
               fontFamily={wysiwygEditorFontFamily}
@@ -1399,10 +1404,12 @@ export function WorkspacePanel({
               >
                 <MarkdownPreviewMetadata file={activeTab.file} />
                 <MarkdownRenderer
+                  mathMarkers={markdownPreferences}
                   content={activeTab.draft}
                   baseFontSize={markdownPreferences.baseFontSize}
                   baseLineHeight={markdownPreferences.baseLineHeight}
                   documentPath={activeTab.file.path}
+                  fontFamily={renderedMarkdownFontFamily}
                   onOpenFileLink={handleOpenMarkdownFileLink}
                   textScale={markdownZoomScale}
                 />
@@ -1497,10 +1504,12 @@ export function WorkspacePanel({
                     />
                   ) : (
                     <MarkdownRenderer
+                      mathMarkers={markdownPreferences}
                       content={previewMarkdownDraft}
                       baseFontSize={markdownPreferences.baseFontSize}
                       baseLineHeight={markdownPreferences.baseLineHeight}
                       documentPath={activeTab.file.path}
+                      fontFamily={renderedMarkdownFontFamily}
                       onOpenFileLink={handleOpenMarkdownFileLink}
                       textScale={markdownZoomScale}
                     />

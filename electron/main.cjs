@@ -1,3 +1,4 @@
+const { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } = require("./math-markers.cjs");
 const {
   app,
   BrowserWindow,
@@ -36,6 +37,7 @@ const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
 const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
 const DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY = "system-sans";
+const DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY = "system-sans";
 const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
 const DEFAULT_MARKDOWN_BASE_FONT_SIZE = 16;
 const DEFAULT_MARKDOWN_BASE_LINE_HEIGHT = 1.75;
@@ -262,6 +264,20 @@ function normalizeWysiwygEditorFontFamily(value) {
   return fontFamily;
 }
 
+function normalizeRenderedMarkdownFontFamily(value) {
+  const fontFamily = typeof value === "string" ? value.trim() : "";
+
+  if (
+    !fontFamily ||
+    fontFamily.length > MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(fontFamily)
+  ) {
+    return DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY;
+  }
+
+  return fontFamily;
+}
+
 function normalizeMarkdownBaseLineHeight(value) {
   return clamp(
     normalizeNumber(value, DEFAULT_MARKDOWN_BASE_LINE_HEIGHT),
@@ -286,11 +302,16 @@ function getConfigStatus(config = readConfig()) {
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
       typeof config.passwordHash === "string" && config.passwordHash.trim().length > 0,
+    markdownInlineMathMarkers: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
+    markdownBlockMathMarkers: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     markdownEditorFontFamily: normalizeMarkdownEditorFontFamily(
       config.markdownEditorFontFamily,
     ),
     wysiwygEditorFontFamily: normalizeWysiwygEditorFontFamily(
       config.wysiwygEditorFontFamily,
+    ),
+    renderedMarkdownFontFamily: normalizeRenderedMarkdownFontFamily(
+      config.renderedMarkdownFontFamily,
     ),
     markdownBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
     markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
@@ -380,6 +401,15 @@ function validateSetupInput(input, existingConfig) {
   const wysiwygEditorFontFamily = normalizeWysiwygEditorFontFamily(
     input?.wysiwygEditorFontFamily,
   );
+  const renderedMarkdownFontFamily = normalizeRenderedMarkdownFontFamily(
+    input?.renderedMarkdownFontFamily,
+  );
+  const markdownInlineMathMarkers = normalizeMathMarkers(input?.markdownInlineMathMarkers ?? existingConfig.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS);
+  const markdownBlockMathMarkers = normalizeMathMarkers(input?.markdownBlockMathMarkers ?? existingConfig.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS);
+  const inlineOpeners = new Set(markdownInlineMathMarkers.split("\n").filter(Boolean).map(line => line.split(" ")[0]));
+  if (markdownBlockMathMarkers.split("\n").filter(Boolean).some(line => inlineOpeners.has(line.split(" ")[0]))) {
+    throw new Error("Inline and display math must use different opening markers.");
+  }
   const markdownBaseFontSize = normalizeMarkdownBaseFontSize(input?.markdownBaseFontSize);
   const markdownBaseLineHeight = normalizeMarkdownBaseLineHeight(input?.markdownBaseLineHeight);
   const markdownPdfBaseFontSize = normalizeMarkdownBaseFontSize(
@@ -427,8 +457,11 @@ function validateSetupInput(input, existingConfig) {
     themePreference: normalizeThemePreference(input?.themePreference),
     yourName: normalizeYourName(input?.yourName),
     dataDir,
+    markdownInlineMathMarkers,
+    markdownBlockMathMarkers,
     markdownEditorFontFamily,
     wysiwygEditorFontFamily,
+    renderedMarkdownFontFamily,
     markdownBaseFontSize,
     markdownBaseLineHeight,
     markdownPdfBaseFontSize,
@@ -506,8 +539,11 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         themePreference: validated.themePreference,
         yourName: validated.yourName,
         dataDir: validated.dataDir,
+        markdownInlineMathMarkers: validated.markdownInlineMathMarkers,
+        markdownBlockMathMarkers: validated.markdownBlockMathMarkers,
         markdownEditorFontFamily: validated.markdownEditorFontFamily,
         wysiwygEditorFontFamily: validated.wysiwygEditorFontFamily,
+        renderedMarkdownFontFamily: validated.renderedMarkdownFontFamily,
         markdownBaseFontSize: validated.markdownBaseFontSize,
         markdownBaseLineHeight: validated.markdownBaseLineHeight,
         markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
@@ -1245,11 +1281,16 @@ async function startNextServer(config) {
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
+    LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
+    LIBERA_MARKDOWN_BLOCK_MATH_MARKERS: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
       config.markdownEditorFontFamily,
     ),
     LIBERA_WYSIWYG_EDITOR_FONT_FAMILY: normalizeWysiwygEditorFontFamily(
       config.wysiwygEditorFontFamily,
+    ),
+    LIBERA_RENDERED_MARKDOWN_FONT_FAMILY: normalizeRenderedMarkdownFontFamily(
+      config.renderedMarkdownFontFamily,
     ),
     LIBERA_MARKDOWN_BASE_FONT_SIZE: String(
       normalizeMarkdownBaseFontSize(config.markdownBaseFontSize),
@@ -1428,11 +1469,43 @@ async function createMainWindow(url) {
     dispatchRendererTabShortcut(mainWindow.webContents, Boolean(input.shift));
   });
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    if (isSameOrigin(targetUrl, url) && new URL(targetUrl).pathname === "/markdown-preview") {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          width: 900,
+          height: 800,
+          minWidth: 360,
+          minHeight: 300,
+          frame: true,
+          transparent: false,
+          titleBarStyle: "default",
+          autoHideMenuBar: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+        },
+      };
+    }
     if (isExternalBrowserUrl(targetUrl)) {
       void shell.openExternal(targetUrl);
     }
 
     return { action: "deny" };
+  });
+  mainWindow.webContents.on("did-create-window", (child) => {
+    child.setMenuBarVisibility(false);
+    child.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+      if (isExternalBrowserUrl(targetUrl) && !isSameOrigin(targetUrl, url)) {
+        void shell.openExternal(targetUrl);
+      }
+      return { action: "deny" };
+    });
+    child.webContents.on("will-navigate", (event, targetUrl) => {
+      if (isSameOrigin(targetUrl, url) && new URL(targetUrl).pathname === "/markdown-preview") return;
+      event.preventDefault();
+      if (isExternalBrowserUrl(targetUrl) && !isSameOrigin(targetUrl, url)) {
+        void shell.openExternal(targetUrl);
+      }
+    });
   });
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
     if (isSameOrigin(targetUrl, url)) {

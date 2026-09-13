@@ -690,7 +690,7 @@ $$`,
   }
 });
 
-test("visual equation fixer sits between Save and zoom, converts ChatGPT source, and supports undo", async () => {
+test("visual editor renders ChatGPT markers directly and the equation fixer preserves recognized math", async () => {
   const host = document.createElement('div');
   document.body.append(host);
   const root = createRoot(host);
@@ -719,8 +719,7 @@ test("visual equation fixer sits between Save and zoom, converts ChatGPT source,
     assert.equal(host.querySelectorAll('[data-type="inline-math"]').length, 1);
     assert.equal(host.querySelectorAll('[data-type="block-math"]').length, 1);
     await settleVisualDraft();
-    assert.match(changes.at(-1)!, /\$v\$/);
-    assert.match(changes.at(-1)!, /\$\$\n/);
+    assert.deepEqual(changes, [], "Recognized equations need no conversion or source rewrite");
     assert.equal(host.querySelectorAll('.katex-error').length, 0);
     const changeCount = changes.length;
     await act(async () => { button.click(); });

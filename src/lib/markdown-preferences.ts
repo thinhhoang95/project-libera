@@ -1,6 +1,10 @@
+import { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } from "../../electron/math-markers.cjs";
 export type MarkdownPreferences = {
+  inlineMathMarkers?: string;
+  blockMathMarkers?: string;
   editorFontFamily: string;
   wysiwygEditorFontFamily: string;
+  renderedMarkdownFontFamily: string;
   baseFontSize: number;
   baseLineHeight: number;
   pdfExportBaseFontSize: number;
@@ -10,6 +14,7 @@ export type MarkdownPreferences = {
 export const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
 export const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
 export const DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY = "system-sans";
+export const DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY = "system-sans";
 
 const DEFAULT_MARKDOWN_EDITOR_FONT_STACK =
   '"SFMono-Regular", ui-monospace, Menlo, Consolas, monospace';
@@ -88,6 +93,20 @@ export function getWysiwygEditorFontStack(fontFamily: string) {
   return `"${escapedFontFamily}", system-ui, sans-serif`;
 }
 
+export function normalizeRenderedMarkdownFontFamily(value: unknown) {
+  return normalizeEditorFontFamily(value, DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY);
+}
+
+export function getRenderedMarkdownFontStack(fontFamily: string) {
+  if (fontFamily === DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY) {
+    return DEFAULT_WYSIWYG_EDITOR_FONT_STACK;
+  }
+
+  const escapedFontFamily = fontFamily.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+
+  return `"${escapedFontFamily}", system-ui, sans-serif`;
+}
+
 export function normalizeMarkdownBaseLineHeight(value: unknown) {
   return clamp(
     normalizeNumber(value, DEFAULT_MARKDOWN_BASE_LINE_HEIGHT),
@@ -98,8 +117,11 @@ export function normalizeMarkdownBaseLineHeight(value: unknown) {
 
 export function normalizeMarkdownPreferences(
   input: {
+    inlineMathMarkers?: unknown;
+    blockMathMarkers?: unknown;
     editorFontFamily?: unknown;
     wysiwygEditorFontFamily?: unknown;
+    renderedMarkdownFontFamily?: unknown;
     baseFontSize?: unknown;
     baseLineHeight?: unknown;
     pdfExportBaseFontSize?: unknown;
@@ -107,9 +129,14 @@ export function normalizeMarkdownPreferences(
   } = {},
 ): MarkdownPreferences {
   return {
+    inlineMathMarkers: normalizeMathMarkers(input.inlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
+    blockMathMarkers: normalizeMathMarkers(input.blockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     editorFontFamily: normalizeMarkdownEditorFontFamily(input.editorFontFamily),
     wysiwygEditorFontFamily: normalizeWysiwygEditorFontFamily(
       input.wysiwygEditorFontFamily,
+    ),
+    renderedMarkdownFontFamily: normalizeRenderedMarkdownFontFamily(
+      input.renderedMarkdownFontFamily,
     ),
     baseFontSize: normalizeMarkdownBaseFontSize(input.baseFontSize),
     baseLineHeight: normalizeMarkdownBaseLineHeight(input.baseLineHeight),

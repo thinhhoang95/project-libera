@@ -6,6 +6,8 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import { remarkMathMarkers } from "@/lib/remark-math-markers";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
   normalizeMarkdownHighlightDelimiters,
   remarkMarkdownHighlights,
@@ -23,12 +25,14 @@ import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
 import { remarkMarkdownTextStyles } from "@/lib/markdown-text-styles";
 
 type MarkdownRendererProps = {
+  mathMarkers?: MathMarkerSettings;
   copyAsMarkdown?: boolean;
   baseFontSize?: number;
   baseLineHeight?: number;
   className?: string;
   content: string;
   documentPath?: string;
+  fontFamily?: string;
   onOpenExternalLink?: (href: string) => void;
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
@@ -37,7 +41,6 @@ type MarkdownRendererProps = {
 
 const remarkPlugins = [
   remarkGfm,
-  remarkMath,
   remarkMarkdownHighlights,
   remarkMarkdownTextColors,
   remarkMarkdownUnderlines,
@@ -133,23 +136,27 @@ function openExternalLink(href: string) {
 }
 
 function MarkdownRendererContent({
+  mathMarkers,
   copyAsMarkdown = false,
   baseFontSize = 16,
   baseLineHeight = 1.75,
   className,
   content,
   documentPath,
+  fontFamily,
   onOpenExternalLink,
   onOpenFileLink,
   textScale = 1,
   renderImages = true,
 }: MarkdownRendererProps) {
+  const configuredRemarkPlugins = useMemo(() => [...remarkPlugins, ...(mathMarkers ? [[remarkMathMarkers, mathMarkers] as [typeof remarkMathMarkers, MathMarkerSettings]] : [remarkMath])], [mathMarkers]);
   const normalizedContent = useMemo(
     () => normalizeMarkdownHighlightDelimiters(content),
     [content],
   );
   const bodyFontSize = baseFontSize * textScale;
   const scaledFontStyle = {
+    fontFamily,
     "--markdown-body-font-size": `${bodyFontSize}px`,
     "--markdown-body-line-height": `${baseFontSize * baseLineHeight * textScale}px`,
     "--markdown-h1-font-size": `${bodyFontSize * 1.875}px`,
@@ -162,7 +169,7 @@ function MarkdownRendererContent({
     <div className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
       <ReactMarkdown
         urlTransform={(url, key) => key === "src" && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(url) ? url : defaultUrlTransform(url)}
-        remarkPlugins={remarkPlugins}
+        remarkPlugins={configuredRemarkPlugins}
         rehypePlugins={[rehypeKatex]}
         components={{
           h1: ({ children, className, ...props }) => (

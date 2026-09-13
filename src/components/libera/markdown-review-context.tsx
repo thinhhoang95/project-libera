@@ -6,7 +6,7 @@ import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
 
-type EditorBridge = { snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
+type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
 export type ReviewSelection = { range: ReviewRange; x: number; y: number };
 type ContextValue = {
   doc: ReviewDocument | null; enabled: boolean; busy: string; locked: boolean; error: string; recovery: boolean;
@@ -55,6 +55,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   useEffect(() => {
     let disposed = false;
     pending.current?.abort();
+    pending.current = null;
     busyRef.current = false;
     latest.current = null;
     queueMicrotask(() => { if (!disposed) { setBusy(""); setError(""); setSelection(null); selectThread(null); setRecovery(false); publish(null); } });
@@ -75,7 +76,12 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       setRecovery(loaded.snapshot !== text && !!loaded.undo.length && loaded.undo.at(-1)?.after === loaded.snapshot);
     }
     void load().catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : "Could not load review."); });
-    return () => { disposed = true; };
+    return () => {
+      disposed = true;
+      pending.current?.abort();
+      pending.current = null;
+      busyRef.current = false;
+    };
   }, [key, tabId, publish]);
   useEffect(() => { if (lastTab.current && lastTab.current.id === tabId) lastTab.current.doc = doc; }, [doc, tabId]);
 
@@ -99,7 +105,12 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (name === "comment") selectThread(result.threads.at(-1)?.id ?? null);
       if (name === "toggle" && !result.enabled) setChatReviewState(false);
       return true;
-    } catch (cause) { setError(controller.signal.aborted ? "Review operation stopped. Reload review to check its saved state." : cause instanceof Error ? cause.message : "Review failed."); return false; }
+    } catch (cause) {
+      if (pending.current === controller && current.current.activeTab?.id === tab.id) {
+        setError(controller.signal.aborted ? "Review operation stopped. Reload review to check its saved state." : cause instanceof Error ? cause.message : "Review failed.");
+      }
+      return false;
+    }
     finally { if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
   }, [publish, snapshot]);
 
@@ -112,24 +123,43 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       const result = await apiRequest<ReviewDocument>("/api/document-review", { method: "POST", signal: controller.signal, body: JSON.stringify({ action: stage, id: stored.id, revision: stored.revision, snapshot: snapshot(), prompt, ids, references, suggestionId, planVersion: stored.session?.plan.version }) });
       if (controller.signal.aborted || current.current.activeTab?.id !== tab.id) return false;
       publish(result); return true;
-    } catch (cause) { if (current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? "Generation stopped. No proposed changes were applied. Reload review before retrying." : cause instanceof Error ? cause.message : "Agentic review failed."); return false; }
+    } catch (cause) { if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? "Generation stopped. No proposed changes were applied. Reload review before retrying." : cause instanceof Error ? cause.message : "Agentic review failed."); return false; }
     finally { if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
   }, [publish, snapshot]);
   const reload = useCallback(async () => {
-    if (busyRef.current) return;
+    const tab = current.current.activeTab;
+    if (busyRef.current || !tab) return;
+    const controller = new AbortController(); pending.current = controller;
+    busyRef.current = true; setBusy("reload");
     try {
-      const next = latest.current ? await apiRequest<ReviewDocument>(`/api/markdown-reviews?id=${encodeURIComponent(latest.current.id)}`) : key ? await apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", body: JSON.stringify({ action: "load", key, snapshot: snapshot() }) }) : null;
-      publish(next); setError(""); setRecovery(!!next && next.snapshot !== snapshot() && !!next.undo.length && next.undo.at(-1)?.after === next.snapshot);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Reload failed."); }
+      const options = { signal: controller.signal };
+      const next = latest.current ? await apiRequest<ReviewDocument>(`/api/markdown-reviews?id=${encodeURIComponent(latest.current.id)}`, options) : key ? await apiRequest<ReviewDocument>("/api/markdown-reviews", { ...options, method: "POST", body: JSON.stringify({ action: "load", key, snapshot: snapshot() }) }) : null;
+      if (controller.signal.aborted || current.current.activeTab?.id !== tab.id) return;
+      const text = snapshot();
+      publish(next); setError(""); setRecovery(!!next && next.snapshot !== text && !!next.undo.length && next.undo.at(-1)?.after === next.snapshot);
+    } catch (cause) {
+      if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(cause instanceof Error ? cause.message : "Reload failed.");
+    } finally {
+      if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); }
+    }
   }, [key, publish, snapshot]);
   // Persist anchor positions against the unsaved buffer, without ever saving
   // Markdown. Wait until generation finishes to avoid invalidating its CAS.
   useEffect(() => {
-    if (!doc || !activeTab || busy || recovery || (!doc.threads.length && !doc.session) || doc.snapshot === activeTab.draft) return;
-    const timer = window.setTimeout(() => { void action("sync"); }, 900);
+    if (!doc || !activeTab || busy || error || recovery || (!doc.threads.length && !doc.session) || doc.snapshot === activeTab.draft) return;
+    let timer: number;
+    const syncWhenReady = () => {
+      // A background snapshot must not interrupt an IME session or surface a
+      // "finish composing" error as though review storage had failed.
+      if (bridge.current?.isComposing()) timer = window.setTimeout(syncWhenReady, 250);
+      else void action("sync");
+    };
+    timer = window.setTimeout(syncWhenReady, 900);
     return () => window.clearTimeout(timer);
-  }, [activeTab, action, busy, doc, recovery]);
-  const locked = !!busy && !["plan", "generate", "revise"].includes(busy);
+  }, [activeTab, action, busy, doc, error, recovery]);
+  // Sync/reload only persist/read metadata. Toggling contenteditable for them
+  // drops browser focus and can leave an IME composition stranded.
+  const locked = !!busy && !["plan", "generate", "revise", "sync", "reload"].includes(busy);
   const shown = doc?.key === key && activeTab ? syncReview(doc, activeTab.draft) : null;
   function select(range: ReviewRange, x: number, y: number) {
     try {

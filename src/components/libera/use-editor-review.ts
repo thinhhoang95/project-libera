@@ -6,6 +6,8 @@ import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewKey } 
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
+const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
+
 export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | null>, apply: (text: string) => void) {
   const r = useMarkdownReview();
   const latest = useRef({ r, apply });
@@ -15,7 +17,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
     const input = textareaRef.current;
     if (!input || !register) return;
     let composing = false;
-    const unregister = register({ snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
+    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
     const start = () => { composing = true; }, end = () => { composing = false; };
@@ -48,7 +50,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   useEffect(() => {
     if (!editor || !register) return;
     const root = editor.view.dom;
-    const unregister = register({ snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return read(); }, apply: (text) => {
+    const unregister = register({ isComposing: () => editor.view.composing, snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return read(); }, apply: (text) => {
       editor.view.dispatch(closeHistory(editor.state.tr));
       replace(text);
       editor.view.dispatch(closeHistory(editor.state.tr));
@@ -63,8 +65,10 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if (!review?.enabled || editor!.view.composing) return;
       const { from, to } = editor!.state.selection;
       const range = sourceRangeForTiptapSelection(editor!, read(), from, to);
-      if (range) review.select(range, x, y);
-      else review.reportError("This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.");
+      if (range) {
+        if (review.error === VISUAL_SELECTION_ERROR) review.reportError("");
+        review.select(range, x, y);
+      } else review.reportError(VISUAL_SELECTION_ERROR);
     }
     const mouse = (event: MouseEvent) => select(event.clientX, event.clientY);
     function key(event: KeyboardEvent) {

@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import {
+  getRenderedMarkdownFontStack,
+  type MarkdownPreferences,
+} from "@/lib/markdown-preferences";
 
 type MarkdownPdfExportPayload = {
   content: string;
@@ -165,10 +168,14 @@ export function MarkdownPdfExportPage({
       <article ref={rootRef} className="markdown-pdf-export-document">
         {payload ? (
           <MarkdownRenderer
+            mathMarkers={markdownPreferences}
             baseFontSize={markdownPreferences.pdfExportBaseFontSize}
             baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
             content={payload.content}
             documentPath={payload.documentPath}
+            fontFamily={getRenderedMarkdownFontStack(
+              markdownPreferences.renderedMarkdownFontFamily,
+            )}
           />
         ) : (
           <p className="markdown-pdf-export-loading">Preparing export...</p>

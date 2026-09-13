@@ -9,11 +9,11 @@ import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
-import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
+import { createMathExtensions } from "@/lib/tiptap-math";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
 import katex from "katex";
 import { closeHistory } from "@tiptap/pm/history";
-import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { markdownHeadingOffsets } from "@/lib/markdown-review";
@@ -31,6 +31,7 @@ import type { MarkdownImageAssetPayload } from "@/lib/types";
 type Props = {
   documentPath: string;
   untitled?: boolean;
+  mathMarkers?: MathMarkerSettings;
   value: string;
   fontFamily?: string;
   fontSizePx: number;
@@ -90,7 +91,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -122,7 +123,9 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
     }
   }, [onViewStateChange]);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
-  const extensions = useMemo(() => [
+  const extensions = useMemo(() => {
+    const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
+    return [
     ...createMarkdownExtensions(documentPath),
     HighlightTool,
     TiptapFind,
@@ -137,7 +140,7 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ], [documentPath]);
+  ]; }, [documentPath, mathMarkers]);
 
   const editor = useEditor({
     extensions,
@@ -473,10 +476,6 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
 
   function fixChatGptEquations() {
     if (!editor) return;
-    // Keep the original source until the first edit: Markdown parsing consumes
-    // the backslashes in ChatGPT's delimiters when displaying them as text.
-    const normalized = normalizeChatGptCopiedMarkdown(readMarkdown());
-    if (normalized === lastValue.current) {
       // Pasted plain text is escaped during Markdown serialization. Read its
       // literal delimiters from text blocks and replace only the math ranges.
       const replacements: { from: number; to: number; type: string; latex: string }[] = [];
@@ -500,12 +499,6 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         chain.insertContentAt({ from, to }, { type, attrs: { latex } });
       }
       chain.run();
-      return;
-    }
-    editor.chain()
-      .command(({ tr }) => { closeHistory(tr); return true; })
-      .setContent(normalized, { contentType: "markdown" })
-      .run();
   }
 
   function openMath() {
@@ -639,11 +632,13 @@ export function TiptapMarkdownEditor({ untitled = false, documentPath, value, fo
         ) : null}
       </div>
       <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
-      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding dollar signs." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
+      <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {
           if (!mathDraft) return;
-          editor.chain().focus().insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type: mathDraft.display ? "blockMath" : "inlineMath", attrs: { latex: mathDraft.latex.trim() } }).run();
+          const type = mathDraft.display ? "blockMath" : "inlineMath";
+          const original = mathDraft.existing ? editor.state.doc.nodeAt(mathDraft.from) : null;
+          editor.chain().focus().insertContentAt({ from: mathDraft.from, to: mathDraft.to }, { type, attrs: { ...(original?.type.name === type ? original.attrs : {}), latex: mathDraft.latex.trim() } }).run();
           setMathDraft(null);
         }}>Apply equation</button>
       </>}>

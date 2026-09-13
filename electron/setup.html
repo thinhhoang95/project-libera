@@ -509,6 +509,12 @@
                 Set the default typography used by Markdown editing, preview, and PDF export.
               </p>
 
+              <h3>Equation markers</h3>
+              <p class="field-help">Enter one opening and closing pair per line, separated by a space. Use literal punctuation, not regular expressions. Leave a textarea empty to disable that type. These settings apply to visual editing and Source Editor rendering; recognized markers are preserved when saving. Save preferences and restart the app to apply changes.</p>
+              <label for="markdown-inline-math-markers">Inline math markers</label>
+              <textarea id="markdown-inline-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea>
+              <label for="markdown-block-math-markers">Display math markers (on their own lines)</label>
+              <textarea id="markdown-block-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea>
               <h3>Visual editor</h3>
               <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
               <div class="font-picker-row">
@@ -537,6 +543,21 @@
               <p id="system-fonts-status" class="field-help">
                 Load the fonts installed on this computer, then choose one for the Markdown
                 source editor. Preview and PDF fonts are not affected.
+              </p>
+
+              <h3>Source-rendered Markdown</h3>
+              <label for="rendered-markdown-font-family">Font family</label>
+              <div class="font-picker-row">
+                <select id="rendered-markdown-font-family">
+                  <option value="system-sans">System sans serif (default)</option>
+                </select>
+                <button id="load-rendered-system-fonts-button" class="secondary" type="button">
+                  Load system fonts
+                </button>
+              </div>
+              <p id="rendered-system-fonts-status" class="field-help">
+                Applies to rendered Markdown previews and generated PDFs. The visual editor
+                and Markdown source text are not affected.
               </p>
 
               <h3>Editor and preview</h3>
@@ -662,6 +683,15 @@
       );
       const loadSystemFontsButton = document.querySelector("#load-system-fonts-button");
       const systemFontsStatus = document.querySelector("#system-fonts-status");
+      const renderedMarkdownFontFamilyInput = document.querySelector(
+        "#rendered-markdown-font-family",
+      );
+      const loadRenderedSystemFontsButton = document.querySelector(
+        "#load-rendered-system-fonts-button",
+      );
+      const renderedSystemFontsStatus = document.querySelector(
+        "#rendered-system-fonts-status",
+      );
       const markdownBaseFontSizeInput = document.querySelector("#markdown-base-font-size");
       const markdownBaseLineHeightInput = document.querySelector("#markdown-base-line-height");
       const markdownPdfBaseFontSizeInput = document.querySelector("#markdown-pdf-base-font-size");
@@ -744,6 +774,23 @@
         option.value = fontFamily;
         option.textContent = label;
         wysiwygEditorFontFamilyInput.append(option);
+      }
+
+      function addRenderedFontFamilyOption(fontFamily, label = fontFamily) {
+        if (
+          !fontFamily ||
+          Array.from(renderedMarkdownFontFamilyInput.options).some(
+            (option) => option.value === fontFamily,
+          )
+        ) {
+          return;
+        }
+
+        const option = document.createElement("option");
+
+        option.value = fontFamily;
+        option.textContent = label;
+        renderedMarkdownFontFamilyInput.append(option);
       }
 
       async function loadWysiwygSystemFonts() {
@@ -834,6 +881,50 @@
         }
       }
 
+      async function loadRenderedSystemFonts() {
+        if (typeof window.queryLocalFonts !== "function") {
+          renderedSystemFontsStatus.textContent =
+            "System font discovery is unavailable in this version of Electron.";
+          return;
+        }
+
+        const selectedFontFamily = renderedMarkdownFontFamilyInput.value;
+
+        loadRenderedSystemFontsButton.disabled = true;
+        loadRenderedSystemFontsButton.textContent = "Loading…";
+        renderedSystemFontsStatus.textContent = "Reading fonts installed on this computer…";
+
+        try {
+          const localFonts = await window.queryLocalFonts();
+          const fontFamilies = Array.from(
+            new Set(
+              localFonts
+                .map((font) => (typeof font.family === "string" ? font.family.trim() : ""))
+                .filter(Boolean),
+            ),
+          ).sort((left, right) => left.localeCompare(right));
+
+          renderedMarkdownFontFamilyInput.replaceChildren();
+          addRenderedFontFamilyOption("system-sans", "System sans serif (default)");
+          fontFamilies.forEach((fontFamily) => addRenderedFontFamilyOption(fontFamily));
+
+          if (selectedFontFamily !== "system-sans") {
+            addRenderedFontFamilyOption(selectedFontFamily, `${selectedFontFamily} (unavailable)`);
+          }
+
+          renderedMarkdownFontFamilyInput.value = selectedFontFamily;
+          renderedSystemFontsStatus.textContent = `${fontFamilies.length} installed font families found. This setting affects rendered Markdown previews and generated PDFs.`;
+        } catch (error) {
+          renderedSystemFontsStatus.textContent =
+            error?.name === "NotAllowedError"
+              ? "Font access was not allowed. Try loading system fonts again and grant access."
+              : "Unable to read the fonts installed on this computer.";
+        } finally {
+          loadRenderedSystemFontsButton.disabled = false;
+          loadRenderedSystemFontsButton.textContent = "Reload system fonts";
+        }
+      }
+
       async function loadState() {
         const state = await window.liberaSetup.getState();
 
@@ -867,6 +958,19 @@
         }
 
         markdownEditorFontFamilyInput.value = configuredFontFamily;
+        const configuredRenderedFontFamily =
+          state.renderedMarkdownFontFamily || "system-sans";
+
+        if (configuredRenderedFontFamily !== "system-sans") {
+          addRenderedFontFamilyOption(
+            configuredRenderedFontFamily,
+            `${configuredRenderedFontFamily} (selected)`,
+          );
+        }
+
+        renderedMarkdownFontFamilyInput.value = configuredRenderedFontFamily;
+        document.querySelector("#markdown-inline-math-markers").value = state.markdownInlineMathMarkers ?? "$ $\n$$ $$\n\\( \\)";
+        document.querySelector("#markdown-block-math-markers").value = state.markdownBlockMathMarkers ?? "\\[ \\]";
         markdownBaseFontSizeInput.value = String(state.markdownBaseFontSize || 16);
         markdownBaseLineHeightInput.value = String(state.markdownBaseLineHeight || 1.75);
         markdownPdfBaseFontSizeInput.value = String(state.markdownPdfBaseFontSize || 16);
@@ -900,6 +1004,11 @@
       loadWysiwygSystemFontsButton.addEventListener("click", () => {
         clearError();
         void loadWysiwygSystemFonts();
+      });
+
+      loadRenderedSystemFontsButton.addEventListener("click", () => {
+        clearError();
+        void loadRenderedSystemFonts();
       });
 
       loadAiChatInstructionButton.addEventListener("click", async () => {
@@ -1000,6 +1109,9 @@
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             wysiwygEditorFontFamily: wysiwygEditorFontFamilyInput.value,
+            renderedMarkdownFontFamily: renderedMarkdownFontFamilyInput.value,
+            markdownInlineMathMarkers: document.querySelector("#markdown-inline-math-markers").value,
+            markdownBlockMathMarkers: document.querySelector("#markdown-block-math-markers").value,
             markdownBaseFontSize: markdownBaseFontSizeInput.value,
             markdownBaseLineHeight: markdownBaseLineHeightInput.value,
             markdownPdfBaseFontSize: markdownPdfBaseFontSizeInput.value,

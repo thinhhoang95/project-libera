@@ -34,6 +34,7 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { useMarkdownWindows } from "./use-markdown-windows";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 
 function collectFileSearchResults(
@@ -534,6 +535,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function getTabDraft(tab: OpenTab) {
     return editorDraftReadersRef.current.get(tab.id)?.() ?? latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
   }
+
+  const duplicateMarkdown = useMarkdownWindows(tabs, getTabDraft, setWorkspaceError);
 
   function recordFileInteraction(file: LiberaFileNode) {
     const interactedAt = new Date().toISOString();
@@ -2877,6 +2880,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       deleteNotebookGroup,
       downloadFile,
       downloadMarkdownPdf,
+      duplicateMarkdown,
       deleteNotebookFromPrompt,
       downloadNotebook,
       convertImageToMarkdownWithAi,
