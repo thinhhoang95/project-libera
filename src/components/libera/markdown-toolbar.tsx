@@ -376,6 +376,19 @@ export function MarkdownToolbar({
   function renderSecondaryControls() {
     return (
       <>
+        <select
+          aria-label="Box color"
+          title="Apply a box to the current or selected lines"
+          className="h-9 shrink-0 rounded-md border border-border bg-card px-2 text-xs"
+          value=""
+          onChange={(event) => onInsert(`${event.target.value === "default" ? "" : event.target.value}> `, "", "Box text")}
+        >
+          <option value="" disabled>Box color</option>
+          <option value="default">Default grey box</option>
+          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => (
+            <option key={color.shortcut} value={color.shortcut}>{color.label} box</option>
+          ))}
+        </select>
         <button
           aria-label="Insert image from file"
           className="toolbar-button"
@@ -489,6 +502,7 @@ export function MarkdownToolbar({
           <span className="toolbar-button" key={index} />
         ))}
         <span className="inline-flex h-9 w-56 shrink-0" />
+        <span className="inline-flex h-9 w-36 shrink-0" />
       </div>
       <div
         ref={toolbarRowRef}

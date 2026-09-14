@@ -1,3 +1,5 @@
+import { MARKDOWN_BOX_PREFIX } from "./markdown-boxes";
+
 export type MarkdownEditorLineTone =
   | "blockquote"
   | "heading-1"
@@ -101,7 +103,7 @@ export function getMarkdownEditorLineHighlight(
     };
   }
 
-  if (BLOCKQUOTE_REGEX.test(line)) {
+  if (BLOCKQUOTE_REGEX.test(line) || MARKDOWN_BOX_PREFIX.test(line)) {
     return {
       nextState: state,
       tone: "blockquote",

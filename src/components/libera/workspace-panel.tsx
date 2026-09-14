@@ -24,6 +24,7 @@ import {
   useState,
 } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
@@ -569,7 +570,13 @@ export function WorkspacePanel({
     activeMarkdownDraft,
     activeTabId,
   );
-  const previewContentStale = previewMarkdownDraft !== activeMarkdownDraft;
+  const [renderedPreview, setRenderedPreview] = useState<{ tabId: string | undefined; content: string } | null>(null);
+  const handlePreviewContentReady = useCallback((content: string) => {
+    setRenderedPreview({ tabId: activeTabId, content });
+  }, [activeTabId]);
+  const previewContentStale = markdownEditorMode === "source" && !activeMarkdownIsSlides
+    ? renderedPreview?.tabId !== activeTabId || renderedPreview?.content !== activeMarkdownDraft
+    : previewMarkdownDraft !== activeMarkdownDraft;
   const activeMarkdownSlidesDeck = useMemo(
     () => (activeMarkdownIsSlides ? parseMarkdownSlides(activeMarkdownDraft) : undefined),
     [activeMarkdownDraft, activeMarkdownIsSlides],
@@ -583,7 +590,7 @@ export function WorkspacePanel({
     activeMarkdownIsSlides &&
     activePreviewTabId === activeTab.id;
 
-  const registerVisualDraft = useCallback((read: () => string) => {
+  const registerMarkdownDraft = useCallback((read: () => string) => {
     return (activeTabId && onRegisterEditorDraft?.(activeTabId, read)) || (() => {});
   }, [activeTabId, onRegisterEditorDraft]);
 
@@ -891,10 +898,15 @@ export function WorkspacePanel({
       previewScrollFrame = window.requestAnimationFrame(runPreviewScrollSync);
     }
 
+    // Source drafts publish after a pause, but the preview map becomes stale at
+    // the first native input. Avoid measuring the full mirror while typing.
+    const markSourceInput = () => { previewContentStaleRef.current = true; };
+    editor.addEventListener("input", markSourceInput);
     editor.addEventListener("scroll", handleEditorScroll, { passive: true });
     previewPane.addEventListener("scroll", handlePreviewScroll, { passive: true });
 
     return () => {
+      editor.removeEventListener("input", markSourceInput);
       editor.removeEventListener("scroll", handleEditorScroll);
       previewPane.removeEventListener("scroll", handlePreviewScroll);
 
@@ -923,7 +935,8 @@ export function WorkspacePanel({
       activeFileType !== "markdown" ||
       !activeTabId ||
       previewFullscreen ||
-      activeMarkdownIsSlides
+      activeMarkdownIsSlides ||
+      previewContentStale
     ) {
       return;
     }
@@ -938,6 +951,8 @@ export function WorkspacePanel({
     activeTabId,
     activeMarkdownIsSlides,
     previewMarkdownDraft,
+    renderedPreview,
+    previewContentStale,
     previewFullscreen,
     markdownZoom,
     syncMarkdownPreviewToActiveEditorPosition,
@@ -1064,7 +1079,7 @@ export function WorkspacePanel({
   }
 
   function handleMarkdownDraftChange(value: string) {
-    previewContentStaleRef.current = value !== previewMarkdownDraft;
+    previewContentStaleRef.current = value !== (markdownEditorMode === "source" && !activeMarkdownIsSlides ? renderedPreview?.content : previewMarkdownDraft);
     onSetDraft(value);
   }
 
@@ -1364,7 +1379,7 @@ export function WorkspacePanel({
               initialViewState={activeMarkdownViewState}
               onViewStateChange={updateMarkdownViewState}
               onChange={handleMarkdownDraftChange} onSave={onSave}
-              onRegisterDraft={registerVisualDraft}
+              onRegisterDraft={registerMarkdownDraft}
               onOpenFileLink={handleOpenMarkdownFileLink} />
           ) : <>
           <MarkdownToolbar
@@ -1444,6 +1459,7 @@ export function WorkspacePanel({
                 onAiImageToMarkdown={onAiImageToMarkdown}
                 onAiRewriteSelection={onAiRewriteSelection}
                 onChange={handleMarkdownDraftChange}
+                onRegisterDraft={registerMarkdownDraft}
                 onInsertFileLink={onInsertFileLink}
                 onInsertImageFile={onInsertImage}
                 onSelectionChange={handleMarkdownSelectionChange}
@@ -1503,7 +1519,9 @@ export function WorkspacePanel({
                       textScale={markdownZoomScale}
                     />
                   ) : (
-                    <MarkdownRenderer
+                    <MarkdownWorkerPreview
+                      key={activeTab.id}
+                      onContentReady={handlePreviewContentReady}
                       mathMarkers={markdownPreferences}
                       content={previewMarkdownDraft}
                       baseFontSize={markdownPreferences.baseFontSize}

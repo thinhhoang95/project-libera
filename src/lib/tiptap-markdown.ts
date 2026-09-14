@@ -9,6 +9,7 @@ import { TableKit } from "@tiptap/extension-table";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
 import { markdownTextStyleAttributes } from "./markdown-text-styles";
+import { LiberaBlockquote } from "./tiptap-boxes";
 
 const LiberaHighlight = Highlight.extend({
   renderHTML({ HTMLAttributes }) {
@@ -105,7 +106,8 @@ const LiberaLineHeight = LineHeight.extend({
 
 export function createMarkdownExtensions(documentPath: string) {
   return [
-    StarterKit.configure({ link: { openOnClick: false }, trailingNode: false, underline: false }),
+    StarterKit.configure({ link: { openOnClick: false }, trailingNode: false, underline: false, blockquote: false }),
+    LiberaBlockquote,
     Underline.extend({
       renderMarkdown: (node, h) => `<u>${h.renderChildren(node)}</u>`,
       markdownTokenizer: {

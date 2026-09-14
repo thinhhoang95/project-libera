@@ -16,7 +16,7 @@ import katex from "katex";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
-import { markdownHeadingOffsets } from "@/lib/markdown-review";
+import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
@@ -52,21 +52,14 @@ const selectClass = "rounded-md border border-border bg-card px-2 py-1.5 text-xs
 const VISUAL_SCROLL_OUTLINE_ANCHOR_PROGRESS = 0.6;
 const isImage = (file: File) => /^image\/(png|jpe?g|gif|webp)$/i.test(file.type) || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
 
-type VisualOutlineMap = { headingOffsets: number[]; markdown: string };
-
-function getVisualHeadingOffsets(cache: { current: VisualOutlineMap }, markdown: string) {
-  if (cache.current.markdown !== markdown) {
-    cache.current = { headingOffsets: markdownHeadingOffsets(markdown), markdown };
-  }
-  return cache.current.headingOffsets;
-}
-
 function getVisualViewportViewState(
   editor: Editor,
   markdown: string,
   container: HTMLDivElement,
-  headingOffsets: number[],
+  headingOffsets: number[] | null,
 ): MarkdownTabViewState {
+  const scrollState = { visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop };
+  if (headingOffsets === null) return scrollState;
   const containerRect = container.getBoundingClientRect();
   const editorRect = editor.view.dom.getBoundingClientRect();
   const visibleHeight = container.clientHeight || containerRect.height;
@@ -86,8 +79,7 @@ function getVisualViewportViewState(
 
   return {
     ...(line === null ? {} : { line }),
-    visualScrollLeft: container.scrollLeft,
-    visualScrollTop: container.scrollTop,
+    ...scrollState,
   };
 }
 
@@ -105,17 +97,19 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const visualScrollFrameRef = useRef<number | null>(null);
-  const visualOutlineMapRef = useRef<VisualOutlineMap>({ headingOffsets: [], markdown: "" });
+  const headingIndexRef = useRef<{ markdown: string; offsets: number[] } | null>(null);
   const initialViewStateRef = useRef(initialViewState);
   const lastValue = useRef(value);
   const visualPositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastReportedLineRef = useRef<number | null>(null);
   const reportVisualPosition = useCallback((current: Editor, markdown: string, position: number) => {
+    const index = headingIndexRef.current;
+    if (!index || index.markdown !== markdown) return;
     const line = markdownLineForTiptapPosition(
       current,
       markdown,
       position,
-      getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+      index.offsets,
     );
     if (line !== null && line !== lastReportedLineRef.current) {
       lastReportedLineRef.current = line;
@@ -213,6 +207,19 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
   const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft);
   useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
+  useMarkdownHeadingIndex(value, (markdown, offsets) => {
+    headingIndexRef.current = { markdown, offsets };
+    // Catch up when background parsing finishes, but never apply positions
+    // against newer, unpublished edits or an active IME composition.
+    if (editor && !editor.isDestroyed && !pendingDraftRef.current && !editor.view.composing) {
+      const container = scrollContainerRef.current;
+      if (!container || markdown !== lastValue.current) return;
+      const viewState = getVisualViewportViewState(editor, markdown, container, offsets);
+      lastReportedLineRef.current = viewState.line ?? null;
+      onViewStateChange?.(viewState);
+    }
+  });
+
   const state = useEditorState({ editor, selector: ({ editor: observedEditor }) => {
     // With deferred rendering, TipTap's state subscription can still hold its
     // initial null snapshot until the first transaction. Read the new editor
@@ -222,6 +229,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
+    boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
     // Subscribe only to UI data, never a DecorationSet containing document nodes.
     find: (() => {
@@ -251,7 +259,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
           editor,
           markdown,
           container,
-          getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+          headingIndexRef.current?.markdown === markdown ? headingIndexRef.current.offsets : null,
         );
         lastReportedLineRef.current = viewState.line ?? null;
         onViewStateChange?.(viewState);
@@ -320,7 +328,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
         currentEditor,
         markdown,
         container,
-        getVisualHeadingOffsets(visualOutlineMapRef, markdown),
+        headingIndexRef.current?.markdown === markdown ? headingIndexRef.current.offsets : null,
       );
       lastReportedLineRef.current = viewState.line ?? null;
       onViewStateChange?.(viewState);
@@ -525,7 +533,6 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
     }}>
       <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
         className="libera-editor-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
-        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
           if (level) editor.chain().focus().setHeading({ level }).run(); else editor.chain().focus().setParagraph().run();
@@ -549,18 +556,31 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
           <option value="">Line spacing</option>
           {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{spacing}×</option>)}
         </select>
+        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
         {[
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
           { title: "Highlight", icon: Highlighter, active: state.highlightTool.active, run: () => editor.chain().focus().setHighlightToolActive(!state.highlightTool.active).run() },
+        ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
+        <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
+          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}
+        </select>
+        {[
           { title: "Bullet list", icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
           { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
           { title: "Quote", icon: Quote, active: state.blockquote, run: () => editor.chain().focus().toggleBlockquote().run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
-        <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
-          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}
+        <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
+          const chain = editor.chain().focus();
+          const color = event.target.value === "default" ? null : event.target.value;
+          if (state.blockquote) chain.updateAttributes("blockquote", { color }).run();
+          else chain.wrapIn("blockquote", { color }).run();
+        }}>
+          <option value="" disabled>Box color</option>
+          <option value="default">Default grey box</option>
+          {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.shortcut} value={color.shortcut}>{color.label} box</option>)}
         </select>
         <select aria-label="Text color" className={selectClass} value={state.color} onChange={(event) => event.target.value ? editor.chain().focus().setColor(event.target.value).run() : editor.chain().focus().unsetColor().run()}>
           <option value="">Text color</option>

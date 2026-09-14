@@ -88,6 +88,7 @@ test('display math accepts trailing whitespace but not trailing prose', () => {
 
 test('typing and rich HTML paste recognize custom markers without changing code', async () => {
   const dom = new JSDOM('<!doctype html><body></body>');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
   Object.assign(globalThis, { window: dom.window, ClipboardEvent: dom.window.Event, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, Node: dom.window.Node, getComputedStyle: dom.window.getComputedStyle });
   const editor = new Editor({ extensions: [...createMarkdownExtensions(''), ...createMathExtensions()], content: '<p></p>' });
   try {

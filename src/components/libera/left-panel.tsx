@@ -100,12 +100,6 @@ export function LeftPanel({
           buttons and doubles as the window drag handle. It is hidden on web and
           non-macOS builds, which keep their own title bar. */}
       <div className="libera-sidebar-titlebar" aria-hidden />
-      {!collapsed ? (
-        <div className="libera-sidebar-brand">
-          <span className="libera-brand-icon"><BookOpen aria-hidden size={25} strokeWidth={1.7} /></span>
-          <div><strong>Libera for Vy Tran</strong></div>
-        </div>
-      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <LeftPanelRail
           activePanel={activePanel}

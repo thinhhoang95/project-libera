@@ -1,4 +1,5 @@
 "use client";
+import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdown-boxes";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -860,13 +861,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
     const draft = textarea?.value ?? getTabDraft(activeTab);
-    const start = textarea?.selectionStart ?? draft.length;
-    const end = textarea?.selectionEnd ?? draft.length;
+    let start = textarea?.selectionStart ?? draft.length;
+    let end = textarea?.selectionEnd ?? draft.length;
     const selectedText = draft.slice(start, end) || placeholder;
-    const replacement = `${before}${selectedText}${after}`;
+    let replacement = `${before}${selectedText}${after}`;
+    let nextSelectionStart = start + before.length;
+    let nextSelectionEnd = nextSelectionStart + selectedText.length;
+    const boxMarker = new RegExp(`^([${MARKDOWN_BOX_SHORTCUTS}]?)> $`, "i").exec(before);
+    if (boxMarker && !after) {
+      const box = createMarkdownBoxInsertion(draft, start, end, boxMarker[1], placeholder);
+      start = box.selectionStart;
+      end = box.selectionEnd;
+      replacement = box.replacement;
+      nextSelectionStart = box.nextSelectionStart;
+      nextSelectionEnd = box.nextSelectionEnd;
+    }
     const nextDraft = `${draft.slice(0, start)}${replacement}${draft.slice(end)}`;
-    const nextSelectionStart = start + before.length;
-    const nextSelectionEnd = nextSelectionStart + selectedText.length;
 
     if (
       textarea &&

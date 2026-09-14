@@ -1,28 +1,24 @@
 "use client";
+import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
 import type { CSSProperties } from "react";
 import { memo, useMemo } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
+import type { Root } from "hast";
+import type { PluggableList } from "unified";
+import { markdownRemarkPlugins } from "@/lib/markdown-rendering";
 import rehypeKatex from "rehype-katex";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import { remarkMathMarkers } from "@/lib/remark-math-markers";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
   normalizeMarkdownHighlightDelimiters,
-  remarkMarkdownHighlights,
 } from "@/lib/markdown-highlights";
 import {
   isSafeMarkdownTextColor,
-  remarkMarkdownTextColors,
 } from "@/lib/markdown-colors";
 import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
-import { remarkMarkdownSourceMap } from "@/lib/markdown-source-map";
-import { remarkMarkdownUnderlines } from "@/lib/markdown-underlines";
-import { remarkMarkdownTextStyles } from "@/lib/markdown-text-styles";
 
 type MarkdownRendererProps = {
   mathMarkers?: MathMarkerSettings;
@@ -31,6 +27,7 @@ type MarkdownRendererProps = {
   baseLineHeight?: number;
   className?: string;
   content: string;
+  preparedTree?: Root;
   documentPath?: string;
   fontFamily?: string;
   onOpenExternalLink?: (href: string) => void;
@@ -38,15 +35,6 @@ type MarkdownRendererProps = {
   textScale?: number;
   renderImages?: boolean;
 };
-
-const remarkPlugins = [
-  remarkGfm,
-  remarkMarkdownHighlights,
-  remarkMarkdownTextColors,
-  remarkMarkdownUnderlines,
-  remarkMarkdownTextStyles,
-  remarkMarkdownSourceMap,
-];
 
 function resolveMarkdownImageSource(src: string | undefined, documentPath: string | undefined) {
   if (
@@ -135,6 +123,17 @@ function openExternalLink(href: string) {
   window.open(href, "_blank", "noopener,noreferrer");
 }
 
+function markdownUrlTransform(url: string, key: string) {
+  return key === "src" && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(url) ? url : defaultUrlTransform(url);
+}
+
+// Separate React work units let typing interrupt a large preview update.
+// Reused worker blocks also skip conversion and reconciliation altogether.
+const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components }: { node: Root["children"][number]; components: Components }) {
+  const plugins = useMemo<PluggableList>(() => [() => () => ({ type: "root", children: [node] })], [node]);
+  return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
+});
+
 function MarkdownRendererContent({
   mathMarkers,
   copyAsMarkdown = false,
@@ -142,6 +141,7 @@ function MarkdownRendererContent({
   baseLineHeight = 1.75,
   className,
   content,
+  preparedTree,
   documentPath,
   fontFamily,
   onOpenExternalLink,
@@ -149,10 +149,10 @@ function MarkdownRendererContent({
   textScale = 1,
   renderImages = true,
 }: MarkdownRendererProps) {
-  const configuredRemarkPlugins = useMemo(() => [...remarkPlugins, ...(mathMarkers ? [[remarkMathMarkers, mathMarkers] as [typeof remarkMathMarkers, MathMarkerSettings]] : [remarkMath])], [mathMarkers]);
+  const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
   const normalizedContent = useMemo(
-    () => normalizeMarkdownHighlightDelimiters(content),
-    [content],
+    () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
+    [content, preparedTree],
   );
   const bodyFontSize = baseFontSize * textScale;
   const scaledFontStyle = {
@@ -165,13 +165,9 @@ function MarkdownRendererContent({
     "--markdown-small-font-size": `${bodyFontSize * 0.875}px`,
   } as CSSProperties;
 
-  return (
-    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
-      <ReactMarkdown
-        urlTransform={(url, key) => key === "src" && /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=]+$/i.test(url) ? url : defaultUrlTransform(url)}
-        remarkPlugins={configuredRemarkPlugins}
-        rehypePlugins={[rehypeKatex]}
-        components={{
+  // Stable component types let React update existing preview nodes instead of
+  // remounting every paragraph, table and equation after each source edit.
+  const components = useMemo<Components>(() => ({
           h1: ({ children, className, ...props }) => (
             <h1
               {...markdownElementProps(props)}
@@ -254,6 +250,7 @@ function MarkdownRendererContent({
           blockquote: ({ children, className, ...props }) => (
             <blockquote
               {...markdownElementProps(props)}
+              style={markdownBoxStyle(dataAttribute(props, "data-box-color") ?? "")}
               className={classNames(
                 "mb-4 border-l-4 border-input bg-muted py-3 pl-4 pr-5 text-[calc(1rem*var(--markdown-text-scale))] text-foreground [&>p:last-child]:mb-0",
                 className,
@@ -473,10 +470,18 @@ function MarkdownRendererContent({
               {children}
             </a>
           ),
-        }}
+  }), [documentPath, onOpenFileLink, onOpenExternalLink, renderImages, textScale]);
+
+  return (
+    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
+      {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} />) : <ReactMarkdown
+        urlTransform={markdownUrlTransform}
+        remarkPlugins={configuredRemarkPlugins}
+        rehypePlugins={[rehypeKatex]}
+        components={components}
       >
         {normalizedContent}
-      </ReactMarkdown>
+      </ReactMarkdown>}
     </div>
   );
 }

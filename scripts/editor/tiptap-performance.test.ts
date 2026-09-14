@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { Worker as NodeWorker } from "node:worker_threads";
+import { fileURLToPath } from "node:url";
 import "./setup.cjs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
@@ -36,9 +39,34 @@ function liveEditor(): Editor {
 
 test("rapid typing avoids serialization and React commits; snapshots, external edits, history and IME stay correct", async (t) => {
   const dom = setupDom();
+  const originalWorker = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+  // Exercise the production worker entry in Node, including the opt-in large
+  // notebook benchmark, instead of falling back to main-thread parsing in JSDOM.
+  class HeadingWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: (() => void) | null = null;
+    private worker: NodeWorker;
+    constructor(url: URL) {
+      this.worker = new NodeWorker(`
+        require("tsx/cjs");
+        const { parentPort, workerData } = require("node:worker_threads");
+        globalThis.self = { postMessage: (data) => parentPort.postMessage(data) };
+        require(workerData.entry);
+        parentPort.on("message", (data) => self.onmessage({ data }));
+      `, { eval: true, workerData: { entry: fileURLToPath(url) } });
+      this.worker.on("message", (data) => this.onmessage?.({ data } as MessageEvent));
+      this.worker.on("error", () => this.onerror?.());
+    }
+    postMessage(data: unknown) { this.worker.postMessage(data); }
+    terminate() { void this.worker.terminate(); }
+  }
+  Object.defineProperty(globalThis, "Worker", { configurable: true, value: HeadingWorker });
   const { TiptapMarkdownEditor } = await import("../../src/components/libera/tiptap-markdown-editor");
   const root = createRoot(document.getElementById("root")!);
-  const source = Array.from({ length: 150 }, (_, i) => `## Section ${i}\n\nParagraph with **bold** words and regular text. More text in this paragraph.\n\n`).join("");
+  // Opt-in local benchmark; never copy a user's notebook into test fixtures.
+  const source = process.env.LIBERA_PERF_DOCUMENT
+    ? readFileSync(process.env.LIBERA_PERF_DOCUMENT, "utf8")
+    : Array.from({ length: 150 }, (_, i) => `## Section ${i}\n\nParagraph with **bold** words and regular text. More text in this paragraph.\n\n`).join("");
   let read!: () => string;
   const register = (reader: () => string) => { read = reader; return () => {}; };
   let published = source, changes = 0, commits = 0, saved = "";
@@ -59,9 +87,12 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
     const editor = liveEditor();
     await act(async () => { editor.commands.setTextSelection(editor.state.doc.content.size - 1); editor.commands.insertContent("warmup"); });
     await settle();
-    let serializations = 0;
+    // Let the status bar's independent 750 ms word-count timer finish before
+    // measuring commits caused by typing (especially on large documents).
+    await settle(850);
+    let serializations = 0, serializationMs = 0;
     const original = editor.getMarkdown.bind(editor);
-    editor.getMarkdown = () => { serializations++; return original(); };
+    editor.getMarkdown = () => { serializations++; const started = performance.now(); const markdown = original(); serializationMs += performance.now() - started; return markdown; };
     changes = commits = 0;
     const emptyFind = tiptapFindPluginKey.getState(editor.state);
     const times: number[] = [];
@@ -82,7 +113,7 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
     assert.equal(editor.state.selection.from, selection);
     assert.equal(undoDepth(editor.state), history);
     times.sort((a, b) => a - b);
-    t.diagnostic(`14 KB / 60 edits: median ${times[30].toFixed(2)} ms, p95 ${times[57].toFixed(2)} ms; one deferred serialization`);
+    t.diagnostic(`${Buffer.byteLength(source)} bytes / 60 edits: median ${times[30].toFixed(2)} ms, p95 ${times[57].toFixed(2)} ms; one deferred serialization (${serializationMs.toFixed(2)} ms)`);
 
     await act(async () => { editor.commands.insertContent(" saved immediately"); document.querySelector<HTMLButtonElement>('[aria-label="Save document"]')!.click(); });
     assert.equal(saved, original(), "Save includes the unflushed final characters");
@@ -127,6 +158,8 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
   } finally {
     await act(async () => { root.unmount(); });
     dom.window.close();
+    if (originalWorker) Object.defineProperty(globalThis, "Worker", originalWorker);
+    else Reflect.deleteProperty(globalThis, "Worker");
   }
 });
 
