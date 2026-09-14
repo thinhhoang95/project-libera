@@ -27,6 +27,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
@@ -34,6 +35,15 @@ import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/t
 
 import styles from "./notebook-home.module.css";
 import { notebookIllustrationUrl } from "@/lib/notebook-illustrations";
+import {
+  DEFAULT_NOTEBOOK_FILE_SORT,
+  DEFAULT_NOTEBOOK_FILE_VIEW,
+  readNotebookFileSort,
+  readNotebookFileView,
+  saveNotebookFileSort,
+  saveNotebookFileView,
+  subscribeNotebookHomePreferences,
+} from "./notebook-home-preferences";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -113,8 +123,16 @@ export function NotebookHome({
       .filter((file) => file.name.toLowerCase().includes(normalizedQuery))
       .slice(0, 10);
   }, [fileSearchQuery, files]);
-  const [sort, setSort] = useState("updated");
-  const [view, setView] = useState<"list" | "grid">("list");
+  const sort = useSyncExternalStore(
+    subscribeNotebookHomePreferences,
+    readNotebookFileSort,
+    () => DEFAULT_NOTEBOOK_FILE_SORT,
+  );
+  const view = useSyncExternalStore(
+    subscribeNotebookHomePreferences,
+    readNotebookFileView,
+    () => DEFAULT_NOTEBOOK_FILE_VIEW,
+  );
   const sortedFiles = useMemo(() => [...files].sort((a, b) =>
     sort === "name" ? a.name.localeCompare(b.name) :
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
@@ -207,12 +225,12 @@ export function NotebookHome({
           <div className={styles.sectionHeader}>
             <h3 id="notebook-files">Files <span>{files.length}</span></h3>
             <div className={styles.fileControls}>
-              <select aria-label="Sort notebook files" value={sort} onChange={(event) => setSort(event.target.value)}>
+              <select aria-label="Sort notebook files" value={sort} onChange={(event) => saveNotebookFileSort(event.target.value === "name" ? "name" : "updated")}>
                 <option value="updated">Last modified</option><option value="name">Name</option>
               </select>
               <div className={styles.viewToggle} aria-label="File view" role="group">
-                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => setView("list")}><List size={17} /></button>
-                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => setView("grid")}><LayoutGrid size={16} /></button>
+                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => saveNotebookFileView("list")}><List size={17} /></button>
+                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => saveNotebookFileView("grid")}><LayoutGrid size={16} /></button>
               </div>
             </div>
           </div>

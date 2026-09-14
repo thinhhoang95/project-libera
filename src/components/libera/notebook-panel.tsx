@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
@@ -30,6 +30,16 @@ import type {
   LiberaTree,
   LiberaTreeNode,
 } from "@/lib/types";
+import {
+  DEFAULT_SIDEBAR_SORT_TOKEN,
+  parseSidebarSortToken,
+  readSidebarSortToken,
+  saveSidebarSortPreference,
+  subscribeSidebarSortPreference,
+  type SidebarSortDirection,
+  type SidebarSortKey,
+  type SidebarSortPreference,
+} from "./sidebar-sort-preference";
 
 type SidebarMenuTarget =
   | { kind: "file"; file: LiberaFileNode }
@@ -99,19 +109,6 @@ export type NotebookPanelProps = {
   ) => Promise<void>;
 };
 
-type SidebarSortKey = "name" | "createdAt" | "updatedAt" | "interactedAt";
-type SidebarSortDirection = "asc" | "desc";
-
-type SidebarSortPreference = {
-  key: SidebarSortKey;
-  direction: SidebarSortDirection;
-};
-
-const SIDEBAR_SORT_STORAGE_KEY = "libera.sidebarSort";
-const DEFAULT_SIDEBAR_SORT: SidebarSortPreference = {
-  key: "updatedAt",
-  direction: "desc",
-};
 const SIDEBAR_PAGE_SIZE = 20;
 const STARRED_FILES_PAGINATION_KEY = "__starred-files__";
 
@@ -129,29 +126,6 @@ const SORT_OPTIONS: Array<{
   { key: "interactedAt", direction: "desc", label: "Last interacted, newest first" },
   { key: "interactedAt", direction: "asc", label: "Last interacted, oldest first" },
 ];
-
-function parseSortPreference(input: unknown): SidebarSortPreference {
-  if (!input || typeof input !== "object") {
-    return DEFAULT_SIDEBAR_SORT;
-  }
-
-  const candidate = input as Partial<SidebarSortPreference>;
-
-  if (
-    (candidate.key === "name" ||
-      candidate.key === "createdAt" ||
-      candidate.key === "updatedAt" ||
-      candidate.key === "interactedAt") &&
-    (candidate.direction === "asc" || candidate.direction === "desc")
-  ) {
-    return {
-      key: candidate.key,
-      direction: candidate.direction,
-    };
-  }
-
-  return DEFAULT_SIDEBAR_SORT;
-}
 
 function hasExternalFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types).includes("Files");
@@ -514,8 +488,15 @@ export function NotebookPanel({
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
-  const [sortPreference, setSortPreference] =
-    useState<SidebarSortPreference>(DEFAULT_SIDEBAR_SORT);
+  const sortPreferenceToken = useSyncExternalStore(
+    subscribeSidebarSortPreference,
+    readSidebarSortToken,
+    () => DEFAULT_SIDEBAR_SORT_TOKEN,
+  );
+  const sortPreference = useMemo(
+    () => parseSidebarSortToken(sortPreferenceToken),
+    [sortPreferenceToken],
+  );
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
   const [viewOptionsError, setViewOptionsError] = useState("");
@@ -541,22 +522,6 @@ export function NotebookPanel({
   const hasVisiblePanelItems =
     Boolean(topLevelNotebooks.length) || Boolean(groupedSections.length);
 
-  useEffect(() => {
-    const animationFrame = window.requestAnimationFrame(() => {
-      try {
-        setSortPreference(
-          parseSortPreference(
-            JSON.parse(window.localStorage.getItem(SIDEBAR_SORT_STORAGE_KEY) ?? "{}"),
-          ),
-        );
-      } catch {
-        setSortPreference(DEFAULT_SIDEBAR_SORT);
-      }
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, []);
-
   function openContextMenu(event: MouseEvent, target: SidebarMenuTarget) {
     event.preventDefault();
     event.stopPropagation();
@@ -579,11 +544,7 @@ export function NotebookPanel({
   }
 
   function applySortPreference(nextSortPreference: SidebarSortPreference) {
-    setSortPreference(nextSortPreference);
-    window.localStorage.setItem(
-      SIDEBAR_SORT_STORAGE_KEY,
-      JSON.stringify(nextSortPreference),
-    );
+    saveSidebarSortPreference(nextSortPreference);
   }
 
   function visibleNodeLimitForPath(path: string) {

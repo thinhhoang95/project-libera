@@ -22,6 +22,7 @@ const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
+const { clearLoginCookie } = require("./login-cookies.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
@@ -1366,12 +1367,6 @@ async function startNextServer(config) {
   return url;
 }
 
-async function clearLoginCookies() {
-  await session.defaultSession.clearStorageData({
-    storages: ["cookies"],
-  });
-}
-
 // Describe the native "liquid glass" backdrop available on this platform.
 // macOS uses NSVisualEffectView vibrancy; Windows 11 22H2+ uses the acrylic
 // system backdrop. Everything else falls back to the opaque UI.
@@ -1389,7 +1384,8 @@ function getDesktopGlass() {
 }
 
 async function createMainWindow(url) {
-  await clearLoginCookies();
+  // Require a fresh sign-in without erasing host-scoped appearance preferences.
+  await clearLoginCookie(session.defaultSession, url);
 
   const glass = getDesktopGlass();
   const isMacGlass = glass.enabled && glass.platform === "darwin";
