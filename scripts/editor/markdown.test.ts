@@ -838,3 +838,21 @@ test("visual editor pastes Markdown as formatting, replaces selections and suppo
     host.remove();
   }
 });
+
+test('find navigation retains matches and block caches map offsets through edits', async () => {
+  const { TiptapFind, tiptapFindPluginKey, updateTiptapFind } = await import('../../src/lib/tiptap-find');
+  const editor = new Editor({ extensions: [...createMarkdownExtensions('Notes/find.md'), TiptapFind], content: 'one **one**\n\nLater one', contentType: 'markdown' });
+  try {
+    updateTiptapFind(editor, { query: 'one' });
+    const before = tiptapFindPluginKey.getState(editor.state)!;
+    updateTiptapFind(editor, { activeMatchIndex: 1 });
+    const selected = tiptapFindPluginKey.getState(editor.state)!;
+    assert.equal(selected.matches, before.matches);
+    assert.equal(editor.view.dom.querySelectorAll('.markdown-editor-find-match-active').length, 1);
+    editor.commands.insertContentAt(1, 'Prefix ');
+    const after = tiptapFindPluginKey.getState(editor.state)!;
+    assert.deepEqual(after.matches, before.matches.map(match => ({ from: match.from + 7, to: match.to + 7 })));
+    updateTiptapFind(editor, { query: 'Later' });
+    assert.equal(tiptapFindPluginKey.getState(editor.state)!.matches.length, 1);
+  } finally { editor.destroy(); }
+});

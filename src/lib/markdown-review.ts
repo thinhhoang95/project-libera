@@ -76,9 +76,57 @@ export function textChange(before: string, after: string) {
   while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
   return { start, oldEnd, newEnd, delta: newEnd - oldEnd };
 }
-export function mapAnchor(anchor: ReviewAnchor, before: string, after: string): ReviewAnchor {
+// Bounded semantic cache: unchanged candidate blocks keep their parse across
+// edits. Source text, including reference definitions, is the exact cache key.
+const semanticCache = new Map<string, { signature: string; count: number }>();
+let semanticCacheCharacters = 0;
+function blockSemantics(text: string) {
+  const cached = semanticCache.get(text);
+  if (cached) return cached;
+  const tree = parser.parse(text);
+  const result = {
+    signature: JSON.stringify(tree, (key, value) => key === "position" || key === "spread" ? undefined : value),
+    count: tree.children.filter((node) => node.position?.start.offset !== undefined && node.position?.end.offset !== undefined).length,
+  };
+  if (text.length <= 100_000) {
+    semanticCache.set(text, result);
+    semanticCacheCharacters += text.length + result.signature.length;
+    while (semanticCache.size > 2048 || semanticCacheCharacters > 2_000_000) {
+      const oldest = semanticCache.keys().next().value!;
+      semanticCacheCharacters -= oldest.length + semanticCache.get(oldest)!.signature.length;
+      semanticCache.delete(oldest);
+    }
+  }
+  return result;
+}
+function anchorMappingContext(before: string, after: string) {
+  let blocks: ReviewBlock[] | undefined;
+  const indexes = new Map<number, Map<string, ReviewRange[]>>();
+  return {
+    change: textChange(before, after),
+    semanticMatches(quote: string) {
+      const { signature, count } = blockSemantics(quote);
+      if (!count) return [];
+      let index = indexes.get(count);
+      if (!index) {
+        index = new Map();
+        blocks ??= reviewBlocks(after);
+        for (let i = 0; i + count <= blocks.length; i++) {
+          const range = { start: blocks[i].start, end: blocks[i + count - 1].end };
+          const key = blockSemantics(after.slice(range.start, range.end)).signature;
+          const matches = index.get(key) ?? [];
+          matches.push(range);
+          index.set(key, matches);
+        }
+        indexes.set(count, index);
+      }
+      return index.get(signature) ?? [];
+    },
+  };
+}
+export function mapAnchor(anchor: ReviewAnchor, before: string, after: string, context = anchorMappingContext(before, after)): ReviewAnchor {
   if (before === after) return anchor;
-  const change = textChange(before, after);
+  const change = context.change;
   if (anchor.state === "attached" && before.slice(anchor.start, anchor.end) === anchor.quote) {
     if (anchor.end <= change.start) return anchorAt(after, anchor);
     if (anchor.start >= change.oldEnd) return anchorAt(after, { start: anchor.start + change.delta, end: anchor.end + change.delta });
@@ -96,13 +144,7 @@ export function mapAnchor(anchor: ReviewAnchor, before: string, after: string): 
   if (!candidates.length) {
     // Markdown serialization may change delimiters or list spacing without
     // changing the selected blocks. Recover only a unique structural match.
-    const signature = (text: string) => JSON.stringify(parser.parse(text), (key, value) => key === "position" || key === "spread" ? undefined : value);
-    const expected = signature(anchor.quote), count = reviewBlocks(anchor.quote).length;
-    const blocks = reviewBlocks(after), semantic: ReviewRange[] = [];
-    for (let index = 0; count > 0 && index + count <= blocks.length; index++) {
-      const range = { start: blocks[index].start, end: blocks[index + count - 1].end };
-      if (signature(after.slice(range.start, range.end)) === expected) semantic.push(range);
-    }
+    const semantic = context.semanticMatches(anchor.quote);
     if (semantic.length === 1) return anchorAt(after, semantic[0]);
     if (semantic.length > 1) return { ...anchor, state: "ambiguous" };
   }
@@ -120,7 +162,8 @@ export function syncReview(doc: ReviewDocument, snapshot: string, detectHistory 
       if (redo?.before === doc.snapshot && redo.after === snapshot) return redoReview(doc);
     } catch { /* A newer plan or decision prevents restoration; map conservatively. */ }
   }
-  const change = textChange(doc.snapshot, snapshot);
+  const context = anchorMappingContext(doc.snapshot, snapshot);
+  const change = context.change;
   const suggestions = doc.session?.suggestions.map((s) => {
     if (s.status !== "pending" && s.status !== "rejected") return s;
     let conflict = false;
@@ -131,7 +174,7 @@ export function syncReview(doc: ReviewDocument, snapshot: string, detectHistory 
     });
     return { ...s, edits, status: conflict && s.status === "pending" ? "conflicted" as const : s.status };
   });
-  return { ...doc, snapshot, redo: [], threads: doc.threads.map((t) => ({ ...t, anchor: mapAnchor(t.anchor, doc.snapshot, snapshot) })), session: doc.session && { ...doc.session, phase: doc.session.phase === "awaiting_confirmation" ? "stale" : doc.session.phase, suggestions: suggestions! } };
+  return { ...doc, snapshot, redo: [], threads: doc.threads.map((t) => ({ ...t, anchor: mapAnchor(t.anchor, doc.snapshot, snapshot, context) })), session: doc.session && { ...doc.session, phase: doc.session.phase === "awaiting_confirmation" ? "stale" : doc.session.phase, suggestions: suggestions! } };
 }
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };

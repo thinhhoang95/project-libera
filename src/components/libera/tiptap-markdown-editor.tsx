@@ -26,9 +26,11 @@ import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
-import type { MarkdownImageAssetPayload } from "@/lib/types";
+import { MarkdownLinkInput } from "./markdown-link-input";
+import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
 
 type Props = {
+  files?: LiberaFileNode[];
   documentPath: string;
   untitled?: boolean;
   mathMarkers?: MathMarkerSettings;
@@ -83,9 +85,9 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
-  const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
+  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -670,12 +672,12 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
         if (!linkDraft) return;
         const chain = editor.chain().focus().setTextSelection({ from: linkDraft.from, to: linkDraft.to }).extendMarkRange("link");
         if (linkDraft.href.trim()) {
-          if (linkDraft.from === linkDraft.to && !editor.isActive("link")) chain.insertContent({ type: "text", text: linkDraft.href, marks: [{ type: "link", attrs: { href: linkDraft.href } }] }).run();
+          if (linkDraft.from === linkDraft.to && !editor.isActive("link")) chain.insertContent({ type: "text", text: linkDraft.label ?? linkDraft.href.trim(), marks: [{ type: "link", attrs: { href: linkDraft.href.trim() } }] }).run();
           else chain.setLink({ href: linkDraft.href.trim() }).run();
         } else chain.unsetLink().run();
         setLinkDraft(null);
       }}>Apply link</button>}>
-        <input autoFocus aria-label="Link URL or file path" placeholder="https://… or notebook/note.md" className="w-full rounded-md border border-border bg-background p-2" value={linkDraft?.href ?? ""} onChange={(event) => setLinkDraft((current) => current ? { ...current, href: event.target.value } : null)} />
+        <MarkdownLinkInput files={files} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft((current) => current ? { ...current, href, label } : null)} />
       </ModalDialog>
     </div>
   );

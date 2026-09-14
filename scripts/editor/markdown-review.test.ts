@@ -138,3 +138,17 @@ test("anchors recover unique Markdown blocks after equivalent delimiter normaliz
   assert.equal(mapped.state, "attached");
   assert.equal(mapped.quote, "An *emphasized* paragraph.");
 });
+
+test('shared semantic recovery preserves resolved orphan reattachment and ambiguity', () => {
+  const quote = '**Old** paragraph.';
+  const anchor = { ...anchorAt(quote, { start: 0, end: quote.length }), state: 'orphaned' as const };
+  const doc = newReview('test', 'Missing.', 'test');
+  doc.threads = Array.from({ length: 10 }, (_, i) => ({ id: String(i), anchor, status: 'resolved', messages: [] }));
+  const after = '__Old__ paragraph.\n\nOther text.';
+  const next = syncReview(doc, after);
+  assert.equal(next.enabled, false);
+  assert.ok(next.threads.every(thread => thread.anchor.state === 'attached' && thread.anchor.quote === '__Old__ paragraph.'));
+  const ambiguous = syncReview(doc, after + '\n\n__Old__ paragraph.');
+  assert.ok(ambiguous.threads.every(thread => thread.anchor.state === 'ambiguous'));
+  assert.equal(doc.threads[0].anchor.state, 'orphaned');
+});

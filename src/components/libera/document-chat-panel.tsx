@@ -3,7 +3,7 @@
 import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
@@ -30,6 +30,15 @@ function createChat(): DocumentChat {
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
 }
 
+const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize }: {
+  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number;
+}) {
+  const content = useMemo(() => message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text,
+    [message.role, message.text, message.status, mathMarkers]);
+  return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
+    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
+});
+
 export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
   const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
@@ -48,6 +57,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
   const [pending, setPending] = useState<string | null>(null);
   const latestStore = useRef<ChatStore | null>(null);
   const saveQueue = useRef(Promise.resolve());
+  const persistedStore = useRef<ChatStore | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -83,9 +93,10 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
   const persistStore = useCallback((snapshot: ChatStore | null) => {
     if (!snapshot) return;
     saveQueue.current = saveQueue.current.then(async () => {
-      if (latestStore.current !== snapshot) return;
+      if (latestStore.current !== snapshot || persistedStore.current === snapshot) return;
       try {
         await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "history", value: snapshot }) });
+        persistedStore.current = snapshot;
         setStorageError("");
       } catch { setStorageError("Chat history could not be saved. Your next change will retry saving."); }
     });
@@ -354,15 +365,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
           })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
-          </div>)}<MarkdownRenderer
-            copyAsMarkdown
-            mathMarkers={mathMarkers}
-            className="libera-chat-markdown min-w-0 break-normal"
-            baseFontSize={fontSize}
-            baseLineHeight={1.6}
-            renderImages={false}
-            content={message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text}
-          />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
+          </div>)}<ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
         <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>

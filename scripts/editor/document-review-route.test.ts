@@ -117,3 +117,27 @@ test("unsaved review recovery preserves identity on first save and concurrent wr
     assert.equal(loaded.id, draft.id); assert.equal(loaded.threads[0].id, commented.threads[0].id);
   } finally { if (prior === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
+
+test('existing review loads are read-only and concurrent creation preserves one identity', async () => {
+  const { stat, readFile } = await import('node:fs/promises');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'libera-review-readonly-'));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = directory;
+  try {
+    const created = await Promise.all(Array.from({ length: 5 }, () => loadReview('Notes/existing.md', 'Initial snapshot.')));
+    assert.equal(new Set(created.map(doc => doc.id)).size, 1);
+    const { getAdminRoot } = await import('../../src/lib/storage/paths');
+    const target = path.join(getAdminRoot(), '.libera', 'markdown-reviews.json');
+    const before = await stat(target);
+    const contents = await readFile(target, 'utf8');
+    const doc = await loadReview('Notes/existing.md', 'Unsaved replacement must not overwrite recovery.');
+    const after = await stat(target);
+    assert.equal(doc.snapshot, 'Initial snapshot.');
+    assert.equal(after.ino, before.ino, 'No atomic rewrite on read');
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.equal(await readFile(target, 'utf8'), contents);
+  } finally {
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

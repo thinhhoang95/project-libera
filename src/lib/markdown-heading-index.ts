@@ -1,3 +1,21 @@
+// A deliberately narrow fast path: a change within a non-indented prose
+// line cannot alter block structure when both versions contain only letters,
+// numbers and ordinary prose punctuation. All Markdown syntax uses the parser.
+export function mapProseHeadingOffsets(before: string, after: string, offsets: number[]): number[] | null {
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  let oldEnd = before.length, newEnd = after.length;
+  while (oldEnd > start && newEnd > start && before[oldEnd - 1] === after[newEnd - 1]) { oldEnd--; newEnd--; }
+  const lineStart = before.lastIndexOf("\n", start - 1) + 1;
+  const end = before.indexOf("\n", start);
+  const lineEnd = end < 0 ? before.length : end;
+  if (oldEnd > lineEnd || after.slice(start, newEnd).includes("\n")) return null;
+  const delta = after.length - before.length;
+  const prose = /^[\p{L}][\p{L}\p{N} ,.!?]*$/u;
+  if (!prose.test(before.slice(lineStart, lineEnd)) || !prose.test(after.slice(lineStart, lineEnd + delta))) return null;
+  return offsets.map(offset => offset > lineStart ? offset + delta : offset);
+}
+
 export type HeadingIndexRequest = { id: number; markdown: string };
 export type HeadingIndexResponse = { id: number; offsets: number[] };
 
@@ -16,10 +34,12 @@ export function createMarkdownHeadingIndex(
   let sequence = 0;
   let latest: HeadingIndexRequest | null = null;
   let running: HeadingIndexRequest | null = null;
+  let completed: { markdown: string; offsets: number[] } | null = null;
 
-  function complete(request: HeadingIndexRequest, offsets: number[]) {
+  function complete(request: HeadingIndexRequest, offsets: number[], reusable = true) {
     if (disposed || running !== request) return;
     running = null;
+    if (reusable) completed = { markdown: request.markdown, offsets };
     if (latest === request) publish(request.markdown, offsets);
     else start();
   }
@@ -38,12 +58,18 @@ export function createMarkdownHeadingIndex(
   function start() {
     if (disposed || running || !latest) return;
     const request = latest;
+    const mapped = completed && mapProseHeadingOffsets(completed.markdown, request.markdown, completed.offsets);
+    if (mapped) {
+      completed = { markdown: request.markdown, offsets: mapped };
+      publish(request.markdown, mapped);
+      return;
+    }
     running = request;
     if (unavailable) {
       // Older browsers/test DOMs still work; production browsers use the worker.
       void fallback(request.markdown).then(
         (offsets) => complete(request, offsets),
-        () => complete(request, []),
+        () => complete(request, [], false),
       );
       return;
     }
@@ -71,7 +97,7 @@ export function createMarkdownHeadingIndex(
       disposed = true;
       worker?.terminate();
       worker = null;
-      latest = running = null;
+      latest = running = completed = null;
     },
   };
 }

@@ -17,7 +17,7 @@ async function readDatabase(): Promise<ReviewDatabase> {
 }
 // One atomic database keeps document identities and their paths consistent
 // during folder moves. An OS lock also coordinates separate Next workers.
-async function transaction<T>(fn: (db: ReviewDatabase) => T | Promise<T>): Promise<T> {
+async function transaction<T>(fn: (db: ReviewDatabase, unchanged: () => void) => T | Promise<T>): Promise<T> {
   const target = databasePath();
   await mkdir(path.dirname(target), { recursive: true });
   let lock;
@@ -40,7 +40,9 @@ async function transaction<T>(fn: (db: ReviewDatabase) => T | Promise<T>): Promi
   const temporary = `${target}.${randomUUID()}.tmp`;
   try {
     const db = await readDatabase();
-    const result = await fn(db);
+    let dirty = true;
+    const result = await fn(db, () => { dirty = false; });
+    if (!dirty) return result;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(db)); await handle.sync(); } finally { await handle.close(); }
     await rename(temporary, target);
@@ -48,8 +50,12 @@ async function transaction<T>(fn: (db: ReviewDatabase) => T | Promise<T>): Promi
   } finally { await rm(temporary, { force: true }); await lock.close(); await rm(`${target}.lock`, { force: true }); }
 }
 export async function loadReview(key: string, snapshot: string) {
-  return transaction((db) => {
+  // Atomic rename makes an existing snapshot safe to read without a write lock.
+  const existing = (await readDatabase()).documents.find((d) => d.key === key);
+  if (existing) return existing;
+  return transaction((db, unchanged) => {
     let doc = db.documents.find((d) => d.key === key);
+    if (doc) unchanged();
     if (!doc) { doc = newReview(key, snapshot, randomUUID()); db.documents.push(doc); }
     return doc;
   });

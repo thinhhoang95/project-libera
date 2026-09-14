@@ -47,10 +47,12 @@ import {
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import {
+  createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
   initialMarkdownEditorHighlightState,
 } from "@/lib/markdown-editor-highlighting";
 import type {
+  MarkdownEditorCachedLine,
   MarkdownEditorHighlightState,
   MarkdownEditorLineTone,
 } from "@/lib/markdown-editor-highlighting";
@@ -480,27 +482,41 @@ function appendTextWithFindMatches({
   }
 }
 
+const plainLineChunks = new WeakMap<MarkdownEditorCachedLine, Map<boolean, HighlightChunk[]>>();
+
 function renderHighlightedMarkdown(
-  value: string,
+  lines: MarkdownEditorCachedLine[],
   matches: TextMatch[] = [],
   activeMatchIndex = 0,
   reviewRanges: { start: number; end: number }[] = [],
 ) {
-  const lines = value.split("\n");
   const matchCursor = { index: 0 };
   const normalizedActiveMatchIndex = matches.length
     ? (activeMatchIndex + matches.length) % matches.length
     : -1;
   let lineOffset = 0;
-  let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
+  const ranges = reviewRanges.slice().sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ ...range });
+  }
+  let reviewIndex = 0;
 
-  return lines.map((line, index) => {
-    const chunks: HighlightChunk[] = [];
-    const highlight = getMarkdownEditorLineHighlight(line, state);
-    const lineClassName = [getHighlightClassName(highlight.tone), reviewRanges.some((r) => r.start < lineOffset + line.length && r.end > lineOffset) ? "review-source-highlight" : ""].filter(Boolean).join(" ");
+  return lines.map((entry, index) => {
+    const line = entry.text;
+    while (reviewIndex < merged.length && merged[reviewIndex].end <= lineOffset) reviewIndex++;
+    const reviewed = merged[reviewIndex]?.start < lineOffset + line.length;
+    const lineClassName = [getHighlightClassName(entry.tone), reviewed ? "review-source-highlight" : ""].filter(Boolean).join(" ");
     const hasTrailingNewline = index < lines.length - 1;
-
-    state = highlight.nextState;
+    const plain = !matches.length && !reviewed;
+    const cached = plain ? plainLineChunks.get(entry)?.get(hasTrailingNewline) : undefined;
+    if (cached) {
+      lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
+      return cached;
+    }
+    const chunks: HighlightChunk[] = [];
 
     if (line) {
       appendTextWithFindMatches({
@@ -529,6 +545,11 @@ function renderHighlightedMarkdown(
     }
 
     lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
+    if (plain) {
+      const cache = plainLineChunks.get(entry) ?? new Map();
+      cache.set(hasTrailingNewline, chunks);
+      plainLineChunks.set(entry, cache);
+    }
     return chunks;
   });
 }
@@ -586,6 +607,8 @@ export function MarkdownEditor({
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
+  const highlightIndexRef = useRef<ReturnType<typeof createMarkdownEditorLineIndex> | null>(null);
+  highlightIndexRef.current ??= createMarkdownEditorLineIndex();
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
   const publishedDraftsRef = useRef<string[]>([]);
@@ -630,9 +653,18 @@ export function MarkdownEditor({
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
+  const findMatches = useMemo(() => {
+    let cached: { text: string; query: string; wildcards: boolean; matches: TextMatch[] } | undefined;
+    return (text: string, query: string, options: { wildcards: boolean }) => {
+      if (cached?.text === text && cached.query === query && cached.wildcards === options.wildcards) return cached.matches;
+      const matches = findTextMatches(text, query, options);
+      cached = { text, query, wildcards: options.wildcards, matches };
+      return matches;
+    };
+  }, []);
   const textMatches = useMemo(
-    () => findTextMatches(editorValue, findQuery, { wildcards: wildcardMatches }),
-    [findQuery, editorValue, wildcardMatches],
+    () => findOpen ? findMatches(editorValue, findQuery, { wildcards: wildcardMatches }) : [],
+    [findOpen, findQuery, editorValue, wildcardMatches, findMatches],
   );
   const refreshHighlightLayer = useCallback(() => {
     // This layer is intentionally owned by the input handler, not React.
@@ -641,14 +673,32 @@ export function MarkdownEditor({
     const layer = highlightLayerRef.current;
     if (!layer) return;
     const text = editorValueRef.current;
-    const matches = findOpen ? findTextMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
-    const next = renderHighlightedMarkdown(text, matches, activeMatchIndex, reviewRanges);
-    const previous = highlightedLinesRef.current;
+    const matches = findOpen ? findMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
+    const next = renderHighlightedMarkdown(highlightIndexRef.current!.update(text), matches, activeMatchIndex, reviewRanges);
+    const previous = highlightedLinesRef.current.slice();
+    const equal = (old: HighlightChunk[] | undefined, chunks: HighlightChunk[]) => old === chunks ||
+      !!old && old.length === chunks.length && old.every((chunk, i) => chunk.text === chunks[i].text && chunk.className === chunks[i].className);
+    // Splice the changed line interval, retaining the suffix's DOM nodes even
+    // when a newline near the start shifts every subsequent line index.
+    let prefix = 0, suffix = 0;
+    while (prefix < previous.length && prefix < next.length && equal(previous[prefix], next[prefix])) prefix++;
+    while (suffix < previous.length - prefix && suffix < next.length - prefix && equal(previous[previous.length - 1 - suffix], next[next.length - 1 - suffix])) suffix++;
+    const oldMiddle = previous.length - prefix - suffix;
+    const newMiddle = next.length - prefix - suffix;
+    if (oldMiddle > newMiddle) {
+      for (let i = newMiddle; i < oldMiddle; i++) layer.children[prefix + newMiddle]?.remove();
+      previous.splice(prefix + newMiddle, oldMiddle - newMiddle);
+    } else if (newMiddle > oldMiddle) {
+      const before = layer.children[prefix + oldMiddle] ?? null;
+      for (let i = oldMiddle; i < newMiddle; i++) {
+        layer.insertBefore(document.createElement("span"), before);
+        previous.splice(prefix + i, 0, []);
+      }
+    }
     const fragment = document.createDocumentFragment();
     next.forEach((chunks, index) => {
       const old = previous[index];
-      if (old && old.length === chunks.length && old.every((chunk, i) =>
-        chunk.text === chunks[i].text && chunk.className === chunks[i].className)) return;
+      if (equal(old, chunks)) return;
       const line = layer.children[index] ?? document.createElement("span");
       line.className = "markdown-editor-highlight-line";
       line.replaceChildren(...chunks.map((chunk) => {
@@ -664,7 +714,7 @@ export function MarkdownEditor({
     highlightedLinesRef.current = next;
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
-  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef]);
+  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
   const fileLinkSections = useMemo(
     () =>
       fileLinkPopup
@@ -780,7 +830,7 @@ export function MarkdownEditor({
     setFindOpen(true);
 
     if (query) {
-      const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
+      const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
       setFindQuery(query);
       selectMatch(0, matches);
     }
@@ -806,7 +856,7 @@ export function MarkdownEditor({
   }
 
   function updateFindQuery(query: string) {
-    const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
+    const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
     setFindQuery(query);
     setActiveMatchIndex(0);
 
@@ -824,7 +874,7 @@ export function MarkdownEditor({
   }
 
   function updateWildcardMatches(enabled: boolean) {
-    const matches = findTextMatches(editorValueRef.current, findQuery, { wildcards: enabled });
+    const matches = findMatches(editorValueRef.current, findQuery, { wildcards: enabled });
     setWildcardMatches(enabled);
     setActiveMatchIndex(0);
     if (matches.length) selectMatch(0, matches);
@@ -860,7 +910,7 @@ export function MarkdownEditor({
     if (!usedNativeUndo) commitEditorValue(textarea, nextValue);
     readDraft();
 
-    const nextMatches = findTextMatches(nextValue, findQuery, { wildcards: wildcardMatches });
+    const nextMatches = findMatches(nextValue, findQuery, { wildcards: wildcardMatches });
     const replacedOne = matches.length === 1;
     const nextOffset = first.start + replaceQuery.length;
     const nextIndex = replacedOne

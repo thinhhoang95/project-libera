@@ -22,6 +22,10 @@ type TiptapFindUpdate = {
 
 export const tiptapFindPluginKey = new PluginKey<TiptapFindState>("liberaTiptapFind");
 
+// A few active queries may share immutable ProseMirror blocks. Cache relative
+// matches so moving/editing another block never searches unchanged text again.
+const blockSearches = new Map<string, WeakMap<ProseMirrorNode, TiptapFindMatch[]>>();
+
 export function findTiptapTextMatches(
   doc: ProseMirrorNode,
   query: string,
@@ -29,15 +33,28 @@ export function findTiptapTextMatches(
 ) {
   if (!query) return [];
 
+  const cacheKey = `${options.wildcards ? 1 : 0}:${query}`;
+  let cache = blockSearches.get(cacheKey);
+  if (!cache) {
+    cache = new WeakMap();
+    blockSearches.set(cacheKey, cache);
+    if (blockSearches.size > 4) blockSearches.delete(blockSearches.keys().next().value!);
+  }
   const matches: TiptapFindMatch[] = [];
   doc.descendants((node, position) => {
     if (!node.isTextblock) return;
 
+    const cached = cache!.get(node);
+    if (cached) {
+      for (const match of cached) matches.push({ from: position + 1 + match.from, to: position + 1 + match.to });
+      return false;
+    }
+    const relative: TiptapFindMatch[] = [];
     let runStart = -1;
     let runText = "";
     const flushRun = () => {
       if (runStart >= 0) {
-        matches.push(...findTextMatches(runText, query, options).map((match) => ({
+        relative.push(...findTextMatches(runText, query, options).map((match) => ({
           from: runStart + match.start,
           to: runStart + match.end,
         })));
@@ -48,13 +65,15 @@ export function findTiptapTextMatches(
 
     node.descendants((child, childPosition) => {
       if (child.isText) {
-        if (runStart < 0) runStart = position + 1 + childPosition;
+        if (runStart < 0) runStart = childPosition;
         runText += child.text ?? "";
       } else if (child.isLeaf) {
         flushRun();
       }
     });
     flushRun();
+    cache!.set(node, relative);
+    for (const match of relative) matches.push({ from: position + 1 + match.from, to: position + 1 + match.to });
 
     // This text block has been searched; do not visit its inline children again.
     return false;
@@ -92,6 +111,23 @@ export const TiptapFind = Extension.create({
           // An inactive find has no positions to map. Keep the shared empty
           // snapshot instead of allocating a new state on every keystroke.
           if (!previous.query && !update) return previous;
+          // Moving between existing matches never needs another document search.
+          if (!transaction.docChanged && update &&
+              (update.query === undefined || update.query === previous.query) &&
+              (update.wildcards === undefined || update.wildcards === previous.wildcards)) {
+            const count = previous.matches.length;
+            const activeMatchIndex = count ? ((update.activeMatchIndex ?? previous.activeMatchIndex) % count + count) % count : 0;
+            if (activeMatchIndex === previous.activeMatchIndex) return previous;
+            const oldMatch = previous.matches[previous.activeMatchIndex];
+            const nextMatch = previous.matches[activeMatchIndex];
+            const remove = [oldMatch, nextMatch].flatMap((match) => previous.decorations.find(match.from, match.to)
+              .filter((decoration) => decoration.from === match.from && decoration.to === match.to));
+            const decorations = previous.decorations.remove(remove).add(transaction.doc, [
+              Decoration.inline(oldMatch.from, oldMatch.to, { class: "markdown-editor-find-match" }),
+              Decoration.inline(nextMatch.from, nextMatch.to, { class: "markdown-editor-find-match markdown-editor-find-match-active" }),
+            ]);
+            return { ...previous, activeMatchIndex, decorations };
+          }
           return createFindState(
             transaction.doc,
             update?.query ?? previous.query,
