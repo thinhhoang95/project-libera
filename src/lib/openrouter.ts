@@ -1,4 +1,5 @@
 import { readSseData } from "./text-stream";
+import { getPromptCacheRouting, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
@@ -15,6 +16,7 @@ type OpenRouterContentPart =
   | {
       type: "text";
       text: string;
+      cache_control?: { type: "ephemeral" };
     }
   | {
       type: "image_url";
@@ -107,7 +109,7 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-type CompletionOptions = { model?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal };
+type CompletionOptions = { model?: string; promptCaching?: boolean; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal };
 
 async function requestOpenRouterCompletion(
   messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
@@ -122,6 +124,8 @@ async function requestOpenRouterCompletion(
     );
   }
 
+  const model = options.model ?? getOpenRouterModel();
+  const caching = options.promptCaching ? await getPromptCacheRouting(model, apiKey, options.signal) : undefined;
   const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
     method: "POST",
     headers: {
@@ -132,10 +136,11 @@ async function requestOpenRouterCompletion(
     },
     signal: options.signal,
     body: JSON.stringify({
-      model: options.model ?? getOpenRouterModel(),
+      model,
+      ...(caching ? { provider: caching.provider } : {}),
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      messages,
+      messages: caching?.explicit ? withPromptCacheBreakpoints(messages) : messages,
       temperature: 0,
       ...(stream ? { stream: true } : {}),
     }),

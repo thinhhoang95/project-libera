@@ -14,6 +14,7 @@ function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash")
     const model = typeof value?.model === "string" ? value.model.trim() : "";
     return [name, {
       model: model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
+      promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : name === "chat",
       reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : name === "latex" ? "low" : "medium",
       ...(["rewrite", "chat"].includes(name) ? {
         customInstruction: typeof value?.customInstruction === "string" ? value.customInstruction : "",
@@ -25,6 +26,7 @@ function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash")
 function aiPreferencesEnvironment(preferences, defaultModel) {
   return Object.fromEntries(Object.entries(normalizeAiPreferences(preferences, defaultModel)).flatMap(([name, value]) => [
     [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_MODEL`, value.model],
+    [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_PROMPT_CACHING`, String(value.promptCaching)],
     [`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`, value.reasoningEffort],
   ]));
 }

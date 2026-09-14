@@ -395,7 +395,8 @@
 
             <section class="settings-section hidden" data-section="ai">
               <h2>AI</h2>
-              <p>Choose a model and reasoning effort for each function. Settings are saved across app restarts.</p>
+              <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
+              <p class="field-help">Enabled routes only to providers that support prompt caching for your chosen model. If none are available, the request fails. Disabled removes caching requests and routing restrictions; providers may still cache automatically.</p>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
@@ -419,6 +420,11 @@
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
                 </select>
+                <label for="ai-formatting-caching">Prompt caching</label>
+                <select id="ai-formatting-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
               </fieldset>
               <fieldset class="ai-function-settings">
                 <legend>AI Image to Markdown</legend>
@@ -431,6 +437,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-imageToMarkdown-caching">Prompt caching</label>
+                <select id="ai-imageToMarkdown-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
                 <p class="field-help">Choose a model that supports image input.</p>
               </fieldset>
@@ -445,6 +456,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-rewrite-caching">Prompt caching</label>
+                <select id="ai-rewrite-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
                 <label for="ai-rewrite-custom-instruction">Custom instruction</label>
                 <textarea
@@ -472,6 +488,11 @@
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
                 </select>
+                <label for="ai-chat-caching">Prompt caching</label>
+                <select id="ai-chat-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
                 <label for="ai-chat-custom-instruction">Custom instruction</label>
                 <textarea
                   id="ai-chat-custom-instruction"
@@ -497,6 +518,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-latex-caching">Prompt caching</label>
+                <select id="ai-latex-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
               </fieldset>
               <p class="field-help">Enter OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
@@ -660,6 +686,7 @@
       const aiFunctionInputs = Object.fromEntries(aiFunctionNames.map((name) => [name, {
         model: document.querySelector(`#ai-${name}-model`),
         effort: document.querySelector(`#ai-${name}-effort`),
+        caching: document.querySelector(`#ai-${name}-caching`),
       }]));
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
@@ -934,6 +961,7 @@
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
+          aiFunctionInputs[name].caching.value = String(typeof state.aiFunctions?.[name]?.promptCaching === "boolean" ? state.aiFunctions[name].promptCaching : name === "chat");
           aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
           aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (name === "latex" ? "low" : "medium");
         }
@@ -1121,6 +1149,7 @@
             aiFunctions: Object.fromEntries(aiFunctionNames.map((name) => [name, {
               model: aiFunctionInputs[name].model.value,
               reasoningEffort: aiFunctionInputs[name].effort.value,
+              promptCaching: aiFunctionInputs[name].caching.value === "true",
               ...(name === "chat" ? { customInstruction: aiChatCustomInstructionInput.value } : {}),
               ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
             }])),

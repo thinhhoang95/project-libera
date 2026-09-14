@@ -17,7 +17,9 @@ export function getAiFunctionOptions(name: AiFunction) {
   const model = process.env[`${prefix}_MODEL`]?.trim() || (name === "latex" ? "openai/gpt-5.6-luna" : getOpenRouterModel());
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
   const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" ? "low" : "medium";
-  return { model, reasoning: { effort } };
+  const configuredCaching = process.env[`${prefix}_PROMPT_CACHING`];
+  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "chat";
+  return { model, reasoning: { effort }, promptCaching };
 }
 
 function getAiCustomInstruction(name: "rewrite" | "chat") {

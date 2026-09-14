@@ -10,15 +10,16 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   const legacy = normalizeAiPreferences(undefined, 'existing/model');
   assert.equal(legacy.formatting.model, 'existing/model');
   assert.equal(legacy.rewrite.model, 'existing/model');
-  assert.deepEqual(legacy.rewrite, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
+  assert.deepEqual(legacy.rewrite, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false, customInstruction: '' });
   assert.equal(legacy.chat.model, 'existing/model');
-  assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium' });
-  assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', customInstruction: '' });
-  assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low' });
+  assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
+  assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true, customInstruction: '' });
+  assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low', promptCaching: false });
   const efforts = { formatting: 'low', rewrite: 'high', chat: 'xhigh', imageToMarkdown: 'medium', latex: 'max' };
   const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
-    model: `provider/${name}`,
+    model: name === "chat" ? "deepseek/deepseek-v4.1-flash" : `provider/${name}`,
     reasoningEffort: efforts[name],
+    promptCaching: name !== "chat",
     ...(['rewrite', 'chat'].includes(name) ? { customInstruction: `Instructions for ${name}.` } : {}),
   }]));
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
@@ -29,6 +30,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     assert.deepEqual(normalizeAiPreferences(restarted.aiFunctions), aiFunctions);
     const env = aiPreferencesEnvironment(restarted.aiFunctions);
     for (const name of AI_FUNCTIONS) {
+      assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_PROMPT_CACHING`], String(aiFunctions[name].promptCaching));
       assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_MODEL`], aiFunctions[name].model);
       assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`], aiFunctions[name].reasoningEffort);
     }
@@ -62,6 +64,8 @@ test('Preferences UI loads and saves all five function settings', async () => {
     for (const name of AI_FUNCTIONS) {
       assert.equal(document.querySelector(`#ai-${name}-model`).value, aiFunctions[name].model);
       assert.deepEqual(Array.from(document.querySelector(`#ai-${name}-effort`).options, (option) => option.value), ['low', 'medium', 'high', 'xhigh', 'max']);
+      assert.equal(document.querySelector(`#ai-${name}-caching`).value, String(name === "chat"));
+      document.querySelector(`#ai-${name}-caching`).value = String(name !== "chat");
       document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
       document.querySelector(`#ai-${name}-effort`).value = 'max';
     }
@@ -78,6 +82,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
     for (const name of AI_FUNCTIONS) assert.deepEqual(saved.aiFunctions[name], {
       model: `custom/${name}`,
       reasoningEffort: 'max',
+      promptCaching: name !== 'chat',
       ...(name === 'chat' ? { customInstruction: 'Instruction loaded from a file.' } : {}),
       ...(name === 'rewrite' ? { customInstruction: 'Rewrite instruction loaded from a file.' } : {}),
     });

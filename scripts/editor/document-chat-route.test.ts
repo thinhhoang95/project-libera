@@ -26,6 +26,7 @@ test("chat authenticates, validates input, and uses the configured Preferences m
   process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS = "%% %%";
   let calls = 0;
   globalThis.fetch = async (_url, init) => {
+    if (String(_url).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "test-provider", supports_implicit_caching: true }] } });
     calls++;
     const payload = JSON.parse(String(init?.body));
     assert.equal(payload.model, "test/preferences-model");

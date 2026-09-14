@@ -34,6 +34,7 @@ test("chat route streams only answer text and carries model settings to OpenRout
   const requests: Record<string, unknown>[] = [];
   let fail = false;
   globalThis.fetch = async (_input, init) => {
+    if (String(_input).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "test-provider", supports_implicit_caching: true }] } });
     requests.push(JSON.parse(String(init?.body)));
     const events = [
       ': OPENROUTER PROCESSING\n\n',

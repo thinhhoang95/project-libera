@@ -19,6 +19,7 @@ test("authenticated review plans, revises, confirms, accepts/rejects individuall
   let modelCalls = 0, bad = false, capacity = 200_000, stale = false, expectFreshRound = false;
   let doc: ReviewDocument;
   globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "test-provider", supports_implicit_caching: true }] } });
     if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "test/model", context_length: capacity }] });
     modelCalls++;
     const body = JSON.parse(String(init?.body));
