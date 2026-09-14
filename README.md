@@ -53,6 +53,22 @@ Use `[color=#dc2626]colored text[/color]` for inline text color.
 Use `>>>highlight<<<` or `y>>>highlight<<<` for yellow highlights, and
 prefix other highlight colors by shortcut, such as `r>>>red highlight<<<`.
 
+Use `y> Box text` for a yellow box. Boxes share the highlight palette:
+`y` yellow, `r` red, `o` orange, `a` amber, `g` green, `t` teal,
+`b` blue, `v` violet, `p` pink, and `s` slate. Plain `>` keeps the default grey box.
+Repeat the prefix on each line, including blank lines between paragraphs:
+
+```markdown
+y> **Remember**
+y>
+y> - First item
+y> - Second item
+```
+
+Choose **Box color** in either editor toolbar to apply a box or change its color.
+In Source, it applies to the current line or all selected lines; on narrow panels,
+expand the toolbar to find it. In Visual, use **Quote** to remove the box.
+
 ## Scripts
 
 ```bash

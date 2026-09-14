@@ -428,6 +428,13 @@ textarea::placeholder {
   background: transparent;
 }
 
+/* Independent line layout keeps a keystroke from reshaping one document-sized
+   inline text run. Line metrics and wrapping must match the textarea exactly. */
+.markdown-editor-highlight-line {
+  display: block;
+  contain: layout style;
+}
+
 .markdown-editor-highlight-tone-heading-1 {
   color: var(--markdown-editor-heading-1);
 }
@@ -756,7 +763,7 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap ul { list-style: disc; padding-left: 1.5em; }
 .libera-tiptap ol { list-style: decimal; padding-left: 1.5em; }
 .libera-tiptap li p { margin-bottom: .3em; }
-.libera-tiptap blockquote { border-left: 4px solid var(--border); background: var(--muted); padding: .75em 1em; margin: 1em 0; }
+.libera-tiptap blockquote { border-left: 4px solid var(--border); background: var(--muted); color: var(--foreground); padding: .75em 1em; margin: 1em 0; }
 .libera-tiptap pre { overflow-x: auto; background: var(--muted); border-radius: .5rem; padding: 1rem; margin: 1em 0; }
 .libera-tiptap code { background: var(--muted); border-radius: .2em; padding: .1em .25em; font-size: .9em; }
 .libera-tiptap pre code { padding: 0; }
@@ -766,6 +773,13 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 1em 0; }
 .libera-tiptap :is(td,th) { border: 1px solid var(--border); padding: .5em .75em; vertical-align: top; position: relative; }
 .libera-tiptap th { background: var(--muted); font-weight: 600; }
+
+/* Use the highlight palette's readable foreground throughout a colored box.
+   Nested grey quotes and code/table surfaces keep their own theme foreground. */
+.markdown-renderer blockquote[data-box-color] :is(p, h1, h2, h3, h4, h5, h6, [role="heading"], ul, ol, li, a),
+.markdown-renderer blockquote[data-box-color] li::marker,
+.libera-tiptap blockquote[data-box-color] a { color: inherit; }
+.libera-tiptap blockquote[data-box-color] :is(pre, code, th) { color: var(--foreground); }
 .libera-tiptap .selectedCell { background: var(--muted); }
 .libera-tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .libera-tiptap ul[data-type="taskList"] li { display: flex; gap: .5em; }
@@ -866,10 +880,6 @@ html.libera-glass .libera-left-panel {
   --input: #91a4c52e;
   --muted: #7392d111;
 }
-.libera-sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 16px 22px 15px; }
-.libera-brand-icon { width: 39px; height: 41px; display: grid; place-items: center; flex-shrink: 0; border-radius: 12px; background: linear-gradient(135deg, #75b7ff, #3776f5 65%, #655ce2); color: white; box-shadow: inset 0 1px 1px #ffffff80, 0 4px 9px #347cf525; }
-.libera-sidebar-brand strong { font-size: 18px; font-weight: 700; letter-spacing: -.6px; color: #172039; }
-.libera-sidebar-brand p { font-size: 11px; color: var(--muted-foreground); margin-top: 1px; }
 html.libera-glass .libera-left-panel .libera-sidebar-search-input,
 .libera-left-panel .libera-sidebar-search-input { background: #ffffff85; font-size: 12px; box-shadow: 0 2px 5px #4e699a03; }
 .libera-left-panel .libera-sidebar-icon-button { color: #75839e; }
@@ -891,7 +901,6 @@ html.libera-glass .libera-left-panel .libera-sidebar-search-input,
 html.dark .libera-left-panel { --muted-foreground: #adb9d1; --border: #8298cb22; --input: #8298cb33; background: linear-gradient(155deg, #222c3ee0, #29273be0); color: #e1e8f7; }
 html.dark.libera-glass .libera-left-panel { background: transparent; }
 html.dark.libera-glass .libera-left-panel::before { background: linear-gradient(155deg, #31415b55, #342b4940); }
-html.dark .libera-sidebar-brand strong { color: #eff3ff; }
 html.dark .libera-left-panel .libera-sidebar-search-input { background: #b3c8ef0d; }
 html.dark .libera-left-panel .libera-sidebar-icon-button { color: #a7b7d2; }
 html.dark .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { color: #a2c9ff; background: #678dcc26; box-shadow: none; }

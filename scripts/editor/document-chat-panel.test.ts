@@ -86,7 +86,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(requests.length, 1);
     assert.equal(requests[0].reasoningEffort, "high");
     assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual\nparagraph\nhidden line"]);
-    const contextSummaries = host.querySelectorAll<HTMLSummaryElement>(".libera-chat-message details summary");
+    const contextSummaries = host.querySelectorAll<HTMLElement>(".libera-chat-message details summary");
     assert.equal(contextSummaries[0]?.textContent, "Draft.md");
     assert.equal(contextSummaries[0]?.getAttribute("aria-label"), "Document: Draft.md");
     assert.ok(contextSummaries[0]?.querySelector("svg"));

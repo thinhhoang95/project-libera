@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -91,6 +92,7 @@ type MarkdownEditorProps = {
     prompt: string,
   ) => Promise<void>;
   onChange: (value: string) => void;
+  onRegisterDraft?: (read: () => string) => () => void;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
     range?: MarkdownFileLinkRange,
@@ -113,8 +115,8 @@ const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
 };
 const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
-const PENDING_PARENT_DRAFT_TIMEOUT_MS = 1000;
 const SELECTION_CHANGE_DEBOUNCE_MS = 120;
+export const SOURCE_DRAFT_DELAY_MS = 250;
 const FIND_MATCH_CLASS_NAME = "markdown-editor-find-match";
 const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
 
@@ -485,7 +487,6 @@ function renderHighlightedMarkdown(
   reviewRanges: { start: number; end: number }[] = [],
 ) {
   const lines = value.split("\n");
-  const chunks: HighlightChunk[] = [];
   const matchCursor = { index: 0 };
   const normalizedActiveMatchIndex = matches.length
     ? (activeMatchIndex + matches.length) % matches.length
@@ -493,7 +494,8 @@ function renderHighlightedMarkdown(
   let lineOffset = 0;
   let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
 
-  lines.forEach((line, index) => {
+  return lines.map((line, index) => {
+    const chunks: HighlightChunk[] = [];
     const highlight = getMarkdownEditorLineHighlight(line, state);
     const lineClassName = [getHighlightClassName(highlight.tone), reviewRanges.some((r) => r.start < lineOffset + line.length && r.end > lineOffset) ? "review-source-highlight" : ""].filter(Boolean).join(" ");
     const hasTrailingNewline = index < lines.length - 1;
@@ -527,14 +529,7 @@ function renderHighlightedMarkdown(
     }
 
     lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
-  });
-
-  return chunks.map((chunk, index) => {
-    return (
-      <span className={chunk.className} key={index}>
-        {chunk.text}
-      </span>
-    );
+    return chunks;
   });
 }
 
@@ -567,11 +562,13 @@ export function MarkdownEditor({
   onAiImageToMarkdown,
   onAiRewriteSelection,
   onChange,
+  onRegisterDraft,
   onInsertFileLink,
   onInsertImageFile,
   onSelectionChange,
 }: MarkdownEditorProps) {
   const [editorValue, setEditorValue] = useState(value);
+  const [initialValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [draggingImage, setDraggingImage] = useState(false);
@@ -588,38 +585,86 @@ export function MarkdownEditor({
   const rewriteInputRef = useRef<HTMLInputElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
+  const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
-  const pendingEditorValueRef = useRef<string | null>(null);
-  const pendingEditorValueTimeoutRef = useRef<number | null>(null);
+  const publishedDraftsRef = useRef<string[]>([]);
+  const composingRef = useRef(false);
   const previousActiveFilePathRef = useRef(activeFilePath);
-  const propValueRef = useRef(value);
   const selectionChangeTimeoutRef = useRef<number | null>(null);
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishRef = useRef(onChange);
+  const lastPublishedRef = useRef(value);
+  useLayoutEffect(() => { publishRef.current = onChange; }, [onChange]);
+  const readDraft = useCallback(() => {
+    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = null;
+    const text = editorValueRef.current;
+    if (lastPublishedRef.current !== text) {
+      setEditorValue(text);
+      lastPublishedRef.current = text;
+      publishedDraftsRef.current.push(text);
+      publishRef.current(text);
+    }
+    return text;
+  }, []);
+  useLayoutEffect(() => {
+    const unregister = onRegisterDraft?.(readDraft);
+    window.addEventListener("pagehide", readDraft);
+    return () => { readDraft(); unregister?.(); window.removeEventListener("pagehide", readDraft); };
+  }, [onRegisterDraft, readDraft]);
   const review = useSourceReview(textareaRef, (text) => {
-    pendingEditorValueRef.current = null;
+    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = null;
+    lastPublishedRef.current = text;
     editorValueRef.current = text;
+    if (textareaRef.current) textareaRef.current.value = text;
     setEditorValue(text);
   });
-  const reviewRanges = useMemo(() => review?.enabled ? [
-    ...(review.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
-    ...(review.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
-    ...(review.selection ? [review.selection.range] : []),
-  ] : [], [review]);
+  const reviewEnabled = review?.enabled;
+  const reviewDocument = review?.doc;
+  const reviewSelection = review?.selection;
+  const reviewRanges = useMemo(() => reviewEnabled ? [
+    ...(reviewDocument?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+    ...(reviewDocument?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+    ...(reviewSelection ? [reviewSelection.range] : []),
+  ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
   const textMatches = useMemo(
     () => findTextMatches(editorValue, findQuery, { wildcards: wildcardMatches }),
     [findQuery, editorValue, wildcardMatches],
   );
-  const highlightedMarkdown = useMemo(
-    () =>
-      renderHighlightedMarkdown(
-        editorValue,
-        findOpen ? textMatches : [],
-        activeMatchIndex,
-        reviewRanges,
-      ),
-    [activeMatchIndex, editorValue, findOpen, textMatches, reviewRanges],
-  );
+  const refreshHighlightLayer = useCallback(() => {
+    // This layer is intentionally owned by the input handler, not React.
+    // Stable line nodes isolate layout and avoid allocating thousands of React
+    // elements (and periodic garbage-collection pauses) for each character.
+    const layer = highlightLayerRef.current;
+    if (!layer) return;
+    const text = editorValueRef.current;
+    const matches = findOpen ? findTextMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
+    const next = renderHighlightedMarkdown(text, matches, activeMatchIndex, reviewRanges);
+    const previous = highlightedLinesRef.current;
+    const fragment = document.createDocumentFragment();
+    next.forEach((chunks, index) => {
+      const old = previous[index];
+      if (old && old.length === chunks.length && old.every((chunk, i) =>
+        chunk.text === chunks[i].text && chunk.className === chunks[i].className)) return;
+      const line = layer.children[index] ?? document.createElement("span");
+      line.className = "markdown-editor-highlight-line";
+      line.replaceChildren(...chunks.map((chunk) => {
+        const span = document.createElement("span");
+        span.className = chunk.className ?? "";
+        span.textContent = chunk.text;
+        return span;
+      }));
+      if (!line.parentNode) fragment.appendChild(line);
+    });
+    if (fragment.childNodes.length) layer.appendChild(fragment);
+    while (layer.children.length > next.length) layer.lastElementChild!.remove();
+    highlightedLinesRef.current = next;
+    const textarea = textareaRef.current;
+    if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
+  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef]);
   const fileLinkSections = useMemo(
     () =>
       fileLinkPopup
@@ -664,44 +709,27 @@ export function MarkdownEditor({
     };
   }, [contextMenu, editorValue]);
 
-  useEffect(() => {
-    editorValueRef.current = editorValue;
-  }, [editorValue]);
-
-  useEffect(() => {
-    propValueRef.current = value;
+  useLayoutEffect(() => {
     const fileChanged = previousActiveFilePathRef.current !== activeFilePath;
-
     previousActiveFilePathRef.current = activeFilePath;
-
-    if (fileChanged) {
-      pendingEditorValueRef.current = null;
-      if (pendingEditorValueTimeoutRef.current !== null) {
-        window.clearTimeout(pendingEditorValueTimeoutRef.current);
-        pendingEditorValueTimeoutRef.current = null;
-      }
-      editorValueRef.current = value;
-      setEditorValue(value);
+    const echoIndex = publishedDraftsRef.current.indexOf(value);
+    if (!fileChanged && echoIndex >= 0) {
+      // A delayed parent echo must never replace characters typed since publish.
+      publishedDraftsRef.current.splice(0, echoIndex + 1);
       return;
     }
-
-    if (pendingEditorValueRef.current !== null) {
-      if (value === pendingEditorValueRef.current) {
-        pendingEditorValueRef.current = null;
-        if (pendingEditorValueTimeoutRef.current !== null) {
-          window.clearTimeout(pendingEditorValueTimeoutRef.current);
-          pendingEditorValueTimeoutRef.current = null;
-        }
-      }
-
-      return;
-    }
-
-    if (value !== editorValueRef.current) {
+    publishedDraftsRef.current = [];
+    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = null;
+    lastPublishedRef.current = value;
+    if (fileChanged || value !== editorValueRef.current) {
       editorValueRef.current = value;
+      if (textareaRef.current) textareaRef.current.value = value;
       setEditorValue(value);
     }
-  }, [activeFilePath, value]);
+  }, [activeFilePath, value, textareaRef]);
+
+  useLayoutEffect(() => { refreshHighlightLayer(); }, [editorValue, refreshHighlightLayer]);
 
   useEffect(() => {
     fileLinkPopupRef.current = fileLinkPopup;
@@ -711,10 +739,6 @@ export function MarkdownEditor({
     return () => {
       if (fileLinkPopupFrameRef.current !== null) {
         window.cancelAnimationFrame(fileLinkPopupFrameRef.current);
-      }
-
-      if (pendingEditorValueTimeoutRef.current !== null) {
-        window.clearTimeout(pendingEditorValueTimeoutRef.current);
       }
 
       if (selectionChangeTimeoutRef.current !== null) {
@@ -745,9 +769,10 @@ export function MarkdownEditor({
   }
 
   function openFind(nextQuery?: string) {
+    setEditorValue(editorValueRef.current);
     const textarea = textareaRef.current;
     const selectedText = textarea
-      ? editorValue.slice(textarea.selectionStart, textarea.selectionEnd)
+      ? editorValueRef.current.slice(textarea.selectionStart, textarea.selectionEnd)
       : "";
     const query = nextQuery ?? (selectedText.includes("\n") ? "" : selectedText);
 
@@ -755,7 +780,7 @@ export function MarkdownEditor({
     setFindOpen(true);
 
     if (query) {
-      const matches = findTextMatches(editorValue, query, { wildcards: wildcardMatches });
+      const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
       setFindQuery(query);
       selectMatch(0, matches);
     }
@@ -781,7 +806,7 @@ export function MarkdownEditor({
   }
 
   function updateFindQuery(query: string) {
-    const matches = findTextMatches(editorValue, query, { wildcards: wildcardMatches });
+    const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
     setFindQuery(query);
     setActiveMatchIndex(0);
 
@@ -799,7 +824,7 @@ export function MarkdownEditor({
   }
 
   function updateWildcardMatches(enabled: boolean) {
-    const matches = findTextMatches(editorValue, findQuery, { wildcards: enabled });
+    const matches = findTextMatches(editorValueRef.current, findQuery, { wildcards: enabled });
     setWildcardMatches(enabled);
     setActiveMatchIndex(0);
     if (matches.length) selectMatch(0, matches);
@@ -816,11 +841,11 @@ export function MarkdownEditor({
       end: match.end - first.start,
     }));
     const replacement = replaceTextMatches(
-      editorValue.slice(first.start, last.end),
+      editorValueRef.current.slice(first.start, last.end),
       relativeMatches,
       replaceQuery,
     );
-    const nextValue = `${editorValue.slice(0, first.start)}${replacement}${editorValue.slice(last.end)}`;
+    const nextValue = `${editorValueRef.current.slice(0, first.start)}${replacement}${editorValueRef.current.slice(last.end)}`;
     const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
       selectionStart: first.start,
@@ -833,6 +858,7 @@ export function MarkdownEditor({
     });
 
     if (!usedNativeUndo) commitEditorValue(textarea, nextValue);
+    readDraft();
 
     const nextMatches = findTextMatches(nextValue, findQuery, { wildcards: wildcardMatches });
     const replacedOne = matches.length === 1;
@@ -1011,10 +1037,11 @@ export function MarkdownEditor({
 
   function openContextMenu(event: MouseEvent<HTMLTextAreaElement>) {
     const textarea = event.currentTarget;
+    setEditorValue(textarea.value);
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const selectedText = editorValue.slice(start, end);
-    const image = findMarkdownImageInText(editorValue, start, end);
+    const selectedText = editorValueRef.current.slice(start, end);
+    const image = findMarkdownImageInText(editorValueRef.current, start, end);
 
     if ((start === end || !selectedText.trim()) && !image) {
       setContextMenu(null);
@@ -1105,6 +1132,7 @@ export function MarkdownEditor({
 
     if (textarea && result.changed) {
       commitEditorValue(textarea, result.nextValue);
+      readDraft();
     }
 
     window.requestAnimationFrame(() => {
@@ -1206,6 +1234,7 @@ export function MarkdownEditor({
       commitEditorValue(textarea, nextValue);
     }
 
+    readDraft();
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;
 
@@ -1301,25 +1330,17 @@ export function MarkdownEditor({
   }
 
   function commitEditorValue(textarea: HTMLTextAreaElement, nextValue: string) {
-    pendingEditorValueRef.current = nextValue;
-    if (pendingEditorValueTimeoutRef.current !== null) {
-      window.clearTimeout(pendingEditorValueTimeoutRef.current);
-    }
-
-    pendingEditorValueTimeoutRef.current = window.setTimeout(() => {
-      pendingEditorValueRef.current = null;
-      pendingEditorValueTimeoutRef.current = null;
-
-      const latestPropValue = propValueRef.current;
-
-      if (latestPropValue !== editorValueRef.current) {
-        editorValueRef.current = latestPropValue;
-        setEditorValue(latestPropValue);
-      }
-    }, PENDING_PARENT_DRAFT_TIMEOUT_MS);
     editorValueRef.current = nextValue;
-    setEditorValue(nextValue);
-    startTransition(() => onChange(nextValue));
+    if (textarea.value !== nextValue) textarea.value = nextValue;
+    refreshHighlightLayer();
+    if (findOpen) setEditorValue(nextValue);
+    // Keep workspace/outline/review renders out of the continuous typing path.
+    // Save, tab closing, review and export can still read the exact live draft.
+    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(function publishAfterPause() {
+      if (composingRef.current) draftTimerRef.current = setTimeout(publishAfterPause, SOURCE_DRAFT_DELAY_MS);
+      else startTransition(() => { readDraft(); });
+    }, SOURCE_DRAFT_DELAY_MS);
     scheduleFileLinkPopupRefresh(textarea, nextValue);
     scheduleSelectionChange(textarea);
   }
@@ -1419,9 +1440,7 @@ export function MarkdownEditor({
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
         }}
-      >
-        {highlightedMarkdown}
-      </pre>
+      />
       <textarea
         ref={textareaRef}
         aria-label="Source Markdown editor"
@@ -1432,9 +1451,11 @@ export function MarkdownEditor({
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
         }}
-        value={editorValue}
-        onBlur={(event) => flushSelectionChange(event.currentTarget)}
+        defaultValue={initialValue}
+        onBlur={(event) => { readDraft(); flushSelectionChange(event.currentTarget); }}
         onChange={(event) => handleEditorChange(event.currentTarget)}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => { composingRef.current = false; }}
         onContextMenu={openContextMenu}
         onClick={(event) => {
           scheduleFileLinkPopupRefresh(event.currentTarget);

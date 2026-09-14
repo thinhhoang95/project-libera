@@ -6,6 +6,7 @@ import { act, createElement, StrictMode, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Editor } from "@tiptap/core";
 import { anchorAt, newReview, syncReview, type ReviewDocument } from "../../src/lib/markdown-review";
+import { tiptapReviewKey } from "../../src/lib/tiptap-review";
 import { MarkdownReviewProvider, useMarkdownReview } from "../../src/components/libera/markdown-review-context";
 import type { OpenTab } from "../../src/components/libera/types";
 
@@ -116,6 +117,20 @@ test("background comment sync keeps Visual focus, selection and editability whil
     await act(async () => editor.commands.insertContent(" more typing"));
     assert.match(editor.getText(), /more typing/);
     assert.equal(h.review.error, "");
+  } finally { await h.dispose(); }
+});
+
+test("review UI updates reuse projected anchors and visual decorations when text is unchanged", async () => {
+  const h = await mountReview();
+  try {
+    await act(async () => { h.editor.commands.setTextSelection(6); h.editor.commands.insertContent(" edit"); });
+    await settle(300);
+    const projected = h.review.doc;
+    const decorations = tiptapReviewKey.getState(h.editor.state);
+    assert.match(projected!.snapshot, /edit/);
+    await act(async () => { h.review.selectThread("comment-id"); });
+    assert.equal(h.review.doc, projected, "An unrelated provider render must not resynchronize anchors");
+    assert.equal(tiptapReviewKey.getState(h.editor.state), decorations, "Do not rebuild visual comment decorations");
   } finally { await h.dispose(); }
 });
 

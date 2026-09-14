@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { syncReview, paragraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
@@ -160,7 +160,10 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   // Sync/reload only persist/read metadata. Toggling contenteditable for them
   // drops browser focus and can leave an IME composition stranded.
   const locked = !!busy && !["plan", "generate", "revise", "sync", "reload"].includes(busy);
-  const shown = doc?.key === key && activeTab ? syncReview(doc, activeTab.draft) : null;
+  const draft = activeTab?.draft;
+  // Scroll/view-state updates do not change anchors. Preserve the projection's
+  // identity so they also do not trigger a full visual comment remapping.
+  const shown = useMemo(() => doc?.key === key && draft !== undefined ? syncReview(doc, draft) : null, [doc, key, draft]);
   function select(range: ReviewRange, x: number, y: number) {
     try {
       const expanded = paragraphRange(snapshot(), range);
