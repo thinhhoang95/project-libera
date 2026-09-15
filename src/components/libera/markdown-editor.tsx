@@ -58,6 +58,8 @@ import type {
 } from "@/lib/markdown-editor-highlighting";
 import type { LiberaFileNode } from "@/lib/types";
 import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
+import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 
 type EditorContextMenuState = {
   image?: MarkdownImageSelection;
@@ -83,6 +85,7 @@ type MarkdownEditorProps = {
   fontSizePx: number;
   imageConverting: boolean;
   lineHeightPx: number;
+  mathMarkers?: MathMarkerSettings;
   openTabs: OpenTab[];
   recentFiles: LiberaFileNode[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -575,6 +578,7 @@ export function MarkdownEditor({
   fontSizePx,
   imageConverting,
   lineHeightPx,
+  mathMarkers,
   openTabs,
   recentFiles,
   textareaRef,
@@ -1237,21 +1241,67 @@ export function MarkdownEditor({
   async function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
     const imageFiles = getClipboardImageFiles(event.clipboardData);
 
-    if (!imageFiles.length) {
+    if (imageFiles.length) {
+      event.preventDefault();
+      setContextMenu(null);
+      closeFileLinkPopup();
+
+      const textarea = event.currentTarget;
+      const selection = {
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      };
+
+      await onInsertImageFile(imageFiles[0], selection);
       return;
     }
+
+    const clipboardMarkdown = event.clipboardData.getData("text/markdown");
+    const html = clipboardMarkdown ? "" : event.clipboardData.getData("text/html");
+    let replacement = clipboardMarkdown;
+    if (!replacement && html) {
+      try {
+        replacement = convertClipboardHtmlToMarkdown(html, mathMarkers);
+      } catch {
+        // Preserve the browser's plain-text fallback for malformed clipboard HTML.
+        return;
+      }
+    }
+
+    if (!replacement) return;
 
     event.preventDefault();
     setContextMenu(null);
     closeFileLinkPopup();
 
     const textarea = event.currentTarget;
-    const selection = {
-      start: textarea.selectionStart,
-      end: textarea.selectionEnd,
-    };
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const nextSelection = selectionStart + replacement.length;
+    const nextValue = `${editorValueRef.current.slice(0, selectionStart)}${replacement}${editorValueRef.current.slice(selectionEnd)}`;
 
-    await onInsertImageFile(imageFiles[0], selection);
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      nextSelectionEnd: nextSelection,
+      nextSelectionStart: nextSelection,
+      replacement,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+      selectionEnd,
+      selectionStart,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+
+    readDraft();
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(nextSelection, nextSelection);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+      scheduleFileLinkPopupRefresh(nextTextarea, nextValue);
+    });
   }
 
   function applyMarkdownFormat(

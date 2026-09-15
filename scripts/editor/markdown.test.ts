@@ -839,6 +839,44 @@ test("visual editor pastes Markdown as formatting, replaces selections and suppo
   }
 });
 
+test("source editor converts rich HTML paste to Markdown and replaces the selection", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/source-paste.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "Before selected after",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    const textarea = textareaRef.current!;
+    textarea.focus();
+    textarea.setSelectionRange(7, 15);
+    const event = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      files: [], items: [],
+      getData: (type: string) => type === "text/html"
+        ? "<h2>Heading</h2><p><strong>Bold</strong> and <em>italic</em></p>"
+        : type === "text/plain" ? "Heading Bold and italic" : "",
+    } });
+    await act(async () => { textarea.dispatchEvent(event); });
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(textarea.value, "Before ## Heading\n\n**Bold** and *italic* after");
+    assert.equal(changes.at(-1), textarea.value);
+    assert.equal(textarea.selectionStart, "Before ## Heading\n\n**Bold** and *italic*".length);
+    assert.equal(textarea.selectionEnd, textarea.selectionStart);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
 test('find navigation retains matches and block caches map offsets through edits', async () => {
   const { TiptapFind, tiptapFindPluginKey, updateTiptapFind } = await import('../../src/lib/tiptap-find');
   const editor = new Editor({ extensions: [...createMarkdownExtensions('Notes/find.md'), TiptapFind], content: 'one **one**\n\nLater one', contentType: 'markdown' });

@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -15,7 +15,7 @@ import type { LiberaFileNode } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { readChatResponse } from "./chat-stream-client";
 import { apiRequest } from "./api-client";
-import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -46,6 +46,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
   const [fontSizeError, setFontSizeError] = useState("");
   const [store, setStore] = useState<ChatStore | null>(null);
+  const [now, setNow] = useState(() => new Date());
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -70,6 +71,11 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
   const document = useMemo<ChatContext | null>(() => activeTab?.file.fileType === "markdown" ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.draft } : null, [activeTab]);
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -176,20 +182,34 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
     finally { setLoadingPhotos(false); }
   }
 
-  async function send() {
-    if (!chat || (!chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
+  function branch(messageId: string) {
+    if (!chat || requestRef.current || loadingPhotos || loadingFiles) return;
+    const index = chat.messages.findIndex((message) => message.id === messageId && message.role === "assistant");
+    if (index < 0) return;
+    const branched: DocumentChat = { ...chat, id: crypto.randomUUID(), title: `${chat.title} (branch)`, titleEdited: true,
+      messages: chat.messages.slice(0, index + 1), prompt: "", selections: [], photos: [] };
+    setStore((current) => current && ({ chats: [...current.chats, branched], activeId: branched.id }));
+    setError("");
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  async function send(retryMessageId?: string) {
+    if (!chat || (!retryMessageId && !chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
+    const retryIndex = retryMessageId ? chat.messages.findIndex((message) => message.id === retryMessageId && message.role === "assistant") : -1;
+    if (retryMessageId && (retryIndex < 1 || chat.messages[retryIndex - 1].role !== "user")) return;
     const id = chat.id;
     const prompt = chat.prompt;
     const selections = chat.selections;
     const photos = chat.photos ?? [];
-    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), photos, contexts: [...newDocumentContext(chat.messages, includedDocument).filter((context) => !selections.some((item) => item.kind === "document" && item.path === context.path)), ...selections] };
-    const messages = [...chat.messages, message];
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: [...newDocumentContext(chat.messages, includedDocument).filter((context) => !selections.some((item) => item.kind === "document" && item.path === context.path)), ...selections] };
+    const messages = retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
     requestRef.current = controller;
     setPending(id);
     setError("");
-    updateChat(id, (current) => ({ ...current, title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages, prompt: "", selections: [], photos: [] }));
+    updateChat(id, (current) => retryMessageId ? { ...current, messages } : ({ ...current, title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages, prompt: "", selections: [], photos: [] }));
     const assistantId = crypto.randomUUID();
+    let createdAt: string | undefined;
     let answer = "";
     let updateTimer: number | undefined;
     function publish(status?: "streaming" | "interrupted") {
@@ -197,8 +217,9 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
       updateTimer = undefined;
       const text = answer;
       if (!text) return;
+      createdAt ??= new Date().toISOString();
       updateChat(id, (current) => {
-        const assistant = { id: assistantId, role: "assistant" as const, text, status };
+        const assistant = { id: assistantId, role: "assistant" as const, text, status, createdAt };
         return { ...current, messages: current.messages.some((item) => item.id === assistantId)
           ? current.messages.map((item) => item.id === assistantId ? assistant : item)
           : [...current.messages, assistant] };
@@ -224,8 +245,8 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
         publish("interrupted");
         setError(controller.signal.aborted ? "" : cause instanceof Error ? cause.message : "Chat failed.");
       } else {
-        setError(controller.signal.aborted ? "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
-        updateChat(id, (current) => ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
+        setError(controller.signal.aborted ? retryMessageId ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
+        updateChat(id, (current) => retryMessageId ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
@@ -358,14 +379,19 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
             <p className="libera-chat-context-hint">{includedDocument ? "Your current Markdown draft is included." : "Type @ to bring a Markdown file into the conversation."}</p>
             <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
           </div>}
-          {chat?.messages.map((message) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => {
+          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
           })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
-          </div>)}<ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}</article>)}
+          </div>)}<ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
+          {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
+            <button type="button" className={buttonClass} aria-label="Regenerate response" title="Regenerate response (replaces this response and later messages)" disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user"} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
+            <button type="button" className={buttonClass} aria-label="Branch conversation" title="Branch into a new chat from this response" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => branch(message.id)}><GitBranch aria-hidden size={14} /></button>
+            {message.createdAt ? <time className="ml-1 text-xs tabular-nums" dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>{formatChatTimestamp(message.createdAt, now)}</time> : <span className="ml-1 text-xs">Time unavailable</span>}
+          </div>}</article>)}
           {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
         <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>

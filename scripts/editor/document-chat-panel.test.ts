@@ -359,6 +359,61 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     root = createRoot(host);
     await mount();
     assert.ok(host.textContent?.includes("Keep this partial answer"));
+
+    // Branching an earlier answer copies only its history and retains the source.
+    globalThis.fetch = mockFetch;
+    const originalChat = structuredClone(stored().chats[0]);
+    assert.ok(originalChat.messages.length > 2);
+    assert.match(host.querySelector("time")!.textContent!, /^\d{2}:\d{2}$/);
+    assert.equal(host.querySelector("time")!.dateTime, originalChat.messages[1].createdAt);
+    await click("Branch conversation");
+    await settle();
+    const branchId = stored().activeId;
+    const activeChat = () => stored().chats.find((item) => item.id === branchId)!;
+    assert.notEqual(branchId, originalChat.id);
+    assert.deepEqual(stored().chats[0], originalChat);
+    assert.deepEqual(activeChat().messages, originalChat.messages.slice(0, 2));
+    assert.equal(activeChat().prompt, "");
+    assert.deepEqual(activeChat().excludedDocumentPaths, originalChat.excludedDocumentPaths);
+    assert.equal(host.querySelectorAll('[aria-label="Regenerate response"]').length, 1);
+
+    // A failed retry restores the original answer; retry keeps composer drafts.
+    await act(async () => {
+      const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Unsent follow-up");
+      prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    globalThis.fetch = async (input, init) => String(input).endsWith("/state") ? mockFetch(input, init) : Response.json({ error: "Retry failed" }, { status: 500 });
+    await click("Regenerate response");
+    await settle();
+    assert.deepEqual(activeChat().messages, originalChat.messages.slice(0, 2));
+    assert.equal(activeChat().prompt, "Unsent follow-up");
+    globalThis.fetch = mockFetch;
+    await click("Regenerate response");
+    await settle();
+    assert.equal(requests.at(-1)!.messages.length, 1);
+    assert.deepEqual(requests.at(-1)!.messages[0].photos, originalChat.messages[0].photos);
+    assert.equal(activeChat().messages.length, 2);
+    assert.notEqual(activeChat().messages[1].id, originalChat.messages[1].id);
+    assert.ok(activeChat().messages[1].createdAt);
+    assert.equal(activeChat().prompt, "Unsent follow-up");
+    assert.deepEqual(stored().chats[0], originalChat);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await mount();
+    assert.equal(stored().activeId, branchId);
+    assert.equal(host.querySelector("time")!.dateTime, activeChat().messages[1].createdAt);
+    const branchMessages = structuredClone(activeChat().messages);
+    await act(async () => {
+      const history = host.querySelector<HTMLSelectElement>("#document-chat-history")!;
+      history.value = originalChat.id;
+      history.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    });
+    await click("Regenerate response");
+    await settle();
+    assert.equal(requests.at(-1)!.messages.length, 1, "Regenerating an older response excludes later turns");
+    assert.equal(stored().chats[0].messages.length, 2);
+    assert.deepEqual(activeChat().messages, branchMessages, "Regenerating the source leaves its branch intact");
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

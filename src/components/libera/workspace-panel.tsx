@@ -1468,6 +1468,7 @@ export function WorkspacePanel({
                 fontFamily={markdownEditorFontFamily}
                 fontSizePx={markdownFontSizePx}
                 lineHeightPx={markdownLineHeightPx}
+                mathMarkers={markdownPreferences}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}

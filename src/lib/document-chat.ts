@@ -13,9 +13,16 @@ export type ChatPhoto = { id: string; name: string; dataUrl: string };
 export function validateChatPhotos(value: unknown): value is ChatPhoto[] {
   return Array.isArray(value) && value.length <= MAX_CHAT_PHOTOS && value.every((photo) => photo && typeof photo.id === "string" && typeof photo.name === "string" && typeof photo.dataUrl === "string" && photo.dataUrl.length <= Math.ceil(MAX_CHAT_PHOTO_BYTES / 3) * 4 + 64 && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+={0,2}$/i.test(photo.dataUrl));
 }
-export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; contexts?: ChatContext[]; photos?: ChatPhoto[]; status?: "streaming" | "interrupted" };
+export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string; contexts?: ChatContext[]; photos?: ChatPhoto[]; status?: "streaming" | "interrupted" };
 export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[] };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
+
+export function formatChatTimestamp(createdAt: string, now = new Date()) {
+  const date = new Date(createdAt);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return date.toDateString() === now.toDateString() ? time : `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
+}
 
 export function newDocumentContext(messages: ChatMessage[], document: ChatContext | null): ChatContext[] {
   if (!document) return [];
@@ -26,6 +33,7 @@ export function newDocumentContext(messages: ChatMessage[], document: ChatContex
 export function validateChatMessages(value: unknown, enforceLimits = true): value is ChatMessage[] {
   return Array.isArray(value) && value.length > 0 && (!enforceLimits || value.length <= 200) && value.every((message) =>
     message && typeof message.id === "string" && (message.role === "user" || message.role === "assistant") &&
+    (message.createdAt === undefined || (typeof message.createdAt === "string" && Number.isFinite(Date.parse(message.createdAt)))) &&
     (message.status === undefined || message.status === "streaming" || message.status === "interrupted") && (message.photos === undefined || validateChatPhotos(message.photos)) && typeof message.text === "string" && (!enforceLimits || message.text.length <= 100_000) &&
     (message.contexts === undefined || (Array.isArray(message.contexts) && (!enforceLimits || message.contexts.length <= 30) && message.contexts.every((context: ChatContext) =>
       context && (context.kind === "document" || context.kind === "selection") &&
