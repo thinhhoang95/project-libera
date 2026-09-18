@@ -872,10 +872,12 @@ button.border[class*="border-white"]:hover {
   background: linear-gradient(155deg, #eff6ffed, #f8f6fbed 68%, #efedffed);
 }
 html.libera-glass .libera-left-panel::before {
-  background: linear-gradient(155deg, #f5faff9e, #ffffff70 55%, #ede9ff60);
+  background: linear-gradient(155deg, #f5faff4d, #ffffff40 55%, #ede9ff33);
   box-shadow: inset 0 1px 0 #ffffff66;
 }
 html.libera-glass .libera-left-panel {
+  /* Let the native backdrop show through a single, lightly tinted sheen. */
+  background: transparent;
   --border: #94a8ce20;
   --input: #91a4c52e;
   --muted: #7392d111;
