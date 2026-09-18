@@ -6,8 +6,9 @@ import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
 
-export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ to add files", disabled, files, tabs, composerRef, onChange, onAttach, onLoading, onError, onSend }: {
+export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ to add files", disabled, files, tabs, documentContexts = [], composerRef, onChange, onAttach, onLoading, onError, onSend }: {
   chatId: string; value: string; placeholder?: string; disabled: boolean; files: LiberaFileNode[]; tabs: OpenTab[];
+  documentContexts?: ChatContext[];
   composerRef: RefObject<HTMLTextAreaElement | null>; onChange: (value: string) => void;
   onAttach: (context: ChatContext) => void; onLoading: (loading: boolean) => void;
   onError: (message: string) => void; onSend: () => void;
@@ -33,8 +34,9 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
     setLoading(true); onLoading(true); onError("");
     try {
       const tab = tabs.find((item) => !item.untitled && item.file.path === file.path);
-      const payload = tab ? null : await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(file.path)}`);
-      const text = tab?.draft ?? payload?.content;
+      const existing = documentContexts.find((context) => context.kind === "document" && context.path === file.path);
+      const payload = existing || tab ? null : await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(file.path)}`);
+      const text = existing?.text ?? tab?.draft ?? payload?.content;
       if (typeof text !== "string" || (payload && payload.file.fileType !== "markdown")) throw new Error(`Could not read ${file.name}.`);
       if (text.length > 500_000) throw new Error(`${file.name} is too large to attach (maximum 500,000 characters).`);
       onAttach({ kind: "document", path: file.path, name: file.name, text });
@@ -56,7 +58,7 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
       ><span className="block truncate font-medium">{file.name}</span><span className="block truncate text-muted-foreground">{file.path}</span></button>) : <p className="p-2 text-xs text-muted-foreground">No matching Markdown files</p>}
     </div>}
     <textarea ref={composerRef} aria-label="Chat prompt" aria-autocomplete="list" aria-controls={mention ? `chat-files-${chatId}` : undefined} aria-activedescendant={mention && matches.length ? `chat-file-${chatId}-${index}` : undefined}
-      placeholder={placeholder} rows={3} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent"
+      placeholder={placeholder} rows={1} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent"
       value={value} disabled={disabled || loading} onChange={(event) => { onChange(event.target.value); locate(event.currentTarget); }}
       onSelect={(event) => locate(event.currentTarget)} onBlur={() => setMention(null)}
       onKeyDown={(event) => {

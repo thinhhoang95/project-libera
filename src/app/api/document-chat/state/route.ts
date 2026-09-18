@@ -11,7 +11,8 @@ export async function GET(request: NextRequest) {
   if (authError) return authError;
   try {
     const [history, panel, fontSize] = await Promise.all([readChatState("history"), readChatState("panel"), readChatState("font-size")]);
-    return NextResponse.json({ history, panel, fontSize, defaultReasoningEffort: getAiFunctionOptions("chat").reasoning.effort });
+    const options = getAiFunctionOptions("chat");
+    return NextResponse.json({ history, panel, fontSize, model: options.model, defaultReasoningEffort: options.reasoning.effort });
   } catch { return jsonError("Could not read saved document chats.", 500); }
 }
 export async function PUT(request: NextRequest) {

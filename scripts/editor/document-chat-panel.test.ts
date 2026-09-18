@@ -25,13 +25,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
   let savedFontSize: number | null = null;
   let savedHistory: ChatStore | null = null;
+  let fileReads = 0;
   globalThis.fetch = async (input, init) => {
-    if (String(input).startsWith("/api/files?")) return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" });
+    if (String(input).startsWith("/api/files?")) { fileReads++; return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" }); }
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
       if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else savedHistory = body.value; return Response.json({ saved: true }); }
-      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, defaultReasoningEffort: "max" });
+      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
       "````markdown", "# A helpful answer", "", "**Bold** and *italic* with `inline code`.", "",
@@ -41,7 +42,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
       String.raw`Inline \(x^2\) and display:`, "", String.raw`\[E=mc^2\]`, "",
       "[Reference](https://example.com)", "", "![Image](https://example.com/image.png)", "",
       '<script>alert("unsafe")</script>', "````",
-    ].join("\n") });
+    ].join("\n"), usage: { inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 } });
   };
   const host = document.getElementById("root")!;
   let root = createRoot(host);
@@ -54,6 +55,9 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
     await mount();
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
+    assert.equal(host.querySelector('[aria-label="Model: test/provider-model"]')?.textContent, "provider-model");
+    assert.ok(!host.textContent?.includes("Enter to send"));
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "max");
     assert.equal(stored().chats[0].reasoningEffort, undefined);
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')?.disabled, true);
@@ -84,6 +88,8 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Send message");
     await settle();
     assert.equal(requests.length, 1);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
+    assert.deepEqual(stored().chats[0].usageRequests?.[0].usage, { inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 });
     assert.equal(requests[0].reasoningEffort, "high");
     assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual\nparagraph\nhidden line"]);
     const contextSummaries = host.querySelectorAll<HTMLElement>(".libera-chat-message details summary");
@@ -139,6 +145,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     const firstId = stored().activeId;
     await click("New chat");
     assert.equal(stored().chats.length, 2);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
     const history = host.querySelector<HTMLSelectElement>("#document-chat-history")!;
     assert.ok(history.classList.contains("font-semibold"));
     assert.ok(history.parentElement?.querySelector("svg"));
@@ -147,6 +154,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
     menuAction = "increase-font-size";
     await click("Chat settings");
     assert.equal(savedFontSize, 15);
@@ -301,6 +309,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.ok(referenced.some((context) => context.text === "# Curated reference"));
     assert.equal(stored().chats[0].selections.length, 0);
 
+    const readsBeforeRepeat = fileReads;
+    await mentionFile("Again @cu");
+    assert.equal(fileReads, readsBeforeRepeat, "Previously attached files are not fetched again");
+    assert.equal(stored().chats[0].selections.length, 0, "Previously attached files do not become new attachments");
+    await click("Send message");
+    await settle();
+    assert.deepEqual(requests.at(-1)!.messages.at(-1)!.contexts, []);
+
     let streamController: ReadableStreamDefaultController<Uint8Array>;
     let streamCanceled = false;
     globalThis.fetch = async (input, init) => {
@@ -324,6 +340,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
         await new Promise((resolve) => setTimeout(resolve, 65));
       });
     }
+    const usageBeforeStream = stored().chats[0].usageRequests?.length ?? 0;
     await askStream();
     const log = host.querySelector<HTMLDivElement>('[role="log"]')!;
     let height = 1000;
@@ -343,7 +360,11 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await emit({ type: "delta", text: " continues" });
     assert.equal(log.scrollTop, 1400, "Returning to the bottom resumes following the answer");
     await act(async () => { log.scrollTop = 200; log.dispatchEvent(new dom.window.Event("scroll")); });
+    await emit({ type: "usage", usage: { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 } });
+    await emit({ type: "usage", usage: { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 } });
     await emit({ type: "done" });
+    assert.equal(stored().chats[0].usageRequests?.length, usageBeforeStream + 1, "Repeated usage frames update the same request");
+    assert.deepEqual(stored().chats[0].usageRequests?.at(-1)?.usage, { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 });
     assert.equal(log.scrollTop, 200, "Finishing the response must also preserve the reading position");
     assert.equal(stored().chats[0].messages.at(-1)?.text, "**Streaming response** continues");
     assert.equal(stored().chats[0].messages.at(-1)?.status, undefined);
@@ -355,6 +376,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(streamCanceled, true);
     assert.equal(stored().chats[0].messages.at(-1)?.text, "Keep this partial answer");
     assert.equal(stored().chats[0].messages.at(-1)?.status, "interrupted");
+    assert.ok(host.querySelector('[aria-label="Chat token usage"]')?.textContent?.includes("≥"));
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
@@ -373,6 +395,8 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.notEqual(branchId, originalChat.id);
     assert.deepEqual(stored().chats[0], originalChat);
     assert.deepEqual(activeChat().messages, originalChat.messages.slice(0, 2));
+    assert.equal(activeChat().usageRequests?.length, 1);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
     assert.equal(activeChat().prompt, "");
     assert.deepEqual(activeChat().excludedDocumentPaths, originalChat.excludedDocumentPaths);
     assert.equal(host.querySelectorAll('[aria-label="Regenerate response"]').length, 1);
@@ -398,6 +422,8 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.ok(activeChat().messages[1].createdAt);
     assert.equal(activeChat().prompt, "Unsent follow-up");
     assert.deepEqual(stored().chats[0], originalChat);
+    assert.equal(activeChat().usageRequests?.length, 3, "Retries remain recorded even when replies are replaced or restored");
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "≥2.4K≥84≥2K");
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();

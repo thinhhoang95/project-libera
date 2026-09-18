@@ -37,7 +37,7 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     assert.ok(payload.messages[0].content.includes("pasted directly into the WYSIWYG and Source editors"));
     assert.ok(payload.messages[0].content.includes("Use a two-sentence maximum."));
     assert.ok(payload.messages[1].content.includes("Unsaved content"));
-    return Response.json({ choices: [{ message: { content: "Answer from configured model" } }] });
+    return Response.json({ choices: [{ message: { content: "Answer from configured model" } }], usage: { prompt_tokens: 500, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } } });
   };
   function request(body: unknown, authenticated = true) {
     return new NextRequest("http://localhost/api/document-chat", { method: "POST", headers: authenticated ? { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` } : {}, body: JSON.stringify(body) });
@@ -49,7 +49,7 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     assert.equal(calls, 0);
     const response = await POST(request({ reasoningEffort: "xhigh", messages: [{ id: "1", role: "user", text: "Explain", contexts: [{ kind: "document", path: "a.md", name: "a.md", text: "Unsaved content" }] }] }));
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { text: "Answer from configured model", model: "test/preferences-model" });
+    assert.deepEqual(await response.json(), { text: "Answer from configured model", model: "test/preferences-model", usage: { inputTokens: 500, outputTokens: 20, cachedTokens: 0 } });
     assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;

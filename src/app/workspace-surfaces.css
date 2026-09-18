@@ -134,7 +134,8 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-panel .libera-chat-context p { font-size: 10px; }
 .libera-chat-composer { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--card)); border-radius: 13px; background: var(--card); box-shadow: 0 2px 10px #547bd009; transition: border-color 150ms, box-shadow 150ms; }
 .libera-chat-composer:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }
-.libera-chat-panel .libera-chat-composer textarea { border: 0; border-radius: 13px; background: transparent; min-height: 70px; padding: 12px 14px 6px; }
+.libera-chat-panel .libera-chat-composer textarea { border: 0; border-radius: 13px; background: transparent; height: 38px; min-height: 38px; overflow-y: hidden; padding: 12px 14px 6px; transition: height 150ms, min-height 150ms; }
+.libera-chat-panel .libera-chat-composer textarea:focus { height: 70px; min-height: 70px; overflow-y: auto; }
 .libera-chat-composer textarea::placeholder { color: var(--muted-foreground); }
 .libera-chat-composer-actions { padding: 0 9px 9px; }
 .libera-chat-composer-actions select { order: 1; margin-left: auto; border: 1px solid var(--border); border-radius: 8px; min-width: 65px; padding: 6px 8px; text-align: center; }
@@ -143,6 +144,12 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-panel .libera-chat-send { color: white; background: linear-gradient(135deg, #7b9ef8, #9b8ce9); border-radius: 10px; }
 .libera-chat-panel .libera-chat-send:not(:disabled):hover { background: #6589e8; color: white; }
 .libera-chat-panel .libera-chat-key-hint { font-size: 10px; text-align: center; color: var(--muted-foreground); padding-top: 2px; }
+.libera-chat-status { display: flex; align-items: center; justify-content: center; gap: 14px; min-width: 0; padding-top: 2px; color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
+.libera-chat-token-usage { display: flex; gap: 14px; }
+.libera-chat-token-usage > span { display: inline-flex; align-items: center; gap: 4px; cursor: help; border-radius: 3px; }
+.libera-chat-token-usage > span:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.libera-chat-model { min-width: 0; max-width: 45%; overflow: hidden; border-left: 1px solid var(--border); padding-left: 14px; border-radius: 3px; text-overflow: ellipsis; white-space: nowrap; }
+.libera-chat-model:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .libera-chat-panel button:focus-visible,
 .libera-media-viewer button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 @media (max-width: 1023px) {
@@ -155,7 +162,7 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
   .libera-viewer-toolbar > div { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .libera-chat-composer, .libera-editor-toolbar button { transition: none; }
+  .libera-chat-composer, .libera-chat-composer textarea, .libera-editor-toolbar button { transition: none; }
 }
 
 html.dark.libera-glass .libera-glass-panel.libera-chat-panel { text-shadow: none; }
