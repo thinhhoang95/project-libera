@@ -11,12 +11,20 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   const { createRoot } = await import("react-dom/client");
   const originalFetch = globalThis.fetch;
-  const requests: { reasoningEffort?: string; messages: { contexts: { text: string; kind: string }[]; photos?: { dataUrl: string; name: string }[] }[] }[] = [];
+  const requests: { model?: string; reasoningEffort?: string; messages: { contexts: { text: string; kind: string }[]; photos?: { dataUrl: string; name: string }[] }[] }[] = [];
   let menuAction = "manage-chats";
   let exported: { fileName: string; content: string } | null = null;
   let createdDraft: { fileName: string; content: string } | null = null;
   let notebookExport: { parentPath: string; content: string; name: string } | null = null;
   window.liberaMenu = { popup: async (menu) => {
+    const firstItem = menu.items[0];
+    if (firstItem.type !== "separator" && firstItem.id.startsWith("chat-model-")) {
+      assert.deepEqual(menu.items.map((item) => item.type !== "separator" && [item.label, item.type, item.checked]), [
+        ["test/provider-model", "radio", true],
+        ["test/alternative-model", "radio", false],
+      ]);
+      return menuAction;
+    }
     assert.equal(menu.items[0].type !== "separator" && menu.items[0].label, "Manage Chats");
     const exportItem = menu.items[1];
     assert.ok(exportItem.type !== "separator" && exportItem.submenu?.length === 3);
@@ -32,7 +40,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
       if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else savedHistory = body.value; return Response.json({ saved: true }); }
-      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", defaultReasoningEffort: "max" });
+      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", alternativeModels: ["test/alternative-model"], defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
       "````markdown", "# A helpful answer", "", "**Bold** and *italic* with `inline code`.", "",
@@ -50,13 +58,17 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
     await mount();
     assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
     assert.equal(host.querySelector('[aria-label="Model: test/provider-model"]')?.textContent, "provider-model");
+    menuAction = "chat-model-1";
+    await click("Model: test/provider-model");
+    assert.equal(host.querySelector('[aria-label="Model: test/alternative-model"]')?.textContent, "alternative-model");
+    menuAction = "manage-chats";
     assert.ok(!host.textContent?.includes("Enter to send"));
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "max");
     assert.equal(stored().chats[0].reasoningEffort, undefined);
@@ -90,6 +102,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(requests.length, 1);
     assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
     assert.deepEqual(stored().chats[0].usageRequests?.[0].usage, { inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 });
+    assert.equal(requests[0].model, "test/alternative-model");
     assert.equal(requests[0].reasoningEffort, "high");
     assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual\nparagraph\nhidden line"]);
     const contextSummaries = host.querySelectorAll<HTMLElement>(".libera-chat-message details summary");
@@ -277,6 +290,23 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.ok(host.querySelector('img[alt="photo.png"]'));
 
 
+
+    // Slash commands insert configured quick prompts without sending and select $1.
+    const beforeQuickPrompt = requests.length;
+    await act(async () => {
+      const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "/sum");
+      prompt.setSelectionRange(4, 4);
+      prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    assert.equal(host.querySelector('[role="listbox"]')?.getAttribute("aria-label"), "Quick prompts");
+    assert.ok(host.textContent?.includes("/summarize"));
+    await act(async () => host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, key: "Enter" })));
+    await settle();
+    const quickPromptInput = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+    assert.equal(requests.length, beforeQuickPrompt, "Enter inserts a quick prompt without sending it");
+    assert.equal(stored().chats[0].prompt, "Summarize $1 in bullets.");
+    assert.deepEqual([quickPromptInput.selectionStart, quickPromptInput.selectionEnd], [10, 12]);
 
     // References attach complete file snapshots, including unsaved open tabs.
     async function mentionFile(query: string) {

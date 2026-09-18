@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiChatCustomInstruction, getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiChatCustomInstruction, getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, streamOpenRouterCompletion, type OpenRouterMessage } from "@/lib/openrouter";
 import { chatCompletionContent, isChatReasoningEffort, validateChatMessages } from "@/lib/document-chat";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
@@ -14,11 +14,14 @@ export async function POST(request: NextRequest) {
   try {
     const raw = await request.text();
     if (raw.length > 48_000_000) return jsonError("This chat is too large. Start a new chat or remove some attachments.", 413);
-    let body: { messages?: unknown; reasoningEffort?: unknown; stream?: boolean } | null;
+    let body: { messages?: unknown; model?: unknown; reasoningEffort?: unknown; stream?: boolean } | null;
     try { body = JSON.parse(raw); } catch { return jsonError("Invalid chat request.", 400); }
     if (!validateChatMessages(body?.messages) || body.messages.at(-1)?.role !== "user") return jsonError("Invalid chat messages.", 400);
     if (body.reasoningEffort !== undefined && !isChatReasoningEffort(body.reasoningEffort)) return jsonError("Invalid reasoning effort.", 400);
     const options = getAiFunctionOptions("chat");
+    const models = getAiChatModels();
+    const model = body.model === undefined ? options.model : body.model;
+    if (typeof model !== "string" || !models.includes(model)) return jsonError("Invalid chat model.", 400);
     const customInstruction = getAiChatCustomInstruction().trim();
     const mathInstruction = mathMarkerSystemInstruction(getConfiguredMarkdownPreferences());
     const systemInstruction = [
@@ -29,7 +32,7 @@ export async function POST(request: NextRequest) {
       { role: "system", content: systemInstruction },
       ...body.messages.map((message) => ({ role: message.role, content: chatCompletionContent(message) })),
     ];
-    const completionOptions = { ...options, reasoning: { effort: body.reasoningEffort ?? options.reasoning.effort } };
+    const completionOptions = { ...options, model, reasoning: { effort: body.reasoningEffort ?? options.reasoning.effort } };
     if (body.stream === true) {
       const cancellation = new AbortController();
       const signal = AbortSignal.any([request.signal, cancellation.signal, AbortSignal.timeout(10 * 60_000)]);
@@ -45,7 +48,7 @@ export async function POST(request: NextRequest) {
               send({ type: "delta", text });
             }
             if (!content.trim()) throw new Error("The model returned an empty response. Please try again.");
-            send({ type: "done", model: options.model });
+            send({ type: "done", model });
           } catch (error) {
             send({ type: "error", message: signal.aborted ? "Response stopped or timed out." : error instanceof Error ? error.message : "Chat failed." });
           } finally {
@@ -59,7 +62,7 @@ export async function POST(request: NextRequest) {
     }
     const result = await createOpenRouterCompletion(messages, { ...completionOptions, signal: AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]) });
     if (!result.content.trim()) return jsonError("The model returned an empty response. Please try again.", 502);
-    return NextResponse.json({ text: result.content, model: options.model, usage: result.usage });
+    return NextResponse.json({ text: result.content, model, usage: result.usage });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Document chat failed.", 500);
   }

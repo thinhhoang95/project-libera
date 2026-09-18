@@ -21,6 +21,7 @@ import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, expo
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
+import type { QuickPrompt } from "@/lib/quick-prompts";
 
 const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40";
 function selectionExcerpt(text: string) {
@@ -41,10 +42,11 @@ const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMar
     baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
 });
 
-export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
+export function DocumentChatPanel({ files = [], tabs = [], quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
   const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
+  const [models, setModels] = useState<string[]>([]);
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
   const [fontSizeError, setFontSizeError] = useState("");
@@ -82,10 +84,16 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
 
   useEffect(() => {
     let disposed = false;
-    void apiRequest<{ history: ChatStore | null; fontSize?: unknown; model?: unknown; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, fontSize: savedFontSize, model: configuredModel, defaultReasoningEffort: configuredEffort }) => {
+    void apiRequest<{ history: ChatStore | null; fontSize?: unknown; model?: unknown; alternativeModels?: unknown; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, fontSize: savedFontSize, model: configuredModel, alternativeModels, defaultReasoningEffort: configuredEffort }) => {
       if (disposed) return;
       if (isChatFontSize(savedFontSize)) setFontSize(savedFontSize);
-      if (typeof configuredModel === "string" && configuredModel.trim()) setModel(configuredModel);
+      if (typeof configuredModel === "string" && configuredModel.trim()) {
+        const availableModels = Array.from(new Set([configuredModel, ...(Array.isArray(alternativeModels) ? alternativeModels : [])]
+          .filter((candidate): candidate is string => typeof candidate === "string" && !!candidate.trim())
+          .map((candidate) => candidate.trim())));
+        setModel(configuredModel.trim());
+        setModels(availableModels);
+      }
       if (isChatReasoningEffort(configuredEffort)) setDefaultReasoningEffort(configuredEffort);
       if (history != null && !validateChatStore(history)) throw new Error("Saved chat history is invalid.");
       const first = createChat();
@@ -269,7 +277,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
       updateChat(id, (current) => ({ ...current, usageRequests: [...chatUsageRequests(chat), { id: assistantId, messageId: messages.at(-1)!.id }] }));
       const response = await fetch("/api/document-chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stream: true, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), reasoningEffort: chat.reasoningEffort }),
+        body: JSON.stringify({ stream: true, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), model, reasoningEffort: chat.reasoningEffort }),
         signal: controller.signal,
       });
       await readChatResponse(response, controller.signal, (text) => {
@@ -455,7 +463,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
 
           {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "document" ? context.path : context.text}>{context.kind === "document" ? `File: ${context.name}` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
           <div className="libera-chat-composer flex flex-col gap-0.5">
-          <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} tabs={tabs}
+          <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} tabs={tabs} quickPrompts={quickPrompts}
             documentContexts={[...(chat?.messages.flatMap((message) => message.contexts ?? []) ?? []), ...(chat?.selections ?? [])]}
             onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }))}
             onLoading={setLoadingFiles} onError={setError} onSend={() => void send()}
@@ -470,7 +478,7 @@ export function DocumentChatPanel({ files = [], tabs = [], activeTab, collapsed,
             onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
           >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length)}><ArrowUp size={18} /></button>}</div></div>
           </div>
-          {chat && <ChatTokenUsage chat={chat} model={model} />}
+          {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={setModel} />}
         </form>
     </div>
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>

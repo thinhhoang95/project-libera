@@ -1,7 +1,7 @@
 import { isChatFontSize } from "@/lib/chat-preferences";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiFunctionOptions } from "@/lib/ai-preferences";
+import { getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
 import { validateChatStore } from "@/lib/document-chat";
 import { readChatState, writeChatState } from "@/lib/storage/document-chat";
 
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   try {
     const [history, panel, fontSize] = await Promise.all([readChatState("history"), readChatState("panel"), readChatState("font-size")]);
     const options = getAiFunctionOptions("chat");
-    return NextResponse.json({ history, panel, fontSize, model: options.model, defaultReasoningEffort: options.reasoning.effort });
+    return NextResponse.json({ history, panel, fontSize, model: options.model, alternativeModels: getAiChatModels().slice(1), defaultReasoningEffort: options.reasoning.effort });
   } catch { return jsonError("Could not read saved document chats.", 500); }
 }
 export async function PUT(request: NextRequest) {

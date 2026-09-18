@@ -148,7 +148,8 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-token-usage { display: flex; gap: 14px; }
 .libera-chat-token-usage > span { display: inline-flex; align-items: center; gap: 4px; cursor: help; border-radius: 3px; }
 .libera-chat-token-usage > span:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
-.libera-chat-model { min-width: 0; max-width: 45%; overflow: hidden; border-left: 1px solid var(--border); padding-left: 14px; border-radius: 3px; text-overflow: ellipsis; white-space: nowrap; }
+.libera-chat-model { min-width: 0; max-width: 45%; overflow: hidden; border: 0; border-left: 1px solid var(--border); padding: 0 0 0 14px; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; }
+button.libera-chat-model { appearance: none; cursor: pointer; text-align: left; }
 .libera-chat-model:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .libera-chat-panel button:focus-visible,
 .libera-media-viewer button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
