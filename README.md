@@ -117,6 +117,11 @@ The Windows installer is written to `dist-electron/`. Build macOS packages on
 macOS and Windows packages on Windows; the caches avoid reinstalling dependencies
 but do not make native code-signing tools cross-platform.
 
+Electron production builds use Next.js' supported Webpack build mode and start
+from a clean `.next` directory. This also supports Windows workspaces on shared
+or removable filesystems that do not implement junctions or `readlink` with
+standard NTFS behavior.
+
 Run the desktop app in development with:
 
 ```bash

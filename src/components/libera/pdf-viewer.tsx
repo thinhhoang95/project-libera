@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   type UIEvent as ReactUIEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -21,10 +22,12 @@ import {
 import { GlobalWorkerOptions, TextLayer, getDocument } from "pdfjs-dist";
 import type {
   PDFDocumentProxy,
+  PDFDocumentLoadingTask,
   PDFPageProxy,
   RenderTask,
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
+import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
 import { apiRequest } from "@/components/libera/api-client";
 import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
 import {
@@ -65,6 +68,8 @@ const HIGHLIGHT_COLOR = "#fde047";
 const PDF_PAGE_RENDER_ROOT_MARGIN = "1200px 0px";
 const PDF_PAGE_RENDER_FALLBACK_COUNT = 2;
 const PDF_PAGE_RENDER_CONCURRENCY = 2;
+const PDF_SCROLL_STATE_INTERVAL_MS = 150;
+const EMPTY_ANNOTATIONS: PdfAnnotation[] = [];
 
 type PdfTool = "select" | "highlight" | "text";
 type PdfScrollPosition = {
@@ -117,21 +122,24 @@ function renderCanvas(viewport: PageViewport, canvas: HTMLCanvasElement) {
     return;
   }
 
-  const outputScale = window.devicePixelRatio || 1;
+  const size = pdfCanvasSize(viewport.width, viewport.height, window.devicePixelRatio);
 
-  canvas.width = Math.floor(viewport.width * outputScale);
-  canvas.height = Math.floor(viewport.height * outputScale);
+  canvas.width = size.width;
+  canvas.height = size.height;
   canvas.style.width = `${viewport.width}px`;
   canvas.style.height = `${viewport.height}px`;
-  context.setTransform(outputScale, 0, 0, outputScale, 0, 0);
-  context.clearRect(0, 0, viewport.width, viewport.height);
+  // CSS and text/annotation coordinates stay at the requested zoom. Only the
+  // backing bitmap is capped; PDF.js applies this transform when rendering.
+  return [size.width / viewport.width, 0, 0, size.height / viewport.height, 0, 0];
 }
 
-async function readPdfBasePageLayouts(pdfDocument: PDFDocumentProxy) {
+async function readPdfBasePageLayouts(pdfDocument: PDFDocumentProxy, signal: AbortSignal) {
   const layouts: PdfPageLayout[] = [];
 
   for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+    signal.throwIfAborted();
     const page = await pdfDocument.getPage(pageNumber);
+    signal.throwIfAborted();
     const viewport = page.getViewport({ scale: 1 });
 
     layouts.push({
@@ -227,8 +235,9 @@ export function PdfViewer({
   });
   const pageElementRefs = useRef<Map<number, HTMLElement>>(new Map());
   const pendingScrollViewStateRef = useRef<PdfScrollPosition | null>(null);
-  const scrollViewStateFrameRef = useRef<number | null>(null);
+  const scrollViewStateTimeoutRef = useRef<number | null>(null);
   const onViewStateChangeRef = useRef(onViewStateChange);
+  const screenshotCallbacksRef = useRef({ onCancelScreenshotSnip, onCompleteScreenshotSnip });
   const initialViewStateRef = useRef(initialViewState);
   const annotationScrollStateRef = useRef<PdfAnnotationScrollState>({
     allowInitialScroll:
@@ -238,6 +247,11 @@ export function PdfViewer({
   });
   const requestRenderSlot = usePdfRenderQueue(PDF_PAGE_RENDER_CONCURRENCY);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const textContentCache = useMemo(
+    () => pdfDocument ? new PdfTextContentCache() : null,
+    [pdfDocument],
+  );
+  useEffect(() => () => textContentCache?.clear(), [textContentCache]);
   const [basePageLayouts, setBasePageLayouts] = useState<PdfPageLayout[]>([]);
   const [renderWindowPages, setRenderWindowPages] = useState<Set<number>>(new Set());
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
@@ -293,6 +307,14 @@ export function PdfViewer({
   useEffect(() => {
     onViewStateChangeRef.current = onViewStateChange;
   }, [onViewStateChange]);
+
+  useEffect(() => {
+    screenshotCallbacksRef.current = { onCancelScreenshotSnip, onCompleteScreenshotSnip };
+  }, [onCancelScreenshotSnip, onCompleteScreenshotSnip]);
+
+  const cancelScreenshotSnip = useCallback(() => {
+    screenshotCallbacksRef.current.onCancelScreenshotSnip?.();
+  }, []);
 
   useEffect(() => {
     initialViewStateRef.current = initialViewState;
@@ -373,9 +395,9 @@ export function PdfViewer({
   ]);
 
   const flushPendingScrollViewState = useCallback(() => {
-    if (scrollViewStateFrameRef.current !== null) {
-      window.cancelAnimationFrame(scrollViewStateFrameRef.current);
-      scrollViewStateFrameRef.current = null;
+    if (scrollViewStateTimeoutRef.current !== null) {
+      window.clearTimeout(scrollViewStateTimeoutRef.current);
+      scrollViewStateTimeoutRef.current = null;
     }
 
     if (!pendingScrollViewStateRef.current) {
@@ -393,29 +415,35 @@ export function PdfViewer({
         scrollTop: event.currentTarget.scrollTop,
       };
 
-      if (scrollViewStateFrameRef.current !== null) {
+      if (scrollViewStateTimeoutRef.current !== null) {
         return;
       }
 
-      scrollViewStateFrameRef.current = window.requestAnimationFrame(() => {
-        scrollViewStateFrameRef.current = null;
-
-        if (!pendingScrollViewStateRef.current) {
-          return;
-        }
-
-        updateViewState(pendingScrollViewStateRef.current);
-        pendingScrollViewStateRef.current = null;
-      });
+      scrollViewStateTimeoutRef.current = window.setTimeout(
+        flushPendingScrollViewState,
+        PDF_SCROLL_STATE_INTERVAL_MS,
+      );
     },
-    [updateViewState],
+    [flushPendingScrollViewState],
   );
 
   useEffect(() => {
     let active = true;
-    let loadedDocument: PDFDocumentProxy | null = null;
+    const controller = new AbortController();
+    let loadingTask: PDFDocumentLoadingTask | null = null;
+    function destroyLoadingTask() {
+      const task = loadingTask;
+      loadingTask = null;
+      // Destroying the task also destroys its worker and any loaded document.
+      if (task) void task.destroy().catch(() => undefined);
+    }
 
     async function loadPdf() {
+      setPdfDocument(null);
+      setBasePageLayouts([]);
+      setRenderWindowPages(new Set());
+      pageElementRefs.current.clear();
+
       if (!src) {
         setError("PDF preview is unavailable.");
         setLoading(false);
@@ -424,10 +452,6 @@ export function PdfViewer({
 
       setLoading(true);
       setError("");
-      setPdfDocument(null);
-      setBasePageLayouts([]);
-      setRenderWindowPages(new Set());
-      pageElementRefs.current.clear();
       const restoreViewState = initialViewStateRef.current;
       pendingScrollRestoreRef.current = {
         scrollLeft: restoreViewState?.scrollLeft ?? 0,
@@ -436,7 +460,7 @@ export function PdfViewer({
 
       try {
         const [pdfResponse, annotationsPayload] = await Promise.all([
-          fetch(src).then(async (response) => {
+          fetch(src, { signal: controller.signal }).then(async (response) => {
             if (!response.ok) {
               throw new Error("Could not load PDF file.");
             }
@@ -445,14 +469,16 @@ export function PdfViewer({
           }),
           apiRequest<PdfAnnotationsPayload>(
             `/api/pdf-annotations?path=${encodeURIComponent(filePath)}`,
+            { signal: controller.signal },
           ),
         ]);
-        const loadingTask = getDocument({ data: new Uint8Array(pdfResponse) });
-        loadedDocument = await loadingTask.promise;
-        const loadedPageLayouts = await readPdfBasePageLayouts(loadedDocument);
+        controller.signal.throwIfAborted();
+        loadingTask = getDocument({ data: new Uint8Array(pdfResponse) });
+        const loadedDocument = await loadingTask.promise;
+        controller.signal.throwIfAborted();
+        const loadedPageLayouts = await readPdfBasePageLayouts(loadedDocument, controller.signal);
 
         if (!active) {
-          await loadedDocument.destroy();
           return;
         }
 
@@ -461,6 +487,8 @@ export function PdfViewer({
         latestAnnotationsRef.current = annotationsPayload.annotations;
         setAnnotations(annotationsPayload.annotations);
       } catch (loadError) {
+        controller.abort();
+        destroyLoadingTask();
         if (active) {
           setError(loadError instanceof Error ? loadError.message : "Could not load PDF.");
         }
@@ -475,8 +503,8 @@ export function PdfViewer({
 
     return () => {
       active = false;
-      setPdfDocument(null);
-      loadedDocument?.destroy();
+      controller.abort();
+      destroyLoadingTask();
 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -628,8 +656,9 @@ export function PdfViewer({
     updateViewState({ zoom: nextZoom });
   }
 
-  async function captureScreenshotSnip(pageNumber: number, rect: PdfAnnotationRect) {
-    if (!pdfDocument || !onCompleteScreenshotSnip) {
+  const captureScreenshotSnip = useCallback(async (pageNumber: number, rect: PdfAnnotationRect) => {
+    const completeScreenshotSnip = screenshotCallbacksRef.current.onCompleteScreenshotSnip;
+    if (!pdfDocument || !completeScreenshotSnip) {
       return;
     }
 
@@ -692,7 +721,7 @@ export function PdfViewer({
         cropHeight,
       );
 
-      await onCompleteScreenshotSnip(
+      await completeScreenshotSnip(
         pngFileFromBlob(
           await canvasToPngBlob(outputCanvas),
           filePath,
@@ -706,9 +735,9 @@ export function PdfViewer({
           : "Could not capture PDF screenshot.",
       );
     }
-  }
+  }, [filePath, pdfDocument]);
 
-  function selectAnnotation(annotation: PdfAnnotation) {
+  const selectAnnotation = useCallback((annotation: PdfAnnotation) => {
     setSelectedAnnotationId(annotation.id);
     updateViewState({ selectedAnnotationId: annotation.id });
 
@@ -716,9 +745,9 @@ export function PdfViewer({
       setFontSize(annotation.fontSize);
       updateViewState({ fontSize: annotation.fontSize });
     }
-  }
+  }, [updateViewState]);
 
-  function addHighlight(pageNumber: number, rects: PdfAnnotationRect[]) {
+  const addHighlight = useCallback((pageNumber: number, rects: PdfAnnotationRect[]) => {
     const timestamp = nowIso();
 
     saveAnnotations([
@@ -733,9 +762,9 @@ export function PdfViewer({
         updatedAt: timestamp,
       },
     ]);
-  }
+  }, [annotations, saveAnnotations]);
 
-  function addTextAnnotation(pageNumber: number, rect: PdfAnnotationRect) {
+  const addTextAnnotation = useCallback((pageNumber: number, rect: PdfAnnotationRect) => {
     const timestamp = nowIso();
     const annotation: PdfTextAnnotation = {
       id: createAnnotationId(),
@@ -751,9 +780,9 @@ export function PdfViewer({
     setSelectedAnnotationId(annotation.id);
     updateViewState({ selectedAnnotationId: annotation.id });
     saveAnnotations([...annotations, annotation]);
-  }
+  }, [annotations, fontSize, saveAnnotations, updateViewState]);
 
-  function updateTextAnnotation(id: string, patch: Partial<PdfTextAnnotation>) {
+  const updateTextAnnotation = useCallback((id: string, patch: Partial<PdfTextAnnotation>) => {
     saveAnnotations(
       annotations.map((annotation) =>
         annotation.id === id && annotation.type === "text"
@@ -765,7 +794,12 @@ export function PdfViewer({
           : annotation,
       ),
     );
-  }
+  }, [annotations, saveAnnotations]);
+
+  const exitTextEditing = useCallback(() => {
+    setTool("select");
+    updateViewState({ tool: "select" });
+  }, [updateViewState]);
 
   function updateFontSize(value: number) {
     const nextFontSize = Math.round(
@@ -818,7 +852,7 @@ export function PdfViewer({
   }, [activeSelectedAnnotationId, deleteSelectedAnnotation]);
 
   return (
-    <div className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
+    <div data-pdf-path={filePath} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
       <div className="libera-viewer-toolbar sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
         <div className="flex min-w-0 items-center gap-1">
           <button
@@ -961,13 +995,14 @@ export function PdfViewer({
           </div>
         ) : null}
 
-        {!loading && pdfDocument ? (
+        {!loading && pdfDocument && textContentCache ? (
           <div className="mx-auto flex w-max flex-col gap-5">
             {pageLayouts.map((layout) => (
               <PdfPageView
                 key={`${filePath}-${layout.pageNumber}`}
-                annotations={annotationsByPage.get(layout.pageNumber) ?? []}
+                annotations={annotationsByPage.get(layout.pageNumber) ?? EMPTY_ANNOTATIONS}
                 pageLayout={layout}
+                textContentCache={textContentCache}
                 pdfDocument={pdfDocument}
                 renderActive={
                   renderWindowPages.has(layout.pageNumber) ||
@@ -982,11 +1017,8 @@ export function PdfViewer({
                 zoom={zoom}
                 onAddHighlight={addHighlight}
                 onAddTextAnnotation={addTextAnnotation}
-                onCancelScreenshotSnip={onCancelScreenshotSnip ?? (() => undefined)}
-                onExitTextEditing={() => {
-                  setTool("select");
-                  updateViewState({ tool: "select" });
-                }}
+                onCancelScreenshotSnip={cancelScreenshotSnip}
+                onExitTextEditing={exitTextEditing}
                 onPageElement={setPageElement}
                 onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
@@ -1000,10 +1032,11 @@ export function PdfViewer({
   );
 }
 
-function PdfPageView({
+const PdfPageView = memo(function PdfPageView({
   annotations,
   pageLayout,
   pdfDocument,
+  textContentCache,
   renderActive,
   requestRenderSlot,
   selectedAnnotationId,
@@ -1022,6 +1055,7 @@ function PdfPageView({
   annotations: PdfAnnotation[];
   pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
+  textContentCache: PdfTextContentCache;
   renderActive: boolean;
   requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
@@ -1038,10 +1072,14 @@ function PdfPageView({
   onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
 }) {
   const pageNumber = pageLayout.pageNumber;
+  const setElement = useCallback(
+    (element: HTMLDivElement | null) => onPageElement(pageNumber, element),
+    [onPageElement, pageNumber],
+  );
 
   return (
     <div
-      ref={(element) => onPageElement(pageNumber, element)}
+      ref={setElement}
       className="libera-pdf-sheet relative bg-card shadow-sm"
       data-pdf-page-number={pageNumber}
     >
@@ -1054,6 +1092,7 @@ function PdfPageView({
             annotations={annotations}
             pageLayout={pageLayout}
             pageNumber={pageNumber}
+            textContentCache={textContentCache}
             pdfDocument={pdfDocument}
             requestRenderSlot={requestRenderSlot}
             selectedAnnotationId={selectedAnnotationId}
@@ -1077,13 +1116,14 @@ function PdfPageView({
       </div>
     </div>
   );
-}
+});
 
 function PdfPageContent({
   annotations,
   pageLayout,
   pageNumber,
   pdfDocument,
+  textContentCache,
   requestRenderSlot,
   selectedAnnotationId,
   screenshotSnipping,
@@ -1101,6 +1141,7 @@ function PdfPageContent({
   pageLayout: PdfPageLayout;
   pageNumber: number;
   pdfDocument: PDFDocumentProxy;
+  textContentCache: PdfTextContentCache;
   requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
   screenshotSnipping: boolean;
@@ -1156,7 +1197,7 @@ function PdfPageContent({
         return;
       }
 
-      renderCanvas(viewport, canvas);
+      const transform = renderCanvas(viewport, canvas);
       const canvasContext = canvas.getContext("2d");
 
       if (!canvasContext) {
@@ -1166,11 +1207,15 @@ function PdfPageContent({
       renderTask = page.render({
         canvasContext,
         viewport,
+        transform,
       });
+      // Cancellation can reject while text extraction is still pending.
+      // Observe that rejection immediately; Promise.all below still handles it.
+      void renderTask.promise.catch(() => undefined);
 
       textLayerElement.replaceChildren();
       textLayerElement.style.setProperty("--scale-factor", String(viewport.scale));
-      const textContent = await page.getTextContent();
+      const textContent = await textContentCache.get(page);
 
       if (!active) {
         return;
@@ -1208,7 +1253,7 @@ function PdfPageContent({
       textLayer?.cancel();
       releaseSlot();
     };
-  }, [pageNumber, pdfDocument, requestRenderSlot, zoom]);
+  }, [pageNumber, pdfDocument, requestRenderSlot, textContentCache, zoom]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1257,7 +1302,7 @@ function PdfPageContent({
       <div
         ref={textLayerRef}
         className="pdf-text-layer"
-        style={{ pointerEvents: tool === "highlight" ? "auto" : "none" }}
+        style={{ pointerEvents: tool !== "text" && !screenshotSnipping ? "auto" : "none" }}
       />
 
       <div className="pointer-events-none absolute inset-0 z-20">

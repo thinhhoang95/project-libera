@@ -53,6 +53,11 @@ test('source typing updates only the changed highlight line, skips React/workspa
     assert.equal(commits,0,'Ordinary typing must not render React');
     assert.equal(changes.length,0,'Do not publish each keystroke to the workspace');
     observer.disconnect();
+    const retained = Array.from(layer.children);
+    await type('Inserted line\n' + input.value);
+    retained.forEach((line, i) => assert.equal(layer.children[i + 1], line, 'Newlines retain downstream DOM nodes'));
+    await type(input.value.slice('Inserted line\n'.length));
+    retained.forEach((line, i) => assert.equal(layer.children[i], line));
     let snapshot='';await act(async()=>{snapshot=read();});
     assert.equal(snapshot,input.value,'Save/export/tab-close reader sees the latest keystroke immediately');
     assert.equal(changes.at(-1),snapshot);

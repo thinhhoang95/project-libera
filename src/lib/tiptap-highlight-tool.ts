@@ -1,4 +1,4 @@
-import { Extension } from "@tiptap/core";
+import { Extension, isActive } from "@tiptap/core";
 import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { MARKDOWN_DEFAULT_HIGHLIGHT_COLOR } from "./markdown-colors";
 
@@ -13,6 +13,7 @@ declare module "@tiptap/core" {
     highlightTool: {
       setHighlightToolColor: (color: string) => ReturnType;
       setHighlightToolActive: (active: boolean) => ReturnType;
+      toggleHighlightTool: () => ReturnType;
       applyHighlightTool: () => ReturnType;
     };
   }
@@ -24,6 +25,14 @@ export const HighlightTool = Extension.create({
   priority: 1100,
   addCommands() {
     return {
+      toggleHighlightTool: () => ({ state, chain }) => {
+        const tool = highlightToolKey.getState(state) ?? defaultHighlightToolState;
+        // A selected highlight can be removed even when paint mode is off.
+        if (tool.active || isActive(state, "highlight")) {
+          return chain().setHighlightToolActive(false).unsetHighlight().run();
+        }
+        return chain().setHighlightToolActive(true).run();
+      },
       setHighlightToolColor: (color) => ({ tr, dispatch }) => {
         if (dispatch) tr.setMeta(highlightToolKey, { color });
         return true;
@@ -50,7 +59,7 @@ export const HighlightTool = Extension.create({
   },
   addKeyboardShortcuts() {
     return {
-      "Mod-Shift-h": () => this.editor.commands.setHighlightToolActive(!highlightToolKey.getState(this.editor.state)?.active),
+      "Mod-Shift-h": () => this.editor.commands.toggleHighlightTool(),
       Escape: () => highlightToolKey.getState(this.editor.state)?.active
         ? this.editor.commands.setHighlightToolActive(false) : false,
     };

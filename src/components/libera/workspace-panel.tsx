@@ -448,26 +448,21 @@ function scrollPreviewToSourceOffset(
 }
 
 function useDebouncedPreviewContent(content: string, resetKey: string | undefined) {
-  const [previewContent, setPreviewContent] = useState(content);
-  const resetKeyRef = useRef(resetKey);
+  const [preview, setPreview] = useState({ content, resetKey });
   const updateSequenceRef = useRef(0);
 
   useEffect(() => {
     updateSequenceRef.current += 1;
     const updateSequence = updateSequenceRef.current;
 
-    if (resetKeyRef.current !== resetKey) {
-      resetKeyRef.current = resetKey;
-      setPreviewContent(content);
-      return;
-    }
-
     const timeout = window.setTimeout(() => {
       startTransition(() => {
-        setPreviewContent((currentPreviewContent) =>
+        setPreview((currentPreview) =>
           updateSequenceRef.current === updateSequence
-            ? content
-            : currentPreviewContent,
+            ? currentPreview.content === content && currentPreview.resetKey === resetKey
+              ? currentPreview
+              : { content, resetKey }
+            : currentPreview,
         );
       });
     }, MARKDOWN_PREVIEW_RENDER_DELAY_MS);
@@ -475,7 +470,13 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
     return () => window.clearTimeout(timeout);
   }, [content, resetKey]);
 
-  return previewContent;
+  // Reset before children mount their effects: otherwise a new tab's worker
+  // starts parsing the old tab before the reset effect can publish its content.
+  if (preview.resetKey !== resetKey) {
+    setPreview({ content, resetKey });
+    return content;
+  }
+  return preview.content;
 }
 
 export function WorkspacePanel({
@@ -505,7 +506,6 @@ export function WorkspacePanel({
   onCompleteScreenshotSnip,
   onInsertExistingImage,
   onInsertFileLink,
-  onInsertFileLinkPlaceholder,
   onInsertImage,
   onInsertMarkdown,
   onOpenFile,
@@ -522,6 +522,7 @@ export function WorkspacePanel({
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const stopMarkdownSplitDragRef = useRef<(() => void) | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
   const openMarkdownFileLinkRef = useRef(onOpenMarkdownFileLink);
@@ -589,6 +590,10 @@ export function WorkspacePanel({
     activeTab?.file.fileType === "markdown" &&
     activeMarkdownIsSlides &&
     activePreviewTabId === activeTab.id;
+
+  useEffect(() => () => {
+    stopMarkdownSplitDragRef.current?.();
+  }, [activeTabId, markdownEditorMode, previewFullscreen, markdownSlidesPresenting]);
 
   const registerMarkdownDraft = useCallback((read: () => string) => {
     return (activeTabId && onRegisterEditorDraft?.(activeTabId, read)) || (() => {});
@@ -729,7 +734,7 @@ export function WorkspacePanel({
     });
   }, [syncMarkdownPreviewToTextarea]);
 
-  const syncTextareaToMarkdownPreview = useCallback(() => {
+  const syncTextareaToMarkdownPreview = useCallback((measuredPosition?: PreviewSourcePosition) => {
     const textarea = textareaRef.current;
     const preview = markdownPreviewRef.current;
 
@@ -737,7 +742,7 @@ export function WorkspacePanel({
       return;
     }
 
-    const sourcePosition = getPreviewViewportAnchorPosition(
+    const sourcePosition = measuredPosition ?? getPreviewViewportAnchorPosition(
       preview,
       MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
     );
@@ -851,6 +856,11 @@ export function WorkspacePanel({
       previewScrollFrame = 0;
 
       const now = window.performance.now();
+      if (now <= programmaticPreviewScrollUntilRef.current) {
+        updateMarkdownViewState({ editorScrollLeft: editor.scrollLeft, editorScrollTop: editor.scrollTop,
+          previewScrollLeft: previewPane.scrollLeft, previewScrollTop: previewPane.scrollTop });
+        return;
+      }
       const sourcePosition = getPreviewViewportAnchorPosition(
         previewPane,
         MARKDOWN_SCROLL_SYNC_ANCHOR_PROGRESS,
@@ -867,7 +877,7 @@ export function WorkspacePanel({
         now <= previewUserScrollUntilRef.current;
 
       if (hasPreviewUserIntent) {
-        syncTextareaToMarkdownPreview();
+        syncTextareaToMarkdownPreview(sourcePosition ?? undefined);
       }
 
       updateMarkdownViewState({
@@ -1128,6 +1138,7 @@ export function WorkspacePanel({
     event: ReactPointerEvent<HTMLDivElement>,
   ) {
     event.preventDefault();
+    stopMarkdownSplitDragRef.current?.();
     event.currentTarget.setPointerCapture(event.pointerId);
     setMarkdownSplitDragging(true);
     updateMarkdownSplitFromPointer(event.clientX, event.clientY);
@@ -1137,12 +1148,14 @@ export function WorkspacePanel({
     }
 
     function stopDragging() {
+      stopMarkdownSplitDragRef.current = null;
       setMarkdownSplitDragging(false);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);
     }
 
+    stopMarkdownSplitDragRef.current = stopDragging;
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", stopDragging);
     window.addEventListener("pointercancel", stopDragging);
@@ -1370,6 +1383,7 @@ export function WorkspacePanel({
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
+              files={files}
               mathMarkers={markdownPreferences}
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
@@ -1383,6 +1397,8 @@ export function WorkspacePanel({
               onOpenFileLink={handleOpenMarkdownFileLink} />
           ) : <>
           <MarkdownToolbar
+            key={`${activeTab.id}-toolbar`}
+            files={files}
             documentPath={activeTab.file.path}
             canStartScreenshotSnip={canStartScreenshotSnip}
             isSlideDeck={activeMarkdownIsSlides}
@@ -1393,7 +1409,6 @@ export function WorkspacePanel({
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
-            onInsertFileLink={onInsertFileLinkPlaceholder}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={onStartScreenshotSnip}
@@ -1453,6 +1468,7 @@ export function WorkspacePanel({
                 fontFamily={markdownEditorFontFamily}
                 fontSizePx={markdownFontSizePx}
                 lineHeightPx={markdownLineHeightPx}
+                mathMarkers={markdownPreferences}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}

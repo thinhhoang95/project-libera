@@ -520,9 +520,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function updateTab(tabId: string, updater: (tab: OpenTab) => OpenTab) {
-    setTabs((currentTabs) =>
-      currentTabs.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
-    );
+    setTabs((currentTabs) => {
+      const index = currentTabs.findIndex((tab) => tab.id === tabId);
+      if (index < 0) return currentTabs;
+      const next = updater(currentTabs[index]);
+      if (next === currentTabs[index]) return currentTabs;
+      return currentTabs.map((tab, i) => i === index ? next : tab);
+    });
   }
 
   function rememberTabDraft(tabId: string, draft: string) {

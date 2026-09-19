@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -67,6 +68,15 @@ test("visual Markdown and HTML round trips preserve every box color, nested boxe
   assert.deepEqual(pasted.getJSON(), first.getJSON());
   for (const color of MARKDOWN_HIGHLIGHT_COLORS) assert.match(first.getHTML(), new RegExp(`data-box-color="${color.shortcut}"`));
   first.destroy(); second.destroy(); pasted.destroy();
+});
+
+test("visual block equations use the theme foreground inside colored boxes", () => {
+  const css = readFileSync(new URL("../../src/app/globals.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\.libera-tiptap blockquote\[data-box-color\] :is\([^}]*\[data-type=["']block-math["']\][^}]*\)\s*\{\s*color:\s*var\(--foreground\);\s*\}/,
+    "block equations must not inherit the colored box's white foreground",
+  );
 });
 
 test("preview and visual boxes agree at paragraph, color and code boundaries", () => {

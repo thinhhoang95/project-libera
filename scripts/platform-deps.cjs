@@ -11,26 +11,38 @@ const platformNodeModules = path.join(platformRoot, "node_modules");
 const projectNodeModules = path.join(projectRoot, "node_modules");
 const metadataFile = path.join(platformRoot, ".libera-platform-deps.json");
 const activeMetadataFile = path.join(cacheRoot, ".active.json");
-const manifestNames = ["package.json", "package-lock.json"];
+const cacheSchemaVersion = 2;
 const nativeOptionalPackages = {
   "darwin-arm64": [
+    "@esbuild/darwin-arm64",
+    "@next/swc-darwin-arm64",
+    "@unrs/resolver-binding-darwin-arm64",
     "lightningcss-darwin-arm64",
     "@tailwindcss/oxide-darwin-arm64",
     "@img/sharp-darwin-arm64",
     "@img/sharp-libvips-darwin-arm64",
   ],
   "darwin-x64": [
+    "@esbuild/darwin-x64",
+    "@next/swc-darwin-x64",
+    "@unrs/resolver-binding-darwin-x64",
     "lightningcss-darwin-x64",
     "@tailwindcss/oxide-darwin-x64",
     "@img/sharp-darwin-x64",
     "@img/sharp-libvips-darwin-x64",
   ],
   "win32-arm64": [
+    "@esbuild/win32-arm64",
+    "@next/swc-win32-arm64-msvc",
+    "@unrs/resolver-binding-win32-arm64-msvc",
     "lightningcss-win32-arm64-msvc",
     "@tailwindcss/oxide-win32-arm64-msvc",
     "@img/sharp-win32-arm64",
   ],
   "win32-x64": [
+    "@esbuild/win32-x64",
+    "@next/swc-win32-x64-msvc",
+    "@unrs/resolver-binding-win32-x64-msvc",
     "lightningcss-win32-x64-msvc",
     "@tailwindcss/oxide-win32-x64-msvc",
     "@img/sharp-win32-x64",
@@ -48,11 +60,19 @@ async function exists(targetPath) {
 
 async function dependencyFingerprint() {
   const hash = createHash("sha256");
+  const packageJson = JSON.parse(
+    await fs.readFile(path.join(projectRoot, "package.json"), "utf8"),
+  );
 
-  for (const manifestName of manifestNames) {
-    hash.update(manifestName);
-    hash.update(await fs.readFile(path.join(projectRoot, manifestName)));
-  }
+  hash.update(`schema:${cacheSchemaVersion}`);
+  hash.update(
+    JSON.stringify({
+      dependencies: packageJson.dependencies,
+      devDependencies: packageJson.devDependencies,
+      optionalDependencies: packageJson.optionalDependencies,
+    }),
+  );
+  hash.update(await fs.readFile(path.join(projectRoot, "package-lock.json")));
 
   return hash.digest("hex");
 }
@@ -82,8 +102,13 @@ async function cacheIsCurrent(fingerprint) {
     ...(nativeOptionalPackages[platformKey] ?? []),
   ];
   const activeMetadata = await readActiveMetadata();
-  const nodeModulesRoot =
-    activeMetadata?.platformKey === platformKey ? projectNodeModules : platformNodeModules;
+  // A completed refresh is staged under the platform cache until activation.
+  // Prefer it over an older tree that is still active at the project root.
+  const nodeModulesRoot = (await exists(platformNodeModules))
+    ? platformNodeModules
+    : activeMetadata?.platformKey === platformKey
+      ? projectNodeModules
+      : platformNodeModules;
 
   if (
     metadata?.fingerprint !== fingerprint ||
@@ -133,11 +158,17 @@ async function installMissingNativePackages(installRoot) {
     const packagePath = path.join(installRoot, "node_modules", ...packageName.split("/"));
 
     if (!(await exists(path.join(packagePath, "package.json")))) {
-      const parentName = packageName.startsWith("lightningcss-")
-        ? "lightningcss"
-        : packageName.startsWith("@tailwindcss/oxide-")
-          ? "@tailwindcss/oxide"
-          : "sharp";
+      const parentName = packageName.startsWith("@esbuild/")
+        ? "esbuild"
+        : packageName.startsWith("@next/swc-")
+          ? "next"
+          : packageName.startsWith("@unrs/resolver-binding-")
+            ? "unrs-resolver"
+            : packageName.startsWith("lightningcss-")
+              ? "lightningcss"
+              : packageName.startsWith("@tailwindcss/oxide-")
+                ? "@tailwindcss/oxide"
+                : "sharp";
       const parentPackage = JSON.parse(
         await fs.readFile(
           path.join(installRoot, "node_modules", ...parentName.split("/"), "package.json"),
@@ -159,13 +190,13 @@ async function installMissingNativePackages(installRoot) {
   }
 
   // npm lockfiles generated on another OS can omit transitive optional native
-  // packages. Install only the host bindings without changing the shared lock.
+  // packages. npm may update the staging copy of the lockfile, but the shared
+  // project lock remains unchanged and continues to pin the rest of the tree.
   console.log(`Installing missing native bindings: ${missingPackageSpecs.join(", ")}`);
   const exitCode = await runNpm(
     [
       "install",
       "--no-save",
-      "--package-lock=false",
       "--no-audit",
       "--no-fund",
       ...missingPackageSpecs,
@@ -184,7 +215,7 @@ async function installPlatformCache(fingerprint) {
   await fs.rm(stagingRoot, { force: true, recursive: true });
   await fs.mkdir(stagingRoot, { recursive: true });
 
-  for (const manifestName of manifestNames) {
+  for (const manifestName of ["package.json", "package-lock.json"]) {
     await fs.copyFile(
       path.join(projectRoot, manifestName),
       path.join(stagingRoot, manifestName),
@@ -263,7 +294,7 @@ async function moveExistingNodeModulesAside() {
 }
 
 async function activatePlatformCache() {
-  if (await pointsToActiveCache()) {
+  if (!(await exists(platformNodeModules)) && (await pointsToActiveCache())) {
     return;
   }
 
@@ -285,6 +316,9 @@ async function ensurePlatformDependencies() {
     console.log(`Reusing cached dependencies for ${platformKey}.`);
   }
 
+  // A refreshed cache lives under .platform-deps even when this platform was
+  // already marked active. Activate that tree before trusting .active.json;
+  // otherwise the stale project-level tree would be reused.
   await activatePlatformCache();
   console.log(`node_modules is using the ${platformKey} dependency cache.`);
 }
@@ -292,7 +326,8 @@ async function ensurePlatformDependencies() {
 async function printStatus() {
   const fingerprint = await dependencyFingerprint();
   const current = await cacheIsCurrent(fingerprint);
-  const active = current && (await pointsToActiveCache());
+  const pendingActivation = await exists(platformNodeModules);
+  const active = current && !pendingActivation && (await pointsToActiveCache());
 
   console.log(`Platform: ${platformKey}`);
   console.log(`Cache: ${current ? "ready" : "missing or stale"}`);

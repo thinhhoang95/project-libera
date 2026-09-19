@@ -11,12 +11,20 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   const { createRoot } = await import("react-dom/client");
   const originalFetch = globalThis.fetch;
-  const requests: { reasoningEffort?: string; messages: { contexts: { text: string; kind: string }[]; photos?: { dataUrl: string; name: string }[] }[] }[] = [];
+  const requests: { model?: string; reasoningEffort?: string; messages: { contexts: { text: string; kind: string }[]; photos?: { dataUrl: string; name: string }[] }[] }[] = [];
   let menuAction = "manage-chats";
   let exported: { fileName: string; content: string } | null = null;
   let createdDraft: { fileName: string; content: string } | null = null;
   let notebookExport: { parentPath: string; content: string; name: string } | null = null;
   window.liberaMenu = { popup: async (menu) => {
+    const firstItem = menu.items[0];
+    if (firstItem.type !== "separator" && firstItem.id.startsWith("chat-model-")) {
+      assert.deepEqual(menu.items.map((item) => item.type !== "separator" && [item.label, item.type, item.checked]), [
+        ["test/provider-model", "radio", true],
+        ["test/alternative-model", "radio", false],
+      ]);
+      return menuAction;
+    }
     assert.equal(menu.items[0].type !== "separator" && menu.items[0].label, "Manage Chats");
     const exportItem = menu.items[1];
     assert.ok(exportItem.type !== "separator" && exportItem.submenu?.length === 3);
@@ -25,13 +33,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
   let savedFontSize: number | null = null;
   let savedHistory: ChatStore | null = null;
+  let fileReads = 0;
   globalThis.fetch = async (input, init) => {
-    if (String(input).startsWith("/api/files?")) return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" });
+    if (String(input).startsWith("/api/files?")) { fileReads++; return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" }); }
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
       if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else savedHistory = body.value; return Response.json({ saved: true }); }
-      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, defaultReasoningEffort: "max" });
+      return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", alternativeModels: ["test/alternative-model"], defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
       "````markdown", "# A helpful answer", "", "**Bold** and *italic* with `inline code`.", "",
@@ -41,7 +50,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
       String.raw`Inline \(x^2\) and display:`, "", String.raw`\[E=mc^2\]`, "",
       "[Reference](https://example.com)", "", "![Image](https://example.com/image.png)", "",
       '<script>alert("unsafe")</script>', "````",
-    ].join("\n") });
+    ].join("\n"), usage: { inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 } });
   };
   const host = document.getElementById("root")!;
   let root = createRoot(host);
@@ -49,11 +58,18 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
     await mount();
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
+    assert.equal(host.querySelector('[aria-label="Model: test/provider-model"]')?.textContent, "provider-model");
+    menuAction = "chat-model-1";
+    await click("Model: test/provider-model");
+    assert.equal(host.querySelector('[aria-label="Model: test/alternative-model"]')?.textContent, "alternative-model");
+    menuAction = "manage-chats";
+    assert.ok(!host.textContent?.includes("Enter to send"));
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "max");
     assert.equal(stored().chats[0].reasoningEffort, undefined);
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')?.disabled, true);
@@ -84,6 +100,9 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Send message");
     await settle();
     assert.equal(requests.length, 1);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
+    assert.deepEqual(stored().chats[0].usageRequests?.[0].usage, { inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 });
+    assert.equal(requests[0].model, "test/alternative-model");
     assert.equal(requests[0].reasoningEffort, "high");
     assert.deepEqual(requests[0].messages[0].contexts.map((item) => item.text), [tab.draft, "Visual\nparagraph\nhidden line"]);
     const contextSummaries = host.querySelectorAll<HTMLElement>(".libera-chat-message details summary");
@@ -139,6 +158,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     const firstId = stored().activeId;
     await click("New chat");
     assert.equal(stored().chats.length, 2);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
     const history = host.querySelector<HTMLSelectElement>("#document-chat-history")!;
     assert.ok(history.classList.contains("font-semibold"));
     assert.ok(history.parentElement?.querySelector("svg"));
@@ -147,6 +167,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
     menuAction = "increase-font-size";
     await click("Chat settings");
     assert.equal(savedFontSize, 15);
@@ -270,6 +291,23 @@ test("chat captures both editors, sends the draft, and restores saved conversati
 
 
 
+    // Slash commands insert configured quick prompts without sending and select $1.
+    const beforeQuickPrompt = requests.length;
+    await act(async () => {
+      const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "/sum");
+      prompt.setSelectionRange(4, 4);
+      prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    assert.equal(host.querySelector('[role="listbox"]')?.getAttribute("aria-label"), "Quick prompts");
+    assert.ok(host.textContent?.includes("/summarize"));
+    await act(async () => host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, key: "Enter" })));
+    await settle();
+    const quickPromptInput = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+    assert.equal(requests.length, beforeQuickPrompt, "Enter inserts a quick prompt without sending it");
+    assert.equal(stored().chats[0].prompt, "Summarize $1 in bullets.");
+    assert.deepEqual([quickPromptInput.selectionStart, quickPromptInput.selectionEnd], [10, 12]);
+
     // References attach complete file snapshots, including unsaved open tabs.
     async function mentionFile(query: string) {
       await act(async () => {
@@ -301,6 +339,14 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.ok(referenced.some((context) => context.text === "# Curated reference"));
     assert.equal(stored().chats[0].selections.length, 0);
 
+    const readsBeforeRepeat = fileReads;
+    await mentionFile("Again @cu");
+    assert.equal(fileReads, readsBeforeRepeat, "Previously attached files are not fetched again");
+    assert.equal(stored().chats[0].selections.length, 0, "Previously attached files do not become new attachments");
+    await click("Send message");
+    await settle();
+    assert.deepEqual(requests.at(-1)!.messages.at(-1)!.contexts, []);
+
     let streamController: ReadableStreamDefaultController<Uint8Array>;
     let streamCanceled = false;
     globalThis.fetch = async (input, init) => {
@@ -324,6 +370,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
         await new Promise((resolve) => setTimeout(resolve, 65));
       });
     }
+    const usageBeforeStream = stored().chats[0].usageRequests?.length ?? 0;
     await askStream();
     const log = host.querySelector<HTMLDivElement>('[role="log"]')!;
     let height = 1000;
@@ -343,7 +390,11 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await emit({ type: "delta", text: " continues" });
     assert.equal(log.scrollTop, 1400, "Returning to the bottom resumes following the answer");
     await act(async () => { log.scrollTop = 200; log.dispatchEvent(new dom.window.Event("scroll")); });
+    await emit({ type: "usage", usage: { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 } });
+    await emit({ type: "usage", usage: { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 } });
     await emit({ type: "done" });
+    assert.equal(stored().chats[0].usageRequests?.length, usageBeforeStream + 1, "Repeated usage frames update the same request");
+    assert.deepEqual(stored().chats[0].usageRequests?.at(-1)?.usage, { inputTokens: 2000, outputTokens: 80, cachedTokens: 1500 });
     assert.equal(log.scrollTop, 200, "Finishing the response must also preserve the reading position");
     assert.equal(stored().chats[0].messages.at(-1)?.text, "**Streaming response** continues");
     assert.equal(stored().chats[0].messages.at(-1)?.status, undefined);
@@ -355,10 +406,70 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(streamCanceled, true);
     assert.equal(stored().chats[0].messages.at(-1)?.text, "Keep this partial answer");
     assert.equal(stored().chats[0].messages.at(-1)?.status, "interrupted");
+    assert.ok(host.querySelector('[aria-label="Chat token usage"]')?.textContent?.includes("≥"));
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
     assert.ok(host.textContent?.includes("Keep this partial answer"));
+
+    // Branching an earlier answer copies only its history and retains the source.
+    globalThis.fetch = mockFetch;
+    const originalChat = structuredClone(stored().chats[0]);
+    assert.ok(originalChat.messages.length > 2);
+    assert.match(host.querySelector("time")!.textContent!, /^\d{2}:\d{2}$/);
+    assert.equal(host.querySelector("time")!.dateTime, originalChat.messages[1].createdAt);
+    await click("Branch conversation");
+    await settle();
+    const branchId = stored().activeId;
+    const activeChat = () => stored().chats.find((item) => item.id === branchId)!;
+    assert.notEqual(branchId, originalChat.id);
+    assert.deepEqual(stored().chats[0], originalChat);
+    assert.deepEqual(activeChat().messages, originalChat.messages.slice(0, 2));
+    assert.equal(activeChat().usageRequests?.length, 1);
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "1.2K421K");
+    assert.equal(activeChat().prompt, "");
+    assert.deepEqual(activeChat().excludedDocumentPaths, originalChat.excludedDocumentPaths);
+    assert.equal(host.querySelectorAll('[aria-label="Regenerate response"]').length, 1);
+
+    // A failed retry restores the original answer; retry keeps composer drafts.
+    await act(async () => {
+      const prompt = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+      Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Unsent follow-up");
+      prompt.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    globalThis.fetch = async (input, init) => String(input).endsWith("/state") ? mockFetch(input, init) : Response.json({ error: "Retry failed" }, { status: 500 });
+    await click("Regenerate response");
+    await settle();
+    assert.deepEqual(activeChat().messages, originalChat.messages.slice(0, 2));
+    assert.equal(activeChat().prompt, "Unsent follow-up");
+    globalThis.fetch = mockFetch;
+    await click("Regenerate response");
+    await settle();
+    assert.equal(requests.at(-1)!.messages.length, 1);
+    assert.deepEqual(requests.at(-1)!.messages[0].photos, originalChat.messages[0].photos);
+    assert.equal(activeChat().messages.length, 2);
+    assert.notEqual(activeChat().messages[1].id, originalChat.messages[1].id);
+    assert.ok(activeChat().messages[1].createdAt);
+    assert.equal(activeChat().prompt, "Unsent follow-up");
+    assert.deepEqual(stored().chats[0], originalChat);
+    assert.equal(activeChat().usageRequests?.length, 3, "Retries remain recorded even when replies are replaced or restored");
+    assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "≥2.4K≥84≥2K");
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await mount();
+    assert.equal(stored().activeId, branchId);
+    assert.equal(host.querySelector("time")!.dateTime, activeChat().messages[1].createdAt);
+    const branchMessages = structuredClone(activeChat().messages);
+    await act(async () => {
+      const history = host.querySelector<HTMLSelectElement>("#document-chat-history")!;
+      history.value = originalChat.id;
+      history.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    });
+    await click("Regenerate response");
+    await settle();
+    assert.equal(requests.at(-1)!.messages.length, 1, "Regenerating an older response excludes later turns");
+    assert.equal(stored().chats[0].messages.length, 2);
+    assert.deepEqual(activeChat().messages, branchMessages, "Regenerating the source leaves its branch intact");
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

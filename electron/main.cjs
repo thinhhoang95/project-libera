@@ -20,9 +20,12 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
+const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
+const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
+const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
@@ -295,6 +298,145 @@ async function writeConfig(config) {
   });
 }
 
+function normalizedImportedPreferences(input) {
+  const dataDir = typeof input.dataDir === "string" ? input.dataDir.trim() : "";
+  const openaiApiKey =
+    typeof input.openaiApiKey === "string" ? input.openaiApiKey.trim() : "";
+  const passwordHash =
+    typeof input.passwordHash === "string" ? input.passwordHash.trim() : "";
+
+  if (!dataDir) throw new Error("The preferences backup does not contain a data directory.");
+  if (!openaiApiKey) throw new Error("The preferences backup does not contain an API key.");
+  if (!/^(?:scrypt:[a-f\d]{32}:[a-f\d]{128}|sha256:[a-f\d]{64})$/i.test(passwordHash)) {
+    throw new Error("The preferences backup does not contain a valid master password verifier.");
+  }
+
+  const markdownInlineMathMarkers = normalizeMathMarkers(
+    input.markdownInlineMathMarkers,
+    DEFAULT_INLINE_MATH_MARKERS,
+  );
+  const markdownBlockMathMarkers = normalizeMathMarkers(
+    input.markdownBlockMathMarkers,
+    DEFAULT_BLOCK_MATH_MARKERS,
+  );
+  const inlineOpeners = new Set(
+    markdownInlineMathMarkers.split("\n").filter(Boolean).map((line) => line.split(" ")[0]),
+  );
+
+  if (
+    markdownBlockMathMarkers
+      .split("\n")
+      .filter(Boolean)
+      .some((line) => inlineOpeners.has(line.split(" ")[0]))
+  ) {
+    throw new Error("The preferences backup uses the same opening marker for inline and display math.");
+  }
+
+  const openRouterModel = normalizeOpenRouterModel(input.openRouterModel);
+
+  return {
+    themePreference: normalizeThemePreference(input.themePreference),
+    yourName: normalizeYourName(input.yourName),
+    dataDir,
+    markdownInlineMathMarkers,
+    markdownBlockMathMarkers,
+    markdownEditorFontFamily: normalizeMarkdownEditorFontFamily(
+      input.markdownEditorFontFamily,
+    ),
+    wysiwygEditorFontFamily: normalizeWysiwygEditorFontFamily(
+      input.wysiwygEditorFontFamily,
+    ),
+    renderedMarkdownFontFamily: normalizeRenderedMarkdownFontFamily(
+      input.renderedMarkdownFontFamily,
+    ),
+    markdownBaseFontSize: normalizeMarkdownBaseFontSize(input.markdownBaseFontSize),
+    markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(input.markdownBaseLineHeight),
+    markdownPdfBaseFontSize: normalizeMarkdownBaseFontSize(input.markdownPdfBaseFontSize),
+    markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(
+      input.markdownPdfBaseLineHeight,
+    ),
+    openaiApiKey,
+    openRouterModel,
+    aiFunctions: normalizeAiPreferences(input.aiFunctions, openRouterModel),
+    quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
+    passwordHash,
+  };
+}
+
+async function exportPreferences(parentWindow) {
+  const date = new Date().toISOString().slice(0, 10);
+  const result = await dialog.showSaveDialog(parentWindow, {
+    title: "Export Libera Preferences",
+    defaultPath: path.join(app.getPath("documents"), `libera-preferences-${date}.json`),
+    filters: [{ name: "JSON files", extensions: ["json"] }],
+  });
+
+  if (result.canceled || !result.filePath) return { canceled: true };
+
+  const backup = createPreferencesBackup(readConfig());
+  await fsp.writeFile(result.filePath, `${JSON.stringify(backup, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+
+  return { canceled: false, fileName: path.basename(result.filePath) };
+}
+
+async function importPreferences(parentWindow) {
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Load Libera Preferences",
+    properties: ["openFile"],
+    filters: [{ name: "JSON files", extensions: ["json"] }],
+  });
+
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+
+  const filePath = result.filePaths[0];
+  const fileInfo = await fsp.stat(filePath);
+  if (fileInfo.size > 5 * 1024 * 1024) {
+    throw new Error("The selected preferences backup is too large.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+    throw error;
+  }
+
+  const importedPreferences = normalizedImportedPreferences(
+    parsePreferencesBackup(parsed),
+  );
+  const confirmation = await showMessageBox(parentWindow, {
+    type: "warning",
+    buttons: ["Load Settings", "Cancel"],
+    cancelId: 1,
+    defaultId: 1,
+    noLink: true,
+    title: "Load Preferences Backup?",
+    message: "Replace all saved Libera preferences with this backup?",
+    detail:
+      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, theme, and master password verifier.",
+  });
+
+  if (confirmation.response !== 0) return { canceled: true };
+
+  const existingConfig = readConfig();
+  const nextConfig = {
+    ...existingConfig,
+    ...importedPreferences,
+    sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
+  };
+
+  await fsp.mkdir(nextConfig.dataDir, { recursive: true });
+  await writeConfig(nextConfig);
+  nativeTheme.themeSource = nextConfig.themePreference;
+  mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
+
+  return { canceled: false, config: nextConfig, fileName: path.basename(filePath) };
+}
+
 function getConfigStatus(config = readConfig()) {
   return {
     themePreference: normalizeThemePreference(config.themePreference),
@@ -320,6 +462,7 @@ function getConfigStatus(config = readConfig()) {
     markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownPdfBaseLineHeight),
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
+    quickPrompts: normalizeQuickPrompts(config.quickPrompts),
   };
 }
 
@@ -420,6 +563,7 @@ function validateSetupInput(input, existingConfig) {
     input?.markdownPdfBaseLineHeight,
   );
   const openRouterModel = normalizeOpenRouterModel(input?.openRouterModel);
+  const quickPrompts = validateQuickPrompts(input?.quickPrompts ?? existingConfig.quickPrompts ?? []);
 
   if (!dataDir) {
     throw new Error("Choose a data directory before continuing.");
@@ -470,6 +614,7 @@ function validateSetupInput(input, existingConfig) {
     openaiApiKey,
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
+    quickPrompts,
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -521,6 +666,16 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
 
+    ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
+
+    ipcMain.handle("setup:import-preferences", async () => {
+      const result = await importPreferences(setupWindow);
+
+      if (!result.canceled) savedConfig = result.config;
+
+      return { canceled: result.canceled, fileName: result.fileName };
+    });
+
     ipcMain.handle("setup:load-ai-chat-custom-instruction-file", () =>
       loadAiChatCustomInstructionFile(setupWindow),
     );
@@ -552,6 +707,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
+        quickPrompts: validated.quickPrompts,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -569,6 +725,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       ipcMain.removeHandler("setup:close");
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
+      ipcMain.removeHandler("setup:export-preferences");
+      ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
       ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");
       ipcMain.removeHandler("setup:save");
@@ -807,6 +965,8 @@ async function openConfigurationWindow() {
     const requiresRestart = Object.keys(updatedConfig).some(
       (key) => key !== "themePreference" && (key === "aiFunctions"
         ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
+        : key === "quickPrompts"
+          ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
         : updatedConfig[key] !== previousConfig[key]),
     );
     if (!requiresRestart) return;
@@ -1409,21 +1569,15 @@ async function createMainWindow(url) {
     show: !isWindowsGlass,
     accentColor: isWindowsGlass ? false : undefined,
     backgroundColor: glass.enabled ? "#00000000" : undefined,
-    // Windows transparency only works for frameless windows. Without this, the
-    // renderer's transparent sidebar falls through to a plain white client area
-    // instead of the DWM acrylic backdrop.
-    frame: !isWindowsGlass,
-    // Keep the native Windows sizing frame underneath our frameless UI. It
-    // supplies edge/corner resize hit targets, the DWM border and shadow, and
-    // minimize/restore animations without bringing back the native title bar.
+    // On Windows, hidden titleBarStyle makes this internally frameless;
+    // thickFrame retains the native resize border, shadow and animations.
+    frame: true,
     thickFrame: true,
-    transparent: isWindowsGlass,
-    // On macOS the vibrancy view *is* the window background, so we don't need a
-    // transparent window — and `transparent: true` would strip the native
-    // rounded corners and force square edges. `titleBarStyle: "hidden"` removes
-    // the title bar while keeping the rounded corners, the traffic-light buttons
-    // and the system drag region at the top of the window.
-    titleBarStyle: isMacGlass ? "hidden" : undefined,
+    // transparent:true forces thickFrame off in Electron. Use the acrylic
+    // backdrop with transparent web content instead of a transparent HWND.
+    transparent: false,
+    // Preserve macOS traffic lights; Windows uses the app's existing controls.
+    titleBarStyle: glass.enabled ? "hidden" : undefined,
     // Vertically centre the traffic lights in the 36px (.libera-titlebar) drag
     // strip: (36 - 12) / 2 = 12.
     trafficLightPosition: isMacGlass ? { x: 16, y: 12 } : undefined,
@@ -1443,6 +1597,7 @@ async function createMainWindow(url) {
 
   mainWindow.setMenuBarVisibility(!isWindowsGlass);
   if (isWindowsGlass) {
+    maintainWindowsBackdrop(mainWindow, nativeTheme);
     mainWindow.once("ready-to-show", () => {
       if (!mainWindow.isDestroyed()) {
         mainWindow.show();

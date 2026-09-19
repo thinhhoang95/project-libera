@@ -11,7 +11,8 @@ export function useMarkdownWindows(
   getDraft: (tab: OpenTab) => string,
   onError: (message: string) => void,
 ) {
-  const windows = useRef(new Map<Window, { file: LiberaFileNode; tabId?: string }>());
+  // Track authorization without keeping closed windows and their DOMs alive.
+  const windows = useRef(new WeakMap<Window, { file: LiberaFileNode; tabId?: string }>());
 
   useEffect(() => {
     async function receive(event: MessageEvent) {
@@ -39,9 +40,6 @@ export function useMarkdownWindows(
 
   return (file: LiberaFileNode) => {
     if (file.fileType !== "markdown") return;
-    for (const child of windows.current.keys()) {
-      if (child.closed) windows.current.delete(child);
-    }
     const child = window.open("/markdown-preview", "_blank", "popup,width=900,height=800");
     if (!child) {
       onError("Could not open the Markdown window. Please allow pop-up windows and try again.");

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
+import { contentDisposition } from "@/lib/content-disposition";
 import { getMarkdownImageAsset, toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
     return new NextResponse(asset.body, {
       headers: {
         "Cache-Control": "private, max-age=60",
-        "Content-Disposition": `inline; filename="${asset.fileName.replaceAll('"', "")}"`,
+        "Content-Disposition": contentDisposition("inline", asset.fileName),
         "Content-Type": asset.contentType,
       },
     });

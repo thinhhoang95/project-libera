@@ -211,6 +211,39 @@ test("highlight tool remembers its color, paints successive selections, and stop
   } finally { editor.destroy(); }
 });
 
+test("highlight toggle removes selected highlights and breaks highlighting while typing", () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), HighlightTool], content: "one two", contentType: "markdown" });
+  const colorAt = (pos: number) => editor.state.doc.nodeAt(pos)?.marks.find((mark) => mark.type.name === "highlight")?.attrs.color;
+  try {
+    editor.commands.setHighlightToolColor("#15803d");
+    editor.commands.setTextSelection({ from: 1, to: 4 });
+    editor.commands.toggleHighlightTool();
+    assert.equal(colorAt(1), "#15803d");
+    editor.commands.toggleHighlightTool();
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+
+    // Previously saved highlights can be removed without enabling paint mode.
+    editor.commands.setHighlight({ color: "#2563eb" });
+    editor.commands.setTextSelection({ from: 2, to: 3 });
+    editor.commands.toggleHighlightTool();
+    assert.equal(colorAt(1), "#2563eb");
+    assert.equal(colorAt(2), undefined);
+    assert.equal(colorAt(3), "#2563eb");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+
+    editor.commands.setTextSelection(8);
+    editor.commands.toggleHighlightTool();
+    editor.view.dispatch(editor.state.tr.insertText("!"));
+    assert.equal(colorAt(8), "#15803d");
+    editor.commands.toggleHighlightTool();
+    editor.view.dispatch(editor.state.tr.insertText("?"));
+    assert.equal(colorAt(8), "#15803d", "Stopping at the cursor preserves existing text");
+    assert.equal(colorAt(9), undefined);
+    assert.equal(highlightToolKey.getState(editor.state)?.color, "#15803d");
+  } finally { editor.destroy(); }
+});
+
 test("visual find matches case-insensitively across inline formatting but not across blocks", () => {
   const editor = create("One **two** one\n\nONE");
   try {
@@ -481,6 +514,38 @@ test("visual editor mounts after deferred initialization in React Strict Mode wi
     assert.ok(host.querySelector('[role="textbox"][contenteditable="true"]'), 'An empty note must also mount after switching documents');
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Text style"]')?.value, '0');
     assert.equal(changes.length, 0, 'Opening a second note must not rewrite it');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("highlight toolbar reflects selected marks and toggles them off", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/note.md", value: "g>>>one<<< two",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const surface = host.querySelector('[role="textbox"]') as HTMLElement & { editor: Editor };
+    const editor = surface.editor;
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="Highlight"]')!;
+    await act(async () => { editor.commands.setTextSelection({ from: 1, to: 4 }); });
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    await act(async () => { button.click(); });
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    await act(async () => { button.click(); });
+    assert.equal(editor.isActive("highlight"), true);
+    await act(async () => { button.click(); });
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
   } finally {
     await act(async () => root.unmount());
     host.remove();
@@ -837,4 +902,60 @@ test("visual editor pastes Markdown as formatting, replaces selections and suppo
     await act(async () => root.unmount());
     host.remove();
   }
+});
+
+test("source editor converts rich HTML paste to Markdown and replaces the selection", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/source-paste.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "Before selected after",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    const textarea = textareaRef.current!;
+    textarea.focus();
+    textarea.setSelectionRange(7, 15);
+    const event = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      files: [], items: [],
+      getData: (type: string) => type === "text/html"
+        ? "<h2>Heading</h2><p><strong>Bold</strong> and <em>italic</em></p>"
+        : type === "text/plain" ? "Heading Bold and italic" : "",
+    } });
+    await act(async () => { textarea.dispatchEvent(event); });
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(textarea.value, "Before ## Heading\n\n**Bold** and *italic* after");
+    assert.equal(changes.at(-1), textarea.value);
+    assert.equal(textarea.selectionStart, "Before ## Heading\n\n**Bold** and *italic*".length);
+    assert.equal(textarea.selectionEnd, textarea.selectionStart);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test('find navigation retains matches and block caches map offsets through edits', async () => {
+  const { TiptapFind, tiptapFindPluginKey, updateTiptapFind } = await import('../../src/lib/tiptap-find');
+  const editor = new Editor({ extensions: [...createMarkdownExtensions('Notes/find.md'), TiptapFind], content: 'one **one**\n\nLater one', contentType: 'markdown' });
+  try {
+    updateTiptapFind(editor, { query: 'one' });
+    const before = tiptapFindPluginKey.getState(editor.state)!;
+    updateTiptapFind(editor, { activeMatchIndex: 1 });
+    const selected = tiptapFindPluginKey.getState(editor.state)!;
+    assert.equal(selected.matches, before.matches);
+    assert.equal(editor.view.dom.querySelectorAll('.markdown-editor-find-match-active').length, 1);
+    editor.commands.insertContentAt(1, 'Prefix ');
+    const after = tiptapFindPluginKey.getState(editor.state)!;
+    assert.deepEqual(after.matches, before.matches.map(match => ({ from: match.from + 7, to: match.to + 7 })));
+    updateTiptapFind(editor, { query: 'Later' });
+    assert.equal(tiptapFindPluginKey.getState(editor.state)!.matches.length, 1);
+  } finally { editor.destroy(); }
 });

@@ -280,6 +280,33 @@
       }
       .ai-function-settings { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; margin: 16px 0; }
       .ai-function-settings legend { padding: 0 4px; font-size: 14px; font-weight: 600; }
+      .quick-prompts-settings { border-top: 1px solid var(--border, #e4e4e7); margin-top: 26px; padding-top: 24px; }
+      .quick-prompts-header { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+      .quick-prompts-heading { align-items: center; display: flex; gap: 9px; }
+      .quick-prompts-heading h3 { margin: 0; }
+      .quick-prompts-heading svg { color: var(--accent, #2563eb); flex: 0 0 auto; }
+      .quick-prompts-add { align-items: center; display: inline-flex; gap: 7px; padding: 8px 11px; }
+      .quick-prompts-list { display: grid; gap: 12px; margin-top: 14px; }
+      .quick-prompt-card { background: color-mix(in srgb, var(--muted, #f4f4f5) 58%, transparent); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 12px; }
+      .quick-prompt-card-header { align-items: center; display: flex; gap: 9px; }
+      .quick-prompt-identifier-label { align-items: stretch; background: var(--background, #fff); border: 1px solid var(--input, #d4d4d8); border-radius: 10px; display: flex; flex: 1; gap: 0; margin: 0; min-width: 0; overflow: hidden; }
+      .quick-prompt-identifier-label:focus-within { border-color: var(--ring, #2563eb); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #2563eb) 25%, transparent); }
+      .quick-prompt-slash { align-items: center; background: var(--muted, #f4f4f5); border-right: 1px solid var(--input, #d4d4d8); color: var(--muted-foreground, #71717a); display: flex; flex: 0 0 34px; font-family: ui-monospace, monospace; justify-content: center; padding: 0; }
+      .libera-dialog .quick-prompt-identifier-label input { border: 0 !important; border-radius: 0 !important; box-shadow: none !important; min-width: 0; padding-left: 10px; }
+      .quick-prompt-delete { align-items: center; display: inline-flex; flex: 0 0 auto; height: 40px; justify-content: center; padding: 0; width: 40px; }
+      .quick-prompt-text-label { margin: 12px 0 0; }
+      .quick-prompt-text-label span { display: block; margin-bottom: 7px; }
+      .quick-prompt-text { min-height: 92px; }
+      .quick-prompts-empty { border: 1px dashed var(--input, #d4d4d8); border-radius: 12px; margin: 14px 0 0; padding: 18px; text-align: center; }
+      .io-grid { display: grid; gap: 14px; }
+      .io-card { border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 18px; }
+      .io-card h3 { margin: 0 0 5px; }
+      .io-card p { margin-bottom: 14px; }
+      .io-button { align-items: center; display: inline-flex; gap: 8px; }
+      .io-button svg { flex: 0 0 auto; }
+      .io-warning { border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #f59e0b 9%, transparent); margin-top: 16px; padding: 12px; }
+      .io-status { margin-top: 14px; min-height: 20px; }
+      .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
       :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
     </style>
     <link rel="stylesheet" href="modal-dialog.css" />
@@ -321,6 +348,7 @@
               Markdown
             </button>
             <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
+            <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
           <div class="settings-detail libera-dialog-section">
@@ -395,7 +423,8 @@
 
             <section class="settings-section hidden" data-section="ai">
               <h2>AI</h2>
-              <p>Choose a model and reasoning effort for each function. Settings are saved across app restarts.</p>
+              <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
+              <p class="field-help">Enabled routes only to providers that support prompt caching for your chosen model. If none are available, the request fails. Disabled removes caching requests and routing restrictions; providers may still cache automatically.</p>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
@@ -419,6 +448,11 @@
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
                 </select>
+                <label for="ai-formatting-caching">Prompt caching</label>
+                <select id="ai-formatting-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
               </fieldset>
               <fieldset class="ai-function-settings">
                 <legend>AI Image to Markdown</legend>
@@ -431,6 +465,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-imageToMarkdown-caching">Prompt caching</label>
+                <select id="ai-imageToMarkdown-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
                 <p class="field-help">Choose a model that supports image input.</p>
               </fieldset>
@@ -445,6 +484,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-rewrite-caching">Prompt caching</label>
+                <select id="ai-rewrite-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
                 <label for="ai-rewrite-custom-instruction">Custom instruction</label>
                 <textarea
@@ -464,6 +508,15 @@
                 <legend>AI Chat</legend>
                 <label for="ai-chat-model">Model</label>
                 <input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-chat-alternative-models">Alternative models</label>
+                <textarea
+                  id="ai-chat-alternative-models"
+                  autocomplete="off"
+                  placeholder="anthropic/claude-sonnet-4.5&#10;google/gemini-3.5-pro"
+                  rows="3"
+                  spellcheck="false"
+                ></textarea>
+                <p class="field-help">Optional. Enter one OpenRouter model identifier per line. Duplicate entries and the default AI Chat model are ignored.</p>
                 <label for="ai-chat-effort">Reasoning effort</label>
                 <select id="ai-chat-effort">
                   <option value="low">Low</option>
@@ -471,6 +524,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-chat-caching">Prompt caching</label>
+                <select id="ai-chat-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
                 <label for="ai-chat-custom-instruction">Custom instruction</label>
                 <textarea
@@ -486,6 +544,42 @@
                   Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.
                 </p>
               </fieldset>
+
+              <div class="quick-prompts-settings" aria-labelledby="quick-prompts-title">
+                <div class="quick-prompts-header">
+                  <div class="quick-prompts-heading">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.6 4.4L6 9l4.4 1.6L12 15l1.6-4.4L18 9l-4.4-1.6L12 3Z"/><path d="m5 16-.9 2.1L2 19l2.1.9L5 22l.9-2.1L8 19l-2.1-.9L5 16Z"/><path d="m19 14-.7 1.3L17 16l1.3.7L19 18l.7-1.3L21 16l-1.3-.7L19 14Z"/></svg>
+                    <h3 id="quick-prompts-title">Quick Prompts</h3>
+                  </div>
+                  <button id="add-quick-prompt-button" class="secondary quick-prompts-add" type="button">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                    Add prompt
+                  </button>
+                </div>
+                <p class="field-help">Type an identifier such as <strong>/summarize</strong> in AI Chat to insert its template. Use <strong>$1</strong>, <strong>$2</strong>, and so on for variables; $1 is selected first.</p>
+                <div id="quick-prompts-list" class="quick-prompts-list"></div>
+                <p id="quick-prompts-empty" class="quick-prompts-empty field-help">No quick prompts yet. Add one to create your first slash command.</p>
+              </div>
+
+              <template id="quick-prompt-template">
+                <article class="quick-prompt-card">
+                  <div class="quick-prompt-card-header">
+                    <label class="quick-prompt-identifier-label">
+                      <span class="visually-hidden">Slash identifier</span>
+                      <span class="quick-prompt-slash" aria-hidden="true">/</span>
+                      <input class="quick-prompt-identifier" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="summarize" required />
+                    </label>
+                    <button class="secondary quick-prompt-delete" type="button" title="Delete quick prompt">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6" /></svg>
+                    </button>
+                  </div>
+                  <label class="quick-prompt-text-label">
+                    <span>Prompt template</span>
+                    <textarea class="quick-prompt-text" maxlength="20000" placeholder="Summarize $1 in three concise bullet points." spellcheck="true" required></textarea>
+                  </label>
+                </article>
+              </template>
+
               <fieldset class="ai-function-settings">
                 <legend>Convert Markdown to LaTeX/PDF</legend>
                 <label for="ai-latex-model">Model</label>
@@ -497,6 +591,11 @@
                   <option value="high">High</option>
                   <option value="xhigh">Extra High (xhigh)</option>
                   <option value="max">Max</option>
+                </select>
+                <label for="ai-latex-caching">Prompt caching</label>
+                <select id="ai-latex-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
                 </select>
               </fieldset>
               <p class="field-help">Enter OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
@@ -615,6 +714,38 @@
                 Use a unitless line-height ratio for exported PDFs.
               </p>
             </section>
+
+            <section class="settings-section configuration-only hidden" data-section="io">
+              <h2>I/O</h2>
+              <p class="settings-section-description">
+                Back up all settings shown in Preferences or restore them from a Libera JSON backup.
+              </p>
+
+              <div class="io-grid">
+                <article class="io-card">
+                  <h3>Export settings</h3>
+                  <p class="field-help">Save the currently stored General, Markdown, and AI preferences to a JSON file.</p>
+                  <button id="export-preferences-button" class="secondary io-button" type="button">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
+                    Export settings
+                  </button>
+                </article>
+
+                <article class="io-card">
+                  <h3>Load settings</h3>
+                  <p class="field-help">Replace the saved preferences with values from a Libera JSON backup.</p>
+                  <button id="import-preferences-button" class="secondary io-button" type="button">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
+                    Load settings
+                  </button>
+                </article>
+              </div>
+
+              <p class="io-warning field-help">
+                The backup contains sensitive data, including your API key and master password verifier. Store it securely. The active login session secret is never exported.
+              </p>
+              <p id="io-status" class="io-status field-help" role="status" aria-live="polite"></p>
+            </section>
           </div>
         </div>
 
@@ -660,13 +791,19 @@
       const aiFunctionInputs = Object.fromEntries(aiFunctionNames.map((name) => [name, {
         model: document.querySelector(`#ai-${name}-model`),
         effort: document.querySelector(`#ai-${name}-effort`),
+        caching: document.querySelector(`#ai-${name}-caching`),
       }]));
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
+      const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
       const aiChatInstructionHelp = document.querySelector("#ai-chat-instruction-help");
       const aiRewriteCustomInstructionInput = document.querySelector("#ai-rewrite-custom-instruction");
       const loadAiRewriteInstructionButton = document.querySelector("#load-ai-rewrite-instruction-button");
       const aiRewriteInstructionHelp = document.querySelector("#ai-rewrite-instruction-help");
+      const quickPromptsList = document.querySelector("#quick-prompts-list");
+      const quickPromptsEmpty = document.querySelector("#quick-prompts-empty");
+      const quickPromptTemplate = document.querySelector("#quick-prompt-template");
+      const addQuickPromptButton = document.querySelector("#add-quick-prompt-button");
       const passwordFields = document.querySelector("#password-fields");
       const passwordLocked = document.querySelector("#password-locked");
       const changePasswordButton = document.querySelector("#change-password-button");
@@ -702,6 +839,9 @@
       const closeButton = document.querySelector("#close-button");
       const headerCloseButton = document.querySelector("#header-close-button");
       const saveButton = document.querySelector("#save-button");
+      const exportPreferencesButton = document.querySelector("#export-preferences-button");
+      const importPreferencesButton = document.querySelector("#import-preferences-button");
+      const ioStatus = document.querySelector("#io-status");
       const navButtons = Array.from(document.querySelectorAll("[data-section-button]"));
       const sections = Array.from(document.querySelectorAll("[data-section]"));
       const setupMode = new URLSearchParams(window.location.search).get("mode");
@@ -714,6 +854,9 @@
           "Change Libera by Thinh Hoang settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera by Thinh Hoang.";
         closeButton.classList.remove("hidden");
         headerCloseButton.classList.remove("hidden");
+        document.querySelectorAll("[data-section-button].configuration-only").forEach((element) => {
+          element.classList.remove("hidden");
+        });
         form.setAttribute("role", "dialog");
         form.setAttribute("aria-modal", "true");
         saveButton.textContent = "Save Preferences";
@@ -740,6 +883,45 @@
       function clearError() {
         errorBox.textContent = "";
         errorBox.style.display = "none";
+      }
+
+      function quickPromptCards() {
+        return Array.from(quickPromptsList.querySelectorAll(".quick-prompt-card"));
+      }
+
+      function refreshQuickPromptList() {
+        const cards = quickPromptCards();
+        quickPromptsEmpty.classList.toggle("hidden", cards.length > 0);
+        addQuickPromptButton.disabled = cards.length >= 50;
+        cards.forEach((card, index) => {
+          const identifier = card.querySelector(".quick-prompt-identifier");
+          const remove = card.querySelector(".quick-prompt-delete");
+          identifier.setAttribute("aria-label", `Quick prompt ${index + 1} slash identifier`);
+          remove.setAttribute("aria-label", `Delete quick prompt ${identifier.value.trim() || index + 1}`);
+        });
+      }
+
+      function addQuickPrompt(quickPrompt = {}, focus = false) {
+        if (quickPromptCards().length >= 50) return;
+        const card = quickPromptTemplate.content.firstElementChild.cloneNode(true);
+        const identifier = card.querySelector(".quick-prompt-identifier");
+        const prompt = card.querySelector(".quick-prompt-text");
+        const remove = card.querySelector(".quick-prompt-delete");
+        identifier.value = typeof quickPrompt.identifier === "string" ? quickPrompt.identifier.replace(/^\/+/, "") : "";
+        prompt.value = typeof quickPrompt.prompt === "string" ? quickPrompt.prompt : "";
+        identifier.addEventListener("input", refreshQuickPromptList);
+        identifier.addEventListener("blur", () => {
+          identifier.value = identifier.value.trim().replace(/^\/+/, "");
+          refreshQuickPromptList();
+        });
+        remove.addEventListener("click", () => {
+          card.remove();
+          refreshQuickPromptList();
+          addQuickPromptButton.focus();
+        });
+        quickPromptsList.append(card);
+        refreshQuickPromptList();
+        if (focus) identifier.focus();
       }
 
       function addFontFamilyOption(fontFamily, label = fontFamily) {
@@ -934,11 +1116,18 @@
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
+          aiFunctionInputs[name].caching.value = String(typeof state.aiFunctions?.[name]?.promptCaching === "boolean" ? state.aiFunctions[name].promptCaching : name === "chat");
           aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
           aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (name === "latex" ? "low" : "medium");
         }
         aiChatCustomInstructionInput.value = state.aiFunctions?.chat?.customInstruction || "";
+        aiChatAlternativeModelsInput.value = Array.isArray(state.aiFunctions?.chat?.alternativeModels)
+          ? state.aiFunctions.chat.alternativeModels.join("\n")
+          : "";
         aiRewriteCustomInstructionInput.value = state.aiFunctions?.rewrite?.customInstruction || "";
+        quickPromptsList.replaceChildren();
+        (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
+        refreshQuickPromptList();
         const configuredWysiwygFontFamily =
           state.wysiwygEditorFontFamily || "system-sans";
 
@@ -1009,6 +1198,51 @@
       loadRenderedSystemFontsButton.addEventListener("click", () => {
         clearError();
         void loadRenderedSystemFonts();
+      });
+
+      addQuickPromptButton.addEventListener("click", () => {
+        clearError();
+        addQuickPrompt({}, true);
+      });
+
+      function setIoBusy(busy) {
+        exportPreferencesButton.disabled = busy;
+        importPreferencesButton.disabled = busy;
+        saveButton.disabled = busy;
+      }
+
+      exportPreferencesButton.addEventListener("click", async () => {
+        clearError();
+        ioStatus.textContent = "";
+        setIoBusy(true);
+
+        try {
+          const result = await window.liberaSetup.exportPreferences();
+          if (!result.canceled) ioStatus.textContent = `Exported ${result.fileName}.`;
+        } catch (error) {
+          showError(error.message || "Unable to export preferences.");
+        } finally {
+          setIoBusy(false);
+        }
+      });
+
+      importPreferencesButton.addEventListener("click", async () => {
+        clearError();
+        ioStatus.textContent = "";
+        setIoBusy(true);
+        let loaded = false;
+
+        try {
+          const result = await window.liberaSetup.importPreferences();
+          loaded = !result.canceled;
+          if (loaded) ioStatus.textContent = `Loaded ${result.fileName}.`;
+        } catch (error) {
+          showError(error.message || "Unable to load preferences.");
+        } finally {
+          setIoBusy(false);
+        }
+
+        if (loaded) window.liberaSetup.close();
       });
 
       loadAiChatInstructionButton.addEventListener("click", async () => {
@@ -1121,9 +1355,17 @@
             aiFunctions: Object.fromEntries(aiFunctionNames.map((name) => [name, {
               model: aiFunctionInputs[name].model.value,
               reasoningEffort: aiFunctionInputs[name].effort.value,
-              ...(name === "chat" ? { customInstruction: aiChatCustomInstructionInput.value } : {}),
+              promptCaching: aiFunctionInputs[name].caching.value === "true",
+              ...(name === "chat" ? {
+                customInstruction: aiChatCustomInstructionInput.value,
+                alternativeModels: aiChatAlternativeModelsInput.value.split(/\r?\n/),
+              } : {}),
               ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
             }])),
+            quickPrompts: quickPromptCards().map((card) => ({
+              identifier: card.querySelector(".quick-prompt-identifier").value,
+              prompt: card.querySelector(".quick-prompt-text").value,
+            })),
             password: changePasswordFields.classList.contains("hidden")
               ? passwordInput.value
               : newPasswordInput.value,
@@ -1140,6 +1382,8 @@
             message.includes("password")
           ) {
             setActiveSection("general");
+          } else if (message.includes("Quick prompt")) {
+            setActiveSection("ai");
           }
 
           showError(message);

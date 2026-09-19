@@ -19,11 +19,13 @@ import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-di
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import type { QuickPrompt } from "@/lib/quick-prompts";
 
 type LiberaAppProps = {
   yourName?: string;
   initialAuthenticated: boolean;
   markdownPreferences: MarkdownPreferences;
+  quickPrompts?: QuickPrompt[];
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
@@ -47,6 +49,7 @@ export function LiberaApp({
   yourName = "",
   initialAuthenticated,
   markdownPreferences,
+  quickPrompts = [],
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
@@ -340,7 +343,7 @@ export function LiberaApp({
           />
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}

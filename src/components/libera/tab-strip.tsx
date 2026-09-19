@@ -3,7 +3,7 @@
 import { ReviewToggle } from "./markdown-review-ui";
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { Plus, Sparkles, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { FileTypeIcon } from "./file-type";
 import { WindowControls } from "@/components/libera/window-controls";
@@ -280,16 +280,17 @@ function ActiveFileActions({
   onRenameFile,
   onSave,
 }: ActiveFileActionsProps) {
-  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
 
   if (!activeTab) {
     return null;
   }
 
   const isMarkdown = activeTab.file.fileType === "markdown";
+  const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
   const downloadContent = isMarkdown ? activeTab.draft : undefined;
 
-  async function openDownloadMenu(event: MouseEvent<HTMLButtonElement>) {
+  async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
     if (!activeTab) {
       return;
     }
@@ -302,102 +303,99 @@ function ActiveFileActions({
 
     const point = nativeMenuPointFromButton(event.currentTarget);
 
-    setDownloadMenuOpen(true);
+    setActionMenuOpen(true);
 
     const selectedItemId = await menu
       .popup({
         ...point,
         items: [
-          { id: "markdown-file", label: "Markdown file" },
-          { id: "pdf-file", label: "PDF file" },
+          ...(isMarkdown
+            ? [
+                ...(supportsEditorMode
+                  ? [
+                      {
+                        id: "editor-mode",
+                        label: "Editor Mode",
+                        submenu: [
+                          {
+                            id: "editor-visual",
+                            label: "Visual",
+                            type: "radio" as const,
+                            checked: markdownEditorMode === "visual",
+                          },
+                          {
+                            id: "editor-source",
+                            label: "Source",
+                            type: "radio" as const,
+                            checked: markdownEditorMode === "source",
+                          },
+                        ],
+                      },
+                      { type: "separator" as const },
+                    ]
+                  : []),
+                {
+                  id: "save",
+                  label: "Save",
+                  enabled:
+                    activeTab.status !== "saving" &&
+                    (activeTab.untitled || activeTab.status !== "clean"),
+                },
+                {
+                  id: "download",
+                  label: "Download",
+                  submenu: [
+                    { id: "download-markdown", label: "Markdown file" },
+                    { id: "download-pdf", label: "PDF file" },
+                  ],
+                },
+              ]
+            : [{ id: "download-original", label: "Download" }]),
+          { type: "separator" },
+          { id: "rename", label: "Rename" },
+          { id: "move", label: "Move" },
+          { type: "separator" },
+          { id: "delete", label: "Delete" },
         ],
       })
       .catch(() => null);
 
-    setDownloadMenuOpen(false);
+    setActionMenuOpen(false);
 
-    if (selectedItemId === "markdown-file") {
+    if (selectedItemId === "editor-visual") {
+      onMarkdownEditorModeChange("visual");
+    } else if (selectedItemId === "editor-source") {
+      onMarkdownEditorModeChange("source");
+    } else if (selectedItemId === "save") {
+      await onSave();
+    } else if (selectedItemId === "download-markdown") {
       onDownloadFile(activeTab.file, downloadContent);
-    } else if (selectedItemId === "pdf-file") {
+    } else if (selectedItemId === "download-pdf") {
       await onDownloadMarkdownPdf(activeTab);
+    } else if (selectedItemId === "download-original") {
+      onDownloadFile(activeTab.file);
+    } else if (selectedItemId === "rename") {
+      await onRenameFile(activeTab);
+    } else if (selectedItemId === "move") {
+      await onMoveFile(activeTab);
+    } else if (selectedItemId === "delete") {
+      await onDeleteFile(activeTab);
     }
   }
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown && !isMarkdownSlidesPath(activeTab.file.path) ? (
-        <div role="group" aria-label="Markdown editing mode" className="libera-editor-mode mr-1 inline-flex h-8 shrink-0 items-center rounded-lg border border-border p-0.5">
-          {(["visual", "source"] as const).map((mode) => (
-            <button key={mode} type="button" aria-pressed={markdownEditorMode === mode}
-              className="h-full rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => onMarkdownEditorModeChange(mode)}>
-              {mode === "visual" ? "Visual" : "Source"}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {isMarkdown ? <ReviewToggle /> : null}
-      {isMarkdown ? (
-        <button
-          aria-label="Save"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={activeTab.status === "saving" || (!activeTab.untitled && activeTab.status === "clean")}
-          title="Save"
-          type="button"
-          onClick={onSave}
-        >
-          <Save aria-hidden className="h-4 w-4" />
-        </button>
-      ) : null}
-      {isMarkdown ? (
-        <button
-          aria-expanded={downloadMenuOpen}
-          aria-haspopup="menu"
-          aria-label="Download"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          title="Download"
-          type="button"
-          onClick={(event) => void openDownloadMenu(event)}
-        >
-          <Download aria-hidden className="h-4 w-4" />
-        </button>
-      ) : (
-        <button
-          aria-label="Download"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          title="Download"
-          type="button"
-          onClick={() => onDownloadFile(activeTab.file)}
-        >
-          <Download aria-hidden className="h-4 w-4" />
-        </button>
-      )}
       <button
-        aria-label="Rename"
+        aria-expanded={actionMenuOpen}
+        aria-haspopup="menu"
+        aria-label="File actions"
         className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        title="Rename"
+        title="File actions"
         type="button"
-        onClick={() => onRenameFile(activeTab)}
+        onClick={(event) => void openActionMenu(event)}
       >
-        <Pencil aria-hidden className="h-4 w-4" />
-      </button>
-      <button
-        aria-label="Move"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        title="Move"
-        type="button"
-        onClick={() => onMoveFile(activeTab)}
-      >
-        <MoveRight aria-hidden className="h-4 w-4" />
-      </button>
-      <button
-        aria-label="Delete"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive"
-        title="Delete"
-        type="button"
-        onClick={() => onDeleteFile(activeTab)}
-      >
-        <Trash2 aria-hidden className="h-4 w-4" />
+        <MoreHorizontal aria-hidden className="h-4 w-4" />
       </button>
     </div>
   );

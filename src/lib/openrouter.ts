@@ -1,4 +1,6 @@
 import { readSseData } from "./text-stream";
+import { parseOpenRouterUsage, type TokenUsage } from "./chat-token-usage";
+import { getPromptCacheRouting, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
@@ -15,6 +17,7 @@ type OpenRouterContentPart =
   | {
       type: "text";
       text: string;
+      cache_control?: { type: "ephemeral" };
     }
   | {
       type: "image_url";
@@ -39,6 +42,7 @@ type OpenRouterMessageContent =
     >;
 
 type OpenRouterResponse = {
+  usage?: unknown;
   choices?: Array<{
     finish_reason?: string;
     message?: {
@@ -107,7 +111,7 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-type CompletionOptions = { model?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal };
+type CompletionOptions = { model?: string; promptCaching?: boolean; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void };
 
 async function requestOpenRouterCompletion(
   messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
@@ -122,6 +126,8 @@ async function requestOpenRouterCompletion(
     );
   }
 
+  const model = options.model ?? getOpenRouterModel();
+  const caching = options.promptCaching ? await getPromptCacheRouting(model, apiKey, options.signal) : undefined;
   const response = await fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
     method: "POST",
     headers: {
@@ -132,10 +138,11 @@ async function requestOpenRouterCompletion(
     },
     signal: options.signal,
     body: JSON.stringify({
-      model: options.model ?? getOpenRouterModel(),
+      model,
+      ...(caching ? { provider: caching.provider } : {}),
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      messages,
+      messages: caching?.explicit ? withPromptCacheBreakpoints(messages) : messages,
       temperature: 0,
       ...(stream ? { stream: true } : {}),
     }),
@@ -148,13 +155,14 @@ async function requestOpenRouterCompletion(
   return response;
 }
 
-export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}) {
+export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage }> {
   const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
   return {
     content: extractMessageContent(payload.choices?.[0]?.message?.content),
     finishReason: payload.choices?.[0]?.finish_reason,
+    usage: parseOpenRouterUsage(payload.usage),
   };
 }
 
@@ -168,10 +176,13 @@ export async function* streamOpenRouterCompletion(messages: OpenRouterMessage[],
   for await (const data of readSseData(response.body, options.signal)) {
     if (data.trim() === "[DONE]") return;
     const payload = JSON.parse(data) as {
+      usage?: unknown;
       error?: { message?: string };
       choices?: { delta?: { content?: OpenRouterMessageContent }; finish_reason?: string }[];
     };
     if (payload.error) throw new Error(payload.error.message || "The model stream failed.");
+    const usage = parseOpenRouterUsage(payload.usage);
+    if (usage) options.onUsage?.(usage);
     const choice = payload.choices?.[0];
     if (choice?.finish_reason === "error") throw new Error("The model stream failed.");
     const text = extractMessageContent(choice?.delta?.content);

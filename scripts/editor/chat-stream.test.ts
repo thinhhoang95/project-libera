@@ -34,12 +34,13 @@ test("chat route streams only answer text and carries model settings to OpenRout
   const requests: Record<string, unknown>[] = [];
   let fail = false;
   globalThis.fetch = async (_input, init) => {
+    if (String(_input).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "test-provider", supports_implicit_caching: true }] } });
     requests.push(JSON.parse(String(init?.body)));
     const events = [
       ': OPENROUTER PROCESSING\n\n',
       'data: {"choices":[{"delta":{"reasoning":"Private reasoning"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":"Hello 👋"}}]}\n\n',
-      fail ? 'data: {"error":{"message":"Provider failed"}}\n\n' : 'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      fail ? 'data: {"error":{"message":"Provider failed"}}\n\n' : 'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":42,"prompt_tokens_details":{"cached_tokens":1000}}}\n\ndata: [DONE]\n\n',
     ];
     return new Response(byteStream(events.join('')), { headers: { "Content-Type": "text/event-stream" } });
   };
@@ -48,7 +49,9 @@ test("chat route streams only answer text and carries model settings to OpenRout
     const response = await POST(request());
     assert.match(response.headers.get("Content-Type")!, /ndjson/);
     let text = "";
-    await readChatResponse(response, new AbortController().signal, (delta) => { text += delta; });
+    const usage: unknown[] = [];
+    await readChatResponse(response, new AbortController().signal, (delta) => { text += delta; }, (value) => usage.push(value));
+    assert.deepEqual(usage, [{ inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 }]);
     assert.equal(text, "Hello 👋 world");
     assert.equal(requests[0].stream, true);
     assert.deepEqual(requests[0].reasoning, { effort: "max" });

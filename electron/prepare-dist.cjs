@@ -8,6 +8,7 @@ const requiredPackages = new Map([
   ["baseline-browser-mapping", path.join(projectRoot, "node_modules", "baseline-browser-mapping")],
   ["caniuse-lite", path.join(projectRoot, "node_modules", "caniuse-lite")],
   ["nanoid", path.join(projectRoot, "node_modules", "nanoid")],
+  ["pdfjs-dist", path.join(projectRoot, "node_modules", "pdfjs-dist")],
   ["picocolors", path.join(projectRoot, "node_modules", "picocolors")],
   ["postcss", path.join(projectRoot, "node_modules", "next", "node_modules", "postcss")],
   ["scheduler", path.join(projectRoot, "node_modules", "scheduler")],
