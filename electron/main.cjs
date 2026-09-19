@@ -25,6 +25,7 @@ const { createPreferencesBackup, parsePreferencesBackup } = require("./preferenc
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
+const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const SERVER_READY_TIMEOUT_MS = 90_000;
@@ -1568,21 +1569,15 @@ async function createMainWindow(url) {
     show: !isWindowsGlass,
     accentColor: isWindowsGlass ? false : undefined,
     backgroundColor: glass.enabled ? "#00000000" : undefined,
-    // Windows transparency only works for frameless windows. Without this, the
-    // renderer's transparent sidebar falls through to a plain white client area
-    // instead of the DWM acrylic backdrop.
-    frame: !isWindowsGlass,
-    // Keep the native Windows sizing frame underneath our frameless UI. It
-    // supplies edge/corner resize hit targets, the DWM border and shadow, and
-    // minimize/restore animations without bringing back the native title bar.
+    // On Windows, hidden titleBarStyle makes this internally frameless;
+    // thickFrame retains the native resize border, shadow and animations.
+    frame: true,
     thickFrame: true,
-    transparent: isWindowsGlass,
-    // On macOS the vibrancy view *is* the window background, so we don't need a
-    // transparent window — and `transparent: true` would strip the native
-    // rounded corners and force square edges. `titleBarStyle: "hidden"` removes
-    // the title bar while keeping the rounded corners, the traffic-light buttons
-    // and the system drag region at the top of the window.
-    titleBarStyle: isMacGlass ? "hidden" : undefined,
+    // transparent:true forces thickFrame off in Electron. Use the acrylic
+    // backdrop with transparent web content instead of a transparent HWND.
+    transparent: false,
+    // Preserve macOS traffic lights; Windows uses the app's existing controls.
+    titleBarStyle: glass.enabled ? "hidden" : undefined,
     // Vertically centre the traffic lights in the 36px (.libera-titlebar) drag
     // strip: (36 - 12) / 2 = 12.
     trafficLightPosition: isMacGlass ? { x: 16, y: 12 } : undefined,
@@ -1602,6 +1597,7 @@ async function createMainWindow(url) {
 
   mainWindow.setMenuBarVisibility(!isWindowsGlass);
   if (isWindowsGlass) {
+    maintainWindowsBackdrop(mainWindow, nativeTheme);
     mainWindow.once("ready-to-show", () => {
       if (!mainWindow.isDestroyed()) {
         mainWindow.show();
