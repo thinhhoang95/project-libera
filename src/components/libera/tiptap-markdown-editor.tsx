@@ -233,6 +233,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
+    highlight: current.isActive("highlight"),
     // Subscribe only to UI data, never a DecorationSet containing document nodes.
     find: (() => {
       const find = tiptapFindPluginKey.getState(current.state);
@@ -563,7 +564,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
-          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active, run: () => editor.chain().focus().setHighlightToolActive(!state.highlightTool.active).run() },
+          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
           {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}

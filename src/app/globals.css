@@ -779,7 +779,7 @@ button.border[class*="border-white"]:hover {
 .markdown-renderer blockquote[data-box-color] :is(p, h1, h2, h3, h4, h5, h6, [role="heading"], ul, ol, li, a),
 .markdown-renderer blockquote[data-box-color] li::marker,
 .libera-tiptap blockquote[data-box-color] a { color: inherit; }
-.libera-tiptap blockquote[data-box-color] :is(pre, code, th) { color: var(--foreground); }
+.libera-tiptap blockquote[data-box-color] :is(pre, code, th, [data-type="block-math"]) { color: var(--foreground); }
 .libera-tiptap .selectedCell { background: var(--muted); }
 .libera-tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .libera-tiptap ul[data-type="taskList"] li { display: flex; gap: .5em; }
