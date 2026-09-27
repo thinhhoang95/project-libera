@@ -118,7 +118,7 @@ const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
 };
-const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
+const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})([ \t]+|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
 const SELECTION_CHANGE_DEBOUNCE_MS = 120;
 export const SOURCE_DRAFT_DELAY_MS = 250;
@@ -337,6 +337,7 @@ function changeSelectedHeadingLevels(
     if (lineSelected && isHeadingTone(highlight.tone) && headingMatch) {
       const leadingSpaces = headingMatch[1] ?? "";
       const headingMarkers = headingMatch[2] ?? "";
+      const headingSeparator = headingMatch[3] ?? "";
       const markerOffset = lineOffset + leadingSpaces.length;
 
       hasHeading = true;
@@ -352,14 +353,17 @@ function changeSelectedHeadingLevels(
         });
       }
 
-      if (direction === "unindent" && headingMarkers.length > 1) {
+      if (direction === "unindent") {
+        const removed = headingMarkers.length === 1
+          ? headingMarkers.length + headingSeparator.length
+          : 1;
         nextLine = `${line.slice(0, leadingSpaces.length)}${line.slice(
-          leadingSpaces.length + 1,
+          leadingSpaces.length + removed,
         )}`;
         mutations.push({
           inserted: 0,
           offset: markerOffset,
-          removed: 1,
+          removed,
         });
       }
     }
@@ -1185,6 +1189,36 @@ export function MarkdownEditor({
     closeFileLinkPopup();
 
     if (textarea && result.changed) {
+      let prefixLength = 0;
+      while (
+        prefixLength < currentValue.length &&
+        prefixLength < result.nextValue.length &&
+        currentValue[prefixLength] === result.nextValue[prefixLength]
+      ) {
+        prefixLength += 1;
+      }
+      let suffixLength = 0;
+      while (
+        suffixLength < currentValue.length - prefixLength &&
+        suffixLength < result.nextValue.length - prefixLength &&
+        currentValue[currentValue.length - 1 - suffixLength] ===
+          result.nextValue[result.nextValue.length - 1 - suffixLength]
+      ) {
+        suffixLength += 1;
+      }
+      const replacementEnd = result.nextValue.length - suffixLength;
+      replaceTextareaSelectionWithUndo(textarea, {
+        nextSelectionEnd: result.nextEnd,
+        nextSelectionStart: result.nextStart,
+        replacement: result.nextValue.slice(prefixLength, replacementEnd),
+        scrollLeft: textarea.scrollLeft,
+        scrollTop: textarea.scrollTop,
+        selectionEnd: currentValue.length - suffixLength,
+        selectionStart: prefixLength,
+      });
+      // Synchronize the editor's live draft even when the browser's native
+      // insertText event is deferred. The value write is skipped after a
+      // successful native edit, preserving its undo entry.
       commitEditorValue(textarea, result.nextValue);
       readDraft();
     }

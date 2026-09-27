@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld("liberaClipboard", {
     ipcRenderer.invoke("clipboard:copy-item-path", relativePath, mode),
 });
 
+contextBridge.exposeInMainWorld("liberaWorkspaces", {
+  checkpoint: (body) => ipcRenderer.sendSync("workspaces:checkpoint", body),
+});
+
 contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),

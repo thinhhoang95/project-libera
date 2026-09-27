@@ -14,9 +14,10 @@ export async function POST(request: NextRequest) {
   try {
     const raw = await request.text();
     if (raw.length > 48_000_000) return jsonError("This chat is too large. Start a new chat or remove some attachments.", 413);
-    let body: { messages?: unknown; model?: unknown; reasoningEffort?: unknown; stream?: boolean } | null;
+    let body: { messages?: unknown; model?: unknown; sessionId?: unknown; reasoningEffort?: unknown; stream?: boolean } | null;
     try { body = JSON.parse(raw); } catch { return jsonError("Invalid chat request.", 400); }
     if (!validateChatMessages(body?.messages) || body.messages.at(-1)?.role !== "user") return jsonError("Invalid chat messages.", 400);
+    if (body.sessionId !== undefined && (typeof body.sessionId !== "string" || !body.sessionId || body.sessionId.length > 256)) return jsonError("Invalid chat session.", 400);
     if (body.reasoningEffort !== undefined && !isChatReasoningEffort(body.reasoningEffort)) return jsonError("Invalid reasoning effort.", 400);
     const options = getAiFunctionOptions("chat");
     const models = getAiChatModels();
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
       { role: "system", content: systemInstruction },
       ...body.messages.map((message) => ({ role: message.role, content: chatCompletionContent(message) })),
     ];
-    const completionOptions = { ...options, model, reasoning: { effort: body.reasoningEffort ?? options.reasoning.effort } };
+    const completionOptions = { ...options, model, sessionId: body.sessionId as string | undefined, reasoning: { effort: body.reasoningEffort ?? options.reasoning.effort } };
     if (body.stream === true) {
       const cancellation = new AbortController();
       const signal = AbortSignal.any([request.signal, cancellation.signal, AbortSignal.timeout(10 * 60_000)]);

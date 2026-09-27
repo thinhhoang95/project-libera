@@ -6,7 +6,7 @@ import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
-import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
+import { changeTiptapHeadingLevels, replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
@@ -25,6 +25,8 @@ import { LatexExportButton } from "@/components/libera/latex-export-button";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
+import { MarkdownTextWidth } from "./markdown-text-width";
+import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
@@ -96,6 +98,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
   const [replaceQuery, setReplaceQuery] = useState("");
   const [wildcardMatches, setWildcardMatches] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const toolbarRef = useHorizontalToolbarScroll();
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const visualScrollFrameRef = useRef<number | null>(null);
@@ -181,6 +184,23 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
         const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
         if (inserted) event.preventDefault();
         return inserted;
+      },
+      handleKeyDown(view, event): boolean {
+        if (
+          !editor ||
+          event.key !== "Tab" ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey
+        ) {
+          return false;
+        }
+
+        return changeTiptapHeadingLevels(
+          editor,
+          view.state.selection,
+          event.shiftKey ? "unindent" : "indent",
+        );
       },
       handleClick(_view, _pos, event) {
         const anchor = (event.target as HTMLElement).closest("a");
@@ -534,8 +554,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
       }
       if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
     }}>
-      <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
-        className="libera-editor-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
+      <div ref={toolbarRef} aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
+        className="libera-editor-toolbar libera-horizontal-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [&>*]:shrink-0">
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
           if (level) editor.chain().focus().setHeading({ level }).run(); else editor.chain().focus().setParagraph().run();
@@ -602,8 +622,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
+      <MarkdownTextWidth canvasRef={scrollContainerRef} />
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
+        <div ref={scrollContainerRef} className={`libera-visual-page libera-text-width-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
           onScroll={(event) => handleVisualScroll(event.currentTarget)}
           onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
@@ -616,7 +637,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
               void insertImages(Array.from(event.dataTransfer.files), pos);
             }
           }}>
-          <EditorContent editor={editor} />
+          <EditorContent className="libera-text-width-content" editor={editor} />
         </div>
         {findOpen ? (
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">

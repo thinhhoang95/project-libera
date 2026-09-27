@@ -345,7 +345,7 @@ test("numbering empty headings is idempotent in both editors", () => {
   editor.destroy();
 });
 
-test("heading indentation preserves marks, respects levels 1–6 and supports undo", () => {
+test("heading indentation preserves marks, removes level-one headings and supports stepwise undo", () => {
   const editor = create('# **Title**\n\n## Child\n\n###### Limit\n\nBody');
   const original = editor.getJSON();
   changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "indent");
@@ -354,8 +354,144 @@ test("heading indentation preserves marks, respects levels 1–6 and supports un
   editor.commands.undo();
   assert.deepEqual(editor.getJSON(), original);
   changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "unindent");
-  assert.deepEqual(getTiptapHeadings(editor, editor.state.selection).map(({ node }) => node.attrs.level), [1, 1, 5]);
+  assert.equal(editor.getMarkdown(), '**Title**\n\n# Child\n\n##### Limit\n\nBody');
+  assert.match(editor.getHTML(), /<p><strong>Title<\/strong><\/p>/);
+  changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "unindent");
+  assert.equal(editor.getMarkdown(), '**Title**\n\nChild\n\n#### Limit\n\nBody');
+  editor.commands.undo();
+  assert.equal(editor.getMarkdown(), '**Title**\n\n# Child\n\n##### Limit\n\nBody');
+  editor.commands.undo();
+  assert.deepEqual(editor.getJSON(), original);
   editor.destroy();
+});
+
+test("visual editor Tab changes heading levels and Shift+Tab removes top-level headings with undo", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/headings.md", value: "# Title\n\n## Child",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    const surface = host.querySelector<HTMLElement>(".libera-tiptap")!;
+    const editor = (surface as HTMLElement & { editor: Editor }).editor;
+    await act(async () => {
+      editor.commands.setTextSelection({ from: 1, to: editor.state.doc.content.size });
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab",
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "## Title\n\n### Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "Title\n\n# Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "Title\n\nChild");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "Title\n\n# Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "## Title\n\n### Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("source editor Shift+Tab removes top-level markers in separate native undo steps", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  const undoStack: { selectionEnd: number; selectionStart: number; value: string }[] = [];
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value(command: string, _showUi?: boolean, value?: string) {
+      const textarea = document.activeElement as HTMLTextAreaElement | null;
+      if (!textarea || textarea.tagName !== "TEXTAREA") return false;
+      if (command === "insertText") {
+        undoStack.push({
+          selectionEnd: textarea.selectionEnd,
+          selectionStart: textarea.selectionStart,
+          value: textarea.value,
+        });
+        const selectionStart = textarea.selectionStart;
+        const nextValue = `${textarea.value.slice(0, selectionStart)}${value ?? ""}${textarea.value.slice(textarea.selectionEnd)}`;
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, nextValue);
+        textarea.setSelectionRange(selectionStart + (value?.length ?? 0), selectionStart + (value?.length ?? 0));
+      } else if (command === "undo") {
+        const previous = undoStack.pop();
+        if (!previous) return false;
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, previous.value);
+        textarea.setSelectionRange(previous.selectionStart, previous.selectionEnd);
+      } else {
+        return false;
+      }
+      textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      return true;
+    },
+  });
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/headings.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "# Title\n\n## Child",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onChange: () => {}, onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    const textarea = textareaRef.current!;
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    await act(async () => {
+      textarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(textarea.value, "Title\n\n# Child");
+    await act(async () => {
+      textarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(textarea.value, "Title\n\nChild");
+    await act(async () => { document.execCommand("undo"); });
+    assert.equal(textarea.value, "Title\n\n# Child");
+    await act(async () => { document.execCommand("undo"); });
+    assert.equal(textarea.value, "# Title\n\n## Child");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    if (originalExecCommand) {
+      Object.defineProperty(document, "execCommand", { configurable: true, value: originalExecCommand });
+    } else {
+      Reflect.deleteProperty(document, "execCommand");
+    }
+  }
 });
 
 test("AI selection serialization includes marks and only the selected content", () => {

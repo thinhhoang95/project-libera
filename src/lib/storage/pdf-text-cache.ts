@@ -19,7 +19,11 @@ import {
 import type { PdfTextCachePayload, PdfTextPage } from "@/lib/types";
 
 const PDF_TEXT_CACHE_VERSION = 1;
-const PDFJS_DIST_PATH = path.join(process.cwd(), "node_modules", "pdfjs-dist");
+// Resolve from the running server bundle so this also works in standalone builds.
+// Webpack replaces createRequire(import.meta.url) with undefined and rewrites
+// direct require.resolve calls to bundle IDs instead of filesystem paths.
+const nodeRequire = eval("require") as NodeRequire;
+const PDFJS_DIST_PATH = path.dirname(nodeRequire.resolve("pdfjs-dist/package.json"));
 const PDF_WORKER_SRC = pathToFileURL(
   path.join(PDFJS_DIST_PATH, "legacy", "build", "pdf.worker.mjs"),
 ).toString();

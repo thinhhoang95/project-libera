@@ -173,7 +173,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const selectedHeadings = popup ? getTiptapHeadings(editor, popup).filter((heading) => heading.selected) : [];
   const hasText = popup ? !!getTiptapSelectionMarkdown(editor, popup).trim() : false;
   const canIndent = selectedHeadings.some(({ node }) => node.attrs.level < 6);
-  const canUnindent = selectedHeadings.some(({ node }) => node.attrs.level > 1);
+  const canUnindent = selectedHeadings.length > 0;
 
   return <>
     <button ref={buttonRef} type="button" aria-label="Enumerate Headings" title="Enumerate Headings"

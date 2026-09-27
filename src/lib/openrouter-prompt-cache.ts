@@ -6,13 +6,15 @@ type Endpoint = {
   supported_parameters?: string[];
   pricing?: { input_cache_read?: string | number | null; input_cache_write?: string | number | null };
 };
-type CacheRouting = { provider: { only: string[] }; explicit: boolean };
+type CacheRouting = { provider: { only: string[] }; breakpoints: "none" | "rolling" | "gemini" };
 const routes = new Map<string, { expires: number; routing: CacheRouting }>();
 
-function supportsCaching(endpoint: Endpoint) {
-  const hasPrice = (price: string | number | null | undefined) =>
-    price !== undefined && price !== null && String(price).trim() !== "" &&
+function hasPrice(price: string | number | null | undefined) {
+  return price !== undefined && price !== null && String(price).trim() !== "" &&
     Number.isFinite(Number(price)) && Number(price) >= 0;
+}
+
+function supportsCaching(endpoint: Endpoint) {
   // A read price alone is not proof: some endpoints advertise discounted
   // reads but explicitly report no implicit caching. Explicit providers
   // advertise cache writes as well (e.g. Claude), or cache_control support.
@@ -44,9 +46,14 @@ export async function getPromptCacheRouting(model: string, apiKey: string, signa
     return endpoints.every((other) => !(other.tag === endpoint.tag || other.tag?.startsWith(`${endpoint.tag}/`)) || supportsCaching(other));
   }) : [];
   if (!eligible.length) throw new Error(`No verified prompt caching providers are available for ${model}. Disable prompt caching in Preferences to use unrestricted routing.`);
-  const routing = {
+  // OpenRouter accepts explicit Gemini breakpoints even though Gemini
+  // endpoints advertise implicit caching rather than cache_control.
+  const geminiExplicit = /^google\/gemini-/.test(model) && eligible.every((endpoint) => hasPrice(endpoint.pricing?.input_cache_write));
+  const breakpoints: CacheRouting["breakpoints"] = geminiExplicit ? "gemini"
+    : eligible.some((endpoint) => endpoint.supports_implicit_caching !== true) ? "rolling" : "none";
+  const routing: CacheRouting = {
     provider: { only: [...new Set(eligible.map((endpoint) => endpoint.tag!))] },
-    explicit: eligible.some((endpoint) => endpoint.supports_implicit_caching !== true),
+    breakpoints,
   };
   if (routes.size >= 100) routes.clear();
   routes.set(model, { expires: Date.now() + 5 * 60_000, routing });
@@ -59,6 +66,19 @@ export function withPromptCacheBreakpoints(messages: OpenRouterMessage[]): OpenR
   const indices = new Set([messages.findIndex((message) => message.role === "system"), messages.length - 2, messages.length - 1]);
   return messages.map((message, index) => {
     if (!indices.has(index)) return message;
+    const content = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
+    const lastText = content.findLastIndex((part) => part.type === "text" && part.text.length > 0);
+    if (lastText < 0) return message;
+    return { ...message, content: content.map((part, i) => i === lastText ? { ...part, cache_control: { type: "ephemeral" as const } } : part) };
+  });
+}
+
+export function withGeminiPromptCacheBreakpoint(messages: OpenRouterMessage[]): OpenRouterMessage[] {
+  // Keep the breakpoint on the first user message so a growing chat can read
+  // the same cached prefix on every follow-up. Gemini uses the last marker.
+  const firstUser = messages.findIndex((message) => message.role === "user");
+  return messages.map((message, index) => {
+    if (index !== firstUser) return message;
     const content = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
     const lastText = content.findLastIndex((part) => part.type === "text" && part.text.length > 0);
     if (lastText < 0) return message;

@@ -35,6 +35,8 @@ import {
   MarkdownSlidesPreview,
 } from "@/components/libera/markdown-slides-viewer";
 import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
+import { MarkdownTextWidth } from "./markdown-text-width";
+import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
@@ -546,7 +548,8 @@ export function WorkspacePanel({
     activeTab?.file.fileType === "markdown" && isMarkdownSlidesPath(activeTab.file.path);
   const activeMarkdownViewState =
     activeTab?.file.fileType === "markdown" ? activeTab.viewState?.markdown : undefined;
-  const markdownZoom = activeMarkdownViewState?.zoom ?? 100;
+  const { preferences: displayPreferences, updatePreferences: updateDisplayPreferences } = useMarkdownDisplayPreferences();
+  const markdownZoom = displayPreferences.textScale;
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
   const markdownEditorFontFamily = getMarkdownEditorFontStack(
@@ -1075,7 +1078,7 @@ export function WorkspacePanel({
   }
 
   function handleMarkdownZoomChange(value: number) {
-    updateMarkdownViewState({ zoom: value });
+    updateDisplayPreferences({ textScale: value });
   }
 
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
@@ -1424,25 +1427,28 @@ export function WorkspacePanel({
               key={`${activeTab.id}-fullscreen-preview`}
               className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card"
             >
+              <MarkdownTextWidth canvasRef={markdownPreviewRef} />
               <article
                 ref={markdownPreviewRef}
-                className="markdown-preview-pane min-h-0 flex-1 overflow-auto bg-card p-6"
+                className="markdown-preview-pane libera-text-width-page min-h-0 flex-1 overflow-auto bg-card p-6"
                 onPointerDown={handleMarkdownPreviewPointerDown}
                 onScroll={handleMarkdownPreviewScroll}
                 onTouchStart={markPreviewUserScrollIntent}
                 onWheel={markPreviewUserScrollIntent}
               >
-                <MarkdownPreviewMetadata file={activeTab.file} />
-                <MarkdownRenderer
-                  mathMarkers={markdownPreferences}
-                  content={activeTab.draft}
-                  baseFontSize={markdownPreferences.baseFontSize}
-                  baseLineHeight={markdownPreferences.baseLineHeight}
-                  documentPath={activeTab.file.path}
-                  fontFamily={renderedMarkdownFontFamily}
-                  onOpenFileLink={handleOpenMarkdownFileLink}
-                  textScale={markdownZoomScale}
-                />
+                <div className="libera-text-width-content">
+                  <MarkdownPreviewMetadata file={activeTab.file} />
+                  <MarkdownRenderer
+                    mathMarkers={markdownPreferences}
+                    content={activeTab.draft}
+                    baseFontSize={markdownPreferences.baseFontSize}
+                    baseLineHeight={markdownPreferences.baseLineHeight}
+                    documentPath={activeTab.file.path}
+                    fontFamily={renderedMarkdownFontFamily}
+                    onOpenFileLink={handleOpenMarkdownFileLink}
+                    textScale={markdownZoomScale}
+                  />
+                </div>
               </article>
             </div>
           ) : (
@@ -1501,12 +1507,13 @@ export function WorkspacePanel({
                   activeMarkdownIsSlides ? "bg-zinc-100" : "bg-card"
                 }`}
               >
+                {!activeMarkdownIsSlides && <MarkdownTextWidth canvasRef={markdownPreviewRef} />}
                 <article
                   ref={markdownPreviewRef}
                   className={`min-h-0 min-w-0 flex-1 overflow-auto ${
                     activeMarkdownIsSlides
                       ? "bg-zinc-100"
-                      : "markdown-preview-pane bg-card p-6"
+                      : "markdown-preview-pane libera-text-width-page bg-card p-6"
                   }`}
                   onDoubleClick={
                     activeMarkdownIsSlides
@@ -1520,9 +1527,6 @@ export function WorkspacePanel({
                   onTouchStart={markPreviewUserScrollIntent}
                   onWheel={markPreviewUserScrollIntent}
                 >
-                  {!activeMarkdownIsSlides ? (
-                    <MarkdownPreviewMetadata file={activeTab.file} />
-                  ) : null}
                   {activeMarkdownIsSlides && activeMarkdownSlidesDeck ? (
                     <MarkdownSlidesPreview
                       activeSlideIndex={markdownSlideIndex}
@@ -1535,18 +1539,21 @@ export function WorkspacePanel({
                       textScale={markdownZoomScale}
                     />
                   ) : (
-                    <MarkdownWorkerPreview
-                      key={activeTab.id}
-                      onContentReady={handlePreviewContentReady}
-                      mathMarkers={markdownPreferences}
-                      content={previewMarkdownDraft}
-                      baseFontSize={markdownPreferences.baseFontSize}
-                      baseLineHeight={markdownPreferences.baseLineHeight}
-                      documentPath={activeTab.file.path}
-                      fontFamily={renderedMarkdownFontFamily}
-                      onOpenFileLink={handleOpenMarkdownFileLink}
-                      textScale={markdownZoomScale}
-                    />
+                    <div className="libera-text-width-content">
+                      {!activeMarkdownIsSlides && <MarkdownPreviewMetadata file={activeTab.file} />}
+                      <MarkdownWorkerPreview
+                        key={activeTab.id}
+                        onContentReady={handlePreviewContentReady}
+                        mathMarkers={markdownPreferences}
+                        content={previewMarkdownDraft}
+                        baseFontSize={markdownPreferences.baseFontSize}
+                        baseLineHeight={markdownPreferences.baseLineHeight}
+                        documentPath={activeTab.file.path}
+                        fontFamily={renderedMarkdownFontFamily}
+                        onOpenFileLink={handleOpenMarkdownFileLink}
+                        textScale={markdownZoomScale}
+                      />
+                    </div>
                   )}
                 </article>
               </div>

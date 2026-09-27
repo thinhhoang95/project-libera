@@ -1,10 +1,12 @@
 "use client";
 
 import {
+  Copy,
   Highlighter,
   Loader2,
   MousePointer2,
   RotateCcw,
+  Search,
   Trash2,
   Type,
   ZoomIn,
@@ -28,6 +30,8 @@ import type {
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { usePdfFind } from "@/components/libera/use-pdf-find";
+import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
 import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
 import {
@@ -36,23 +40,39 @@ import {
 } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
 import {
+  ANNOTATION_UI_SELECTOR,
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   MAX_TEXT_ANNOTATION_FONT_SIZE,
   MIN_TEXT_ANNOTATION_FONT_SIZE,
   TextAnnotationLayer,
   clamp,
   createAnnotationId,
+  keepEditorFocus,
   normalizeRect,
   nowIso,
   rectStyle,
   type AnnotationSurfaceSize,
 } from "@/components/libera/text-annotation-layer";
+import {
+  SwatchPicker,
+  TextAnnotationStyleControls,
+} from "@/components/libera/annotation-style-controls";
+import {
+  DEFAULT_PDF_HIGHLIGHT_COLOR,
+  DEFAULT_PDF_TEXT_COLOR,
+  DEFAULT_PDF_TEXT_FONT,
+  PDF_HIGHLIGHT_COLORS,
+  isHexColor,
+  mergeHighlightRects,
+  rangeTextClientRects,
+} from "@/lib/pdf-annotation-style";
 import type {
   PdfAnnotation,
   PdfAnnotationRect,
   PdfHighlightAnnotation,
   PdfAnnotationsPayload,
   PdfTextAnnotation,
+  PdfTextAnnotationFont,
 } from "@/lib/types";
 import type { PdfTabViewState } from "@/components/libera/types";
 
@@ -64,12 +84,12 @@ GlobalWorkerOptions.workerSrc = new URL(
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
-const HIGHLIGHT_COLOR = "#fde047";
 const PDF_PAGE_RENDER_ROOT_MARGIN = "1200px 0px";
 const PDF_PAGE_RENDER_FALLBACK_COUNT = 2;
 const PDF_PAGE_RENDER_CONCURRENCY = 2;
 const PDF_SCROLL_STATE_INTERVAL_MS = 150;
 const EMPTY_ANNOTATIONS: PdfAnnotation[] = [];
+const EMPTY_SEARCH_MATCHES: PdfSearchMatch[] = [];
 
 type PdfTool = "select" | "highlight" | "text";
 type PdfScrollPosition = {
@@ -86,6 +106,8 @@ type PdfAnnotationScrollState = {
   lastSelectedAnnotationId: string;
 };
 type RequestRenderSlot = () => Promise<() => void>;
+type SelectionMenuPosition = { left: number; top: number };
+type AnnotationUpdater = (annotations: PdfAnnotation[]) => PdfAnnotation[];
 
 type PdfViewerProps = {
   filePath: string;
@@ -228,6 +250,7 @@ export function PdfViewer({
   onCompleteScreenshotSnip,
   onViewStateChange,
 }: PdfViewerProps) {
+  const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
     scrollLeft: initialViewState?.scrollLeft ?? 0,
@@ -252,6 +275,13 @@ export function PdfViewer({
     [pdfDocument],
   );
   useEffect(() => () => textContentCache?.clear(), [textContentCache]);
+  const pdfFind = usePdfFind(pdfDocument, textContentCache, viewerRef);
+  const activeSearchMatch = pdfFind.activeMatch;
+  useEffect(() => {
+    if (activeSearchMatch) {
+      pageElementRefs.current.get(activeSearchMatch.pageNumber)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [activeSearchMatch]);
   const [basePageLayouts, setBasePageLayouts] = useState<PdfPageLayout[]>([]);
   const [renderWindowPages, setRenderWindowPages] = useState<Set<number>>(new Set());
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
@@ -263,6 +293,18 @@ export function PdfViewer({
   const [fontSize, setFontSize] = useState(
     initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   );
+  const [fontFamily, setFontFamily] = useState<PdfTextAnnotationFont>(
+    initialViewState?.fontFamily ?? DEFAULT_PDF_TEXT_FONT,
+  );
+  const [textColor, setTextColor] = useState(
+    isHexColor(initialViewState?.textColor) ? initialViewState.textColor : DEFAULT_PDF_TEXT_COLOR,
+  );
+  const [highlightColor, setHighlightColor] = useState(
+    isHexColor(initialViewState?.highlightColor)
+      ? initialViewState.highlightColor
+      : DEFAULT_PDF_HIGHLIGHT_COLOR,
+  );
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -275,6 +317,10 @@ export function PdfViewer({
     typeof viewStateSelectedAnnotationId === "string"
       ? viewStateSelectedAnnotationId
       : selectedAnnotationId;
+  const activeSelectedAnnotationIdRef = useRef(activeSelectedAnnotationId);
+  useEffect(() => {
+    activeSelectedAnnotationIdRef.current = activeSelectedAnnotationId;
+  }, [activeSelectedAnnotationId]);
   const pageLayouts = useMemo(
     () =>
       basePageLayouts.map((layout) => ({
@@ -289,20 +335,12 @@ export function PdfViewer({
     () => annotations.find((annotation) => annotation.id === activeSelectedAnnotationId),
     [activeSelectedAnnotationId, annotations],
   );
-  const annotationsByPage = useMemo(() => {
-    const groupedAnnotations = new Map<number, PdfAnnotation[]>();
-
-    for (const annotation of annotations) {
-      const pageAnnotations = groupedAnnotations.get(annotation.pageNumber) ?? [];
-      pageAnnotations.push(annotation);
-      groupedAnnotations.set(annotation.pageNumber, pageAnnotations);
-    }
-
-    return groupedAnnotations;
-  }, [annotations]);
+  const annotationsByPage = useStablePageGroups(annotations);
 
   const selectedTextAnnotation =
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
+  const selectedHighlight =
+    selectedAnnotation?.type === "highlight" ? selectedAnnotation : null;
 
   useEffect(() => {
     onViewStateChangeRef.current = onViewStateChange;
@@ -737,69 +775,166 @@ export function PdfViewer({
     }
   }, [filePath, pdfDocument]);
 
+  // Updaters read the latest list from a ref, so these callbacks stay stable
+  // and typing in one note does not re-render every page of the document.
+  const commitAnnotations = useCallback((updater: AnnotationUpdater) => {
+    const current = latestAnnotationsRef.current;
+    const next = updater(current);
+
+    if (next !== current) {
+      saveAnnotations(next);
+    }
+  }, [saveAnnotations]);
+
+  const selectAnnotationId = useCallback((id: string) => {
+    // Selections made on the page are already in view; only selections from
+    // elsewhere (the outline panel) should scroll the document to them.
+    annotationScrollStateRef.current.lastSelectedAnnotationId = id;
+    annotationScrollStateRef.current.allowInitialScroll = false;
+    setSelectedAnnotationId(id);
+    updateViewState({ selectedAnnotationId: id });
+  }, [updateViewState]);
+
   const selectAnnotation = useCallback((annotation: PdfAnnotation) => {
-    setSelectedAnnotationId(annotation.id);
-    updateViewState({ selectedAnnotationId: annotation.id });
+    selectAnnotationId(annotation.id);
 
     if (annotation.type === "text") {
       setFontSize(annotation.fontSize);
       updateViewState({ fontSize: annotation.fontSize });
     }
-  }, [updateViewState]);
+  }, [selectAnnotationId, updateViewState]);
 
-  const addHighlight = useCallback((pageNumber: number, rects: PdfAnnotationRect[]) => {
+  const clearSelection = useCallback(() => {
+    setSelectionMenu(null);
+
+    if (activeSelectedAnnotationIdRef.current) {
+      selectAnnotationId("");
+    }
+  }, [selectAnnotationId]);
+
+  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+    commitAnnotations((current) => {
+      let changed = false;
+      const next = current.map((annotation) => {
+        if (annotation.id !== id) {
+          return annotation;
+        }
+
+        changed = true;
+        return { ...annotation, ...patch, updatedAt: nowIso() } as PdfAnnotation;
+      });
+
+      return changed ? next : current;
+    });
+  }, [commitAnnotations]);
+
+  const deleteAnnotation = useCallback((id: string) => {
+    commitAnnotations((current) => {
+      const next = current.filter((annotation) => annotation.id !== id);
+
+      return next.length === current.length ? current : next;
+    });
+
+    if (activeSelectedAnnotationIdRef.current === id) {
+      selectAnnotationId("");
+    }
+  }, [commitAnnotations, selectAnnotationId]);
+
+  /** Highlights the current text selection, split across every page it spans. */
+  const highlightSelection = useCallback((color: string) => {
+    const selection = window.getSelection();
+    const viewer = viewerRef.current;
+
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !viewer) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!viewer.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+
+    const clientRects = rangeTextClientRects(range, ".pdf-text-layer");
     const timestamp = nowIso();
+    const created: PdfHighlightAnnotation[] = [];
 
-    saveAnnotations([
-      ...annotations,
-      {
-        id: createAnnotationId(),
-        type: "highlight",
-        pageNumber,
-        color: HIGHLIGHT_COLOR,
-        rects,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ]);
-  }, [annotations, saveAnnotations]);
+    for (const page of viewer.querySelectorAll<HTMLElement>("[data-pdf-page-content]")) {
+      const bounds = page.getBoundingClientRect();
+      const rects = clientRects
+        .map((rect) => intersectClientRect(rect, bounds))
+        .filter((rect): rect is PdfAnnotationRect => Boolean(rect));
+
+      if (rects.length) {
+        created.push({
+          id: createAnnotationId(),
+          type: "highlight",
+          pageNumber: Number(page.dataset.pdfPageContent),
+          color,
+          rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
+    }
+
+    selection.removeAllRanges();
+    setSelectionMenu(null);
+
+    if (!created.length) {
+      return false;
+    }
+
+    commitAnnotations((current) => [...current, ...created]);
+    return true;
+  }, [commitAnnotations]);
+
+  const newTextStyleRef = useRef({ color: textColor, fontFamily, fontSize });
+  useEffect(() => {
+    newTextStyleRef.current = { color: textColor, fontFamily, fontSize };
+  }, [fontFamily, fontSize, textColor]);
 
   const addTextAnnotation = useCallback((pageNumber: number, rect: PdfAnnotationRect) => {
     const timestamp = nowIso();
+    const style = newTextStyleRef.current;
     const annotation: PdfTextAnnotation = {
       id: createAnnotationId(),
       type: "text",
       pageNumber,
       text: "",
-      fontSize,
+      fontSize: style.fontSize,
+      color: style.color,
+      fontFamily: style.fontFamily,
       rect,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
 
-    setSelectedAnnotationId(annotation.id);
-    updateViewState({ selectedAnnotationId: annotation.id });
-    saveAnnotations([...annotations, annotation]);
-  }, [annotations, fontSize, saveAnnotations, updateViewState]);
+    selectAnnotationId(annotation.id);
+    commitAnnotations((current) => [...current, annotation]);
+    return annotation.id;
+  }, [commitAnnotations, selectAnnotationId]);
 
-  const updateTextAnnotation = useCallback((id: string, patch: Partial<PdfTextAnnotation>) => {
-    saveAnnotations(
-      annotations.map((annotation) =>
-        annotation.id === id && annotation.type === "text"
-          ? {
-              ...annotation,
-              ...patch,
-              updatedAt: nowIso(),
-            }
-          : annotation,
-      ),
-    );
-  }, [annotations, saveAnnotations]);
+  const updateTextAnnotation = useCallback(
+    (id: string, patch: Partial<PdfTextAnnotation>) => updateAnnotation(id, patch),
+    [updateAnnotation],
+  );
 
   const exitTextEditing = useCallback(() => {
     setTool("select");
     updateViewState({ tool: "select" });
   }, [updateViewState]);
+
+  function selectTool(nextTool: PdfTool) {
+    setTool(nextTool);
+    updateViewState({ tool: nextTool });
+    setSelectionMenu(null);
+
+    // Choosing Highlight with text already selected highlights it right away.
+    if (nextTool === "highlight") {
+      highlightSelection(highlightColor);
+    }
+  }
 
   function updateFontSize(value: number) {
     const nextFontSize = Math.round(
@@ -813,48 +948,206 @@ export function PdfViewer({
     }
   }
 
-  const deleteSelectedAnnotation = useCallback(() => {
-    if (!activeSelectedAnnotationId) {
-      return;
-    }
+  function updateFontFamily(nextFont: PdfTextAnnotationFont) {
+    setFontFamily(nextFont);
+    updateViewState({ fontFamily: nextFont });
 
-    saveAnnotations(
-      annotations.filter((annotation) => annotation.id !== activeSelectedAnnotationId),
-    );
-    setSelectedAnnotationId("");
-    updateViewState({ selectedAnnotationId: "" });
-  }, [activeSelectedAnnotationId, annotations, saveAnnotations, updateViewState]);
+    if (selectedTextAnnotation) {
+      updateTextAnnotation(selectedTextAnnotation.id, { fontFamily: nextFont });
+    }
+  }
+
+  function updateTextColor(nextColor: string) {
+    setTextColor(nextColor);
+    updateViewState({ textColor: nextColor });
+
+    if (selectedTextAnnotation) {
+      updateTextAnnotation(selectedTextAnnotation.id, { color: nextColor });
+    }
+  }
+
+  const updateHighlightColor = useCallback((nextColor: string) => {
+    setHighlightColor(nextColor);
+    updateViewState({ highlightColor: nextColor });
+  }, [updateViewState]);
+
+  function applyHighlightColor(nextColor: string) {
+    updateHighlightColor(nextColor);
+
+    if (selectedHighlight) {
+      updateAnnotation(selectedHighlight.id, { color: nextColor });
+    }
+  }
+
+  const deleteSelectedAnnotation = useCallback(() => {
+    if (activeSelectedAnnotationId) {
+      deleteAnnotation(activeSelectedAnnotationId);
+    }
+  }, [activeSelectedAnnotationId, deleteAnnotation]);
 
   useEffect(() => {
-    function handleDeleteKey(event: KeyboardEvent) {
-      if (
-        !activeSelectedAnnotationId ||
-        (event.key !== "Delete" && event.key !== "Backspace")
-      ) {
-        return;
-      }
+    function isEditableTarget(element: Element | null) {
+      return (
+        element instanceof HTMLElement &&
+        (element.isContentEditable || element.matches("input, textarea, select"))
+      );
+    }
 
+    function handleKeyDown(event: KeyboardEvent) {
+      const viewer = viewerRef.current;
       const activeElement = document.activeElement;
 
       if (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement
+        event.defaultPrevented ||
+        !viewer ||
+        isEditableTarget(activeElement) ||
+        (activeElement !== document.body && !viewer.contains(activeElement))
       ) {
         return;
       }
 
-      event.preventDefault();
-      deleteSelectedAnnotation();
+      if (event.key === "Escape") {
+        const selection = window.getSelection();
+        const hadTextSelection = Boolean(
+          selection && !selection.isCollapsed && viewer.contains(selection.anchorNode),
+        );
+
+        if (hadTextSelection) {
+          selection?.removeAllRanges();
+        }
+
+        if (hadTextSelection || activeSelectedAnnotationId || selectionMenu) {
+          event.preventDefault();
+          clearSelection();
+        }
+
+        return;
+      }
+
+      if (activeSelectedAnnotationId && (event.key === "Delete" || event.key === "Backspace")) {
+        event.preventDefault();
+        deleteSelectedAnnotation();
+      }
     }
 
-    window.addEventListener("keydown", handleDeleteKey);
-    return () => window.removeEventListener("keydown", handleDeleteKey);
-  }, [activeSelectedAnnotationId, deleteSelectedAnnotation]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeSelectedAnnotationId, clearSelection, deleteSelectedAnnotation, selectionMenu]);
+
+  // The quick-highlight menu follows the live selection and disappears with it.
+  useEffect(() => {
+    if (!selectionMenu) {
+      return;
+    }
+
+    function handleSelectionChange() {
+      const selection = window.getSelection();
+
+      if (!selection || selection.isCollapsed) {
+        setSelectionMenu(null);
+      }
+    }
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [selectionMenu]);
+
+  function handleScrollPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+
+    if (event.button !== 0 || target.closest(ANNOTATION_UI_SELECTOR)) {
+      return;
+    }
+
+    // Clicking empty paper (or the gutter) lets go of the current annotation.
+    clearSelection();
+  }
+
+  function handleScrollPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) {
+      return;
+    }
+
+    if (tool === "highlight") {
+      highlightSelection(highlightColor);
+      return;
+    }
+
+    if (tool !== "select") {
+      return;
+    }
+
+    const scrollContainer = event.currentTarget;
+
+    // Let the browser settle the selection before reading it.
+    window.requestAnimationFrame(() => {
+      const selection = window.getSelection();
+
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+
+      if (!scrollContainer.contains(range.commonAncestorContainer)) {
+        return;
+      }
+
+      const rects = rangeTextClientRects(range, ".pdf-text-layer");
+
+      if (!rects.length) {
+        return;
+      }
+
+      const bounds = scrollContainer.getBoundingClientRect();
+      const first = rects.reduce((top, rect) => (rect.top < top.top ? rect : top));
+      const last = rects.reduce((bottom, rect) => (rect.bottom > bottom.bottom ? rect : bottom));
+      const menuHeight = 40;
+      const above = first.top - bounds.top - menuHeight - 6;
+      const top = above >= 0 ? above : last.bottom - bounds.top + 6;
+
+      setSelectionMenu({
+        left: clamp(
+          first.left - bounds.left + scrollContainer.scrollLeft,
+          8,
+          Math.max(8, scrollContainer.scrollWidth - 280),
+        ),
+        top: top + scrollContainer.scrollTop,
+      });
+    });
+  }
+
+  function copySelection() {
+    const text = window.getSelection()?.toString() ?? "";
+
+    if (text) {
+      void navigator.clipboard?.writeText(text).catch(() => undefined);
+    }
+
+    setSelectionMenu(null);
+  }
+
+  const showHighlightStyle = tool === "highlight" || Boolean(selectedHighlight);
+  const showTextStyle = tool === "text" || Boolean(selectedTextAnnotation);
+  const textStyleValues = selectedTextAnnotation
+    ? {
+        color: selectedTextAnnotation.color ?? DEFAULT_PDF_TEXT_COLOR,
+        fontFamily: selectedTextAnnotation.fontFamily ?? DEFAULT_PDF_TEXT_FONT,
+      }
+    : { color: textColor, fontFamily };
 
   return (
-    <div data-pdf-path={filePath} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
-      <div className="libera-viewer-toolbar sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
-        <div className="flex min-w-0 items-center gap-1">
+    <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
+      style={{ "--pdf-highlight-color": highlightColor } as React.CSSProperties}
+      onPointerDown={(event) => {
+        if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
+          event.currentTarget.focus({ preventScroll: true });
+        }
+      }}>
+      <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
+        {/* Contextual style controls scroll sideways instead of wrapping, so
+            selecting an annotation never shifts the page under the pointer. */}
+        <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "select"
@@ -864,10 +1157,8 @@ export function PdfViewer({
             type="button"
             aria-pressed={tool === "select"}
             data-viewer-tool="select"
-            onClick={() => {
-              setTool("select");
-              updateViewState({ tool: "select" });
-            }}
+            title="Select (V)"
+            onClick={() => selectTool("select")}
           >
             <MousePointer2 aria-hidden className="h-4 w-4" />
             Select
@@ -875,16 +1166,14 @@ export function PdfViewer({
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "highlight"
-                ? "border-yellow-500 bg-yellow-100 text-yellow-950"
+                ? "pdf-highlight-tool-active"
                 : "border-input hover:bg-muted"
             }`}
             type="button"
             aria-pressed={tool === "highlight"}
             data-viewer-tool="highlight"
-            onClick={() => {
-              setTool("highlight");
-              updateViewState({ tool: "highlight" });
-            }}
+            title="Highlight: select text to mark it"
+            onClick={() => selectTool("highlight")}
           >
             <Highlighter aria-hidden className="h-4 w-4" />
             Highlight
@@ -898,25 +1187,35 @@ export function PdfViewer({
             type="button"
             aria-pressed={tool === "text"}
             data-viewer-tool="text"
-            onClick={() => {
-              setTool("text");
-              updateViewState({ tool: "text" });
-            }}
+            title="Text note: click to place, or drag to draw a box"
+            onClick={() => selectTool("text")}
           >
             <Type aria-hidden className="h-4 w-4" />
             Text
           </button>
-          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-lg border border-input px-2 text-sm">
-            Size
-            <input
-              className="w-14 border-0 bg-transparent text-sm outline-none"
-              min={MIN_TEXT_ANNOTATION_FONT_SIZE}
-              max={MAX_TEXT_ANNOTATION_FONT_SIZE}
-              type="number"
-              value={fontSize}
-              onChange={(event) => updateFontSize(Number(event.target.value))}
+
+          {showHighlightStyle ? (
+            <div className="annotation-style-group">
+              <SwatchPicker
+                colors={PDF_HIGHLIGHT_COLORS}
+                label="Highlight color"
+                value={selectedHighlight?.color ?? highlightColor}
+                onChange={applyHighlightColor}
+              />
+            </div>
+          ) : null}
+
+          {showTextStyle ? (
+            <TextAnnotationStyleControls
+              color={textStyleValues.color}
+              fontFamily={textStyleValues.fontFamily}
+              fontSize={fontSize}
+              onColorChange={updateTextColor}
+              onFontFamilyChange={updateFontFamily}
+              onFontSizeChange={updateFontSize}
             />
-          </label>
+          ) : null}
+
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
@@ -929,7 +1228,12 @@ export function PdfViewer({
           </button>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
+          <button type="button" aria-label="Find in PDF" title="Find in PDF (Ctrl/Cmd+F)"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
+            onClick={pdfFind.openFind}>
+            <Search aria-hidden className="h-4 w-4" />
+          </button>
           <span className="mr-2 text-xs text-muted-foreground">
             {saveStatus === "saving"
               ? "Saving"
@@ -977,6 +1281,8 @@ export function PdfViewer({
         </div>
       </div>
 
+      {pdfFind.bar}
+
       {error ? (
         <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           {error}
@@ -985,9 +1291,43 @@ export function PdfViewer({
 
       <div
         ref={scrollContainerRef}
-        className="min-h-0 flex-1 overflow-auto px-4 py-6"
+        className="relative min-h-0 flex-1 overflow-auto px-4 py-6"
         onScroll={handleScroll}
+        onPointerDown={handleScrollPointerDown}
+        onPointerUp={handleScrollPointerUp}
       >
+        {selectionMenu ? (
+          <div
+            className="pdf-selection-menu"
+            data-pdf-annotation-ui
+            role="toolbar"
+            aria-label="Selection actions"
+            style={{ left: selectionMenu.left, top: selectionMenu.top }}
+            // Keep the text selection alive while a menu button is pressed.
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            {PDF_HIGHLIGHT_COLORS.map((color) => (
+              <button
+                key={color.value}
+                type="button"
+                className="pdf-selection-menu-swatch"
+                aria-label={`Highlight ${color.label.toLowerCase()}`}
+                title={`Highlight ${color.label.toLowerCase()}`}
+                data-active={color.value === highlightColor || undefined}
+                style={{ "--swatch": color.value } as React.CSSProperties}
+                onClick={() => {
+                  updateHighlightColor(color.value);
+                  highlightSelection(color.value);
+                }}
+              />
+            ))}
+            <span aria-hidden className="pdf-selection-menu-divider" />
+            <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
+              <Copy aria-hidden className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
+
         {loading ? (
           <div className="flex min-h-80 items-center justify-center text-sm text-foreground">
             <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />
@@ -1001,28 +1341,36 @@ export function PdfViewer({
               <PdfPageView
                 key={`${filePath}-${layout.pageNumber}`}
                 annotations={annotationsByPage.get(layout.pageNumber) ?? EMPTY_ANNOTATIONS}
+                documentPath={filePath}
+                newAnnotationFontSize={fontSize}
                 pageLayout={layout}
                 textContentCache={textContentCache}
                 pdfDocument={pdfDocument}
+                searchMatches={pdfFind.matchesByPage.get(layout.pageNumber) ?? EMPTY_SEARCH_MATCHES}
+                activeSearchMatch={activeSearchMatch?.pageNumber === layout.pageNumber ? activeSearchMatch : undefined}
                 renderActive={
                   renderWindowPages.has(layout.pageNumber) ||
+                  activeSearchMatch?.pageNumber === layout.pageNumber ||
                   selectedAnnotation?.pageNumber === layout.pageNumber ||
                   (!renderWindowPages.size &&
                     layout.pageNumber <= PDF_PAGE_RENDER_FALLBACK_COUNT)
                 }
                 requestRenderSlot={requestRenderSlot}
-                selectedAnnotationId={activeSelectedAnnotationId}
+                // Only the page holding the selection re-renders when it changes.
+                selectedAnnotationId={
+                  selectedAnnotation?.pageNumber === layout.pageNumber ? activeSelectedAnnotationId : ""
+                }
                 screenshotSnipping={screenshotSnipping}
                 tool={tool}
                 zoom={zoom}
-                onAddHighlight={addHighlight}
                 onAddTextAnnotation={addTextAnnotation}
                 onCancelScreenshotSnip={cancelScreenshotSnip}
+                onDeleteAnnotation={deleteAnnotation}
                 onExitTextEditing={exitTextEditing}
                 onPageElement={setPageElement}
                 onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
-                onUpdateTextAnnotation={updateTextAnnotation}
+                onUpdateAnnotation={updateAnnotation}
               />
             ))}
           </div>
@@ -1032,45 +1380,38 @@ export function PdfViewer({
   );
 }
 
-const PdfPageView = memo(function PdfPageView({
-  annotations,
-  pageLayout,
-  pdfDocument,
-  textContentCache,
-  renderActive,
-  requestRenderSlot,
-  selectedAnnotationId,
-  screenshotSnipping,
-  tool,
-  zoom,
-  onAddHighlight,
-  onAddTextAnnotation,
-  onCancelScreenshotSnip,
-  onExitTextEditing,
-  onPageElement,
-  onScreenshotSnip,
-  onSelectAnnotation,
-  onUpdateTextAnnotation,
-}: {
+type PdfPageContentProps = {
   annotations: PdfAnnotation[];
+  documentPath: string;
+  newAnnotationFontSize: number;
+  searchMatches: PdfSearchMatch[];
+  activeSearchMatch?: PdfSearchMatch;
   pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
   textContentCache: PdfTextContentCache;
-  renderActive: boolean;
   requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
   screenshotSnipping: boolean;
   tool: PdfTool;
   zoom: number;
-  onAddHighlight: (pageNumber: number, rects: PdfAnnotationRect[]) => void;
-  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
+  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => string;
   onCancelScreenshotSnip: () => void;
+  onDeleteAnnotation: (id: string) => void;
   onExitTextEditing: () => void;
-  onPageElement: (pageNumber: number, element: HTMLElement | null) => void;
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
-  onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
+  onUpdateAnnotation: (id: string, patch: Partial<PdfAnnotation>) => void;
+};
+
+const PdfPageView = memo(function PdfPageView({
+  onPageElement,
+  renderActive,
+  ...contentProps
+}: PdfPageContentProps & {
+  renderActive: boolean;
+  onPageElement: (pageNumber: number, element: HTMLElement | null) => void;
 }) {
+  const { annotations, pageLayout } = contentProps;
   const pageNumber = pageLayout.pageNumber;
   const setElement = useCallback(
     (element: HTMLDivElement | null) => onPageElement(pageNumber, element),
@@ -1088,25 +1429,7 @@ const PdfPageView = memo(function PdfPageView({
         style={{ width: pageLayout.width, height: pageLayout.height }}
       >
         {renderActive ? (
-          <PdfPageContent
-            annotations={annotations}
-            pageLayout={pageLayout}
-            pageNumber={pageNumber}
-            textContentCache={textContentCache}
-            pdfDocument={pdfDocument}
-            requestRenderSlot={requestRenderSlot}
-            selectedAnnotationId={selectedAnnotationId}
-            screenshotSnipping={screenshotSnipping}
-            tool={tool}
-            zoom={zoom}
-            onAddHighlight={onAddHighlight}
-            onAddTextAnnotation={onAddTextAnnotation}
-            onCancelScreenshotSnip={onCancelScreenshotSnip}
-            onExitTextEditing={onExitTextEditing}
-            onScreenshotSnip={onScreenshotSnip}
-            onSelectAnnotation={onSelectAnnotation}
-            onUpdateTextAnnotation={onUpdateTextAnnotation}
-          />
+          <PdfPageContent {...contentProps} />
         ) : (
           <PdfAnnotationScrollAnchors annotations={annotations} pageSize={pageLayout} />
         )}
@@ -1120,8 +1443,11 @@ const PdfPageView = memo(function PdfPageView({
 
 function PdfPageContent({
   annotations,
+  documentPath,
+  newAnnotationFontSize,
+  searchMatches,
+  activeSearchMatch,
   pageLayout,
-  pageNumber,
   pdfDocument,
   textContentCache,
   requestRenderSlot,
@@ -1129,36 +1455,26 @@ function PdfPageContent({
   screenshotSnipping,
   tool,
   zoom,
-  onAddHighlight,
   onAddTextAnnotation,
   onCancelScreenshotSnip,
+  onDeleteAnnotation,
   onExitTextEditing,
   onScreenshotSnip,
   onSelectAnnotation,
-  onUpdateTextAnnotation,
-}: {
-  annotations: PdfAnnotation[];
-  pageLayout: PdfPageLayout;
-  pageNumber: number;
-  pdfDocument: PDFDocumentProxy;
-  textContentCache: PdfTextContentCache;
-  requestRenderSlot: RequestRenderSlot;
-  selectedAnnotationId: string;
-  screenshotSnipping: boolean;
-  tool: PdfTool;
-  zoom: number;
-  onAddHighlight: (pageNumber: number, rects: PdfAnnotationRect[]) => void;
-  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => void;
-  onCancelScreenshotSnip: () => void;
-  onExitTextEditing: () => void;
-  onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
-  onSelectAnnotation: (annotation: PdfAnnotation) => void;
-  onUpdateTextAnnotation: (id: string, patch: Partial<PdfTextAnnotation>) => void;
-}) {
+  onUpdateAnnotation,
+}: PdfPageContentProps) {
+  const pageNumber = pageLayout.pageNumber;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
+  const [searchLayer, setSearchLayer] = useState<{ textDivs: HTMLElement[]; page: PdfSearchPage } | null>(null);
+
+  useEffect(() => {
+    if (!searchLayer) return;
+    const activeElement = highlightPdfMatches(searchLayer.textDivs, searchLayer.page, searchMatches, activeSearchMatch);
+    activeElement?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [searchLayer, searchMatches, activeSearchMatch]);
 
   useEffect(() => {
     let active = true;
@@ -1230,6 +1546,7 @@ function PdfPageContent({
       await Promise.all([renderTask.promise, textLayer.render()]);
 
       if (active) {
+        setSearchLayer({ textDivs: textLayer.textDivs, page: buildPdfSearchPage(textContent) });
         setRendering(false);
       }
     }
@@ -1269,70 +1586,120 @@ function PdfPageContent({
     };
   }, []);
 
-  function createHighlightFromSelection() {
-    if (tool !== "highlight" || !pageRef.current) {
+  const { highlights, textAnnotations } = useMemo(() => {
+    const pageHighlights: PdfHighlightAnnotation[] = [];
+    const pageTextAnnotations: PdfTextAnnotation[] = [];
+
+    for (const annotation of annotations) {
+      if (annotation.type === "highlight") {
+        pageHighlights.push(annotation);
+      } else {
+        pageTextAnnotations.push(annotation);
+      }
+    }
+
+    return { highlights: pageHighlights, textAnnotations: pageTextAnnotations };
+  }, [annotations]);
+  const selectedHighlight = highlights.find((highlight) => highlight.id === selectedAnnotationId);
+  const addTextAnnotation = useCallback(
+    (rect: PdfAnnotationRect) => onAddTextAnnotation(pageNumber, rect),
+    [onAddTextAnnotation, pageNumber],
+  );
+
+  // Highlights sit under the transparent text layer so text stays selectable
+  // through them; clicks are hit-tested here instead.
+  function selectHighlightAtPoint(event: React.MouseEvent<HTMLDivElement>) {
+    if (tool !== "select" || !pageRef.current || !highlights.length) {
       return;
     }
 
     const selection = window.getSelection();
 
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    if (selection && !selection.isCollapsed) {
       return;
     }
 
-    const pageBounds = pageRef.current.getBoundingClientRect();
-    const rects = Array.from(selection.getRangeAt(0).getClientRects())
-      .map((rect) => intersectClientRect(rect, pageBounds))
-      .filter((rect): rect is PdfAnnotationRect => Boolean(rect));
+    const bounds = pageRef.current.getBoundingClientRect();
 
-    if (rects.length) {
-      onAddHighlight(pageNumber, rects.map(normalizeRect));
+    if (!bounds.width || !bounds.height) {
+      return;
     }
 
-    selection.removeAllRanges();
+    const x = (event.clientX - bounds.left) / bounds.width;
+    const y = (event.clientY - bounds.top) / bounds.height;
+    const slackX = 1 / bounds.width;
+    const slackY = 1 / bounds.height;
+    const hit = [...highlights].reverse().find((highlight) =>
+      highlight.rects.some(
+        (rect) =>
+          x >= rect.x - slackX &&
+          x <= rect.x + rect.width + slackX &&
+          y >= rect.y - slackY &&
+          y <= rect.y + rect.height + slackY,
+      ),
+    );
+
+    if (hit) {
+      onSelectAnnotation(hit);
+    }
   }
 
   return (
     <div
       ref={pageRef}
       className="absolute inset-0 overflow-hidden bg-card"
-      onMouseUp={createHighlightFromSelection}
+      data-pdf-page-content={pageNumber}
+      onClick={selectHighlightAtPoint}
     >
       <canvas ref={canvasRef} className="absolute inset-0 z-0" />
+
+      <div className="pdf-highlight-layer" aria-hidden>
+        {highlights.map((annotation) => (
+          <PdfHighlightMarks key={annotation.id} annotation={annotation} pageSize={pageLayout} />
+        ))}
+      </div>
+
       <div
         ref={textLayerRef}
         className="pdf-text-layer"
         style={{ pointerEvents: tool !== "text" && !screenshotSnipping ? "auto" : "none" }}
       />
 
-      <div className="pointer-events-none absolute inset-0 z-20">
-        {annotations.map((annotation) =>
-          annotation.type === "highlight" ? (
-            <PdfHighlightAnnotationView
-              key={annotation.id}
-              annotation={annotation}
-              interactive={tool === "select"}
-              pageSize={pageLayout}
-              selected={selectedAnnotationId === annotation.id}
-              onSelect={onSelectAnnotation}
-            />
-          ) : null,
-        )}
+      <div className="pdf-highlight-ui-layer">
+        {highlights.map((annotation) => (
+          <PdfHighlightControl
+            key={annotation.id}
+            annotation={annotation}
+            interactive={tool === "select"}
+            pageSize={pageLayout}
+            selected={selectedAnnotationId === annotation.id}
+            onSelect={onSelectAnnotation}
+          />
+        ))}
+        {selectedHighlight && tool === "select" ? (
+          <PdfHighlightChip
+            annotation={selectedHighlight}
+            pageSize={pageLayout}
+            onDelete={onDeleteAnnotation}
+            onUpdate={onUpdateAnnotation}
+          />
+        ) : null}
       </div>
 
       <TextAnnotationLayer
-        annotations={annotations.filter(
-          (annotation): annotation is PdfTextAnnotation => annotation.type === "text",
-        )}
+        annotations={textAnnotations}
+        documentPath={documentPath}
         drawing={tool === "text"}
-        interactive={tool === "select"}
+        interactive={tool !== "highlight" && !screenshotSnipping}
+        newAnnotationFontSize={newAnnotationFontSize}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
         textScale={zoom}
-        onAddAnnotation={(rect) => onAddTextAnnotation(pageNumber, rect)}
+        onAddAnnotation={addTextAnnotation}
+        onDeleteAnnotation={onDeleteAnnotation}
         onExitTextEditing={onExitTextEditing}
         onSelectAnnotation={onSelectAnnotation}
-        onUpdateAnnotation={onUpdateTextAnnotation}
+        onUpdateAnnotation={onUpdateAnnotation}
       />
 
       <ScreenshotSnipLayer
@@ -1382,7 +1749,40 @@ function PdfAnnotationScrollAnchors({
   );
 }
 
-function PdfHighlightAnnotationView({
+/** Display rects for a highlight: one clean band per line run. */
+function useHighlightBands(annotation: PdfHighlightAnnotation, pageSize: AnnotationSurfaceSize) {
+  return useMemo(
+    () => mergeHighlightRects(annotation.rects, pageSize.width, pageSize.height),
+    [annotation.rects, pageSize.height, pageSize.width],
+  );
+}
+
+const PdfHighlightMarks = memo(function PdfHighlightMarks({
+  annotation,
+  pageSize,
+}: {
+  annotation: PdfHighlightAnnotation;
+  pageSize: AnnotationSurfaceSize;
+}) {
+  const bands = useHighlightBands(annotation, pageSize);
+
+  // Opaque ink inside one multiply-blended layer: overlapping bands never
+  // stack into darker patches, and the page's black glyphs stay black.
+  return (
+    <>
+      {bands.map((rect, index) => (
+        <span
+          key={index}
+          className="pdf-highlight-mark"
+          data-pdf-highlight-id={annotation.id}
+          style={{ ...rectStyle(rect, pageSize), background: annotation.color }}
+        />
+      ))}
+    </>
+  );
+});
+
+const PdfHighlightControl = memo(function PdfHighlightControl({
   annotation,
   interactive,
   pageSize,
@@ -1395,28 +1795,147 @@ function PdfHighlightAnnotationView({
   selected: boolean;
   onSelect: (annotation: PdfAnnotation) => void;
 }) {
+  const bands = useHighlightBands(annotation, pageSize);
+  const first = bands[0];
+
+  if (!first) {
+    return null;
+  }
+
   return (
     <>
-      {annotation.rects.map((rect, index) => (
-        <button
-          key={`${annotation.id}-${index}`}
-          className={`absolute border-0 p-0 ${
-            interactive ? "pointer-events-auto" : "pointer-events-none"
-          } ${selected ? "ring-2 ring-yellow-600" : ""}`}
-          type="button"
-          aria-label="Select highlight"
-          data-pdf-annotation-id={annotation.id}
-          style={{
-            ...rectStyle(rect, pageSize),
-            background: annotation.color,
-            opacity: 0.38,
-          }}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelect(annotation);
-          }}
-        />
-      ))}
+      {/* Keyboard/screen-reader handle; pointer clicks are hit-tested by the page. */}
+      <button
+        className="pdf-highlight-hit"
+        type="button"
+        aria-label="Select highlight"
+        aria-pressed={selected}
+        data-pdf-annotation-id={annotation.id}
+        data-selected={selected || undefined}
+        tabIndex={interactive ? 0 : -1}
+        style={rectStyle(first, pageSize)}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(annotation);
+        }}
+      />
+      {selected
+        ? bands.map((rect, index) => (
+            <span
+              key={index}
+              aria-hidden
+              className="pdf-highlight-outline"
+              style={{ ...rectStyle(rect, pageSize), color: annotation.color }}
+            />
+          ))
+        : null}
     </>
   );
+});
+
+function PdfHighlightChip({
+  annotation,
+  pageSize,
+  onDelete,
+  onUpdate,
+}: {
+  annotation: PdfHighlightAnnotation;
+  pageSize: AnnotationSurfaceSize;
+  onDelete: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<PdfAnnotation>) => void;
+}) {
+  const bands = useHighlightBands(annotation, pageSize);
+  const first = bands[0];
+  const last = bands.at(-1);
+
+  if (!first || !last) {
+    return null;
+  }
+
+  const chipWidth = 232;
+  const chipHeight = 36;
+  const aboveTop = first.y * pageSize.height - chipHeight - 6;
+  const top = aboveTop >= 4 ? aboveTop : (last.y + last.height) * pageSize.height + 6;
+  const left = clamp(first.x * pageSize.width, 4, Math.max(4, pageSize.width - chipWidth - 4));
+
+  return (
+    <div
+      className="pdf-selection-menu"
+      data-pdf-annotation-ui
+      role="toolbar"
+      aria-label="Highlight actions"
+      style={{ left, top }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {PDF_HIGHLIGHT_COLORS.map((color) => (
+        <button
+          key={color.value}
+          type="button"
+          className="pdf-selection-menu-swatch"
+          aria-label={`Change to ${color.label.toLowerCase()}`}
+          title={color.label}
+          data-active={color.value.toLowerCase() === annotation.color.toLowerCase() || undefined}
+          style={{ "--swatch": color.value } as React.CSSProperties}
+          onClick={() => onUpdate(annotation.id, { color: color.value })}
+        />
+      ))}
+      <span aria-hidden className="pdf-selection-menu-divider" />
+      <button
+        type="button"
+        className="pdf-selection-menu-action"
+        aria-label="Remove highlight"
+        title="Remove highlight"
+        onClick={() => onDelete(annotation.id)}
+      >
+        <Trash2 aria-hidden className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function groupAnnotationsByPage(
+  annotations: PdfAnnotation[],
+  previous: Map<number, PdfAnnotation[]>,
+) {
+  const next = new Map<number, PdfAnnotation[]>();
+
+  for (const annotation of annotations) {
+    const pageAnnotations = next.get(annotation.pageNumber) ?? [];
+    pageAnnotations.push(annotation);
+    next.set(annotation.pageNumber, pageAnnotations);
+  }
+
+  for (const [pageNumber, pageAnnotations] of next) {
+    const before = previous.get(pageNumber);
+
+    if (
+      before &&
+      before.length === pageAnnotations.length &&
+      before.every((annotation, index) => annotation === pageAnnotations[index])
+    ) {
+      next.set(pageNumber, before);
+    }
+  }
+
+  return next;
+}
+
+/**
+ * Groups annotations by page, reusing each page's previous array when its
+ * members are unchanged so memoized pages skip re-rendering.
+ */
+function useStablePageGroups(annotations: PdfAnnotation[]) {
+  const [cache, setCache] = useState(() => ({
+    groups: groupAnnotationsByPage(annotations, new Map()),
+    source: annotations,
+  }));
+
+  if (cache.source === annotations) {
+    return cache.groups;
+  }
+
+  const groups = groupAnnotationsByPage(annotations, cache.groups);
+  setCache({ groups, source: annotations });
+  return groups;
 }

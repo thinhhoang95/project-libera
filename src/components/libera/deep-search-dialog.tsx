@@ -4,15 +4,17 @@ import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { ModalDialog } from "@/components/libera/modal-dialog";
-import type { DeepSearchPayload, DeepSearchResult, LiberaFileNode } from "@/lib/types";
+import type { DeepSearchPayload, DeepSearchResult, LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 type DeepSearchDialogProps = {
+  visibleTree?: LiberaTree;
   initialQuery: string;
   onClose: () => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
 };
 
 export function DeepSearchDialog({
+  visibleTree,
   initialQuery,
   onClose,
   onOpenFile,
@@ -42,14 +44,19 @@ export function DeepSearchDialog({
         `/api/deep-search?q=${encodeURIComponent(trimmedQuery)}`,
       );
 
-      setPayload(response);
+      if (visibleTree) {
+        const paths = new Set<string>();
+        const collect = (nodes: LiberaTreeNode[]) => nodes.forEach((node) => node.kind === "file" ? paths.add(node.path) : collect(node.children));
+        visibleTree.notebooks.forEach((notebook) => collect(notebook.children));
+        setPayload({ ...response, results: response.results.filter((result) => paths.has(result.file.path)), searchedFiles: paths.size });
+      } else setPayload(response);
     } catch (searchError) {
       setPayload(null);
       setError(searchError instanceof Error ? searchError.message : "Deep search failed.");
     } finally {
       setSearching(false);
     }
-  }, []);
+  }, [visibleTree]);
 
   useEffect(() => {
     if (!initialQuery.trim()) {

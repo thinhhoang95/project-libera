@@ -2,6 +2,8 @@
 
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPopover } from "@/components/libera/markdown-review-ui";
+import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
+import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
@@ -11,6 +13,7 @@ import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
+import { WorkspaceViewContext } from "@/components/libera/workspace-view-context";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
 import { TabStrip } from "@/components/libera/tab-strip";
@@ -25,6 +28,7 @@ type LiberaAppProps = {
   yourName?: string;
   initialAuthenticated: boolean;
   markdownPreferences: MarkdownPreferences;
+  markdownDisplayPreferences?: Partial<MarkdownDisplayPreferences>;
   quickPrompts?: QuickPrompt[];
 };
 
@@ -49,6 +53,7 @@ export function LiberaApp({
   yourName = "",
   initialAuthenticated,
   markdownPreferences,
+  markdownDisplayPreferences,
   quickPrompts = [],
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
@@ -209,9 +214,12 @@ export function LiberaApp({
   }
 
   return (
+    <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
+    <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
+        inert={workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready)}
         ref={mainLayoutRef}
         className="relative grid min-h-0 flex-1 overflow-hidden libera-main-layout lg:grid-cols-[var(--libera-sidebar-width)_minmax(0,1fr)_var(--libera-chat-width)]"
         style={
@@ -222,6 +230,8 @@ export function LiberaApp({
         }
       >
         <LeftPanel
+          workspaceManager={workspace.workspaceManager}
+          fullTree={workspace.fullTree}
           activePanel={activeLeftPanel}
           onPanelChange={setActiveLeftPanel}
           activeTab={workspace.activeTab}
@@ -231,7 +241,7 @@ export function LiberaApp({
           fileInteractions={workspace.fileInteractions}
           query={workspace.query}
           searchResults={workspace.searchResults}
-          selectedNotebookName={workspace.selectedNotebookName}
+          selectedNotebookName={workspace.selectedNotebook?.name ?? ""}
           tree={workspace.tree}
           textareaRef={workspace.textareaRef}
           uploadInputRef={workspace.uploadInputRef}
@@ -343,7 +353,7 @@ export function LiberaApp({
           />
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onExportSaved={async (notebook) => { await workspace.refreshTree(notebook); }} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
@@ -387,6 +397,8 @@ export function LiberaApp({
         ) : null}
       </div>
 
+      {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
+      {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
       <NotebookDialog
         dialog={workspace.notebookDialog}
         groups={workspace.tree.notebookGroups}
@@ -397,11 +409,11 @@ export function LiberaApp({
       <NotebookGroupDialog
         dialog={workspace.notebookGroupDialog}
         submitting={workspace.notebookGroupDialogSubmitting}
-        tree={workspace.tree}
+        tree={workspace.workspaceManager.organizedTree}
         onClose={workspace.closeNotebookGroupDialog}
         onSubmit={workspace.submitNotebookGroupDialog}
       />
-      {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.tree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
+      {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.fullTree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
       <NoteDialog
         dialog={workspace.noteDialog}
         submitting={workspace.noteDialogSubmitting}
@@ -423,5 +435,7 @@ export function LiberaApp({
       <ReviewPopover />
     </main>
     </MarkdownReviewProvider>
+    </WorkspaceViewContext.Provider>
+    </MarkdownDisplayPreferencesProvider>
   );
 }

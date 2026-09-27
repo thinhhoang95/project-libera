@@ -50,17 +50,18 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-file-actions .libera-editor-mode { height: 35px; padding: 3px; gap: 2px; border-radius: 11px; background: var(--muted); }
 .libera-editor-mode > button { min-width: 52px; border-radius: 8px; }
 .libera-file-actions .libera-editor-mode > button[aria-pressed="true"] { background: var(--card); color: var(--accent); box-shadow: 0 1px 4px #3f69b510, inset 0 0 0 1px var(--border); }
-.libera-document-workspace { background: var(--card); }
+.libera-document-workspace { --markdown-page-gutter: clamp(20px, 2.5vw, 40px); background: var(--card); }
 .libera-document-workspace .libera-editor-toolbar { background: linear-gradient(110deg, var(--card), var(--background)); padding: 10px 18px; gap: 5px; border-color: var(--border); box-shadow: none; }
 .libera-editor-toolbar > button,
 .libera-editor-toolbar .toolbar-button { border-radius: 8px; color: var(--muted-foreground); transition: background 140ms, color 140ms; }
 .libera-editor-toolbar button:not(:disabled):hover { color: var(--accent); background: var(--muted); }
 .libera-editor-toolbar button[aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); }
 .libera-editor-toolbar select { border-color: var(--input); color: var(--surface-ink); border-radius: 9px; min-height: 32px; background: var(--card); }
-.libera-visual-editor .libera-visual-page { padding: 30px clamp(22px, 3vw, 44px) 44px; }
-.libera-visual-page .libera-tiptap { max-width: 880px; margin-inline: auto; }
-.libera-document-workspace .markdown-preview-pane { padding: 30px clamp(20px, 2.5vw, 40px); }
-.libera-document-workspace .markdown-preview-pane > .markdown-renderer { max-width: 880px; margin-inline: auto; }
+.libera-visual-editor { --markdown-page-gutter: clamp(22px, 3vw, 44px); }
+.libera-visual-editor .libera-visual-page { padding: 30px var(--markdown-page-gutter) 44px; }
+/* The adjustable content wrapper owns the column width. Do not cap its editor
+   again; the ruler and page must also share the same horizontal gutter. */
+.libera-document-workspace .markdown-preview-pane { padding: 30px var(--markdown-page-gutter); }
 .libera-document-workspace [data-markdown-preview-metadata] { background: var(--muted); border-color: var(--border); border-radius: 11px; }
 .libera-document-workspace .libera-tiptap [data-type="block-math"],
 .libera-document-workspace .markdown-preview-pane .katex-display {
@@ -78,11 +79,13 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-document-workspace .libera-media-viewer { background: linear-gradient(135deg, var(--muted), color-mix(in srgb, var(--surface-lavender) 48%, var(--background))); }
 .libera-media-viewer .libera-viewer-toolbar { background: var(--card); border-color: var(--border); padding: 11px 18px; gap: 10px; }
 .libera-viewer-toolbar > div:first-child { flex-wrap: wrap; gap: 5px; }
+.libera-viewer-toolbar > div.libera-annotation-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.libera-viewer-toolbar > div.libera-annotation-toolbar > * { flex-shrink: 0; }
 .libera-viewer-toolbar button,
 .libera-viewer-toolbar label { border-radius: 9px; border-color: var(--input); color: var(--muted-foreground); font-size: 12px; }
 .libera-viewer-toolbar button:not(:disabled):hover { background: var(--muted); color: var(--accent); }
 .libera-viewer-toolbar button[data-viewer-tool][aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); border-color: color-mix(in srgb, var(--accent) 20%, var(--card)); }
-.libera-viewer-toolbar button[data-viewer-tool="highlight"][aria-pressed="true"] { color: #9a710f; background: #fff4cb; border-color: #f1df9d; }
+.libera-viewer-toolbar button[data-viewer-tool="highlight"][aria-pressed="true"] { color: var(--foreground); background: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 55%, var(--card)); border-color: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 80%, var(--foreground) 8%); }
 .libera-viewer-toolbar button[aria-label="Delete selected annotation"] { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 18%, var(--card)); }
 .libera-viewer-toolbar input { max-width: 42px; color: var(--surface-ink); }
 .libera-media-viewer .libera-pdf-sheet { box-shadow: 0 5px 25px #334b7812, 0 1px 3px #334b7812; outline: 1px solid #8095b81a; }

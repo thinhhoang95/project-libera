@@ -74,7 +74,12 @@ export function changeTiptapHeadingLevels(editor: Editor, range: EditorRange, di
   const delta = direction === "indent" ? 1 : -1;
   for (const { node, pos, selected } of getTiptapHeadings(editor, range)) {
     const level = node.attrs.level + delta;
-    if (selected && level >= 1 && level <= 6) tr.setNodeMarkup(pos, undefined, { ...node.attrs, level });
+    if (!selected) continue;
+    if (direction === "unindent" && level === 0) {
+      tr.setNodeMarkup(pos, editor.schema.nodes.paragraph);
+    } else if (level >= 1 && level <= 6) {
+      tr.setNodeMarkup(pos, undefined, { ...node.attrs, level });
+    }
   }
   if (!tr.docChanged) return false;
   editor.view.dispatch(tr);

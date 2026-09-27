@@ -17,12 +17,18 @@ export type PdfHighlightAnnotation = {
   updatedAt: string;
 };
 
+export type PdfTextAnnotationFont = "sans" | "serif" | "hand" | "mono";
+
 export type PdfTextAnnotation = {
   id: string;
   type: "text";
   pageNumber: number;
+  /** Markdown source (Libera's TipTap Markdown dialect). */
   text: string;
   fontSize: number;
+  /** Ink color; older annotations without one render in the default ink. */
+  color?: string;
+  fontFamily?: PdfTextAnnotationFont;
   rect: PdfAnnotationRect;
   createdAt: string;
   updatedAt: string;
@@ -76,6 +82,7 @@ export type LiberaNotebookViewOptions = {
 };
 
 export type LiberaNotebookNode = {
+  relatedNotebookNames?: string[];
   illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
   kind: "notebook";
   name: string;
@@ -89,6 +96,7 @@ export type LiberaNotebookNode = {
 };
 
 export type LiberaTree = {
+  archiveIncluded?: boolean;
   lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;

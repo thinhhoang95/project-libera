@@ -708,6 +708,107 @@ button.border[class*="border-white"]:hover {
   color: #09090b;
 }
 
+.libera-horizontal-toolbar {
+  scrollbar-width: none;
+}
+
+.libera-horizontal-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Width is relative to the canvas, so window/sidebar/split resizing needs no
+   observers, layout reads, or React updates. Narrow panes use all available room.
+   Keep the ruler and page gutters equal even when scrollbars appear. */
+.libera-text-width-page,
+.libera-text-width-ruler {
+  scrollbar-gutter: stable;
+}
+
+.libera-text-width-content {
+  width: calc(min(100%, 320px) + (100% - min(100%, 320px)) * var(--markdown-text-width, .75));
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.libera-text-width-ruler {
+  position: relative;
+  z-index: 10;
+  flex: none;
+  margin-bottom: -24px;
+  overflow: auto;
+  padding-inline: var(--markdown-page-gutter, 1.5rem);
+  background: transparent;
+  /* Overlay the canvas without blocking text selection or scrolling. Only the
+     triangle accepts pointer input; the range remains keyboard accessible. */
+  pointer-events: none;
+}
+
+.libera-text-width-track {
+  position: relative;
+  height: 24px;
+}
+
+.libera-text-width-slider {
+  /* Thumb center follows the right edge of the centered text column. The extra
+     16px cancels the native range thumb's inset at either end of its track. */
+  position: absolute;
+  left: calc(50% + min(50%, 160px) - 8px);
+  width: calc(50% - min(50%, 160px) + 16px);
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+  accent-color: var(--primary);
+}
+
+.libera-text-width-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  background: transparent;
+}
+
+.libera-text-width-slider::-webkit-slider-thumb {
+  appearance: none;
+  pointer-events: auto;
+  width: 16px;
+  height: 24px;
+  background: var(--muted-foreground);
+  clip-path: polygon(0 3px, 100% 3px, 50% 14px);
+}
+
+.libera-text-width-slider::-moz-range-track {
+  height: 24px;
+  background: transparent;
+}
+
+.libera-text-width-slider::-moz-range-thumb {
+  pointer-events: auto;
+  width: 16px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: var(--muted-foreground);
+  clip-path: polygon(0 3px, 100% 3px, 50% 14px);
+}
+
+.libera-text-width-slider:hover::-webkit-slider-thumb,
+.libera-text-width-slider:focus-visible::-webkit-slider-thumb {
+  background: var(--primary);
+}
+
+.libera-text-width-slider:hover::-moz-range-thumb,
+.libera-text-width-slider:focus-visible::-moz-range-thumb {
+  background: var(--primary);
+}
+
+.libera-text-width-slider:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
 .markdown-preview-pane {
   box-sizing: border-box;
   overflow-anchor: none;
@@ -744,8 +845,381 @@ button.border[class*="border-white"]:hover {
 }
 
 .pdf-text-layer ::selection {
-  background: rgba(250, 204, 21, 0.35);
+  background: rgba(59, 130, 246, 0.28);
 }
+
+/* With the Highlight tool, the live selection previews the chosen ink. */
+[data-pdf-tool="highlight"] .pdf-text-layer ::selection {
+  background: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 72%, transparent);
+}
+
+.pdf-text-layer .pdf-find-match {
+  color: transparent;
+  background: rgba(250, 204, 21, 0.4);
+  padding: 0;
+}
+
+.pdf-text-layer .pdf-find-match-active {
+  background: rgba(249, 115, 22, 0.65);
+  outline: 1px solid #ea580c;
+}
+
+/* ---- PDF annotations ------------------------------------------------------
+ * Pages are white paper in every theme, so annotation inks are fixed colors;
+ * only floating chrome (menus) follows the app theme.
+ */
+
+/* Opaque bands inside one multiply-blended layer: overlaps never stack into
+ * darker patches and black glyphs stay black, like a real highlighter. */
+.pdf-highlight-layer {
+  inset: 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
+}
+
+.pdf-highlight-mark {
+  border-radius: 2px;
+  box-sizing: content-box;
+  margin-left: -1px;
+  padding: 0 1px;
+  position: absolute;
+}
+
+.pdf-highlight-ui-layer {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 15;
+}
+
+.pdf-highlight-hit {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.pdf-highlight-outline {
+  border-radius: 3px;
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, currentColor 45%, #1e293b);
+  margin: -1px 0 0 -2px;
+  padding: 1px 2px;
+  box-sizing: content-box;
+  position: absolute;
+}
+
+.pdf-highlight-tool-active {
+  background: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 55%, var(--card));
+  border-color: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 85%, var(--foreground));
+}
+
+@keyframes pdf-pop-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.pdf-selection-menu {
+  align-items: center;
+  animation: pdf-pop-in 120ms ease-out;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 0.18), 0 1px 3px rgb(15 23 42 / 0.1);
+  display: flex;
+  gap: 5px;
+  padding: 5px 6px 5px 8px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 50;
+}
+
+.pdf-selection-menu-swatch {
+  background: var(--swatch);
+  border: 1px solid rgb(15 23 42 / 0.14);
+  border-radius: 999px;
+  cursor: pointer;
+  height: 20px;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+  width: 20px;
+}
+
+.pdf-selection-menu-swatch:hover { transform: scale(1.14); }
+
+.pdf-selection-menu-swatch[data-active] {
+  box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--muted-foreground);
+}
+
+.pdf-selection-menu-divider {
+  align-self: stretch;
+  background: var(--border);
+  margin: 2px 2px;
+  width: 1px;
+}
+
+.pdf-selection-menu-action {
+  align-items: center;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.pdf-selection-menu-action:hover { background: var(--muted); color: var(--foreground); }
+
+/* Text notes: ink set straight on the paper — no fill, no frame at rest. */
+.pdf-note {
+  --pdf-note-accent: #3b82f6;
+  border-radius: 3px;
+  box-sizing: border-box;
+  outline: 1px dashed transparent;
+  outline-offset: 1px;
+  pointer-events: none;
+  position: absolute;
+  transition: outline-color 120ms ease;
+  user-select: none;
+}
+
+.pdf-note[data-interactive] { cursor: default; pointer-events: auto; }
+.pdf-note[data-interactive][data-overflowing]:not([data-selected]) { cursor: pointer; }
+.pdf-note[data-interactive]:hover,
+.pdf-note[data-empty]:not([data-editing]) { outline-color: color-mix(in srgb, currentColor 38%, transparent); }
+.pdf-note[data-selected] { outline: 1px solid color-mix(in srgb, var(--pdf-note-accent) 75%, transparent); }
+.pdf-note[data-selected]:not([data-editing]) { cursor: move; }
+
+.pdf-note-body {
+  box-sizing: border-box;
+  height: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  padding: 0.12em 0.25em;
+}
+
+/* Longer than its box: fade out at the bottom (a mask, so it needs no
+ * background color and never covers the page). Click to read in full. */
+.pdf-note[data-overflowing]:not([data-editing]) .pdf-note-body {
+  mask-image: linear-gradient(to bottom, #000 max(30%, calc(100% - 2.6em)), transparent);
+}
+
+.pdf-note[data-editing] .pdf-note-body {
+  cursor: text;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  user-select: text;
+}
+
+.pdf-note-editor-host,
+.pdf-note-editor { min-height: 100%; }
+.pdf-note-editor { caret-color: currentColor; outline: none; white-space: pre-wrap; }
+.pdf-note-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.pdf-note-content > :first-child { margin-top: 0; }
+.pdf-note-content > :last-child { margin-bottom: 0; }
+.pdf-note-content p { margin: 0; }
+.pdf-note-content p + p { margin-top: 0.4em; }
+.pdf-note-content h1,
+.pdf-note-content h2,
+.pdf-note-content h3,
+.pdf-note-content h4 { font-weight: 650; line-height: 1.2; margin: 0.35em 0 0.2em; }
+.pdf-note-content h1 { font-size: 1.35em; }
+.pdf-note-content h2 { font-size: 1.2em; }
+.pdf-note-content h3,
+.pdf-note-content h4 { font-size: 1.05em; }
+.pdf-note-content strong { font-weight: 650; }
+.pdf-note-content a { text-decoration: underline; text-underline-offset: 0.15em; }
+.pdf-note-content ul,
+.pdf-note-content ol { margin: 0.15em 0; padding-left: 1.25em; }
+.pdf-note-content ul { list-style: disc; }
+.pdf-note-content ol { list-style: decimal; }
+.pdf-note-content li > p { margin: 0; }
+.pdf-note-content ul[data-type="taskList"] { list-style: none; padding-left: 0.1em; }
+.pdf-note-content ul[data-type="taskList"] li { align-items: baseline; display: flex; gap: 0.35em; }
+.pdf-note-content code {
+  background: rgb(15 23 42 / 0.07);
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.05em 0.25em;
+}
+.pdf-note-content pre {
+  background: rgb(15 23 42 / 0.06);
+  border-radius: 4px;
+  margin: 0.3em 0;
+  overflow-x: auto;
+  padding: 0.35em 0.5em;
+}
+.pdf-note-content pre code { background: none; padding: 0; }
+.pdf-note-content blockquote {
+  border-left: 2px solid color-mix(in srgb, currentColor 45%, transparent);
+  margin: 0.3em 0;
+  padding-left: 0.55em;
+}
+.pdf-note-content mark { border-radius: 2px; padding: 0 0.1em; }
+.pdf-note-content hr { border: 0; border-top: 1px solid color-mix(in srgb, currentColor 30%, transparent); margin: 0.4em 0; }
+.pdf-note-content img { max-width: 100%; }
+.pdf-note-content table { border-collapse: collapse; margin: 0.3em 0; }
+.pdf-note-content th,
+.pdf-note-content td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 0.1em 0.35em; }
+
+.pdf-note-grip {
+  align-items: center;
+  background: var(--pdf-note-accent);
+  border-radius: 4px 4px 0 0;
+  color: #fff;
+  cursor: move;
+  display: inline-flex;
+  height: 14px;
+  justify-content: center;
+  left: 50%;
+  pointer-events: auto;
+  position: absolute;
+  top: -15px;
+  transform: translateX(-50%);
+  width: 26px;
+}
+
+.pdf-note-handle {
+  background: #fff;
+  border: 1px solid var(--pdf-note-accent);
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.2);
+  height: 8px;
+  pointer-events: auto;
+  position: absolute;
+  width: 8px;
+}
+
+.pdf-note-handle[data-handle="nw"] { cursor: nwse-resize; left: -5px; top: -5px; }
+.pdf-note-handle[data-handle="n"] { cursor: ns-resize; left: calc(50% - 4px); top: -5px; opacity: 0; }
+.pdf-note-handle[data-handle="ne"] { cursor: nesw-resize; right: -5px; top: -5px; }
+.pdf-note-handle[data-handle="e"] { cursor: ew-resize; right: -5px; top: calc(50% - 4px); }
+.pdf-note-handle[data-handle="se"] { bottom: -5px; cursor: nwse-resize; right: -5px; }
+.pdf-note-handle[data-handle="s"] { bottom: -5px; cursor: ns-resize; left: calc(50% - 4px); }
+.pdf-note-handle[data-handle="sw"] { bottom: -5px; cursor: nesw-resize; left: -5px; }
+.pdf-note-handle[data-handle="w"] { cursor: ew-resize; left: -5px; top: calc(50% - 4px); }
+/* The top-center handle sits under the move grip; keep it grabbable but hidden. */
+
+.pdf-note-draw-surface { cursor: crosshair; pointer-events: auto; touch-action: none; }
+
+.pdf-note-draft {
+  background: rgb(59 130 246 / 0.06);
+  border: 1.5px dashed #3b82f6;
+  border-radius: 3px;
+  box-sizing: border-box;
+  position: absolute;
+}
+
+.pdf-note-reader {
+  animation: pdf-pop-in 140ms ease-out;
+  background: #fffdf9;
+  border: 1px solid rgb(15 23 42 / 0.12);
+  border-radius: 10px;
+  box-shadow: 0 14px 44px rgb(15 23 42 / 0.24), 0 2px 6px rgb(15 23 42 / 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 50;
+}
+
+.pdf-note-reader-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  justify-content: flex-end;
+  padding: 5px 6px 0;
+}
+
+.pdf-note-reader-actions button {
+  align-items: center;
+  border-radius: 999px;
+  color: #475569;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.pdf-note-reader-actions button:hover { background: #f1f5f9; color: #0f172a; }
+
+.pdf-note-reader-body {
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 16px 14px;
+  scrollbar-width: thin;
+}
+
+/* Toolbar style controls (PDF and image viewers). */
+.annotation-style-group {
+  align-items: center;
+  border-left: 1px solid var(--border);
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 4px;
+  padding-left: 9px;
+}
+
+.annotation-swatches { align-items: center; display: inline-flex; gap: 1px; }
+
+.annotation-style-group .annotation-swatch {
+  align-items: center;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
+  width: 26px;
+}
+
+.annotation-swatch > span {
+  align-items: center;
+  background: var(--swatch);
+  border: 1px solid rgb(15 23 42 / 0.16);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.annotation-swatch > span svg { filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.7)); }
+.annotation-swatch[aria-checked="true"] > span { box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--muted-foreground); }
+
+.annotation-font-select {
+  background: var(--card);
+  border: 1px solid var(--input);
+  border-radius: 9px;
+  color: var(--foreground);
+  font-size: 12px;
+  height: 32px;
+  padding: 0 6px;
+}
+
+.annotation-size-field {
+  align-items: center;
+  border: 1px solid var(--input);
+  display: inline-flex;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+}
+
+.annotation-size-field input { background: transparent; border: 0; outline: none; width: 42px; }
 
 /* TipTap uses the same theme tokens and typography preferences as Markdown. */
 .libera-tiptap {
@@ -898,6 +1372,7 @@ html.libera-glass .libera-left-panel .libera-sidebar-search-input,
 .libera-notebook-children .text-sm { font-size: 12px; }
 .libera-folder-icon { color: #29a9ce; fill: #7fdaef55; }
 .libera-tree-file-icon { display: inline-flex; flex-shrink: 0; color: #778bb2; }
+.libera-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; margin: 0 !important; background: color-mix(in srgb, var(--foreground) 14%, transparent); pointer-events: none; }
 .libera-tree-file-icon[data-type="image"] { color: #4caa85; }
 .libera-tree-file-icon[data-type="pdf"] { color: #d08178; }
 html.dark .libera-left-panel { --muted-foreground: #adb9d1; --border: #8298cb22; --input: #8298cb33; background: linear-gradient(155deg, #222c3ee0, #29273be0); color: #e1e8f7; }
@@ -908,3 +1383,8 @@ html.dark .libera-left-panel .libera-sidebar-icon-button { color: #a7b7d2; }
 html.dark .libera-left-panel .libera-sidebar-icon-button[aria-selected="true"] { color: #a2c9ff; background: #678dcc26; box-shadow: none; }
 html.dark .libera-notebook-row:hover { background: #a3bbef0c; }
 html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row { background: color-mix(in srgb, var(--notebook-color) 18%, transparent); }
+
+.libera-notebook-section[data-related="true"] > .libera-notebook-row {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}

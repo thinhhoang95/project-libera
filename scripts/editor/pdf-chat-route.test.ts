@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { NextRequest } from "next/server";
 import { GET } from "../../src/app/api/document-chat/pdf/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 import { filePathFromParts, pdfTextCachePath } from "../../src/lib/storage/paths";
+
+const execFileAsync = promisify(execFile);
 
 // A small valid PDF exercises the same extraction code used for real documents.
 function pdfFixture() {
@@ -59,6 +64,24 @@ test("PDF chat context authenticates and extracts page-labelled text with size a
     assert.equal((await GET(request())).status, 413);
   } finally {
     if (previousRoot === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previousRoot;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PDF text extraction resolves its worker when the server working directory has no node_modules", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-pdf-relocated-"));
+  const file = path.join(directory, "users", "admin", "Notes", "paper.pdf");
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, pdfFixture());
+    const moduleUrl = pathToFileURL(path.resolve("src/lib/storage/pdf-text-cache.ts")).href;
+    const script = `process.chdir(process.env.LIBERA_TEST_CWD); import(${JSON.stringify(moduleUrl)}).then(async ({ readPdfTextCache }) => console.log(JSON.stringify((await readPdfTextCache("Notes/paper.pdf")).pages))).catch(error => { console.error(error); process.exitCode = 1; });`;
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--require", path.resolve("scripts/editor/setup.cjs"),
+      "--import", "tsx", "-e", script,
+    ], { env: { ...process.env, LIBERA_DATA_DIR: directory, LIBERA_TEST_CWD: directory } });
+    assert.deepEqual(JSON.parse(stdout.trim()), [{ pageNumber: 1, text: "Complete PDF text" }]);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

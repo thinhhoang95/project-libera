@@ -424,7 +424,7 @@
             <section class="settings-section hidden" data-section="ai">
               <h2>AI</h2>
               <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
-              <p class="field-help">Enabled routes only to providers that support prompt caching for your chosen model. If none are available, the request fails. Disabled removes caching requests and routing restrictions; providers may still cache automatically.</p>
+              <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically.</p>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"

@@ -44,7 +44,7 @@ test("chat route streams only answer text and carries model settings to OpenRout
     ];
     return new Response(byteStream(events.join('')), { headers: { "Content-Type": "text/event-stream" } });
   };
-  const request = () => new NextRequest("http://localhost/api/document-chat", { method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` }, body: JSON.stringify({ stream: true, reasoningEffort: "max", messages: [{ id: "1", role: "user", text: "Hello" }] }) });
+  const request = () => new NextRequest("http://localhost/api/document-chat", { method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` }, body: JSON.stringify({ stream: true, sessionId: "chat-123", reasoningEffort: "max", messages: [{ id: "1", role: "user", text: "Hello" }] }) });
   try {
     const response = await POST(request());
     assert.match(response.headers.get("Content-Type")!, /ndjson/);
@@ -54,6 +54,8 @@ test("chat route streams only answer text and carries model settings to OpenRout
     assert.deepEqual(usage, [{ inputTokens: 1200, outputTokens: 42, cachedTokens: 1000 }]);
     assert.equal(text, "Hello 👋 world");
     assert.equal(requests[0].stream, true);
+    assert.equal(requests[0].session_id, "chat-123");
+    assert.deepEqual(requests[0].stream_options, { include_usage: true });
     assert.deepEqual(requests[0].reasoning, { effort: "max" });
     fail = true;
     let partial = "";

@@ -7,7 +7,7 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
   const oldFetch = globalThis.fetch;
   const oldKey = process.env.OPENROUTER_API_KEY;
   process.env.OPENROUTER_API_KEY = "test-key";
-  const requests: { model: string; provider?: { only: string[] }; messages: { content: { cache_control?: { type: string } }[] }[] }[] = [];
+  const requests: { model: string; provider?: { only: string[] }; stream?: boolean; stream_options?: { include_usage: boolean }; messages: { content: { cache_control?: { type: string } }[] }[] }[] = [];
   let lookups = 0;
   let endpoints: unknown[] = [
     { tag: "deepseek", supports_implicit_caching: true },
@@ -37,7 +37,7 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     const body = JSON.parse(String(init?.body));
     requests.push(body);
     return body.stream
-      ? new Response('data: {"choices":[{"delta":{"content":"Answer"}}]}\n\ndata: [DONE]\n\n')
+      ? new Response('data: {"choices":[{"delta":{"content":"Answer"}}]}\n\ndata: {"usage":{"prompt_tokens":5000,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":4096}},"choices":[]}\n\ndata: [DONE]\n\n')
       : Response.json({ choices: [{ message: { content: "Answer" } }] });
   };
   try {
@@ -47,8 +47,11 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     assert.deepEqual(requests[0].provider, { only: ["deepseek", "regional/eu"] });
     assert.deepEqual(requests[0].messages, messages);
     let answer = "";
-    for await (const text of streamOpenRouterCompletion(messages, { model, promptCaching: true })) answer += text;
+    const reportedUsage: unknown[] = [];
+    for await (const text of streamOpenRouterCompletion(messages, { model, promptCaching: true, onUsage: (usage) => reportedUsage.push(usage) })) answer += text;
     assert.equal(answer, "Answer");
+    assert.deepEqual(requests[1].stream_options, { include_usage: true });
+    assert.deepEqual(reportedUsage, [{ inputTokens: 5000, outputTokens: 20, cachedTokens: 4096 }]);
     assert.deepEqual(requests[1].provider, requests[0].provider);
     assert.equal(lookups, 1, "reuse provider metadata for follow-up requests");
 
@@ -56,6 +59,10 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     assert.equal(requests[2].provider, undefined);
     assert.deepEqual(requests[2].messages, messages);
     assert.equal(lookups, 1, "disabled caching does not discover providers");
+    const automaticUsage: unknown[] = [];
+    for await (const _ of streamOpenRouterCompletion(messages, { model, promptCaching: false, onUsage: (usage) => automaticUsage.push(usage) })) { /* consume response */ }
+    assert.equal(requests[3].provider, undefined);
+    assert.deepEqual(automaticUsage, [{ inputTokens: 5000, outputTokens: 20, cachedTokens: 4096 }], "automatic cache reads are reported when the preference is disabled");
 
     endpoints = [
       { tag: "explicit", supported_parameters: ["cache_control"] },
@@ -70,6 +77,15 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     assert.deepEqual(explicit.messages[2].content[0].cache_control, { type: "ephemeral" });
     assert.deepEqual(explicit.messages[3].content[0].cache_control, { type: "ephemeral" });
     assert.deepEqual(messages, originalMessages, "do not mutate caller messages");
+
+    endpoints = [{ tag: "google-vertex/global", supports_implicit_caching: true, pricing: { input_cache_read: "0.000000075", input_cache_write: "0.000000041" } }];
+    await createOpenRouterCompletion(messages, { model: "google/gemini-3.8-flash", promptCaching: true });
+    const gemini = requests.at(-1)!;
+    assert.deepEqual(gemini.provider?.only, ["google-vertex/global"]);
+    assert.deepEqual(gemini.messages[0], messages[0], "Gemini keeps system instructions unchanged");
+    assert.deepEqual(gemini.messages[1].content[0].cache_control, { type: "ephemeral" });
+    assert.deepEqual(gemini.messages[2], messages[2]);
+    assert.deepEqual(gemini.messages[3], messages[3], "Gemini leaves the changing question after the stable breakpoint");
 
     endpoints = [{ tag: "unsupported" }];
     const completionCount = requests.length;

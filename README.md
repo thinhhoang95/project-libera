@@ -128,6 +128,14 @@ Run the desktop app in development with:
 npm run electron:dev
 ```
 
+On macOS arm64, when the Windows dependency tree is active in `node_modules`,
+run `npm run dev:mac` instead. It reads the existing macOS dependency cache and
+starts Electron and Next.js from a temporary app directory. Source edits are
+mirrored into that directory for development; the active dependencies and the
+project's `.next` output are left unchanged. The temporary directory is removed
+when the app exits. If the macOS cache is missing or stale, the command reports
+that condition without installing or activating dependencies.
+
 Electron development starts Next.js with webpack because Turbopack's persistent
 dev cache can fail on external macOS volumes that create `._*` sidecar files.
 

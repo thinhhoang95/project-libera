@@ -283,7 +283,7 @@ export async function archiveFolder(relativePath: string) {
   await renameStarredFilePathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
 
-  return getTree();
+  return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
 }
 
 export async function deleteFolder(relativePath: string) {

@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch } from "lucide-react";
-import { DocumentChatExportDialog, type ChatExport } from "./document-chat-export-dialog";
+import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
@@ -42,7 +42,7 @@ const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMar
     baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
 });
 
-export function DocumentChatPanel({ files = [], tabs = [], quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
+export function DocumentChatPanel({ files = [], tabs = [], quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
   const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
@@ -277,7 +277,7 @@ export function DocumentChatPanel({ files = [], tabs = [], quickPrompts = [], ac
       updateChat(id, (current) => ({ ...current, usageRequests: [...chatUsageRequests(chat), { id: assistantId, messageId: messages.at(-1)!.id }] }));
       const response = await fetch("/api/document-chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stream: true, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), model, reasoningEffort: chat.reasoningEffort }),
+        body: JSON.stringify({ stream: true, sessionId: id, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), model, reasoningEffort: chat.reasoningEffort }),
         signal: controller.signal,
       });
       await readChatResponse(response, controller.signal, (text) => {
@@ -492,7 +492,7 @@ export function DocumentChatPanel({ files = [], tabs = [], quickPrompts = [], ac
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook (or Notebook Folder)</button>
       </div>
     </ModalDialog>
-    {exportSnapshot && <DocumentChatExportDialog snapshot={exportSnapshot} onClose={() => setExportSnapshot(null)} onSaved={onExportSaved} />}
+    {exportSnapshot && <DocumentChatExportDialog snapshot={exportSnapshot} onClose={() => setExportSnapshot(null)} onSaved={onExportSaved} onSaveToNotebook={onSaveToNotebook} />}
     {settingsOpen && store && <DocumentChatSettingsDialog
       chats={store.chats}
       activeId={store.activeId}

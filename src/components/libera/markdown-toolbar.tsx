@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
+import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
 import {
@@ -103,6 +104,15 @@ export function MarkdownToolbar({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toolbarMeasureRef = useRef<HTMLDivElement>(null);
   const toolbarRowRef = useRef<HTMLDivElement>(null);
+  const scrollToolbarRef = useHorizontalToolbarScroll();
+  const setToolbarRowRef = useCallback((element: HTMLDivElement | null) => {
+    toolbarRowRef.current = element;
+    const cleanup = scrollToolbarRef(element);
+    return () => {
+      cleanup?.();
+      toolbarRowRef.current = null;
+    };
+  }, [scrollToolbarRef]);
   const highlightButtonRef = useRef<HTMLButtonElement>(null);
   const highlightMenuRef = useRef<HTMLDivElement>(null);
   const textColorButtonRef = useRef<HTMLButtonElement>(null);
@@ -520,8 +530,11 @@ export function MarkdownToolbar({
         <span className="inline-flex h-9 w-36 shrink-0" />
       </div>
       <div
-        ref={toolbarRowRef}
-        className="flex max-w-full flex-nowrap items-center gap-2 overflow-hidden whitespace-nowrap"
+        ref={setToolbarRowRef}
+        role="toolbar"
+        aria-label="Markdown formatting"
+        tabIndex={0}
+        className="libera-horizontal-toolbar flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
       >
         <button
           aria-label="Bold"

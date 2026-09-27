@@ -6,6 +6,7 @@ import type {
   LiberaNotebookViewOptions,
   LiberaNotebookNode,
   LiberaTree,
+  PdfTextAnnotationFont,
 } from "@/lib/types";
 
 export type MarkdownEditorMode = "visual" | "source";
@@ -40,19 +41,24 @@ export type MarkdownTabViewState = {
 };
 
 export type PdfTabViewState = {
+  fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
+  highlightColor?: string;
   scrollLeft?: number;
   scrollTop?: number;
   selectedAnnotationId?: string;
+  textColor?: string;
   tool?: "select" | "highlight" | "text";
   zoom?: number;
 };
 
 export type ImageTabViewState = {
+  fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
   panX?: number;
   panY?: number;
   selectedAnnotationId?: string;
+  textColor?: string;
   tool?: "select" | "text";
   zoom?: number;
 };

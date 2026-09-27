@@ -1,6 +1,6 @@
 import { readSseData } from "./text-stream";
 import { parseOpenRouterUsage, type TokenUsage } from "./chat-token-usage";
-import { getPromptCacheRouting, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
+import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
@@ -111,7 +111,7 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-type CompletionOptions = { model?: string; promptCaching?: boolean; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void };
+type CompletionOptions = { model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void };
 
 async function requestOpenRouterCompletion(
   messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
@@ -139,12 +139,14 @@ async function requestOpenRouterCompletion(
     signal: options.signal,
     body: JSON.stringify({
       model,
+      ...(options.sessionId ? { session_id: options.sessionId } : {}),
       ...(caching ? { provider: caching.provider } : {}),
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      messages: caching?.explicit ? withPromptCacheBreakpoints(messages) : messages,
+      messages: caching?.breakpoints === "gemini" ? withGeminiPromptCacheBreakpoint(messages)
+        : caching?.breakpoints === "rolling" ? withPromptCacheBreakpoints(messages) : messages,
       temperature: 0,
-      ...(stream ? { stream: true } : {}),
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
     }),
   });
 

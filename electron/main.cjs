@@ -25,6 +25,7 @@ const { createPreferencesBackup, parsePreferencesBackup } = require("./preferenc
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
+const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
@@ -1307,6 +1308,20 @@ function installFileExplorerHandlers() {
 }
 
 function installWindowControlHandlers() {
+  ipcMain.on("workspaces:checkpoint", (event, body) => {
+    try {
+      if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
+          new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
+        throw new Error("Workspace checkpoint sender is invalid.");
+      }
+      const config = readConfig();
+      if (!config.dataDir) throw new Error("Libera data directory is not configured.");
+      writeWorkspaceRecovery(path.join(config.dataDir, "users", ADMIN_USER), body);
+      event.returnValue = { saved: true };
+    } catch (error) {
+      event.returnValue = { saved: false, error: error.message };
+    }
+  });
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();
   });

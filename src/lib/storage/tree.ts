@@ -1,3 +1,4 @@
+import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import { readdir, stat } from "node:fs/promises";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
@@ -211,7 +212,7 @@ async function readTreeDirectory(
   return children.sort(sortTreeNodes);
 }
 
-export async function getTree(): Promise<LiberaTree> {
+export async function getTree(options: { includeArchive?: boolean } = {}): Promise<LiberaTree> {
   await ensureAdminRoot();
 
   const workspaceMetadata = await readWorkspaceMetadata();
@@ -235,7 +236,7 @@ export async function getTree(): Promise<LiberaTree> {
       notebookStats.birthtime.toISOString(),
     );
     const children = await readTreeDirectory(entry.name, [], {
-      showArchive: workspaceMetadata.notebookViewOptions.showArchive,
+      showArchive: options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive,
     });
 
     notebooks.push({
@@ -261,7 +262,10 @@ export async function getTree(): Promise<LiberaTree> {
     collectExpandablePaths(children, expandablePaths);
   }
 
+  await populateRelatedNotebooks(notebooks);
+
   return {
+    archiveIncluded: Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive),
     root: getAdminRoot(),
     lastNotebookName: await readLastNotebookName(),
     notebookPanelExpandedPaths:
