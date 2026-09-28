@@ -142,10 +142,7 @@ export function createMarkdownExtensions(documentPath: string) {
       addNodeView() {
         return ({ node }) => {
           const image = document.createElement("img");
-          const src = String(node.attrs.src ?? "");
-          image.src = src && !/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(src)
-            ? `/api/markdown-assets/raw?document=${encodeURIComponent(documentPath)}&asset=${encodeURIComponent(src)}`
-            : src;
+          image.src = markdownAssetSource(documentPath, String(node.attrs.src ?? ""));
           image.alt = node.attrs.alt ?? "";
           if (node.attrs.title) image.title = node.attrs.title;
           return { dom: image };
@@ -153,4 +150,11 @@ export function createMarkdownExtensions(documentPath: string) {
       },
     }).configure({ allowBase64: true }),
   ];
+}
+
+/** Resolves a Markdown image source relative to its document's assets. */
+export function markdownAssetSource(documentPath: string, src: string) {
+  return src && !/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(src)
+    ? `/api/markdown-assets/raw?document=${encodeURIComponent(documentPath)}&asset=${encodeURIComponent(src)}`
+    : src;
 }

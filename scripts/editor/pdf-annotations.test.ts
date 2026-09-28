@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import type { Editor } from "@tiptap/core";
 import { JSDOM } from "jsdom";
 import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -58,6 +59,25 @@ test("note Markdown renders through the TipTap schema, is cached, and leaves glo
   assert.doesNotMatch(html, /script/);
   assert.equal(renderAnnotationMarkdown("**Key** point\nsecond line\n\n- one\n- two\n\n<script>alert(1)</script>"), html);
   assert.equal(marked.defaults.breaks, false, "the main editor's parser must keep its options");
+});
+
+test("note Markdown typesets math with KaTeX using the configured markers", () => {
+  const html = renderAnnotationMarkdown("Energy $E=mc^2$, not `$x$`\n\n\\[\n\\int_0^1 x\\,dx\n\\]\n\nBad $\\frac{a$ end");
+  const inline = html.match(/<span class="tiptap-mathematics-render" data-type="inline-math">/g) ?? [];
+
+  assert.equal(inline.length, 2, "valid and invalid inline math both become math nodes");
+  assert.match(html, /<span class="katex">[\s\S]*E=mc\^2/, "KaTeX output carries the TeX annotation");
+  assert.match(html, /<div class="tiptap-mathematics-render" data-type="block-math"><div class="block-math-inner"><span class="katex-display">/);
+  assert.match(html, /<code>\$x\$<\/code>/, "code spans stay literal");
+  assert.match(html, /katex-error/, "invalid TeX renders KaTeX's inline error instead of throwing");
+  assert.doesNotMatch(html, /data-type="inline-math"><\/span>/, "no empty placeholders remain");
+
+  const brackets = { inlineMathMarkers: "\\( \\)", blockMathMarkers: "\\[ \\]" };
+  const configured = renderAnnotationMarkdown("a \\(x<y\\) b and $z$", brackets);
+
+  assert.match(configured, /data-type="inline-math"><span class="katex">[\s\S]*x&lt;y/);
+  assert.match(configured, /and \$z\$/, "unconfigured markers stay text");
+  assert.match(renderAnnotationMarkdown("a \\(x<y\\) b and $z$"), /and <span class="tiptap-mathematics-render"/, "cache is keyed by marker settings");
 });
 
 type LayerLog = {
@@ -176,6 +196,43 @@ test("first click selects, second click edits, Esc commits the Markdown", async 
   const [, patch] = layer.log.updates.at(-1)!;
   assert.equal(patch.text, "**Bold** remark *added*");
   assert.equal(element().querySelector("em")?.textContent, "added");
+  await layer.unmount();
+});
+
+test("clicking an equation while editing reveals its source, and edits save as math", async () => {
+  const layer = await renderLayer([note({ text: "Mass $m_0$ here\n\n\\[\n\\sum_i x_i\n\\]" })]);
+  const element = () => layer.host.querySelector<HTMLElement>(".pdf-note")!;
+
+  assert.ok(element().querySelector(".katex"), "resting notes are typeset");
+  assert.ok(element().querySelector(".katex-display"), "display math is typeset");
+
+  await click(element());
+  await click(element());
+  const { editor } = editorElement(layer.host) as unknown as { editor: Editor };
+  const { view } = editor;
+  // jsdom has no layout for ProseMirror to hit-test, so call the click prop directly.
+  const clickMath = async (name: string) => {
+    let pos = -1;
+    view.state.doc.descendants((node, at) => { if (pos < 0 && node.type.name === name) pos = at; });
+    assert.ok(pos >= 0, `${name} is a math node while editing`);
+    const node = view.state.doc.nodeAt(pos)!;
+    await act(async () => { view.someProp("handleClickOn", (handler) => handler(view, pos, node, pos, new dom.window.MouseEvent("click"), true)); });
+  };
+
+  await clickMath("inlineMath");
+  const { from, to } = editor.state.selection;
+  assert.equal(editor.state.doc.textBetween(from, to), "m_0", "the LaTeX is selected inside its markers");
+  await act(async () => { editor.commands.insertContent("m_1^2"); });
+
+  await clickMath("blockMath");
+  const block = editor.state.selection;
+  assert.equal(editor.state.doc.textBetween(block.from, block.to), "\\sum_i x_i");
+
+  await act(async () => editorElement(layer.host)!.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+
+  const [, patch] = layer.log.updates.at(-1)!;
+  assert.equal(patch.text, "Mass $m_1^2$ here\n\n\\[\n\\sum_i x_i\n\\]", "equation source is saved unescaped");
+  assert.equal(element().querySelectorAll(".katex").length, 2);
   await layer.unmount();
 });
 

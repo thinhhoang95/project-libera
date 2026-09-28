@@ -13,6 +13,7 @@ export type PdfHighlightAnnotation = {
   pageNumber: number;
   color: string;
   rects: PdfAnnotationRect[];
+  quote?: string;
   createdAt: string;
   updatedAt: string;
 };

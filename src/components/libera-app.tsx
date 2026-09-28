@@ -3,6 +3,7 @@
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
+import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,10 +18,13 @@ import { WorkspaceViewContext } from "@/components/libera/workspace-view-context
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
 import { TabStrip } from "@/components/libera/tab-strip";
+import type { OpenTab } from "@/components/libera/types";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
+import { CanvasSplitView } from "@/components/libera/canvas-split-view";
+import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 
@@ -49,12 +53,14 @@ function clampSidebarWidth(width: number, layoutWidth?: number) {
   return Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(maximumWidth, width)));
 }
 
+const NO_QUICK_PROMPTS: QuickPrompt[] = [];
+
 export function LiberaApp({
   yourName = "",
   initialAuthenticated,
   markdownPreferences,
   markdownDisplayPreferences,
-  quickPrompts = [],
+  quickPrompts = NO_QUICK_PROMPTS,
 }: LiberaAppProps) {
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
@@ -69,6 +75,7 @@ export function LiberaApp({
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [chatWidth, setChatWidth] = useState(360);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatAttachmentRequest, setChatAttachmentRequest] = useState<{ id: string; tab: OpenTab } | null>(null);
   const [chatResizing, setChatResizing] = useState(false);
   const mainLayoutRef = useRef<HTMLDivElement>(null);
 
@@ -151,6 +158,20 @@ export function LiberaApp({
     saveChatPanel(chatWidth, collapsed);
   }, [chatWidth, saveChatPanel]);
 
+  const canvas = workspace.canvas;
+
+  // ⌘/Ctrl+\ splits the focused panel to the right, adding Shift splits it down.
+  useEffect(() => {
+    if (!authenticated) return;
+    function splitCanvas(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.code !== "Backslash" || event.repeat || event.isComposing) return;
+      event.preventDefault();
+      canvas.splitPane(canvas.layout.focusedPaneId, event.shiftKey ? "bottom" : "right");
+    }
+    window.addEventListener("keydown", splitCanvas);
+    return () => window.removeEventListener("keydown", splitCanvas);
+  }, [authenticated, canvas]);
+
   useEffect(() => {
     if (!authenticated) return;
     function toggleChat(event: KeyboardEvent) {
@@ -200,6 +221,57 @@ export function LiberaApp({
     [workspace.tree.notebooks],
   );
 
+  const visibleCanvasTabIds = visibleCanvasTabIdsOf(canvas.layout);
+
+  function renderCanvasPane(pane: CanvasPaneNode, focused: boolean) {
+    const tab = workspace.tabs.find((currentTab) => currentTab.id === pane.tabId);
+
+    return (
+      <WorkspacePanel
+        focused={focused}
+        yourName={yourName}
+        markdownEditorMode={tab?.viewState?.markdown?.editorMode ?? "visual"}
+        activePreviewTabId={activePreviewTabId}
+        onActivePreviewTabIdChange={setActivePreviewTabId}
+        activeTab={tab}
+        aiFormatting={workspace.aiFormatting}
+        canStartScreenshotSnip={workspace.canStartScreenshotSnip}
+        files={workspace.files}
+        firstNotebook={workspace.firstNotebook}
+        imageMarkdownConverting={workspace.imageMarkdownConverting}
+        markdownPreferences={markdownPreferences}
+        recentFiles={workspace.recentFiles}
+        screenshotSnipSession={workspace.screenshotSnipSession}
+        selectedNotebook={workspace.selectedNotebook}
+        tabs={workspace.tabs}
+        textareaRef={workspace.textareaRef}
+        onAiFormatSelection={workspace.formatSelectionWithAi}
+        onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
+        onAiRewriteSelection={workspace.rewriteSelectionWithAi}
+        onAiWriteAt={workspace.writeWithAiAt}
+        onCreateMarkdown={workspace.createMarkdownFromPrompt}
+        onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+        onCreateNotebook={workspace.openCreateNotebookDialog}
+        onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
+        onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
+        onInsertExistingImage={workspace.insertExistingMarkdownImage}
+        onInsertFileLink={workspace.insertMarkdownFileLink}
+        onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
+        onInsertImage={workspace.insertMarkdownImage}
+        onInsertMarkdown={workspace.insertMarkdown}
+        onOpenFile={workspace.openFile}
+        onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
+        onSave={workspace.saveActiveTab}
+        onSetDraft={(value) => {
+          if (tab) workspace.setTabDraft(tab.id, value);
+        }}
+        onRegisterEditorDraft={workspace.registerEditorDraft}
+        onSetViewState={workspace.setActiveTabViewState}
+        onStartScreenshotSnip={workspace.startScreenshotSnip}
+      />
+    );
+  }
+
   if (!authenticated) {
     return (
       <LoginScreen
@@ -215,6 +287,7 @@ export function LiberaApp({
 
   return (
     <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
+    <QuickPromptsContext.Provider value={quickPrompts}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
@@ -295,6 +368,10 @@ export function LiberaApp({
             notebookColors={notebookColors}
             tabs={workspace.tabs}
             onActivateTab={workspace.setActiveTabId}
+            onAddToAiChat={(tab) => {
+              setChatAttachmentRequest({ id: crypto.randomUUID(), tab });
+              changeChatCollapsed(false);
+            }}
             onCloseOtherTabs={workspace.closeOtherTabs}
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
@@ -305,6 +382,12 @@ export function LiberaApp({
             onRenameFile={workspace.renameFileFromPrompt}
             onSave={workspace.saveActiveTab}
             onSwapTabs={workspace.swapTabs}
+            visibleTabIds={visibleCanvasTabIds}
+            canvasPanelCount={canvas.paneCount}
+            onSplitCanvas={(zone) => canvas.splitPane(canvas.layout.focusedPaneId, zone)}
+            onOpenTabInSplit={(tabId, zone) => canvas.splitPane(canvas.layout.focusedPaneId, zone, tabId)}
+            onCloseCanvasPanel={() => canvas.closePane(canvas.layout.focusedPaneId)}
+            onCloseOtherCanvasPanels={() => canvas.closeOtherPanes(canvas.layout.focusedPaneId)}
           />
 
           {workspace.workspaceError ? (
@@ -313,47 +396,20 @@ export function LiberaApp({
             </div>
           ) : null}
 
-          <WorkspacePanel
-            yourName={yourName}
-            markdownEditorMode={markdownEditorMode}
-            activePreviewTabId={activePreviewTabId}
-            onActivePreviewTabIdChange={setActivePreviewTabId}
-            activeTab={workspace.activeTab}
-            aiFormatting={workspace.aiFormatting}
-            canStartScreenshotSnip={workspace.canStartScreenshotSnip}
-            files={workspace.files}
-            firstNotebook={workspace.firstNotebook}
-            imageMarkdownConverting={workspace.imageMarkdownConverting}
-            markdownPreferences={markdownPreferences}
-            recentFiles={workspace.recentFiles}
-            screenshotSnipSession={workspace.screenshotSnipSession}
-            selectedNotebook={workspace.selectedNotebook}
+          <CanvasSplitView
+            layout={canvas.layout}
             tabs={workspace.tabs}
-            textareaRef={workspace.textareaRef}
-            onAiFormatSelection={workspace.formatSelectionWithAi}
-            onAiImageToMarkdown={workspace.convertImageToMarkdownWithAi}
-            onAiRewriteSelection={workspace.rewriteSelectionWithAi}
-            onCreateMarkdown={workspace.createMarkdownFromPrompt}
-            onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
-            onCreateNotebook={workspace.openCreateNotebookDialog}
-            onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
-            onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
-            onInsertExistingImage={workspace.insertExistingMarkdownImage}
-            onInsertFileLink={workspace.insertMarkdownFileLink}
-            onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
-            onInsertImage={workspace.insertMarkdownImage}
-            onInsertMarkdown={workspace.insertMarkdown}
-            onOpenFile={workspace.openFile}
-            onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
-            onSave={workspace.saveActiveTab}
-            onSetDraft={workspace.setActiveDraft}
-            onRegisterEditorDraft={workspace.registerEditorDraft}
-            onSetViewState={workspace.setActiveTabViewState}
-            onStartScreenshotSnip={workspace.startScreenshotSnip}
+            renderPane={renderCanvasPane}
+            onFocusPane={canvas.focusPane}
+            onSplitPane={canvas.splitPane}
+            onClosePane={canvas.closePane}
+            onPlaceTab={canvas.placeTab}
+            onDropTab={canvas.dropTab}
+            onResizeSplit={canvas.resizeSplit}
           />
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
@@ -436,6 +492,7 @@ export function LiberaApp({
     </main>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
+    </QuickPromptsContext.Provider>
     </MarkdownDisplayPreferencesProvider>
   );
 }

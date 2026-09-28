@@ -16,6 +16,7 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { toStorageError } from "@/lib/storage/errors";
+import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
@@ -96,6 +97,9 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
               ? candidate.color
               : "#fde047",
           rects,
+          quote: typeof candidate.quote === "string"
+            ? normalizePdfHighlightQuote(candidate.quote)
+            : undefined,
           createdAt,
           updatedAt,
         });

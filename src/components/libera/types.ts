@@ -278,6 +278,7 @@ export type LiberaWorkspace = {
     selection: { start: number; end: number },
     prompt: string,
   ) => Promise<void>;
+  writeWithAiAt: (offset: number, prompt: string) => Promise<void>;
   handleLogin: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   handleLogout: () => Promise<void>;
   handleUploadChange: () => Promise<void>;

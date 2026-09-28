@@ -8,6 +8,7 @@ import {
   type NoteCaret,
   type PdfNoteEditorHandle,
 } from "@/components/libera/pdf-note-editor";
+import { useNoteMathMarkers } from "@/components/libera/note-math-context";
 import { renderAnnotationMarkdown } from "@/lib/pdf-annotation-markdown";
 import { DEFAULT_PDF_TEXT_COLOR, pdfTextFontStack } from "@/lib/pdf-annotation-style";
 import type { PdfAnnotationRect, PdfTextAnnotation } from "@/lib/types";
@@ -260,7 +261,8 @@ function noteTypography(annotation: PdfTextAnnotation, textScale: number): CSSPr
 }
 
 const NoteMarkdown = memo(function NoteMarkdown({ markdown }: { markdown: string }) {
-  const html = useMemo(() => renderAnnotationMarkdown(markdown), [markdown]);
+  const mathMarkers = useNoteMathMarkers();
+  const html = useMemo(() => renderAnnotationMarkdown(markdown, mathMarkers), [markdown, mathMarkers]);
 
   return <div className="pdf-note-content" dangerouslySetInnerHTML={{ __html: html }} />;
 });
@@ -291,6 +293,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
   textScale: number;
 }) {
   const noteRef = useRef<HTMLDivElement>(null);
+  const mathMarkers = useNoteMathMarkers();
 
   // Re-attach when the content element is swapped (resting HTML ↔ editor).
   useLayoutEffect(() => {
@@ -340,6 +343,7 @@ const TextAnnotationNote = memo(function TextAnnotationNote({
             documentPath={documentPath}
             handleRef={editorHandleRef}
             initialMarkdown={annotation.text}
+            mathMarkers={mathMarkers}
             onChange={updateText}
             onEscape={handlers.stopEditing}
           />

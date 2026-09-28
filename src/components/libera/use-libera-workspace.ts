@@ -37,9 +37,12 @@ import {
 } from "@/lib/markdown-file-links";
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
+import { useCanvasLayout } from "./use-canvas-layout";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { readIncludeDocumentContext } from "./ai-document-context-preference";
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -308,7 +311,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const expansionSaveInFlightRef = useRef(false);
   const queuedExpansionSaveRef = useRef<string[] | null>(null);
 
-  const workspaceSession = useMemo(() => ({ tabs, activeTabId, selectedNotebookName, expandedPaths: [...expanded] }), [tabs, activeTabId, selectedNotebookName, expanded]);
+  const canvas = useCanvasLayout({ tabs, activeTabId, activateTab });
+  const canvasLayout = canvas.layout;
+  const workspaceSession = useMemo(() => ({ tabs, activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout }), [tabs, activeTabId, selectedNotebookName, expanded, canvasLayout]);
   const workspaceManager = useSavedWorkspaces({
     authenticated, tree, refreshTree, session: workspaceSession, readDraft: getTabDraft,
     onError: setWorkspaceError,
@@ -317,6 +322,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       activeTabHistoryRef.current = [];
       setTabs(session.tabs);
       setActiveTabId(session.activeTabId);
+      canvas.restore(session.canvasLayout, session.tabs.map((tab) => tab.id), session.activeTabId);
       setSelectedNotebookName(session.selectedNotebookName);
       applyExpanded(new Set(session.expandedPaths));
       setQuery("");
@@ -730,7 +736,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     if (closingTabIds.has(activeTabId)) {
       const remainingTabs = tabs.filter((currentTab) => !closingTabIds.has(currentTab.id));
-      const nextActiveTab = remainingTabs.at(-1);
+      const splitNeighbourTabId = canvas.nextActiveTabAfterClosing(closingTabIds);
+      const nextActiveTab =
+        remainingTabs.find((currentTab) => currentTab.id === splitNeighbourTabId) ?? remainingTabs.at(-1);
       const activeClosingTab = closingTabs.find((tab) => tab.id === activeTabId);
       const fallbackTab = activeClosingTab ?? closingTabs.at(-1);
 
@@ -742,7 +750,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         setSelectedNotebookName(fallbackTab.file.notebook);
       }
     }
-  }, [activeTabId, tabs]);
+  }, [activeTabId, canvas, tabs]);
 
   const closeTabWithoutConfirm = useCallback((tabId: string) => {
     closeTabsWithoutConfirm([tabId]);
@@ -807,12 +815,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function setActiveDraft(value: string) {
-    if (!activeTab) {
-      return;
+    if (activeTab) {
+      setTabDraft(activeTab.id, value);
     }
+  }
 
-    rememberTabDraft(activeTab.id, value);
-    updateTab(activeTab.id, (tab) => ({
+  // Split panes edit their own tab; targeting it by id keeps a background pane
+  // from ever writing into whichever tab happens to be active.
+  function setTabDraft(tabId: string, value: string) {
+    rememberTabDraft(tabId, value);
+    updateTab(tabId, (tab) => ({
       ...tab,
       draft: value,
       status: value === tab.saved ? "clean" : "dirty",
@@ -1455,7 +1467,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     try {
       const payload = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
         method: "POST",
-        body: JSON.stringify({ text: selectedText, prompt }),
+        body: JSON.stringify({
+          text: selectedText,
+          prompt,
+          ...(readIncludeDocumentContext()
+            ? { before: draft.slice(0, selection.start), after: draft.slice(selection.end) }
+            : {}),
+        }),
       });
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
@@ -1480,6 +1498,53 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI rewrite failed.",
+      }));
+    } finally {
+      setAiFormatting(false);
+    }
+  }
+
+  async function writeWithAiAt(offset: number, prompt: string) {
+    if (!activeTab || activeTab.file.fileType !== "markdown" || !prompt.trim()) {
+      return;
+    }
+
+    const tabId = activeTab.id;
+    const draft = getTabDraft(activeTab);
+    const position = findMarkdownBlockInsertionOffset(draft, offset);
+    const scrollState = getMarkdownTextareaScrollState();
+
+    setAiFormatting(true);
+    updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
+
+    try {
+      const payload = await apiRequest<{ markdown: string }>("/api/ai-write", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          ...(readIncludeDocumentContext() ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+        }),
+      });
+      const insertion = insertMarkdownBlock(draft, position, payload.markdown);
+
+      rememberTabDraft(tabId, insertion.value);
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        draft: insertion.value,
+        status: insertion.value === tab.saved ? "clean" : "dirty",
+        error: undefined,
+      }));
+
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: insertion.start,
+        selectionEnd: insertion.end,
+      });
+    } catch (error) {
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        status: "error",
+        error: error instanceof Error ? error.message : "Write with AI failed.",
       }));
     } finally {
       setAiFormatting(false);
@@ -2970,6 +3035,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       convertImageToMarkdownWithAi,
       formatSelectionWithAi,
       rewriteSelectionWithAi,
+      writeWithAiAt,
       refreshTree,
       handleLogin,
       handleLogout,
@@ -2996,6 +3062,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectSearchResult,
       selectNotebook,
       setActiveDraft,
+      setTabDraft,
+      canvas,
       registerEditorDraft,
       getReviewDraft,
       recoverReviewDraft,

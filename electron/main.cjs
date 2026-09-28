@@ -1610,6 +1610,17 @@ async function createMainWindow(url) {
     },
   });
 
+  // Electron disables native visual pinch by default. Let Chromium magnify the
+  // existing surface without PDF.js rendering or cancellable wheel listeners.
+  const enableNativePinch = (contents) => {
+    contents.on("did-finish-load", () => {
+      void contents.setVisualZoomLevelLimits(1, 4).catch((error) => {
+        console.error("Could not enable native pinch zoom", error);
+      });
+    });
+  };
+  enableNativePinch(mainWindow.webContents);
+
   mainWindow.setMenuBarVisibility(!isWindowsGlass);
   if (isWindowsGlass) {
     maintainWindowsBackdrop(mainWindow, nativeTheme);
@@ -1634,13 +1645,19 @@ async function createMainWindow(url) {
     event.preventDefault();
     dispatchRendererTabShortcut(mainWindow.webContents, Boolean(input.shift));
   });
+  // Same-origin pages the renderer may open as child windows: duplicated
+  // Markdown previews and duplicated PDF/image tabs.
+  const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]]]);
+  const childWindowSize = (targetUrl) =>
+    isSameOrigin(targetUrl, url) ? childWindowSizes.get(new URL(targetUrl).pathname) : undefined;
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (isSameOrigin(targetUrl, url) && new URL(targetUrl).pathname === "/markdown-preview") {
+    const size = childWindowSize(targetUrl);
+    if (size) {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
-          width: 900,
-          height: 800,
+          width: size[0],
+          height: size[1],
           minWidth: 360,
           minHeight: 300,
           frame: true,
@@ -1658,6 +1675,7 @@ async function createMainWindow(url) {
     return { action: "deny" };
   });
   mainWindow.webContents.on("did-create-window", (child) => {
+    enableNativePinch(child.webContents);
     child.setMenuBarVisibility(false);
     child.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
       if (isExternalBrowserUrl(targetUrl) && !isSameOrigin(targetUrl, url)) {
@@ -1666,7 +1684,7 @@ async function createMainWindow(url) {
       return { action: "deny" };
     });
     child.webContents.on("will-navigate", (event, targetUrl) => {
-      if (isSameOrigin(targetUrl, url) && new URL(targetUrl).pathname === "/markdown-preview") return;
+      if (childWindowSize(targetUrl)) return;
       event.preventDefault();
       if (isExternalBrowserUrl(targetUrl) && !isSameOrigin(targetUrl, url)) {
         void shell.openExternal(targetUrl);

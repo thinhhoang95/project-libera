@@ -1,5 +1,6 @@
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import type { OpenTab } from "@/components/libera/types";
+import { mapCanvasLayoutTabIds, type CanvasLayout } from "@/lib/canvas-layout";
 import type { LiberaNotebookGroup, LiberaNotebookViewOptions, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 export type WorkspaceScope = { mode: "all" | "include" | "exclude"; paths: string[]; includedPaths?: string[] };
@@ -59,6 +60,8 @@ export type WorkspaceSession = {
   activeTabId: string;
   selectedNotebookName: string;
   expandedPaths: string[];
+  // Split panes of the document canvas. Optional: older snapshots open as a single pane.
+  canvasLayout?: CanvasLayout;
 };
 export type SavedWorkspace = {
   id: string;
@@ -185,6 +188,7 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
   const session = (value: WorkspaceSession): WorkspaceSession => ({
     ...value, activeTabId: remap(value.activeTabId), selectedNotebookName: remap(value.selectedNotebookName),
     expandedPaths: value.expandedPaths.map(remap),
+    ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remap) } : {}),
     tabs: value.tabs.map((tab) => {
       const path = remap(tab.file.path);
       return path === tab.file.path ? tab : { ...tab, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };

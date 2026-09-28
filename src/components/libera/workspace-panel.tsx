@@ -16,7 +16,9 @@ import type {
   UIEvent as ReactUIEvent,
 } from "react";
 import {
+  memo,
   startTransition,
+  useLayoutEffect,
   useCallback,
   useEffect,
   useMemo,
@@ -27,6 +29,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
+import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
@@ -82,6 +85,9 @@ import {
 import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
+  // False for background panes of a split canvas: they render their tab but
+  // leave window shortcuts and the shared textarea ref to the focused pane.
+  focused?: boolean;
   markdownEditorMode: MarkdownEditorMode;
   activePreviewTabId: string | null;
   onActivePreviewTabIdChange: Dispatch<SetStateAction<string | null>>;
@@ -109,6 +115,7 @@ type WorkspacePanelProps = {
     selection: { start: number; end: number },
     prompt: string,
   ) => Promise<void>;
+  onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
@@ -481,7 +488,69 @@ function useDebouncedPreviewContent(content: string, resetKey: string | undefine
   return preview.content;
 }
 
-export function WorkspacePanel({
+const PANEL_CALLBACKS = [
+  "onActivePreviewTabIdChange",
+  "onAiFormatSelection",
+  "onAiImageToMarkdown",
+  "onAiRewriteSelection",
+  "onAiWriteAt",
+  "onCreateMarkdown",
+  "onCreateSlides",
+  "onCreateNotebook",
+  "onCancelScreenshotSnip",
+  "onCompleteScreenshotSnip",
+  "onInsertExistingImage",
+  "onInsertFileLink",
+  "onInsertFileLinkPlaceholder",
+  "onInsertImage",
+  "onInsertMarkdown",
+  "onOpenFile",
+  "onSave",
+  "onSetDraft",
+  "onRegisterEditorDraft",
+  "onSetViewState",
+  "onOpenMarkdownFileLink",
+  "onStartScreenshotSnip",
+] as const;
+
+type PanelContentProps = Omit<WorkspacePanelProps, "tabs"> & { readOpenTabs: () => OpenTab[] };
+
+export function WorkspacePanel(props: WorkspacePanelProps) {
+  // Keep callbacks and cleanup scoped to their document when a pane changes tabs.
+  return <WorkspacePanelScope key={props.activeTab?.id ?? "empty"} {...props} />;
+}
+
+function WorkspacePanelScope(props: WorkspacePanelProps) {
+  const paneTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const { tabs, ...contentProps } = props;
+  const scope = useRef(props);
+  useLayoutEffect(() => { scope.current = { ...contentProps, tabs }; });
+  const callbacks = useMemo(() => Object.fromEntries(PANEL_CALLBACKS.map((key) => [
+    key,
+    (...args: never[]) => {
+      const callback = scope.current[key] as ((...args: never[]) => unknown) | undefined;
+      return callback?.(...args);
+    },
+  ])) as Pick<WorkspacePanelProps, typeof PANEL_CALLBACKS[number]>, [scope]);
+  const readOpenTabs = useCallback(() => scope.current.tabs, [scope]);
+
+  // Only data for this document crosses the memo boundary. Link suggestions
+  // read the latest open-tab positions when invoked, without subscribing the
+  // whole editor to every other tab's scrolling and draft publications.
+  return (
+    <MemoizedWorkspacePanelContent
+      {...contentProps}
+      {...callbacks}
+      readOpenTabs={readOpenTabs}
+      textareaRef={props.focused === false ? paneTextareaRef : props.textareaRef}
+    />
+  );
+}
+
+const MemoizedWorkspacePanelContent = memo(WorkspacePanelContent);
+
+function WorkspacePanelContent({
+  focused = true,
   markdownEditorMode,
   activePreviewTabId,
   onActivePreviewTabIdChange: setActivePreviewTabId,
@@ -496,11 +565,12 @@ export function WorkspacePanel({
   recentFiles,
   screenshotSnipSession,
   selectedNotebook,
-  tabs,
+  readOpenTabs,
   textareaRef,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onAiRewriteSelection,
+  onAiWriteAt,
   onCreateMarkdown,
   onCreateSlides,
   onCreateNotebook,
@@ -517,7 +587,7 @@ export function WorkspacePanel({
   onSetViewState,
   onOpenMarkdownFileLink,
   onStartScreenshotSnip,
-}: WorkspacePanelProps) {
+}: PanelContentProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
@@ -1020,7 +1090,7 @@ export function WorkspacePanel({
   ]);
 
   useEffect(() => {
-    if (!previewFullscreen) {
+    if (!previewFullscreen || !focused) {
       return;
     }
 
@@ -1042,7 +1112,7 @@ export function WorkspacePanel({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [previewFullscreen, setActivePreviewTabId, textareaRef]);
+  }, [focused, previewFullscreen, setActivePreviewTabId, textareaRef]);
 
   useEffect(() => {
     if (activeFileType !== "markdown" || !activeTabId) {
@@ -1050,7 +1120,7 @@ export function WorkspacePanel({
     }
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
+      if (!focused || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
         return;
       }
 
@@ -1068,7 +1138,7 @@ export function WorkspacePanel({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeFileType, activeTabId, activeTabStatus, onSave]);
+  }, [activeFileType, activeTabId, activeTabStatus, focused, onSave]);
 
   function saveMarkdownSplitPercent(value: number) {
     const clampedValue = clampMarkdownSplitPercent(value);
@@ -1469,7 +1539,7 @@ export function WorkspacePanel({
                 files={files}
                 formatting={aiFormatting}
                 imageConverting={imageMarkdownConverting}
-                openTabs={tabs}
+                readOpenTabs={readOpenTabs}
                 recentFiles={recentFiles}
                 fontFamily={markdownEditorFontFamily}
                 fontSizePx={markdownFontSizePx}
@@ -1480,6 +1550,7 @@ export function WorkspacePanel({
                 onAiFormatSelection={onAiFormatSelection}
                 onAiImageToMarkdown={onAiImageToMarkdown}
                 onAiRewriteSelection={onAiRewriteSelection}
+                onAiWriteAt={onAiWriteAt}
                 onChange={handleMarkdownDraftChange}
                 onRegisterDraft={registerMarkdownDraft}
                 onInsertFileLink={onInsertFileLink}
@@ -1588,28 +1659,32 @@ export function WorkspacePanel({
           </>}
         </>
       ) : activeTab.file.fileType === "image" ? (
-        <ImageViewer
-          key={activeTab.id}
-          src={activeTab.rawUrl}
-          alt={activeTab.file.name}
-          filePath={activeTab.file.path}
-          initialViewState={activeImageViewState}
-          screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
-          onViewStateChange={updateImageViewState}
-          onCancelScreenshotSnip={onCancelScreenshotSnip}
-          onCompleteScreenshotSnip={onCompleteScreenshotSnip}
-        />
+        <NoteMathMarkersProvider value={markdownPreferences}>
+          <ImageViewer
+            key={activeTab.id}
+            src={activeTab.rawUrl}
+            alt={activeTab.file.name}
+            filePath={activeTab.file.path}
+            initialViewState={activeImageViewState}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            onViewStateChange={updateImageViewState}
+            onCancelScreenshotSnip={onCancelScreenshotSnip}
+            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+          />
+        </NoteMathMarkersProvider>
       ) : activeTab.file.fileType === "pdf" ? (
-        <PdfViewer
-          key={activeTab.id}
-          src={activeTab.rawUrl}
-          filePath={activeTab.file.path}
-          initialViewState={activePdfViewState}
-          screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
-          onViewStateChange={updatePdfViewState}
-          onCancelScreenshotSnip={onCancelScreenshotSnip}
-          onCompleteScreenshotSnip={onCompleteScreenshotSnip}
-        />
+        <NoteMathMarkersProvider value={markdownPreferences}>
+          <PdfViewer
+            key={activeTab.id}
+            src={activeTab.rawUrl}
+            filePath={activeTab.file.path}
+            initialViewState={activePdfViewState}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            onViewStateChange={updatePdfViewState}
+            onCancelScreenshotSnip={onCancelScreenshotSnip}
+            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+          />
+        </NoteMathMarkersProvider>
       ) : (
         <iframe
           className="min-h-0 flex-1 bg-card"

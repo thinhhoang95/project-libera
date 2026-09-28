@@ -2,7 +2,8 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { closeHistory } from "@tiptap/pm/history";
-import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewKey } from "@/lib/tiptap-review";
+import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
+import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
@@ -89,9 +90,17 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     if (!editor || editor.isDestroyed) return;
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => ({ ...t.anchor, kind: "comment" })) ?? []),
-      ...(r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits.map((e) => ({ ...e, kind: "suggestion" }))) ?? []),
       ...(r.selection ? [{ ...r.selection.range, kind: "selection" }] : []),
     ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, lastValue.current, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
-    editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges));
+    // Pending agentic-review proposals are previewed inline as changes; their
+    // decisions still go through the review so its undo/CAS state stays exact.
+    const suggestions = r?.doc?.session?.suggestions ?? [];
+    const changes = tiptapReviewChanges(editor, lastValue.current, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
+    const decide: ChangeDecider = (ids, decision) => {
+      const review = latest.current;
+      if (!review || review.busy || (decision === "accept" && review.recovery)) return;
+      void review.action("decision", { ids, decision });
+    };
+    editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges).setMeta(tiptapChangesKey, { type: "preview", changes, decide } satisfies TiptapChangesMeta));
   }, [editor, r?.doc, r?.enabled, r?.selection, lastValue]);
 }

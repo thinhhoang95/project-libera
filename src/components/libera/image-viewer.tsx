@@ -27,6 +27,8 @@ import {
 } from "@/components/libera/text-annotation-layer";
 import { TextAnnotationStyleControls } from "@/components/libera/annotation-style-controls";
 import type { ImageTabViewState } from "@/components/libera/types";
+import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
+import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   DEFAULT_PDF_TEXT_COLOR,
   DEFAULT_PDF_TEXT_FONT,
@@ -76,6 +78,7 @@ export function ImageViewer({
   onCompleteScreenshotSnip,
   onViewStateChange,
 }: ImageViewerProps) {
+  const paneFocused = useCanvasPaneFocused();
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,11 +187,24 @@ export function ImageViewer({
     };
   }, [src]);
 
+  // Another window showing this image saved annotations: adopt them unless this
+  // window has its own edit in flight, which will be saved over them anyway.
+  const localSavePendingRef = useRef(false);
+  useAnnotationSync<PdfTextAnnotation>("image", filePath, (remoteAnnotations) => {
+    if (localSavePendingRef.current) {
+      return;
+    }
+
+    latestAnnotationsRef.current = remoteAnnotations;
+    setAnnotations(remoteAnnotations);
+  });
+
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfTextAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       setSaveStatus("saving");
+      localSavePendingRef.current = true;
 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -203,11 +219,14 @@ export function ImageViewer({
           }),
         })
           .then((payload) => {
+            localSavePendingRef.current = false;
             latestAnnotationsRef.current = payload.annotations;
             setAnnotations(payload.annotations);
             setSaveStatus("saved");
+            broadcastSavedAnnotations("image", filePath, payload.annotations);
           })
           .catch((saveError) => {
+            localSavePendingRef.current = false;
             setSaveStatus("error");
             setError(
               saveError instanceof Error
@@ -397,6 +416,7 @@ export function ImageViewer({
 
       if (
         !selectedAnnotationId ||
+        !paneFocused ||
         event.defaultPrevented ||
         (activeElement instanceof HTMLElement &&
           (activeElement.isContentEditable || activeElement.matches("input, textarea, select")))
@@ -421,7 +441,7 @@ export function ImageViewer({
 
     window.addEventListener("keydown", handleDeleteKey);
     return () => window.removeEventListener("keydown", handleDeleteKey);
-  }, [deleteSelectedAnnotation, selectedAnnotationId, updateViewState]);
+  }, [deleteSelectedAnnotation, paneFocused, selectedAnnotationId, updateViewState]);
 
   async function captureScreenshotSnip(rect: PdfAnnotationRect) {
     const image = imageRef.current;

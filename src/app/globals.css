@@ -822,6 +822,19 @@ button.border[class*="border-white"]:hover {
   }
 }
 
+/* PDF.js appends font-measurement canvases to document.body, outside the
+   viewer. Keep its helper canvases out of the body's flex layout: another
+   PDF/language can create a nonzero, opaque canvas that covers the workspace.
+   This is the helper rule from pdfjs-dist/web/pdf_viewer.css. */
+.hiddenCanvasElement {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 .pdf-text-layer {
   color: transparent;
   inset: 0;
@@ -1071,6 +1084,11 @@ button.border[class*="border-white"]:hover {
 .pdf-note-content table { border-collapse: collapse; margin: 0.3em 0; }
 .pdf-note-content th,
 .pdf-note-content td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 0.1em 0.35em; }
+/* Equations take the note's ink and size; wide display math scrolls instead of spilling out. */
+.pdf-note-content [data-type="block-math"] { margin: 0.2em 0; overflow-x: auto; overflow-y: hidden; }
+.pdf-note-content .katex-display { margin: 0; }
+.pdf-note-editor .tiptap-mathematics-render { border-radius: 2px; cursor: pointer; }
+.pdf-note-editor .tiptap-mathematics-render:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
 
 .pdf-note-grip {
   align-items: center;
@@ -1335,6 +1353,26 @@ button.border[class*="border-white"]:hover {
 .review-diff-label { display: block; padding: .2rem .5rem 0; font-size: .65rem; font-weight: 600; opacity: .7; }
 .review-source-highlight, .review-visual-highlight { background: color-mix(in srgb, #fbbf24 24%, transparent); box-shadow: inset 0 -2px color-mix(in srgb, #f59e0b 70%, transparent); }
 .review-suggestion.review-visual-highlight { margin: 0; padding: 0; border: 0; border-radius: 0; background: color-mix(in srgb, #38bdf8 20%, transparent); }
+/* Proposed AI changes, shown inline (green = proposed, red = original). */
+.libera-tiptap { --change-add: light-dark(#16a34a, #4ade80); --change-del: light-dark(#dc2626, #f87171); }
+.libera-change-inserted { background: color-mix(in srgb, var(--change-add) 20%, transparent); border-radius: 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.libera-change-deleted { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: color-mix(in srgb, currentColor 70%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 75%, transparent); border-radius: 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+/* Offset shadows draw a tinted gutter and bar left of the block without shifting its layout. */
+.libera-change-inserted-block { background: color-mix(in srgb, var(--change-add) 11%, transparent); box-shadow: -6px 0 0 color-mix(in srgb, var(--change-add) 11%, transparent), -9px 0 0 var(--change-add); }
+.libera-change-deleted-block { background: color-mix(in srgb, var(--change-del) 9%, transparent); box-shadow: -6px 0 0 color-mix(in srgb, var(--change-del) 9%, transparent), -9px 0 0 var(--change-del); color: color-mix(in srgb, currentColor 70%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 75%, transparent); }
+.libera-change-widget { cursor: default; user-select: none; }
+.libera-change-actions { display: inline-flex; align-items: center; gap: 1px; margin-inline: .3em; padding: 1px; vertical-align: text-bottom; border: 1px solid var(--border); border-radius: 6px; background: var(--card); box-shadow: 0 1px 2px rgb(0 0 0 / .08); color: var(--muted-foreground); font: 500 11px/1 system-ui, sans-serif; text-decoration: none; text-indent: 0; user-select: none; white-space: nowrap; }
+.libera-change-actions-block { display: flex; width: fit-content; margin: .25rem 0 .75rem auto; }
+.libera-change-actions-label { padding-inline: 6px 4px; }
+.libera-change-actions button { display: inline-flex; align-items: center; gap: 3px; min-width: 20px; height: 20px; justify-content: center; padding: 0 4px; border-radius: 4px; color: inherit; cursor: pointer; }
+.libera-change-actions button[data-decision="accept"] { color: var(--change-add); }
+.libera-change-actions button[data-decision="accept"]:hover { background: color-mix(in srgb, var(--change-add) 16%, transparent); }
+.libera-change-actions button[data-decision="reject"]:hover { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: var(--change-del); }
+.libera-change-actions button:focus-visible, .libera-change-bar button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.libera-change-bar-reject { color: var(--muted-foreground); }
+.libera-change-bar-reject:hover { background: color-mix(in srgb, light-dark(#dc2626, #f87171) 12%, transparent); color: light-dark(#dc2626, #f87171); }
+.libera-change-bar-accept { background: light-dark(#15803d, #22c55e); color: light-dark(#ffffff, #052e16); }
+.libera-change-bar-accept:hover { background: light-dark(#166534, #4ade80); }
 
 /* Brighter notebook navigation. The native material still shows through the
    translucent sheen; dropdowns retain their solid card surface. */

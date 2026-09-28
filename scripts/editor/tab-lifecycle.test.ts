@@ -68,16 +68,18 @@ test("repeated Source/Visual tab switches release workers, editors, draft reader
     files: [], aiFormatting: false, canStartScreenshotSnip: false, firstNotebook: "", imageMarkdownConverting: false,
     yourName: "", markdownPreferences: normalizeMarkdownPreferences({}), recentFiles: [], screenshotSnipSession: null,
     tabs: [], textareaRef: { current: null }, onAiFormatSelection: asyncNoOp, onAiImageToMarkdown: asyncNoOp,
-    onAiRewriteSelection: asyncNoOp, onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp,
+    onAiRewriteSelection: asyncNoOp, onAiWriteAt: asyncNoOp, onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp,
     onCancelScreenshotSnip: noOp, onCompleteScreenshotSnip: asyncNoOp, onInsertExistingImage: asyncNoOp,
     onInsertFileLink: noOp, onInsertFileLinkPlaceholder: noOp, onInsertImage: asyncNoOp, onInsertMarkdown: noOp,
     onOpenFile: asyncNoOp, onSave: asyncNoOp, onSetDraft: noOp, onSetViewState: noOp,
     onOpenMarkdownFileLink: async () => false, onStartScreenshotSnip: noOp,
     onRegisterEditorDraft: (id, read) => { readers.set(id, read); return () => { if (readers.get(id) === read) readers.delete(id); }; },
   };
+  const published: { id: string | undefined; value: string }[] = [];
   async function render(activeTab?: OpenTab, mode: "source" | "visual" = "source") {
     await act(async () => root.render(createElement(StrictMode, null, createElement(WorkspacePanel, {
       ...props, activeTab, tabs: activeTab ? [activeTab] : [], markdownEditorMode: mode,
+      onSetDraft: (value) => published.push({ id: activeTab?.id, value }),
     }))));
   }
   function startDrag() {
@@ -109,6 +111,8 @@ test("repeated Source/Visual tab switches release workers, editors, draft reader
       await render(first);
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
       assert.equal(editor.isDestroyed, true);
+      assert.equal(published.at(-1)?.id, second.id, "Unmount flush belongs to the previous document");
+      assert.match(published.at(-1)?.value ?? "", /pending/);
       assert.equal(workers.filter(worker => !worker.terminated).length, 1);
       await act(async () => startDrag());
       await render();

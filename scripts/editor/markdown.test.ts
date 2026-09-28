@@ -458,7 +458,7 @@ test("source editor Shift+Tab removes top-level markers in separate native undo 
         activeFilePath: "Notebook/headings.md", files: [], formatting: false, fontFamily: "monospace",
         fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
         textareaRef, value: "# Title\n\n## Child",
-        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
         onChange: () => {}, onInsertFileLink: () => {}, onInsertImageFile: async () => {},
       }));
     });
@@ -810,7 +810,7 @@ test("source find replaces wildcard matches without affecting unmatched Markdown
         activeFilePath: "Notebook/source.md", files: [], formatting: false, fontFamily: "monospace",
         fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
         textareaRef, value: "item-01; item-aa; item-123;",
-        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
         onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
       }));
     });
@@ -1052,7 +1052,7 @@ test("source editor converts rich HTML paste to Markdown and replaces the select
         activeFilePath: "Notebook/source-paste.md", files: [], formatting: false, fontFamily: "monospace",
         fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
         textareaRef, value: "Before selected after",
-        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
         onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
       }));
     });
@@ -1070,6 +1070,8 @@ test("source editor converts rich HTML paste to Markdown and replaces the select
     assert.equal(event.defaultPrevented, true);
     assert.equal(textarea.value, "Before ## Heading\n\n**Bold** and *italic* after");
     assert.equal(changes.at(-1), textarea.value);
+    // Paste restores its caret after React has published the new draft.
+    await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
     assert.equal(textarea.selectionStart, "Before ## Heading\n\n**Bold** and *italic*".length);
     assert.equal(textarea.selectionEnd, textarea.selectionStart);
   } finally {

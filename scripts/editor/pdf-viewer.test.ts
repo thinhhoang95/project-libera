@@ -134,11 +134,82 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       await unmount();
       assert.equal(destroys, 1);
     });
+    await t.test("native scrolling and pinch never restart PDF rendering or install blocking gesture listeners", async () => {
+      normalLoad();
+      const added: { target: EventTarget; type: string; options: unknown }[] = [];
+      const add = dom.window.EventTarget.prototype.addEventListener;
+      dom.window.EventTarget.prototype.addEventListener = function (type, listener, options) {
+        added.push({ target: this, type, options });
+        return add.call(this, type, listener, options);
+      };
+      try {
+        await mount();
+      } finally {
+        dom.window.EventTarget.prototype.addEventListener = add;
+      }
+      const scroller = host.querySelector<HTMLElement>(".libera-pdf-viewer .overflow-auto")!;
+      assert.ok(!scroller.style.touchAction || scroller.style.touchAction.includes("pinch-zoom"));
+      assert.equal(added.filter(({ target, type }) => target === scroller && ["wheel", "touchmove"].includes(type)).length, 0);
+      const before = { renders: renders.length, observers: observers.length, changes: changes.length };
+      for (let frame = 0; frame < 10; frame++) {
+        await act(async () => {
+          for (const ctrlKey of [false, true]) {
+            const wheel = new dom.window.WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey, deltaY: -20 });
+            scroller.dispatchEvent(wheel);
+            assert.equal(wheel.defaultPrevented, false);
+          }
+          const touch = new dom.window.Event("touchmove", { bubbles: true, cancelable: true });
+          Object.defineProperty(touch, "touches", { value: [{ clientX: 100, clientY: 200 }, { clientX: 250, clientY: 200 }] });
+          scroller.dispatchEvent(touch);
+          assert.equal(touch.defaultPrevented, false);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+      }
+      assert.equal(renders.length, before.renders);
+      assert.equal(observers.length, before.observers);
+      assert.equal(changes.length, before.changes);
+      assert.ok(host.textContent?.includes("100%"));
+      await unmount();
+    });
+    await t.test("toolbar page indicator follows the visible PDF page", async () => {
+      normalLoad();
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      const scroller = host.querySelector<HTMLElement>(".libera-pdf-viewer .overflow-auto")!;
+      const pageIndicator = () => Array.from(host.querySelectorAll("span"))
+        .find((element) => /^Page \d+\/5$/.test(element.textContent ?? ""))?.textContent;
+      assert.equal(pageIndicator(), "Page 1/5");
+      scroller.getBoundingClientRect = () => ({ top: 0, height: 600 } as DOMRect);
+      for (const page of host.querySelectorAll<HTMLElement>("[data-pdf-page-number]")) {
+        const pageNumber = Number(page.dataset.pdfPageNumber);
+        page.getBoundingClientRect = () => {
+          const top = 100 + (pageNumber - 1) * 812 - scroller.scrollTop;
+          return { top, bottom: top + 792 } as DOMRect;
+        };
+      }
+      await act(async () => {
+        scroller.scrollTop = 820;
+        scroller.dispatchEvent(new dom.window.Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 175));
+      });
+      assert.equal(pageIndicator(), "Page 2/5");
+      await act(async () => {
+        scroller.scrollTop = 2470;
+        scroller.dispatchEvent(new dom.window.Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 175));
+      });
+      assert.equal(pageIndicator(), "Page 4/5");
+      await unmount();
+    });
     await t.test("scroll bursts coalesce and the final position flushes on unmount", async () => {
       normalLoad();
       await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
       changes.length = 0;
       const scroller = host.querySelector(".overflow-auto")!;
+      let geometryReads = 0;
+      const measure = scroller.getBoundingClientRect.bind(scroller);
+      scroller.getBoundingClientRect = () => { geometryReads++; return measure(); };
       await act(async () => {
         for (let i = 1; i <= 100; i++) {
           scroller.scrollTop = i;
@@ -146,7 +217,9 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
         }
       });
       assert.equal(changes.length, 0);
+      assert.equal(geometryReads, 0, "Scroll handlers must not synchronously measure pages");
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+      assert.ok(geometryReads <= 2, "Page indicator geometry is coalesced with scroll persistence");
       assert.deepEqual(changes, [{ scrollTop: 100, scrollLeft: 0 }]);
       await act(async () => { scroller.scrollTop = 123; scroller.dispatchEvent(new dom.window.Event("scroll")); });
       await unmount();

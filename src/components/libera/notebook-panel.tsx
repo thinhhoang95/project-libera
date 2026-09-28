@@ -617,7 +617,7 @@ export function NotebookPanel({
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
-            ...(target.file.fileType === "markdown" ? [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }] : []),
+            { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
             { type: "separator" },
             {
               id: "copy-relative-path",

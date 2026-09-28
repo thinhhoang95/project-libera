@@ -71,7 +71,10 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
   const register = (reader: () => string) => { read = reader; return () => {}; };
   let published = source, changes = 0, commits = 0, saved = "";
   let setExternal!: (value: string) => void;
+  let rerender!: () => void;
   function Harness() {
+    const [, setEpoch] = useState(0);
+    rerender = () => setEpoch((epoch) => epoch + 1);
     const [value, setValue] = useState(source);
     setExternal = setValue;
     return createElement(TiptapMarkdownEditor, {
@@ -90,6 +93,10 @@ test("rapid typing avoids serialization and React commits; snapshots, external e
     // Let the status bar's independent 750 ms word-count timer finish before
     // measuring commits caused by typing (especially on large documents).
     await settle(850);
+    const scroller = document.querySelector<HTMLElement>(".libera-visual-page")!;
+    scroller.scrollTop = 850;
+    await act(async () => rerender());
+    assert.equal(scroller.scrollTop, 850, "New callbacks from pane focus changes must not restore mount-time scrolling");
     let serializations = 0, serializationMs = 0;
     const original = editor.getMarkdown.bind(editor);
     editor.getMarkdown = () => { serializations++; const started = performance.now(); const markdown = original(); serializationMs += performance.now() - started; return markdown; };

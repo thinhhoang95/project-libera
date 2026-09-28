@@ -1,6 +1,8 @@
 "use client";
 
 import { TiptapReview } from "@/lib/tiptap-review";
+import { TiptapChanges } from "@/lib/tiptap-changes";
+import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
@@ -104,6 +106,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
   const visualScrollFrameRef = useRef<number | null>(null);
   const headingIndexRef = useRef<{ markdown: string; offsets: number[] } | null>(null);
   const initialViewStateRef = useRef(initialViewState);
+  const onViewStateChangeRef = useRef(onViewStateChange);
+  useLayoutEffect(() => { onViewStateChangeRef.current = onViewStateChange; }, [onViewStateChange]);
   const lastValue = useRef(value);
   const visualPositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastReportedLineRef = useRef<number | null>(null);
@@ -129,6 +133,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
     HighlightTool,
     TiptapFind,
     TiptapReview,
+    TiptapChanges.configure({ documentPath }),
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -285,17 +290,17 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
           headingIndexRef.current?.markdown === markdown ? headingIndexRef.current.offsets : null,
         );
         lastReportedLineRef.current = viewState.line ?? null;
-        onViewStateChange?.(viewState);
+        onViewStateChangeRef.current?.(viewState);
       }
     });
     visualScrollFrameRef.current = frame;
     return () => {
       // A tab/mode switch can unmount before the next scroll frame runs.
-      onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+      onViewStateChangeRef.current?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
       window.cancelAnimationFrame(frame);
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
     };
-  }, [editor, onViewStateChange]);
+  }, [editor]);
 
   useEffect(() => {
     const pending = uploads.current;
@@ -674,6 +679,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
             </div>
           </div>
         ) : null}
+        <TiptapChangeBar editor={editor} />
       </div>
       <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>

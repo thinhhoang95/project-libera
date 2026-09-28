@@ -5,8 +5,10 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import { PdfTextContentCache } from "./pdf-rendering";
 import { PdfSearchIndex, findPdfMatches, type PdfSearchPage } from "./pdf-find";
+import { useCanvasPaneFocused } from "./canvas-pane-context";
 
 export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextContentCache | null, viewerRef: RefObject<HTMLDivElement | null>) {
+  const paneFocused = useCanvasPaneFocused();
   const inputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -61,7 +63,7 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
     function handleKeyDown(event: KeyboardEvent) {
       const viewer = viewerRef.current;
       if (event.defaultPrevented || !viewer || !(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
-      if (event.target instanceof Node && !viewer.contains(event.target) && event.target !== document.body) return;
+      if (event.target instanceof Node && !viewer.contains(event.target) && (event.target !== document.body || !paneFocused)) return;
       event.preventDefault();
       openFind();
     }

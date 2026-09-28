@@ -1,5 +1,6 @@
 "use client";
 
+import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import {
   Copy,
   Highlighter,
@@ -34,6 +35,7 @@ import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
 import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
+import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
   pngFileFromBlob,
@@ -66,6 +68,7 @@ import {
   mergeHighlightRects,
   rangeTextClientRects,
 } from "@/lib/pdf-annotation-style";
+import { pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   PdfAnnotation,
   PdfAnnotationRect,
@@ -250,6 +253,7 @@ export function PdfViewer({
   onCompleteScreenshotSnip,
   onViewStateChange,
 }: PdfViewerProps) {
+  const paneFocused = useCanvasPaneFocused();
   const viewerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRestoreRef = useRef<PdfScrollPosition | null>({
@@ -283,6 +287,7 @@ export function PdfViewer({
     }
   }, [activeSearchMatch]);
   const [basePageLayouts, setBasePageLayouts] = useState<PdfPageLayout[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
   const [renderWindowPages, setRenderWindowPages] = useState<Set<number>>(new Set());
   const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
@@ -432,6 +437,37 @@ export function PdfViewer({
     pdfDocument,
   ]);
 
+  const updateCurrentPage = useCallback((scrollContainer: HTMLDivElement) => {
+    const viewport = scrollContainer.getBoundingClientRect();
+    const readingLine = viewport.top + Math.min(viewport.height / 3, 160);
+    const pages = pageElementRefs.current;
+    if (!pages.size) return;
+    let first = 1;
+    let last = pages.size;
+
+    while (first < last) {
+      const middle = Math.floor((first + last) / 2);
+      const page = pages.get(middle);
+      if (!page) return;
+      if (page.getBoundingClientRect().bottom < readingLine) {
+        first = middle + 1;
+      } else {
+        last = middle;
+      }
+    }
+
+    const page = pages.get(first);
+    if (!page) return;
+    const previousPage = pages.get(first - 1);
+    const pageTop = page.getBoundingClientRect().top;
+    if (previousPage && readingLine < pageTop &&
+      readingLine - previousPage.getBoundingClientRect().bottom < pageTop - readingLine) {
+      setCurrentPage(first - 1);
+    } else {
+      setCurrentPage(first);
+    }
+  }, []);
+
   const flushPendingScrollViewState = useCallback(() => {
     if (scrollViewStateTimeoutRef.current !== null) {
       window.clearTimeout(scrollViewStateTimeoutRef.current);
@@ -442,9 +478,11 @@ export function PdfViewer({
       return;
     }
 
+    const scroller = scrollContainerRef.current;
+    if (scroller) updateCurrentPage(scroller);
     updateViewState(pendingScrollViewStateRef.current);
     pendingScrollViewStateRef.current = null;
-  }, [updateViewState]);
+  }, [updateCurrentPage, updateViewState]);
 
   const handleScroll = useCallback(
     (event: ReactUIEvent<HTMLDivElement>) => {
@@ -479,6 +517,7 @@ export function PdfViewer({
     async function loadPdf() {
       setPdfDocument(null);
       setBasePageLayouts([]);
+      setCurrentPage(1);
       setRenderWindowPages(new Set());
       pageElementRefs.current.clear();
 
@@ -581,10 +620,11 @@ export function PdfViewer({
         maxScrollTop,
       );
       pendingScrollRestoreRef.current = null;
+      updateCurrentPage(scrollContainer);
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [loading, pageLayouts.length, pdfDocument]);
+  }, [loading, pageLayouts.length, pdfDocument, updateCurrentPage]);
 
   useEffect(() => flushPendingScrollViewState, [flushPendingScrollViewState]);
 
@@ -642,12 +682,26 @@ export function PdfViewer({
     return () => observer.disconnect();
   }, [filePath, pageLayouts.length, zoom]);
 
+  // Another window showing this PDF saved annotations: adopt them unless this
+  // window has its own edit in flight, which will be saved over them anyway.
+  const localSavePendingRef = useRef(false);
+  useAnnotationSync<PdfAnnotation>("pdf", filePath, (remoteAnnotations) => {
+    if (localSavePendingRef.current) {
+      return;
+    }
+
+    latestAnnotationsRef.current = remoteAnnotations;
+    setAnnotations(remoteAnnotations);
+    dispatchPdfAnnotationsUpdated({ path: filePath, annotations: remoteAnnotations });
+  });
+
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
       setSaveStatus("saving");
+      localSavePendingRef.current = true;
 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -662,6 +716,7 @@ export function PdfViewer({
           }),
         })
           .then((payload) => {
+            localSavePendingRef.current = false;
             latestAnnotationsRef.current = payload.annotations;
             setAnnotations(payload.annotations);
             dispatchPdfAnnotationsUpdated({
@@ -669,8 +724,10 @@ export function PdfViewer({
               annotations: payload.annotations,
             });
             setSaveStatus("saved");
+            broadcastSavedAnnotations("pdf", filePath, payload.annotations);
           })
           .catch((saveError) => {
+            localSavePendingRef.current = false;
             setSaveStatus("error");
             setError(
               saveError instanceof Error
@@ -683,16 +740,21 @@ export function PdfViewer({
     [filePath],
   );
 
-  function changeZoom(delta: number) {
-    const nextZoom = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM);
-
-    if (nextZoom === zoom) {
-      return;
-    }
-
+  function applyZoom(nextValue: number) {
+    const nextZoom = clamp(nextValue, MIN_ZOOM, MAX_ZOOM);
+    if (nextZoom === zoom) return;
     setZoom(nextZoom);
     updateViewState({ zoom: nextZoom });
   }
+
+  function changeZoom(delta: number) {
+    applyZoom(zoom + delta);
+  }
+
+  // Leave wheel and touch gestures to the browser. Intercepting trackpad pinch
+  // requires a blocking wheel listener, including on ordinary scroll events.
+  // The toolbar changes PDF resolution explicitly; native pinch only magnifies
+  // the existing surface and never restarts PDF.js for each gesture frame.
 
   const captureScreenshotSnip = useCallback(async (pageNumber: number, rect: PdfAnnotationRect) => {
     const completeScreenshotSnip = screenshotCallbacksRef.current.onCompleteScreenshotSnip;
@@ -866,12 +928,14 @@ export function PdfViewer({
         .filter((rect): rect is PdfAnnotationRect => Boolean(rect));
 
       if (rects.length) {
+        const textLayer = page.querySelector(".pdf-text-layer");
         created.push({
           id: createAnnotationId(),
           type: "highlight",
           pageNumber: Number(page.dataset.pdfPageContent),
           color,
           rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
+          quote: textLayer ? pdfHighlightQuote(range, textLayer) : undefined,
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -1001,6 +1065,7 @@ export function PdfViewer({
         event.defaultPrevented ||
         !viewer ||
         isEditableTarget(activeElement) ||
+        (activeElement === document.body && !paneFocused) ||
         (activeElement !== document.body && !viewer.contains(activeElement))
       ) {
         return;
@@ -1032,7 +1097,7 @@ export function PdfViewer({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeSelectedAnnotationId, clearSelection, deleteSelectedAnnotation, selectionMenu]);
+  }, [activeSelectedAnnotationId, clearSelection, deleteSelectedAnnotation, paneFocused, selectionMenu]);
 
   // The quick-highlight menu follows the live selection and disappears with it.
   useEffect(() => {
@@ -1243,6 +1308,11 @@ export function PdfViewer({
                   ? "Save failed"
                   : ""}
           </span>
+          {pageLayouts.length > 0 ? (
+            <span className="mr-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+              Page {Math.min(currentPage, pageLayouts.length)}/{pageLayouts.length}
+            </span>
+          ) : null}
           <button
             aria-label="Zoom out"
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
@@ -1271,8 +1341,7 @@ export function PdfViewer({
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             type="button"
             onClick={() => {
-              setZoom(1);
-              updateViewState({ zoom: 1 });
+              applyZoom(1);
             }}
             title="Reset zoom"
           >

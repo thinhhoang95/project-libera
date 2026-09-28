@@ -36,6 +36,7 @@ test("PDF outline search filters annotations and opens the first match", async (
   };
   const annotations = [
     { id: "first", type: "text", pageNumber: 2, text: "Methods", fontSize: 12, rect: { x: 0, y: 0, width: 1, height: 1 }, createdAt: "2026-09-28", updatedAt: "2026-09-28" },
+    { id: "highlight", type: "highlight", pageNumber: 3, quote: "Selected\npassage", color: "#fde047", rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }], createdAt: "2026-09-28", updatedAt: "2026-09-28" },
     { id: "second", type: "text", pageNumber: 4, text: "Results", fontSize: 12, rect: { x: 0, y: 0, width: 1, height: 1 }, createdAt: "2026-09-28", updatedAt: "2026-09-28" },
   ];
   globalThis.fetch = async () => Response.json({ annotations });
@@ -52,7 +53,7 @@ test("PDF outline search filters annotations and opens the first match", async (
 
   try {
     await act(async () => root.render(createElement(OutlinePanel, props)));
-    assert.deepEqual(labels(), ["Methods", "Results"]);
+    assert.deepEqual(labels(), ["Methods", "Selected passage", "Results"]);
     const input = host.querySelector<HTMLInputElement>('input[aria-label="Search PDF annotations"]')!;
     await act(async () => input.focus());
     await act(async () => {
@@ -74,7 +75,7 @@ test("PDF outline search filters annotations and opens the first match", async (
     });
     assert.match(host.textContent ?? "", /No matching annotations/);
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Clear annotation search"]')!.click());
-    assert.deepEqual(labels(), ["Methods", "Results"]);
+    assert.deepEqual(labels(), ["Methods", "Selected passage", "Results"]);
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = previousFetch;

@@ -177,3 +177,39 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel { text-shadow: none
 .libera-review-intro svg { flex-shrink: 0; color: #9681d7; }
 .libera-review-comment-picker { flex-shrink: 0; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--card) 75%, transparent); }
 .libera-chat-starters button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Split canvas: panes are absolutely positioned from the layout tree so they
+   keep their editors mounted while the layout changes around them. */
+.libera-canvas { background: var(--card); }
+.libera-canvas-pane { transition: left 170ms ease, top 170ms ease, width 170ms ease, height 170ms ease; }
+.libera-canvas[data-resizing="true"] .libera-canvas-pane { transition: none; pointer-events: none; user-select: none; }
+.libera-canvas-pane-header { background: linear-gradient(110deg, var(--card), var(--background)); color: var(--muted-foreground); cursor: grab; box-shadow: inset 0 2px 0 transparent; transition: color 140ms, box-shadow 140ms; }
+.libera-canvas-pane-header:active { cursor: grabbing; }
+.libera-canvas-pane[data-canvas-pane-focused="true"] > .libera-canvas-pane-header { color: var(--foreground); box-shadow: inset 0 2px 0 var(--accent); }
+.libera-canvas-pane-actions { opacity: .55; transition: opacity 140ms; }
+.libera-canvas-pane:hover .libera-canvas-pane-actions,
+.libera-canvas-pane[data-canvas-pane-focused="true"] .libera-canvas-pane-actions,
+.libera-canvas-pane-actions:focus-within { opacity: 1; }
+
+.libera-canvas-split-handle { outline: none; }
+.libera-canvas-split-handle[data-direction="row"] { width: 9px; transform: translateX(-50%); cursor: col-resize; }
+.libera-canvas-split-handle[data-direction="column"] { height: 9px; transform: translateY(-50%); cursor: row-resize; }
+.libera-canvas-split-handle::after { content: ""; position: absolute; background: var(--border); transition: background 140ms, box-shadow 140ms; }
+.libera-canvas-split-handle[data-direction="row"]::after { top: 0; bottom: 0; left: 4px; width: 1px; }
+.libera-canvas-split-handle[data-direction="column"]::after { left: 0; right: 0; top: 4px; height: 1px; }
+.libera-canvas-split-handle:hover::after,
+.libera-canvas-split-handle:focus-visible::after,
+.libera-canvas-split-handle[data-active="true"]::after { background: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.libera-canvas-drop-preview { position: absolute; inset: 6px; display: flex; align-items: center; justify-content: center; border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 12%, transparent); pointer-events: none; transition: inset 120ms ease; }
+.libera-canvas-drop-preview[data-zone="left"] { right: 50%; }
+.libera-canvas-drop-preview[data-zone="right"] { left: 50%; }
+.libera-canvas-drop-preview[data-zone="top"] { bottom: 50%; }
+.libera-canvas-drop-preview[data-zone="bottom"] { top: 50%; }
+.libera-canvas-drop-preview > span { border-radius: 999px; background: var(--card); color: var(--surface-ink); padding: 4px 12px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 14px #1b2a5020; }
+
+.libera-document-tab[data-canvas-visible="true"]:not([aria-current="page"]) { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .libera-canvas-pane, .libera-canvas-drop-preview { transition: none; }
+}

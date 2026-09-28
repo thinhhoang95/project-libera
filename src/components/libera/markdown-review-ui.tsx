@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useEffect, useRef, useState } from "react";
 import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save } from "lucide-react";
 import type { ReviewSuggestion } from "@/lib/markdown-review";
 import { reviewIntent } from "@/lib/markdown-review";
@@ -102,6 +102,7 @@ export function ReviewPopover() {
   </div>;
 }
 export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs: OpenTab[] }) {
+  const markdownFiles = useMemo(() => files.filter((file) => file.fileType === "markdown"), [files]);
   const r = useMarkdownReview()!;
   const [prompt, setPrompt] = useState("");
   const [references, setReferences] = useState<ChatContext[]>(r.doc?.session?.references ?? []);
@@ -193,7 +194,25 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       {doc && <div className="libera-chat-context flex items-center gap-2"><BookOpen aria-hidden size={13} className="shrink-0" /><p className="min-w-0 truncate" title={doc.key}>{doc.key.split("/").at(-1)} · Round {doc.round ?? 1}</p></div>}
       {references.map((ref) => <div key={ref.path} className="flex items-center gap-2 text-xs"><span className="min-w-0 flex-1 truncate" title={ref.path}>@{ref.name}</span><button type="button" className={button} aria-label={`Remove reference ${ref.name}`} onClick={() => setReferences(references.filter((r) => r.path !== ref.path))}>×</button></div>)}
       <div className="libera-chat-composer">
-      <ChatFileComposer placeholder={doc ? session ? "Ask a follow-up… Type @ to add files" : "What would you like to improve?" : "Open a Markdown document to begin"} chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={files} tabs={tabs} composerRef={input} onChange={setPrompt} onLoading={setAttachmentBusy} onError={setError} onSend={() => void send()} onAttach={(ref) => setReferences([...references.filter((r) => r.path !== ref.path), ref])} />
+      <ChatFileComposer placeholder={doc ? session ? "Ask a follow-up… Type @ to add files" : "What would you like to improve?" : "Open a Markdown document to begin"} chatId={`review-${doc?.id}-${doc?.round ?? 1}`} value={prompt} disabled={!doc || !!r.busy} files={markdownFiles} composerRef={input} onChange={setPrompt} onSend={() => void send()} onAttachFile={async (file) => {
+        setAttachmentBusy(true);
+        setError("");
+        try {
+          const tab = tabs.find((item) => !item.untitled && item.file.path === file.path);
+          const existing = references.find((ref) => ref.path === file.path);
+          const payload = existing || tab ? null : await apiRequest<{ content?: string }>(`/api/files?path=${encodeURIComponent(file.path)}`);
+          const text = existing?.text ?? tab?.draft ?? payload?.content;
+          if (typeof text !== "string") throw new Error(`Could not read ${file.name}.`);
+          if (text.length > 500_000) throw new Error(`${file.name} is too large to attach (maximum 500,000 characters).`);
+          setReferences((current) => [...current.filter((ref) => ref.path !== file.path), { kind: "document", path: file.path, name: file.name, text }]);
+          return true;
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "Could not attach file.");
+          return false;
+        } finally {
+          setAttachmentBusy(false);
+        }
+      }} />
       <div className="libera-chat-composer-actions flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">{session ? "Continue review" : "Plan review"}</span>
         <button type="submit" className="libera-chat-send inline-flex h-8 w-8 shrink-0 items-center justify-center disabled:opacity-40" aria-label={session ? "Send review request" : "Plan review"} title={session ? "Send review request" : "Plan review"} disabled={!doc || !!r.busy || attachmentBusy || (!prompt.trim() && !selectedIds.length)}><ArrowUp aria-hidden size={18} /></button>

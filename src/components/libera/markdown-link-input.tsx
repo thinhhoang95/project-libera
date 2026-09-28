@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState } from "react";
+import { findFileSuggestions, indexFileSuggestions } from "@/lib/file-suggestions";
 import type { LiberaFileNode } from "@/lib/types";
 import { createMarkdownFileLinkDestination } from "@/lib/markdown-file-links";
 
@@ -14,9 +15,9 @@ export function MarkdownLinkInput({ files, sourcePath, value, onChange }: {
   const [expanded, setExpanded] = useState(true);
   const [selected, setSelected] = useState(0);
   const query = value.trim().replace(/^@/, "").toLocaleLowerCase();
-  const matches = useMemo(() => files.filter((file) => file.fileType === "markdown" &&
-    `${file.name}\n${file.path}`.toLocaleLowerCase().includes(query))
-    .sort((a, b) => Number(!a.name.toLocaleLowerCase().startsWith(query)) - Number(!b.name.toLocaleLowerCase().startsWith(query)) || a.path.localeCompare(b.path)), [files, query]);
+  const fileIndex = useMemo(() => indexFileSuggestions(files), [files]);
+  const suggestions = useMemo(() => findFileSuggestions(fileIndex, query), [fileIndex, query]);
+  const matches = suggestions.files;
   const open = expanded && !/^[a-z][a-z0-9+.-]*:/i.test(value.trim());
   const index = Math.min(selected, Math.max(0, matches.length - 1));
 
@@ -30,7 +31,7 @@ export function MarkdownLinkInput({ files, sourcePath, value, onChange }: {
       aria-expanded={open} aria-controls={open ? id : undefined}
       aria-activedescendant={open && matches.length ? `${id}-${index}` : undefined}
       aria-describedby={`${id}-hint`} autoComplete="off"
-      placeholder="Search notes, type @, or paste https://…"
+      placeholder="Search files, type @, or paste https://…"
       className="w-full rounded-md border border-border bg-background p-2"
       value={value} onChange={(event) => { onChange(event.target.value); setExpanded(true); setSelected(0); }}
       onFocus={() => setExpanded(true)} onBlur={() => setExpanded(false)}
@@ -47,8 +48,8 @@ export function MarkdownLinkInput({ files, sourcePath, value, onChange }: {
           event.preventDefault(); choose(matches[index]);
         }
       }} />
-    <p id={`${id}-hint`} className="mt-2 text-xs text-muted-foreground">Search notebook Markdown files by name or path, or enter an external URL. Use ↑/↓ and Enter to choose a file.</p>
-    {open && <div id={id} role="listbox" aria-label="Notebook Markdown files" className="mt-2 max-h-60 overflow-auto rounded-lg border border-border bg-card p-1">
+    <p id={`${id}-hint`} className="mt-2 text-xs text-muted-foreground">Search notebook files by name or path, or enter an external URL. Use ↑/↓ and Enter to choose a file.</p>
+    {open && <div id={id} role="listbox" aria-label="Notebook files" className="mt-2 max-h-60 overflow-auto rounded-lg border border-border bg-card p-1">
       {matches.map((file, i) => <button key={file.path} id={`${id}-${i}`} type="button" role="option"
         tabIndex={-1} aria-selected={i === index}
         className={`block w-full rounded-md p-2 text-left text-xs ${i === index ? "bg-muted" : "hover:bg-muted"}`}
@@ -56,7 +57,8 @@ export function MarkdownLinkInput({ files, sourcePath, value, onChange }: {
         <span className="block truncate font-medium">{file.name}</span>
         <span className="block truncate text-muted-foreground">{file.path}</span>
       </button>)}
-      {!matches.length && <p role="status" className="p-2 text-xs text-muted-foreground">No matching Markdown files</p>}
+      {suggestions.hasMore && <p className="p-2 text-xs text-muted-foreground">Showing the first 50 matches. Keep typing to narrow the results.</p>}
+      {!matches.length && <p role="status" className="p-2 text-xs text-muted-foreground">No matching files</p>}
     </div>}
   </div>;
 }

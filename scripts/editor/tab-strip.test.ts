@@ -4,6 +4,9 @@ import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import type { OpenTab } from "../../src/components/libera/types";
 
+type MenuInput = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0];
+type MenuItem = MenuInput["items"][number];
+
 test("file actions use one native menu between comments and the AI panel", async () => {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
     pretendToBeVisual: true,
@@ -40,9 +43,10 @@ test("file actions use one native menu between comments and the AI panel", async
     status: "dirty",
   } satisfies OpenTab;
   let menuAction: string | null = "editor-source";
-  let capturedMenu: LiberaNativeMenuInput | null = null;
+  let capturedMenu: MenuInput | null = null;
   let editorMode = "";
   let saved = 0;
+  let addedToChat: OpenTab | null = null;
 
   window.liberaPlatform = { glass: false, isElectron: true, platform: "darwin" };
   window.liberaMenu = {
@@ -79,6 +83,7 @@ test("file actions use one native menu between comments and the AI panel", async
     notebookColors: {},
     tabs: [tab],
     onActivateTab: () => undefined,
+    onAddToAiChat: (selectedTab) => { addedToChat = selectedTab; },
     onCloseOtherTabs: () => undefined,
     onCloseTab: () => undefined,
     onCreateUntitled: () => undefined,
@@ -103,14 +108,14 @@ test("file actions use one native menu between comments and the AI panel", async
       root.render(
         createElement(
           MarkdownReviewProvider,
-          {
+          ({
             activeTab: tab,
             applyDraft: () => true,
             getDraft: () => tab.draft,
             openChat: () => undefined,
             openComments: () => undefined,
             recoverDraft: () => undefined,
-          },
+          } as unknown as Parameters<typeof MarkdownReviewProvider>[0]),
           tabStrip,
         ),
       );
@@ -133,13 +138,13 @@ test("file actions use one native menu between comments and the AI panel", async
     await act(async () => menuButton.click());
     assert.equal(editorMode, "source");
     assert.ok(capturedMenu);
-    const items = capturedMenu.items;
+    const items = (capturedMenu as MenuInput | null)!.items;
     const editorItem = items.find(
-      (item): item is Exclude<LiberaNativeMenuItem, { type: "separator" }> =>
+      (item): item is Exclude<MenuItem, { type: "separator" }> =>
         item.type !== "separator" && item.id === "editor-mode",
     );
     const downloadItem = items.find(
-      (item): item is Exclude<LiberaNativeMenuItem, { type: "separator" }> =>
+      (item): item is Exclude<MenuItem, { type: "separator" }> =>
         item.type !== "separator" && item.id === "download",
     );
     assert.deepEqual(
@@ -153,6 +158,13 @@ test("file actions use one native menu between comments and the AI panel", async
       downloadItem?.submenu?.map((item) => (item.type === "separator" ? "separator" : item.id)),
       ["download-markdown", "download-pdf"],
     );
+
+    menuAction = "add-to-ai-chat";
+    await act(async () => {
+      document.querySelector('[aria-label="Open Draft.md"]')?.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true, button: 2 }));
+    });
+    assert.ok((capturedMenu as MenuInput | null)?.items.some((item) => item.type !== "separator" && item.id === "add-to-ai-chat"));
+    assert.equal(addedToChat, tab);
 
     menuAction = "save";
     await act(async () => menuButton.click());

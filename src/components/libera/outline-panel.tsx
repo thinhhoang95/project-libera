@@ -24,6 +24,7 @@ import type { OpenTab } from "@/components/libera/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload } from "@/lib/types";
 
 type OutlinePanelProps = {
@@ -386,9 +387,13 @@ function annotationLabel(annotation: PdfAnnotation) {
     return annotation.text.trim() || "Text annotation";
   }
 
-  return annotation.rects.length > 1
-    ? `Highlight (${annotation.rects.length} areas)`
-    : "Highlight";
+  const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
+
+  if (quote) {
+    return quote;
+  }
+
+  return "Highlight";
 }
 
 function annotationIcon(annotation: PdfAnnotation) {
@@ -402,7 +407,9 @@ function annotationIcon(annotation: PdfAnnotation) {
 function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {
   window.requestAnimationFrame(() => {
     const escapedAnnotationId = CSS.escape(annotation.id);
-    const annotationElement = document.querySelector<HTMLElement>(
+    // With a split canvas several PDFs can be on screen; prefer the focused pane.
+    const root = document.querySelector<HTMLElement>('[data-canvas-pane-focused="true"]') ?? document;
+    const annotationElement = root.querySelector<HTMLElement>(
       `[data-pdf-annotation-id="${escapedAnnotationId}"]`,
     );
 
@@ -411,7 +418,7 @@ function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {
       return;
     }
 
-    document
+    root
       .querySelector<HTMLElement>(`[data-pdf-page-number="${annotation.pageNumber}"]`)
       ?.scrollIntoView({ block: "start", inline: "nearest" });
   });

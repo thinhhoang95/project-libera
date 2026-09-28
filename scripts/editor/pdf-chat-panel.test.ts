@@ -7,7 +7,7 @@ import type { ChatMessage, ChatStore } from "../../src/lib/document-chat";
 
 test("PDF selections retain their source and files attach once across turns, tabs and reloads", async () => {
   const dom = new JSDOM('<!doctype html><body><div class="libera-pdf-viewer" data-pdf-path="notes/paper.pdf"><div class="pdf-text-layer">Selected PDF passage</div></div><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "HTMLInputElement", "Element", "Node", "KeyboardEvent"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "HTMLInputElement", "Element", "Node", "KeyboardEvent", "FileReader"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
   const { createRoot } = await import("react-dom/client");
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
@@ -27,6 +27,9 @@ test("PDF selections retain their source and files attach once across turns, tab
       pdfReads.push(url);
       return failPdf ? Response.json({ error: "PDF could not be read" }, { status: 500 }) : Response.json({ text: "## Page 1\n\nComplete PDF text\n\n## Page 2\n\nMore content" });
     }
+    if (url.startsWith("/api/files/raw/")) {
+      return { ok: true, blob: async () => new dom.window.Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }) } as Response;
+    }
     assert.equal(url, "/api/document-chat");
     requests.push(JSON.parse(String(init?.body)));
     return failChat ? Response.json({ error: "Chat failed" }, { status: 500 }) : Response.json({ text: "Answer" });
@@ -34,11 +37,12 @@ test("PDF selections retain their source and files attach once across turns, tab
   const pdf = { id: "pdf", file: { name: "paper.pdf", path: "notes/paper.pdf", fileType: "pdf" }, draft: "", saved: "", status: "clean" } as OpenTab;
   const markdown = { ...pdf, id: "md", file: { ...pdf.file, name: "a.md", path: "notes/a.md", fileType: "markdown" }, draft: "# Unsaved A" } as OpenTab;
   const otherMarkdown = { ...markdown, id: "md-b", file: { ...markdown.file, name: "b.md", path: "notes/b.md" }, draft: "# Unsaved B" };
+  const image = { ...pdf.file, name: "route.png", path: "notes/route.png", fileType: "image", size: 4 } as OpenTab["file"];
   const host = document.getElementById("root")!;
   let root = createRoot(host);
   let opened = false;
-  async function render(tab: OpenTab, collapsed = false) {
-    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, collapsed, mathMarkers: {}, onCollapsedChange: () => { opened = true; }, onCreateDraft: () => undefined })));
+  async function render(tab: OpenTab, collapsed = false, attachmentRequest?: { id: string; tab: OpenTab }) {
+    await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [pdf.file, markdown.file, image], tabs: [pdf, markdown], attachmentRequest, collapsed, mathMarkers: {}, onCollapsedChange: () => { opened = true; }, onCreateDraft: () => undefined })));
   }
   async function click(label: string) { await act(async () => { const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   async function prompt(text: string) {
@@ -120,6 +124,21 @@ test("PDF selections retain their source and files attach once across turns, tab
     await render({ ...pdf, file: { ...pdf.file, path: "notes/different.pdf" } });
     await selectPdf();
     assert.equal(chat().selections.length, 0, "A stale selection from another PDF is ignored");
+    await render(pdf);
+    await click("New chat");
+    await click("Remove document context");
+    await render(pdf, false, { id: "reattach-pdf", tab: pdf });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.equal(chat().excludedDocumentPaths?.includes(pdf.file.path), false);
+    assert.match(chat().selections.find((context) => context.path === pdf.file.path)?.text ?? "", /Complete PDF text/);
+    await prompt("Ask @paper");
+    assert.ok(host.querySelector('[role="listbox"] [role="option"]'), "The @ picker offers PDF files");
+    await act(async () => { (host.querySelector('[role="listbox"] [role="option"]') as HTMLButtonElement).click(); });
+    await prompt("Ask @route");
+    assert.ok(host.querySelector('[role="listbox"] [role="option"]'), "The @ picker offers images");
+    await act(async () => { (host.querySelector('[role="listbox"] [role="option"]') as HTMLButtonElement).click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.match(chat().photos?.[0]?.dataUrl ?? "", /^data:image\/png;base64,/, host.textContent ?? "");
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

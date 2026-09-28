@@ -39,6 +39,13 @@ export function useMarkdownWindows(
   });
 
   return (file: LiberaFileNode) => {
+    if (file.fileType === "pdf" || file.fileType === "image") {
+      // PDFs and images load straight from the server in their own window, so
+      // they need no snapshot channel; annotation edits sync via annotation-sync.
+      const fileWindow = window.open(`/file-window?path=${encodeURIComponent(file.path)}`, "_blank", "popup,width=1000,height=850");
+      if (!fileWindow) onError("Could not open the file window. Please allow pop-up windows and try again.");
+      return;
+    }
     if (file.fileType !== "markdown") return;
     const child = window.open("/markdown-preview", "_blank", "popup,width=900,height=800");
     if (!child) {

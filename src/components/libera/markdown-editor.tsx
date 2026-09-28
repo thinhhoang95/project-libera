@@ -8,10 +8,13 @@ import {
   ListIndentDecrease,
   ListIndentIncrease,
   Loader2,
+  PenLine,
   Search,
   Sparkles,
   X,
 } from "lucide-react";
+import { QuickPromptInput } from "./quick-prompt-input";
+import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
 import type {
   ClipboardEvent as ReactClipboardEvent,
   DragEvent,
@@ -62,6 +65,7 @@ import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
 type EditorContextMenuState = {
+  hasText: boolean;
   image?: MarkdownImageSelection;
   x: number;
   y: number;
@@ -86,7 +90,8 @@ type MarkdownEditorProps = {
   imageConverting: boolean;
   lineHeightPx: number;
   mathMarkers?: MathMarkerSettings;
-  openTabs: OpenTab[];
+  openTabs?: OpenTab[];
+  readOpenTabs?: () => OpenTab[];
   recentFiles: LiberaFileNode[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -96,6 +101,7 @@ type MarkdownEditorProps = {
     selection: { start: number; end: number },
     prompt: string,
   ) => Promise<void>;
+  onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onChange: (value: string) => void;
   onRegisterDraft?: (read: () => string) => () => void;
   onInsertFileLink: (
@@ -584,12 +590,14 @@ export function MarkdownEditor({
   lineHeightPx,
   mathMarkers,
   openTabs,
+  readOpenTabs,
   recentFiles,
   textareaRef,
   value,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onAiRewriteSelection,
+  onAiWriteAt,
   onChange,
   onRegisterDraft,
   onInsertFileLink,
@@ -600,6 +608,7 @@ export function MarkdownEditor({
   const [initialValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
+  const [writePrompt, setWritePrompt] = useState("");
   const [draggingImage, setDraggingImage] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -611,7 +620,8 @@ export function MarkdownEditor({
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
-  const rewriteInputRef = useRef<HTMLInputElement>(null);
+  const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
+  const writeInputRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
@@ -729,12 +739,12 @@ export function MarkdownEditor({
         ? buildMarkdownFileLinkSections({
             activeFilePath,
             files,
-            openTabs,
+            openTabs: readOpenTabs?.() ?? openTabs ?? [],
             query: fileLinkPopup.query,
             recentFiles,
           })
         : [],
-    [activeFilePath, fileLinkPopup, files, openTabs, recentFiles],
+    [activeFilePath, fileLinkPopup, files, openTabs, readOpenTabs, recentFiles],
   );
   const fileLinkOptions = useMemo(
     () => flattenMarkdownFileLinkSections(fileLinkSections),
@@ -1086,8 +1096,9 @@ export function MarkdownEditor({
       return;
     }
 
+    const writeOnly = !contextMenu.hasText;
     const animationFrame = window.requestAnimationFrame(() => {
-      rewriteInputRef.current?.focus();
+      (writeOnly ? writeInputRef : rewriteInputRef).current?.focus();
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
@@ -1100,18 +1111,17 @@ export function MarkdownEditor({
     const end = textarea.selectionEnd;
     const selectedText = editorValueRef.current.slice(start, end);
     const image = findMarkdownImageInText(editorValueRef.current, start, end);
+    const hasText = !!selectedText.trim();
 
-    if ((start === end || !selectedText.trim()) && !image) {
-      setContextMenu(null);
-      return;
-    }
-
+    // Without a selection the menu offers Write with AI at the caret.
     event.preventDefault();
     const menuWidth = 288;
-    const menuHeight = (image ? 190 : 146) + (selectedText.trim() ? 80 : 0);
+    const menuHeight = (hasText ? 340 : 114) + (image ? 44 : 0);
     setRewritePrompt("");
+    setWritePrompt("");
 
     setContextMenu({
+      hasText,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
       start,
@@ -1153,6 +1163,24 @@ export function MarkdownEditor({
 
     setContextMenu(null);
     await onAiRewriteSelection(selection, prompt);
+  }
+
+  async function writeWithAi() {
+    if (!contextMenu || aiWorking) {
+      return;
+    }
+
+    const prompt = writePrompt.trim();
+
+    if (!prompt) {
+      writeInputRef.current?.focus();
+      return;
+    }
+
+    const offset = contextMenu.end;
+
+    setContextMenu(null);
+    await onAiWriteAt(offset, prompt);
   }
 
   async function imageToMarkdown() {
@@ -1674,22 +1702,22 @@ export function MarkdownEditor({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <button
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            type="button"
-            role="menuitem"
-            disabled={aiWorking || contextMenu.start === contextMenu.end}
-            onClick={() => void formatSelection()}
-          >
-            {formatting ? (
-              <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles aria-hidden className="h-4 w-4" />
-            )}
-            {formatting ? "Formatting..." : "AI Format"}
-          </button>
-          {contextMenu.start !== contextMenu.end ? (
+          {contextMenu.hasText ? (
             <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                disabled={aiWorking}
+                onClick={() => void formatSelection()}
+              >
+                {formatting ? (
+                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles aria-hidden className="h-4 w-4" />
+                )}
+                {formatting ? "Formatting..." : "AI Format"}
+              </button>
               <button
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 type="button"
@@ -1720,52 +1748,76 @@ export function MarkdownEditor({
                 <ListIndentDecrease aria-hidden className="h-4 w-4" />
                 Unindent Headings
               </button>
+              <form
+                className="mt-1 border-t border-border px-2 py-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void rewriteSelection();
+                }}
+              >
+                <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
+                  AI Rewrite
+                </label>
+                <div className="mt-1 flex items-start gap-2">
+                  <QuickPromptInput
+                    id="ai-rewrite-prompt"
+                    inputRef={rewriteInputRef}
+                    value={rewritePrompt}
+                    disabled={aiWorking}
+                    onChange={setRewritePrompt}
+                    onSubmit={() => void rewriteSelection()}
+                    onEscape={() => setContextMenu(null)}
+                  />
+                  <button
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    type="submit"
+                    aria-label="Rewrite selected text"
+                    title="Rewrite selected text"
+                    disabled={aiWorking || !rewritePrompt.trim()}
+                  >
+                    {formatting ? (
+                      <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles aria-hidden className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </form>
             </>
           ) : null}
           <form
-            className="mt-1 border-t border-border px-2 py-2"
+            className={`${contextMenu.hasText ? "mt-1 border-t border-border " : ""}px-2 py-2`}
             onSubmit={(event) => {
               event.preventDefault();
-              void rewriteSelection();
+              void writeWithAi();
             }}
           >
-            <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
-              AI Rewrite
+            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="ai-write-prompt">
+              <PenLine aria-hidden className="h-3.5 w-3.5" />
+              Write with AI
             </label>
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                ref={rewriteInputRef}
-                id="ai-rewrite-prompt"
-                className="h-8 min-w-0 flex-1 rounded-xl border border-border bg-card px-2 text-sm outline-none focus:border-input"
-                placeholder="Prompt..."
-                value={rewritePrompt}
-                disabled={aiWorking || contextMenu.start === contextMenu.end}
-                onChange={(event) => setRewritePrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setContextMenu(null);
-                  }
-                }}
+            <div className="mt-1 flex items-start gap-2">
+              <QuickPromptInput
+                id="ai-write-prompt"
+                inputRef={writeInputRef}
+                placeholder="What should AI write? Type / for prompts"
+                value={writePrompt}
+                disabled={aiWorking}
+                onChange={setWritePrompt}
+                onSubmit={() => void writeWithAi()}
+                onEscape={() => setContextMenu(null)}
               />
               <button
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 type="submit"
-                aria-label="Rewrite selected text"
-                title="Rewrite selected text"
-                disabled={
-                  aiWorking ||
-                  contextMenu.start === contextMenu.end ||
-                  !rewritePrompt.trim()
-                }
+                aria-label="Write new text with AI"
+                title="Write new text with AI"
+                disabled={aiWorking || !writePrompt.trim()}
               >
-                {formatting ? (
-                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles aria-hidden className="h-4 w-4" />
-                )}
+                <PenLine aria-hidden className="h-4 w-4" />
               </button>
             </div>
+            <IncludeDocumentContextCheckbox id="ai-document-context" />
           </form>
           {contextMenu.image ? (
             <button
