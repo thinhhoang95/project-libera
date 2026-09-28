@@ -2,7 +2,8 @@
 import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
 import type { CSSProperties } from "react";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useLayoutEffect, useRef } from "react";
+import type { PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import type { Root } from "hast";
 import type { PluggableList } from "unified";
@@ -28,6 +29,7 @@ type MarkdownRendererProps = {
   className?: string;
   content: string;
   preparedTree?: Root;
+  preparedSources?: PreviewSourcePosition[];
   documentPath?: string;
   fontFamily?: string;
   onOpenExternalLink?: (href: string) => void;
@@ -142,6 +144,7 @@ function MarkdownRendererContent({
   className,
   content,
   preparedTree,
+  preparedSources,
   documentPath,
   fontFamily,
   onOpenExternalLink,
@@ -149,6 +152,7 @@ function MarkdownRendererContent({
   textScale = 1,
   renderImages = true,
 }: MarkdownRendererProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
@@ -472,8 +476,20 @@ function MarkdownRendererContent({
           ),
   }), [documentPath, onOpenFileLink, onOpenExternalLink, renderImages, textScale]);
 
+  useLayoutEffect(() => {
+    if (!preparedSources || !rootRef.current) return;
+    const positions = new Map(preparedSources.map((source) => [source.id, source]));
+    for (const element of rootRef.current.querySelectorAll<HTMLElement>("[data-preview-source-id]")) {
+      const source = positions.get(element.dataset.previewSourceId!);
+      if (!source) continue;
+      if (element.dataset.sourceStart !== source.start) element.dataset.sourceStart = source.start;
+      if (element.dataset.sourceEnd !== source.end) element.dataset.sourceEnd = source.end;
+    }
+  }, [preparedSources, preparedTree, components]);
+
   return (
-    <div className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
+    <div
+      ref={rootRef} className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
       {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} />) : <ReactMarkdown
         urlTransform={markdownUrlTransform}
         remarkPlugins={configuredRemarkPlugins}

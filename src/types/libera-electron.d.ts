@@ -57,6 +57,7 @@ declare global {
   };
 
   interface Window {
+    liberaWorkspaces?: { checkpoint: (body: string) => { saved: boolean; error?: string } };
     liberaPlatform?: {
       isElectron: boolean;
       platform: string;

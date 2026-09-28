@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
+import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
 import {
@@ -32,7 +33,12 @@ import {
 } from "@/lib/markdown-colors";
 import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enumeration";
 
+import { ModalDialog } from "./modal-dialog";
+import { MarkdownLinkInput } from "./markdown-link-input";
+import type { LiberaFileNode } from "@/lib/types";
+
 type MarkdownToolbarProps = {
+  files: LiberaFileNode[];
   documentPath: string;
   canStartScreenshotSnip: boolean;
   isSlideDeck?: boolean;
@@ -46,7 +52,6 @@ type MarkdownToolbarProps = {
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
-  onInsertFileLink: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onMarkdownZoomChange: (zoom: number) => void;
   onStartScreenshotSnip: () => void;
@@ -78,6 +83,7 @@ function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
 }
 
 export function MarkdownToolbar({
+  files,
   documentPath,
   canStartScreenshotSnip,
   isSlideDeck = false,
@@ -88,16 +94,25 @@ export function MarkdownToolbar({
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
-  onInsertFileLink,
   onInsertImage,
   onMarkdownZoomChange,
   onStartScreenshotSnip,
   onTogglePreviewFullscreen,
   previewFullscreen,
 }: MarkdownToolbarProps) {
+  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toolbarMeasureRef = useRef<HTMLDivElement>(null);
   const toolbarRowRef = useRef<HTMLDivElement>(null);
+  const scrollToolbarRef = useHorizontalToolbarScroll();
+  const setToolbarRowRef = useCallback((element: HTMLDivElement | null) => {
+    toolbarRowRef.current = element;
+    const cleanup = scrollToolbarRef(element);
+    return () => {
+      cleanup?.();
+      toolbarRowRef.current = null;
+    };
+  }, [scrollToolbarRef]);
   const highlightButtonRef = useRef<HTMLButtonElement>(null);
   const highlightMenuRef = useRef<HTMLDivElement>(null);
   const textColorButtonRef = useRef<HTMLButtonElement>(null);
@@ -486,6 +501,16 @@ export function MarkdownToolbar({
 
   return (
     <div className="libera-editor-toolbar relative z-40 border-b border-border bg-card px-4 py-2">
+      <ModalDialog open={!!linkDraft} title="Insert link" onClose={() => setLinkDraft(null)} footer={
+        <button type="button" className="rounded-md border border-border bg-card px-3 py-2 text-sm disabled:opacity-40" disabled={!linkDraft?.href.trim()} onClick={() => {
+          if (!linkDraft?.href.trim()) return;
+          const href = linkDraft.href.trim().replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/</g, "%3C").replace(/>/g, "%3E");
+          onInsert("[", `](${href})`, (linkDraft.label ?? "link").replace(/[\[\]\\]/g, "\\$&"));
+          setLinkDraft(null);
+        }}>Insert link</button>
+      }>
+        <MarkdownLinkInput files={files} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft({ href, label })} />
+      </ModalDialog>
       <input
         ref={imageInputRef}
         className="hidden"
@@ -505,8 +530,11 @@ export function MarkdownToolbar({
         <span className="inline-flex h-9 w-36 shrink-0" />
       </div>
       <div
-        ref={toolbarRowRef}
-        className="flex max-w-full flex-nowrap items-center gap-2 overflow-hidden whitespace-nowrap"
+        ref={setToolbarRowRef}
+        role="toolbar"
+        aria-label="Markdown formatting"
+        tabIndex={0}
+        className="libera-horizontal-toolbar flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
       >
         <button
           aria-label="Bold"
@@ -627,7 +655,7 @@ export function MarkdownToolbar({
           className="toolbar-button"
           title="Link"
           type="button"
-          onClick={onInsertFileLink}
+          onClick={() => setLinkDraft({ href: "" })}
         >
           <Link aria-hidden className="h-4 w-4" />
         </button>

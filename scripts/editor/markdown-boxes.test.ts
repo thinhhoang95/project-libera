@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -69,6 +70,15 @@ test("visual Markdown and HTML round trips preserve every box color, nested boxe
   first.destroy(); second.destroy(); pasted.destroy();
 });
 
+test("visual block equations use the theme foreground inside colored boxes", () => {
+  const css = readFileSync(new URL("../../src/app/globals.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\.libera-tiptap blockquote\[data-box-color\] :is\([^}]*\[data-type=["']block-math["']\][^}]*\)\s*\{\s*color:\s*var\(--foreground\);\s*\}/,
+    "block equations must not inherit the colored box's white foreground",
+  );
+});
+
 test("preview and visual boxes agree at paragraph, color and code boundaries", () => {
   for (const content of [
     "Before\ny> Yellow\nb> Blue\n> Grey",
@@ -115,9 +125,9 @@ test("source toolbar exposes all highlight colors and inserts the chosen box mar
   const noop = () => {};
   try {
     await act(async () => root.render(createElement(MarkdownToolbar, {
-      documentPath: "note.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 100,
+      files: [], documentPath: "note.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 100,
       onEnumerateHeadings: noop, onFixChatGptEquations: noop, onInsert: (before) => { calls.push(before); },
-      onInsertExistingImage: noop, onInsertFileLink: noop, onInsertImage: async () => {}, onMarkdownZoomChange: noop,
+      onInsertExistingImage: noop, onInsertImage: async () => {}, onMarkdownZoomChange: noop,
       onStartScreenshotSnip: noop, onTogglePreviewFullscreen: noop, previewFullscreen: false,
     })));
     const select = host.querySelector<HTMLSelectElement>('select[aria-label="Box color"]')!;

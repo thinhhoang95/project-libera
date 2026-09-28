@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   getState: () => ipcRenderer.invoke("setup:get-state"),
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
+  exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
+  importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
   loadAiChatCustomInstructionFile: () =>
     ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),
   loadAiRewriteCustomInstructionFile: () =>
@@ -46,6 +48,10 @@ contextBridge.exposeInMainWorld("liberaFileExplorer", {
 contextBridge.exposeInMainWorld("liberaClipboard", {
   copyItemPath: (relativePath, mode) =>
     ipcRenderer.invoke("clipboard:copy-item-path", relativePath, mode),
+});
+
+contextBridge.exposeInMainWorld("liberaWorkspaces", {
+  checkpoint: (body) => ipcRenderer.sendSync("workspaces:checkpoint", body),
 });
 
 contextBridge.exposeInMainWorld("liberaWindow", {

@@ -3,8 +3,9 @@
 import { ReviewToggle } from "./markdown-review-ui";
 import { useState } from "react";
 import type { MouseEvent } from "react";
-import { Plus, Sparkles, Download, MoveRight, Pencil, Save, Trash2, X } from "lucide-react";
+import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
+import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
@@ -20,6 +21,7 @@ type TabStripProps = {
   notebookColors: Record<string, string>;
   tabs: OpenTab[];
   onActivateTab: (tabId: string) => void;
+  onAddToAiChat: (tab: OpenTab) => void;
   onDuplicateMarkdown: (file: OpenTab["file"]) => void;
   onCloseOtherTabs: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -30,7 +32,17 @@ type TabStripProps = {
   onRenameFile: (tab: OpenTab) => Promise<void>;
   onSave: () => Promise<void>;
   onSwapTabs: (sourceTabId: string, targetTabId: string) => void;
+  // Split canvas. Tabs listed in `visibleTabIds` are on screen in some panel.
+  visibleTabIds?: string[];
+  canvasPanelCount?: number;
+  onSplitCanvas?: (zone: CanvasSplitZone) => void;
+  onOpenTabInSplit?: (tabId: string, zone: CanvasSplitZone) => void;
+  onCloseCanvasPanel?: () => void;
+  onCloseOtherCanvasPanels?: () => void;
 };
+
+type CanvasSplitZone = "right" | "bottom";
+type NativeMenuItems = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0]["items"];
 
 type ActiveFileActionsProps = Pick<
   TabStripProps,
@@ -43,7 +55,46 @@ type ActiveFileActionsProps = Pick<
   | "onMoveFile"
   | "onRenameFile"
   | "onSave"
+  | "canvasPanelCount"
+  | "onSplitCanvas"
+  | "onCloseCanvasPanel"
+  | "onCloseOtherCanvasPanels"
 >;
+
+function canvasMenuItems(
+  panelCount: number,
+  { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels }: Pick<ActiveFileActionsProps, "onSplitCanvas" | "onCloseCanvasPanel" | "onCloseOtherCanvasPanels">,
+): NativeMenuItems {
+  if (!onSplitCanvas) {
+    return [];
+  }
+
+  return [
+    { id: "split-right", label: "Split Right" },
+    { id: "split-down", label: "Split Down" },
+    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: "Close Panel", enabled: panelCount > 1 }] : []),
+    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: "Close Other Panels", enabled: panelCount > 1 }] : []),
+  ];
+}
+
+function runCanvasMenuAction(
+  selectedItemId: string | null,
+  { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels }: Pick<ActiveFileActionsProps, "onSplitCanvas" | "onCloseCanvasPanel" | "onCloseOtherCanvasPanels">,
+) {
+  if (selectedItemId === "split-right") {
+    onSplitCanvas?.("right");
+  } else if (selectedItemId === "split-down") {
+    onSplitCanvas?.("bottom");
+  } else if (selectedItemId === "close-panel") {
+    onCloseCanvasPanel?.();
+  } else if (selectedItemId === "close-other-panels") {
+    onCloseOtherCanvasPanels?.();
+  } else {
+    return false;
+  }
+
+  return true;
+}
 
 function nativeMenuPointFromButton(button: HTMLElement) {
   const rect = button.getBoundingClientRect();
@@ -71,6 +122,7 @@ export function TabStrip({
   activeTabId,
   tabs,
   onActivateTab,
+  onAddToAiChat,
   onDuplicateMarkdown,
   onCloseOtherTabs,
   onCloseTab,
@@ -81,6 +133,12 @@ export function TabStrip({
   onRenameFile,
   onSave,
   onSwapTabs,
+  visibleTabIds = [],
+  canvasPanelCount = 1,
+  onSplitCanvas,
+  onOpenTabInSplit,
+  onCloseCanvasPanel,
+  onCloseOtherCanvasPanels,
 }: TabStripProps) {
   const [draggingTabId, setDraggingTabId] = useState("");
   const [dragOverTabId, setDragOverTabId] = useState("");
@@ -104,7 +162,16 @@ export function TabStrip({
       .popup({
         ...nativeMenuPointFromMouseEvent(event),
         items: [
-          ...(tab.file.fileType === "markdown" ? [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }] : []),
+          { id: "add-to-ai-chat", label: "Add to AI Chat" },
+          { type: "separator" },
+          ...(onOpenTabInSplit
+            ? [
+                { id: "open-split-right", label: "Open to the Right" },
+                { id: "open-split-down", label: "Open Below" },
+                { type: "separator" as const },
+              ]
+            : []),
+          { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -115,7 +182,13 @@ export function TabStrip({
       })
       .catch(() => null);
 
-    if (selectedItemId === "duplicate-markdown") {
+    if (selectedItemId === "add-to-ai-chat") {
+      onAddToAiChat(tab);
+    } else if (selectedItemId === "open-split-right") {
+      onOpenTabInSplit?.(tab.id, "right");
+    } else if (selectedItemId === "open-split-down") {
+      onOpenTabInSplit?.(tab.id, "bottom");
+    } else if (selectedItemId === "duplicate-markdown") {
       onDuplicateMarkdown(tab.file);
     } else if (selectedItemId === "close-tab") {
       onCloseTab(tab.id);
@@ -134,6 +207,7 @@ export function TabStrip({
             const isDragging = draggingTabId === tab.id;
             const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
             const isDirty = tab.status === "dirty";
+            const isOnCanvas = canvasPanelCount > 1 && visibleTabIds.includes(tab.id);
 
             return (
               <button
@@ -147,12 +221,14 @@ export function TabStrip({
                 } ${isDragging ? "opacity-40" : ""}`}
                 draggable
                 data-tab-id={tab.id}
+                data-canvas-visible={isOnCanvas ? "true" : undefined}
+                title={isOnCanvas && !isActive ? `${tab.file.name} — shown in another panel` : undefined}
                 aria-label={`Open ${tab.file.name}`}
                 aria-current={isActive ? "page" : undefined}
                 aria-describedby={isDragTarget ? `${tab.id}-drop-target` : undefined}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "move";
-                  event.dataTransfer.setData("application/x-libera-tab-id", tab.id);
+                  event.dataTransfer.setData(TAB_DRAG_MIME, tab.id);
                   setDraggingTabId(tab.id);
                 }}
                 onDragOver={(event) => {
@@ -170,7 +246,7 @@ export function TabStrip({
                 onDrop={(event) => {
                   event.preventDefault();
                   const sourceTabId =
-                    event.dataTransfer.getData("application/x-libera-tab-id") ||
+                    event.dataTransfer.getData(TAB_DRAG_MIME) ||
                     draggingTabId;
 
                   if (sourceTabId && sourceTabId !== tab.id) {
@@ -250,6 +326,10 @@ export function TabStrip({
           onMoveFile={onMoveFile}
           onRenameFile={onRenameFile}
           onSave={onSave}
+          canvasPanelCount={canvasPanelCount}
+          onSplitCanvas={onSplitCanvas}
+          onCloseCanvasPanel={onCloseCanvasPanel}
+          onCloseOtherCanvasPanels={onCloseOtherCanvasPanels}
         />
         <button
           type="button"
@@ -279,17 +359,46 @@ function ActiveFileActions({
   onMoveFile,
   onRenameFile,
   onSave,
+  canvasPanelCount = 1,
+  onSplitCanvas,
+  onCloseCanvasPanel,
+  onCloseOtherCanvasPanels,
 }: ActiveFileActionsProps) {
-  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const canvasActions = { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels };
+  const canvasItems = canvasMenuItems(canvasPanelCount, canvasActions);
 
   if (!activeTab) {
-    return null;
+    // An empty split panel has no file, but its layout can still be changed.
+    if (canvasPanelCount < 2 || !canvasItems.length) {
+      return null;
+    }
+
+    return (
+      <FileActionsMenuButton
+        open={actionMenuOpen}
+        onClick={async (event) => {
+          const menu = window.liberaMenu;
+
+          if (!menu) {
+            return;
+          }
+
+          const point = nativeMenuPointFromButton(event.currentTarget);
+          setActionMenuOpen(true);
+          const selectedItemId = await menu.popup({ ...point, items: canvasItems }).catch(() => null);
+          setActionMenuOpen(false);
+          runCanvasMenuAction(selectedItemId, canvasActions);
+        }}
+      />
+    );
   }
 
   const isMarkdown = activeTab.file.fileType === "markdown";
+  const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
   const downloadContent = isMarkdown ? activeTab.draft : undefined;
 
-  async function openDownloadMenu(event: MouseEvent<HTMLButtonElement>) {
+  async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
     if (!activeTab) {
       return;
     }
@@ -302,103 +411,121 @@ function ActiveFileActions({
 
     const point = nativeMenuPointFromButton(event.currentTarget);
 
-    setDownloadMenuOpen(true);
+    setActionMenuOpen(true);
 
     const selectedItemId = await menu
       .popup({
         ...point,
         items: [
-          { id: "markdown-file", label: "Markdown file" },
-          { id: "pdf-file", label: "PDF file" },
+          ...(isMarkdown
+            ? [
+                ...(supportsEditorMode
+                  ? [
+                      {
+                        id: "editor-mode",
+                        label: "Editor Mode",
+                        submenu: [
+                          {
+                            id: "editor-visual",
+                            label: "Visual",
+                            type: "radio" as const,
+                            checked: markdownEditorMode === "visual",
+                          },
+                          {
+                            id: "editor-source",
+                            label: "Source",
+                            type: "radio" as const,
+                            checked: markdownEditorMode === "source",
+                          },
+                        ],
+                      },
+                      { type: "separator" as const },
+                    ]
+                  : []),
+                {
+                  id: "save",
+                  label: "Save",
+                  enabled:
+                    activeTab.status !== "saving" &&
+                    (activeTab.untitled || activeTab.status !== "clean"),
+                },
+                {
+                  id: "download",
+                  label: "Download",
+                  submenu: [
+                    { id: "download-markdown", label: "Markdown file" },
+                    { id: "download-pdf", label: "PDF file" },
+                  ],
+                },
+              ]
+            : [{ id: "download-original", label: "Download" }]),
+          { type: "separator" },
+          ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
+          { id: "rename", label: "Rename" },
+          { id: "move", label: "Move" },
+          { type: "separator" },
+          { id: "delete", label: "Delete" },
         ],
       })
       .catch(() => null);
 
-    setDownloadMenuOpen(false);
+    setActionMenuOpen(false);
 
-    if (selectedItemId === "markdown-file") {
+    if (runCanvasMenuAction(selectedItemId, canvasActions)) {
+      return;
+    }
+
+    if (selectedItemId === "editor-visual") {
+      onMarkdownEditorModeChange("visual");
+    } else if (selectedItemId === "editor-source") {
+      onMarkdownEditorModeChange("source");
+    } else if (selectedItemId === "save") {
+      await onSave();
+    } else if (selectedItemId === "download-markdown") {
       onDownloadFile(activeTab.file, downloadContent);
-    } else if (selectedItemId === "pdf-file") {
+    } else if (selectedItemId === "download-pdf") {
       await onDownloadMarkdownPdf(activeTab);
+    } else if (selectedItemId === "download-original") {
+      onDownloadFile(activeTab.file);
+    } else if (selectedItemId === "rename") {
+      await onRenameFile(activeTab);
+    } else if (selectedItemId === "move") {
+      await onMoveFile(activeTab);
+    } else if (selectedItemId === "delete") {
+      await onDeleteFile(activeTab);
     }
   }
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown && !isMarkdownSlidesPath(activeTab.file.path) ? (
-        <div role="group" aria-label="Markdown editing mode" className="libera-editor-mode mr-1 inline-flex h-8 shrink-0 items-center rounded-lg border border-border p-0.5">
-          {(["visual", "source"] as const).map((mode) => (
-            <button key={mode} type="button" aria-pressed={markdownEditorMode === mode}
-              className="h-full rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => onMarkdownEditorModeChange(mode)}>
-              {mode === "visual" ? "Visual" : "Source"}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {isMarkdown ? <ReviewToggle /> : null}
-      {isMarkdown ? (
-        <button
-          aria-label="Save"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={activeTab.status === "saving" || (!activeTab.untitled && activeTab.status === "clean")}
-          title="Save"
-          type="button"
-          onClick={onSave}
-        >
-          <Save aria-hidden className="h-4 w-4" />
-        </button>
-      ) : null}
-      {isMarkdown ? (
-        <button
-          aria-expanded={downloadMenuOpen}
-          aria-haspopup="menu"
-          aria-label="Download"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          title="Download"
-          type="button"
-          onClick={(event) => void openDownloadMenu(event)}
-        >
-          <Download aria-hidden className="h-4 w-4" />
-        </button>
-      ) : (
-        <button
-          aria-label="Download"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          title="Download"
-          type="button"
-          onClick={() => onDownloadFile(activeTab.file)}
-        >
-          <Download aria-hidden className="h-4 w-4" />
-        </button>
-      )}
-      <button
-        aria-label="Rename"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        title="Rename"
-        type="button"
-        onClick={() => onRenameFile(activeTab)}
-      >
-        <Pencil aria-hidden className="h-4 w-4" />
-      </button>
-      <button
-        aria-label="Move"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        title="Move"
-        type="button"
-        onClick={() => onMoveFile(activeTab)}
-      >
-        <MoveRight aria-hidden className="h-4 w-4" />
-      </button>
-      <button
-        aria-label="Delete"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive"
-        title="Delete"
-        type="button"
-        onClick={() => onDeleteFile(activeTab)}
-      >
-        <Trash2 aria-hidden className="h-4 w-4" />
-      </button>
+      <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
     </div>
   );
+}
+
+function FileActionsMenuButton({
+  open,
+  onClick,
+  bare = false,
+}: {
+  open: boolean;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => Promise<void>;
+  bare?: boolean;
+}) {
+  const button = (
+    <button
+      aria-expanded={open}
+      aria-haspopup="menu"
+      aria-label="File actions"
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent/10 hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      title="File actions"
+      type="button"
+      onClick={(event) => void onClick(event)}
+    >
+      <MoreHorizontal aria-hidden className="h-4 w-4" />
+    </button>
+  );
+
+  return bare ? button : <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">{button}</div>;
 }

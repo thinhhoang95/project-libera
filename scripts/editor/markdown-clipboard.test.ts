@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownRenderer } from "../../src/components/markdown-renderer";
-import { copyRenderedMarkdownSelection, getRenderedSelectionMarkdown } from "../../src/lib/markdown-clipboard";
+import { convertClipboardHtmlToMarkdown, copyRenderedMarkdownSelection, getRenderedSelectionMarkdown } from "../../src/lib/markdown-clipboard";
 
 const dom = new JSDOM("<!doctype html><body></body>");
 for (const key of ["window", "document", "Node", "Element", "HTMLElement", "DOMParser"] as const) {
@@ -33,6 +33,25 @@ test("chat copy retains headings, nested formatting, links, lists, code and tabl
   assert.match(markdown, /> Quote/);
   assert.match(markdown, /```js\nconst x = 1;\n```/);
   assert.match(markdown, /\| A\s*\| B\s*\|/);
+});
+
+test("rich clipboard HTML converts through the visual editor schema", () => {
+  const markdown = convertClipboardHtmlToMarkdown(`
+    <script>alert("ignored")</script>
+    <h2 onclick="ignored()">Heading</h2>
+    <p><strong>Bold</strong> and <em>italic</em> with <a href="javascript:ignored()">unsafe link</a>.</p>
+    <p><span style="color: #123456; font-size: 20px; line-height: 1.5"><u>Styled</u></span></p>
+    <ul><li>First</li><li>Second</li></ul>
+  `);
+  assert.match(markdown, /^## Heading/m);
+  assert.match(markdown, /\*\*Bold\*\* and \*italic\*/);
+  assert.match(markdown, /unsafe link/);
+  assert.match(markdown, /\[color=#123456\]/);
+  assert.match(markdown, /data-font-size="20"/);
+  assert.match(markdown, /data-line-height="1.5"/);
+  assert.match(markdown, /<u>Styled<\/u>/);
+  assert.match(markdown, /- First\n- Second/);
+  assert.doesNotMatch(markdown, /alert|onclick|javascript:/);
 });
 
 test("partial inline selections keep balanced formatting and link destinations", () => {

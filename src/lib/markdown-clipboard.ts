@@ -23,6 +23,18 @@ function serializerFor(mathMarkers: MathMarkerSettings) {
   return serializer;
 }
 
+/** Convert rich clipboard HTML through the same schema used by the visual
+ * editor, retaining supported structure and formatting while discarding DOM
+ * that cannot be represented in a Markdown document. */
+export function convertClipboardHtmlToMarkdown(
+  html: string,
+  mathMarkers: MathMarkerSettings = {},
+): string {
+  if (!html.trim()) return "";
+  const configured = extensions(mathMarkers);
+  return serializerFor(mathMarkers).serialize(generateJSON(html, configured));
+}
+
 /** Clone only selected content, retaining its formatting ancestors. Math is an
  * atomic selection: copying any part copies the underlying LaTeX expression. */
 function cloneSelected(node: Node, range: Range): Node | null {
@@ -73,8 +85,7 @@ export function getRenderedSelectionMarkdown(
 ): string {
   const clone = cloneSelected(container, range) as HTMLElement | null;
   if (!clone) return "";
-  const configured = extensions(mathMarkers);
-  return serializerFor(mathMarkers).serialize(generateJSON(clone.innerHTML, configured));
+  return convertClipboardHtmlToMarkdown(clone.innerHTML, mathMarkers);
 }
 
 type CopyEvent = Pick<ClipboardEvent, "clipboardData" | "preventDefault">;

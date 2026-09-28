@@ -25,7 +25,11 @@ test("each AI endpoint uses its own model and effort; chat overrides remain loca
     process.env[`LIBERA_AI_${environmentNames[name]}_REASONING_EFFORT`] = efforts[name];
   }
   const calls: { model: string; reasoning: { effort: string }; messages: { role: string; content: string }[] }[] = [];
-  globalThis.fetch = async (_input, init) => { calls.push(JSON.parse(String(init?.body))); return Response.json({ choices: [{ message: { content: "A response" } }] }); };
+  globalThis.fetch = async (_input, init) => {
+    if (String(_input).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "test-provider", supports_implicit_caching: true }] } });
+    calls.push(JSON.parse(String(init?.body)));
+    return Response.json({ choices: [{ message: { content: "A response" } }] });
+  };
   const request = (body: unknown) => new NextRequest("http://localhost/api/test", { method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` }, body: JSON.stringify(body) });
   try {
     assert.equal((await format(request({ text: "Markdown text" }))).status, 200);
@@ -45,10 +49,11 @@ test("each AI endpoint uses its own model and effort; chat overrides remain loca
       return { content: ++parts === 1 ? "\\documentclass{article}\n\\begin{document}\n<to be continued>" : "Complete\n\\end{document}", finishReason: "stop" };
     });
     assert.equal(parts, 2);
+    assert.equal(getAiFunctionOptions("chat").promptCaching, true);
     assert.equal(getAiFunctionOptions("chat").reasoning.effort, "xhigh");
     delete process.env.LIBERA_AI_FORMATTING_MODEL;
     process.env.LIBERA_AI_FORMATTING_REASONING_EFFORT = "invalid";
-    assert.deepEqual(getAiFunctionOptions("formatting"), { model: "legacy/model", reasoning: { effort: "medium" } });
+    assert.deepEqual(getAiFunctionOptions("formatting"), { model: "legacy/model", reasoning: { effort: "medium" }, promptCaching: false });
   } finally {
     globalThis.fetch = originalFetch;
     for (const key of keys) { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key]; }

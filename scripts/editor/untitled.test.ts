@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownRenderer } from "../../src/components/markdown-renderer";
 import { createRoot } from "react-dom/client";
 import { useLiberaWorkspace } from "../../src/components/libera/use-libera-workspace";
+import { emptyWorkspaceLibrary } from "../../src/lib/workspaces";
 import { emptyTree } from "../../src/components/libera/api-client";
 
 test("untitled files edit, export, cancel, and save to a folder without losing in-flight edits", async () => {
@@ -23,10 +24,11 @@ test("untitled files edit, export, cancel, and save to a folder without losing i
       await new Promise<void>((resolve) => { finishSave = resolve; });
       return Response.json({ file: { kind: "file", fileType: "markdown", path: "Notes/Folder/My note.md", notebook: "Notes", name: "My note.md", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), size: 5 }, content: posted!.content });
     }
-    return Response.json(emptyTree());
+    if (url === "/api/workspaces") return Response.json(init?.method === "PUT" ? { saved: true } : emptyWorkspaceLibrary());
+    return Response.json({ ...emptyTree(), root: "/test/untitled" });
   };
   let workspace: ReturnType<typeof useLiberaWorkspace>["workspace"];
-  function Harness() { workspace = useLiberaWorkspace(false).workspace; return null; }
+  function Harness() { workspace = useLiberaWorkspace(true).workspace; return null; }
   const root = createRoot(document.getElementById("root")!);
   try {
     await act(async () => { root.render(createElement(Harness)); });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
+import { contentDisposition } from "@/lib/content-disposition";
 import { createNotebookZip, toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -20,10 +21,7 @@ export async function GET(request: NextRequest) {
       {
         headers: {
           "Cache-Control": "private, no-store",
-          "Content-Disposition": `attachment; filename="${download.fileName.replaceAll(
-            '"',
-            "",
-          )}"`,
+          "Content-Disposition": contentDisposition("attachment", download.fileName),
           "Content-Type": "application/zip",
         },
       },

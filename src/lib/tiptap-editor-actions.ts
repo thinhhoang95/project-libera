@@ -2,6 +2,7 @@ import type { Editor, JSONContent } from "@tiptap/core";
 import type { Node } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
+import { tiptapChangesKey, type ChangeSource, type TiptapChangesMeta } from "./tiptap-changes";
 import {
   getHeadingEnumerationNumbers,
   headingNumberPrefixLength,
@@ -74,7 +75,12 @@ export function changeTiptapHeadingLevels(editor: Editor, range: EditorRange, di
   const delta = direction === "indent" ? 1 : -1;
   for (const { node, pos, selected } of getTiptapHeadings(editor, range)) {
     const level = node.attrs.level + delta;
-    if (selected && level >= 1 && level <= 6) tr.setNodeMarkup(pos, undefined, { ...node.attrs, level });
+    if (!selected) continue;
+    if (direction === "unindent" && level === 0) {
+      tr.setNodeMarkup(pos, editor.schema.nodes.paragraph);
+    } else if (level >= 1 && level <= 6) {
+      tr.setNodeMarkup(pos, undefined, { ...node.attrs, level });
+    }
   }
   if (!tr.docChanged) return false;
   editor.view.dispatch(tr);
@@ -107,7 +113,8 @@ export function trackTiptapRange(editor: Editor, initial: EditorRange) {
   };
 }
 
-export function replaceTiptapRangeWithMarkdown(editor: Editor, range: EditorRange, markdown: string) {
+/** With `track`, the replacement is shown as proposed changes to accept or reject. */
+export function replaceTiptapRangeWithMarkdown(editor: Editor, range: EditorRange, markdown: string, track?: ChangeSource) {
   const parsed = editor.markdown?.parse(markdown);
   if (!parsed) return false;
   const from = editor.state.doc.resolve(range.from);
@@ -118,7 +125,22 @@ export function replaceTiptapRangeWithMarkdown(editor: Editor, range: EditorRang
     ? parsed.content[0].content ?? []
     : parsed.content ?? [];
   return editor.chain()
-    .command(({ tr }) => { closeHistory(tr); return true; })
+    .command(({ tr }) => {
+      closeHistory(tr);
+      if (track) tr.setMeta(tiptapChangesKey, { type: "track", source: track } satisfies TiptapChangesMeta);
+      return true;
+    })
     .insertContentAt(range, content)
     .run();
+}
+
+/** Where Write with AI puts a new block for a caret at `pos`: in place of an empty
+ * top-level paragraph, otherwise after the top-level block containing the caret. */
+export function getTiptapBlockInsertionRange(editor: Editor, pos: number): EditorRange {
+  const $pos = editor.state.doc.resolve(pos);
+  if ($pos.depth === 0) return { from: pos, to: pos };
+  const node = $pos.node(1);
+  const from = $pos.before(1);
+  const to = $pos.after(1);
+  return node.isTextblock && node.content.size === 0 ? { from, to } : { from: to, to };
 }

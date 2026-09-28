@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
+import { contentDisposition } from "@/lib/content-disposition";
 import { getRawFile, toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest, context: RawFileRouteContext) {
     return new NextResponse(rawFile.body, {
       headers: {
         "Cache-Control": "private, max-age=60",
-        "Content-Disposition": `inline; filename="${rawFile.node.name.replaceAll('"', "")}"`,
+        "Content-Disposition": contentDisposition("inline", rawFile.node.name),
         "Content-Type": rawFile.contentType,
       },
     });

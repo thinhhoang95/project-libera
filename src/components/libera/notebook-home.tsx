@@ -45,6 +45,8 @@ import {
   subscribeNotebookHomePreferences,
 } from "./notebook-home-preferences";
 
+import { useWorkspaceView } from "./workspace-view-context";
+
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.25;
@@ -123,16 +125,27 @@ export function NotebookHome({
       .filter((file) => file.name.toLowerCase().includes(normalizedQuery))
       .slice(0, 10);
   }, [fileSearchQuery, files]);
-  const sort = useSyncExternalStore(
+  const workspaceView = useWorkspaceView();
+  const librarySort = useSyncExternalStore(
     subscribeNotebookHomePreferences,
     readNotebookFileSort,
     () => DEFAULT_NOTEBOOK_FILE_SORT,
   );
-  const view = useSyncExternalStore(
+  const libraryView = useSyncExternalStore(
     subscribeNotebookHomePreferences,
     readNotebookFileView,
     () => DEFAULT_NOTEBOOK_FILE_VIEW,
   );
+  const sort = workspaceView?.view?.fileSort ?? librarySort;
+  const view = workspaceView?.view?.fileView ?? libraryView;
+  function changeSort(fileSort: "name" | "updated") {
+    if (workspaceView?.view) void workspaceView.updateView((value) => ({ ...value, fileSort }));
+    else saveNotebookFileSort(fileSort);
+  }
+  function changeView(fileView: "grid" | "list") {
+    if (workspaceView?.view) void workspaceView.updateView((value) => ({ ...value, fileView }));
+    else saveNotebookFileView(fileView);
+  }
   const sortedFiles = useMemo(() => [...files].sort((a, b) =>
     sort === "name" ? a.name.localeCompare(b.name) :
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
@@ -155,65 +168,72 @@ export function NotebookHome({
 
   return (
     <div className={styles.home}>
-      <div className={styles.content}>
-        <header className={styles.header}>
-          <div className={styles.identity}>
-            <span className={styles.notebookIcon} style={{ backgroundColor: notebook.color }}>
-              {notebook.emoji}
-            </span>
-            <div className="min-w-0">
-              <h2 className={styles.title}>{notebook.name}</h2>
-              <p className={styles.metadata}>
-                <FileText aria-hidden size={15} /> {notes.length} {notes.length === 1 ? "note" : "notes"}
-                <span aria-hidden>·</span> Updated {formatDate(updatedAt)}
-              </p>
+      <section
+        className={styles.cover}
+        aria-labelledby="notebook-welcome"
+        style={{ "--notebook-illustration": `url("${notebookIllustrationUrl(notebook.illustration, notebook.createdAt)}")` } as CSSProperties}
+      >
+        <div className={styles.coverInner}>
+          <header className={styles.header}>
+            <div className={styles.identity}>
+              <span className={styles.notebookIcon} style={{ backgroundColor: notebook.color }}>
+                {notebook.emoji}
+              </span>
+              <div className="min-w-0">
+                <h2 className={styles.title}>{notebook.name}</h2>
+                <p className={styles.metadata}>
+                  <FileText aria-hidden size={15} /> {notes.length} {notes.length === 1 ? "note" : "notes"}
+                  <span aria-hidden>·</span> Updated {formatDate(updatedAt)}
+                </p>
+              </div>
+            </div>
+            <div className={styles.actions}>
+              <button className={styles.secondaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}>
+                <FileText aria-hidden size={17} /> New note
+              </button>
+              <button className={styles.primaryButton} type="button" onClick={() => onCreateSlides(notebook.name)}>
+                <FilePlus2 aria-hidden size={17} /> New slides
+              </button>
+            </div>
+          </header>
+
+          <div className={styles.hero}>
+            <div className={styles.heroCopy}>
+              <p className={styles.eyebrow}><Sparkles aria-hidden size={14} /> Keep exploring</p>
+              <h1 id="notebook-welcome">What&apos;s next for {notebook.name}?</h1>
+            </div>
+            <div className={styles.search}>
+              <Search aria-hidden className={styles.searchIcon} size={20} />
+              <input
+                aria-label={`Search files in ${notebook.name}`}
+                placeholder="Search files in this notebook…"
+                value={fileSearchQuery}
+                onChange={(event) => setFileSearchQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setFileSearchQuery("");
+                  if (event.key === "Enter" && fileSearchResults[0]) openSearchResult(fileSearchResults[0]);
+                }}
+              />
+              {trimmedFileSearchQuery ? (
+                <>
+                  <button className={styles.clearSearch} type="button" aria-label="Clear notebook search" onClick={() => setFileSearchQuery("")}><X size={16} /></button>
+                  <div className={styles.searchResults}>
+                    {fileSearchResults.length ? fileSearchResults.map((file) => (
+                      <button key={file.path} type="button" onClick={() => openSearchResult(file)}>
+                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                        <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
+                        <span className={styles.fileType}>{fileTypeLabel(file.fileType)}</span>
+                      </button>
+                    )) : <p className={styles.noResults}>No files found in this notebook.</p>}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
-          <div className={styles.actions}>
-            <button className={styles.secondaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}>
-              <FileText aria-hidden size={17} /> New note
-            </button>
-            <button className={styles.primaryButton} type="button" onClick={() => onCreateSlides(notebook.name)}>
-              <FilePlus2 aria-hidden size={17} /> New slides
-            </button>
-          </div>
-        </header>
+        </div>
+      </section>
 
-        <section className={styles.hero} aria-labelledby="notebook-welcome"
-          style={{ "--notebook-illustration": `url("${notebookIllustrationUrl(notebook.illustration, notebook.createdAt)}")` } as CSSProperties}>
-          <div className={styles.heroCopy}>
-            <p className={styles.eyebrow}><Sparkles aria-hidden size={14} /> Keep exploring</p>
-            <h1 id="notebook-welcome">What&apos;s next for {notebook.name}?</h1>
-          </div>
-          <div className={styles.search}>
-            <Search aria-hidden className={styles.searchIcon} size={20} />
-            <input
-              aria-label={`Search files in ${notebook.name}`}
-              placeholder="Search files in this notebook…"
-              value={fileSearchQuery}
-              onChange={(event) => setFileSearchQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") setFileSearchQuery("");
-                if (event.key === "Enter" && fileSearchResults[0]) openSearchResult(fileSearchResults[0]);
-              }}
-            />
-            {trimmedFileSearchQuery ? (
-              <>
-                <button className={styles.clearSearch} type="button" aria-label="Clear notebook search" onClick={() => setFileSearchQuery("")}><X size={16} /></button>
-                <div className={styles.searchResults}>
-                  {fileSearchResults.length ? fileSearchResults.map((file) => (
-                    <button key={file.path} type="button" onClick={() => openSearchResult(file)}>
-                      <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
-                      <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
-                      <span className={styles.fileType}>{fileTypeLabel(file.fileType)}</span>
-                    </button>
-                  )) : <p className={styles.noResults}>No files found in this notebook.</p>}
-                </div>
-              </>
-            ) : null}
-          </div>
-        </section>
-
+      <div className={styles.content}>
         <section className={styles.stats} aria-label="Notebook overview">
           <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>Notes</span></div></div>
           <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>Images</span></div></div>
@@ -225,12 +245,12 @@ export function NotebookHome({
           <div className={styles.sectionHeader}>
             <h3 id="notebook-files">Files <span>{files.length}</span></h3>
             <div className={styles.fileControls}>
-              <select aria-label="Sort notebook files" value={sort} onChange={(event) => saveNotebookFileSort(event.target.value === "name" ? "name" : "updated")}>
+              <select aria-label="Sort notebook files" value={sort} onChange={(event) => changeSort(event.target.value === "name" ? "name" : "updated")}>
                 <option value="updated">Last modified</option><option value="name">Name</option>
               </select>
               <div className={styles.viewToggle} aria-label="File view" role="group">
-                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => saveNotebookFileView("list")}><List size={17} /></button>
-                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => saveNotebookFileView("grid")}><LayoutGrid size={16} /></button>
+                <button type="button" aria-label="List view" aria-pressed={view === "list"} onClick={() => changeView("list")}><List size={17} /></button>
+                <button type="button" aria-label="Grid view" aria-pressed={view === "grid"} onClick={() => changeView("grid")}><LayoutGrid size={16} /></button>
               </div>
             </div>
           </div>

@@ -1,4 +1,5 @@
 import type { Editor, JSONContent } from "@tiptap/core";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { markdownHeadingOffsets } from "./markdown-review";
 
 export const MARKDOWN_OUTLINE_NAVIGATE_EVENT = "libera:markdown-outline-navigate";
@@ -9,6 +10,13 @@ export type MarkdownOutlineNavigateDetail = {
   offset: number;
 };
 
+const headingPositions = new WeakMap<ProseMirrorNode, number[]>();
+const sourceLines = new WeakMap<Editor, { source: string; starts: number[] }>();
+function lowerBound(values: number[], target: number) {
+  let low = 0, high = values.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (values[mid] < target) low = mid + 1; else high = mid; }
+  return low;
+}
 export function markdownLineForTiptapPosition(
   editor: Editor,
   markdown: string,
@@ -17,20 +25,25 @@ export function markdownLineForTiptapPosition(
 ) {
   if (editor.isDestroyed) return null;
 
-  let precedingHeadings = 0;
-  const positionInDocument = Math.max(0, Math.min(position, editor.state.doc.content.size));
-  editor.state.doc.nodesBetween(0, positionInDocument, (node, pos) => {
-    if (node.type.name === "heading" && pos < position) {
-      precedingHeadings += 1;
-    }
-  });
-
-  const headingOffset = precedingHeadings
-    ? headingOffsets[precedingHeadings - 1]
-    : 0;
-
+  const doc = editor.state.doc;
+  let positions = headingPositions.get(doc);
+  if (!positions) {
+    positions = [];
+    doc.descendants((node, pos) => { if (node.type.name === "heading") positions!.push(pos); });
+    headingPositions.set(doc, positions);
+  }
+  const precedingHeadings = lowerBound(positions, Math.max(0, position));
+  const headingOffset = precedingHeadings ? headingOffsets[precedingHeadings - 1] : 0;
   if (headingOffset === undefined) return null;
-  return markdown.slice(0, headingOffset).split("\n").length;
+  let lines = sourceLines.get(editor);
+  if (!lines || lines.source !== markdown) {
+    const starts = [0];
+    for (let i = 0; i < markdown.length; i++) if (markdown[i] === "\n") starts.push(i + 1);
+    lines = { source: markdown, starts };
+    sourceLines.set(editor, lines);
+  }
+  return lowerBound(lines.starts, headingOffset + 1);
+
 }
 
 export function navigateTiptapToMarkdownHeading(editor: Editor, markdown: string, offset: number) {

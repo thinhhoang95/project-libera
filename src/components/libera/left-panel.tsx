@@ -4,6 +4,8 @@ import { useEffect } from "react";
 import type { RefObject } from "react";
 import {
   BookOpen,
+  Layers3,
+  LogOut,
   ListTree,
   MessageSquare,
   PanelLeftClose,
@@ -16,9 +18,14 @@ import { ReviewComments } from "@/components/libera/markdown-review-ui";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
 
-export type LeftPanelTab = "notebook" | "outlines" | "comments";
+import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
+import type { LiberaTree } from "@/lib/types";
+
+export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces";
 
 type LeftPanelProps = NotebookPanelProps & {
+  workspaceManager: WorkspaceManager;
+  fullTree: LiberaTree;
   activeTab?: OpenTab;
   activePanel: LeftPanelTab;
   onPanelChange: (panel: LeftPanelTab) => void;
@@ -34,12 +41,15 @@ const LEFT_PANEL_TABS: Array<{
   id: LeftPanelTab;
   label: string;
 }> = [
+  { id: "workspaces", label: "Workspaces", icon: Layers3 },
   { id: "notebook", label: "Notebook", icon: BookOpen },
   { id: "outlines", label: "Outlines", icon: ListTree },
   { id: "comments", label: "Comments", icon: MessageSquare },
 ];
 
 export function LeftPanel({
+  workspaceManager,
+  fullTree,
   activeTab,
   activePanel,
   onPanelChange,
@@ -76,7 +86,9 @@ export function LeftPanel({
             ? "outlines"
             : event.key === "3" || event.code === "Digit3"
               ? "comments"
-              : null;
+              : event.key === "4" || event.code === "Digit4"
+                ? "workspaces"
+                : null;
 
       if (!nextPanel) {
         return;
@@ -110,8 +122,17 @@ export function LeftPanel({
         />
         {!collapsed ? (
           <div role="tabpanel" id={`left-panel-${activePanel}`} aria-labelledby={`left-panel-tab-${activePanel}`} className="flex min-h-0 min-w-0 flex-1 flex-col pr-1.5">
-            {activePanel === "notebook" ? (
-              <NotebookPanel {...notebookPanelProps} />
+            {activePanel === "workspaces" ? (
+              <WorkspacesPanel manager={workspaceManager} tree={fullTree} />
+            ) : activePanel === "notebook" ? (
+              <>
+                {workspaceManager.activeWorkspace && <div className="mx-3 mt-3 flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
+                  <Layers3 className="h-4 w-4 shrink-0" style={{ color: workspaceManager.activeWorkspace.color }} />
+                  <button className="min-w-0 flex-1 text-left" title="Manage active workspace" onClick={() => selectPanel("workspaces")}><span className="block text-[10px] uppercase tracking-wider text-muted-foreground">Workspace</span><span className="block truncate text-sm font-medium">{workspaceManager.activeWorkspace.name}</span></button>
+                  <button className="libera-sidebar-icon-button rounded-lg p-1.5" aria-label="Exit workspace" title="Exit workspace" disabled={workspaceManager.switching} onClick={() => { void workspaceManager.switchWorkspace(null).catch(() => selectPanel("workspaces")); }}><LogOut className="h-3.5 w-3.5" /></button>
+                </div>}
+                <NotebookPanel {...notebookPanelProps} onManageWorkspace={() => selectPanel("workspaces")} workspaceActive={Boolean(workspaceManager.activeWorkspace)} />
+              </>
             ) : activePanel === "comments" ? (
               <ReviewComments key={activeTab?.id ?? "no-document"} />
             ) : (

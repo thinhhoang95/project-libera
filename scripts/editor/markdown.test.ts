@@ -211,6 +211,39 @@ test("highlight tool remembers its color, paints successive selections, and stop
   } finally { editor.destroy(); }
 });
 
+test("highlight toggle removes selected highlights and breaks highlighting while typing", () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), HighlightTool], content: "one two", contentType: "markdown" });
+  const colorAt = (pos: number) => editor.state.doc.nodeAt(pos)?.marks.find((mark) => mark.type.name === "highlight")?.attrs.color;
+  try {
+    editor.commands.setHighlightToolColor("#15803d");
+    editor.commands.setTextSelection({ from: 1, to: 4 });
+    editor.commands.toggleHighlightTool();
+    assert.equal(colorAt(1), "#15803d");
+    editor.commands.toggleHighlightTool();
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+
+    // Previously saved highlights can be removed without enabling paint mode.
+    editor.commands.setHighlight({ color: "#2563eb" });
+    editor.commands.setTextSelection({ from: 2, to: 3 });
+    editor.commands.toggleHighlightTool();
+    assert.equal(colorAt(1), "#2563eb");
+    assert.equal(colorAt(2), undefined);
+    assert.equal(colorAt(3), "#2563eb");
+    assert.equal(highlightToolKey.getState(editor.state)?.active, false);
+
+    editor.commands.setTextSelection(8);
+    editor.commands.toggleHighlightTool();
+    editor.view.dispatch(editor.state.tr.insertText("!"));
+    assert.equal(colorAt(8), "#15803d");
+    editor.commands.toggleHighlightTool();
+    editor.view.dispatch(editor.state.tr.insertText("?"));
+    assert.equal(colorAt(8), "#15803d", "Stopping at the cursor preserves existing text");
+    assert.equal(colorAt(9), undefined);
+    assert.equal(highlightToolKey.getState(editor.state)?.color, "#15803d");
+  } finally { editor.destroy(); }
+});
+
 test("visual find matches case-insensitively across inline formatting but not across blocks", () => {
   const editor = create("One **two** one\n\nONE");
   try {
@@ -312,7 +345,7 @@ test("numbering empty headings is idempotent in both editors", () => {
   editor.destroy();
 });
 
-test("heading indentation preserves marks, respects levels 1–6 and supports undo", () => {
+test("heading indentation preserves marks, removes level-one headings and supports stepwise undo", () => {
   const editor = create('# **Title**\n\n## Child\n\n###### Limit\n\nBody');
   const original = editor.getJSON();
   changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "indent");
@@ -321,8 +354,144 @@ test("heading indentation preserves marks, respects levels 1–6 and supports un
   editor.commands.undo();
   assert.deepEqual(editor.getJSON(), original);
   changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "unindent");
-  assert.deepEqual(getTiptapHeadings(editor, editor.state.selection).map(({ node }) => node.attrs.level), [1, 1, 5]);
+  assert.equal(editor.getMarkdown(), '**Title**\n\n# Child\n\n##### Limit\n\nBody');
+  assert.match(editor.getHTML(), /<p><strong>Title<\/strong><\/p>/);
+  changeTiptapHeadingLevels(editor, { from: 1, to: editor.state.doc.content.size }, "unindent");
+  assert.equal(editor.getMarkdown(), '**Title**\n\nChild\n\n#### Limit\n\nBody');
+  editor.commands.undo();
+  assert.equal(editor.getMarkdown(), '**Title**\n\n# Child\n\n##### Limit\n\nBody');
+  editor.commands.undo();
+  assert.deepEqual(editor.getJSON(), original);
   editor.destroy();
+});
+
+test("visual editor Tab changes heading levels and Shift+Tab removes top-level headings with undo", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/headings.md", value: "# Title\n\n## Child",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    const surface = host.querySelector<HTMLElement>(".libera-tiptap")!;
+    const editor = (surface as HTMLElement & { editor: Editor }).editor;
+    await act(async () => {
+      editor.commands.setTextSelection({ from: 1, to: editor.state.doc.content.size });
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab",
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "## Title\n\n### Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "Title\n\n# Child");
+    await act(async () => {
+      surface.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+    });
+    assert.equal(editor.getMarkdown(), "Title\n\nChild");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "Title\n\n# Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "## Title\n\n### Child");
+    await act(async () => { editor.commands.undo(); });
+    assert.equal(editor.getMarkdown(), "# Title\n\n## Child");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test("source editor Shift+Tab removes top-level markers in separate native undo steps", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  const undoStack: { selectionEnd: number; selectionStart: number; value: string }[] = [];
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(document, "execCommand", {
+    configurable: true,
+    value(command: string, _showUi?: boolean, value?: string) {
+      const textarea = document.activeElement as HTMLTextAreaElement | null;
+      if (!textarea || textarea.tagName !== "TEXTAREA") return false;
+      if (command === "insertText") {
+        undoStack.push({
+          selectionEnd: textarea.selectionEnd,
+          selectionStart: textarea.selectionStart,
+          value: textarea.value,
+        });
+        const selectionStart = textarea.selectionStart;
+        const nextValue = `${textarea.value.slice(0, selectionStart)}${value ?? ""}${textarea.value.slice(textarea.selectionEnd)}`;
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, nextValue);
+        textarea.setSelectionRange(selectionStart + (value?.length ?? 0), selectionStart + (value?.length ?? 0));
+      } else if (command === "undo") {
+        const previous = undoStack.pop();
+        if (!previous) return false;
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, previous.value);
+        textarea.setSelectionRange(previous.selectionStart, previous.selectionEnd);
+      } else {
+        return false;
+      }
+      textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      return true;
+    },
+  });
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/headings.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "# Title\n\n## Child",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
+        onChange: () => {}, onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    const textarea = textareaRef.current!;
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    await act(async () => {
+      textarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(textarea.value, "Title\n\n# Child");
+    await act(async () => {
+      textarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+        bubbles: true, cancelable: true, key: "Tab", shiftKey: true,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(textarea.value, "Title\n\nChild");
+    await act(async () => { document.execCommand("undo"); });
+    assert.equal(textarea.value, "Title\n\n# Child");
+    await act(async () => { document.execCommand("undo"); });
+    assert.equal(textarea.value, "# Title\n\n## Child");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    if (originalExecCommand) {
+      Object.defineProperty(document, "execCommand", { configurable: true, value: originalExecCommand });
+    } else {
+      Reflect.deleteProperty(document, "execCommand");
+    }
+  }
 });
 
 test("AI selection serialization includes marks and only the selected content", () => {
@@ -487,6 +656,38 @@ test("visual editor mounts after deferred initialization in React Strict Mode wi
   }
 });
 
+test("highlight toolbar reflects selected marks and toggles them off", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(createElement(TiptapMarkdownEditor, {
+        documentPath: "Notebook/note.md", value: "g>>>one<<< two",
+        fontSizePx: 16, lineHeight: 1.75, markdownZoom: 100, onMarkdownZoomChange: () => {},
+        onChange: () => {}, onSave: async () => {}, onOpenFileLink: async () => false,
+      }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const surface = host.querySelector('[role="textbox"]') as HTMLElement & { editor: Editor };
+    const editor = surface.editor;
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="Highlight"]')!;
+    await act(async () => { editor.commands.setTextSelection({ from: 1, to: 4 }); });
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    await act(async () => { button.click(); });
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    await act(async () => { button.click(); });
+    assert.equal(editor.isActive("highlight"), true);
+    await act(async () => { button.click(); });
+    assert.equal(editor.getMarkdown(), "one two");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
 test("visual editor opens find with Mod-F, highlights matches, navigates, and closes without editing", async () => {
   const host = document.createElement("div");
   document.body.append(host);
@@ -609,7 +810,7 @@ test("source find replaces wildcard matches without affecting unmatched Markdown
         activeFilePath: "Notebook/source.md", files: [], formatting: false, fontFamily: "monospace",
         fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
         textareaRef, value: "item-01; item-aa; item-123;",
-        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {},
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
         onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
       }));
     });
@@ -837,4 +1038,62 @@ test("visual editor pastes Markdown as formatting, replaces selections and suppo
     await act(async () => root.unmount());
     host.remove();
   }
+});
+
+test("source editor converts rich HTML paste to Markdown and replaces the selection", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes: string[] = [];
+  const textareaRef = createRef<HTMLTextAreaElement>();
+  try {
+    await act(async () => {
+      root.render(createElement(MarkdownEditor, {
+        activeFilePath: "Notebook/source-paste.md", files: [], formatting: false, fontFamily: "monospace",
+        fontSizePx: 14, imageConverting: false, lineHeightPx: 24, openTabs: [], recentFiles: [],
+        textareaRef, value: "Before selected after",
+        onAiFormatSelection: async () => {}, onAiImageToMarkdown: async () => {}, onAiRewriteSelection: async () => {}, onAiWriteAt: async () => {},
+        onChange: (value) => changes.push(value), onInsertFileLink: () => {}, onInsertImageFile: async () => {},
+      }));
+    });
+    const textarea = textareaRef.current!;
+    textarea.focus();
+    textarea.setSelectionRange(7, 15);
+    const event = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: {
+      files: [], items: [],
+      getData: (type: string) => type === "text/html"
+        ? "<h2>Heading</h2><p><strong>Bold</strong> and <em>italic</em></p>"
+        : type === "text/plain" ? "Heading Bold and italic" : "",
+    } });
+    await act(async () => { textarea.dispatchEvent(event); });
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(textarea.value, "Before ## Heading\n\n**Bold** and *italic* after");
+    assert.equal(changes.at(-1), textarea.value);
+    // Paste restores its caret after React has published the new draft.
+    await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+    assert.equal(textarea.selectionStart, "Before ## Heading\n\n**Bold** and *italic*".length);
+    assert.equal(textarea.selectionEnd, textarea.selectionStart);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+test('find navigation retains matches and block caches map offsets through edits', async () => {
+  const { TiptapFind, tiptapFindPluginKey, updateTiptapFind } = await import('../../src/lib/tiptap-find');
+  const editor = new Editor({ extensions: [...createMarkdownExtensions('Notes/find.md'), TiptapFind], content: 'one **one**\n\nLater one', contentType: 'markdown' });
+  try {
+    updateTiptapFind(editor, { query: 'one' });
+    const before = tiptapFindPluginKey.getState(editor.state)!;
+    updateTiptapFind(editor, { activeMatchIndex: 1 });
+    const selected = tiptapFindPluginKey.getState(editor.state)!;
+    assert.equal(selected.matches, before.matches);
+    assert.equal(editor.view.dom.querySelectorAll('.markdown-editor-find-match-active').length, 1);
+    editor.commands.insertContentAt(1, 'Prefix ');
+    const after = tiptapFindPluginKey.getState(editor.state)!;
+    assert.deepEqual(after.matches, before.matches.map(match => ({ from: match.from + 7, to: match.to + 7 })));
+    updateTiptapFind(editor, { query: 'Later' });
+    assert.equal(tiptapFindPluginKey.getState(editor.state)!.matches.length, 1);
+  } finally { editor.destroy(); }
 });

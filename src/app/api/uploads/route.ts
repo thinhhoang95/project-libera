@@ -22,13 +22,23 @@ export async function POST(request: NextRequest) {
     }
 
     const uploaded = [];
+    let error: string | undefined;
 
     for (const file of files) {
-      uploaded.push(await writeUploadedFile(notebook, file, destinationPath));
+      try {
+        uploaded.push(await writeUploadedFile(notebook, file, destinationPath));
+      } catch (failure) {
+        if (!uploaded.length) throw failure;
+        // Return successful paths so the client can track them even if a later
+        // upload fails (for example, because its name already exists).
+        error = toStorageError(failure).message;
+        break;
+      }
     }
 
     return NextResponse.json({
       uploaded,
+      error,
       tree: await getTree(),
     });
   } catch (error) {

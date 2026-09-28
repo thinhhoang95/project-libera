@@ -1,0 +1,147 @@
+{
+  "node": "v22.23.1",
+  "architecture": "arm64",
+  "fixtures": [
+    {
+      "label": "100 sections",
+      "bytes": 9180
+    },
+    {
+      "label": "500 sections",
+      "bytes": 46780
+    },
+    {
+      "label": "100 sections with math",
+      "bytes": 14280
+    }
+  ],
+  "measurements": [
+    {
+      "name": "100 sections: complete preview parse + KaTeX + patch signatures",
+      "samples": 5,
+      "medianWallMs": 15.21,
+      "medianProcessCpuMs": 40.12
+    },
+    {
+      "name": "100 sections: heading worker parser",
+      "samples": 5,
+      "medianWallMs": 10.85,
+      "medianProcessCpuMs": 17.23
+    },
+    {
+      "name": "100 sections: word count",
+      "samples": 5,
+      "medianWallMs": 0.2,
+      "medianProcessCpuMs": 0.19
+    },
+    {
+      "name": "100 sections: highlight first-heading edit",
+      "totalLines": 401,
+      "retainedLines": 400
+    },
+    {
+      "name": "100 sections: one character at start",
+      "totalBlocks": 399,
+      "reusedBlocks": 398,
+      "elementBlocks": 200,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "100 sections: one character at end",
+      "totalBlocks": 399,
+      "reusedBlocks": 398,
+      "elementBlocks": 200,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "500 sections: complete preview parse + KaTeX + patch signatures",
+      "samples": 5,
+      "medianWallMs": 67.04,
+      "medianProcessCpuMs": 140.48
+    },
+    {
+      "name": "500 sections: heading worker parser",
+      "samples": 5,
+      "medianWallMs": 49.03,
+      "medianProcessCpuMs": 61.47
+    },
+    {
+      "name": "500 sections: word count",
+      "samples": 5,
+      "medianWallMs": 0.94,
+      "medianProcessCpuMs": 0.93
+    },
+    {
+      "name": "500 sections: highlight first-heading edit",
+      "totalLines": 2001,
+      "retainedLines": 2000
+    },
+    {
+      "name": "500 sections: one character at start",
+      "totalBlocks": 1999,
+      "reusedBlocks": 1998,
+      "elementBlocks": 1000,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "500 sections: one character at end",
+      "totalBlocks": 1999,
+      "reusedBlocks": 1998,
+      "elementBlocks": 1000,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "100 sections with math: complete preview parse + KaTeX + patch signatures",
+      "samples": 5,
+      "medianWallMs": 33.15,
+      "medianProcessCpuMs": 54.43
+    },
+    {
+      "name": "100 sections with math: heading worker parser",
+      "samples": 5,
+      "medianWallMs": 11.42,
+      "medianProcessCpuMs": 15.38
+    },
+    {
+      "name": "100 sections with math: word count",
+      "samples": 5,
+      "medianWallMs": 0.3,
+      "medianProcessCpuMs": 0.3
+    },
+    {
+      "name": "100 sections with math: highlight first-heading edit",
+      "totalLines": 801,
+      "retainedLines": 800
+    },
+    {
+      "name": "100 sections with math: one character at start",
+      "totalBlocks": 599,
+      "reusedBlocks": 598,
+      "elementBlocks": 300,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "100 sections with math: one character at end",
+      "totalBlocks": 599,
+      "reusedBlocks": 598,
+      "elementBlocks": 300,
+      "replacedElementBlocks": 1
+    },
+    {
+      "name": "disabled review, 1 resolved orphaned comments: sync after append",
+      "samples": 3,
+      "medianWallMs": 9.25,
+      "medianProcessCpuMs": 14.4
+    },
+    {
+      "name": "disabled review, 10 resolved orphaned comments: sync after append",
+      "samples": 3,
+      "medianWallMs": 10.2,
+      "medianProcessCpuMs": 22.14
+    }
+  ],
+  "wildcardProbe": {
+    "matches": 0,
+    "elapsedMs": 0.32541700000001583
+  }
+}

@@ -115,3 +115,38 @@ export function getMarkdownEditorLineHighlight(
     tone: getHeadingTone(line),
   };
 }
+
+export type MarkdownEditorCachedLine = MarkdownEditorLineHighlight & { text: string };
+const sameState = (a: MarkdownEditorHighlightState, b: MarkdownEditorHighlightState) =>
+  a.inFencedCodeBlock === b.inFencedCodeBlock && a.fenceLength === b.fenceLength && a.fenceMarker === b.fenceMarker;
+
+// Retain line identities across insertions/deletions. Only tokenize changed
+// lines and the suffix whose incoming fence state has actually changed.
+export function createMarkdownEditorLineIndex() {
+  let value: string | undefined;
+  let lines: MarkdownEditorCachedLine[] = [];
+  return {
+    update(nextValue: string) {
+      if (value === nextValue) return lines;
+      const text = nextValue.split('\n');
+      let prefix = 0, suffix = 0;
+      while (prefix < text.length && prefix < lines.length && text[prefix] === lines[prefix].text) prefix++;
+      while (suffix < text.length - prefix && suffix < lines.length - prefix && text[text.length - 1 - suffix] === lines[lines.length - 1 - suffix].text) suffix++;
+      const next = lines.slice(0, prefix);
+      let state = next.at(-1)?.nextState ?? initialMarkdownEditorHighlightState();
+      for (let i = prefix; i < text.length; i++) {
+        const oldIndex = i - text.length + lines.length;
+        if (i >= text.length - suffix && sameState(state, lines[oldIndex - 1]?.nextState ?? initialMarkdownEditorHighlightState())) {
+          for (let j = oldIndex; j < lines.length; j++) next.push(lines[j]);
+          break;
+        }
+        const line = { text: text[i], ...getMarkdownEditorLineHighlight(text[i], state) };
+        next.push(line);
+        state = line.nextState;
+      }
+      value = nextValue;
+      lines = next;
+      return lines;
+    },
+  };
+}

@@ -219,7 +219,7 @@ export function isExternalMarkdownLink(href: string | undefined) {
 export function resolveMarkdownFileLink(
   href: string,
   sourcePath: string,
-  files: LiberaFileNode[],
+  files: LiberaFileNode[] | ReadonlyMap<string, LiberaFileNode>,
 ): ResolvedMarkdownFileLink | null {
   if (!isLikelyWorkspaceMarkdownLink(href)) {
     return null;
@@ -227,7 +227,9 @@ export function resolveMarkdownFileLink(
 
   const { hash, path } = splitMarkdownHref(href);
   const decodedPath = decodeHrefPath(path);
-  const fileByPath = new Map(files.map((file) => [file.path, file]));
+  const fileByPath = Array.isArray(files)
+    ? new Map(files.map((file) => [file.path, file]))
+    : files;
   const relativePath = normalizeWorkspacePath(
     `${getParentPath(sourcePath)}/${decodedPath}`,
   );

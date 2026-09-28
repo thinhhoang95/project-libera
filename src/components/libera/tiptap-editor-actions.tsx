@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, Loader2, Sparkles } from "lucide-react";
+import { ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, Loader2, PenLine, Sparkles } from "lucide-react";
 import { apiRequest } from "./api-client";
+import { QuickPromptInput } from "./quick-prompt-input";
+import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
 import {
   changeTiptapHeadingLevels,
   enumerateTiptapHeadings,
+  getTiptapBlockInsertionRange,
   getTiptapHeadings,
   hasTiptapHeadings,
   getTiptapSelectionMarkdown,
@@ -24,7 +27,7 @@ type Popup = EditorRange & {
   y: number;
   image?: ImageSelection;
 };
-type AiAction = "format" | "rewrite" | "image";
+type AiAction = "format" | "rewrite" | "write" | "image";
 const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
 export function TiptapEditorActions({ editor, documentPath, onError }: {
@@ -35,6 +38,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const [popup, setPopup] = useState<Popup | null>(null);
   const [startAt, setStartAt] = useState("1");
   const [prompt, setPrompt] = useState("");
+  const [writePrompt, setWritePrompt] = useState("");
   const [working, setWorking] = useState<AiAction | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -44,7 +48,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   useEffect(() => {
     function openContextMenu(event: MouseEvent | KeyboardEvent) {
       if (event instanceof KeyboardEvent && !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
-      const { from, to } = editor.state.selection;
+      let { from, to } = editor.state.selection;
       let image: ImageSelection | undefined;
       const target = event.target instanceof Element ? event.target.closest("img") : null;
       if (target && editor.view.dom.contains(target)) {
@@ -57,12 +61,18 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
           if (!image && node.type.name === "image") image = { from: pos, to: pos + node.nodeSize, src: node.attrs.src, alt: node.attrs.alt ?? "" };
         });
       }
-      if (from === to && !image) return;
+      // Without a selection the menu offers Write with AI at the clicked spot.
+      if (from === to && image) {
+        from = to = image.to;
+      } else if (from === to && event instanceof MouseEvent) {
+        from = to = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? from;
+      }
       event.preventDefault();
       const point = event instanceof MouseEvent
         ? { left: event.clientX, top: event.clientY }
         : editor.view.coordsAtPos(from);
       setPrompt("");
+      setWritePrompt("");
       setStartAt("1");
       setPopup({ from, to, kind: "context", image,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
@@ -99,7 +109,8 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
     window.addEventListener("resize", close);
     window.addEventListener("scroll", onScroll, true);
     editor.on("transaction", onTransaction);
-    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    const writeOnly = popup.kind === "context" && popup.from === popup.to;
+    menuRef.current?.querySelector<HTMLElement>(writeOnly ? "#visual-ai-write" : "button:not(:disabled)")?.focus();
     return () => {
       window.removeEventListener("pointerdown", onPointer);
       window.removeEventListener("keydown", onKey);
@@ -124,8 +135,9 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
 
   async function runAi(action: AiAction) {
     if (!popup || pendingRef.current) return;
-    const range = action === "image" ? popup.image : popup;
-    if (!range || range.from === range.to || (action === "rewrite" && !prompt.trim())) return;
+    const range = action === "image" ? popup.image : action === "write" ? getTiptapBlockInsertionRange(editor, popup.to) : popup;
+    if (!range) return;
+    if (action === "write" ? !writePrompt.trim() : range.from === range.to || (action === "rewrite" && !prompt.trim())) return;
     const tracked = trackTiptapRange(editor, range);
     const controller = new AbortController();
     const pending = { controller, dispose: tracked.dispose };
@@ -134,7 +146,12 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
     setPopup(null);
     onError("");
     try {
-      const text = getTiptapSelectionMarkdown(editor, range);
+      const text = action === "write" ? "" : getTiptapSelectionMarkdown(editor, range);
+      // The Markdown on either side of the selection or insertion point.
+      const context = (action === "write" || action === "rewrite") && readIncludeDocumentContext() ? {
+        before: getTiptapSelectionMarkdown(editor, { from: 0, to: range.from }),
+        after: getTiptapSelectionMarkdown(editor, { from: range.to, to: editor.state.doc.content.size }),
+      } : {};
       let markdown: string;
       const init = { method: "POST", signal: controller.signal };
       if (action === "image" && popup.image) {
@@ -142,9 +159,14 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
           ...init, body: JSON.stringify({ documentPath, imageSource: popup.image.src, alt: popup.image.alt }),
         });
         markdown = result.markdown;
+      } else if (action === "write") {
+        const result = await apiRequest<{ markdown: string }>("/api/ai-write", {
+          ...init, body: JSON.stringify({ prompt: writePrompt.trim(), ...context }),
+        });
+        markdown = result.markdown;
       } else if (action === "rewrite") {
         const result = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
-          ...init, body: JSON.stringify({ text, prompt: prompt.trim() }),
+          ...init, body: JSON.stringify({ text, prompt: prompt.trim(), ...context }),
         });
         markdown = result.rewrittenText;
       } else {
@@ -154,10 +176,10 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
         markdown = result.formattedText;
       }
       if (controller.signal.aborted || editor.isDestroyed) return;
-      if (!tracked.isValid()) throw new Error("The selected content changed while AI was working. Select it again and retry.");
+      if (!tracked.isValid()) throw new Error(action === "write" ? "The text around the insertion point changed while AI was working. Please retry." : "The selected content changed while AI was working. Select it again and retry.");
       if (!markdown?.trim()) throw new Error("AI returned an empty response. Please retry.");
       tracked.dispose();
-      replaceTiptapRangeWithMarkdown(editor, tracked.range, markdown);
+      replaceTiptapRangeWithMarkdown(editor, tracked.range, markdown, action);
       // Keep converted image assets available so Undo can restore the image.
     } catch (cause) {
       if (!controller.signal.aborted) onError(cause instanceof Error ? cause.message : "AI request failed.");
@@ -173,7 +195,16 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const selectedHeadings = popup ? getTiptapHeadings(editor, popup).filter((heading) => heading.selected) : [];
   const hasText = popup ? !!getTiptapSelectionMarkdown(editor, popup).trim() : false;
   const canIndent = selectedHeadings.some(({ node }) => node.attrs.level < 6);
-  const canUnindent = selectedHeadings.some(({ node }) => node.attrs.level > 1);
+  const canUnindent = selectedHeadings.length > 0;
+  const writeOnly = popup?.kind === "context" && popup.from === popup.to;
+  const writeForm = <form className={`${writeOnly ? "" : "mt-1 border-t border-border "}px-2 py-2`} onSubmit={(event) => { event.preventDefault(); void runAi("write"); }}>
+    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="visual-ai-write"><PenLine aria-hidden className="h-3.5 w-3.5" />Write with AI</label>
+    <div className="mt-1 flex items-start gap-2">
+      <QuickPromptInput id="visual-ai-write" placeholder="What should AI write? Type / for prompts" value={writePrompt} disabled={!!working} onChange={setWritePrompt} onSubmit={() => void runAi("write")} />
+      <button type="submit" aria-label="Write new text with AI" title="Write new text with AI" disabled={!!working || !writePrompt.trim()} className="h-8 shrink-0 rounded-md bg-primary px-2 text-primary-foreground disabled:opacity-50"><PenLine aria-hidden className="h-4 w-4" /></button>
+    </div>
+    <IncludeDocumentContextCheckbox id="visual-ai-document-context" />
+  </form>;
 
   return <>
     <button ref={buttonRef} type="button" aria-label="Enumerate Headings" title="Enumerate Headings"
@@ -187,42 +218,45 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
         setStartAt("1");
         setPopup({ kind: "headings", from, to, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 200)) });
       }}><ListOrdered aria-hidden className="h-4 w-4" /></button>
-    {working ? <span role="status" className="flex items-center gap-1 px-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />{working === "image" ? "Converting image…" : working === "rewrite" ? "Rewriting…" : "Formatting…"}</span> : null}
+    {working ? <span role="status" className="flex items-center gap-1 px-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />{working === "image" ? "Converting image…" : working === "rewrite" ? "Rewriting…" : working === "write" ? "Writing…" : "Formatting…"}</span> : null}
     {popup ? createPortal(
       <div ref={menuRef} role="menu" aria-label={popup.kind === "headings" ? "Heading numbering" : "Editor actions"}
         className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg"
         style={{ left: popup.x, top: popup.y, maxHeight: "calc(100vh - 16px)" }}
         onKeyDown={(event) => {
-          if (event.target instanceof HTMLInputElement || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+          if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
           const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
           const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
           const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
           buttons[next]?.focus();
           event.preventDefault();
         }}>
-        {popup.kind === "context" ? <>
+        {writeOnly ? writeForm : null}
+        {popup.kind === "context" && !writeOnly ? <>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!!working || !hasText} onClick={() => void runAi("format")}><Sparkles aria-hidden className="h-4 w-4" />AI Format</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canIndent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "indent"); setPopup(null); editor.commands.focus(); }}><ListIndentIncrease aria-hidden className="h-4 w-4" />Indent Headings</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canUnindent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "unindent"); setPopup(null); editor.commands.focus(); }}><ListIndentDecrease aria-hidden className="h-4 w-4" />Unindent Headings</button>
         </> : null}
         <button type="button" role="menuitem" className={menuItemClass} disabled={!hasHeadings} onClick={() => enumerate("all")}><ListOrdered aria-hidden className="h-4 w-4" />Enumerate All Headings</button>
-        <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); enumerate("selected"); }}>
+        {writeOnly ? null : <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); enumerate("selected"); }}>
           <label className="block text-xs font-medium text-muted-foreground" htmlFor="visual-heading-start">Enumerate Selected Headings</label>
           <div className="mt-1 flex items-center gap-2">
             <input id="visual-heading-start" aria-label="Selected heading start value" type="number" min="1" step="1" value={startAt} disabled={!selectedHeadings.length}
               className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm" onChange={(event) => setStartAt(event.target.value)} />
             <button type="submit" disabled={!selectedHeadings.length} className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50">Apply</button>
           </div>
-        </form>
-        {popup.kind === "context" ? <>
+        </form>}
+        {popup.kind === "context" && !writeOnly ? <>
           <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); void runAi("rewrite"); }}>
             <label className="block text-xs font-medium text-muted-foreground" htmlFor="visual-ai-rewrite">AI Rewrite</label>
-            <div className="mt-1 flex items-center gap-2">
-              <input id="visual-ai-rewrite" placeholder="Prompt..." value={prompt} disabled={!!working || !hasText}
-                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm" onChange={(event) => setPrompt(event.target.value)} />
+            <div className="mt-1 flex items-start gap-2">
+              <QuickPromptInput id="visual-ai-rewrite" value={prompt} disabled={!!working || !hasText} onChange={setPrompt} onSubmit={() => void runAi("rewrite")} />
               <button type="submit" aria-label="Rewrite selected text" disabled={!!working || !hasText || !prompt.trim()} className="h-8 rounded-md bg-primary px-2 text-primary-foreground disabled:opacity-50"><Sparkles aria-hidden className="h-4 w-4" /></button>
             </div>
           </form>
+          {writeForm}
+        </> : null}
+        {popup.kind === "context" ? <>
           {popup.image ? <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => void runAi("image")}><ImageIcon aria-hidden className="h-4 w-4" />AI Image to Markdown</button> : null}
         </> : null}
       </div>, document.body,

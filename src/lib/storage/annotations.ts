@@ -16,13 +16,18 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { toStorageError } from "@/lib/storage/errors";
+import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
   PdfAnnotationRect,
   PdfAnnotationsPayload,
   PdfTextAnnotation,
+  PdfTextAnnotationFont,
 } from "@/lib/types";
+
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const PDF_TEXT_ANNOTATION_FONTS: readonly PdfTextAnnotationFont[] = ["sans", "serif", "hand", "mono"];
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -88,10 +93,13 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
           type,
           pageNumber,
           color:
-            typeof candidate.color === "string" && /^#[0-9a-f]{6}$/i.test(candidate.color)
+            typeof candidate.color === "string" && HEX_COLOR_PATTERN.test(candidate.color)
               ? candidate.color
               : "#fde047",
           rects,
+          quote: typeof candidate.quote === "string"
+            ? normalizePdfHighlightQuote(candidate.quote)
+            : undefined,
           createdAt,
           updatedAt,
         });
@@ -107,7 +115,14 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
           typeof candidate.text === "string"
             ? candidate.text.slice(0, 10_000)
             : "",
-        fontSize: Math.round(clampNumber(candidate.fontSize, 4, 72, 8)),
+        fontSize: Math.round(clampNumber(candidate.fontSize, 4, 72, 10)),
+        ...(typeof candidate.color === "string" && HEX_COLOR_PATTERN.test(candidate.color)
+          ? { color: candidate.color }
+          : {}),
+        ...(typeof candidate.fontFamily === "string" &&
+        PDF_TEXT_ANNOTATION_FONTS.includes(candidate.fontFamily as PdfTextAnnotationFont)
+          ? { fontFamily: candidate.fontFamily as PdfTextAnnotationFont }
+          : {}),
         rect: normalizeAnnotationRect(
           (candidate as Partial<{ rect: Partial<PdfAnnotationRect> }>).rect ?? {},
         ),

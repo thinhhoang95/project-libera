@@ -34,8 +34,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const [selectedThread, selectThread] = useState<string | null>(null);
   const [chatReview, setChatReviewState] = useState(false);
   const bridge = useRef<EditorBridge | null>(null);
-  const current = useRef({ activeTab, getDraft, applyDraft, openChat, openComments });
-  useLayoutEffect(() => { current.current = { activeTab, getDraft, applyDraft, openChat, openComments }; }, [activeTab, getDraft, applyDraft, openChat, openComments]);
+  const current = useRef({ activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft });
+  useLayoutEffect(() => { current.current = { activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft }; }, [activeTab, getDraft, applyDraft, openChat, openComments, recoverDraft]);
   const latest = useRef<ReviewDocument | null>(null);
   const pending = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -54,20 +54,23 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   }, []);
   useEffect(() => {
     let disposed = false;
+    const loadController = new AbortController();
     pending.current?.abort();
     pending.current = null;
     busyRef.current = false;
     latest.current = null;
     queueMicrotask(() => { if (!disposed) { setBusy(""); setError(""); setSelection(null); selectThread(null); setRecovery(false); publish(null); } });
     const prior = lastTab.current;
-    if (!key) return;
+    lastTab.current = null;
+    if (!key) return () => { disposed = true; };
     const text = current.current.getDraft(tabId!);
     async function load() {
       // Saving an untitled/standalone draft preserves its review identity.
       if (prior && prior.id === tabId && prior.key !== key && prior.doc && (prior.key.startsWith("draft:") || prior.key.startsWith("standalone:"))) {
         await apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", body: JSON.stringify({ action: "migrate", id: prior.doc.id, revision: prior.doc.revision, snapshot: text, key }) });
       }
-      const loaded = await apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", body: JSON.stringify({ action: "load", key, snapshot: text }) });
+      if (disposed) return;
+      const loaded = await apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", signal: loadController.signal, body: JSON.stringify({ action: "load", key, snapshot: text }) });
       if (disposed) return;
       if (loaded.schemaVersion !== 1 || !Array.isArray(loaded.threads) || !Array.isArray(loaded.undo)) throw new Error("Could not load valid review metadata. Reload review to retry.");
       publish(loaded);
@@ -78,6 +81,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     void load().catch((cause) => { if (!disposed) setError(cause instanceof Error ? cause.message : "Could not load review."); });
     return () => {
       disposed = true;
+      loadController.abort();
       pending.current?.abort();
       pending.current = null;
       busyRef.current = false;
@@ -143,10 +147,11 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); }
     }
   }, [key, publish, snapshot]);
+  const draft = activeTab?.draft;
   // Persist anchor positions against the unsaved buffer, without ever saving
   // Markdown. Wait until generation finishes to avoid invalidating its CAS.
   useEffect(() => {
-    if (!doc || !activeTab || busy || error || recovery || (!doc.threads.length && !doc.session) || doc.snapshot === activeTab.draft) return;
+    if (!doc || draft === undefined || busy || error || recovery || (!doc.threads.length && !doc.session) || doc.snapshot === draft) return;
     let timer: number;
     const syncWhenReady = () => {
       // A background snapshot must not interrupt an IME session or surface a
@@ -156,25 +161,26 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     };
     timer = window.setTimeout(syncWhenReady, 900);
     return () => window.clearTimeout(timer);
-  }, [activeTab, action, busy, doc, error, recovery]);
+  }, [tabId, draft, action, busy, doc, error, recovery]);
   // Sync/reload only persist/read metadata. Toggling contenteditable for them
   // drops browser focus and can leave an IME composition stranded.
   const locked = !!busy && !["plan", "generate", "revise", "sync", "reload"].includes(busy);
-  const draft = activeTab?.draft;
   // Scroll/view-state updates do not change anchors. Preserve the projection's
   // identity so they also do not trigger a full visual comment remapping.
   const shown = useMemo(() => doc?.key === key && draft !== undefined ? syncReview(doc, draft) : null, [doc, key, draft]);
-  function select(range: ReviewRange, x: number, y: number) {
+  const select = useCallback((range: ReviewRange, x: number, y: number) => {
     try {
       const expanded = paragraphRange(snapshot(), range);
       if (expanded) setSelection({ range: expanded, x, y });
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Selection failed."); }
-  }
-  return <ReviewContext.Provider value={{ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection, selectedThread, chatReview, register, select, snapshot, reload, action, generate,
+  }, [snapshot]);
+  const value = useMemo<ContextValue>(() => ({ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection, selectedThread, chatReview, register, select, snapshot, reload, action, generate,
     selectThread: (id) => { selectThread(id); if (id) current.current.openComments(); },
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
     setChatReview: (value) => { setChatReviewState(value); if (value) current.current.openChat(); },
     restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error("Document changed. Retry recovery."); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : "Recovery failed."); } },
-    stop: () => pending.current?.abort(), reportError: setError, recoverDraft,
-  }}>{children}</ReviewContext.Provider>;
+    stop: () => pending.current?.abort(), reportError: setError,
+    recoverDraft: (key, text) => current.current.recoverDraft(key, text),
+  }), [shown, busy, locked, error, recovery, selection, selectedThread, chatReview, register, select, snapshot, reload, action, generate]);
+  return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
 }

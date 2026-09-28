@@ -122,3 +122,49 @@ test("preview coalesces edits, rejects stale replies, keeps existing DOM nodes a
     dom.window.close();
   }
 });
+
+test('semantic preview reuse updates exact source coordinates without rewriting unchanged content', async () => {
+  const { createMarkdownPreviewCache } = await import('../../src/lib/markdown-preview-patch');
+  const dom = setupDom();
+  const root = createRoot(document.getElementById('root')!);
+  const cache = createMarkdownPreviewCache();
+  let previous: ReturnType<typeof prepareMarkdownPreview>['children'] = [];
+  async function render(content: string, textScale = 1) {
+    const patch = cache.patch(prepareMarkdownPreview(content));
+    const children = patch.children.map(node => typeof node === 'number' ? previous[node] : node);
+    const prior = previous;
+    previous = children;
+    await act(async () => root.render(createElement(MarkdownRenderer, { content, textScale, preparedTree: { type: 'root', children }, preparedSources: patch.sources })));
+    const expected = document.createElement('div');
+    expected.innerHTML = renderToStaticMarkup(createElement(MarkdownRenderer, { content, textScale }));
+    const actual = document.createElement('div');
+    actual.innerHTML = document.getElementById('root')!.innerHTML.replace(/ data-preview-source-id="[^"]*"/g, '');
+    for (const container of [actual, expected]) for (const element of container.querySelectorAll<HTMLElement>('[style]')) element.setAttribute('style', element.style.cssText);
+    assert.equal(actual.innerHTML, expected.innerHTML, content);
+    return { children, prior };
+  }
+  try {
+    const source = '# Title\n\nParagraph **bold**.\n\n## Later\n\n[Ref][r]\n\n[r]: first.md';
+    await render(source);
+    const paragraph = document.querySelector('p')!;
+    const bold = paragraph.querySelector('strong');
+    const { children, prior } = await render(source.replace('Title', 'Longer title'));
+    assert.equal(children[2], prior[2], 'Position-only changes preserve rendered HAST identity');
+    assert.equal(document.querySelector('p'), paragraph);
+    assert.equal(paragraph.querySelector('strong'), bold);
+    await render(source.replace('Title', 'Longer title'), 1.25);
+    await render('New block\n\n' + source.replace('first.md', 'second.md'));
+    assert.equal(document.querySelector('a')?.getAttribute('href'), 'second.md');
+    await render('| A | B |\n| - | - |\n| same | same |\n\n$$\nx^2\n$$\n\nSame\n\nSame');
+    await render('Prefix\n\n| A | B |\n| - | - |\n| same | same |\n\n$$\nx^2\n$$\n\nSame\n\nSame');
+  } finally { await act(async () => root.unmount()); dom.window.close(); }
+});
+
+test('cached equations preserve fenced math, custom markers and invalid-formula rendering', () => {
+  for (const content of ['```math\nx^2\n```', 'Inline $\\badcommand{x}$ and $x^2$.', '$$\n\\tag{1} x^2\n$$']) {
+    for (let i = 0; i < 2; i++) {
+      const props = { content: '# Heading' + 'x'.repeat(i) + '\n\n' + content };
+      assert.equal(renderToStaticMarkup(createElement(MarkdownRenderer, { ...props, preparedTree: prepareMarkdownPreview(props.content) })), renderToStaticMarkup(createElement(MarkdownRenderer, props)));
+    }
+  }
+});

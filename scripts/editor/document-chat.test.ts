@@ -64,3 +64,14 @@ test("photos become model image parts and excluded documents leave outbound hist
   assert.deepEqual(messagesWithoutExcludedDocuments(history, [document.path])[0].contexts, [selection]);
   assert.equal(history[0].contexts.length, 2);
 });
+
+test("response timestamps use local calendar days and accept legacy messages", async () => {
+  const { formatChatTimestamp } = await import("../../src/lib/document-chat");
+  const now = new Date(2026, 0, 1, 12, 0);
+  assert.equal(formatChatTimestamp(new Date(2026, 0, 1, 0, 5).toISOString(), now), "00:05");
+  assert.equal(formatChatTimestamp(new Date(2025, 11, 31, 23, 59).toISOString(), now), "31/12 23:59");
+  assert.equal(formatChatTimestamp(new Date(2025, 0, 1, 9, 7).toISOString(), now), "01/01 09:07");
+  assert.ok(validateChatMessages([turn]));
+  assert.ok(validateChatMessages([{ ...turn, createdAt: now.toISOString() }]));
+  assert.equal(validateChatMessages([{ ...turn, createdAt: "invalid" }]), false);
+});

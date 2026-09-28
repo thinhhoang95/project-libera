@@ -1,6 +1,7 @@
 "use client";
 
 import { ZoomIn } from "lucide-react";
+import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
 
 type Props = {
   markdownBaseFontSize: number;
@@ -9,6 +10,7 @@ type Props = {
 };
 
 export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMarkdownZoomChange }: Props) {
+  const { flushPreferences } = useMarkdownDisplayPreferences();
   const markdownFontSize = markdownBaseFontSize * (markdownZoom / 100);
   const formattedFontSize = Number.isInteger(markdownFontSize)
     ? String(markdownFontSize)
@@ -30,6 +32,10 @@ export function MarkdownDisplayZoom({ markdownBaseFontSize, markdownZoom, onMark
         value={markdownZoom}
         aria-label="Rendered Markdown text zoom"
         onChange={(event) => onMarkdownZoomChange(Number(event.target.value))}
+        onPointerUp={flushPreferences}
+        onPointerCancel={flushPreferences}
+        onKeyUp={flushPreferences}
+        onBlur={flushPreferences}
       />
       <span className="min-w-20 text-right tabular-nums">
         {markdownZoom}% / {formattedFontSize}px

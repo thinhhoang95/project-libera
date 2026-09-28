@@ -30,7 +30,7 @@ test('source typing updates only the changed highlight line, skips React/workspa
     const textareaRef=useRef<HTMLTextAreaElement>(null);
     return createElement(MarkdownEditor,{key:tab,activeFilePath:tab,value,textareaRef,onRegisterDraft:register,
       files:[],openTabs:[],recentFiles:[],formatting:false,imageConverting:false,fontFamily:'monospace',fontSizePx:16,lineHeightPx:24,
-      onChange:(text)=>{changes.push(text);if(echo)setValue(text);},onAiFormatSelection:async()=>{},onAiRewriteSelection:async()=>{},onAiImageToMarkdown:async()=>{},onInsertFileLink:()=>{},onInsertImageFile:async()=>{}});
+      onChange:(text)=>{changes.push(text);if(echo)setValue(text);},onAiFormatSelection:async()=>{},onAiRewriteSelection:async()=>{},onAiWriteAt:async()=>{},onAiImageToMarkdown:async()=>{},onInsertFileLink:()=>{},onInsertImageFile:async()=>{}});
   }
   const type=async(text:string)=>{const input=document.querySelector('textarea')!;await act(async()=>{setNativeValue.call(input,text);input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));});};
   try{
@@ -53,6 +53,11 @@ test('source typing updates only the changed highlight line, skips React/workspa
     assert.equal(commits,0,'Ordinary typing must not render React');
     assert.equal(changes.length,0,'Do not publish each keystroke to the workspace');
     observer.disconnect();
+    const retained = Array.from(layer.children);
+    await type('Inserted line\n' + input.value);
+    retained.forEach((line, i) => assert.equal(layer.children[i + 1], line, 'Newlines retain downstream DOM nodes'));
+    await type(input.value.slice('Inserted line\n'.length));
+    retained.forEach((line, i) => assert.equal(layer.children[i], line));
     let snapshot='';await act(async()=>{snapshot=read();});
     assert.equal(snapshot,input.value,'Save/export/tab-close reader sees the latest keystroke immediately');
     assert.equal(changes.at(-1),snapshot);
@@ -88,7 +93,7 @@ test('source typing updates only the changed highlight line, skips React/workspa
 test('source highlight updates propagate through fences and keep find matches current',async()=>{
   const root=createRoot(document.getElementById('root')!);
   const ref={current:null as HTMLTextAreaElement|null};
-  await act(async()=>root.render(createElement(MarkdownEditor,{value:'```\n## Hidden\n```\n## Visible\n',textareaRef:ref,files:[],openTabs:[],recentFiles:[],formatting:false,imageConverting:false,fontFamily:'monospace',fontSizePx:16,lineHeightPx:24,onChange:()=>{},onAiFormatSelection:async()=>{},onAiRewriteSelection:async()=>{},onAiImageToMarkdown:async()=>{},onInsertFileLink:()=>{},onInsertImageFile:async()=>{}})));
+  await act(async()=>root.render(createElement(MarkdownEditor,{value:'```\n## Hidden\n```\n## Visible\n',textareaRef:ref,files:[],openTabs:[],recentFiles:[],formatting:false,imageConverting:false,fontFamily:'monospace',fontSizePx:16,lineHeightPx:24,onChange:()=>{},onAiFormatSelection:async()=>{},onAiRewriteSelection:async()=>{},onAiWriteAt:async()=>{},onAiImageToMarkdown:async()=>{},onInsertFileLink:()=>{},onInsertImageFile:async()=>{}})));
   try{
     const layer=document.querySelector('.markdown-editor-highlight-layer')!;
     assert.equal(layer.querySelectorAll('.markdown-editor-highlight-tone-heading-2').length,1);

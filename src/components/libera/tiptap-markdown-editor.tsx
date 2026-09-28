@@ -1,12 +1,14 @@
 "use client";
 
 import { TiptapReview } from "@/lib/tiptap-review";
+import { TiptapChanges } from "@/lib/tiptap-changes";
+import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
-import { replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
+import { changeTiptapHeadingLevels, replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
@@ -25,10 +27,14 @@ import { LatexExportButton } from "@/components/libera/latex-export-button";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
+import { MarkdownTextWidth } from "./markdown-text-width";
+import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
-import type { MarkdownImageAssetPayload } from "@/lib/types";
+import { MarkdownLinkInput } from "./markdown-link-input";
+import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
 
 type Props = {
+  files?: LiberaFileNode[];
   documentPath: string;
   untitled?: boolean;
   mathMarkers?: MathMarkerSettings;
@@ -83,9 +89,9 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
-  const [linkDraft, setLinkDraft] = useState<{ href: string; from: number; to: number } | null>(null);
+  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -94,11 +100,14 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
   const [replaceQuery, setReplaceQuery] = useState("");
   const [wildcardMatches, setWildcardMatches] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const toolbarRef = useHorizontalToolbarScroll();
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const visualScrollFrameRef = useRef<number | null>(null);
   const headingIndexRef = useRef<{ markdown: string; offsets: number[] } | null>(null);
   const initialViewStateRef = useRef(initialViewState);
+  const onViewStateChangeRef = useRef(onViewStateChange);
+  useLayoutEffect(() => { onViewStateChangeRef.current = onViewStateChange; }, [onViewStateChange]);
   const lastValue = useRef(value);
   const visualPositionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastReportedLineRef = useRef<number | null>(null);
@@ -124,6 +133,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
     HighlightTool,
     TiptapFind,
     TiptapReview,
+    TiptapChanges.configure({ documentPath }),
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -180,6 +190,23 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
         if (inserted) event.preventDefault();
         return inserted;
       },
+      handleKeyDown(view, event): boolean {
+        if (
+          !editor ||
+          event.key !== "Tab" ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey
+        ) {
+          return false;
+        }
+
+        return changeTiptapHeadingLevels(
+          editor,
+          view.state.selection,
+          event.shiftKey ? "unindent" : "indent",
+        );
+      },
       handleClick(_view, _pos, event) {
         const anchor = (event.target as HTMLElement).closest("a");
         if (!anchor || !(event.metaKey || event.ctrlKey)) return false;
@@ -231,6 +258,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
+    highlight: current.isActive("highlight"),
     // Subscribe only to UI data, never a DecorationSet containing document nodes.
     find: (() => {
       const find = tiptapFindPluginKey.getState(current.state);
@@ -262,17 +290,17 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
           headingIndexRef.current?.markdown === markdown ? headingIndexRef.current.offsets : null,
         );
         lastReportedLineRef.current = viewState.line ?? null;
-        onViewStateChange?.(viewState);
+        onViewStateChangeRef.current?.(viewState);
       }
     });
     visualScrollFrameRef.current = frame;
     return () => {
       // A tab/mode switch can unmount before the next scroll frame runs.
-      onViewStateChange?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+      onViewStateChangeRef.current?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
       window.cancelAnimationFrame(frame);
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
     };
-  }, [editor, onViewStateChange]);
+  }, [editor]);
 
   useEffect(() => {
     const pending = uploads.current;
@@ -531,8 +559,8 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
       }
       if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
     }}>
-      <div aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
-        className="libera-editor-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [scrollbar-width:thin] [&>*]:shrink-0">
+      <div ref={toolbarRef} aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
+        className="libera-editor-toolbar libera-horizontal-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [&>*]:shrink-0">
         <select aria-label="Text style" className={selectClass} value={state.heading} onChange={(event) => {
           const level = Number(event.target.value) as 1 | 2 | 3 | 4 | 5 | 6;
           if (level) editor.chain().focus().setHeading({ level }).run(); else editor.chain().focus().setParagraph().run();
@@ -561,7 +589,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
-          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active, run: () => editor.chain().focus().setHighlightToolActive(!state.highlightTool.active).run() },
+          { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
           {MARKDOWN_HIGHLIGHT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label} highlight</option>)}
@@ -599,8 +627,9 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
+      <MarkdownTextWidth canvasRef={scrollContainerRef} />
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollContainerRef} className={`libera-visual-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
+        <div ref={scrollContainerRef} className={`libera-visual-page libera-text-width-page h-full overflow-auto p-6 ${dragging ? "ring-2 ring-inset ring-primary" : ""}`} style={{ fontFamily, fontSize: fontSizePx, lineHeight }}
           onScroll={(event) => handleVisualScroll(event.currentTarget)}
           onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
@@ -613,7 +642,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
               void insertImages(Array.from(event.dataTransfer.files), pos);
             }
           }}>
-          <EditorContent editor={editor} />
+          <EditorContent className="libera-text-width-content" editor={editor} />
         </div>
         {findOpen ? (
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
@@ -650,6 +679,7 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
             </div>
           </div>
         ) : null}
+        <TiptapChangeBar editor={editor} />
       </div>
       <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
@@ -670,12 +700,12 @@ export function TiptapMarkdownEditor({ mathMarkers, untitled = false, documentPa
         if (!linkDraft) return;
         const chain = editor.chain().focus().setTextSelection({ from: linkDraft.from, to: linkDraft.to }).extendMarkRange("link");
         if (linkDraft.href.trim()) {
-          if (linkDraft.from === linkDraft.to && !editor.isActive("link")) chain.insertContent({ type: "text", text: linkDraft.href, marks: [{ type: "link", attrs: { href: linkDraft.href } }] }).run();
+          if (linkDraft.from === linkDraft.to && !editor.isActive("link")) chain.insertContent({ type: "text", text: linkDraft.label ?? linkDraft.href.trim(), marks: [{ type: "link", attrs: { href: linkDraft.href.trim() } }] }).run();
           else chain.setLink({ href: linkDraft.href.trim() }).run();
         } else chain.unsetLink().run();
         setLinkDraft(null);
       }}>Apply link</button>}>
-        <input autoFocus aria-label="Link URL or file path" placeholder="https://… or notebook/note.md" className="w-full rounded-md border border-border bg-background p-2" value={linkDraft?.href ?? ""} onChange={(event) => setLinkDraft((current) => current ? { ...current, href: event.target.value } : null)} />
+        <MarkdownLinkInput files={files} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft((current) => current ? { ...current, href, label } : null)} />
       </ModalDialog>
     </div>
   );

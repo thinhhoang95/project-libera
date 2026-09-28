@@ -2,7 +2,8 @@ import { Extension, type Editor } from "@tiptap/core";
 import { Fragment, type Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { reviewBlocks, type ReviewRange } from "./markdown-review";
+import { reviewBlocks, type ReviewEdit, type ReviewRange } from "./markdown-review";
+import { diffNodes, type ChangeHunk, type TrackedChange } from "./tiptap-changes";
 
 export const tiptapReviewKey = new PluginKey<DecorationSet>("liberaReview");
 export const TiptapReview = Extension.create({
@@ -88,4 +89,57 @@ export function sourceRangeForTiptapSelection(editor: Editor, source: string, fr
   // Include only blocks whose editable content actually intersects selection.
   const blocks = tiptapReviewBlocks(editor, source).filter((b) => from === to ? b.from <= from && b.to > from : b.from + 1 < to && b.to - 1 > from);
   return blocks.length ? { start: blocks[0].start, end: blocks.at(-1)!.end } : null;
+}
+
+function hashText(text: string) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index++) hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  return (hash >>> 0).toString(36);
+}
+
+/** Preview pending review suggestions as inline changes without editing the
+ * document: each edited run of blocks is re-parsed with its replacement and
+ * diffed against the live nodes. Suggestions that cannot be mapped exactly are
+ * left to the review panel rather than shown in the wrong place. */
+export function tiptapReviewChanges(editor: Editor, source: string, suggestions: { id: string; label: string; edits: ReviewEdit[] }[]): TrackedChange[] {
+  const markdown = editor.markdown;
+  const blocks = markdown ? tiptapReviewBlocks(editor, source) : [];
+  if (!markdown || !blocks.length) return [];
+  const parse = (text: string) => editor.schema.nodeFromJSON(markdown.parse(text)).content;
+  const nodes = (fragment: Fragment) => { const list: ProseMirrorNode[] = []; fragment.forEach((node) => list.push(node)); return list; };
+  const changes: TrackedChange[] = [];
+  for (const suggestion of suggestions) {
+    const regions: { first: number; last: number; start: number; end: number; edits: ReviewEdit[] }[] = [];
+    const edits = [...suggestion.edits].sort((a, b) => a.start - b.start);
+    if (edits.some((edit) => !blocks.some((block) => block.start < edit.end && block.end > edit.start))) continue;
+    for (const edit of edits) {
+      const first = blocks.findIndex((block) => block.start < edit.end && block.end > edit.start);
+      const last = blocks.findLastIndex((block) => block.start < edit.end && block.end > edit.start);
+      const region = regions.at(-1);
+      if (region && first <= region.last) {
+        region.last = Math.max(region.last, last);
+        region.end = Math.max(region.end, edit.end, blocks[last].end);
+        region.edits.push(edit);
+      } else regions.push({ first, last, start: Math.min(blocks[first].start, edit.start), end: Math.max(blocks[last].end, edit.end), edits: [edit] });
+    }
+    const hunks: ChangeHunk[] = [];
+    try {
+      for (const region of regions) {
+        const from = blocks[region.first].from, to = blocks[region.last].to;
+        const original = source.slice(region.start, region.end);
+        const proposed = region.edits.reduceRight((text, edit) => text.slice(0, edit.start - region.start) + edit.after + text.slice(edit.end - region.start), original);
+        const live = nodes(editor.state.doc.slice(from, to).content), next = nodes(parse(proposed));
+        // Refine only when the live nodes are exactly what the source parses to;
+        // otherwise show the whole run as replaced, which is still accurate.
+        hunks.push(...(Fragment.fromArray(live).eq(parse(original))
+          ? diffNodes(live, from, next, 0)
+          : [{ a: { from, to }, b: { from: 0, to: 0 }, aContent: Fragment.fromArray(live), bContent: Fragment.fromArray(next), block: true }]));
+      }
+    } catch { continue; }
+    hunks.forEach((hunk, index) => changes.push({
+      id: `${suggestion.id}:${index}:${hashText(JSON.stringify(hunk.bContent.toJSON()))}`, group: suggestion.id, source: "review", label: suggestion.label,
+      mode: "preview", block: hunk.block, from: hunk.a.from, to: hunk.a.to, other: hunk.bContent, showActions: index === hunks.length - 1,
+    }));
+  }
+  return changes;
 }

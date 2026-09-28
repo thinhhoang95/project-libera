@@ -1,5 +1,6 @@
 "use client";
 
+import { useWorkspaceView } from "./workspace-view-context";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
@@ -9,6 +10,7 @@ import {
   ChevronRight,
   Folder,
   FolderPlus,
+  Link2,
   MoreHorizontal,
   Pencil,
   Star,
@@ -63,6 +65,8 @@ type NativeMenuPoint = {
 };
 
 export type NotebookPanelProps = {
+  workspaceActive?: boolean;
+  onManageWorkspace?: () => void;
   activeTabId: string;
   expanded: Set<string>;
   fileInteractions: Record<string, string>;
@@ -445,6 +449,8 @@ async function copyItemPath(
 }
 
 export function NotebookPanel({
+  workspaceActive,
+  onManageWorkspace,
   activeTabId,
   expanded,
   fileInteractions,
@@ -488,11 +494,13 @@ export function NotebookPanel({
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
-  const sortPreferenceToken = useSyncExternalStore(
+  const workspaceView = useWorkspaceView();
+  const librarySortToken = useSyncExternalStore(
     subscribeSidebarSortPreference,
     readSidebarSortToken,
     () => DEFAULT_SIDEBAR_SORT_TOKEN,
   );
+  const sortPreferenceToken = workspaceView?.view?.sidebarSort ?? librarySortToken;
   const sortPreference = useMemo(
     () => parseSidebarSortToken(sortPreferenceToken),
     [sortPreferenceToken],
@@ -501,6 +509,10 @@ export function NotebookPanel({
   const [viewOptionsSubmitting, setViewOptionsSubmitting] = useState(false);
   const [viewOptionsError, setViewOptionsError] = useState("");
   const [visibleNodeLimits, setVisibleNodeLimits] = useState<Record<string, number>>({});
+  const relatedNotebookNames = useMemo(
+    () => new Set(tree.notebooks.find((notebook) => notebook.name === selectedNotebookName)?.relatedNotebookNames ?? []),
+    [tree.notebooks, selectedNotebookName],
+  );
   const sortedTree = useMemo(
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
@@ -544,7 +556,9 @@ export function NotebookPanel({
   }
 
   function applySortPreference(nextSortPreference: SidebarSortPreference) {
-    saveSidebarSortPreference(nextSortPreference);
+    if (workspaceView?.view) {
+      void workspaceView.updateView((view) => ({ ...view, sidebarSort: `${nextSortPreference.key}:${nextSortPreference.direction}` }));
+    } else saveSidebarSortPreference(nextSortPreference);
   }
 
   function visibleNodeLimitForPath(path: string) {
@@ -603,7 +617,7 @@ export function NotebookPanel({
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
-            ...(target.file.fileType === "markdown" ? [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }] : []),
+            { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
             { type: "separator" },
             {
               id: "copy-relative-path",
@@ -700,7 +714,7 @@ export function NotebookPanel({
             option.direction === sortPreference.direction,
         })),
         { type: "separator" as const },
-        { id: "view-options", label: "View Options" },
+        { id: "view-options", label: workspaceActive ? "Workspace visibility…" : "View Options" },
       ],
       nativeMenuPointFromButton(event.currentTarget),
     );
@@ -710,6 +724,7 @@ export function NotebookPanel({
     }
 
     if (selectedItemId === "view-options") {
+      if (workspaceActive && onManageWorkspace) { onManageWorkspace(); return; }
       setViewOptionsError("");
       setViewOptionsOpen(true);
       return;
@@ -786,7 +801,7 @@ export function NotebookPanel({
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!hasPanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            No notebooks yet.
+            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks yet."}
           </div>
         ) : null}
         {hasPanelItems && !hasVisiblePanelItems ? (
@@ -821,6 +836,7 @@ export function NotebookPanel({
               expanded={expanded}
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
+              isRelated={relatedNotebookNames.has(notebook.name)}
               notebook={notebook}
               showArchive={tree.notebookViewOptions.showArchive}
               starredFilePaths={starredFilePaths}
@@ -854,6 +870,7 @@ export function NotebookPanel({
               group={group}
               notebooks={notebooks}
               selectedNotebookName={selectedNotebookName}
+              relatedNotebookNames={relatedNotebookNames}
               showArchive={tree.notebookViewOptions.showArchive}
               starredFilePaths={starredFilePaths}
               onArchiveVisibilityToggle={toggleShowArchive}
@@ -883,6 +900,7 @@ export function NotebookPanel({
 
       {deepSearchOpen ? (
         <DeepSearchDialog
+          visibleTree={workspaceActive ? tree : undefined}
           initialQuery={deepSearchQuery}
           onClose={() => setDeepSearchOpen(false)}
           onOpenFile={onOpenFile}
@@ -1012,6 +1030,7 @@ function NotebookSection({
   expanded,
   isExpanded,
   isSelected,
+  isRelated,
   notebook,
   showArchive,
   starredFilePaths,
@@ -1040,6 +1059,7 @@ function NotebookSection({
   expanded: Set<string>;
   isExpanded: boolean;
   isSelected: boolean;
+  isRelated: boolean;
   notebook: LiberaTree["notebooks"][number];
   showArchive: boolean;
   starredFilePaths: Set<string>;
@@ -1142,6 +1162,7 @@ function NotebookSection({
     <section
       className="libera-notebook-section"
       data-selected={isSelected || isUploadTarget}
+      data-related={isRelated}
       style={{ "--notebook-color": notebook.color } as CSSProperties}
       onDragOver={(event) => {
         if (draggingFile || !hasExternalFiles(event.dataTransfer)) {
@@ -1211,6 +1232,11 @@ function NotebookSection({
           >
             {notebook.emoji}
           </span>
+          {isRelated ? (
+            <span className="shrink-0 text-accent" title="Linked from the open notebook" aria-label="Related notebook">
+              <Link2 aria-hidden className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
           <span className="min-w-0">
             <span className="block truncate">{notebook.name}</span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
@@ -1297,6 +1323,7 @@ function NotebookGroupSection({
   group,
   notebooks,
   selectedNotebookName,
+  relatedNotebookNames,
   showArchive,
   starredFilePaths,
   onArchiveVisibilityToggle,
@@ -1327,6 +1354,7 @@ function NotebookGroupSection({
   group: LiberaNotebookGroup;
   notebooks: LiberaNotebookNode[];
   selectedNotebookName: string;
+  relatedNotebookNames: Set<string>;
   showArchive: boolean;
   starredFilePaths: Set<string>;
   onArchiveVisibilityToggle: () => Promise<void>;
@@ -1400,6 +1428,7 @@ function NotebookGroupSection({
               expanded={expanded}
               isExpanded={expanded.has(notebook.name)}
               isSelected={selectedNotebookName === notebook.name}
+              isRelated={relatedNotebookNames.has(notebook.name)}
               notebook={notebook}
               showArchive={showArchive}
               starredFilePaths={starredFilePaths}
@@ -1533,7 +1562,7 @@ function TreeNodeRow({
 
         {isExpanded ? (
           <div
-            className={`mt-1 space-y-1 ${isDragTarget ? "bg-accent/10/50" : ""}`}
+            className={`relative mt-1 space-y-1 ${isDragTarget ? "bg-accent/10/50" : ""}`}
             onDragOver={(event) =>
               handleFileDragOverDirectory(
                 event,
@@ -1551,6 +1580,11 @@ function TreeNodeRow({
               handleFileDropOnDirectory(event, draggingFile, node.path, onDropFile)
             }
           >
+            <span
+              aria-hidden
+              className="libera-tree-guide"
+              style={{ left: `${8 + depth * 16 + 7.5}px` }}
+            />
             {visibleChildren.map((child) => (
               <TreeNodeRow
                 key={child.path}

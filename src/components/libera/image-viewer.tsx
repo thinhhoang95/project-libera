@@ -14,17 +14,32 @@ import { apiRequest } from "@/components/libera/api-client";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
 import {
+  ANNOTATION_UI_SELECTOR,
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   MAX_TEXT_ANNOTATION_FONT_SIZE,
   MIN_TEXT_ANNOTATION_FONT_SIZE,
   TextAnnotationLayer,
   clamp,
   createAnnotationId,
+  keepEditorFocus,
   nowIso,
   type AnnotationSurfaceSize,
 } from "@/components/libera/text-annotation-layer";
+import { TextAnnotationStyleControls } from "@/components/libera/annotation-style-controls";
 import type { ImageTabViewState } from "@/components/libera/types";
-import type { ImageAnnotationsPayload, PdfAnnotationRect, PdfTextAnnotation } from "@/lib/types";
+import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
+import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import {
+  DEFAULT_PDF_TEXT_COLOR,
+  DEFAULT_PDF_TEXT_FONT,
+  isHexColor,
+} from "@/lib/pdf-annotation-style";
+import type {
+  ImageAnnotationsPayload,
+  PdfAnnotationRect,
+  PdfTextAnnotation,
+  PdfTextAnnotationFont,
+} from "@/lib/types";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -63,6 +78,7 @@ export function ImageViewer({
   onCompleteScreenshotSnip,
   onViewStateChange,
 }: ImageViewerProps) {
+  const paneFocused = useCanvasPaneFocused();
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,6 +91,12 @@ export function ImageViewer({
   const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
   const [fontSize, setFontSize] = useState(
     initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
+  );
+  const [fontFamily, setFontFamily] = useState<PdfTextAnnotationFont>(
+    initialViewState?.fontFamily ?? DEFAULT_PDF_TEXT_FONT,
+  );
+  const [textColor, setTextColor] = useState(
+    isHexColor(initialViewState?.textColor) ? initialViewState.textColor : DEFAULT_PDF_TEXT_COLOR,
   );
   const [pan, setPan] = useState<Point>({
     x: initialViewState?.panX ?? 0,
@@ -165,11 +187,24 @@ export function ImageViewer({
     };
   }, [src]);
 
+  // Another window showing this image saved annotations: adopt them unless this
+  // window has its own edit in flight, which will be saved over them anyway.
+  const localSavePendingRef = useRef(false);
+  useAnnotationSync<PdfTextAnnotation>("image", filePath, (remoteAnnotations) => {
+    if (localSavePendingRef.current) {
+      return;
+    }
+
+    latestAnnotationsRef.current = remoteAnnotations;
+    setAnnotations(remoteAnnotations);
+  });
+
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfTextAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       setSaveStatus("saving");
+      localSavePendingRef.current = true;
 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -184,11 +219,14 @@ export function ImageViewer({
           }),
         })
           .then((payload) => {
+            localSavePendingRef.current = false;
             latestAnnotationsRef.current = payload.annotations;
             setAnnotations(payload.annotations);
             setSaveStatus("saved");
+            broadcastSavedAnnotations("image", filePath, payload.annotations);
           })
           .catch((saveError) => {
+            localSavePendingRef.current = false;
             setSaveStatus("error");
             setError(
               saveError instanceof Error
@@ -230,7 +268,17 @@ export function ImageViewer({
       return;
     }
 
-    if (tool === "text" || event.button !== 0) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) {
+      return;
+    }
+
+    // Pressing on the image (not a note) lets go of the current note.
+    if (selectedAnnotationId) {
+      setSelectedAnnotationId("");
+      updateViewState({ selectedAnnotationId: "" });
+    }
+
+    if (tool === "text") {
       return;
     }
 
@@ -288,6 +336,8 @@ export function ImageViewer({
       pageNumber: 1,
       text: "",
       fontSize,
+      color: textColor,
+      fontFamily,
       rect,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -295,12 +345,15 @@ export function ImageViewer({
 
     setSelectedAnnotationId(annotation.id);
     updateViewState({ selectedAnnotationId: annotation.id });
-    saveAnnotations([...annotations, annotation]);
+    saveAnnotations([...latestAnnotationsRef.current, annotation]);
+    return annotation.id;
   }
 
-  function updateTextAnnotation(id: string, patch: Partial<PdfTextAnnotation>) {
+  // Reads the latest list: the note layer can report several changes before
+  // this component re-renders (e.g. a final edit, then deleting an empty note).
+  const updateTextAnnotation = useCallback((id: string, patch: Partial<PdfTextAnnotation>) => {
     saveAnnotations(
-      annotations.map((annotation) =>
+      latestAnnotationsRef.current.map((annotation) =>
         annotation.id === id
           ? {
               ...annotation,
@@ -310,7 +363,16 @@ export function ImageViewer({
           : annotation,
       ),
     );
-  }
+  }, [saveAnnotations]);
+
+  const deleteAnnotation = useCallback((id: string) => {
+    saveAnnotations(latestAnnotationsRef.current.filter((annotation) => annotation.id !== id));
+
+    if (selectedAnnotationId === id) {
+      setSelectedAnnotationId("");
+      updateViewState({ selectedAnnotationId: "" });
+    }
+  }, [saveAnnotations, selectedAnnotationId, updateViewState]);
 
   function updateFontSize(value: number) {
     const nextFontSize = Math.round(
@@ -324,33 +386,52 @@ export function ImageViewer({
     }
   }
 
-  const deleteSelectedAnnotation = useCallback(() => {
-    if (!selectedAnnotationId) {
-      return;
-    }
+  function updateFontFamily(nextFont: PdfTextAnnotationFont) {
+    setFontFamily(nextFont);
+    updateViewState({ fontFamily: nextFont });
 
-    saveAnnotations(
-      annotations.filter((annotation) => annotation.id !== selectedAnnotationId),
-    );
-    setSelectedAnnotationId("");
-    updateViewState({ selectedAnnotationId: "" });
-  }, [annotations, saveAnnotations, selectedAnnotationId, updateViewState]);
+    if (selectedAnnotation) {
+      updateTextAnnotation(selectedAnnotation.id, { fontFamily: nextFont });
+    }
+  }
+
+  function updateTextColor(nextColor: string) {
+    setTextColor(nextColor);
+    updateViewState({ textColor: nextColor });
+
+    if (selectedAnnotation) {
+      updateTextAnnotation(selectedAnnotation.id, { color: nextColor });
+    }
+  }
+
+  const deleteSelectedAnnotation = useCallback(() => {
+    if (selectedAnnotationId) {
+      deleteAnnotation(selectedAnnotationId);
+    }
+  }, [deleteAnnotation, selectedAnnotationId]);
 
   useEffect(() => {
     function handleDeleteKey(event: KeyboardEvent) {
+      const activeElement = document.activeElement;
+
       if (
         !selectedAnnotationId ||
-        (event.key !== "Delete" && event.key !== "Backspace")
+        !paneFocused ||
+        event.defaultPrevented ||
+        (activeElement instanceof HTMLElement &&
+          (activeElement.isContentEditable || activeElement.matches("input, textarea, select")))
       ) {
         return;
       }
 
-      const activeElement = document.activeElement;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSelectedAnnotationId("");
+        updateViewState({ selectedAnnotationId: "" });
+        return;
+      }
 
-      if (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement
-      ) {
+      if (event.key !== "Delete" && event.key !== "Backspace") {
         return;
       }
 
@@ -360,7 +441,7 @@ export function ImageViewer({
 
     window.addEventListener("keydown", handleDeleteKey);
     return () => window.removeEventListener("keydown", handleDeleteKey);
-  }, [deleteSelectedAnnotation, selectedAnnotationId]);
+  }, [deleteSelectedAnnotation, paneFocused, selectedAnnotationId, updateViewState]);
 
   async function captureScreenshotSnip(rect: PdfAnnotationRect) {
     const image = imageRef.current;
@@ -385,7 +466,7 @@ export function ImageViewer({
   return (
     <div className="libera-media-viewer libera-image-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
       <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
-        <div className="flex min-w-0 items-center gap-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <Move aria-hidden className="h-4 w-4 shrink-0" />
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
@@ -421,17 +502,14 @@ export function ImageViewer({
             <Type aria-hidden className="h-4 w-4" />
             Text
           </button>
-          <label className="ml-2 inline-flex h-8 items-center gap-2 rounded-lg border border-input px-2 text-sm">
-            Size
-            <input
-              className="w-14 border-0 bg-transparent text-sm outline-none"
-              min={MIN_TEXT_ANNOTATION_FONT_SIZE}
-              max={MAX_TEXT_ANNOTATION_FONT_SIZE}
-              type="number"
-              value={fontSize}
-              onChange={(event) => updateFontSize(Number(event.target.value))}
-            />
-          </label>
+          <TextAnnotationStyleControls
+            color={selectedAnnotation?.color ?? textColor}
+            fontFamily={selectedAnnotation?.fontFamily ?? fontFamily}
+            fontSize={fontSize}
+            onColorChange={updateTextColor}
+            onFontFamilyChange={updateFontFamily}
+            onFontSizeChange={updateFontSize}
+          />
           <button
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
             type="button"
@@ -537,7 +615,10 @@ export function ImageViewer({
               interactive={tool === "select"}
               pageSize={imageSize}
               selectedAnnotationId={selectedAnnotationId}
+              documentPath={filePath}
+              newAnnotationFontSize={fontSize}
               onAddAnnotation={addTextAnnotation}
+              onDeleteAnnotation={deleteAnnotation}
               onExitTextEditing={() => {
                 setTool("select");
                 updateViewState({ tool: "select" });

@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    return NextResponse.json(await getTree());
+    return NextResponse.json(await getTree({ includeArchive: request.nextUrl.searchParams.get("includeArchive") === "true" }));
   } catch (error) {
     const storageError = toStorageError(error);
     return NextResponse.json({ error: storageError.message }, { status: storageError.status });

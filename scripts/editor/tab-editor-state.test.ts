@@ -38,9 +38,12 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     await act(async () => { button.click(); });
     await settle();
   }
-  function modeButton(mode: string) {
-    return Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Markdown editing mode"] button'))
-      .find((button) => button.textContent === mode);
+  let menuAction: string | null = null;
+  window.liberaMenu = { popup: async () => menuAction };
+  async function changeMode(mode: "Source" | "Visual") {
+    menuAction = mode === "Source" ? "editor-source" : "editor-visual";
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="File actions"]'));
+    menuAction = null;
   }
   function visualScroller() {
     const scroller = host.querySelector<HTMLElement>(".libera-tiptap")?.parentElement?.parentElement;
@@ -56,7 +59,7 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     });
   }
   function assertVisualScroll(left: number, top: number) {
-    assert.equal(modeButton("Visual")?.getAttribute("aria-pressed"), "true");
+    assert.ok(host.querySelector(".libera-tiptap"), "Visual editor is mounted");
     assert.equal(visualScroller().scrollLeft, left);
     assert.equal(visualScroller().scrollTop, top);
   }
@@ -77,7 +80,7 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     assert.match(visualScroller().style.fontFamily, /Aptos/);
     assertVisualScroll(0, 0);
     await scrollVisual(24, 640);
-    await click(modeButton("Source"));
+    await changeMode("Source");
     assert.ok(host.querySelector("textarea"));
     await click(host.querySelector<HTMLButtonElement>('[aria-label="New untitled file"]'));
     const secondTab = host.querySelectorAll<HTMLButtonElement>("[data-tab-id]")[1];
@@ -85,9 +88,9 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     await scrollVisual(48, 1280);
 
     await click(firstTab);
-    assert.equal(modeButton("Source")?.getAttribute("aria-pressed"), "true");
+    assert.ok(host.querySelector("textarea"));
     assert.equal(host.querySelector(".libera-tiptap"), null);
-    await click(modeButton("Visual"));
+    await changeMode("Visual");
     assertVisualScroll(24, 640);
     await click(secondTab);
     assertVisualScroll(48, 1280);
@@ -98,11 +101,36 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     await scrollVisual(12, 320);
     await settle();
     assertVisualScroll(12, 320);
-    await click(modeButton("Source"));
-    await click(modeButton("Visual"));
+    await changeMode("Source");
+    await changeMode("Visual");
     assertVisualScroll(12, 320);
     await click(secondTab);
     assertVisualScroll(48, 1280);
+
+    // Both editors stay mounted in split view. Changing focus must not replay
+    // either editor's initial scroll restoration.
+    menuAction = "split-right";
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="File actions"]'));
+    menuAction = null;
+    await click(firstTab);
+    const panes = [...host.querySelectorAll<HTMLElement>(".libera-canvas-pane")];
+    assert.equal(panes.length, 2);
+    const left = panes[0].querySelector<HTMLElement>(".libera-visual-page")!;
+    const right = panes[1].querySelector<HTMLElement>(".libera-visual-page")!;
+    assert.ok(left && right);
+    await act(async () => {
+      left.scrollTop = 900;
+      left.dispatchEvent(new dom.window.Event("scroll"));
+      right.scrollTop = 500;
+      right.dispatchEvent(new dom.window.Event("scroll"));
+    });
+    await settle();
+    for (const pane of [panes[0], panes[1], panes[0]]) {
+      await act(async () => pane.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true })));
+      await settle();
+      assert.equal(left.scrollTop, 900);
+      assert.equal(right.scrollTop, 500);
+    }
   } finally {
     await act(async () => { root.unmount(); });
     dom.window.close();

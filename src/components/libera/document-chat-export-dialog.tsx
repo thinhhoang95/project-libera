@@ -6,11 +6,13 @@ import { apiRequest } from "./api-client";
 import type { LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 export type ChatExport = { fileName: string; content: string };
+export type ChatNotebookExport = ChatExport & { directory: string };
 
-export function DocumentChatExportDialog({ snapshot, onClose, onSaved }: {
+export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToNotebook }: {
   snapshot: ChatExport;
   onClose: () => void;
   onSaved?: (notebook: string) => Promise<void>;
+  onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>;
 }) {
   const [name, setName] = useState(snapshot.fileName);
   const [directory, setDirectory] = useState("");
@@ -44,7 +46,9 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved }: {
     setError("");
     const notebook = directory.split("/")[0];
     try {
-      await apiRequest("/api/files", { method: "POST", body: JSON.stringify({ notebook, parentPath: directory, name: /\.(md|markdown)$/i.test(requestedName) ? requestedName : `${requestedName}.md`, content: snapshot.content }) });
+      const fileName = /\.(md|markdown)$/i.test(requestedName) ? requestedName : `${requestedName}.md`;
+      if (onSaveToNotebook) await onSaveToNotebook({ directory, fileName, content: snapshot.content });
+      else await apiRequest("/api/files", { method: "POST", body: JSON.stringify({ notebook, parentPath: directory, name: fileName, content: snapshot.content }) });
       onClose();
       void onSaved?.(notebook).catch(() => undefined);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not export chat."); }

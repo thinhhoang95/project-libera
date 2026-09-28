@@ -5,6 +5,8 @@ const { performance } = require('node:perf_hooks');
 const { Worker } = require('node:worker_threads');
 const { prepareMarkdownPreview, createMarkdownPreviewPatch } = require('../../src/lib/markdown-preview.ts');
 const { markdownHeadingOffsets, newReview, syncReview, anchorAt } = require('../../src/lib/markdown-review.ts');
+const { createMarkdownPreviewCache } = require('../../src/lib/markdown-preview-patch.ts');
+const { createMarkdownEditorLineIndex } = require('../../src/lib/markdown-editor-highlighting.ts');
 const { getMarkdownWordCountStats } = require('../../src/lib/markdown-word-count.ts');
 
 function measure(name, fn, samples = 5) {
@@ -59,10 +61,15 @@ async function main() {
     output.measurements.push(measure(`${label}: complete preview parse + KaTeX + patch signatures`, () => createMarkdownPreviewPatch(prepareMarkdownPreview(text), [])));
     output.measurements.push(measure(`${label}: heading worker parser`, () => markdownHeadingOffsets(text)));
     output.measurements.push(measure(`${label}: word count`, () => getMarkdownWordCountStats(text)));
-    const baseline = createMarkdownPreviewPatch(prepareMarkdownPreview(text), []);
+    const lineIndex = createMarkdownEditorLineIndex();
+    const originalLines = lineIndex.update(text);
+    const changedLines = lineIndex.update(text.replace('Section 0', 'Section 0x'));
+    output.measurements.push({ name: `${label}: highlight first-heading edit`, totalLines: changedLines.length, retainedLines: changedLines.filter(line => originalLines.includes(line)).length });
     for (const [position, changed] of [['start', text.replace('Section 0', 'Section 0x')], ['end', text.trimEnd() + 'x\n\n']]) {
+      const cache = createMarkdownPreviewCache();
+      cache.patch(prepareMarkdownPreview(text));
       const tree = prepareMarkdownPreview(changed);
-      const patch = createMarkdownPreviewPatch(tree, baseline.signatures);
+      const patch = cache.patch(tree);
       output.measurements.push({ name: `${label}: one character at ${position}`, totalBlocks: patch.children.length, reusedBlocks: patch.children.filter((n) => typeof n === 'number').length,
         elementBlocks: tree.children.filter((n) => n.type === 'element').length,
         replacedElementBlocks: patch.children.filter((n) => typeof n !== 'number' && n.type === 'element').length });

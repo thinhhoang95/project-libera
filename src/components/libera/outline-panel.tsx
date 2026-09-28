@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  FileText,
+  ChevronDown,
+  ChevronRight,
   GripVertical,
   Highlighter,
   Search,
@@ -12,6 +13,7 @@ import {
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { useMarkdownDisplayPreferences } from "@/components/libera/markdown-display-preferences";
 import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import {
@@ -22,6 +24,7 @@ import type { OpenTab } from "@/components/libera/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload } from "@/lib/types";
 
 type OutlinePanelProps = {
@@ -384,9 +387,13 @@ function annotationLabel(annotation: PdfAnnotation) {
     return annotation.text.trim() || "Text annotation";
   }
 
-  return annotation.rects.length > 1
-    ? `Highlight (${annotation.rects.length} areas)`
-    : "Highlight";
+  const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
+
+  if (quote) {
+    return quote;
+  }
+
+  return "Highlight";
 }
 
 function annotationIcon(annotation: PdfAnnotation) {
@@ -400,7 +407,9 @@ function annotationIcon(annotation: PdfAnnotation) {
 function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {
   window.requestAnimationFrame(() => {
     const escapedAnnotationId = CSS.escape(annotation.id);
-    const annotationElement = document.querySelector<HTMLElement>(
+    // With a split canvas several PDFs can be on screen; prefer the focused pane.
+    const root = document.querySelector<HTMLElement>('[data-canvas-pane-focused="true"]') ?? document;
+    const annotationElement = root.querySelector<HTMLElement>(
       `[data-pdf-annotation-id="${escapedAnnotationId}"]`,
     );
 
@@ -409,7 +418,7 @@ function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {
       return;
     }
 
-    document
+    root
       .querySelector<HTMLElement>(`[data-pdf-page-number="${annotation.pageNumber}"]`)
       ?.scrollIntoView({ block: "start", inline: "nearest" });
   });
@@ -421,10 +430,12 @@ export function OutlinePanel({
   onOpenFile,
   onSetDraft,
 }: OutlinePanelProps) {
+  const { preferences: { outlineExpansionLevel }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex min-h-[52px] items-center justify-between border-b border-border px-4 py-2 shadow-sm">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="flex min-h-[52px] items-center justify-between px-3 py-3">
+        <h2 className="text-sm font-semibold text-foreground">
           Outlines
         </h2>
       </div>
@@ -440,12 +451,17 @@ export function OutlinePanel({
           <MarkdownOutline
             key={activeTab.id}
             activeTab={activeTab}
+            expansionLevel={outlineExpansionLevel}
+            onExpansionLevelChange={(level) => {
+              updatePreferences({ outlineExpansionLevel: level });
+              flushPreferences();
+            }}
             textareaRef={textareaRef}
             onOpenFile={onOpenFile}
             onSetDraft={onSetDraft}
           />
         ) : activeTab?.file.fileType === "pdf" ? (
-          <PdfOutline activeTab={activeTab} onOpenFile={onOpenFile} />
+          <PdfOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
         ) : (
           <EmptyOutline />
         )}
@@ -464,11 +480,15 @@ function EmptyOutline() {
 
 function MarkdownOutline({
   activeTab,
+  expansionLevel,
+  onExpansionLevelChange,
   textareaRef,
   onOpenFile,
   onSetDraft,
 }: {
   activeTab?: OpenTab;
+  expansionLevel: number;
+  onExpansionLevelChange: (level: number) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onOpenFile: (
     file: LiberaFileNode,
@@ -479,10 +499,36 @@ function MarkdownOutline({
   const outlineState = useMarkdownOutline(activeTab);
   const headings = outlineState.headings;
   const [query, setQuery] = useState("");
+  const [expandedHeadings, setExpandedHeadings] = useState<Record<string, boolean>>({});
   const normalizedQuery = query.trim().toLowerCase();
   const filteredHeadings = useMemo(
-    () => headings.filter((heading) => heading.text.toLowerCase().includes(normalizedQuery)),
-    [headings, normalizedQuery],
+    () => {
+      let collapsedLevel: number | null = null;
+      const visible: Array<{ heading: MarkdownHeading; hasChildren: boolean; expanded: boolean }> = [];
+
+      for (const [index, heading] of headings.entries()) {
+        const hasChildren = (headings[index + 1]?.level ?? 0) > heading.level;
+        const expanded = expandedHeadings[heading.id] ?? heading.level < expansionLevel;
+
+        // Search includes matches inside collapsed branches.
+        if (normalizedQuery) {
+          if (heading.text.toLowerCase().includes(normalizedQuery)) {
+            visible.push({ heading, hasChildren: false, expanded });
+          }
+          continue;
+        }
+
+        if (collapsedLevel !== null && heading.level > collapsedLevel) {
+          continue;
+        }
+
+        collapsedLevel = hasChildren && !expanded ? heading.level : null;
+        visible.push({ heading, hasChildren, expanded });
+      }
+
+      return visible;
+    },
+    [headings, normalizedQuery, expansionLevel, expandedHeadings],
   );
   const outlineIsCurrent = outlineState.draft === (activeTab?.draft ?? "");
   const activeMarkdownLine =
@@ -724,10 +770,6 @@ function MarkdownOutline({
 
   return (
     <section>
-      <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        <FileText aria-hidden className="h-3.5 w-3.5" />
-        Markdown Outlines
-      </div>
       <div className="relative mb-3">
         <Search
           aria-hidden
@@ -745,7 +787,7 @@ function MarkdownOutline({
               setQuery("");
             } else if (event.key === "Enter" && filteredHeadings[0]) {
               event.preventDefault();
-              void navigateToHeading(filteredHeadings[0]);
+              void navigateToHeading(filteredHeadings[0].heading);
             }
           }}
         />
@@ -761,67 +803,104 @@ function MarkdownOutline({
           </button>
         ) : null}
       </div>
+      <label className="mb-3 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+        <span>Expand to</span>
+        <span className="relative">
+          <select
+            aria-label="Outline expansion level"
+            className="libera-sidebar-search-input h-8 appearance-none rounded-lg border border-input bg-card pl-3 pr-8 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20"
+            value={expansionLevel}
+            onChange={(event) => {
+              onExpansionLevelChange(Number(event.target.value));
+              setExpandedHeadings({});
+            }}
+          >
+            {[1, 2, 3, 4, 5, 6].map((level) => (
+              <option key={level} value={level}>Level {level}</option>
+            ))}
+          </select>
+          <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
+        </span>
+      </label>
       {!activeTab ? (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
           Open a Markdown file to see headings.
         </p>
       ) : filteredHeadings.length ? (
         <div className="space-y-1">
-          {filteredHeadings.map((heading) => {
+          {filteredHeadings.map(({ heading, hasChildren, expanded }) => {
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
             const isDragging = draggingHeadingId === heading.id;
             const isActive = activeHeadingId === heading.id;
 
             return (
-              <SidebarNameTooltipButton
+              <div
                 key={heading.id}
-                className={`relative flex w-full items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
-                  outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
-                } ${
-                  isDragging ? "opacity-45" : ""
-                }`}
-                style={{
-                  paddingLeft: `${8 + (heading.level - 1) * 12}px`,
-                  ...(isActive
-                    ? {
-                        backgroundColor:
-                          "color-mix(in srgb, var(--accent) 12%, transparent)",
-                        borderColor:
-                          "color-mix(in srgb, var(--accent) 46%, transparent)",
-                      }
-                    : undefined),
-                }}
-                aria-current={isActive ? "location" : undefined}
-                fullName={heading.text}
-                type="button"
-                draggable={outlineIsCurrent}
-                onClick={() => void navigateToHeading(heading)}
-                onDragEnd={handleHeadingDragEnd}
-                onDragLeave={(event) => handleHeadingDragLeave(event, heading)}
-                onDragOver={(event) => handleHeadingDragOver(event, heading)}
-                onDragStart={(event) => handleHeadingDragStart(event, heading)}
-                onDrop={(event) => handleHeadingDrop(event, heading)}
-                onContextMenu={(event) => openHeadingContextMenu(event, heading)}
+                className="flex items-start gap-0.5"
+                style={{ paddingLeft: `${(heading.level - 1) * 12}px` }}
               >
-                {activeDropPlacement === "before" ? (
-                  <span className="pointer-events-none absolute left-2 right-2 top-0 h-0.5 rounded-full bg-accent" />
-                ) : null}
-                {activeDropPlacement === "after" ? (
-                  <span className="pointer-events-none absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-accent" />
-                ) : null}
-                <GripVertical
-                  aria-hidden
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                />
-                <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
-                  H{heading.level}
-                </span>
-                <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{heading.text}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {heading.line}
-                </span>
-              </SidebarNameTooltipButton>
+                {hasChildren ? (
+                  <button
+                    aria-label={`${expanded ? "Collapse" : "Expand"} ${heading.text}`}
+                    aria-expanded={expanded}
+                    className="libera-sidebar-icon-button mt-1 inline-flex h-6 w-5 shrink-0 items-center justify-center rounded"
+                    type="button"
+                    onClick={() => setExpandedHeadings((current) => ({
+                      ...current,
+                      [heading.id]: !expanded,
+                    }))}
+                  >
+                    {expanded ? <ChevronDown aria-hidden className="h-3.5 w-3.5" /> : <ChevronRight aria-hidden className="h-3.5 w-3.5" />}
+                  </button>
+                ) : <span aria-hidden className="w-5 shrink-0" />}
+                <SidebarNameTooltipButton
+                  className={`relative flex min-w-0 flex-1 items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
+                    outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
+                  } ${
+                    isDragging ? "opacity-45" : ""
+                  }`}
+                  style={{
+                    ...(isActive
+                      ? {
+                          backgroundColor:
+                            "color-mix(in srgb, var(--accent) 12%, transparent)",
+                          borderColor:
+                            "color-mix(in srgb, var(--accent) 46%, transparent)",
+                        }
+                      : undefined),
+                  }}
+                  aria-current={isActive ? "location" : undefined}
+                  fullName={heading.text}
+                  type="button"
+                  draggable={outlineIsCurrent}
+                  onClick={() => void navigateToHeading(heading)}
+                  onDragEnd={handleHeadingDragEnd}
+                  onDragLeave={(event) => handleHeadingDragLeave(event, heading)}
+                  onDragOver={(event) => handleHeadingDragOver(event, heading)}
+                  onDragStart={(event) => handleHeadingDragStart(event, heading)}
+                  onDrop={(event) => handleHeadingDrop(event, heading)}
+                  onContextMenu={(event) => openHeadingContextMenu(event, heading)}
+                >
+                  {activeDropPlacement === "before" ? (
+                    <span className="pointer-events-none absolute left-2 right-2 top-0 h-0.5 rounded-full bg-accent" />
+                  ) : null}
+                  {activeDropPlacement === "after" ? (
+                    <span className="pointer-events-none absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-accent" />
+                  ) : null}
+                  <GripVertical
+                    aria-hidden
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  />
+                  <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
+                    H{heading.level}
+                  </span>
+                  <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{heading.text}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {heading.line}
+                  </span>
+                </SidebarNameTooltipButton>
+              </div>
             );
           })}
         </div>
@@ -862,6 +941,7 @@ function PdfOutline({
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
 }) {
+  const [query, setQuery] = useState("");
   const [outlineState, setOutlineState] = useState<{
     annotations: PdfAnnotation[];
     error: string;
@@ -958,9 +1038,50 @@ function PdfOutline({
       ),
     [annotations],
   );
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredAnnotations = useMemo(
+    () => sortedAnnotations.filter((annotation) =>
+      annotationLabel(annotation).toLowerCase().includes(normalizedQuery) ||
+      `p. ${annotation.pageNumber}`.includes(normalizedQuery),
+    ),
+    [sortedAnnotations, normalizedQuery],
+  );
 
   return (
     <section>
+      <div className="relative mb-3">
+        <Search
+          aria-hidden
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <input
+          aria-label="Search PDF annotations"
+          className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
+          placeholder="Search annotations"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Escape") {
+              setQuery("");
+            } else if (event.key === "Enter" && filteredAnnotations[0]) {
+              event.preventDefault();
+              void navigateToAnnotation(filteredAnnotations[0]);
+            }
+          }}
+        />
+        {query ? (
+          <button
+            aria-label="Clear annotation search"
+            className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+            type="button"
+            onClick={() => setQuery("")}
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <X aria-hidden className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
       <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         <Highlighter aria-hidden className="h-3.5 w-3.5" />
         PDF Outlines
@@ -977,9 +1098,9 @@ function PdfOutline({
         <p className="rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-4 text-sm text-destructive">
           {error}
         </p>
-      ) : sortedAnnotations.length ? (
+      ) : filteredAnnotations.length ? (
         <div className="space-y-1">
-          {sortedAnnotations.map((annotation) => {
+          {filteredAnnotations.map((annotation) => {
             const label = annotationLabel(annotation);
 
             return (
@@ -1001,7 +1122,7 @@ function PdfOutline({
         </div>
       ) : (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          No annotations in this PDF.
+          {sortedAnnotations.length ? "No matching annotations." : "No annotations in this PDF."}
         </p>
       )}
     </section>

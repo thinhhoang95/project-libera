@@ -102,3 +102,15 @@ test("the real worker entry preserves nested, setext, fenced-code and math headi
     await worker.terminate();
   }
 });
+
+test('prose offset mapping agrees with the parser and declines structural edits', async () => {
+  const { mapProseHeadingOffsets } = await import('../../src/lib/markdown-heading-index');
+  const { markdownHeadingOffsets } = await import('../../src/lib/markdown-review');
+  for (const source of ['# A\n\nPlain text.\n\n## B', 'Plain text.\n---\n\n# B', '```\nPlain text.\n# hidden\n```\n# B', '<div>\nPlain text.\n# hidden\n</div>\n\n# B', '$$\nPlain text.\n$$\n\n# B']) {
+    const after = source.replace('Plain text.', 'Plain edited text!');
+    assert.deepEqual(mapProseHeadingOffsets(source, after, markdownHeadingOffsets(source)), markdownHeadingOffsets(after));
+  }
+  for (const [before, after] of [['Text', '# Text'], ['Text', 'Text\n---'], ['Text', '1. Text'], ['Text', '    Text'], ['<div>', '<span>'], ['Text', '']]) {
+    assert.equal(mapProseHeadingOffsets(before, after, []), null);
+  }
+});

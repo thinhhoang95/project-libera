@@ -8,10 +8,13 @@ import {
   ListIndentDecrease,
   ListIndentIncrease,
   Loader2,
+  PenLine,
   Search,
   Sparkles,
   X,
 } from "lucide-react";
+import { QuickPromptInput } from "./quick-prompt-input";
+import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
 import type {
   ClipboardEvent as ReactClipboardEvent,
   DragEvent,
@@ -47,17 +50,22 @@ import {
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import {
+  createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
   initialMarkdownEditorHighlightState,
 } from "@/lib/markdown-editor-highlighting";
 import type {
+  MarkdownEditorCachedLine,
   MarkdownEditorHighlightState,
   MarkdownEditorLineTone,
 } from "@/lib/markdown-editor-highlighting";
 import type { LiberaFileNode } from "@/lib/types";
 import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
+import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 
 type EditorContextMenuState = {
+  hasText: boolean;
   image?: MarkdownImageSelection;
   x: number;
   y: number;
@@ -81,7 +89,9 @@ type MarkdownEditorProps = {
   fontSizePx: number;
   imageConverting: boolean;
   lineHeightPx: number;
-  openTabs: OpenTab[];
+  mathMarkers?: MathMarkerSettings;
+  openTabs?: OpenTab[];
+  readOpenTabs?: () => OpenTab[];
   recentFiles: LiberaFileNode[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -91,6 +101,7 @@ type MarkdownEditorProps = {
     selection: { start: number; end: number },
     prompt: string,
   ) => Promise<void>;
+  onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onChange: (value: string) => void;
   onRegisterDraft?: (read: () => string) => () => void;
   onInsertFileLink: (
@@ -113,7 +124,7 @@ const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
 };
-const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})(?=\s|$)/;
+const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})([ \t]+|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
 const SELECTION_CHANGE_DEBOUNCE_MS = 120;
 export const SOURCE_DRAFT_DELAY_MS = 250;
@@ -332,6 +343,7 @@ function changeSelectedHeadingLevels(
     if (lineSelected && isHeadingTone(highlight.tone) && headingMatch) {
       const leadingSpaces = headingMatch[1] ?? "";
       const headingMarkers = headingMatch[2] ?? "";
+      const headingSeparator = headingMatch[3] ?? "";
       const markerOffset = lineOffset + leadingSpaces.length;
 
       hasHeading = true;
@@ -347,14 +359,17 @@ function changeSelectedHeadingLevels(
         });
       }
 
-      if (direction === "unindent" && headingMarkers.length > 1) {
+      if (direction === "unindent") {
+        const removed = headingMarkers.length === 1
+          ? headingMarkers.length + headingSeparator.length
+          : 1;
         nextLine = `${line.slice(0, leadingSpaces.length)}${line.slice(
-          leadingSpaces.length + 1,
+          leadingSpaces.length + removed,
         )}`;
         mutations.push({
           inserted: 0,
           offset: markerOffset,
-          removed: 1,
+          removed,
         });
       }
     }
@@ -480,27 +495,41 @@ function appendTextWithFindMatches({
   }
 }
 
+const plainLineChunks = new WeakMap<MarkdownEditorCachedLine, Map<boolean, HighlightChunk[]>>();
+
 function renderHighlightedMarkdown(
-  value: string,
+  lines: MarkdownEditorCachedLine[],
   matches: TextMatch[] = [],
   activeMatchIndex = 0,
   reviewRanges: { start: number; end: number }[] = [],
 ) {
-  const lines = value.split("\n");
   const matchCursor = { index: 0 };
   const normalizedActiveMatchIndex = matches.length
     ? (activeMatchIndex + matches.length) % matches.length
     : -1;
   let lineOffset = 0;
-  let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
+  const ranges = reviewRanges.slice().sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ ...range });
+  }
+  let reviewIndex = 0;
 
-  return lines.map((line, index) => {
-    const chunks: HighlightChunk[] = [];
-    const highlight = getMarkdownEditorLineHighlight(line, state);
-    const lineClassName = [getHighlightClassName(highlight.tone), reviewRanges.some((r) => r.start < lineOffset + line.length && r.end > lineOffset) ? "review-source-highlight" : ""].filter(Boolean).join(" ");
+  return lines.map((entry, index) => {
+    const line = entry.text;
+    while (reviewIndex < merged.length && merged[reviewIndex].end <= lineOffset) reviewIndex++;
+    const reviewed = merged[reviewIndex]?.start < lineOffset + line.length;
+    const lineClassName = [getHighlightClassName(entry.tone), reviewed ? "review-source-highlight" : ""].filter(Boolean).join(" ");
     const hasTrailingNewline = index < lines.length - 1;
-
-    state = highlight.nextState;
+    const plain = !matches.length && !reviewed;
+    const cached = plain ? plainLineChunks.get(entry)?.get(hasTrailingNewline) : undefined;
+    if (cached) {
+      lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
+      return cached;
+    }
+    const chunks: HighlightChunk[] = [];
 
     if (line) {
       appendTextWithFindMatches({
@@ -529,6 +558,11 @@ function renderHighlightedMarkdown(
     }
 
     lineOffset += line.length + (hasTrailingNewline ? 1 : 0);
+    if (plain) {
+      const cache = plainLineChunks.get(entry) ?? new Map();
+      cache.set(hasTrailingNewline, chunks);
+      plainLineChunks.set(entry, cache);
+    }
     return chunks;
   });
 }
@@ -554,13 +588,16 @@ export function MarkdownEditor({
   fontSizePx,
   imageConverting,
   lineHeightPx,
+  mathMarkers,
   openTabs,
+  readOpenTabs,
   recentFiles,
   textareaRef,
   value,
   onAiFormatSelection,
   onAiImageToMarkdown,
   onAiRewriteSelection,
+  onAiWriteAt,
   onChange,
   onRegisterDraft,
   onInsertFileLink,
@@ -571,6 +608,7 @@ export function MarkdownEditor({
   const [initialValue] = useState(value);
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
   const [rewritePrompt, setRewritePrompt] = useState("");
+  const [writePrompt, setWritePrompt] = useState("");
   const [draggingImage, setDraggingImage] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -582,10 +620,13 @@ export function MarkdownEditor({
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
-  const rewriteInputRef = useRef<HTMLInputElement>(null);
+  const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
+  const writeInputRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
+  const highlightIndexRef = useRef<ReturnType<typeof createMarkdownEditorLineIndex> | null>(null);
+  highlightIndexRef.current ??= createMarkdownEditorLineIndex();
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
   const publishedDraftsRef = useRef<string[]>([]);
@@ -630,9 +671,18 @@ export function MarkdownEditor({
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
+  const findMatches = useMemo(() => {
+    let cached: { text: string; query: string; wildcards: boolean; matches: TextMatch[] } | undefined;
+    return (text: string, query: string, options: { wildcards: boolean }) => {
+      if (cached?.text === text && cached.query === query && cached.wildcards === options.wildcards) return cached.matches;
+      const matches = findTextMatches(text, query, options);
+      cached = { text, query, wildcards: options.wildcards, matches };
+      return matches;
+    };
+  }, []);
   const textMatches = useMemo(
-    () => findTextMatches(editorValue, findQuery, { wildcards: wildcardMatches }),
-    [findQuery, editorValue, wildcardMatches],
+    () => findOpen ? findMatches(editorValue, findQuery, { wildcards: wildcardMatches }) : [],
+    [findOpen, findQuery, editorValue, wildcardMatches, findMatches],
   );
   const refreshHighlightLayer = useCallback(() => {
     // This layer is intentionally owned by the input handler, not React.
@@ -641,14 +691,32 @@ export function MarkdownEditor({
     const layer = highlightLayerRef.current;
     if (!layer) return;
     const text = editorValueRef.current;
-    const matches = findOpen ? findTextMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
-    const next = renderHighlightedMarkdown(text, matches, activeMatchIndex, reviewRanges);
-    const previous = highlightedLinesRef.current;
+    const matches = findOpen ? findMatches(text, findQuery, { wildcards: wildcardMatches }) : [];
+    const next = renderHighlightedMarkdown(highlightIndexRef.current!.update(text), matches, activeMatchIndex, reviewRanges);
+    const previous = highlightedLinesRef.current.slice();
+    const equal = (old: HighlightChunk[] | undefined, chunks: HighlightChunk[]) => old === chunks ||
+      !!old && old.length === chunks.length && old.every((chunk, i) => chunk.text === chunks[i].text && chunk.className === chunks[i].className);
+    // Splice the changed line interval, retaining the suffix's DOM nodes even
+    // when a newline near the start shifts every subsequent line index.
+    let prefix = 0, suffix = 0;
+    while (prefix < previous.length && prefix < next.length && equal(previous[prefix], next[prefix])) prefix++;
+    while (suffix < previous.length - prefix && suffix < next.length - prefix && equal(previous[previous.length - 1 - suffix], next[next.length - 1 - suffix])) suffix++;
+    const oldMiddle = previous.length - prefix - suffix;
+    const newMiddle = next.length - prefix - suffix;
+    if (oldMiddle > newMiddle) {
+      for (let i = newMiddle; i < oldMiddle; i++) layer.children[prefix + newMiddle]?.remove();
+      previous.splice(prefix + newMiddle, oldMiddle - newMiddle);
+    } else if (newMiddle > oldMiddle) {
+      const before = layer.children[prefix + oldMiddle] ?? null;
+      for (let i = oldMiddle; i < newMiddle; i++) {
+        layer.insertBefore(document.createElement("span"), before);
+        previous.splice(prefix + i, 0, []);
+      }
+    }
     const fragment = document.createDocumentFragment();
     next.forEach((chunks, index) => {
       const old = previous[index];
-      if (old && old.length === chunks.length && old.every((chunk, i) =>
-        chunk.text === chunks[i].text && chunk.className === chunks[i].className)) return;
+      if (equal(old, chunks)) return;
       const line = layer.children[index] ?? document.createElement("span");
       line.className = "markdown-editor-highlight-line";
       line.replaceChildren(...chunks.map((chunk) => {
@@ -664,19 +732,19 @@ export function MarkdownEditor({
     highlightedLinesRef.current = next;
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
-  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef]);
+  }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
   const fileLinkSections = useMemo(
     () =>
       fileLinkPopup
         ? buildMarkdownFileLinkSections({
             activeFilePath,
             files,
-            openTabs,
+            openTabs: readOpenTabs?.() ?? openTabs ?? [],
             query: fileLinkPopup.query,
             recentFiles,
           })
         : [],
-    [activeFilePath, fileLinkPopup, files, openTabs, recentFiles],
+    [activeFilePath, fileLinkPopup, files, openTabs, readOpenTabs, recentFiles],
   );
   const fileLinkOptions = useMemo(
     () => flattenMarkdownFileLinkSections(fileLinkSections),
@@ -780,7 +848,7 @@ export function MarkdownEditor({
     setFindOpen(true);
 
     if (query) {
-      const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
+      const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
       setFindQuery(query);
       selectMatch(0, matches);
     }
@@ -806,7 +874,7 @@ export function MarkdownEditor({
   }
 
   function updateFindQuery(query: string) {
-    const matches = findTextMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
+    const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
     setFindQuery(query);
     setActiveMatchIndex(0);
 
@@ -824,7 +892,7 @@ export function MarkdownEditor({
   }
 
   function updateWildcardMatches(enabled: boolean) {
-    const matches = findTextMatches(editorValueRef.current, findQuery, { wildcards: enabled });
+    const matches = findMatches(editorValueRef.current, findQuery, { wildcards: enabled });
     setWildcardMatches(enabled);
     setActiveMatchIndex(0);
     if (matches.length) selectMatch(0, matches);
@@ -860,7 +928,7 @@ export function MarkdownEditor({
     if (!usedNativeUndo) commitEditorValue(textarea, nextValue);
     readDraft();
 
-    const nextMatches = findTextMatches(nextValue, findQuery, { wildcards: wildcardMatches });
+    const nextMatches = findMatches(nextValue, findQuery, { wildcards: wildcardMatches });
     const replacedOne = matches.length === 1;
     const nextOffset = first.start + replaceQuery.length;
     const nextIndex = replacedOne
@@ -1028,8 +1096,9 @@ export function MarkdownEditor({
       return;
     }
 
+    const writeOnly = !contextMenu.hasText;
     const animationFrame = window.requestAnimationFrame(() => {
-      rewriteInputRef.current?.focus();
+      (writeOnly ? writeInputRef : rewriteInputRef).current?.focus();
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
@@ -1042,18 +1111,17 @@ export function MarkdownEditor({
     const end = textarea.selectionEnd;
     const selectedText = editorValueRef.current.slice(start, end);
     const image = findMarkdownImageInText(editorValueRef.current, start, end);
+    const hasText = !!selectedText.trim();
 
-    if ((start === end || !selectedText.trim()) && !image) {
-      setContextMenu(null);
-      return;
-    }
-
+    // Without a selection the menu offers Write with AI at the caret.
     event.preventDefault();
     const menuWidth = 288;
-    const menuHeight = (image ? 190 : 146) + (selectedText.trim() ? 80 : 0);
+    const menuHeight = (hasText ? 340 : 114) + (image ? 44 : 0);
     setRewritePrompt("");
+    setWritePrompt("");
 
     setContextMenu({
+      hasText,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
       y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
       start,
@@ -1097,6 +1165,24 @@ export function MarkdownEditor({
     await onAiRewriteSelection(selection, prompt);
   }
 
+  async function writeWithAi() {
+    if (!contextMenu || aiWorking) {
+      return;
+    }
+
+    const prompt = writePrompt.trim();
+
+    if (!prompt) {
+      writeInputRef.current?.focus();
+      return;
+    }
+
+    const offset = contextMenu.end;
+
+    setContextMenu(null);
+    await onAiWriteAt(offset, prompt);
+  }
+
   async function imageToMarkdown() {
     if (!contextMenu?.image || aiWorking) {
       return;
@@ -1131,6 +1217,36 @@ export function MarkdownEditor({
     closeFileLinkPopup();
 
     if (textarea && result.changed) {
+      let prefixLength = 0;
+      while (
+        prefixLength < currentValue.length &&
+        prefixLength < result.nextValue.length &&
+        currentValue[prefixLength] === result.nextValue[prefixLength]
+      ) {
+        prefixLength += 1;
+      }
+      let suffixLength = 0;
+      while (
+        suffixLength < currentValue.length - prefixLength &&
+        suffixLength < result.nextValue.length - prefixLength &&
+        currentValue[currentValue.length - 1 - suffixLength] ===
+          result.nextValue[result.nextValue.length - 1 - suffixLength]
+      ) {
+        suffixLength += 1;
+      }
+      const replacementEnd = result.nextValue.length - suffixLength;
+      replaceTextareaSelectionWithUndo(textarea, {
+        nextSelectionEnd: result.nextEnd,
+        nextSelectionStart: result.nextStart,
+        replacement: result.nextValue.slice(prefixLength, replacementEnd),
+        scrollLeft: textarea.scrollLeft,
+        scrollTop: textarea.scrollTop,
+        selectionEnd: currentValue.length - suffixLength,
+        selectionStart: prefixLength,
+      });
+      // Synchronize the editor's live draft even when the browser's native
+      // insertText event is deferred. The value write is skipped after a
+      // successful native edit, preserving its undo entry.
       commitEditorValue(textarea, result.nextValue);
       readDraft();
     }
@@ -1187,21 +1303,67 @@ export function MarkdownEditor({
   async function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
     const imageFiles = getClipboardImageFiles(event.clipboardData);
 
-    if (!imageFiles.length) {
+    if (imageFiles.length) {
+      event.preventDefault();
+      setContextMenu(null);
+      closeFileLinkPopup();
+
+      const textarea = event.currentTarget;
+      const selection = {
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      };
+
+      await onInsertImageFile(imageFiles[0], selection);
       return;
     }
+
+    const clipboardMarkdown = event.clipboardData.getData("text/markdown");
+    const html = clipboardMarkdown ? "" : event.clipboardData.getData("text/html");
+    let replacement = clipboardMarkdown;
+    if (!replacement && html) {
+      try {
+        replacement = convertClipboardHtmlToMarkdown(html, mathMarkers);
+      } catch {
+        // Preserve the browser's plain-text fallback for malformed clipboard HTML.
+        return;
+      }
+    }
+
+    if (!replacement) return;
 
     event.preventDefault();
     setContextMenu(null);
     closeFileLinkPopup();
 
     const textarea = event.currentTarget;
-    const selection = {
-      start: textarea.selectionStart,
-      end: textarea.selectionEnd,
-    };
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const nextSelection = selectionStart + replacement.length;
+    const nextValue = `${editorValueRef.current.slice(0, selectionStart)}${replacement}${editorValueRef.current.slice(selectionEnd)}`;
 
-    await onInsertImageFile(imageFiles[0], selection);
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      nextSelectionEnd: nextSelection,
+      nextSelectionStart: nextSelection,
+      replacement,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+      selectionEnd,
+      selectionStart,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+
+    readDraft();
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(nextSelection, nextSelection);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+      scheduleFileLinkPopupRefresh(nextTextarea, nextValue);
+    });
   }
 
   function applyMarkdownFormat(
@@ -1540,22 +1702,22 @@ export function MarkdownEditor({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <button
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            type="button"
-            role="menuitem"
-            disabled={aiWorking || contextMenu.start === contextMenu.end}
-            onClick={() => void formatSelection()}
-          >
-            {formatting ? (
-              <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles aria-hidden className="h-4 w-4" />
-            )}
-            {formatting ? "Formatting..." : "AI Format"}
-          </button>
-          {contextMenu.start !== contextMenu.end ? (
+          {contextMenu.hasText ? (
             <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                disabled={aiWorking}
+                onClick={() => void formatSelection()}
+              >
+                {formatting ? (
+                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles aria-hidden className="h-4 w-4" />
+                )}
+                {formatting ? "Formatting..." : "AI Format"}
+              </button>
               <button
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 type="button"
@@ -1586,52 +1748,76 @@ export function MarkdownEditor({
                 <ListIndentDecrease aria-hidden className="h-4 w-4" />
                 Unindent Headings
               </button>
+              <form
+                className="mt-1 border-t border-border px-2 py-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void rewriteSelection();
+                }}
+              >
+                <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
+                  AI Rewrite
+                </label>
+                <div className="mt-1 flex items-start gap-2">
+                  <QuickPromptInput
+                    id="ai-rewrite-prompt"
+                    inputRef={rewriteInputRef}
+                    value={rewritePrompt}
+                    disabled={aiWorking}
+                    onChange={setRewritePrompt}
+                    onSubmit={() => void rewriteSelection()}
+                    onEscape={() => setContextMenu(null)}
+                  />
+                  <button
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    type="submit"
+                    aria-label="Rewrite selected text"
+                    title="Rewrite selected text"
+                    disabled={aiWorking || !rewritePrompt.trim()}
+                  >
+                    {formatting ? (
+                      <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles aria-hidden className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </form>
             </>
           ) : null}
           <form
-            className="mt-1 border-t border-border px-2 py-2"
+            className={`${contextMenu.hasText ? "mt-1 border-t border-border " : ""}px-2 py-2`}
             onSubmit={(event) => {
               event.preventDefault();
-              void rewriteSelection();
+              void writeWithAi();
             }}
           >
-            <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
-              AI Rewrite
+            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="ai-write-prompt">
+              <PenLine aria-hidden className="h-3.5 w-3.5" />
+              Write with AI
             </label>
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                ref={rewriteInputRef}
-                id="ai-rewrite-prompt"
-                className="h-8 min-w-0 flex-1 rounded-xl border border-border bg-card px-2 text-sm outline-none focus:border-input"
-                placeholder="Prompt..."
-                value={rewritePrompt}
-                disabled={aiWorking || contextMenu.start === contextMenu.end}
-                onChange={(event) => setRewritePrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setContextMenu(null);
-                  }
-                }}
+            <div className="mt-1 flex items-start gap-2">
+              <QuickPromptInput
+                id="ai-write-prompt"
+                inputRef={writeInputRef}
+                placeholder="What should AI write? Type / for prompts"
+                value={writePrompt}
+                disabled={aiWorking}
+                onChange={setWritePrompt}
+                onSubmit={() => void writeWithAi()}
+                onEscape={() => setContextMenu(null)}
               />
               <button
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                 type="submit"
-                aria-label="Rewrite selected text"
-                title="Rewrite selected text"
-                disabled={
-                  aiWorking ||
-                  contextMenu.start === contextMenu.end ||
-                  !rewritePrompt.trim()
-                }
+                aria-label="Write new text with AI"
+                title="Write new text with AI"
+                disabled={aiWorking || !writePrompt.trim()}
               >
-                {formatting ? (
-                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles aria-hidden className="h-4 w-4" />
-                )}
+                <PenLine aria-hidden className="h-4 w-4" />
               </button>
             </div>
+            <IncludeDocumentContextCheckbox id="ai-document-context" />
           </form>
           {contextMenu.image ? (
             <button

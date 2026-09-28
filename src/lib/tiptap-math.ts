@@ -1,8 +1,37 @@
 import { InputRule } from '@tiptap/core';
-import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { Fragment, Slice, type Node as ProseMirrorNode, type Schema } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import { InlineMath, BlockMath } from '@tiptap/extension-mathematics';
-import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerSettings } from './math-markers';
+import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from './math-markers';
+
+/** Turns literal, delimited math in text (outside code) into math nodes. */
+export function convertLiteralMath(fragment: Fragment, schema: Schema, pairs: MathMarkerPair[]): Fragment {
+  const result: ProseMirrorNode[] = [];
+  fragment.forEach(node => {
+    if (node.type.spec.code || node.marks.some(mark => mark.type.spec.code)) { result.push(node); return; }
+    if (node.isText) {
+      const text = node.text!;
+      let start = 0;
+      for (let i = 0; i < text.length; i++) {
+        if (escapedAt(text, i)) continue;
+        const match = matchMath(text.slice(i), pairs, false);
+        if (!match) continue;
+        if (i > start) result.push(schema.text(text.slice(start, i), node.marks));
+        result.push(schema.nodes.inlineMath.create({ latex: match.latex, mathOpen: match.open, mathClose: match.close }, null, node.marks));
+        i += match.raw.length - 1;
+        start = i + 1;
+      }
+      if (start < text.length) result.push(schema.text(text.slice(start), node.marks));
+    } else if (node.type.name === 'paragraph' && node.content.content.every(child => child.isText || child.type.name === 'hardBreak')) {
+      const text = node.textBetween(0, node.content.size, '', '\n');
+      const block = matchMath(text, pairs, true);
+      if (block && block.raw.length === text.trimEnd().length) {
+        result.push(schema.nodes.blockMath.create({ latex: block.latex, mathOpen: block.open, mathClose: block.close }));
+      } else result.push(node.copy(convertLiteralMath(node.content, schema, pairs)));
+    } else result.push(node.copy(convertLiteralMath(node.content, schema, pairs)));
+  });
+  return Fragment.fromArray(result);
+}
 
 export function createMathExtensions(settings: MathMarkerSettings = {}) {
   const pairs = mathMarkerPairs(settings);
@@ -40,35 +69,7 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
         if (display) return this.parent?.() ?? [];
         return [...(this.parent?.() ?? []), new Plugin({ props: {
           transformPasted: slice => {
-            const schema = this.editor.schema;
-            function convert(fragment: Fragment): Fragment {
-              const result: ProseMirrorNode[] = [];
-              fragment.forEach(node => {
-                if (node.type.spec.code || node.marks.some(mark => mark.type.spec.code)) { result.push(node); return; }
-                if (node.isText) {
-                  const text = node.text!;
-                  let start = 0;
-                  for (let i = 0; i < text.length; i++) {
-                    if (escapedAt(text, i)) continue;
-                    const match = matchMath(text.slice(i), pairs, false);
-                    if (!match) continue;
-                    if (i > start) result.push(schema.text(text.slice(start, i), node.marks));
-                    result.push(schema.nodes.inlineMath.create({ latex: match.latex, mathOpen: match.open, mathClose: match.close }, null, node.marks));
-                    i += match.raw.length - 1;
-                    start = i + 1;
-                  }
-                  if (start < text.length) result.push(schema.text(text.slice(start), node.marks));
-                } else if (node.type.name === 'paragraph' && node.content.content.every(child => child.isText || child.type.name === 'hardBreak')) {
-                  const text = node.textBetween(0, node.content.size, '', '\n');
-                  const block = matchMath(text, pairs, true);
-                  if (block && block.raw.length === text.trimEnd().length) {
-                    result.push(schema.nodes.blockMath.create({ latex: block.latex, mathOpen: block.open, mathClose: block.close }));
-                  } else result.push(node.copy(convert(node.content)));
-                } else result.push(node.copy(convert(node.content)));
-              });
-              return Fragment.fromArray(result);
-            }
-            const content = convert(slice.content);
+            const content = convertLiteralMath(slice.content, this.editor.schema, pairs);
             // Math atoms cannot retain the open paragraph depth of an HTML slice.
             const maxOpen = Slice.maxOpen(content);
             return new Slice(content, Math.min(slice.openStart, maxOpen.openStart), Math.min(slice.openEnd, maxOpen.openEnd));

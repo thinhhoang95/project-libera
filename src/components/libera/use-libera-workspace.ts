@@ -36,7 +36,13 @@ import {
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
 import { useMarkdownWindows } from "./use-markdown-windows";
+import { useSavedWorkspaces } from "./use-saved-workspaces";
+import { useCanvasLayout } from "./use-canvas-layout";
+import type { ChatNotebookExport } from "./document-chat-export-dialog";
+import { removeWorkspaceGroup, saveWorkspaceGroup, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { readIncludeDocumentContext } from "./ai-document-context-preference";
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -305,14 +311,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const expansionSaveInFlightRef = useRef(false);
   const queuedExpansionSaveRef = useRef<string[] | null>(null);
 
+  const canvas = useCanvasLayout({ tabs, activeTabId, activateTab });
+  const canvasLayout = canvas.layout;
+  const workspaceSession = useMemo(() => ({ tabs, activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout }), [tabs, activeTabId, selectedNotebookName, expanded, canvasLayout]);
+  const workspaceManager = useSavedWorkspaces({
+    authenticated, tree, refreshTree, session: workspaceSession, readDraft: getTabDraft,
+    onError: setWorkspaceError,
+    applySession: (session) => {
+      latestDraftByTabIdRef.current = Object.fromEntries(session.tabs.map((tab) => [tab.id, tab.draft]));
+      activeTabHistoryRef.current = [];
+      setTabs(session.tabs);
+      setActiveTabId(session.activeTabId);
+      canvas.restore(session.canvasLayout, session.tabs.map((tab) => tab.id), session.activeTabId);
+      setSelectedNotebookName(session.selectedNotebookName);
+      applyExpanded(new Set(session.expandedPaths));
+      setQuery("");
+      setScreenshotSnipSession(null);
+      setSaveDraftTabId(null);
+    },
+  });
+  const visibleTree = workspaceManager.visibleTree;
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
-  const firstNotebook = tree.notebooks[0]?.name ?? "";
-  const selectedNotebook = tree.notebooks.find(
+  const firstNotebook = visibleTree.notebooks[0]?.name ?? "";
+  const selectedNotebook = visibleTree.notebooks.find(
     (notebook) => notebook.name === selectedNotebookName,
-  );
+  ) ?? visibleTree.notebooks[0];
   const files = useMemo(
-    () => tree.notebooks.flatMap((notebook) => collectFiles(notebook.children)),
-    [tree],
+    () => visibleTree.notebooks.flatMap((notebook) => collectFiles(notebook.children)),
+    [visibleTree],
   );
   const recentFiles = useMemo(() => {
     const interactionTime = (file: LiberaFileNode) =>
@@ -353,7 +379,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     const results: SearchResult[] = [];
 
-    for (const notebook of tree.notebooks) {
+    for (const notebook of visibleTree.notebooks) {
       if (notebook.name.toLowerCase().includes(normalizedQuery)) {
         results.push({
           type: "notebook",
@@ -366,7 +392,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     return results.slice(0, 12);
-  }, [query, tree]);
+  }, [query, visibleTree]);
 
   async function flushNotebookPanelExpansionSave() {
     if (expansionSaveInFlightRef.current || !queuedExpansionSaveRef.current) {
@@ -395,6 +421,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
+    if (workspaceManager.activeWorkspace) return;
     queuedExpansionSaveRef.current = [...nextExpanded];
     void flushNotebookPanelExpansionSave();
   }
@@ -423,7 +450,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     nextTree: LiberaTree,
     options?: { expandPaths?: string[]; persist?: boolean },
   ) {
-    const validPaths = collectExpandablePanelPaths(nextTree);
+    const validPaths = collectExpandablePanelPaths(workspaceManager.organizeTree(nextTree));
     const sourceExpanded = treeLoadedRef.current
       ? expandedRef.current
       : new Set(
@@ -444,9 +471,23 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     applyExpanded(nextExpanded, { persist: options?.persist });
   }
 
-  async function refreshTree(expandNotebook?: string) {
-    const nextTree = await apiRequest<LiberaTree>("/api/tree");
+  function workspaceFileRequest<T>(url: string, init: RequestInit, describe: (result: T) => WorkspaceFileChange) {
+    return workspaceManager.runFileChange(() => apiRequest<T>(url, init), describe);
+  }
+
+  async function applyCompleteTree(nextTree: LiberaTree) {
+    // Mutation responses use library visibility. Keep the full file tree so a
+    // workspace can show archives independently without changing library settings.
+    if (nextTree.archiveIncluded === false) {
+      try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
+      catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh archived files."); }
+    }
     setTree(nextTree);
+  }
+
+  async function refreshTree(expandNotebook?: string) {
+    const nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
       if (current && nextTree.notebooks.some((notebook) => notebook.name === current)) {
         return current;
@@ -504,6 +545,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function handleLogout() {
+    try { await workspaceManager.checkpoint(); }
+    catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
     }).catch(() => null);
@@ -520,9 +563,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function updateTab(tabId: string, updater: (tab: OpenTab) => OpenTab) {
-    setTabs((currentTabs) =>
-      currentTabs.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
-    );
+    setTabs((currentTabs) => {
+      const index = currentTabs.findIndex((tab) => tab.id === tabId);
+      if (index < 0) return currentTabs;
+      const next = updater(currentTabs[index]);
+      if (next === currentTabs[index]) return currentTabs;
+      return currentTabs.map((tab, i) => i === index ? next : tab);
+    });
   }
 
   function rememberTabDraft(tabId: string, draft: string) {
@@ -610,11 +657,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     openingFilePathsRef.current.add(file.path);
+    const workspaceEpoch = workspaceManager.epoch.current;
 
     try {
       const payload = await apiRequest<LiberaFilePayload>(
         `/api/files?path=${encodeURIComponent(file.path)}`,
       );
+      if (workspaceEpoch !== workspaceManager.epoch.current) return;
       const draft = payload.content ?? "";
       const pendingViewState = pendingOpenViewStateByPathRef.current[file.path];
       const nextTab: OpenTab = {
@@ -687,7 +736,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     if (closingTabIds.has(activeTabId)) {
       const remainingTabs = tabs.filter((currentTab) => !closingTabIds.has(currentTab.id));
-      const nextActiveTab = remainingTabs.at(-1);
+      const splitNeighbourTabId = canvas.nextActiveTabAfterClosing(closingTabIds);
+      const nextActiveTab =
+        remainingTabs.find((currentTab) => currentTab.id === splitNeighbourTabId) ?? remainingTabs.at(-1);
       const activeClosingTab = closingTabs.find((tab) => tab.id === activeTabId);
       const fallbackTab = activeClosingTab ?? closingTabs.at(-1);
 
@@ -699,7 +750,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         setSelectedNotebookName(fallbackTab.file.notebook);
       }
     }
-  }, [activeTabId, tabs]);
+  }, [activeTabId, canvas, tabs]);
 
   const closeTabWithoutConfirm = useCallback((tabId: string) => {
     closeTabsWithoutConfirm([tabId]);
@@ -764,12 +815,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function setActiveDraft(value: string) {
-    if (!activeTab) {
-      return;
+    if (activeTab) {
+      setTabDraft(activeTab.id, value);
     }
+  }
 
-    rememberTabDraft(activeTab.id, value);
-    updateTab(activeTab.id, (tab) => ({
+  // Split panes edit their own tab; targeting it by id keeps a background pane
+  // from ever writing into whichever tab happens to be active.
+  function setTabDraft(tabId: string, value: string) {
+    rememberTabDraft(tabId, value);
+    updateTab(tabId, (tab) => ({
       ...tab,
       draft: value,
       status: value === tab.saved ? "clean" : "dirty",
@@ -1412,7 +1467,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     try {
       const payload = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
         method: "POST",
-        body: JSON.stringify({ text: selectedText, prompt }),
+        body: JSON.stringify({
+          text: selectedText,
+          prompt,
+          ...(readIncludeDocumentContext()
+            ? { before: draft.slice(0, selection.start), after: draft.slice(selection.end) }
+            : {}),
+        }),
       });
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
@@ -1437,6 +1498,53 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI rewrite failed.",
+      }));
+    } finally {
+      setAiFormatting(false);
+    }
+  }
+
+  async function writeWithAiAt(offset: number, prompt: string) {
+    if (!activeTab || activeTab.file.fileType !== "markdown" || !prompt.trim()) {
+      return;
+    }
+
+    const tabId = activeTab.id;
+    const draft = getTabDraft(activeTab);
+    const position = findMarkdownBlockInsertionOffset(draft, offset);
+    const scrollState = getMarkdownTextareaScrollState();
+
+    setAiFormatting(true);
+    updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
+
+    try {
+      const payload = await apiRequest<{ markdown: string }>("/api/ai-write", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          ...(readIncludeDocumentContext() ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+        }),
+      });
+      const insertion = insertMarkdownBlock(draft, position, payload.markdown);
+
+      rememberTabDraft(tabId, insertion.value);
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        draft: insertion.value,
+        status: insertion.value === tab.saved ? "clean" : "dirty",
+        error: undefined,
+      }));
+
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: insertion.start,
+        selectionEnd: insertion.end,
+      });
+    } catch (error) {
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        status: "error",
+        error: error instanceof Error ? error.message : "Write with AI failed.",
       }));
     } finally {
       setAiFormatting(false);
@@ -1539,6 +1647,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!savingDraftRef.current) setSaveDraftTabId(null);
   }
 
+  async function saveChatToNotebook({ directory, fileName, content }: ChatNotebookExport) {
+    const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+      method: "POST",
+      body: JSON.stringify({ notebook: directory.split("/")[0], parentPath: directory, name: fileName, content }),
+    }, (result) => ({ paths: [result.file.path] }));
+    await refreshTree(payload.file.notebook);
+  }
+
   async function submitSaveDraft(name: string, directory: string) {
     const tab = tabs.find((item) => item.id === saveDraftTabId);
     if (!tab || savingDraftRef.current) return;
@@ -1570,10 +1686,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           standaloneSaveId, file: { ...current.file, name: savedFileName }, saved: draft,
           status: latestDraft === draft ? "clean" : "dirty" }));
       } else {
-        const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+        const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
           method: "POST",
           body: JSON.stringify({ notebook: directory.split("/")[0], parentPath: directory, name: fileName, content: draft }),
-        });
+        }, (payload) => ({ paths: [payload.file.path] }));
         const latestDraft = getTabDraft(tab);
         await apiRequest("/api/markdown-reviews", { method: "POST", body: JSON.stringify({ action: "migrate-path", from: tab.standaloneSaveId ? `standalone:${tab.standaloneSaveId}` : `draft:${tab.id}`, to: payload.file.path, snapshot: latestDraft }) });
         rememberTabDraft(payload.file.path, latestDraft);
@@ -1632,13 +1748,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(activeTab.id, (tab) => ({ ...tab, status: "saving", error: undefined }));
 
     try {
-      const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: activeTab.file.path,
           content: draft,
         }),
-      });
+      }, (payload) => ({ paths: [payload.file.path] }));
 
       const latestDraft = getTabDraft(activeTab);
       updateTab(activeTab.id, (tab) => ({
@@ -1722,27 +1838,31 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     setNotebookDialogSubmitting(true);
+    const workspaceActive = Boolean(workspaceManager.activeWorkspace);
+    // Workspace group assignments live in the workspace snapshot, not notebook metadata.
+    const notebookValues = workspaceActive ? { ...values, groupId: undefined } : values;
+    const notebookGroup = workspaceActive ? { notebook: nextName, groupId: values.groupId || null } : undefined;
 
     try {
       if (notebookDialog.mode === "create") {
-        const nextTree = await apiRequest<LiberaTree>("/api/notebooks", {
+        const nextTree = await workspaceFileRequest<LiberaTree>("/api/notebooks", {
           method: "POST",
-          body: JSON.stringify(values),
-        });
-        setTree(nextTree);
+          body: JSON.stringify(notebookValues),
+        }, () => ({ paths: [nextName], notebookGroup }));
+        await applyCompleteTree(nextTree);
         setSelectedNotebookName(nextName);
         setActiveTabId("");
         updateExpanded((current) => new Set(current).add(nextName));
       } else {
         const previousName = notebookDialog.notebook.name;
-        const nextTree = await apiRequest<LiberaTree>("/api/notebooks", {
+        const nextTree = await workspaceFileRequest<LiberaTree>("/api/notebooks", {
           method: "PATCH",
           body: JSON.stringify({
             path: previousName,
-            ...values,
+            ...notebookValues,
           }),
-        });
-        setTree(nextTree);
+        }, () => ({ moved: { from: previousName, to: nextName }, notebookGroup }));
+        await applyCompleteTree(nextTree);
         updateExpanded((current) => {
           const next = new Set<string>();
 
@@ -1828,20 +1948,26 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNotebookGroupDialogSubmitting(true);
 
     try {
-      const nextTree = await apiRequest<LiberaTree>("/api/notebook-groups", {
-        method: notebookGroupDialog.mode === "create" ? "POST" : "PATCH",
-        body: JSON.stringify({
-          id:
-            notebookGroupDialog.mode === "edit"
-              ? notebookGroupDialog.group.id
-              : undefined,
-          title,
-          description: values.description,
-          notebookNames: values.notebookNames,
-        }),
-      });
+      if (workspaceManager.activeWorkspace) {
+        const now = new Date().toISOString();
+        const group = notebookGroupDialog.mode === "edit" ? notebookGroupDialog.group : { id: crypto.randomUUID(), createdAt: now };
+        await workspaceManager.updateView((view) => saveWorkspaceGroup(view, { ...group, title, description: values.description.trim(), updatedAt: now }, values.notebookNames));
+      } else {
+        const nextTree = await apiRequest<LiberaTree>("/api/notebook-groups", {
+          method: notebookGroupDialog.mode === "create" ? "POST" : "PATCH",
+          body: JSON.stringify({
+            id:
+              notebookGroupDialog.mode === "edit"
+                ? notebookGroupDialog.group.id
+                : undefined,
+            title,
+            description: values.description,
+            notebookNames: values.notebookNames,
+          }),
+        });
 
-      setTree(nextTree);
+        await applyCompleteTree(nextTree);
+      }
       setNotebookGroupDialog(null);
       updateExpanded((current) => {
         const next = new Set(current);
@@ -1861,11 +1987,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceError("");
 
     try {
+      if (workspaceManager.activeWorkspace) {
+        await workspaceManager.updateView((view) => removeWorkspaceGroup(view, group.id));
+        return;
+      }
       const nextTree = await apiRequest<LiberaTree>(
         `/api/notebook-groups?id=${encodeURIComponent(group.id)}`,
         { method: "DELETE" },
       );
-      setTree(nextTree);
+      await applyCompleteTree(nextTree);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not delete group.");
     }
@@ -1874,12 +2004,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function updateNotebookViewOptions(
     viewOptions: LiberaNotebookViewOptions,
   ) {
+    if (workspaceManager.activeWorkspace) {
+      await workspaceManager.updateView((view) => ({ ...view, notebookViewOptions: viewOptions }));
+      return;
+    }
     const nextTree = await apiRequest<LiberaTree>("/api/notebook-view-options", {
       method: "PATCH",
       body: JSON.stringify(viewOptions),
     });
 
-    setTree(nextTree);
+    await applyCompleteTree(nextTree);
   }
 
   async function toggleFileStar(file: LiberaFileNode, starred: boolean) {
@@ -1894,7 +2028,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
 
-      setTree(nextTree);
+      await applyCompleteTree(nextTree);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not update star.");
     }
@@ -1906,11 +2040,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function deleteNotebook(notebook: string) {
     try {
-      const nextTree = await apiRequest<LiberaTree>(
+      const nextTree = await workspaceFileRequest<LiberaTree>(
         `/api/notebooks?path=${encodeURIComponent(notebook)}`,
         { method: "DELETE" },
+        () => ({ removed: [notebook] }),
       );
-      setTree(nextTree);
+      await applyCompleteTree(nextTree);
       setSelectedNotebookName((current) =>
         current === notebook ? nextTree.notebooks[0]?.name ?? "" : current,
       );
@@ -2020,7 +2155,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     try {
       const parentPath = noteDialog.parentPath;
-      const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "POST",
         body: JSON.stringify({
           notebook: noteDialog.notebook,
@@ -2031,7 +2166,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
               ? createMarkdownSlidesContent(name)
               : createMarkdownNoteContent(name),
         }),
-      });
+      }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(noteDialog.notebook);
       if (parentPath) {
         updateExpanded((current) => new Set(current).add(parentPath));
@@ -2052,14 +2187,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function createFolder(parentPath: string, name: string) {
     try {
-      const nextTree = await apiRequest<LiberaTree>("/api/folders", {
+      const nextTree = await workspaceFileRequest<LiberaTree>("/api/folders", {
         method: "POST",
         body: JSON.stringify({
           parentPath,
           name,
         }),
-      });
-      setTree(nextTree);
+      }, () => ({ paths: [`${parentPath}/${name.trim()}`] }));
+      await applyCompleteTree(nextTree);
       updateExpanded((current) => {
         const next = new Set(current);
         next.add(parentPath.split("/")[0] ?? parentPath);
@@ -2082,7 +2217,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     destinationName: string,
   ) {
     try {
-      const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
@@ -2090,7 +2225,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           destinationName,
           copy: true,
         }),
-      });
+      }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(payload.file.notebook);
       updateExpanded((current) => {
         const next = new Set(current);
@@ -2139,14 +2274,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
           destinationNotebook,
           destinationName,
         }),
-      });
+      }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       const nextId = payload.file.path;
       if (openTab) {
         const draft = getTabDraft(openTab);
@@ -2196,13 +2331,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      const payload = await apiRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
           destinationDirectory: normalizedDestination,
         }),
-      });
+      }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       const nextId = payload.file.path;
 
       if (openTab) {
@@ -2248,9 +2383,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function deleteFileNode(file: LiberaFileNode) {
     try {
-      await apiRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}`, {
+      await workspaceFileRequest<LiberaTree>(`/api/files?path=${encodeURIComponent(file.path)}`, {
         method: "DELETE",
-      });
+      }, () => ({ removed: [file.path] }));
       tabs.forEach((tab) => {
         if (tab.file.path === file.path) {
           forgetTabDraft(tab.id);
@@ -2275,13 +2410,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      await apiRequest<LiberaFilePayload>("/api/files", {
+      await workspaceFileRequest<LiberaFilePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
           archive: true,
         }),
-      });
+      }, (payload) => ({ moved: { from: file.path, to: payload.file.path } }));
       forgetTabDraft(file.path);
       setTabs((currentTabs) =>
         currentTabs.filter((currentTab) => currentTab.file.path !== file.path),
@@ -2303,14 +2438,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const nextPath = `${parentPath}/${name}`;
 
     try {
-      const nextTree = await apiRequest<LiberaTree>("/api/folders", {
+      const nextTree = await workspaceFileRequest<LiberaTree>("/api/folders", {
         method: "PATCH",
         body: JSON.stringify({
           path: folder.path,
           name,
         }),
-      });
-      setTree(nextTree);
+      }, () => ({ moved: { from: folder.path, to: nextPath } }));
+      await applyCompleteTree(nextTree);
       updateExpanded((current) => {
         const next = new Set<string>();
 
@@ -2459,11 +2594,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function deleteFolder(folder: LiberaFolderNode) {
     try {
-      const nextTree = await apiRequest<LiberaTree>(
+      const nextTree = await workspaceFileRequest<LiberaTree>(
         `/api/folders?path=${encodeURIComponent(folder.path)}`,
         { method: "DELETE" },
+        () => ({ removed: [folder.path] }),
       );
-      setTree(nextTree);
+      await applyCompleteTree(nextTree);
       updateExpanded((current) =>
         new Set(
           [...current].filter(
@@ -2497,14 +2633,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      const nextTree = await apiRequest<LiberaTree>("/api/folders", {
+      const nextTree = await workspaceFileRequest<LiberaTree & { moved: { from: string; to: string } }>("/api/folders", {
         method: "PATCH",
         body: JSON.stringify({
           path: folder.path,
           archive: true,
         }),
-      });
-      setTree(nextTree);
+      }, (result) => ({ moved: result.moved, paths: [result.moved.to] }));
+      await applyCompleteTree(nextTree);
       updateExpanded((current) =>
         new Set(
           [...current].filter(
@@ -2606,11 +2742,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     files.forEach((file) => formData.append("files", file));
 
     try {
-      const payload = await apiRequest<{ tree: LiberaTree }>("/api/uploads", {
+      const payload = await workspaceFileRequest<{ tree: LiberaTree; uploaded: LiberaFileNode[]; error?: string }>("/api/uploads", {
         method: "POST",
         body: formData,
-      });
-      setTree(payload.tree);
+      }, (payload) => ({ paths: payload.uploaded.map((file) => file.path) }));
+      await applyCompleteTree(payload.tree);
       updateExpanded((current) => {
         const next = new Set(current).add(notebook);
 
@@ -2621,7 +2757,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         return next;
       });
       setSelectedNotebookName(notebook);
-      setWorkspaceError("");
+      if (payload.error) setWorkspaceError(payload.error);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
     }
@@ -2837,6 +2973,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       saveDraftSubmitting,
       closeSaveDraftDialog,
       submitSaveDraft,
+      saveChatToNotebook,
       activeTab,
       activeTabId,
       authError,
@@ -2863,7 +3000,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectedNotebookName,
       tabs,
       textareaRef,
-      tree,
+      tree: visibleTree,
+      fullTree: tree,
+      workspaceManager,
       uploadInputRef,
       workspaceConfirmDialog,
       workspaceConfirmDialogSubmitting,
@@ -2896,6 +3035,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       convertImageToMarkdownWithAi,
       formatSelectionWithAi,
       rewriteSelectionWithAi,
+      writeWithAiAt,
       refreshTree,
       handleLogin,
       handleLogout,
@@ -2922,6 +3062,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectSearchResult,
       selectNotebook,
       setActiveDraft,
+      setTabDraft,
+      canvas,
       registerEditorDraft,
       getReviewDraft,
       recoverReviewDraft,
