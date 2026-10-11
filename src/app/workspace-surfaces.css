@@ -42,6 +42,8 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-tab-file-icon { color: #5388ff; display: inline-flex; flex-shrink: 0; }
 .libera-tab-file-icon[data-type="pdf"] { color: #d58375; }
 .libera-tab-file-icon[data-type="image"] { color: #4aad92; }
+.libera-tab-file-icon[data-type="latex"] { color: #8b7fd1; }
+.libera-tab-file-icon[data-type="text"] { color: #6b8aa8; }
 .libera-tab-strip button[aria-label="New untitled file"] { background: var(--muted); border: 1px solid var(--border); border-radius: 11px; }
 .libera-tab-strip button[aria-label="Toggle document chat"] { color: #9575ed; }
 .libera-tab-strip .libera-file-actions { border-left: 1px solid var(--border); padding-left: 8px; }

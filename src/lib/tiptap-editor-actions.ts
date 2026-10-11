@@ -2,12 +2,15 @@ import type { Editor, JSONContent } from "@tiptap/core";
 import type { Node } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
+import { addColumn, addRow, CellSelection, TableMap, type TableRect } from "@tiptap/pm/tables";
 import { tiptapChangesKey, type ChangeSource, type TiptapChangesMeta } from "./tiptap-changes";
 import {
+  getContinuedHeadingNumbers,
   getHeadingEnumerationNumbers,
   headingNumberPrefixLength,
   type MarkdownHeadingEnumerationScope,
 } from "./markdown-heading-enumeration";
+import { getSmartPasteLevelShift, shiftHeadingLevel } from "./markdown-smart-paste";
 
 export type EditorRange = { from: number; to: number };
 
@@ -48,6 +51,13 @@ export function enumerateTiptapHeadings(
     selectedIndexes: headings.flatMap((heading, index) => heading.selected ? [index] : []),
   });
   const tr = closeHistory(editor.state.tr);
+  applyTiptapHeadingNumbers(tr, headings, numbers);
+  if (!tr.docChanged) return false;
+  editor.view.dispatch(tr);
+  return true;
+}
+
+function applyTiptapHeadingNumbers(tr: Transaction, headings: { node: Node; pos: number }[], numbers: Map<number, string>) {
   // Work backwards so earlier node positions remain valid. Replace only the
   // number prefix, preserving marks, links, equations and heading attributes.
   for (let index = headings.length - 1; index >= 0; index -= 1) {
@@ -63,11 +73,49 @@ export function enumerateTiptapHeadings(
     const prefixLength = headingNumberPrefixLength(leadingText);
     const prefix = `${number}${node.content.size > prefixLength ? " " : ""}`;
     if (leadingText.slice(0, prefixLength) === prefix) continue;
-    tr.replaceWith(pos + 1, pos + 1 + prefixLength, editor.schema.text(prefix));
+    tr.replaceWith(pos + 1, pos + 1 + prefixLength, tr.doc.type.schema.text(prefix));
   }
-  if (!tr.docChanged) return false;
-  editor.view.dispatch(tr);
-  return true;
+}
+
+function collectJsonHeadings(nodes: JSONContent[] | undefined, headings: JSONContent[] = []) {
+  for (const node of nodes ?? []) {
+    if (node.type === "heading") headings.push(node);
+    collectJsonHeadings(node.content, headings);
+  }
+  return headings;
+}
+
+/**
+ * Smart Paste: align the pasted headings with the document's top heading level
+ * and, when any heading is numbered, renumber every heading so the numbering
+ * continues through the pasted content, all in one undo step. Returns false
+ * when the Markdown has no headings, so the normal paste runs.
+ */
+export function smartPasteTiptapMarkdown(editor: Editor, range: EditorRange, markdown: string) {
+  const parsed = editor.markdown?.parse(markdown);
+  const pastedHeadings = collectJsonHeadings(parsed?.content);
+  if (!parsed?.content || !pastedHeadings.length) return false;
+  const existing = getTiptapHeadings(editor, range)
+    .filter(({ node, pos }) => pos + node.nodeSize <= range.from || pos >= range.to)
+    .map(({ node }) => ({ level: node.attrs.level as number, text: node.textContent }));
+  const shift = getSmartPasteLevelShift(existing, pastedHeadings.map((heading) => heading.attrs?.level ?? 1));
+  for (const heading of pastedHeadings) {
+    heading.attrs = { ...heading.attrs, level: shiftHeadingLevel(heading.attrs?.level ?? 1, shift) };
+  }
+  return editor.chain()
+    .command(({ tr }) => { closeHistory(tr); return true; })
+    .insertContentAt(range, parsed.content)
+    .command(({ tr }) => {
+      const headings: { node: Node; pos: number }[] = [];
+      tr.doc.descendants((node, pos) => {
+        if (node.type.name === "heading") headings.push({ node, pos });
+      });
+      const numbers = getContinuedHeadingNumbers(headings.map(({ node }) => ({ level: node.attrs.level, text: node.textContent })));
+      if (numbers) applyTiptapHeadingNumbers(tr, headings, numbers);
+      return true;
+    })
+    .scrollIntoView()
+    .run();
 }
 
 export function changeTiptapHeadingLevels(editor: Editor, range: EditorRange, direction: "indent" | "unindent") {
@@ -111,6 +159,65 @@ export function trackTiptapRange(editor: Editor, initial: EditorRange) {
     isValid: () => valid && !editor.isDestroyed,
     dispose: () => { editor.off("transaction", onTransaction); },
   };
+}
+
+/**
+ * Pastes a copied Markdown table into the cells at the selection, in one undo step,
+ * the way Word and Excel do: the pasted block is anchored at the top-left selected
+ * cell, and the table gains rows/columns when the block does not fit. Returns false
+ * (so the normal paste runs) for non-table content or when merged cells are involved.
+ */
+export function pasteMarkdownTableIntoCells(editor: Editor, markdown: string): boolean {
+  const { state } = editor;
+  const sel = state.selection;
+  const cellTypes = ["tableCell", "tableHeader"];
+  let tableStart: number;
+  let left: number, top: number;
+  if (sel instanceof CellSelection) {
+    tableStart = sel.$anchorCell.start(-1);
+    const rect = TableMap.get(sel.$anchorCell.node(-1)).rectBetween(sel.$anchorCell.pos - tableStart, sel.$headCell.pos - tableStart);
+    ({ left, top } = rect);
+  } else {
+    const $from = sel.$from;
+    let depth = $from.depth;
+    while (depth > 2 && !cellTypes.includes($from.node(depth).type.name)) depth--;
+    if (depth < 2 || !cellTypes.includes($from.node(depth).type.name)) return false;
+    tableStart = $from.start(depth - 2);
+    ({ left, top } = TableMap.get($from.node(depth - 2)).findCell($from.before(depth) - tableStart));
+  }
+  const json = editor.markdown?.parse(markdown);
+  if (!json) return false;
+  const pasted = editor.schema.nodeFromJSON(json);
+  const pastedTable = pasted.childCount === 1 ? pasted.child(0) : null;
+  if (pastedTable?.type.name !== "table") return false;
+  const rows = pastedTable.childCount;
+  const cols = pastedTable.child(0).childCount;
+  for (let r = 0; r < rows; r++) {
+    const row = pastedTable.child(r);
+    if (row.childCount !== cols) return false;
+    for (let c = 0; c < cols; c++) if (row.child(c).attrs.colspan > 1 || row.child(c).attrs.rowspan > 1) return false;
+  }
+  const tr = state.tr;
+  const tableRect = (): TableRect => {
+    const table = tr.doc.nodeAt(tableStart - 1)!;
+    const map = TableMap.get(table);
+    return { left: 0, top: 0, right: map.width, bottom: map.height, map, table, tableStart };
+  };
+  while (top + rows > tableRect().map.height) addRow(tr, tableRect(), tableRect().map.height);
+  while (left + cols > tableRect().map.width) addColumn(tr, tableRect(), tableRect().map.width);
+  const map = tableRect().map;
+  // Work backwards so earlier cell positions stay valid as content sizes change.
+  for (let r = rows - 1; r >= 0; r--) {
+    for (let c = cols - 1; c >= 0; c--) {
+      const pos = tableStart + map.map[(top + r) * map.width + left + c];
+      const cell = tr.doc.nodeAt(pos);
+      if (!cell || cell.attrs.colspan > 1 || cell.attrs.rowspan > 1) return false;
+      tr.replaceWith(pos + 1, pos + 1 + cell.content.size, pastedTable.child(r).child(c).content);
+    }
+  }
+  closeHistory(tr);
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
 }
 
 /** With `track`, the replacement is shown as proposed changes to accept or reject. */

@@ -59,7 +59,7 @@ export function SidebarSearch({
                 {result.type === "notebook" ? (
                   <BookOpen aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                 ) : (
-                  <FileTypeIcon fileType={result.file.fileType} />
+                  <FileTypeIcon fileType={result.file.fileType} name={result.file.name} />
                 )}
                 <span className="truncate">{result.label}</span>
               </span>

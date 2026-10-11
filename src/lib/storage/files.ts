@@ -1,7 +1,7 @@
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ARCHIVE_DIR } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import {
   assertSupportedFileName,
@@ -51,23 +51,41 @@ import {
   renameStarredFilePath,
   renameStarredFilePathPrefix,
 } from "@/lib/storage/workspace-metadata";
-import type { LiberaFilePayload } from "@/lib/types";
+import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 
-export async function readLiberaFile(relativePath: string): Promise<LiberaFilePayload> {
+/** Reads a file for a tab. Text files come with their content, except plain
+ * text files that are too large or turn out to be binary: those throw when
+ * `requireContent` is set (opening a tab) and otherwise only get a raw URL. */
+export async function readLiberaFile(
+  relativePath: string,
+  { requireContent = false }: { requireContent?: boolean } = {},
+): Promise<LiberaFilePayload> {
   await ensureAdminRoot();
   const { notebook, pathParts } = splitFilePath(relativePath);
   const node = await getFileNode(notebook, pathParts);
+  const raw = { file: node, rawUrl: rawFileUrl(node.path) };
 
-  if (node.fileType !== "markdown") {
-    return {
-      file: node,
-      rawUrl: rawFileUrl(node.path),
-    };
+  if (!isTextFileType(node.fileType)) {
+    return raw;
+  }
+
+  if (node.fileType === "text" && node.size > MAX_TEXT_FILE_BYTES) {
+    if (!requireContent) return raw;
+    throw new StorageError(`${node.name} is too large to open as text (limit ${MAX_TEXT_FILE_BYTES / 1024 / 1024} MB).`, 413);
+  }
+
+  const content = await readFile(filePathFromParts(notebook, pathParts), "utf8");
+
+  // A NUL byte means the file is binary despite its name; editing and saving
+  // it as text would corrupt it.
+  if (node.fileType === "text" && content.includes("\u0000")) {
+    if (!requireContent) return raw;
+    throw new StorageError(`${node.name} is not a text file.`, 415);
   }
 
   return {
     file: node,
-    content: await readFile(filePathFromParts(notebook, pathParts), "utf8"),
+    content,
   };
 }
 
@@ -107,12 +125,12 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
 
-  if (fileType !== "markdown") {
-    throw new StorageError("Only Markdown files can be edited.");
+  if (!isTextFileType(fileType)) {
+    throw new StorageError("Only text files can be edited.");
   }
 
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
-  await pruneUnusedMarkdownImageAssets(relativePath, content);
+  if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content);
 
   return readLiberaFile(relativePath);
 }

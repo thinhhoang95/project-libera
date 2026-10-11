@@ -1,5 +1,7 @@
 "use client";
 
+import { beginAiActivity } from "@/lib/ai-activity";
+
 import { useSourceReview } from "./use-editor-review";
 import {
   ChevronDown,
@@ -62,6 +64,7 @@ import type {
 import type { LiberaFileNode } from "@/lib/types";
 import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
 import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
+import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
 type EditorContextMenuState = {
@@ -91,6 +94,7 @@ type MarkdownEditorProps = {
   lineHeightPx: number;
   mathMarkers?: MathMarkerSettings;
   openTabs?: OpenTab[];
+  smartPaste?: boolean;
   readOpenTabs?: () => OpenTab[];
   recentFiles: LiberaFileNode[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -130,6 +134,32 @@ const SELECTION_CHANGE_DEBOUNCE_MS = 120;
 export const SOURCE_DRAFT_DELAY_MS = 250;
 const FIND_MATCH_CLASS_NAME = "markdown-editor-find-match";
 const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
+
+/** The smallest range of `current` that must be replaced to produce `next`,
+ * so whole-document edits land in the textarea as one compact undo step. */
+function getChangedTextRange(current: string, next: string) {
+  let prefixLength = 0;
+  while (
+    prefixLength < current.length &&
+    prefixLength < next.length &&
+    current[prefixLength] === next[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+  let suffixLength = 0;
+  while (
+    suffixLength < current.length - prefixLength &&
+    suffixLength < next.length - prefixLength &&
+    current[current.length - 1 - suffixLength] === next[next.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1;
+  }
+  return {
+    replacement: next.slice(prefixLength, next.length - suffixLength),
+    selectionEnd: current.length - suffixLength,
+    selectionStart: prefixLength,
+  };
+}
 
 type HeadingLevelChangeDirection = "indent" | "unindent";
 
@@ -592,6 +622,7 @@ export function MarkdownEditor({
   openTabs,
   readOpenTabs,
   recentFiles,
+  smartPaste = false,
   textareaRef,
   value,
   onAiFormatSelection,
@@ -671,6 +702,7 @@ export function MarkdownEditor({
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
+  useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
   const findMatches = useMemo(() => {
     let cached: { text: string; query: string; wildcards: boolean; matches: TextMatch[] } | undefined;
     return (text: string, query: string, options: { wildcards: boolean }) => {
@@ -730,6 +762,12 @@ export function MarkdownEditor({
     if (fragment.childNodes.length) layer.appendChild(fragment);
     while (layer.children.length > next.length) layer.lastElementChild!.remove();
     highlightedLinesRef.current = next;
+    // The gutter width tracks the digit count of the last line number.
+    const digits = String(Math.max(next.length, 1)).length;
+    if (layer.parentElement && layer.parentElement.dataset.lineDigits !== String(digits)) {
+      layer.parentElement.dataset.lineDigits = String(digits);
+      layer.parentElement.style.setProperty("--markdown-line-digits", String(Math.max(digits, 2)));
+    }
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
   }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
@@ -1217,32 +1255,12 @@ export function MarkdownEditor({
     closeFileLinkPopup();
 
     if (textarea && result.changed) {
-      let prefixLength = 0;
-      while (
-        prefixLength < currentValue.length &&
-        prefixLength < result.nextValue.length &&
-        currentValue[prefixLength] === result.nextValue[prefixLength]
-      ) {
-        prefixLength += 1;
-      }
-      let suffixLength = 0;
-      while (
-        suffixLength < currentValue.length - prefixLength &&
-        suffixLength < result.nextValue.length - prefixLength &&
-        currentValue[currentValue.length - 1 - suffixLength] ===
-          result.nextValue[result.nextValue.length - 1 - suffixLength]
-      ) {
-        suffixLength += 1;
-      }
-      const replacementEnd = result.nextValue.length - suffixLength;
       replaceTextareaSelectionWithUndo(textarea, {
+        ...getChangedTextRange(currentValue, result.nextValue),
         nextSelectionEnd: result.nextEnd,
         nextSelectionStart: result.nextStart,
-        replacement: result.nextValue.slice(prefixLength, replacementEnd),
         scrollLeft: textarea.scrollLeft,
         scrollTop: textarea.scrollTop,
-        selectionEnd: currentValue.length - suffixLength,
-        selectionStart: prefixLength,
       });
       // Synchronize the editor's live draft even when the browser's native
       // insertText event is deferred. The value write is skipped after a
@@ -1326,30 +1344,41 @@ export function MarkdownEditor({
         replacement = convertClipboardHtmlToMarkdown(html, mathMarkers);
       } catch {
         // Preserve the browser's plain-text fallback for malformed clipboard HTML.
-        return;
+        if (!smartPaste) return;
       }
     }
 
-    if (!replacement) return;
+    const textarea = event.currentTarget;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const currentValue = editorValueRef.current;
+    const smartPasted = smartPaste
+      ? smartPasteMarkdown(
+          currentValue,
+          { end: selectionEnd, start: selectionStart },
+          replacement || event.clipboardData.getData("text/plain"),
+        )
+      : null;
+
+    if (!replacement && !smartPasted) return;
 
     event.preventDefault();
     setContextMenu(null);
     closeFileLinkPopup();
 
-    const textarea = event.currentTarget;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-    const nextSelection = selectionStart + replacement.length;
-    const nextValue = `${editorValueRef.current.slice(0, selectionStart)}${replacement}${editorValueRef.current.slice(selectionEnd)}`;
+    const nextSelection = smartPasted?.selection.start ?? selectionStart + replacement.length;
+    const nextValue = smartPasted?.value ??
+      `${currentValue.slice(0, selectionStart)}${replacement}${currentValue.slice(selectionEnd)}`;
+    const edit = smartPasted
+      ? getChangedTextRange(currentValue, nextValue)
+      : { replacement, selectionEnd, selectionStart };
 
     if (!replaceTextareaSelectionWithUndo(textarea, {
+      ...edit,
       nextSelectionEnd: nextSelection,
       nextSelectionStart: nextSelection,
-      replacement,
       scrollLeft: textarea.scrollLeft,
       scrollTop: textarea.scrollTop,
-      selectionEnd,
-      selectionStart,
     })) {
       commitEditorValue(textarea, nextValue);
     }
@@ -1592,7 +1621,7 @@ export function MarkdownEditor({
     : 0;
 
   return (
-    <div className="relative min-h-0 min-w-0 overflow-hidden bg-card">
+    <div className="markdown-editor-source relative min-h-0 min-w-0 overflow-hidden bg-card">
       <pre
         ref={highlightLayerRef}
         aria-hidden="true"
@@ -1601,6 +1630,7 @@ export function MarkdownEditor({
           fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
+          paddingLeft: "var(--markdown-line-text-start)",
         }}
       />
       <textarea
@@ -1612,6 +1642,7 @@ export function MarkdownEditor({
           fontFamily,
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
+          paddingLeft: "var(--markdown-line-text-start)",
         }}
         defaultValue={initialValue}
         onBlur={(event) => { readDraft(); flushSelectionChange(event.currentTarget); }}
@@ -1684,13 +1715,6 @@ export function MarkdownEditor({
       {draggingImage ? (
         <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-lg border-2 border-dashed border-input bg-white/70 text-sm font-medium text-foreground">
           Drop image to insert
-        </div>
-      ) : null}
-
-      {aiWorking ? (
-        <div className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-lg">
-          <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-          AI is working...
         </div>
       ) : null}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { syncReview, paragraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
+import { syncReview, paragraphRange, plainParagraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
@@ -40,7 +40,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const pending = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
   const lastTab = useRef<{ id: string; key: string; doc: ReviewDocument | null } | null>(null);
-  const key = activeTab?.file.fileType === "markdown" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
+  const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
   const tabId = activeTab?.id;
   const publish = useCallback((next: ReviewDocument | null) => { latest.current = next; setDoc(next); }, []);
   const snapshot = useCallback(() => {
@@ -170,7 +170,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const shown = useMemo(() => doc?.key === key && draft !== undefined ? syncReview(doc, draft) : null, [doc, key, draft]);
   const select = useCallback((range: ReviewRange, x: number, y: number) => {
     try {
-      const expanded = paragraphRange(snapshot(), range);
+      const expanded = (current.current.activeTab?.file.fileType === "latex" ? plainParagraphRange : paragraphRange)(snapshot(), range);
       if (expanded) setSelection({ range: expanded, x, y });
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Selection failed."); }
   }, [snapshot]);

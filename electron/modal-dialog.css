@@ -14,15 +14,14 @@
   --accent-foreground: #fff;
   --primary: #191a32;
   --primary-foreground: #fff;
-  --dialog-gradient: linear-gradient(125deg, #f8faff 0%, #e6edff 44%, #f8f3fc 100%);
-  --dialog-icon-gradient: linear-gradient(140deg, #e0e8ff, #cdd4ff);
-  --dialog-button-gradient: linear-gradient(160deg, #303149, #121326);
+  --dialog-surface: #ffffff;
+  --dialog-button-gradient: #191a32;
   --dialog-button-text: #fff;
   color: var(--foreground);
-  background: var(--dialog-gradient);
-  border: 1px solid var(--card);
-  border-radius: 22px;
-  box-shadow: 0 28px 80px #161c3c38, 0 4px 16px #161c3c12;
+  background: var(--dialog-surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px #161c3c2e, 0 2px 8px #161c3c0f;
   display: flex;
   flex-direction: column;
   max-height: calc(100dvh - 48px);
@@ -45,32 +44,29 @@
   --accent-foreground: #172039;
   --primary: #e1e7ff;
   --primary-foreground: #171d36;
-  --dialog-gradient: linear-gradient(125deg, #23293f, #2c3552 44%, #352e46);
-  --dialog-icon-gradient: linear-gradient(140deg, #3d4a79, #4b4278);
-  --dialog-button-gradient: linear-gradient(160deg, #e6ecff, #c5d1ff);
+  --dialog-surface: #1e2336;
+  --dialog-button-gradient: #e1e7ff;
   --dialog-button-text: #171d36;
   color-scheme: dark;
 }
 
 :root { --libera-dialog-overlay-color: #202a5061; }
 .libera-dialog-overlay { background: var(--libera-dialog-overlay-color); }
-.libera-dialog-header { display: flex; align-items: center; gap: 20px; padding: 30px 32px 20px; flex-shrink: 0; }
-.libera-dialog-icon { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; flex-shrink: 0; border-radius: 18px; color: var(--accent); background: var(--dialog-icon-gradient); }
-.libera-dialog-icon svg { width: 30px; height: 30px; stroke-width: 1.8; }
-.libera-dialog-title { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -0.035em; line-height: 1.25; }
-.libera-dialog-description { margin: 5px 0 0; color: var(--muted-foreground); font-size: 14px; line-height: 1.5; }
-.libera-dialog-close { display: flex; align-items: center; justify-content: center; align-self: flex-start; flex-shrink: 0; width: 30px; height: 30px; padding: 0; margin: -8px -12px 0 0; border: 0; border-radius: 9px; color: var(--muted-foreground); background: transparent; cursor: pointer; }
+.libera-dialog-header { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 16px 24px; flex-shrink: 0; }
+.libera-dialog-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.35; }
+.libera-dialog-description { margin: 4px 0 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
+.libera-dialog-close { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; padding: 0; margin: -2px 0 0; border: 0; border-radius: 7px; color: var(--muted-foreground); background: transparent; cursor: pointer; }
 .libera-dialog-close:hover { color: var(--foreground); background: var(--muted); }
-.libera-dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 30px 22px; }
+.libera-dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 24px 20px; }
 .libera-dialog :is(.libera-dialog-body, .overflow-auto, .settings-detail) { scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
-.libera-dialog-section { border: 1px solid var(--border); border-radius: 17px; background: var(--card); padding: 18px; }
-.libera-dialog-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; padding: 0 30px 22px; flex-shrink: 0; }
-.libera-dialog-footer > :is(button, a), .libera-dialog-actions > :is(button, a) { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 9px 20px; border: 1px solid var(--input); border-radius: 12px; background: var(--card); color: var(--foreground); font-size: 14px; font-weight: 500; box-shadow: 0 3px 8px #202a5008; }
+.libera-dialog-section { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 16px; }
+.libera-dialog-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 14px 24px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.libera-dialog-footer > :is(button, a), .libera-dialog-actions > :is(button, a) { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 6px 14px; border: 1px solid var(--input); border-radius: 8px; background: var(--dialog-surface); color: var(--foreground); font-size: 13px; font-weight: 500; box-shadow: 0 1px 2px #202a500d; }
 .libera-dialog :is(.bg-primary, .bg-foreground, .libera-dialog-primary) { background: var(--dialog-button-gradient); color: var(--dialog-button-text); border-color: var(--primary); }
 .libera-dialog .bg-destructive { background: var(--destructive, #dc2626); color: #fff; border-color: transparent; }
 .libera-dialog :is(button, a):disabled { opacity: .55; cursor: not-allowed; }
 .libera-dialog-footer > :is(button, a):hover:not(:disabled), .libera-dialog-actions > :is(button, a):hover:not(:disabled) { filter: brightness(.96); }
-.libera-dialog :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), textarea, select) { background: var(--background); border: 1px solid var(--input); border-radius: 10px; color: var(--foreground); }
+.libera-dialog :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), textarea, select) { background: var(--dialog-surface); border: 1px solid var(--input); border-radius: 8px; color: var(--foreground); }
 .libera-dialog :is(input, textarea)::placeholder { color: var(--muted-foreground); }
 .libera-dialog :is(input, textarea, select):focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); }
 .libera-dialog :is(button, a):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
@@ -101,13 +97,9 @@ html .libera-preferences #save-button { background: var(--dialog-button-gradient
 .libera-preferences .ai-function-settings { border-color: var(--border); }
 
 @media (max-width: 600px) {
-  .libera-dialog-header { gap: 12px; padding: 22px 20px 18px; }
-  .libera-dialog-icon { width: 46px; height: 46px; border-radius: 14px; }
-  .libera-dialog-icon svg { width: 24px; height: 24px; }
-  .libera-dialog-title { font-size: 20px; }
-  .libera-dialog-close { margin-right: -6px; }
+  .libera-dialog-header { padding: 16px 12px 14px 16px; }
   .libera-dialog-body { padding: 0 16px 16px; }
   .libera-dialog-section { padding: 14px; }
-  .libera-dialog-footer { padding: 0 16px 18px; }
+  .libera-dialog-footer { padding: 12px 16px; }
   .libera-preferences .settings-layout { grid-template-columns: 1fr; overflow-y: auto; }
 }

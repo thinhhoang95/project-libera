@@ -7,8 +7,8 @@ import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { MarkdownTabViewState } from "@/components/libera/types";
-import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
-import { changeTiptapHeadingLevels, replaceTiptapRangeWithMarkdown } from "@/lib/tiptap-editor-actions";
+import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
+import { changeTiptapHeadingLevels, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
@@ -38,6 +38,7 @@ type Props = {
   documentPath: string;
   untitled?: boolean;
   mathMarkers?: MathMarkerSettings;
+  smartPaste?: boolean;
   value: string;
   fontFamily?: string;
   fontSizePx: number;
@@ -51,6 +52,21 @@ type Props = {
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
 };
+
+/** Smart Paste takes over only when the clipboard holds headings; rich HTML
+ * is read through the editor's Markdown schema to find them. */
+function smartPasteClipboard(editor: Editor, range: { from: number; to: number }, clipboard: DataTransfer | null, markdown: string | undefined, mathMarkers?: MathMarkerSettings) {
+  let text = markdown;
+  if (!text) {
+    const html = clipboard?.getData("text/html");
+    try {
+      text = html ? convertClipboardHtmlToMarkdown(html, mathMarkers) : clipboard?.getData("text/plain");
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(text?.trim()) && smartPasteTiptapMarkdown(editor, range, text!);
+}
 
 type MathDraft = { latex: string; display: boolean; from: number; to: number; existing: boolean };
 const buttonClass = "rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 aria-pressed:bg-muted aria-pressed:text-foreground";
@@ -89,7 +105,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -181,11 +197,16 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, untitled = false
         }
         if (!editor || editor.isActive("codeBlock") || editor.isActive("code")) return false;
         const markdown = event.clipboardData?.getData("text/markdown");
+        if (smartPaste && smartPasteClipboard(editor, view.state.selection, event.clipboardData, markdown, mathMarkers)) {
+          event.preventDefault();
+          return true;
+        }
         // Keep native rich-text paste, while plain source (including Libera's
         // Copy as Markdown) is parsed into editable document content.
         if (!markdown && event.clipboardData?.getData("text/html")) return false;
         const text = markdown || event.clipboardData?.getData("text/plain");
         if (!text?.trim()) return false;
+        if (pasteMarkdownTableIntoCells(editor, text)) { event.preventDefault(); return true; }
         const inserted = replaceTiptapRangeWithMarkdown(editor, view.state.selection, text);
         if (inserted) event.preventDefault();
         return inserted;

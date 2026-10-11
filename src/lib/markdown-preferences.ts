@@ -9,6 +9,7 @@ export type MarkdownPreferences = {
   baseLineHeight: number;
   pdfExportBaseFontSize: number;
   pdfExportBaseLineHeight: number;
+  smartPaste: boolean;
 };
 
 export const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
@@ -126,6 +127,7 @@ export function normalizeMarkdownPreferences(
     baseLineHeight?: unknown;
     pdfExportBaseFontSize?: unknown;
     pdfExportBaseLineHeight?: unknown;
+    smartPaste?: unknown;
   } = {},
 ): MarkdownPreferences {
   return {
@@ -146,5 +148,6 @@ export function normalizeMarkdownPreferences(
     pdfExportBaseLineHeight: normalizeMarkdownBaseLineHeight(
       input.pdfExportBaseLineHeight,
     ),
+    smartPaste: input.smartPaste === true || input.smartPaste === "1" || input.smartPaste === "true",
   };
 }

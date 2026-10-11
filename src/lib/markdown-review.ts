@@ -63,6 +63,22 @@ export function paragraphRange(text: string, selection: ReviewRange): ReviewRang
     : b.start < selection.end && b.end > selection.start);
   return blocks.length ? { start: blocks[0].start, end: blocks.at(-1)!.end } : null;
 }
+// Non-Markdown sources (LaTeX) have no Markdown block structure: expand the
+// selection to the blank-line separated paragraphs it touches instead.
+export function plainParagraphRange(text: string, selection: ReviewRange): ReviewRange | null {
+  const blocks: ReviewRange[] = [];
+  const separator = /\n[ \t]*\n/g;
+  let cursor = 0;
+  for (const match of [...text.matchAll(separator), null]) {
+    const end = match ? match.index : text.length;
+    const raw = text.slice(cursor, end), lead = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (trimmed) blocks.push({ start: cursor + lead, end: cursor + lead + trimmed.length });
+    if (match) cursor = match.index + match[0].length;
+  }
+  const hit = blocks.filter((b) => selection.start === selection.end ? b.start <= selection.start && b.end >= selection.start : b.start < selection.end && b.end > selection.start);
+  return hit.length ? { start: hit[0].start, end: hit.at(-1)!.end } : null;
+}
 export function anchorAt(text: string, range: ReviewRange): ReviewAnchor {
   if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end <= range.start || range.end > text.length) throw new Error("Select a passage to comment on.");
   return { ...range, quote: text.slice(range.start, range.end), prefix: text.slice(Math.max(0, range.start - 80), range.start), suffix: text.slice(range.end, range.end + 80), state: "attached" };

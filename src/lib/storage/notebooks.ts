@@ -9,7 +9,7 @@ import {
   readNotebookMetadata,
   writeNotebookMetadata,
 } from "@/lib/storage/notebook-metadata";
-import { ensureAdminRoot, notebookPath } from "@/lib/storage/paths";
+import { ensureAdminRoot, getMountedDirectory, notebookPath } from "@/lib/storage/paths";
 import { getTree } from "@/lib/storage/tree";
 import {
   removeNotebookPanelExpandedPathPrefix,
@@ -21,10 +21,17 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
 
+function assertNotebookMode() {
+  if (getMountedDirectory()) {
+    throw new StorageError("Close the open folder to manage notebooks.", 409);
+  }
+}
+
 export async function createNotebook(
   name: string,
   metadataInput?: Partial<LiberaNotebookMetadata>,
 ) {
+  assertNotebookMode();
   await ensureAdminRoot();
   const targetPath = notebookPath(name);
 
@@ -49,6 +56,7 @@ export async function renameNotebook(
   nextName: string,
   metadataInput?: Partial<LiberaNotebookMetadata>,
 ) {
+  assertNotebookMode();
   await ensureAdminRoot();
   const currentPath = notebookPath(currentName);
   const nextPath = notebookPath(nextName);
@@ -87,6 +95,7 @@ export async function renameNotebook(
 }
 
 export async function deleteNotebook(name: string) {
+  assertNotebookMode();
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);

@@ -5,12 +5,13 @@ import {
 import { readLiberaFile } from "@/lib/storage/files";
 import { readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { getTree } from "@/lib/storage/tree";
-import type {
-  DeepSearchPayload,
-  DeepSearchResult,
-  DeepSearchResultSource,
-  LiberaFileNode,
-  LiberaTreeNode,
+import {
+  isTextFileType,
+  type DeepSearchPayload,
+  type DeepSearchResult,
+  type DeepSearchResultSource,
+  type LiberaFileNode,
+  type LiberaTreeNode,
 } from "@/lib/types";
 
 const MAX_DEEP_SEARCH_RESULTS = 100;
@@ -139,15 +140,15 @@ export async function deepSearch(query: string): Promise<DeepSearchPayload> {
       break;
     }
 
-    if (file.fileType === "markdown") {
+    if (isTextFileType(file.fileType)) {
       const payload = await readLiberaFile(file.path);
 
       pushTextResult(results, {
         file,
-        id: `markdown:${file.path}`,
+        id: `${file.fileType}:${file.path}`,
         normalizedQuery,
-        source: "markdown",
-        sourceLabel: "Markdown",
+        source: file.fileType,
+        sourceLabel: file.fileType === "latex" ? "LaTeX" : file.fileType === "text" ? "Text" : "Markdown",
         text: payload.content ?? "",
       });
     }

@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
-    return NextResponse.json(await readLiberaFile(filePath));
+    return NextResponse.json(await readLiberaFile(filePath, { requireContent: true }));
   } catch (error) {
     return handleError(error);
   }

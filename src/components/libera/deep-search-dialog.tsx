@@ -183,7 +183,7 @@ function DeepSearchResults({
             type="button"
             onClick={() => onOpenResult(result)}
           >
-            <FileTypeIcon fileType={result.file.fileType} />
+            <FileTypeIcon fileType={result.file.fileType} name={result.file.name} />
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="truncate text-sm font-medium text-foreground">

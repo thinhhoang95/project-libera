@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
+import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
 import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
 import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
+import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
@@ -41,6 +43,56 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
     input.addEventListener("compositionstart", start); input.addEventListener("compositionend", end); input.addEventListener("mouseup", select); input.addEventListener("keydown", key, true);
     return () => { unregister(); input.removeEventListener("input", changed); input.removeEventListener("compositionstart", start); input.removeEventListener("compositionend", end); input.removeEventListener("mouseup", select); input.removeEventListener("keydown", key, true); };
   }, [register, textareaRef]);
+  return r;
+}
+export function useCodeMirrorReview(view: EditorView | null, apply: (text: string) => void) {
+  const r = useMarkdownReview();
+  const latest = useRef({ r, apply });
+  useLayoutEffect(() => { latest.current = { r, apply }; }, [r, apply]);
+  const register = r?.register;
+  useEffect(() => {
+    if (!view || !register) return;
+    installCodeMirrorReview(view);
+    const root = view.contentDOM;
+    const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
+    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text), focus: (target) => {
+      const length = view.state.doc.length;
+      const anchor = Math.min(target.start, length), head = Math.min(target.end, length);
+      view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
+      view.focus();
+    } });
+    function select(event: MouseEvent) {
+      if (!latest.current.r?.enabled || view!.composing || event.button !== 0) return;
+      // Let CodeMirror settle the selection from this mouseup first.
+      const { clientX, clientY } = event;
+      window.setTimeout(() => latest.current.r?.enabled && latest.current.r.select(range(), clientX, clientY), 0);
+    }
+    function key(event: KeyboardEvent) {
+      const review = latest.current.r;
+      if (!review?.enabled) return;
+      const text = () => view!.state.doc.toString();
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "m") {
+        event.preventDefault(); event.stopImmediatePropagation(); const rect = view!.coordsAtPos(view!.state.selection.main.head); review.select(range(), rect?.left ?? 30, rect?.bottom ?? 30);
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
+      if (event.key === "Escape") review.clearSelection();
+    }
+    const changed = () => latest.current.r?.clearSelection();
+    root.addEventListener("input", changed); root.addEventListener("mouseup", select); root.addEventListener("keydown", key, true);
+    return () => { unregister(); root.removeEventListener("input", changed); root.removeEventListener("mouseup", select); root.removeEventListener("keydown", key, true); };
+  }, [view, register]);
+  useEffect(() => { if (view) { installCodeMirrorReview(view); setCodeMirrorReviewLocked(view, !!r?.locked); } }, [view, r?.locked]);
+  useEffect(() => {
+    if (!view) return;
+    installCodeMirrorReview(view);
+    const ranges = r?.enabled ? [
+      ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+      ...(r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+      ...(r.selection ? [r.selection.range] : []),
+    ] : [];
+    view.dispatch({ effects: setReviewHighlights.of(ranges) });
+  }, [view, r?.doc, r?.enabled, r?.selection]);
   return r;
 }
 export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>, read: () => string, replace: (markdown: string) => void) {

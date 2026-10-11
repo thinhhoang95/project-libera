@@ -1,8 +1,11 @@
 import path from "node:path";
 import {
   IMAGE_EXTENSIONS,
+  LATEX_EXTENSIONS,
   MARKDOWN_EXTENSIONS,
   PDF_EXTENSIONS,
+  TEXT_EXTENSIONS,
+  TEXT_FILE_NAMES,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment } from "@/lib/storage/paths";
@@ -15,12 +18,20 @@ export function getFileType(name: string): LiberaFileType | null {
     return "markdown";
   }
 
+  if (LATEX_EXTENSIONS.has(extension)) {
+    return "latex";
+  }
+
   if (IMAGE_EXTENSIONS.has(extension)) {
     return "image";
   }
 
   if (PDF_EXTENSIONS.has(extension)) {
     return "pdf";
+  }
+
+  if (TEXT_EXTENSIONS.has(extension) || TEXT_FILE_NAMES.has(path.basename(name).toLowerCase())) {
+    return "text";
   }
 
   return null;
@@ -30,7 +41,7 @@ export function assertSupportedFileName(name: string) {
   const fileType = getFileType(name);
 
   if (!fileType) {
-    throw new StorageError("Only Markdown, image, and PDF files are supported.");
+    throw new StorageError("Only Markdown, LaTeX, image, PDF, and plain-text or code files are supported.");
   }
 
   return fileType;
@@ -66,8 +77,8 @@ export function ensureMarkdownName(name: string) {
   if (path.extname(safeName)) {
     const fileType = assertSupportedFileName(safeName);
 
-    if (fileType !== "markdown") {
-      throw new StorageError("New note files must use a Markdown extension.");
+    if (fileType !== "markdown" && fileType !== "latex" && fileType !== "text") {
+      throw new StorageError("New files must be Markdown, LaTeX, or plain-text files.");
     }
 
     return safeName;
@@ -107,6 +118,15 @@ export function getContentType(name: string, fileType: LiberaFileType) {
 
   if (fileType === "markdown") {
     return "text/markdown; charset=utf-8";
+  }
+
+  if (fileType === "latex") {
+    return extension === ".bib" ? "text/x-bibtex; charset=utf-8" : "text/x-tex; charset=utf-8";
+  }
+
+  if (fileType === "text") {
+    // Served as plain text so a raw view never runs HTML, SVG, or scripts.
+    return "text/plain; charset=utf-8";
   }
 
   if (extension === ".jpg" || extension === ".jpeg") {

@@ -15,7 +15,7 @@ type MarkdownHeadingEnumerationOptions = {
   startAt?: number;
 };
 
-type MarkdownHeadingLine = {
+export type MarkdownHeadingLine = {
   heading?: {
     level: number;
   };
@@ -65,7 +65,7 @@ function isLineSelected(
   return selection.start < line.lineEnd && selection.end > line.lineStart;
 }
 
-function parseMarkdownHeadingLines(value: string) {
+export function parseMarkdownHeadingLines(value: string) {
   const lines = value.split("\n");
   const headingLines: MarkdownHeadingLine[] = [];
   let lineStart = 0;
@@ -117,6 +117,35 @@ export function headingNumberPrefixLength(text: string) {
   return text.match(HEADING_NUMBER_PREFIX_REGEX)?.[0].length ?? 0;
 }
 
+/** Text after the `#` markers of a Markdown heading line. */
+export function markdownHeadingLineText(line: string) {
+  return line.match(MARKDOWN_HEADING_LINE_REGEX)?.[4] ?? "";
+}
+
+/** Renumber every heading at or below the highest numbered heading level,
+ * continuing the document's existing numbering. Headings above that level
+ * (e.g. an unnumbered title) are left as they are. Multi-part numbers keep
+ * the document's style ("1.1" or "1.1."). Returns null for an unnumbered
+ * document. */
+export function getContinuedHeadingNumbers(headings: { level: number; text: string }[]) {
+  const prefixes = headings.flatMap((heading) => {
+    const prefix = heading.text.match(HEADING_NUMBER_PREFIX_REGEX)?.[0].trim();
+    return prefix ? [{ level: heading.level, prefix }] : [];
+  });
+  if (!prefixes.length) return null;
+  const baseLevel = Math.min(...prefixes.map(({ level }) => level));
+  const multiPart = prefixes.filter(({ prefix }) => prefix.replace(/\.$/, "").includes("."));
+  const trailingDot = multiPart.filter(({ prefix }) => prefix.endsWith(".")).length * 2 >= multiPart.length;
+  const counters = Array.from({ length: MAX_HEADING_LEVEL }, () => 0);
+  const numbers = new Map<number, string>();
+  headings.forEach(({ level }, index) => {
+    if (level < baseLevel) return;
+    const number = advanceHeadingCounters(counters, level - baseLevel + 1);
+    numbers.set(index, trailingDot || !number.slice(0, -1).includes(".") ? number : number.slice(0, -1));
+  });
+  return numbers;
+}
+
 /** Shared numbering rules for source lines and rich-text heading nodes. */
 export function getHeadingEnumerationNumbers(
   levels: number[],
@@ -142,7 +171,7 @@ export function getHeadingEnumerationNumbers(
   return numbers;
 }
 
-function enumerateHeadingLine(line: string, numbering: string) {
+export function enumerateHeadingLine(line: string, numbering: string) {
   const match = line.match(MARKDOWN_HEADING_LINE_REGEX);
 
   if (!match) {

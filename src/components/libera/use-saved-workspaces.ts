@@ -41,6 +41,8 @@ export function useSavedWorkspaces(options: Options) {
   useLayoutEffect(() => { current.current = options; });
 
   const journalKey = `libera:workspaces:v1:${options.tree.root}`;
+  // Notebook mode and each open folder have their own saved sessions.
+  const workspacesUrl = `/api/workspaces?root=${encodeURIComponent(options.tree.root)}`;
   function publish(next: WorkspaceLibrary) {
     libraryRef.current = next;
     setLibrary(next);
@@ -53,7 +55,7 @@ export function useSavedWorkspaces(options: Options) {
   }
   function journal(next: WorkspaceLibrary, closing = false) {
     if (closing && window.liberaWorkspaces) {
-      const result = window.liberaWorkspaces.checkpoint(JSON.stringify(next));
+      const result = window.liberaWorkspaces.checkpoint(JSON.stringify(next), current.current.tree.root);
       if (!result.saved) throw new Error(result.error ?? "Could not save workspace before closing.");
     }
     try { window.localStorage.setItem(journalKey, JSON.stringify(next)); }
@@ -63,7 +65,8 @@ export function useSavedWorkspaces(options: Options) {
     pendingSnapshot.current = next;
     journal(next);
     const body = JSON.stringify(next);
-    const task = queue.current.catch(() => undefined).then(() => apiRequest("/api/workspaces", { method: "PUT", body }));
+    const url = workspacesUrl;
+    const task = queue.current.catch(() => undefined).then(() => apiRequest(url, { method: "PUT", body }));
     queue.current = task;
     return task;
   }
@@ -99,7 +102,7 @@ export function useSavedWorkspaces(options: Options) {
     async function load() {
       setReady(false);
       try {
-        let next = parseWorkspaceLibrary(await apiRequest("/api/workspaces"));
+        let next = parseWorkspaceLibrary(await apiRequest(workspacesUrl));
         let recovery: string | null = null;
         try { recovery = window.localStorage.getItem(journalKey); } catch { /* Disk persistence remains available. */ }
         if (recovery) {
@@ -127,7 +130,7 @@ export function useSavedWorkspaces(options: Options) {
     void load();
     return () => { cancelled = true; readyRef.current = false; };
     // The tree may refresh while editing; restore only on login or data-root changes.
-  }, [options.authenticated, options.tree.root, journalKey, attempt]);
+  }, [options.authenticated, options.tree.root, journalKey, workspacesUrl, attempt]);
 
   useEffect(() => {
     if (!ready || !options.authenticated) return;
@@ -182,7 +185,7 @@ export function useSavedWorkspaces(options: Options) {
       let next = change(previous);
       let restored: WorkspaceSession | undefined;
       if (switchTo !== undefined && switchTo !== previous.activeWorkspaceId) {
-        next = { ...next, activeWorkspaceId: switchTo };
+        next = { ...next, activeWorkspaceId: switchTo, workspaces: next.workspaces.map((workspace) => workspace.id === switchTo ? { ...workspace, lastUsedAt: Date.now() } : workspace) };
         const session = next.workspaces.find((workspace) => workspace.id === switchTo)?.session ?? next.librarySession ?? emptyWorkspaceSession();
         restored = await restore(session, await current.current.refreshTree());
       }
@@ -267,5 +270,22 @@ export function useSavedWorkspaces(options: Options) {
       void persist(next).catch((error: Error) => current.current.onError(error.message));
     },
     checkpoint: async () => { if (readyRef.current) await persist(snapshot()); },
+    /**
+     * Save the session and stop checkpointing before the page switches between
+     * Notebook and Directory mode. Returns a function that resumes on failure.
+     */
+    suspendForContextSwitch: async () => {
+      if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");
+      await Promise.allSettled([...fileChanges.current]);
+      await persist(snapshot());
+      locked.current = true;
+      readyRef.current = false;
+      setSwitching(true);
+      return () => {
+        locked.current = false;
+        readyRef.current = true;
+        setSwitching(false);
+      };
+    },
   };
 }

@@ -7,10 +7,12 @@ import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
+import { closeDirectory } from "@/lib/storage/directory-mode";
 import {
   ensureAdminRoot,
   filePathFromParts,
   getAdminRoot,
+  getMountedDirectory,
   imageAnnotationsPath,
   itemPath,
   legacyImageAnnotationsPath,
@@ -19,6 +21,7 @@ import {
   pdfAnnotationsPath,
   relativeFilePath,
   relativeItemPath,
+  type MountedDirectory,
 } from "@/lib/storage/paths";
 import type {
   LiberaFileNode,
@@ -28,14 +31,35 @@ import type {
   LiberaTreeNode,
 } from "@/lib/types";
 
-function shouldSkipTreeEntry(name: string, options?: { showArchive?: boolean }) {
+type TreeReadOptions = {
+  showArchive?: boolean;
+  /** Set for an open folder, which may be a large project rather than a notebook. */
+  budget?: { remaining: number; truncated: boolean };
+};
+
+// Dependency and build folders hold no notes and can be enormous.
+const SKIPPED_DIRECTORY_MODE_FOLDERS = new Set(["node_modules", "__pycache__", "bower_components"]);
+const DIRECTORY_MODE_ENTRY_LIMIT = 20_000;
+const DIRECTORY_MODE_EMOJI = "📁";
+const DIRECTORY_MODE_COLOR = "#475569";
+
+function shouldSkipTreeEntry(name: string, options?: TreeReadOptions) {
   return (
     name.startsWith(".") ||
     name.startsWith("._") ||
     name === "__MACOSX" ||
     name === MARKDOWN_ASSETS_DIR ||
-    (name === ARCHIVE_DIR && !options?.showArchive)
+    (name === ARCHIVE_DIR && !options?.showArchive) ||
+    (Boolean(options?.budget) && SKIPPED_DIRECTORY_MODE_FOLDERS.has(name))
   );
+}
+
+async function isDirectory(targetPath: string) {
+  try {
+    return (await stat(targetPath)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function sortTreeNodes(left: LiberaTreeNode, right: LiberaTreeNode) {
@@ -173,7 +197,7 @@ export async function getFileNode(
 async function readTreeDirectory(
   notebook: string,
   parentParts: string[],
-  options: { showArchive?: boolean } = {},
+  options: TreeReadOptions = {},
 ): Promise<LiberaTreeNode[]> {
   const directoryPath = itemPath(notebook, parentParts);
   const entries = await readdir(directoryPath, { withFileTypes: true });
@@ -182,6 +206,15 @@ async function readTreeDirectory(
   for (const entry of entries) {
     if (shouldSkipTreeEntry(entry.name, options)) {
       continue;
+    }
+
+    if (options.budget) {
+      if (options.budget.remaining <= 0) {
+        options.budget.truncated = true;
+        break;
+      }
+
+      options.budget.remaining -= 1;
     }
 
     const childParts = [...parentParts, entry.name];
@@ -212,8 +245,68 @@ async function readTreeDirectory(
   return children.sort(sortTreeNodes);
 }
 
+async function getDirectoryTree(
+  mounted: MountedDirectory,
+  options: { includeArchive?: boolean },
+): Promise<LiberaTree> {
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const showArchive = Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive);
+  const budget = { remaining: DIRECTORY_MODE_ENTRY_LIMIT, truncated: false };
+  const directoryStats = await stat(mounted.path);
+  const children = await readTreeDirectory(mounted.name, [], { showArchive, budget });
+  const filePaths = new Set<string>();
+  const expandablePaths = new Set<string>([mounted.name]);
+  collectFilePaths(children, filePaths);
+  collectExpandablePaths(children, expandablePaths);
+
+  return {
+    archiveIncluded: showArchive,
+    root: mounted.path,
+    directory: { name: mounted.name, path: mounted.path, truncated: budget.truncated },
+    lastNotebookName: mounted.name,
+    notebookPanelExpandedPaths:
+      workspaceMetadata.notebookPanelExpandedPaths === null
+        ? null
+        : workspaceMetadata.notebookPanelExpandedPaths.filter((expandedPath) =>
+            expandablePaths.has(expandedPath),
+          ),
+    notebookGroups: [],
+    notebookViewOptions: { hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: workspaceMetadata.notebookViewOptions.showArchive },
+    starredFilePaths: workspaceMetadata.starredFilePaths.filter((filePath) =>
+      filePaths.has(filePath),
+    ),
+    notebooks: [{
+      kind: "notebook",
+      name: mounted.name,
+      path: mounted.name,
+      createdAt: directoryStats.birthtime.toISOString(),
+      color: DIRECTORY_MODE_COLOR,
+      emoji: DIRECTORY_MODE_EMOJI,
+      illustration: "azure-coast",
+      groupId: null,
+      updatedAt: latestIsoDate(
+        directoryStats.mtime.toISOString(),
+        ...latestTreeNodeUpdatedAt(children),
+      ),
+      children,
+    }],
+  };
+}
+
 export async function getTree(options: { includeArchive?: boolean } = {}): Promise<LiberaTree> {
   await ensureAdminRoot();
+
+  const mounted = getMountedDirectory();
+
+  if (mounted) {
+    if (await isDirectory(mounted.path)) {
+      return getDirectoryTree(mounted, options);
+    }
+
+    // A moved folder or an unplugged drive must not lock the app out of its
+    // library. The folder stays in the recent list.
+    closeDirectory();
+  }
 
   const workspaceMetadata = await readWorkspaceMetadata();
   const validGroupIds = new Set(

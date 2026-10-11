@@ -152,7 +152,7 @@ test("workspace sessions preserve order, active tab, unsaved drafts, view state,
   let liveTree = structuredClone(tree);
   const files = [a, b, c, d];
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") {
         if (failSave) return Response.json({ error: "Disk unavailable" }, { status: 500 });
         disk = parseWorkspaceLibrary(JSON.parse(String(init.body)));
@@ -292,7 +292,7 @@ test("active workspace tracks file operations, persists them, and owns uploads t
     return folder!.kind === "folder" ? folder.children : [];
   }
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") { disk = parseWorkspaceLibrary(JSON.parse(String(init.body))); return Response.json({ saved: true }); }
       return Response.json(disk);
     }
@@ -465,7 +465,7 @@ test("sorting controls and group changes stay in their workspace across switches
   let notebookBody: Record<string, unknown> = {};
   let failSave = false;
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") {
         if (failSave) return Response.json({ error: "Disk unavailable" }, { status: 500 });
         disk = parseWorkspaceLibrary(JSON.parse(String(init.body)));

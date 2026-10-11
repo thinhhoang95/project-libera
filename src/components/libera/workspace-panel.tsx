@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
@@ -46,6 +47,7 @@ import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import type {
   ImageTabViewState,
+  LatexTabViewState,
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
   MarkdownEditorMode,
@@ -54,6 +56,7 @@ import type {
   OpenTab,
   OpenTabViewState,
   PdfTabViewState,
+  TextTabViewState,
 } from "@/components/libera/types";
 import { enumerateMarkdownHeadings } from "@/lib/markdown-heading-enumeration";
 import type {
@@ -118,6 +121,7 @@ type WorkspacePanelProps = {
   onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
   onCompleteScreenshotSnip: (file: File) => Promise<void>;
@@ -129,7 +133,7 @@ type WorkspacePanelProps = {
   onInsertFileLinkPlaceholder: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
-  onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onRegisterEditorDraft?: RegisterEditorDraft;
@@ -137,6 +141,17 @@ type WorkspacePanelProps = {
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
 };
+
+// CodeMirror and the PDF pane load only when a LaTeX file is opened.
+const LatexWorkspace = dynamic(
+  () => import("@/components/libera/latex/latex-workspace").then((module) => module.LatexWorkspace),
+  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading LaTeX editor…</div> },
+);
+
+const CodeEditor = dynamic(
+  () => import("@/components/libera/code-editor").then((module) => module.CodeEditor),
+  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading editor…</div> },
+);
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
 const MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS = 250;
@@ -496,6 +511,7 @@ const PANEL_CALLBACKS = [
   "onAiWriteAt",
   "onCreateMarkdown",
   "onCreateSlides",
+  "onCreateLatex",
   "onCreateNotebook",
   "onCancelScreenshotSnip",
   "onCompleteScreenshotSnip",
@@ -573,6 +589,7 @@ function WorkspacePanelContent({
   onAiWriteAt,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
@@ -679,6 +696,28 @@ function WorkspacePanelContent({
       }
 
       onSetViewState({ markdown: patch }, activeTabId);
+    },
+    [activeTabId, onSetViewState],
+  );
+
+  const updateLatexViewState = useCallback(
+    (patch: LatexTabViewState) => {
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ latex: patch }, activeTabId);
+    },
+    [activeTabId, onSetViewState],
+  );
+
+  const updateTextViewState = useCallback(
+    (patch: TextTabViewState) => {
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ text: patch }, activeTabId);
     },
     [activeTabId, onSetViewState],
   );
@@ -1398,6 +1437,7 @@ function WorkspacePanelContent({
           notebook={selectedNotebook}
           onCreateMarkdown={onCreateMarkdown}
           onCreateSlides={onCreateSlides}
+          onCreateLatex={onCreateLatex}
           onOpenFile={onOpenFile}
         />
       );
@@ -1452,12 +1492,43 @@ function WorkspacePanelContent({
         </div>
       ) : null}
 
-      {activeTab.file.fileType === "markdown" ? (
+      {activeTab.file.fileType === "latex" ? (
+        <LatexWorkspace
+          key={activeTab.id}
+          tab={activeTab}
+          files={files}
+          fontFamily={markdownEditorFontFamily}
+          fontSizePx={markdownFontSizePx}
+          lineHeight={markdownPreferences.baseLineHeight}
+          readOpenTabs={readOpenTabs}
+          onSetDraft={onSetDraft}
+          onRegisterDraft={registerMarkdownDraft}
+          onSave={onSave}
+          onSetViewState={updateLatexViewState}
+          onOpenFile={onOpenFile}
+        />
+      ) : activeTab.file.fileType === "text" ? (
+        <CodeEditor
+          key={activeTab.id}
+          fileName={activeTab.file.name}
+          value={activeTab.draft}
+          fontFamily={markdownEditorFontFamily}
+          fontSizePx={markdownFontSizePx}
+          lineHeight={markdownPreferences.baseLineHeight}
+          initialViewState={activeTab.viewState?.text}
+          saving={activeTab.status === "saving"}
+          onChange={onSetDraft}
+          onRegisterDraft={registerMarkdownDraft}
+          onViewStateChange={updateTextViewState}
+          onSave={() => void onSave()}
+        />
+      ) : activeTab.file.fileType === "markdown" ? (
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
               files={files}
               mathMarkers={markdownPreferences}
+              smartPaste={markdownPreferences.smartPaste}
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
               fontFamily={wysiwygEditorFontFamily}
@@ -1545,6 +1616,7 @@ function WorkspacePanelContent({
                 fontSizePx={markdownFontSizePx}
                 lineHeightPx={markdownLineHeightPx}
                 mathMarkers={markdownPreferences}
+                smartPaste={markdownPreferences.smartPaste}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}

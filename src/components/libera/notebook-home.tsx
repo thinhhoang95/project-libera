@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FileCode2,
   FilePlus2,
   FileText,
   FolderOpen,
@@ -56,6 +57,7 @@ type NotebookHomeProps = {
   notebook: LiberaNotebookNode;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
 };
 
@@ -90,7 +92,7 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
 
     files.push(node);
 
-    if (node.fileType === "markdown") {
+    if (node.fileType === "markdown" || node.fileType === "latex") {
       notes.push(node);
     }
 
@@ -106,6 +108,7 @@ export function NotebookHome({
   notebook,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onOpenFile,
 }: NotebookHomeProps) {
   const { files, notes, images, folders } = useMemo(
@@ -191,6 +194,11 @@ export function NotebookHome({
               <button className={styles.secondaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}>
                 <FileText aria-hidden size={17} /> New note
               </button>
+              {onCreateLatex ? (
+                <button className={styles.secondaryButton} type="button" onClick={() => onCreateLatex(notebook.name)}>
+                  <FileCode2 aria-hidden size={17} /> New LaTeX
+                </button>
+              ) : null}
               <button className={styles.primaryButton} type="button" onClick={() => onCreateSlides(notebook.name)}>
                 <FilePlus2 aria-hidden size={17} /> New slides
               </button>
@@ -220,9 +228,9 @@ export function NotebookHome({
                   <div className={styles.searchResults}>
                     {fileSearchResults.length ? fileSearchResults.map((file) => (
                       <button key={file.path} type="button" onClick={() => openSearchResult(file)}>
-                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                         <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
-                        <span className={styles.fileType}>{fileTypeLabel(file.fileType)}</span>
+                        <span className={styles.fileType}>{fileTypeLabel(file.fileType, file.name)}</span>
                       </button>
                     )) : <p className={styles.noResults}>No files found in this notebook.</p>}
                   </div>
@@ -260,7 +268,7 @@ export function NotebookHome({
               {sortedFiles.map((file) => (
                 <button key={file.path} className={styles.fileRow} type="button" onClick={() => onOpenFile(file)}>
                   <span className={styles.fileDetails}>
-                    <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                    <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                     <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
                   </span>
                   <time className={styles.fileDate} dateTime={file.updatedAt}>{formatDate(file.updatedAt)}</time>

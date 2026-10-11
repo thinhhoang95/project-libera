@@ -52,6 +52,25 @@ export type PdfTabViewState = {
   zoom?: number;
 };
 
+export type LatexTabViewState = {
+  autoCompile?: boolean;
+  /** "current" typesets the open file itself instead of its main file. */
+  compileTarget?: "main" | "current";
+  /** "auto" honors `% !TEX program` and the packages in the preamble. */
+  engine?: "auto" | "pdflatex" | "xelatex" | "lualatex";
+  editorScrollTop?: number;
+  line?: number;
+  logOpen?: boolean;
+  pdfScrollLeft?: number;
+  pdfScrollTop?: number;
+  /** A number, or "width" to fit the page width to the pane. */
+  pdfZoom?: number | "width";
+  selectionEnd?: number;
+  selectionStart?: number;
+  /** One-shot request from another view (SyncTeX, outline) to reveal a line. */
+  revealLine?: { line: number; column?: number; nonce: number };
+};
+
 export type ImageTabViewState = {
   fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
@@ -63,10 +82,19 @@ export type ImageTabViewState = {
   zoom?: number;
 };
 
+export type TextTabViewState = {
+  editorScrollTop?: number;
+  line?: number;
+  selectionEnd?: number;
+  selectionStart?: number;
+};
+
 export type OpenTabViewState = {
   image?: ImageTabViewState;
+  latex?: LatexTabViewState;
   markdown?: MarkdownTabViewState;
   pdf?: PdfTabViewState;
+  text?: TextTabViewState;
 };
 
 export type SearchResult =
@@ -113,7 +141,7 @@ export type NoteFormValues = {
 };
 
 export type NoteDialogState = {
-  mode: "markdown" | "slides";
+  mode: "markdown" | "slides" | "latex";
   notebook: string;
   parentPath?: string;
   error?: string;
@@ -263,6 +291,7 @@ export type LiberaWorkspace = {
   completeScreenshotSnip: (file: File) => Promise<void>;
   createMarkdownFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
   createMarkdownSlidesFromPrompt: (notebook: string) => Promise<void>;
+  createLatexFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;

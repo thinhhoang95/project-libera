@@ -1,5 +1,11 @@
+import { statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import {
+  directoryModeStatePath,
+  directoryStateRoot,
+  readDirectoryModeState,
+} from "../../../electron/directory-mode.cjs";
 import {
   ADMIN_USER,
   ANNOTATIONS_DIR,
@@ -69,24 +75,115 @@ export function assertSafeUserSegment(segment: string, label: string) {
 }
 
 export function assertInsideAdminRoot(targetPath: string) {
-  const relative = path.relative(getAdminRoot(), targetPath);
+  assertInsideRoot(getAdminRoot(), targetPath);
+}
+
+function assertInsideRoot(rootPath: string, targetPath: string) {
+  const relative = path.relative(rootPath, targetPath);
 
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new StorageError("Path escapes the Libera data directory.");
   }
 }
 
-export function notebookPath(name: string) {
-  const safeName = assertSafeSegment(name, "Notebook name");
-  const targetPath = path.join(getAdminRoot(), safeName);
-  assertInsideAdminRoot(targetPath);
+/** An external folder opened in Directory mode. It replaces the notebook library. */
+export type MountedDirectory = {
+  /** The single notebook name that addresses the folder, e.g. `name/notes.md`. */
+  name: string;
+  path: string;
+  /** App-owned state for this folder, kept in the data directory. */
+  stateRoot: string;
+};
+
+type MountedDirectoryCache = { key: string; mounted: MountedDirectory | null };
+const MOUNTED_DIRECTORY_CACHE = Symbol.for("libera.mountedDirectory");
+
+export function mountedDirectoryName(directoryPath: string) {
+  return path.basename(directoryPath).trim() || "Folder";
+}
+
+/**
+ * Read the open folder. The state file can be written by another server
+ * worker, so cache only while its identity on disk is unchanged.
+ */
+export function getMountedDirectory(): MountedDirectory | null {
+  const adminRoot = getAdminRoot();
+  const statePath = directoryModeStatePath(adminRoot);
+  let key = `${statePath}:missing`;
+
+  try {
+    const stats = statSync(statePath);
+    key = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    // No state file means Notebook mode.
+  }
+
+  const cache = globalThis as { [MOUNTED_DIRECTORY_CACHE]?: MountedDirectoryCache };
+  const cached = cache[MOUNTED_DIRECTORY_CACHE];
+
+  if (cached?.key === key) {
+    return cached.mounted;
+  }
+
+  const { current } = readDirectoryModeState(adminRoot);
+  const mounted = current
+    ? { name: mountedDirectoryName(current), path: current, stateRoot: directoryStateRoot(adminRoot, current) }
+    : null;
+  cache[MOUNTED_DIRECTORY_CACHE] = { key, mounted };
+  return mounted;
+}
+
+/** Where library-level state lives: the admin root, or the open folder's state root. */
+export function getStateRoot() {
+  return getMountedDirectory()?.stateRoot ?? getAdminRoot();
+}
+
+function notebookRootPath(safeNotebook: string) {
+  const mounted = getMountedDirectory();
+
+  if (!mounted) {
+    const targetPath = path.join(getAdminRoot(), safeNotebook);
+    assertInsideAdminRoot(targetPath);
+    return targetPath;
+  }
+
+  // Directory mode only exposes the open folder; links and attachments cannot
+  // reach notebooks or other folders.
+  if (safeNotebook !== mounted.name) {
+    throw new StorageError("Only files in the open folder are available.", 404);
+  }
+
+  return mounted.path;
+}
+
+function notebookChildPath(safeNotebook: string, ...parts: string[]) {
+  const rootPath = notebookRootPath(safeNotebook);
+  const targetPath = path.join(rootPath, ...parts);
+  assertInsideRoot(rootPath, targetPath);
   return targetPath;
 }
 
-export function workspaceMetadataPath() {
-  const targetPath = path.join(getAdminRoot(), WORKSPACE_METADATA_FILE);
-  assertInsideAdminRoot(targetPath);
+/** Libera's per-notebook system folder. An open folder keeps it in the data directory. */
+function notebookSystemPath(safeNotebook: string, ...parts: string[]) {
+  const mounted = getMountedDirectory();
+
+  if (!mounted) {
+    return notebookChildPath(safeNotebook, LIBERA_SYSTEM_DIR, ...parts);
+  }
+
+  notebookRootPath(safeNotebook);
+  const systemRoot = path.join(mounted.stateRoot, LIBERA_SYSTEM_DIR);
+  const targetPath = path.join(systemRoot, ...parts);
+  assertInsideRoot(systemRoot, targetPath);
   return targetPath;
+}
+
+export function notebookPath(name: string) {
+  return notebookRootPath(assertSafeSegment(name, "Notebook name"));
+}
+
+export function workspaceMetadataPath() {
+  return path.join(getStateRoot(), WORKSPACE_METADATA_FILE);
 }
 
 export function itemPath(
@@ -96,9 +193,7 @@ export function itemPath(
 ) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safePathParts = pathParts.map((part) => assertSafeUserSegment(part, itemLabel));
-  const targetPath = path.join(getAdminRoot(), safeNotebook, ...safePathParts);
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookChildPath(safeNotebook, ...safePathParts);
 }
 
 export function filePath(notebook: string, name: string) {
@@ -116,28 +211,13 @@ export function filePathFromParts(notebook: string, pathParts: string[]) {
 export function pdfAnnotationsPath(notebook: string, name: string) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safeName = assertSafeSegment(name, "File name");
-  const targetPath = path.join(
-    getAdminRoot(),
-    safeNotebook,
-    LIBERA_SYSTEM_DIR,
-    ANNOTATIONS_DIR,
-    "pdf",
-    `${safeName}.json`,
-  );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookSystemPath(safeNotebook, ANNOTATIONS_DIR, "pdf", `${safeName}.json`);
 }
 
 export function legacyPdfAnnotationsPath(notebook: string, name: string) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safeName = assertSafeSegment(name, "File name");
-  const targetPath = path.join(
-    getAdminRoot(),
-    safeNotebook,
-    `.${safeName}${PDF_ANNOTATIONS_SUFFIX}`,
-  );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookChildPath(safeNotebook, `.${safeName}${PDF_ANNOTATIONS_SUFFIX}`);
 }
 
 export function pdfTextCachePath(notebook: string, pathParts: string[]) {
@@ -149,16 +229,12 @@ export function pdfTextCachePath(notebook: string, pathParts: string[]) {
   const safePathParts = pathParts.map((part) =>
     assertSafeUserSegment(part, "File path segment"),
   );
-  const targetPath = path.join(
-    getAdminRoot(),
+  return notebookSystemPath(
     safeNotebook,
-    LIBERA_SYSTEM_DIR,
     PDF_TEXT_CACHE_DIR,
     ...safePathParts.slice(0, -1),
     `${safePathParts.at(-1)}.json`,
   );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
 }
 
 export function pdfTextCacheDirectoryPath(notebook: string, pathParts: string[]) {
@@ -166,42 +242,19 @@ export function pdfTextCacheDirectoryPath(notebook: string, pathParts: string[])
   const safePathParts = pathParts.map((part) =>
     assertSafeUserSegment(part, "Folder path segment"),
   );
-  const targetPath = path.join(
-    getAdminRoot(),
-    safeNotebook,
-    LIBERA_SYSTEM_DIR,
-    PDF_TEXT_CACHE_DIR,
-    ...safePathParts,
-  );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookSystemPath(safeNotebook, PDF_TEXT_CACHE_DIR, ...safePathParts);
 }
 
 export function imageAnnotationsPath(notebook: string, name: string) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safeName = assertSafeSegment(name, "File name");
-  const targetPath = path.join(
-    getAdminRoot(),
-    safeNotebook,
-    LIBERA_SYSTEM_DIR,
-    ANNOTATIONS_DIR,
-    "image",
-    `${safeName}.json`,
-  );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookSystemPath(safeNotebook, ANNOTATIONS_DIR, "image", `${safeName}.json`);
 }
 
 export function legacyImageAnnotationsPath(notebook: string, name: string) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
   const safeName = assertSafeSegment(name, "File name");
-  const targetPath = path.join(
-    getAdminRoot(),
-    safeNotebook,
-    `.${safeName}${IMAGE_ANNOTATIONS_SUFFIX}`,
-  );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  return notebookChildPath(safeNotebook, `.${safeName}${IMAGE_ANNOTATIONS_SUFFIX}`);
 }
 
 export function markdownAssetsDirectoryName(markdownName: string) {
@@ -229,27 +282,23 @@ export function markdownAssetsDirectoryPathFromParts(
   const folderParts = markdownPathParts
     .slice(0, -1)
     .map((part) => markdownAssetSafeSegment(part));
-  const targetPath = path.join(
-    notebookPath(notebook),
+  return notebookChildPath(
+    assertSafeSegment(notebook, "Notebook name"),
     MARKDOWN_ASSETS_DIR,
     ...folderParts,
     markdownAssetsDirectoryName(markdownPathParts.at(-1) ?? ""),
   );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
 }
 
 export function markdownAssetsDirectoryPathForDirectory(
   notebook: string,
   pathParts: string[],
 ) {
-  const targetPath = path.join(
-    notebookPath(notebook),
+  return notebookChildPath(
+    assertSafeSegment(notebook, "Notebook name"),
     MARKDOWN_ASSETS_DIR,
     ...pathParts.map((part) => markdownAssetSafeSegment(part)),
   );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
 }
 
 export function markdownAssetsPathPrefix(markdownPathParts: string[]) {
@@ -265,19 +314,23 @@ export function markdownAssetsPathPrefix(markdownPathParts: string[]) {
 }
 
 export function markdownAssetsDirectoryPath(notebook: string, markdownName: string) {
-  const targetPath = path.join(
-    notebookPath(notebook),
+  return notebookChildPath(
+    assertSafeSegment(notebook, "Notebook name"),
     MARKDOWN_ASSETS_DIR,
     markdownAssetsDirectoryName(markdownName),
   );
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
 }
 
 export function notebookMetadataPath(name: string) {
-  const targetPath = path.join(notebookPath(name), NOTEBOOK_METADATA_FILE);
-  assertInsideAdminRoot(targetPath);
-  return targetPath;
+  const safeName = assertSafeSegment(name, "Notebook name");
+  const mounted = getMountedDirectory();
+
+  if (mounted) {
+    notebookRootPath(safeName);
+    return path.join(mounted.stateRoot, NOTEBOOK_METADATA_FILE);
+  }
+
+  return notebookChildPath(safeName, NOTEBOOK_METADATA_FILE);
 }
 
 export function splitStoragePath(relativePath: string) {
@@ -364,8 +417,10 @@ export function normalizeMarkdownAssetPath(assetPath: string) {
 
 export function markdownAssetPath(notebook: string, assetPath: string) {
   const normalized = normalizeMarkdownAssetPath(assetPath);
-  const targetPath = path.join(notebookPath(notebook), normalized);
-  assertInsideAdminRoot(targetPath);
+  const targetPath = notebookChildPath(
+    assertSafeSegment(notebook, "Notebook name"),
+    ...normalized.split("/"),
+  );
   return {
     normalized,
     targetPath,

@@ -1,6 +1,6 @@
 "use client";
 
-import { PanelsTopLeft, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useEffect, useId } from "react";
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
@@ -9,7 +9,6 @@ import "../../../electron/modal-dialog.css";
 type ModalDialogProps = {
   children: ReactNode;
   footer?: ReactNode;
-  icon?: ReactNode;
   sectioned?: boolean;
   open: boolean;
   panelClassName?: string;
@@ -22,7 +21,6 @@ export function ModalDialog({
   children,
   description,
   footer,
-  icon = <PanelsTopLeft aria-hidden />,
   sectioned = false,
   open,
   panelClassName = "max-w-lg",
@@ -69,7 +67,6 @@ export function ModalDialog({
         role="dialog"
       >
         <header className="libera-dialog-header">
-          <span className="libera-dialog-icon" aria-hidden="true">{icon}</span>
           <div className="min-w-0 flex-1">
             <h2 className="libera-dialog-title" id={titleId}>
               {title}
@@ -86,7 +83,7 @@ export function ModalDialog({
             type="button"
             onClick={onClose}
           >
-            <X aria-hidden className="h-5 w-5" />
+            <X aria-hidden className="h-4 w-4" />
           </button>
         </header>
         <div className="libera-dialog-body">

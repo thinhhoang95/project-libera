@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getAdminRoot } from "./paths";
+import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
 import { newReview, type ReviewDocument } from "../markdown-review";
 
 type ReviewDatabase = { schemaVersion: 1; documents: ReviewDocument[] };
-const databasePath = () => path.join(getAdminRoot(), ".libera", "markdown-reviews.json");
+const databasePath = () => path.join(getStateRoot(), ".libera", "markdown-reviews.json");
 async function readDatabase(): Promise<ReviewDatabase> {
   try {
     const db = JSON.parse(await readFile(databasePath(), "utf8"));

@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getAiFunctionOptions, getAiRewriteCustomInstruction } from "@/lib/ai-preferences";
 import { formatDocumentContext, readDocumentContext, SELECTION_END_MARKER, SELECTION_START_MARKER } from "@/lib/ai-document-context";
-import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { createOpenRouterCompletion, createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { latexRewritePrompt, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
 import { MAX_QUICK_PROMPT_LENGTH } from "@/lib/quick-prompts";
 
 export const runtime = "nodejs";
@@ -43,7 +44,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as { prompt?: string; text?: string; before?: string; after?: string };
+    const body = (await request.json()) as { prompt?: string; text?: string; before?: string; after?: string; format?: string };
+    const latex = body.format === "latex";
     const text = body.text ?? "";
     const prompt = body.prompt?.trim() ?? "";
 
@@ -64,23 +66,27 @@ export async function POST(request: NextRequest) {
     }
 
     const context = readDocumentContext(body);
-    const rewrittenText = await createOpenRouterMarkdownCompletion([
+    const language = latex ? "LaTeX" : "Markdown";
+    const messages = [
       {
-        role: "system",
-        content: await readSystemPrompt(),
+        role: "system" as const,
+        content: latex ? latexRewritePrompt(getAiRewriteCustomInstruction().trim()) : await readSystemPrompt(),
       },
       {
-        role: "user",
-        content: `${context ? `Full document, with the selected Markdown marked:
+        role: "user" as const,
+        content: `${context ? `Full document, with the selected ${language} marked:
 ${formatDocumentContext(context, `${SELECTION_START_MARKER}${text}${SELECTION_END_MARKER}`)}
 
 ` : ""}Rewrite instruction:
 ${prompt}
 
-Selected Markdown:
+Selected ${language}:
 ${text}`,
       },
-    ], getAiFunctionOptions("rewrite"));
+    ];
+    const rewrittenText = latex
+      ? normalizeLatexOutput((await createOpenRouterCompletion(messages, getAiFunctionOptions("rewrite"))).content)
+      : await createOpenRouterMarkdownCompletion(messages, getAiFunctionOptions("rewrite"));
 
     if (!rewrittenText.trim()) {
       return jsonError("AI rewrite returned an empty response.", 502);

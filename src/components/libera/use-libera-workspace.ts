@@ -1,7 +1,8 @@
 "use client";
 import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdown-boxes";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { isTextFileType } from "@/lib/types";
 import type {
   LiberaFileNode,
   LiberaFilePayload,
@@ -39,10 +40,11 @@ import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { useCanvasLayout } from "./use-canvas-layout";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
-import { removeWorkspaceGroup, saveWorkspaceGroup, type WorkspaceFileChange } from "@/lib/workspaces";
+import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
+import { latexDocumentTemplate } from "@/lib/latex/project";
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -65,6 +67,12 @@ function collectFileSearchResults(
       });
     }
   }
+}
+
+const PENDING_OPEN_FILE_KEY = "libera:pending-open-file";
+
+function subscribeToNothing() {
+  return () => undefined;
 }
 
 function collectFiles(nodes: LiberaTreeNode[], results: LiberaFileNode[] = []) {
@@ -186,12 +194,18 @@ function mergeOpenTabViewState(
     image: patchViewState.image
       ? { ...currentViewState?.image, ...patchViewState.image }
       : currentViewState?.image,
+    latex: patchViewState.latex
+      ? { ...currentViewState?.latex, ...patchViewState.latex }
+      : currentViewState?.latex,
     markdown: patchViewState.markdown
       ? { ...currentViewState?.markdown, ...patchViewState.markdown }
       : currentViewState?.markdown,
     pdf: patchViewState.pdf
       ? { ...currentViewState?.pdf, ...patchViewState.pdf }
       : currentViewState?.pdf,
+    text: patchViewState.text
+      ? { ...currentViewState?.text, ...patchViewState.text }
+      : currentViewState?.text,
   };
 }
 
@@ -308,6 +322,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const pendingOpenViewStateByPathRef = useRef<Record<string, OpenTabViewState | undefined>>({});
   const expandedRef = useRef<Set<string>>(new Set());
   const treeLoadedRef = useRef(false);
+  const contextSwitchingRef = useRef(false);
   const expansionSaveInFlightRef = useRef(false);
   const queuedExpansionSaveRef = useRef<string[] | null>(null);
 
@@ -524,6 +539,125 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       })
       .catch((error) => setWorkspaceError(error instanceof Error ? error.message : "Could not remember the last notebook."));
   }, [authenticated, selectedNotebookName]);
+
+  type DirectoryActionResult = { changed?: boolean; filePath?: string };
+
+  // Switching between Notebook and Directory mode saves the current session,
+  // changes the server's context, then reloads into the other saved session.
+  async function switchDirectoryContext(request: () => Promise<DirectoryActionResult>) {
+    if (contextSwitchingRef.current) return;
+    setWorkspaceError("");
+    let resume: (() => void) | null = null;
+
+    try {
+      resume = await workspaceManager.suspendForContextSwitch();
+      const result = await request();
+
+      if (result.changed === false) {
+        resume();
+        resume = null;
+        if (result.filePath) await openFileByPath(result.filePath, await refreshTree());
+        return;
+      }
+
+      contextSwitchingRef.current = true;
+      if (result.filePath) {
+        try { window.sessionStorage.setItem(PENDING_OPEN_FILE_KEY, result.filePath); }
+        catch { /* The folder still opens; the file can be picked from the sidebar. */ }
+      }
+      await window.liberaDirectory?.notifyChanged().catch(() => undefined);
+      window.location.reload();
+    } catch (error) {
+      contextSwitchingRef.current = false;
+      resume?.();
+      setWorkspaceError(error instanceof Error ? error.message : "Could not open the folder.");
+    }
+  }
+
+  async function openFileByPath(filePath: string, sourceTree: LiberaTree) {
+    const file = sourceTree.notebooks
+      .flatMap((notebook) => collectFiles(notebook.children))
+      .find((candidate) => candidate.path === filePath);
+
+    if (!file) {
+      setWorkspaceError("That file is hidden in this folder, so Libera cannot open it.");
+      return;
+    }
+
+    await openFile(file);
+  }
+
+  async function openDirectory(directoryPath?: string) {
+    const chosenPath = directoryPath ?? await window.liberaDirectory?.chooseFolder();
+    if (!chosenPath) return;
+    if (tree.directory?.path === chosenPath) return;
+    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
+      method: "POST", body: JSON.stringify({ action: "open", path: chosenPath }),
+    }));
+  }
+
+  async function openFileFromDisk(filePath?: string) {
+    const chosenPath = filePath ?? await window.liberaDirectory?.chooseFile();
+    if (!chosenPath) return;
+    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
+      method: "POST", body: JSON.stringify({ action: "open-file", path: chosenPath }),
+    }));
+  }
+
+  async function closeDirectory() {
+    if (!tree.directory) return;
+    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
+      method: "POST", body: JSON.stringify({ action: "close" }),
+    }));
+  }
+
+  async function clearRecentDirectories() {
+    try {
+      await apiRequest("/api/directory", { method: "POST", body: JSON.stringify({ action: "clear-recent" }) });
+      await window.liberaDirectory?.notifyChanged();
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not clear recent folders.");
+    }
+  }
+
+  // Folder pickers need the desktop app; the server-rendered page has none.
+  const canOpenDirectories = useSyncExternalStore(
+    subscribeToNothing,
+    () => Boolean(window.liberaDirectory),
+    () => false,
+  );
+  const directoryCommandRef = useRef<(command: LiberaDirectoryCommand) => void>(() => undefined);
+  useLayoutEffect(() => {
+    directoryCommandRef.current = (command) => {
+      if (command.type === "open-directory") void openDirectory(command.path);
+      else if (command.type === "open-file") void openFileFromDisk(command.path);
+      else if (command.type === "close-directory") void closeDirectory();
+      else void clearRecentDirectories();
+    };
+  });
+
+  useEffect(() => {
+    if (!authenticated) return;
+    return window.liberaDirectory?.onCommand((command) => directoryCommandRef.current(command));
+  }, [authenticated]);
+
+  // Keep the native File menu in step with the context this page loaded.
+  useEffect(() => {
+    if (authenticated && tree.root) void window.liberaDirectory?.notifyChanged().catch(() => undefined);
+  }, [authenticated, tree.root]);
+
+  // Open the file chosen with File > Open File once its folder has loaded.
+  useEffect(() => {
+    if (!authenticated || !workspaceManager.ready || !tree.root) return;
+    let pendingPath: string | null = null;
+    try {
+      pendingPath = window.sessionStorage.getItem(PENDING_OPEN_FILE_KEY);
+      window.sessionStorage.removeItem(PENDING_OPEN_FILE_KEY);
+    } catch { /* Nothing to open. */ }
+    if (pendingPath) void openFileByPath(pendingPath, tree);
+    // Run once per loaded context; later tree refreshes must not reopen it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated, workspaceManager.ready, tree.root]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -846,6 +980,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           image: viewState.image
             ? { ...tab.viewState?.image, ...viewState.image }
             : tab.viewState?.image,
+          latex: viewState.latex
+            ? { ...tab.viewState?.latex, ...viewState.latex }
+            : tab.viewState?.latex,
           markdown: viewState.markdown
             ? { ...tab.viewState?.markdown, ...viewState.markdown }
             : tab.viewState?.markdown,
@@ -856,6 +993,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
         if (
           shallowEqualRecord(tab.viewState?.image, nextViewState.image) &&
+          shallowEqualRecord(tab.viewState?.latex, nextViewState.latex) &&
           shallowEqualRecord(tab.viewState?.markdown, nextViewState.markdown) &&
           shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf)
         ) {
@@ -1712,7 +1850,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function saveActiveTab() {
-    if (!activeTab || activeTab.file.fileType !== "markdown") {
+    if (!activeTab || !isTextFileType(activeTab.file.fileType)) {
       return;
     }
 
@@ -2020,6 +2158,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceError("");
 
     try {
+      if (workspaceManager.activeWorkspace) {
+        await workspaceManager.updateView((view) =>
+          toggleWorkspaceStar(view, workspaceManager.organizedTree.starredFilePaths, file.path, starred),
+        );
+        return;
+      }
+
       const nextTree = await apiRequest<LiberaTree>("/api/starred-files", {
         method: "PATCH",
         body: JSON.stringify({
@@ -2085,7 +2230,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const hasDraftContent = typeof content === "string";
 
     if (hasDraftContent) {
-      const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+      const blob = new Blob([content], { type: file.fileType === "latex" ? "text/x-tex;charset=utf-8" : file.fileType === "text" ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8" });
       link.href = URL.createObjectURL(blob);
       window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
     } else {
@@ -2134,6 +2279,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setNoteDialog({ mode: "slides", notebook });
   }
 
+  async function createLatexFromPrompt(notebook: string, parentPath?: string) {
+    setWorkspaceError("");
+    setSelectedNotebookName(notebook);
+    setNoteDialog({ mode: "latex", notebook, parentPath });
+  }
+
   async function submitNoteDialog(values: NoteFormValues) {
     if (!noteDialog) {
       return;
@@ -2149,7 +2300,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const name =
       noteDialog.mode === "slides"
         ? ensureMarkdownSlidesName(requestedName)
-        : requestedName;
+        : noteDialog.mode === "latex" && !/\.(tex|bib|sty|cls)$/i.test(requestedName)
+          ? `${requestedName.replace(/\.$/, "")}.tex`
+          : requestedName;
 
     setNoteDialogSubmitting(true);
 
@@ -2164,7 +2317,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           content:
             noteDialog.mode === "slides"
               ? createMarkdownSlidesContent(name)
-              : createMarkdownNoteContent(name),
+              : noteDialog.mode === "latex"
+                ? /\.tex$/i.test(name) ? latexDocumentTemplate(name.replace(/\.tex$/i, "")) : ""
+                : createMarkdownNoteContent(name),
         }),
       }, (payload) => ({ paths: [payload.file.path] }));
       await refreshTree(noteDialog.notebook);
@@ -2955,6 +3110,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
+      // A folder switch has already saved drafts with the session.
+      if (contextSwitchingRef.current) return;
       if (tabs.some((tab) => getTabDraft(tab) !== tab.saved)) {
         event.preventDefault();
         event.returnValue = "";
@@ -3002,6 +3159,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       textareaRef,
       tree: visibleTree,
       fullTree: tree,
+      directory: tree.directory ?? null,
+      canOpenDirectories,
+      openDirectory,
+      openFileFromDisk,
+      closeDirectory,
       workspaceManager,
       uploadInputRef,
       workspaceConfirmDialog,
@@ -3024,6 +3186,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       createFolderFromPrompt,
       createMarkdownFromPrompt,
       createMarkdownSlidesFromPrompt,
+      createLatexFromPrompt,
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
       deleteNotebookGroup,

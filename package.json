@@ -1,7 +1,7 @@
 {
   "name": "project-libera",
   "productName": "Libera by Thinh Hoang",
-  "version": "4.0.0-beta1",
+  "version": "5.0.0-beta1",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -12,7 +12,7 @@
     "build": "next build",
     "electron:build-next": "node scripts/build-electron-next.cjs",
     "start": "next start",
-    "electron:dev": "cross-env LIBERA_ELECTRON_NEXT_MODE=dev electron .",
+    "electron:dev": "node scripts/electron-dev.cjs",
     "electron:prepare-standalone": "node electron/prepare-standalone.cjs",
     "electron:prepare-dist": "node electron/prepare-dist.cjs",
     "electron:start": "npm run electron:build-next && npm run electron:prepare-standalone && cross-env LIBERA_ELECTRON_NEXT_MODE=start electron .",
@@ -30,6 +30,17 @@
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/legacy-modes": "^6.5.5",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/merge": "^6.12.2",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.14",
+    "@lezer/highlight": "^1.2.5",
     "@tiptap/core": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
     "@tiptap/extension-image": "^3.31.3",

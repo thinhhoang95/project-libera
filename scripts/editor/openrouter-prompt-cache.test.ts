@@ -82,10 +82,30 @@ test("prompt caching restricts providers, preserves models, handles explicit cac
     await createOpenRouterCompletion(messages, { model: "google/gemini-3.8-flash", promptCaching: true });
     const gemini = requests.at(-1)!;
     assert.deepEqual(gemini.provider?.only, ["google-vertex/global"]);
-    assert.deepEqual(gemini.messages[0], messages[0], "Gemini keeps system instructions unchanged");
-    assert.deepEqual(gemini.messages[1].content[0].cache_control, { type: "ephemeral" });
-    assert.deepEqual(gemini.messages[2], messages[2]);
-    assert.deepEqual(gemini.messages[3], messages[3], "Gemini leaves the changing question after the stable breakpoint");
+    assert.deepEqual(gemini.messages, messages, "Gemini uses implicit caching even when explicit cache-write pricing is advertised");
+
+    endpoints.push({ tag: "google-ai-studio", supports_implicit_caching: false, pricing: { input_cache_read: "0.000000075", input_cache_write: "0.000000041" } });
+    await createOpenRouterCompletion(messages, { model: "google/gemini-mixed-cache-test", promptCaching: true });
+    assert.deepEqual(requests.at(-1)!.provider?.only, ["google-vertex/global"], "prefer verified implicit Gemini endpoints over explicit-only endpoints");
+    assert.deepEqual(requests.at(-1)!.messages, messages);
+
+    endpoints = [
+      { tag: "google-ai-studio", supports_implicit_caching: true },
+      { tag: "google-ai-studio/explicit", supports_implicit_caching: false, supported_parameters: ["cache_control"] },
+      { tag: "google-vertex/global", supports_implicit_caching: true },
+    ];
+    await createOpenRouterCompletion(messages, { model: "google/gemini-mixed-variants-test", promptCaching: true });
+    assert.deepEqual(requests.at(-1)!.provider?.only, ["google-vertex/global"], "exclude root tags that also match explicit-only variants");
+    assert.deepEqual(requests.at(-1)!.messages, messages);
+
+    endpoints = [{ tag: "google-vertex/global", supports_implicit_caching: false, pricing: { input_cache_read: "0.000000075", input_cache_write: "0.000000041" } }];
+    await createOpenRouterCompletion(messages, { model: "google/gemini-explicit-only-test", promptCaching: true });
+    const explicitGemini = requests.at(-1)!;
+    assert.deepEqual(explicitGemini.provider?.only, ["google-vertex/global"]);
+    assert.deepEqual(explicitGemini.messages[0], messages[0], "Gemini keeps system instructions unchanged");
+    assert.deepEqual(explicitGemini.messages[1].content[0].cache_control, { type: "ephemeral" });
+    assert.deepEqual(explicitGemini.messages[2], messages[2]);
+    assert.deepEqual(explicitGemini.messages[3], messages[3], "explicit-only Gemini leaves the changing question after the stable breakpoint");
 
     endpoints = [{ tag: "unsupported" }];
     const completionCount = requests.length;

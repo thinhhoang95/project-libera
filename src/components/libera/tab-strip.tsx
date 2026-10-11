@@ -275,7 +275,7 @@ export function TabStrip({
                 }}
               >
                 <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                  <FileTypeIcon fileType={tab.file.fileType} />
+                  <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                 </span>
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
@@ -395,8 +395,9 @@ function ActiveFileActions({
   }
 
   const isMarkdown = activeTab.file.fileType === "markdown";
+  const isLatex = activeTab.file.fileType === "latex";
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
-  const downloadContent = isMarkdown ? activeTab.draft : undefined;
+  const downloadContent = isMarkdown || isLatex ? activeTab.draft : undefined;
 
   async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
     if (!activeTab) {
@@ -458,7 +459,16 @@ function ActiveFileActions({
                   ],
                 },
               ]
-            : [{ id: "download-original", label: "Download" }]),
+            : isLatex
+              ? [
+                  {
+                    id: "save",
+                    label: "Save",
+                    enabled: activeTab.status !== "saving" && activeTab.status !== "clean",
+                  },
+                  { id: "download-markdown", label: "Download" },
+                ]
+              : [{ id: "download-original", label: "Download" }]),
           { type: "separator" },
           ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
           { id: "rename", label: "Rename" },
@@ -498,7 +508,7 @@ function ActiveFileActions({
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown ? <ReviewToggle /> : null}
+      {isMarkdown || isLatex ? <ReviewToggle /> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
     </div>
   );

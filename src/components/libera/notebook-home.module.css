@@ -108,6 +108,8 @@
 .fileIcon { display: grid; place-items: center; width: 34px; height: 38px; flex-shrink: 0; border-radius: 9px; background: #eff4ff; color: #5881d8; }
 .fileIcon[data-type=image] { background: #edf9f2; color: #29966c; }
 .fileIcon[data-type=pdf] { background: #fff0ec; color: #d16d54; }
+.fileIcon[data-type=latex] { background: #f1efff; color: #6f60c4; }
+.fileIcon[data-type=text] { background: #eef3f8; color: #4b6a88; }
 .fileIcon svg { width: 19px; height: 19px; }
 .fileName { display: block; min-width: 0; }
 .fileName strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
@@ -157,6 +159,8 @@
 :global(.dark) .fileIcon { background: #2a354f; color: #9dbbff; }
 :global(.dark) .fileIcon[data-type=image] { background: #233e36; color: #83d7aa; }
 :global(.dark) .fileIcon[data-type=pdf] { background: #49312f; color: #f2b1a0; }
+:global(.dark) .fileIcon[data-type=latex] { background: #312d4f; color: #bdb3f5; }
+:global(.dark) .fileIcon[data-type=text] { background: #2a3440; color: #a9c1d9; }
 :global(.dark) .emptyState { background: linear-gradient(130deg, #202b40, #30283e); border-color: #495775; }
 
 @container (max-width: 850px) {

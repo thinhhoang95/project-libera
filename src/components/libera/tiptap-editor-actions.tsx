@@ -1,10 +1,12 @@
 "use client";
 
+import { beginAiActivity } from "@/lib/ai-activity";
+
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, Loader2, PenLine, Sparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, PenLine, Rows3, Sparkles } from "lucide-react";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
@@ -26,6 +28,7 @@ type Popup = EditorRange & {
   x: number;
   y: number;
   image?: ImageSelection;
+  tableCell?: number;
 };
 type AiAction = "format" | "rewrite" | "write" | "image";
 const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
@@ -40,6 +43,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const [prompt, setPrompt] = useState("");
   const [writePrompt, setWritePrompt] = useState("");
   const [working, setWorking] = useState<AiAction | null>(null);
+  useEffect(() => (working ? beginAiActivity() : undefined), [working]);
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
@@ -67,6 +71,13 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
       } else if (from === to && event instanceof MouseEvent) {
         from = to = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? from;
       }
+      // A right-click may land in a cell the selection has not reached yet.
+      let tableCell: number | undefined;
+      const $cell = (() => { try { return editor.state.doc.resolve(from); } catch { return null; } })();
+      for (let depth = $cell?.depth ?? -1; depth > 0; depth--) {
+        const name = $cell!.node(depth).type.name;
+        if (name === "tableCell" || name === "tableHeader") { tableCell = $cell!.start(depth); break; }
+      }
       event.preventDefault();
       const point = event instanceof MouseEvent
         ? { left: event.clientX, top: event.clientY }
@@ -74,7 +85,7 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
       setPrompt("");
       setWritePrompt("");
       setStartAt("1");
-      setPopup({ from, to, kind: "context", image,
+      setPopup({ from, to, kind: "context", image, tableCell,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
         y: Math.max(8, Math.min(point.top, window.innerHeight - 420)),
       });
@@ -197,6 +208,12 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
   const canIndent = selectedHeadings.some(({ node }) => node.attrs.level < 6);
   const canUnindent = selectedHeadings.length > 0;
   const writeOnly = popup?.kind === "context" && popup.from === popup.to;
+  type TableAction = "addRowBefore" | "addRowAfter" | "addColumnBefore" | "addColumnAfter" | "deleteRow" | "deleteColumn";
+  function tableAction(action: TableAction) {
+    if (popup?.tableCell === undefined) return;
+    editor.chain().focus().setTextSelection(popup.tableCell)[action]().run();
+    setPopup(null);
+  }
   const writeForm = <form className={`${writeOnly ? "" : "mt-1 border-t border-border "}px-2 py-2`} onSubmit={(event) => { event.preventDefault(); void runAi("write"); }}>
     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="visual-ai-write"><PenLine aria-hidden className="h-3.5 w-3.5" />Write with AI</label>
     <div className="mt-1 flex items-start gap-2">
@@ -218,7 +235,6 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
         setStartAt("1");
         setPopup({ kind: "headings", from, to, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 200)) });
       }}><ListOrdered aria-hidden className="h-4 w-4" /></button>
-    {working ? <span role="status" className="flex items-center gap-1 px-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />{working === "image" ? "Converting image…" : working === "rewrite" ? "Rewriting…" : working === "write" ? "Writing…" : "Formatting…"}</span> : null}
     {popup ? createPortal(
       <div ref={menuRef} role="menu" aria-label={popup.kind === "headings" ? "Heading numbering" : "Editor actions"}
         className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg"
@@ -257,6 +273,14 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
           {writeForm}
         </> : null}
         {popup.kind === "context" ? <>
+          {popup.tableCell !== undefined ? <>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addRowBefore")}><ArrowUpToLine aria-hidden className="h-4 w-4" />Insert Row Above</button>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addRowAfter")}><ArrowDownToLine aria-hidden className="h-4 w-4" />Insert Row Below</button>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addColumnBefore")}><ArrowLeftToLine aria-hidden className="h-4 w-4" />Insert Column to the Left</button>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addColumnAfter")}><ArrowRightToLine aria-hidden className="h-4 w-4" />Insert Column to the Right</button>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("deleteRow")}><Rows3 aria-hidden className="h-4 w-4" />Delete Row</button>
+            <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("deleteColumn")}><Columns3 aria-hidden className="h-4 w-4" />Delete Column</button>
+          </> : null}
           {popup.image ? <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => void runAi("image")}><ImageIcon aria-hidden className="h-4 w-4" />AI Image to Markdown</button> : null}
         </> : null}
       </div>, document.body,

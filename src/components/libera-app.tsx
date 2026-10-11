@@ -17,6 +17,7 @@ import { NotebookDialog } from "@/components/libera/notebook-dialog";
 import { WorkspaceViewContext } from "@/components/libera/workspace-view-context";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
+import { useAiActivity } from "@/lib/ai-activity";
 import { TabStrip } from "@/components/libera/tab-strip";
 import type { OpenTab } from "@/components/libera/types";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
@@ -27,6 +28,7 @@ import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
+import { isTextFileType } from "@/lib/types";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -62,6 +64,7 @@ export function LiberaApp({
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
 }: LiberaAppProps) {
+  const aiActive = useAiActivity();
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -102,7 +105,7 @@ export function LiberaApp({
 
   useEffect(() => {
     const unsavedDocumentCount = workspace.tabs.filter(
-      (tab) => tab.file.fileType === "markdown" && tab.draft !== tab.saved,
+      (tab) => isTextFileType(tab.file.fileType) && tab.draft !== tab.saved,
     ).length;
 
     void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
@@ -251,6 +254,7 @@ export function LiberaApp({
         onAiWriteAt={workspace.writeWithAiAt}
         onCreateMarkdown={workspace.createMarkdownFromPrompt}
         onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+        onCreateLatex={workspace.createLatexFromPrompt}
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
         onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
@@ -325,6 +329,7 @@ export function LiberaApp({
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
           onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+          onCreateLatex={workspace.createLatexFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
           onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
@@ -351,9 +356,13 @@ export function LiberaApp({
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
+          canOpenDirectories={workspace.canOpenDirectories}
+          onOpenDirectory={() => void workspace.openDirectory()}
+          onCloseDirectory={() => void workspace.closeDirectory()}
         />
 
-        <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden" data-ai-active={aiActive}>
+          <div aria-hidden className="libera-ai-glow" />
           <TabStrip
             chatOpen={!chatCollapsed}
             onToggleChat={() => changeChatCollapsed(!chatCollapsed)}

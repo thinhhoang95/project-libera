@@ -1,4 +1,9 @@
-export type LiberaFileType = "markdown" | "image" | "pdf";
+export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
+
+/** File types whose content is edited as text in a tab. */
+export function isTextFileType(fileType: LiberaFileType | undefined): fileType is "markdown" | "latex" | "text" {
+  return fileType === "markdown" || fileType === "latex" || fileType === "text";
+}
 
 export type PdfAnnotationRect = {
   x: number;
@@ -98,6 +103,8 @@ export type LiberaNotebookNode = {
 
 export type LiberaTree = {
   archiveIncluded?: boolean;
+  /** Present in Directory mode: the open folder is the only notebook. */
+  directory?: { name: string; path: string; truncated: boolean };
   lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;
@@ -144,6 +151,8 @@ export type MarkdownImageAssetPayload = {
 
 export type DeepSearchResultSource =
   | "markdown"
+  | "latex"
+  | "text"
   | "pdf-text"
   | "pdf-annotation"
   | "image-annotation";

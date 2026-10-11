@@ -24,7 +24,7 @@ test("untitled files edit, export, cancel, and save to a folder without losing i
       await new Promise<void>((resolve) => { finishSave = resolve; });
       return Response.json({ file: { kind: "file", fileType: "markdown", path: "Notes/Folder/My note.md", notebook: "Notes", name: "My note.md", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), size: 5 }, content: posted!.content });
     }
-    if (url === "/api/workspaces") return Response.json(init?.method === "PUT" ? { saved: true } : emptyWorkspaceLibrary());
+    if (String(url).startsWith("/api/workspaces")) return Response.json(init?.method === "PUT" ? { saved: true } : emptyWorkspaceLibrary());
     return Response.json({ ...emptyTree(), root: "/test/untitled" });
   };
   let workspace: ReturnType<typeof useLiberaWorkspace>["workspace"];

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getAdminRoot, notebookPath } from "./paths";
+import { getAdminRoot, getMountedDirectory, notebookPath } from "./paths";
 import { StorageError } from "./errors";
 
 function preferencePath() {
@@ -16,6 +16,8 @@ export async function readLastNotebookName(): Promise<string> {
 }
 
 export async function writeLastNotebookName(notebook: string) {
+  // An open folder is a single notebook; keep the library's choice for later.
+  if (getMountedDirectory()) return;
   if (!(await stat(notebookPath(notebook))).isDirectory()) throw new StorageError("Notebook not found.", 404);
   const target = preferencePath();
   const temporary = `${target}.${randomUUID()}.tmp`;

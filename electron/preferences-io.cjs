@@ -4,6 +4,7 @@ const BACKUP_VERSION = 1;
 const PREFERENCE_KEYS = Object.freeze([
   "themePreference",
   "yourName",
+  "smartPaste",
   "dataDir",
   "markdownInlineMathMarkers",
   "markdownBlockMathMarkers",

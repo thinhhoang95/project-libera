@@ -46,13 +46,19 @@ export async function getPromptCacheRouting(model: string, apiKey: string, signa
     return endpoints.every((other) => !(other.tag === endpoint.tag || other.tag?.startsWith(`${endpoint.tag}/`)) || supportsCaching(other));
   }) : [];
   if (!eligible.length) throw new Error(`No verified prompt caching providers are available for ${model}. Disable prompt caching in Preferences to use unrestricted routing.`);
-  // OpenRouter accepts explicit Gemini breakpoints even though Gemini
-  // endpoints advertise implicit caching rather than cache_control.
-  const geminiExplicit = /^google\/gemini-/.test(model) && eligible.every((endpoint) => hasPrice(endpoint.pricing?.input_cache_write));
+  const gemini = /^google\/gemini-/.test(model);
+  // Gemini endpoints can advertise both implicit caching and an explicit
+  // cache-write/storage price. Prefer implicit caching: the price alone must
+  // not switch a growing conversation to a fixed explicit cache prefix.
+  const implicitGemini = gemini ? eligible.filter((endpoint) => endpoint.supports_implicit_caching === true &&
+    endpoints?.every((other) => !(other.tag === endpoint.tag || other.tag?.startsWith(`${endpoint.tag}/`)) || other.supports_implicit_caching === true)) : [];
+  const selected = implicitGemini.length ? implicitGemini : eligible;
+  // Retain explicit caching for Gemini endpoints without implicit support.
+  const geminiExplicit = gemini && !implicitGemini.length && selected.every((endpoint) => hasPrice(endpoint.pricing?.input_cache_write));
   const breakpoints: CacheRouting["breakpoints"] = geminiExplicit ? "gemini"
-    : eligible.some((endpoint) => endpoint.supports_implicit_caching !== true) ? "rolling" : "none";
+    : selected.some((endpoint) => endpoint.supports_implicit_caching !== true) ? "rolling" : "none";
   const routing: CacheRouting = {
-    provider: { only: [...new Set(eligible.map((endpoint) => endpoint.tag!))] },
+    provider: { only: [...new Set(selected.map((endpoint) => endpoint.tag!))] },
     breakpoints,
   };
   if (routes.size >= 100) routes.clear();
