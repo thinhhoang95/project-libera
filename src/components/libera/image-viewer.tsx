@@ -1,16 +1,28 @@
 "use client";
 
 import {
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  Info,
+  Maximize,
+  Minimize,
   MousePointer2,
   Move,
-  RotateCcw,
+  Pause,
+  Pencil,
+  Play,
   Trash2,
   Type,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { PointerEvent, WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
+import { PhotoEditor } from "@/components/libera/photo-editor";
+import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
 import {
@@ -34,6 +46,7 @@ import {
   DEFAULT_PDF_TEXT_FONT,
   isHexColor,
 } from "@/lib/pdf-annotation-style";
+import type { PhotoEdits } from "@/lib/photo-edits";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotationRect,
@@ -42,22 +55,57 @@ import type {
 } from "@/lib/types";
 
 const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 5;
-const ZOOM_STEP = 0.25;
+const MAX_ZOOM = 8;
+const ZOOM_FACTOR = 1.5;
+const DOUBLE_CLICK_ZOOM = 2.5;
 const SAVE_DEBOUNCE_MS = 350;
+const SLIDESHOW_MS = 4000;
+const INFO_STORAGE_KEY = "libera.imageViewer.infoOpen";
+const iconButton = "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
 type ImageViewerProps = {
   alt: string;
   /** False shows the image read-only, without loading or saving text annotations. */
   annotatable?: boolean;
+  /** File facts shown in the Info panel. */
+  details?: { createdAt?: string; location?: string; size?: number; updatedAt?: string };
   filePath: string;
   initialViewState?: ImageTabViewState;
   screenshotSnipping?: boolean;
+  /** The images in this one's folder, in order, this one included. */
+  siblings?: Array<{ path: string; src: string }>;
   src?: string;
   onCancelScreenshotSnip?: () => void;
   onCompleteScreenshotSnip?: (file: File) => Promise<void>;
+  /** Offers the photo editor; edits are saved as a new file beside this one. */
+  onSaveEditedCopy?: (edits: PhotoEdits) => Promise<void>;
+  /** Shows a sibling in place of this image. The viewer remounts for it. */
+  onShowSibling?: (path: string) => void;
   onViewStateChange?: (viewState: ImageTabViewState) => void;
 };
+
+// Stepping to a sibling remounts the viewer for the next file. The slideshow
+// and full screen carry over to it, so a slideshow keeps going.
+let handoff: { filePath: string; playing: boolean; fullscreen: boolean; at: number } | null = null;
+
+function carriedOver(filePath: string) {
+  return handoff?.filePath === filePath && Date.now() - handoff.at < 5000 ? handoff : null;
+}
+
+function readInfoOpen() {
+  try {
+    return window.localStorage.getItem(INFO_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function formatDate(value?: string) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime())
+    ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    : "";
+}
 
 type ImageTool = "select" | "text";
 
@@ -73,15 +121,20 @@ function clampZoom(value: number) {
 export function ImageViewer({
   alt,
   annotatable = true,
+  details,
   filePath,
   initialViewState,
   screenshotSnipping = false,
+  siblings,
   src,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
+  onSaveEditedCopy,
+  onShowSibling,
   onViewStateChange,
 }: ImageViewerProps) {
   const paneFocused = useCanvasPaneFocused();
+  const stageRef = useRef<HTMLDivElement>(null);
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,8 +158,17 @@ export function ImageViewer({
     x: initialViewState?.panX ?? 0,
     y: initialViewState?.panY ?? 0,
   });
+  // Pointer/wheel events can arrive in a batch before React renders again.
+  const transformRef = useRef({ zoom, pan });
   const [isPanning, setIsPanning] = useState(false);
   const [imageSize, setImageSize] = useState<AnnotationSurfaceSize>({ width: 0, height: 0 });
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [playing, setPlaying] = useState(() => carriedOver(filePath)?.playing ?? false);
+  const [fullscreen, setFullscreen] = useState(() => carriedOver(filePath)?.fullscreen ?? false);
+  const fullscreenRef = useRef(fullscreen);
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
@@ -159,8 +221,18 @@ export function ImageViewer({
     return () => {
       active = false;
 
+      // Leaving the image (another tab, or the next photo) still saves the
+      // last edit instead of dropping it with the debounce.
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+        const pending = latestAnnotationsRef.current;
+        apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
+          method: "PATCH",
+          body: JSON.stringify({ path: filePath, annotations: pending }),
+        })
+          .then((payload) => broadcastSavedAnnotations("image", filePath, payload.annotations))
+          .catch(() => undefined);
       }
     };
   }, [annotatable, filePath]);
@@ -192,7 +264,8 @@ export function ImageViewer({
       observer.disconnect();
       window.removeEventListener("resize", updateImageSize);
     };
-  }, [src]);
+    // Full screen moves the viewer into a portal, with a new frame element.
+  }, [src, fullscreen]);
 
   // Another window showing this image saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.
@@ -218,6 +291,7 @@ export function ImageViewer({
       }
 
       saveTimeoutRef.current = setTimeout(() => {
+        saveTimeoutRef.current = null;
         apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
           method: "PATCH",
           body: JSON.stringify({
@@ -247,27 +321,77 @@ export function ImageViewer({
   );
 
   function resetView() {
+    transformRef.current = { zoom: 1, pan: { x: 0, y: 0 } };
     setZoom(1);
     setPan({ x: 0, y: 0 });
     lastPointerRef.current = null;
     updateViewState({ panX: 0, panY: 0, zoom: 1 });
   }
 
-  function changeZoom(delta: number) {
-    setZoom((currentZoom) => {
-      const nextZoom = clampZoom(currentZoom + delta);
-      updateViewState({ zoom: nextZoom });
-      return nextZoom;
-    });
+  /** Zooms keeping the point under the cursor (or the middle of the view) still. */
+  const zoomTo = useCallback((value: number, clientX?: number, clientY?: number) => {
+    const current = transformRef.current;
+    const nextZoom = clampZoom(value);
+    const factor = nextZoom / current.zoom;
+    const stage = stageRef.current?.getBoundingClientRect();
+    const pointX = stage && clientX !== undefined ? clientX - (stage.left + stage.width / 2) : 0;
+    const pointY = stage && clientY !== undefined ? clientY - (stage.top + stage.height / 2) : 0;
+    const nextPan = {
+      x: pointX - (pointX - current.pan.x) * factor,
+      y: pointY - (pointY - current.pan.y) * factor,
+    };
+    transformRef.current = { zoom: nextZoom, pan: nextPan };
+    setZoom(nextZoom);
+    setPan(nextPan);
+    updateViewState({ panX: nextPan.x, panY: nextPan.y, zoom: nextZoom });
+  }, [updateViewState]);
+
+  function zoomBy(factor: number) {
+    zoomTo(transformRef.current.zoom * factor);
   }
 
-  function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    if (screenshotSnipping) {
+  // At zoom 1 the image fits the view; this is its share of the real pixels.
+  const fitScale = naturalSize.width && imageSize.width ? imageSize.width / naturalSize.width : 1;
+  const atFit = zoom === 1 && pan.x === 0 && pan.y === 0;
+
+  function toggleActualSize() {
+    if (atFit) {
+      zoomTo(1 / fitScale);
+    } else {
+      resetView();
+    }
+  }
+
+  // A native listener: React's wheel listeners are passive and cannot stop the
+  // page from zooming on a pinch.
+  useEffect(() => {
+    const stage = stageRef.current;
+
+    if (!stage || screenshotSnipping) {
       return;
     }
 
-    event.preventDefault();
-    changeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+    function handleWheel(event: globalThis.WheelEvent) {
+      event.preventDefault();
+      // Pinch gestures arrive as ctrl+wheel with small deltas.
+      const intensity = event.ctrlKey ? 0.01 : 0.0025;
+      zoomTo(transformRef.current.zoom * Math.exp(-event.deltaY * intensity), event.clientX, event.clientY);
+    }
+
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", handleWheel);
+  }, [fullscreen, screenshotSnipping, zoomTo]);
+
+  function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
+    if (screenshotSnipping || tool === "text" || (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) {
+      return;
+    }
+
+    if (zoom > 1) {
+      resetView();
+    } else {
+      zoomTo(DOUBLE_CLICK_ZOOM, event.clientX, event.clientY);
+    }
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -307,14 +431,13 @@ export function ImageViewer({
     const previousPoint = lastPointerRef.current;
     lastPointerRef.current = nextPoint;
 
-    setPan((currentPan) => {
-      const nextPan = {
-        x: currentPan.x + nextPoint.x - previousPoint.x,
-        y: currentPan.y + nextPoint.y - previousPoint.y,
-      };
-      updateViewState({ panX: nextPan.x, panY: nextPan.y });
-      return nextPan;
-    });
+    const nextPan = {
+      x: transformRef.current.pan.x + nextPoint.x - previousPoint.x,
+      y: transformRef.current.pan.y + nextPoint.y - previousPoint.y,
+    };
+    transformRef.current.pan = nextPan;
+    setPan(nextPan);
+    updateViewState({ panX: nextPan.x, panY: nextPan.y });
   }
 
   function handlePointerEnd(event: PointerEvent<HTMLDivElement>) {
@@ -450,6 +573,207 @@ export function ImageViewer({
     return () => window.removeEventListener("keydown", handleDeleteKey);
   }, [deleteSelectedAnnotation, paneFocused, selectedAnnotationId, updateViewState]);
 
+  const fileName = filePath.split("/").at(-1) ?? filePath;
+  const editable = Boolean(onSaveEditedCopy && src) && !/\.svg$/i.test(filePath);
+  const siblingIndex = siblings?.findIndex((sibling) => sibling.path === filePath) ?? -1;
+  const siblingCount = siblingIndex >= 0 && onShowSibling ? siblings?.length ?? 0 : 0;
+  const previousSibling = siblingCount ? siblings?.[siblingIndex - 1] : undefined;
+  const nextSibling = siblingCount ? siblings?.[siblingIndex + 1] : undefined;
+
+  const showSibling = useCallback((path: string | undefined, carry: { playing: boolean; fullscreen: boolean }) => {
+    if (!path || path === filePath || !onShowSibling) {
+      return;
+    }
+
+    handoff = { filePath: path, ...carry, at: Date.now() };
+    onShowSibling(path);
+  }, [filePath, onShowSibling]);
+
+  // The Info panel stays open or closed across images.
+  useEffect(() => {
+    queueMicrotask(() => setInfoOpen(readInfoOpen()));
+  }, []);
+
+  function toggleInfo() {
+    setInfoOpen((open) => {
+      try {
+        window.localStorage.setItem(INFO_STORAGE_KEY, String(!open));
+      } catch {
+        // Storage unavailable: the panel still toggles for this image.
+      }
+
+      return !open;
+    });
+  }
+
+  useEffect(() => {
+    if (handoff?.filePath === filePath) {
+      handoff = null;
+    }
+  }, [filePath]);
+
+  // Preload the neighbors so stepping through the folder feels instant.
+  useEffect(() => {
+    for (const neighbor of [previousSibling, nextSibling]) {
+      if (neighbor) {
+        new Image().src = neighbor.src;
+      }
+    }
+  }, [nextSibling, previousSibling]);
+
+  useEffect(() => {
+    if (!playing || editing || siblingCount < 2) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      showSibling((nextSibling ?? siblings?.[0])?.path, { playing: true, fullscreen });
+    }, SLIDESHOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [editing, fullscreen, nextSibling, playing, showSibling, siblingCount, siblings]);
+
+  useEffect(() => {
+    fullscreenRef.current = fullscreen;
+  }, [fullscreen]);
+
+  // Full screen fills the screen with the viewer (in a portal, so no panel
+  // clips it) and puts the window in full screen. The document, not the viewer,
+  // goes full screen so it stays that way when the next photo replaces this one.
+  useEffect(() => {
+    function handleFullscreenChange() {
+      if (!document.fullscreenElement) {
+        setFullscreen(false);
+      }
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+
+      // Closing the tab leaves full screen, unless the next photo took it over.
+      if (fullscreenRef.current) {
+        window.setTimeout(() => {
+          if (!document.querySelector("[data-image-viewer-fullscreen]") && document.fullscreenElement) {
+            void document.exitFullscreen().catch(() => undefined);
+          }
+        });
+      }
+    };
+  }, []);
+
+  function toggleFullscreen() {
+    if (fullscreen) {
+      setFullscreen(false);
+
+      if (document.fullscreenElement) {
+        void document.exitFullscreen().catch(() => undefined);
+      }
+
+      return;
+    }
+
+    setFullscreen(true);
+
+    if (!document.fullscreenElement) {
+      void document.documentElement.requestFullscreen?.().catch(() => undefined);
+    }
+  }
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setNotice(""), 2200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  function downloadImage() {
+    if (!src) {
+      return;
+    }
+
+    const link = document.createElement("a");
+    link.href = src;
+    link.download = fileName;
+    link.click();
+  }
+
+  function copyToClipboard() {
+    if (!src) {
+      return;
+    }
+
+    copyImage(src).then(
+      () => setNotice("Copied to the clipboard"),
+      () => setNotice("Could not copy this image"),
+    );
+  }
+
+  function startEditing() {
+    setPlaying(false);
+    setEditing(true);
+  }
+
+  // Viewer shortcuts, like the Gallery's: ← → step through the folder, + − 0
+  // zoom, F full screen, I info, E edit, Space slideshow.
+  useEffect(() => {
+    function handleViewerKey(event: KeyboardEvent) {
+      const target = event.target;
+
+      if (
+        !paneFocused ||
+        editing ||
+        screenshotSnipping ||
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        document.querySelector(".libera-dialog") ||
+        (target instanceof HTMLElement &&
+          (target.isContentEditable || target.closest("input, textarea, select, [role=menu]")))
+      ) {
+        return;
+      }
+
+      const key = event.key;
+
+      if (key === "ArrowLeft" && previousSibling) {
+        showSibling(previousSibling.path, { playing, fullscreen });
+      } else if (key === "ArrowRight" && nextSibling) {
+        showSibling(nextSibling.path, { playing, fullscreen });
+      } else if (key === "+" || key === "=") {
+        zoomBy(ZOOM_FACTOR);
+      } else if (key === "-") {
+        zoomBy(1 / ZOOM_FACTOR);
+      } else if (key === "0") {
+        resetView();
+      } else if (key === "f" || key === "F") {
+        toggleFullscreen();
+      } else if (key === "i" || key === "I") {
+        toggleInfo();
+      } else if ((key === "e" || key === "E") && editable) {
+        startEditing();
+      } else if (key === " " && siblingCount > 1 && !(target instanceof HTMLElement && target.closest("button, a"))) {
+        setPlaying((value) => !value);
+      } else if (key === "Escape" && !selectedAnnotationId && (playing || fullscreen)) {
+        // Esc leaves a browser's full screen by itself; this covers the rest.
+        if (playing) {
+          setPlaying(false);
+        } else {
+          toggleFullscreen();
+        }
+      } else {
+        return;
+      }
+
+      event.preventDefault();
+    }
+
+    window.addEventListener("keydown", handleViewerKey);
+    return () => window.removeEventListener("keydown", handleViewerKey);
+  });
+
   async function captureScreenshotSnip(rect: PdfAnnotationRect) {
     const image = imageRef.current;
 
@@ -470,8 +794,23 @@ export function ImageViewer({
     }
   }
 
-  return (
-    <div className="libera-media-viewer libera-image-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted">
+  const naturalDimensions = naturalSize.width ? `${naturalSize.width} × ${naturalSize.height}` : "";
+  const infoRows = [
+    ["Name", fileName],
+    ["Dimensions", naturalDimensions],
+    ["Size", details?.size !== undefined ? formatBytes(details.size) : ""],
+    ["Created", formatDate(details?.createdAt)],
+    ["Modified", formatDate(details?.updatedAt)],
+    ["Location", details?.location ?? ""],
+  ].filter(([, value]) => value);
+
+  const viewer = (
+    <div
+      className={`libera-media-viewer libera-image-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted ${
+        fullscreen ? "fixed inset-0 z-50 bg-background" : ""
+      }`}
+      data-image-viewer-fullscreen={fullscreen ? "" : undefined}
+    >
       <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <Move aria-hidden className="h-4 w-4 shrink-0" />
@@ -530,7 +869,7 @@ export function ImageViewer({
           </button>
           </> : <span className="text-xs text-muted-foreground">View only</span>}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
           <span className="mr-2 text-xs text-muted-foreground">
             {saveStatus === "saving"
               ? "Saving"
@@ -542,35 +881,67 @@ export function ImageViewer({
           </span>
           <button
             aria-label="Zoom out"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
+            className={iconButton}
             type="button"
-            onClick={() => changeZoom(-ZOOM_STEP)}
+            onClick={() => zoomBy(1 / ZOOM_FACTOR)}
             disabled={zoom <= MIN_ZOOM}
-            title="Zoom out"
+            title="Zoom out (−)"
           >
             <ZoomOut aria-hidden className="h-4 w-4" />
           </button>
-          <span className="min-w-14 text-center text-sm font-medium text-foreground">
-            {Math.round(zoom * 100)}%
-          </span>
+          <button
+            aria-label={atFit ? "Show actual size" : "Fit to view"}
+            className="h-8 min-w-14 rounded-lg px-1 text-center text-sm font-medium tabular-nums text-foreground hover:bg-muted"
+            type="button"
+            onClick={toggleActualSize}
+            title={atFit ? "Actual size" : "Fit to view (0)"}
+          >
+            {atFit ? "Fit" : `${Math.round(zoom * fitScale * 100)}%`}
+          </button>
           <button
             aria-label="Zoom in"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
+            className={iconButton}
             type="button"
-            onClick={() => changeZoom(ZOOM_STEP)}
+            onClick={() => zoomBy(ZOOM_FACTOR)}
             disabled={zoom >= MAX_ZOOM}
-            title="Zoom in"
+            title="Zoom in (+)"
           >
             <ZoomIn aria-hidden className="h-4 w-4" />
           </button>
+          <span aria-hidden className="mx-1 h-6 w-px bg-border" />
+          {editable ? (
+            <button aria-label="Edit image" className={iconButton} type="button" title="Edit: crop, rotate, adjust. Saves a copy (E)" onClick={startEditing}>
+              <Pencil aria-hidden className="h-4 w-4" />
+            </button>
+          ) : null}
+          {siblingCount > 1 ? (
+            <button
+              aria-label={playing ? "Pause slideshow" : "Play slideshow"}
+              className={iconButton}
+              type="button"
+              title={playing ? "Pause slideshow (Space)" : "Slideshow of this folder (Space)"}
+              onClick={() => setPlaying((value) => !value)}
+            >
+              {playing ? <Pause aria-hidden className="h-4 w-4" /> : <Play aria-hidden className="h-4 w-4" />}
+            </button>
+          ) : null}
+          <button aria-label="Copy image" className={iconButton} type="button" title="Copy image" disabled={!src} onClick={copyToClipboard}>
+            <Copy aria-hidden className="h-4 w-4" />
+          </button>
+          <button aria-label="Download image" className={iconButton} type="button" title="Download" disabled={!src} onClick={downloadImage}>
+            <Download aria-hidden className="h-4 w-4" />
+          </button>
           <button
-            aria-label="Reset image view"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted"
+            aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+            className={iconButton}
             type="button"
-            onClick={resetView}
-            title="Reset image view"
+            title={fullscreen ? "Exit full screen (F)" : "Full screen (F)"}
+            onClick={toggleFullscreen}
           >
-            <RotateCcw aria-hidden className="h-4 w-4" />
+            {fullscreen ? <Minimize aria-hidden className="h-4 w-4" /> : <Maximize aria-hidden className="h-4 w-4" />}
+          </button>
+          <button aria-label="Info" aria-pressed={infoOpen} className={iconButton} type="button" title="Info (I)" onClick={toggleInfo}>
+            <Info aria-hidden className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -581,8 +952,11 @@ export function ImageViewer({
         </div>
       ) : null}
 
+      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1">
       <div
-        className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6 ${
+        ref={stageRef}
+        className={`relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-6 ${
           screenshotSnipping
             ? "cursor-crosshair"
             : tool === "text"
@@ -591,13 +965,12 @@ export function ImageViewer({
                 ? "cursor-grabbing"
                 : "cursor-grab"
         }`}
-        onDoubleClick={resetView}
+        onDoubleClick={handleDoubleClick}
         onPointerCancel={handlePointerEnd}
         onPointerDown={handlePointerDown}
         onPointerLeave={handlePointerEnd}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
-        onWheel={handleWheel}
         style={{ touchAction: "none" }}
       >
         {src ? (
@@ -613,10 +986,18 @@ export function ImageViewer({
             {/* eslint-disable-next-line @next/next/no-img-element -- Authenticated local file URLs should not use Next image optimization. */}
             <img
               ref={imageRef}
-              className="block max-h-[calc(100vh-236px)] max-w-full select-none rounded-lg object-contain"
+              className={`block max-w-full select-none rounded-lg object-contain ${
+                fullscreen ? "max-h-[calc(100vh-7rem)]" : "max-h-[calc(100vh-236px)]"
+              }`}
               src={src}
               alt={alt}
               draggable={false}
+              onLoad={(event) =>
+                setNaturalSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                })
+              }
             />
             {annotatable ? <TextAnnotationLayer
               annotations={annotations}
@@ -646,6 +1027,81 @@ export function ImageViewer({
           <p className="text-sm text-muted-foreground">Image preview is unavailable.</p>
         )}
       </div>
+      {/* Outside the stage, so pressing them never starts a pan. */}
+      {previousSibling ? (
+        <button
+          aria-label="Previous image"
+          className="absolute left-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60"
+          type="button"
+          title="Previous image in this folder (←)"
+          onClick={() => showSibling(previousSibling.path, { playing, fullscreen })}
+        >
+          <ChevronLeft aria-hidden className="h-6 w-6" />
+        </button>
+      ) : null}
+      {nextSibling ? (
+        <button
+          aria-label="Next image"
+          className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60"
+          type="button"
+          title="Next image in this folder (→)"
+          onClick={() => showSibling(nextSibling.path, { playing, fullscreen })}
+        >
+          <ChevronRight aria-hidden className="h-6 w-6" />
+        </button>
+      ) : null}
+      {siblingCount > 1 ? (
+        <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-2.5 py-0.5 text-xs tabular-nums text-white">
+          {siblingIndex + 1} of {siblingCount}
+        </span>
+      ) : null}
+      {notice ? (
+        <div role="status" className="pointer-events-none absolute bottom-10 left-1/2 -translate-x-1/2 rounded-full bg-foreground px-4 py-2 text-sm text-background shadow-lg">
+          {notice}
+        </div>
+      ) : null}
+      </div>
+      {infoOpen ? (
+        <aside aria-label="Image info" className="flex w-64 shrink-0 flex-col gap-3 overflow-auto border-l border-border bg-card p-4 text-sm max-sm:hidden">
+          <h2 className="text-sm font-semibold">Info</h2>
+          <dl className="space-y-3">
+            {infoRows.map(([label, value]) => (
+              <div key={label}>
+                <dt className="text-xs uppercase tracking-wider text-muted-foreground">{label}</dt>
+                <dd className="break-all">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {annotatable ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {annotations.length === 1 ? "1 text note" : `${annotations.length} text notes`} on this image.
+            </p>
+          ) : null}
+        </aside>
+      ) : null}
+      </div>
     </div>
+  );
+
+  return (
+    <>
+      {fullscreen ? createPortal(viewer, document.body) : viewer}
+      {editing && src && onSaveEditedCopy
+        ? createPortal(
+            <div role="dialog" aria-modal="true" aria-label={`Edit ${fileName}`} className="fixed inset-0 z-[60] flex flex-col bg-neutral-950 text-white">
+              <PhotoEditor
+                src={src}
+                copyOnly
+                onCancel={() => setEditing(false)}
+                onSave={async (edits) => {
+                  await onSaveEditedCopy(edits);
+                  setEditing(false);
+                }}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }

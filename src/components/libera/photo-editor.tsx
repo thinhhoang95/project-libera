@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { Crop, FlipHorizontal2, FlipVertical2, Loader2, RotateCcw, RotateCcwSquare, RotateCwSquare, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import { apiRequest } from "@/components/libera/api-client";
-import { galleryRawUrl, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
+import type { CSSProperties, ReactNode, PointerEvent as ReactPointerEvent } from "react";
+import { Crop, FlipHorizontal2, FlipVertical2, Loader2, RotateCcw, RotateCcwSquare, RotateCwSquare, Search, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import {
   ADJUSTMENT_CONTROLS,
   CROP_ASPECTS,
@@ -25,12 +23,23 @@ import {
   type PhotoAdjustments,
   type PhotoEdits,
 } from "@/lib/photo-edits";
+import {
+  FILM_LOOKS_CREDIT,
+  INSTAGRAM_FILTERS,
+  INSTAGRAM_GROUP,
+  applyPhotoFilter,
+  loadPhotoFilters,
+  mixFilteredPixels,
+  type PhotoFilter,
+} from "@/lib/photo-filters";
 
 type EditorTab = "crop" | "adjust" | "filters";
 type Handle = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 /** The preview is drawn at most this large; saving always uses the full photo. */
 const PREVIEW_EDGE = 2400;
+/** Filter previews are drawn with at least this many pixels on their short side, sharp on 2× screens. */
+const THUMBNAIL_SHORT_EDGE = 220;
 const MIN_CROP = 0.04;
 const FULL_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 const panelButton = "inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-40";
@@ -62,6 +71,51 @@ function vignetteStyle(adjustments: PhotoAdjustments): CSSProperties | undefined
   const opacity = vignetteOpacity(adjustments);
   if (!opacity) return undefined;
   return { background: `radial-gradient(ellipse 70.71% 70.71% at 50% 50%, rgba(0,0,0,0) ${VIGNETTE_START * 100}%, rgba(0,0,0,${opacity.toFixed(3)}) 100%)` };
+}
+
+function filterImage(source: ImageData, filter: PhotoFilter) {
+  const output = new ImageData(source.width, source.height);
+  applyPhotoFilter(source.data, output.data, source.width, source.height, 4, filter);
+  return output;
+}
+
+/** Filter groups in the order the Filters tab lists them. */
+function groupRank(group: string) {
+  if (group === INSTAGRAM_GROUP) return 0;
+  if (group.startsWith("Color film")) return 1;
+  if (group.startsWith("B&W film")) return 2;
+  return 3;
+}
+
+/** A small preview of the photo, through a filter if given, drawn once it scrolls into view. */
+function FilterThumbnail({ base, filter, style }: { base: ImageData | null; filter?: PhotoFilter; style?: CSSProperties }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || visible) return;
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) setVisible(true); }, { rootMargin: "200px" });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !base || !visible) return;
+    canvas.width = base.width;
+    canvas.height = base.height;
+    canvas.getContext("2d")?.putImageData(filter ? filterImage(base, filter) : base, 0, 0);
+  }, [base, filter, visible]);
+
+  return <canvas ref={canvasRef} aria-hidden className="h-full w-full object-cover" style={style} />;
+}
+
+function FilterChoice({ label, active, onClick, children }: { label: string; active: boolean; onClick: () => void; children: ReactNode }) {
+  return <button aria-pressed={active} title={label} className="group min-w-0 text-left" onClick={onClick}>
+    <span className={`relative block aspect-square overflow-hidden rounded-md ring-2 ${active ? "ring-white" : "ring-transparent group-hover:ring-white/40"}`}>{children}</span>
+    <span className="mt-1 block truncate text-[11px] text-white/80">{label}</span>
+  </button>;
 }
 
 /** Largest centered crop with a normalized width/height ratio. */
@@ -135,10 +189,16 @@ function CropOverlay({ crop, ratio, onChange }: { crop: CropRect; ratio: number 
   </div>;
 }
 
-export function PhotoEditor({ photo, onCancel, onSaved }: {
-  photo: GalleryPhoto;
+/**
+ * Crop, rotate and adjust a photo. `onSave` writes the edits; while it runs the
+ * editor shows progress, and a rejection is shown as the error. With
+ * `copyOnly`, saving never replaces the original.
+ */
+export function PhotoEditor({ src, copyOnly = false, onCancel, onSave }: {
+  src: string;
+  copyOnly?: boolean;
   onCancel: () => void;
-  onSaved: (result: { id: string; gallery: GalleryContents }, mode: "replace" | "copy") => void;
+  onSave: (edits: PhotoEdits, mode: "replace" | "copy") => Promise<void>;
 }) {
   const filterId = `libera-photo-${safeId(useId())}`;
   const [edits, setEdits] = useState<PhotoEdits>(NO_EDITS);
@@ -147,8 +207,10 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
   const [source, setSource] = useState<HTMLImageElement | null>(null);
   const [saving, setSaving] = useState<"replace" | "copy" | null>(null);
   const [error, setError] = useState("");
+  const [library, setLibrary] = useState<PhotoFilter[] | null>(null);
+  const [libraryFailed, setLibraryFailed] = useState(false);
+  const [query, setQuery] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const presetCanvasesRef = useRef<Array<HTMLCanvasElement | null>>([]);
   const dirty = hasEdits(edits);
 
   useEffect(() => {
@@ -156,8 +218,8 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
     image.decoding = "async";
     image.onload = () => setSource(image);
     image.onerror = () => setError("Could not open the photo for editing.");
-    image.src = galleryRawUrl(photo);
-  }, [photo]);
+    image.src = src;
+  }, [src]);
 
   // The photo turned and flipped, at preview size. Adjustments are applied by the filter.
   const oriented = useMemo(() => {
@@ -178,23 +240,66 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
     return canvas;
   }, [source, edits.rotate, edits.flipH, edits.flipV]);
 
+  // The film looks are large, so they load when the Filters tab opens or a saved choice needs them.
+  const needsLibrary = tab === "filters" || (edits.filter !== null && !INSTAGRAM_FILTERS.some((filter) => filter.id === edits.filter));
+  useEffect(() => {
+    if (!needsLibrary || library || libraryFailed) return;
+    let current = true;
+    loadPhotoFilters().then((filters) => { if (current) setLibrary(filters); }, () => { if (current) setLibraryFailed(true); });
+    return () => { current = false; };
+  }, [needsLibrary, library, libraryFailed]);
+  const filters = library ?? INSTAGRAM_FILTERS;
+  const activeFilter = useMemo(() => filters.find((filter) => filter.id === edits.filter) ?? null, [filters, edits.filter]);
+
+  // The crop tab shows the whole photo so the frame can move over it.
   const showCrop = tab === "crop";
+  const shownCrop = showCrop ? null : edits.crop;
+  const area = useMemo(() => oriented && cropPixels(shownCrop, oriented.width, oriented.height), [oriented, shownCrop]);
+  const region = useMemo(() => (oriented && area ? oriented.getContext("2d")?.getImageData(area.left, area.top, area.width, area.height) ?? null : null), [oriented, area]);
+  // The filter runs here on the pixels; the adjustments run in the SVG filter on top.
+  const filtered = useMemo(() => (region && activeFilter ? filterImage(region, activeFilter) : null), [region, activeFilter]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !oriented) return;
-    const region = showCrop ? cropPixels(null, oriented.width, oriented.height) : cropPixels(edits.crop, oriented.width, oriented.height);
+    if (!canvas || !region) return;
     canvas.width = region.width;
     canvas.height = region.height;
-    canvas.getContext("2d")?.drawImage(oriented, region.left, region.top, region.width, region.height, 0, 0, region.width, region.height);
-    // Filter previews show the cropped photo through each preset.
-    const scale = 160 / Math.max(region.width, region.height);
-    for (const preview of presetCanvasesRef.current) {
-      if (!preview) continue;
-      preview.width = Math.max(1, Math.round(region.width * scale));
-      preview.height = Math.max(1, Math.round(region.height * scale));
-      preview.getContext("2d")?.drawImage(canvas, 0, 0, preview.width, preview.height);
+    let pixels = region;
+    if (filtered && edits.filterStrength > 0) {
+      pixels = filtered;
+      if (edits.filterStrength < 100) {
+        pixels = new ImageData(region.width, region.height);
+        mixFilteredPixels(region.data, filtered.data, pixels.data, 4, edits.filterStrength / 100);
+      }
     }
-  }, [oriented, edits.crop, showCrop, tab]);
+    canvas.getContext("2d")?.putImageData(pixels, 0, 0);
+  }, [region, filtered, edits.filterStrength]);
+
+  // Filter previews show the cropped photo, small.
+  const thumbnail = useMemo(() => {
+    if (!oriented || !area || tab !== "filters") return null;
+    const scale = Math.min(1, THUMBNAIL_SHORT_EDGE / Math.min(area.width, area.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(area.width * scale));
+    canvas.height = Math.max(1, Math.round(area.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(oriented, area.left, area.top, area.width, area.height, 0, 0, canvas.width, canvas.height);
+    return context.getImageData(0, 0, canvas.width, canvas.height);
+  }, [oriented, area, tab]);
+
+  const filterSections = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const matches = (filter: PhotoFilter) => !search || filter.label.toLowerCase().includes(search) || filter.group.toLowerCase().includes(search);
+    const groups = new Map<string, PhotoFilter[]>();
+    for (const filter of filters) {
+      if (!matches(filter)) continue;
+      groups.set(filter.group, [...(groups.get(filter.group) ?? []), filter]);
+    }
+    return [...groups].sort(([first], [second]) => groupRank(first) - groupRank(second)).map(([group, items]) => ({ group, items }));
+  }, [filters, query]);
+  const basicPresets = FILTER_PRESETS.filter((preset) => !query.trim() || preset.label.toLowerCase().includes(query.trim().toLowerCase()));
 
   const aspect = CROP_ASPECTS.find((entry) => entry.id === aspectId) ?? CROP_ASPECTS[0];
   const normalizedRatio = oriented && aspect.ratio !== null
@@ -233,8 +338,7 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
     setSaving(mode);
     setError("");
     try {
-      const result = await apiRequest<{ id: string; gallery: GalleryContents }>("/api/gallery/photos/edit", { method: "POST", body: JSON.stringify({ id: photo.id, edits, mode }) });
-      onSaved(result, mode);
+      await onSave(edits, mode);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not save the photo.");
       setSaving(null);
@@ -245,7 +349,7 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
     function handleKey(event: KeyboardEvent) {
       if (event.target instanceof Element && event.target.closest("input, textarea, select")) return;
       if (event.key === "Escape" && !dirty && !saving) { event.preventDefault(); onCancel(); }
-      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && dirty && !saving) { event.preventDefault(); void save("replace"); }
+      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && dirty && !saving) { event.preventDefault(); void save(copyOnly ? "copy" : "replace"); }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -258,7 +362,17 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
     { id: "adjust", label: "Adjust", icon: SlidersHorizontal },
     { id: "filters", label: "Filters", icon: Sparkles },
   ];
-  const activePreset = FILTER_PRESETS.find((preset) => sameAdjustments(preset.adjustments, edits));
+  const activePreset = edits.filter === null ? FILTER_PRESETS.find((preset) => sameAdjustments(preset.adjustments, edits)) : undefined;
+
+  function chooseFilter(id: string) {
+    setEdits((current) => ({
+      ...current,
+      // A basic preset is replaced; the user's own adjustments stay on top of the filter.
+      ...(FILTER_PRESETS.some((preset) => preset.id !== "original" && sameAdjustments(preset.adjustments, current)) ? NO_ADJUSTMENTS : {}),
+      filter: id,
+      filterStrength: 100,
+    }));
+  }
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <svg aria-hidden width="0" height="0" className="absolute">
@@ -269,10 +383,14 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
       <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-sm hover:bg-white/10" disabled={Boolean(saving)} onClick={onCancel}><X className="h-4 w-4" />Cancel</button>
       <h2 className="mr-auto truncate text-sm font-medium">Edit photo</h2>
       <button className={panelButton} disabled={!dirty || Boolean(saving)} onClick={() => { setEdits(NO_EDITS); setAspectId("free"); }}><RotateCcw className="h-4 w-4" />Reset</button>
-      <button className={panelButton} disabled={!dirty || Boolean(saving)} onClick={() => void save("copy")}>{saving === "copy" && <Loader2 className="h-4 w-4 animate-spin" />}Save as copy</button>
-      <button className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-40" disabled={!dirty || Boolean(saving)} title="Save (⌘S). The original is kept so you can revert." onClick={() => void save("replace")}>
-        {saving === "replace" && <Loader2 className="h-4 w-4 animate-spin" />}Save
-      </button>
+      {copyOnly ? <button className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-40" disabled={!dirty || Boolean(saving)} title="Save as a new file beside the original (⌘S)" onClick={() => void save("copy")}>
+        {saving === "copy" && <Loader2 className="h-4 w-4 animate-spin" />}Save as copy
+      </button> : <>
+        <button className={panelButton} disabled={!dirty || Boolean(saving)} onClick={() => void save("copy")}>{saving === "copy" && <Loader2 className="h-4 w-4 animate-spin" />}Save as copy</button>
+        <button className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-40" disabled={!dirty || Boolean(saving)} title="Save (⌘S). The original is kept so you can revert." onClick={() => void save("replace")}>
+          {saving === "replace" && <Loader2 className="h-4 w-4 animate-spin" />}Save
+        </button>
+      </>}
     </header>
     {error && <div role="alert" className="border-b border-red-400/30 bg-red-500/15 px-4 py-2 text-sm text-red-200">{error}</div>}
     <div className="flex min-h-0 flex-1">
@@ -325,15 +443,47 @@ export function PhotoEditor({ photo, onCancel, onSaved }: {
             </div>)}
             <button className={`${panelButton} w-full`} disabled={sameAdjustments(edits, NO_ADJUSTMENTS)} onClick={() => setEdits((current) => ({ ...current, ...NO_ADJUSTMENTS }))}>Reset adjustments</button>
           </>}
-          {tab === "filters" && <div className="grid grid-cols-2 gap-3">
-            {FILTER_PRESETS.map((preset, position) => <button key={preset.id} aria-pressed={activePreset?.id === preset.id} className="group text-left" onClick={() => setEdits((current) => ({ ...current, ...preset.adjustments }))}>
-              <span className={`relative block aspect-square overflow-hidden rounded-lg ring-2 ${activePreset?.id === preset.id ? "ring-white" : "ring-transparent group-hover:ring-white/40"}`}>
-                <canvas ref={(element) => { presetCanvasesRef.current[position] = element; }} aria-hidden className="h-full w-full object-cover" style={{ filter: `url(#${filterId}-${preset.id})` }} />
-                <span aria-hidden className="absolute inset-0" style={vignetteStyle(preset.adjustments)} />
-              </span>
-              <span className="mt-1 block text-xs text-white/80">{preset.label}</span>
-            </button>)}
-          </div>}
+          {tab === "filters" && <>
+            {edits.filter !== null && <div>
+              <div className="mb-1 flex items-center justify-between gap-2 text-sm">
+                <label htmlFor={`${filterId}-strength`} className="truncate">{activeFilter?.label ?? "Filter"} intensity</label>
+                <button className="min-w-8 rounded px-1 text-right text-xs tabular-nums text-white/60 hover:text-white" title="Reset" onClick={() => setEdits((current) => ({ ...current, filterStrength: 100 }))}>{edits.filterStrength}</button>
+              </div>
+              <input id={`${filterId}-strength`} type="range" min={0} max={100} step={1} value={edits.filterStrength} className="w-full accent-white"
+                onDoubleClick={() => setEdits((current) => ({ ...current, filterStrength: 100 }))}
+                onChange={(event) => { const value = Number(event.target.value); setEdits((current) => ({ ...current, filterStrength: value })); }} />
+              <button className={`${panelButton} mt-2 w-full`} onClick={() => setEdits((current) => ({ ...current, filter: null, filterStrength: 100 }))}>Remove filter</button>
+            </div>}
+            <label className="flex items-center gap-2 rounded-lg border border-white/15 px-2.5 py-1.5 focus-within:border-white/40">
+              <Search aria-hidden className="h-4 w-4 shrink-0 text-white/50" />
+              <input type="search" value={query} placeholder="Search filters" aria-label="Search filters" className="min-w-0 flex-1 text-sm outline-none placeholder:text-white/40"
+                // The global input colors are for the light and dark app themes; the editor is always dark.
+                style={{ backgroundColor: "transparent", color: "inherit" }}
+                onChange={(event) => setQuery(event.target.value)} />
+            </label>
+            {basicPresets.length > 0 && <section>
+              <h3 className="mb-2 text-xs uppercase tracking-wider text-white/50">Basic</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {basicPresets.map((preset) => <FilterChoice key={preset.id} label={preset.label} active={activePreset?.id === preset.id}
+                  onClick={() => setEdits((current) => ({ ...current, ...preset.adjustments, filter: null, filterStrength: 100 }))}>
+                  <FilterThumbnail base={thumbnail} style={{ filter: `url(#${filterId}-${preset.id})` }} />
+                  <span aria-hidden className="absolute inset-0" style={vignetteStyle(preset.adjustments)} />
+                </FilterChoice>)}
+              </div>
+            </section>}
+            {filterSections.map(({ group, items }) => <section key={group}>
+              <h3 className="mb-2 text-xs uppercase tracking-wider text-white/50">{group}</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {items.map((filter) => <FilterChoice key={filter.id} label={filter.label} active={edits.filter === filter.id} onClick={() => chooseFilter(filter.id)}>
+                  <FilterThumbnail base={thumbnail} filter={filter} />
+                </FilterChoice>)}
+              </div>
+            </section>)}
+            {!library && !libraryFailed && <p className="flex items-center gap-2 text-xs text-white/50"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading film looks…</p>}
+            {libraryFailed && <p className="text-xs text-red-200">Could not load the film looks.</p>}
+            {basicPresets.length === 0 && filterSections.length === 0 && <p className="text-xs text-white/50">No filters match “{query.trim()}”.</p>}
+            {library && <p className="text-[11px] leading-relaxed text-white/40">{FILM_LOOKS_CREDIT}</p>}
+          </>}
         </div>
       </aside>
     </div>

@@ -17,6 +17,7 @@ import {
   type CanvasDropZone,
   type CanvasLayout,
 } from "@/lib/canvas-layout";
+import { captureCanvasViewState } from "./canvas-view-state";
 import type { OpenTab } from "./types";
 
 type CanvasState = { layout: CanvasLayout; tabIds: string[]; activeTabId: string };
@@ -66,6 +67,7 @@ export function useCanvasLayout(options: {
 
   function commit(next: CanvasLayout) {
     if (next === layout) return;
+    captureCanvasViewState();
     setState((current) => ({ ...current, layout: next }));
     const nextFocusedTabId = focusedCanvasPane(next)?.tabId ?? "";
     if (nextFocusedTabId !== activeTabId) activateTab(nextFocusedTabId);

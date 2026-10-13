@@ -58,11 +58,23 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
   async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
-  async function mount() { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed: false, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
+  async function mount(collapsed = false) { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
   async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
     await mount();
+    Object.defineProperties(dom.window.HTMLElement.prototype, {
+      scrollHeight: { configurable: true, get() { return this.classList.contains("libera-chat-log") ? 2000 : 0; } },
+      clientHeight: { configurable: true, get() { return this.classList.contains("libera-chat-log") ? 500 : 0; } },
+    });
+    await act(async () => {
+      const log = host.querySelector<HTMLElement>('[aria-label="Chat messages"]')!;
+      log.scrollTop = 430.25;
+      log.dispatchEvent(new dom.window.Event("scroll"));
+    });
+    await mount(true);
+    await mount();
+    assert.equal(host.querySelector<HTMLElement>('[aria-label="Chat messages"]')!.scrollTop, 430.25, "Reopening chat keeps the reading position");
     assert.equal(host.querySelector('[aria-label="Chat token usage"]')?.textContent, "000");
     assert.equal(host.querySelector('[aria-label="Model: test/provider-model"]')?.textContent, "provider-model");
     menuAction = "chat-model-1";

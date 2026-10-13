@@ -557,6 +557,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               url={pdfUrl}
               zoom={(viewState?.pdfZoom ?? "width") as PdfZoom}
               initialScrollTop={viewState?.pdfScrollTop}
+              initialScrollLeft={viewState?.pdfScrollLeft}
               highlight={highlight}
               busy={build.compiling}
               downloadUrl={build.buildId ? latexPdfUrl(rootPath, build.buildId, true) : null}

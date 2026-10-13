@@ -4,8 +4,8 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check } from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -18,7 +18,7 @@ import { readChatResponse } from "./chat-stream-client";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
-import { CHAT_REASONING_EFFORTS, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -28,6 +28,48 @@ const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-fle
 function selectionExcerpt(text: string) {
   const lines = text.split(/\r\n|\r|\n/);
   return `${lines.slice(0, 2).join(" ")}${lines.length > 2 ? "…" : ""}`;
+}
+
+/** A photo on screen outside the chat, such as in the gallery viewer. `source` names its version. */
+export type ChatViewedPhoto = { source: string; name: string; url: string };
+
+function readDataUrl(blob: Blob, name: string) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error(`Could not read ${name}.`));
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Gallery photos may be SVG or larger than the chat accepts; re-encode those
+// as JPEG, stepping down in size until the photo fits.
+async function viewedPhotoDataUrl(photo: ChatViewedPhoto, signal: AbortSignal) {
+  const response = await fetch(photo.url, { signal });
+  if (!response.ok) throw new Error(`Could not read ${photo.name}.`);
+  const blob = await response.blob();
+  if (/^image\/(png|jpeg|webp|gif)$/.test(blob.type) && blob.size && blob.size <= MAX_CHAT_PHOTO_BYTES) return readDataUrl(blob, photo.name);
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.src = objectUrl;
+    await image.decode();
+    for (const side of [2048, 1536, 1024]) {
+      const scale = Math.min(1, side / Math.max(image.naturalWidth || side, image.naturalHeight || side));
+      const canvas = window.document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round((image.naturalWidth || side) * scale));
+      canvas.height = Math.max(1, Math.round((image.naturalHeight || side) * scale));
+      const context = canvas.getContext("2d");
+      if (!context) break;
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const encoded = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+      if (encoded && encoded.size <= MAX_CHAT_PHOTO_BYTES) return readDataUrl(encoded, photo.name);
+    }
+  } catch { /* Reported below. */ }
+  finally { URL.revokeObjectURL(objectUrl); }
+  throw new Error(`${photo.name} could not be prepared for the chat.`);
 }
 
 function createChat(): DocumentChat {
@@ -43,7 +85,7 @@ const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMar
     baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
 });
 
-export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void }) {
+export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null }) {
   const review = useMarkdownReview();
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
@@ -75,11 +117,17 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const followResponseRef = useRef(true);
+  const readingPositionsRef = useRef(new Map<string, { top: number; follow: boolean }>());
   const chat = store?.chats.find((item) => item.id === store.activeId);
   const lastMessageText = chat?.messages.at(-1)?.text;
-  const document = useMemo<ChatContext | null>(() => (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" ? "" : activeTab.draft } : null, [activeTab]);
+  // A photo being viewed covers the editors, so it replaces the document as context.
+  const document = useMemo<ChatContext | null>(() => !viewedPhoto && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
+  const includedPhoto = viewedPhoto && !chat?.excludedPhotoSources?.includes(viewedPhoto.source) ? viewedPhoto : null;
+  // Sent once per conversation; a copy waiting in the composer (a restored unsent message) counts too.
+  const photoAlreadyIncluded = !!includedPhoto && !!chat && (chatHasPhotoSource(chat.messages, includedPhoto.source) || !!chat.photos?.some((photo) => photo.source === includedPhoto.source));
+  const pendingPhoto = photoAlreadyIncluded ? null : includedPhoto;
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
@@ -136,11 +184,16 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
     return () => window.clearInterval(interval);
   }, [pending, persistStore]);
 
-  useEffect(() => {
-    followResponseRef.current = true;
+  useLayoutEffect(() => {
+    const id = chat?.id;
     const log = logRef.current;
-    if (log) log.scrollTop = log.scrollHeight;
-  }, [chat?.id, collapsed]);
+    if (!id || !log || collapsed) return;
+    const positions = readingPositionsRef.current;
+    const saved = positions.get(id);
+    followResponseRef.current = saved?.follow ?? true;
+    log.scrollTop = saved && !saved.follow ? saved.top : log.scrollHeight;
+    positions.set(id, { top: log.scrollTop, follow: followResponseRef.current });
+  }, [chat?.id, collapsed, review?.chatReview]);
 
   useEffect(() => {
     const log = logRef.current;
@@ -313,7 +366,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
 
   async function send(retryMessageId?: string, edit?: { id: string; text: string }) {
     const replay = Boolean(retryMessageId || edit);
-    if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
+    if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length && !pendingPhoto) || requestRef.current || loadingPhotos || loadingFiles) return;
+    if (!replay && pendingPhoto && (chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) { setError(`Attach up to ${MAX_CHAT_PHOTOS} photos per message, including the one you are viewing.`); return; }
     const retryIndex = retryMessageId ? chat.messages.findIndex((message) => message.id === retryMessageId && message.role === "assistant") : -1;
     if (retryMessageId && (retryIndex < 1 || chat.messages[retryIndex - 1].role !== "user")) return;
     const editIndex = edit ? chat.messages.findIndex((item) => item.id === edit.id && item.role === "user") : -1;
@@ -356,10 +410,11 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
             const { text } = await apiRequest<{ text: string }>(`/api/document-chat/pdf?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
             return { ...context, text };
           }));
+        if (pendingPhoto) message.photos = [...photos, { id: crypto.randomUUID(), name: pendingPhoto.name, dataUrl: await viewedPhotoDataUrl(pendingPhoto, controller.signal), source: pendingPhoto.source }];
       }
       controller.signal.throwIfAborted();
       updateChat(id, (current) => replay ? { ...current, messages } : ({ ...current,
-        title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages,
+        title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || message.photos[0]?.name || "Photo chat").slice(0, 60), messages,
         prompt: current.prompt === prompt ? "" : current.prompt,
         selections: current.selections.filter((item) => !selections.includes(item)),
         photos: current.photos?.filter((item) => !photos.includes(item)) ?? [],
@@ -504,6 +559,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
           onScroll={(event) => {
             const log = event.currentTarget;
             followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
+            // Snapshot during the event: a removed log may report zero in cleanup.
+            if (chat) readingPositionsRef.current.set(chat.id, { top: log.scrollTop, follow: followResponseRef.current });
           }}
           onCopy={(event) => { copyRenderedMarkdownSelection(event.currentTarget, event, mathMarkers); }}
         >
@@ -512,7 +569,11 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
             <h2>A little clarity.<br />A new possibility.</h2>
             <p>Think it through with your AI companion.</p>
             <div className="libera-chat-starters">
-              {(includedDocument ? [
+              {(includedPhoto ? [
+                { icon: Eye, label: "Describe this photo", prompt: "Describe this photo in detail." },
+                { icon: Tag, label: "Suggest a title and caption", prompt: "Suggest a short title and a one-sentence caption for this photo." },
+                { icon: Lightbulb, label: "Write a prompt to recreate it", prompt: "Write an image-generation prompt that would recreate this photo, covering subject, composition, lighting, and style." },
+              ] : includedDocument ? [
                 { icon: BookOpen, label: "Summarize this document", prompt: "Summarize the key ideas in this document." },
                 { icon: Lightbulb, label: "Explain the key ideas", prompt: "Explain the key ideas in this document in simple terms." },
                 { icon: ListChecks, label: "Find questions to explore", prompt: "What questions or gaps in this document are worth exploring further?" },
@@ -521,8 +582,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
                 { icon: BookOpen, label: "Make sense of a topic", prompt: "Help me understand this topic: " },
               ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
-            <p className="libera-chat-context-hint">{includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
-            <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
+            <p className="libera-chat-context-hint">{includedPhoto ? "The photo you are viewing is included." : includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
+            {!viewedPhoto && <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>}
           </div>}
           {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title="Edit message (regenerates from here)" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
@@ -550,6 +611,15 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? (activeTab?.file.fileType === "pdf" ? " (PDF text)" : " (current draft)") : " (already included)"}`}</p>
             <button type="button" className={buttonClass} aria-label="Remove document context" title="Remove document context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))}><X size={12} /></button>
           </div>}
+          {viewedPhoto && (includedPhoto ? <div className="libera-chat-context flex items-center gap-1">
+            {/* eslint-disable-next-line @next/next/no-img-element -- Thumbnail of the photo being viewed. */}
+            <img src={includedPhoto.url} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedPhoto.name}>{`Context: ${includedPhoto.name}${photoAlreadyIncluded ? " (already included)" : " (photo)"}`}</p>
+            <button type="button" className={buttonClass} aria-label="Remove photo context" title="Remove photo context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: [...(current.excludedPhotoSources ?? []), includedPhoto.source] }))}><X size={12} /></button>
+          </div> : <div className="libera-chat-context flex items-center gap-1"><ImageIcon aria-hidden size={13} className="shrink-0" />
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedPhoto.name}>{`${viewedPhoto.name} is not included`}</p>
+            <button type="button" className="libera-window-no-drag rounded-full px-2 py-1 text-xs font-medium hover:bg-muted" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: current.excludedPhotoSources?.filter((source) => source !== viewedPhoto.source) }))}>Include</button>
+          </div>)}
           {!!chat?.photos?.length && <div className="flex gap-2 overflow-x-auto">
             {chat.photos.map((photo) => <div key={photo.id} className="relative shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
@@ -569,7 +639,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
             className="w-auto max-w-24 cursor-pointer appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none focus-visible:underline"
             value={chat?.reasoningEffort ?? defaultReasoningEffort} disabled={!chat}
             onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
-          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length)}><ArrowUp size={18} /></button>}</div></div>
+          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
           </div>
           {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={setModel} />}
         </form>

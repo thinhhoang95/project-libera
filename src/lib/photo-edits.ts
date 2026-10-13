@@ -2,7 +2,8 @@
  * Photo edits shared by the editor preview (an SVG filter on a canvas) and the
  * server (sharp), so the saved photo matches what the editor showed.
  *
- * Order: rotate → flip → crop → brightness/contrast → color matrix → vignette.
+ * Order: rotate → flip → crop → filter → brightness/contrast → color matrix → vignette.
+ * Filters themselves live in `photo-filters.ts`.
  */
 
 export type CropRect = { x: number; y: number; width: number; height: number };
@@ -24,10 +25,14 @@ export type PhotoEdits = PhotoAdjustments & {
   flipV: boolean;
   /** Normalized to the rotated and flipped photo; null keeps the whole photo. */
   crop: CropRect | null;
+  /** A filter id from `photo-filters.ts`, applied before the adjustments. */
+  filter: string | null;
+  /** How strongly the filter applies, 0–100. */
+  filterStrength: number;
 };
 
 export const NO_ADJUSTMENTS: PhotoAdjustments = { brightness: 0, contrast: 0, saturation: 0, warmth: 0, tint: 0, vignette: 0 };
-export const NO_EDITS: PhotoEdits = { ...NO_ADJUSTMENTS, rotate: 0, flipH: false, flipV: false, crop: null };
+export const NO_EDITS: PhotoEdits = { ...NO_ADJUSTMENTS, rotate: 0, flipH: false, flipV: false, crop: null, filter: null, filterStrength: 100 };
 
 export const ADJUSTMENT_CONTROLS: Array<{ key: keyof PhotoAdjustments; label: string; min: number; max: number }> = [
   { key: "brightness", label: "Brightness", min: -100, max: 100 },
@@ -80,13 +85,20 @@ export function parsePhotoEdits(value: unknown): PhotoEdits {
     const height = clamp(raw.height, 0, 1 - y);
     if (width > 0.001 && height > 0.001 && (width < 0.9999 || height < 0.9999)) crop = { x, y, width, height };
   }
-  const edits: PhotoEdits = { ...NO_EDITS, rotate, flipH: input.flipH === true, flipV: input.flipV === true, crop };
+  // The server checks the id against its filters when it renders.
+  const filter = typeof input.filter === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(input.filter) ? input.filter : null;
+  const filterStrength = typeof input.filterStrength === "number" ? Math.round(clamp(input.filterStrength, 0, 100)) : 100;
+  const edits: PhotoEdits = { ...NO_EDITS, rotate, flipH: input.flipH === true, flipV: input.flipV === true, crop, filter, filterStrength };
   for (const control of ADJUSTMENT_CONTROLS) edits[control.key] = Math.round(clamp(input[control.key], control.min, control.max));
   return edits;
 }
 
 export function hasEdits(edits: PhotoEdits) {
-  return edits.rotate !== 0 || edits.flipH || edits.flipV || edits.crop !== null || hasAdjustments(edits);
+  return edits.rotate !== 0 || edits.flipH || edits.flipV || edits.crop !== null || hasFilter(edits) || hasAdjustments(edits);
+}
+
+export function hasFilter(edits: PhotoEdits) {
+  return edits.filter !== null && edits.filterStrength > 0;
 }
 
 export function hasAdjustments(adjustments: PhotoAdjustments) {

@@ -22,6 +22,7 @@ import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewH
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
 } from "@/lib/latex/codemirror/sync";
+import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { LatexTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
 import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
@@ -126,6 +127,21 @@ export function LatexEditor({
     return text;
   }, []);
 
+  const reportViewState = useCallback((target: EditorView) => {
+      const selection = target.state.selection.main;
+      callbacks.current.onViewStateChange({
+        selectionStart: selection.anchor,
+        selectionEnd: selection.head,
+        line: target.state.doc.lineAt(selection.head).number,
+        editorScrollTop: target.scrollDOM.scrollTop,
+        editorScrollLeft: target.scrollDOM.scrollLeft,
+      });
+  }, []);
+  useCanvasViewStateCapture(() => {
+    publishDraft();
+    if (viewRef.current) reportViewState(viewRef.current);
+  });
+
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -187,14 +203,7 @@ export function LatexEditor({
           if (update.startState.field(reviewHunksField) !== update.state.field(reviewHunksField)) setHunks(update.state.field(reviewHunksField));
           if (update.docChanged || update.selectionSet) {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-            viewStateTimerRef.current = setTimeout(() => {
-              const selection = update.view.state.selection.main;
-              callbacks.current.onViewStateChange({
-                selectionStart: selection.anchor,
-                selectionEnd: selection.head,
-                line: update.view.state.doc.lineAt(selection.head).number,
-              });
-            }, VIEW_STATE_DELAY_MS);
+            viewStateTimerRef.current = setTimeout(() => reportViewState(update.view), VIEW_STATE_DELAY_MS);
           }
         }),
         EditorView.domEventHandlers({
@@ -211,7 +220,7 @@ export function LatexEditor({
           },
           scroll: (_event, target) => {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-            viewStateTimerRef.current = setTimeout(() => callbacks.current.onViewStateChange({ editorScrollTop: target.scrollDOM.scrollTop }), VIEW_STATE_DELAY_MS);
+            viewStateTimerRef.current = setTimeout(() => reportViewState(target), VIEW_STATE_DELAY_MS);
             return false;
           },
         }),
@@ -221,8 +230,13 @@ export function LatexEditor({
     const created = new EditorView({ state, parent: host });
     viewRef.current = created;
     setView(created);
-    if (restore?.editorScrollTop) {
-      requestAnimationFrame(() => { created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0; });
+    let restoreFrame: number | undefined;
+    if (restore?.editorScrollTop !== undefined || restore?.editorScrollLeft !== undefined) {
+      restoreFrame = requestAnimationFrame(() => {
+        created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0;
+        created.scrollDOM.scrollLeft = restore.editorScrollLeft ?? 0;
+        restoreFrame = undefined;
+      });
     } else if (restore?.selectionStart !== undefined) {
       created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
     }
@@ -234,12 +248,16 @@ export function LatexEditor({
 
     return () => {
       unregisterSelection();
+      if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
+      // Layout cleanup runs while the editor is still attached. A switch must
+      // flush both selection and scroll, even inside the debounce interval.
+      if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
       created.destroy();
       viewRef.current = null;
     };
-  }, [publishDraft]);
+  }, [publishDraft, reportViewState]);
 
   // Expose imperative actions for the PDF pane, the log and the outline.
   useLayoutEffect(() => {

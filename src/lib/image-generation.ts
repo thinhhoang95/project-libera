@@ -157,6 +157,8 @@ export type GalleryPhoto = {
   starred: boolean;
   /** An unedited original is kept, so the edit can be reverted. */
   edited: boolean;
+  /** Set on photos in the Protected Archive: when they were sent there. */
+  archivedAt?: string;
 };
 
 export type GalleryAlbum = {
@@ -174,6 +176,17 @@ export type GalleryContents = {
   albums: GalleryAlbum[];
   photos: GalleryPhoto[];
 };
+
+/** The Protected Archive, listed only once it is unlocked. */
+export type ArchiveContents = {
+  photos: GalleryPhoto[];
+};
+
+export function archiveRawUrl(photo: Pick<GalleryPhoto, "name" | "updatedAt" | "size">, thumbnail = false) {
+  const query = new URLSearchParams({ v: `${photo.updatedAt}-${photo.size}` });
+  if (thumbnail) query.set("thumbnail", "1");
+  return `/api/gallery/archive/raw/${encodeURIComponent(photo.name)}?${query}`;
+}
 
 export function galleryRawUrl(photo: Pick<GalleryPhoto, "path" | "updatedAt" | "size">, thumbnail = false) {
   const query = new URLSearchParams({ v: `${photo.updatedAt}-${photo.size}` });

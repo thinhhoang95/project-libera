@@ -1,14 +1,27 @@
+import path from "node:path";
 import sharp, { type Sharp } from "sharp";
 import {
   colorMatrix,
   cropPixels,
+  hasFilter,
   toneCurve,
   VIGNETTE_START,
   vignetteOpacity,
   type PhotoEdits,
 } from "./photo-edits";
+import { applyPhotoFilter, findPhotoFilter, mixFilteredPixels } from "./photo-filters";
+import { StorageError } from "./storage/errors";
 
 export type EditedPhotoFormat = "png" | "jpeg" | "webp";
+
+/** The format an edited photo is saved in, and the extension that goes with it. */
+export function editedPhotoFormat(fileName: string): { format: EditedPhotoFormat; extension: string } {
+  const extension = path.extname(fileName).toLowerCase();
+  if (extension === ".jpg" || extension === ".jpeg") return { format: "jpeg", extension };
+  if (extension === ".webp") return { format: "webp", extension };
+  // GIF frames cannot be kept through an edit, so the result is a PNG.
+  return { format: "png", extension: ".png" };
+}
 
 type RawImage = { data: Buffer; info: { width: number; height: number; channels: 1 | 2 | 3 | 4 } };
 
@@ -37,6 +50,16 @@ export async function renderEditedPhoto(input: string | Buffer, edits: PhotoEdit
   if (edits.crop) {
     const region = cropPixels(edits.crop, image.info.width, image.info.height);
     await pass((pipeline) => pipeline.extract(region));
+  }
+
+  if (hasFilter(edits)) {
+    const filter = await findPhotoFilter(edits.filter!);
+    if (!filter) throw new StorageError("That filter is not available.");
+    const { width, height } = image.info;
+    const filtered = Buffer.alloc(image.data.length);
+    applyPhotoFilter(image.data, filtered, width, height, channels as 3 | 4, filter);
+    if (edits.filterStrength < 100) mixFilteredPixels(image.data, filtered, filtered, channels as 3 | 4, edits.filterStrength / 100);
+    image = { data: filtered, info: image.info };
   }
 
   const { slope, intercept } = toneCurve(edits);

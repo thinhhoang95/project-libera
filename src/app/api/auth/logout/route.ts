@@ -1,17 +1,13 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE_NAME } from "@/lib/auth";
+import { ARCHIVE_COOKIE_NAME, getExpiredCookieOptions, SESSION_COOKIE_NAME } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
 export async function POST() {
   const response = NextResponse.json({ authenticated: false });
-  response.cookies.set(SESSION_COOKIE_NAME, "", {
-    httpOnly: true,
-    maxAge: 0,
-    path: "/",
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production" && process.env.LIBERA_ELECTRON !== "1",
-  });
+  response.cookies.set(SESSION_COOKIE_NAME, "", getExpiredCookieOptions());
+  // Signing out also locks the Protected Archive.
+  response.cookies.set(ARCHIVE_COOKIE_NAME, "", getExpiredCookieOptions());
 
   return response;
 }

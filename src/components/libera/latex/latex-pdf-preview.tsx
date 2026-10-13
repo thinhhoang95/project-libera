@@ -5,6 +5,7 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/
 import { Download, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { useCanvasViewStateCapture } from "../canvas-view-state";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import type { SynctexPdfLocation } from "@/lib/latex/synctex";
 import { textHintAt, type SynctexTextHint } from "@/lib/latex/synctex-text";
@@ -40,6 +41,7 @@ type LatexPdfPreviewProps = {
   url: string | null;
   zoom: PdfZoom;
   initialScrollTop?: number;
+  initialScrollLeft?: number;
   highlight: PdfHighlightRequest | null;
   busy: boolean;
   downloadUrl: string | null;
@@ -49,7 +51,7 @@ type LatexPdfPreviewProps = {
   onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
 };
 
-export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
+export function LatexPdfPreview({ url, zoom, initialScrollTop, initialScrollLeft, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [loaded, setLoaded] = useState<{ url: string; pdf: PDFDocumentProxy; sizes: PageSize[]; textCache: PdfTextContentCache } | null>(null);
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
@@ -64,6 +66,9 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, 
   const restoredScrollRef = useRef(false);
   const pageElementsRef = useRef(new Map<number, HTMLDivElement>());
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingScrollRef = useRef<{ top: number; left: number } | null>(null);
+  const onScrollChangeRef = useRef(onScrollChange);
+  useLayoutEffect(() => { onScrollChangeRef.current = onScrollChange; }, [onScrollChange]);
 
   // Load each new build, keeping the previous PDF on screen until it is ready.
   useEffect(() => {
@@ -136,9 +141,12 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, 
   // Restore the saved scroll position once, when the first PDF has a layout.
   useLayoutEffect(() => {
     if (restoredScrollRef.current || !sizes.length || !containerWidth) return;
+    const element = scrollRef.current;
+    if (!element) return;
+    element.scrollTop = initialScrollTop ?? 0;
+    element.scrollLeft = initialScrollLeft ?? 0;
     restoredScrollRef.current = true;
-    if (initialScrollTop && scrollRef.current) scrollRef.current.scrollTop = initialScrollTop;
-  }, [containerWidth, initialScrollTop, sizes.length]);
+  }, [containerWidth, initialScrollLeft, initialScrollTop, sizes.length]);
 
   // Track which pages are near the viewport; only those keep a canvas.
   useEffect(() => {
@@ -187,12 +195,39 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
 
+  // Read the position when it changes, not when the debounce fires: by then a
+  // tab switch may have detached the element, which reads as scrolled to 0.
+  const flushScroll = useCallback(() => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = null;
+    const pending = pendingScrollRef.current;
+    if (!pending) return;
+    pendingScrollRef.current = null;
+    onScrollChangeRef.current(pending.top, pending.left);
+  }, []);
+
+  useCanvasViewStateCapture(() => {
+    const element = scrollRef.current;
+    if (element && restoredScrollRef.current) onScrollChangeRef.current(element.scrollTop, element.scrollLeft);
+  });
+
+  // Switching tabs unmounts the preview; save the last position before it goes.
+  useLayoutEffect(() => () => {
+    const element = scrollRef.current;
+    if (element && restoredScrollRef.current) {
+      pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft };
+    }
+    flushScroll();
+  }, [flushScroll]);
+
   function handleScroll() {
+    if (!restoredScrollRef.current) return;
     updateCurrentPage();
     const element = scrollRef.current;
     if (!element) return;
+    pendingScrollRef.current = { top: element.scrollTop, left: element.scrollLeft };
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
-    scrollTimerRef.current = setTimeout(() => onScrollChange(element.scrollTop, element.scrollLeft), 200);
+    scrollTimerRef.current = setTimeout(flushScroll, 200);
   }
 
   function zoomBy(factor: number) {

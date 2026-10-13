@@ -9,7 +9,7 @@ import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
-import { DocumentChatPanel } from "@/components/libera/document-chat-panel";
+import { DocumentChatPanel, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
@@ -22,7 +22,7 @@ import { useAiActivity } from "@/lib/ai-activity";
 import { TabStrip } from "@/components/libera/tab-strip";
 import type { OpenTab } from "@/components/libera/types";
 import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
-import type { GalleryPhoto } from "@/lib/image-generation";
+import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
@@ -171,6 +171,14 @@ export function LiberaApp({
     saveChatPanel(chatWidth, collapsed);
   }, [chatWidth, saveChatPanel]);
 
+  // The photo open in the gallery viewer is the AI chat's context while it is on screen.
+  const [galleryViewingPhoto, setGalleryViewingPhoto] = useState<GalleryPhoto | null>(null);
+  const viewedPhotoSource = galleryViewingPhoto && activeLeftPanel === "gallery" ? `gallery:${galleryViewingPhoto.id}:${galleryViewingPhoto.updatedAt}-${galleryViewingPhoto.size}` : null;
+  const viewedPhotoName = galleryViewingPhoto?.name;
+  const viewedPhotoUrl = galleryViewingPhoto ? galleryRawUrl(galleryViewingPhoto) : null;
+  const chatViewedPhoto = useMemo<ChatViewedPhoto | null>(() => viewedPhotoSource && viewedPhotoName && viewedPhotoUrl ? { source: viewedPhotoSource, name: viewedPhotoName, url: viewedPhotoUrl } : null, [viewedPhotoSource, viewedPhotoName, viewedPhotoUrl]);
+  const galleryChat = useMemo(() => ({ open: !chatCollapsed, onToggle: () => changeChatCollapsed(!chatCollapsed) }), [chatCollapsed, changeChatCollapsed]);
+
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
   function openGalleryPhoto(photo: GalleryPhoto, placement: GalleryTabPlacement) {
@@ -284,6 +292,10 @@ export function LiberaApp({
         onInsertImage={workspace.insertMarkdownImage}
         onInsertMarkdown={workspace.insertMarkdown}
         onOpenFile={workspace.openFile}
+        onShowImage={(file) => {
+          if (tab) workspace.showImageInTab(tab.id, file);
+        }}
+        onSaveEditedImageCopy={workspace.saveEditedImageCopy}
         onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
         onSave={workspace.saveActiveTab}
         onSetDraft={(value) => {
@@ -391,7 +403,7 @@ export function LiberaApp({
               editors keep their state while the Image Gallery tab is active. */}
           {activeLeftPanel === "gallery" ? (
             <div className="absolute inset-0 z-20 flex min-h-0 flex-col">
-              <ImageGalleryView onOpenInCanvas={openGalleryPhoto} />
+              <ImageGalleryView onOpenInCanvas={openGalleryPhoto} chat={galleryChat} onViewingPhotoChange={setGalleryViewingPhoto} />
             </div>
           ) : null}
           <div className="contents" inert={activeLeftPanel === "gallery"}>
@@ -451,7 +463,7 @@ export function LiberaApp({
           </div>
         </section>
 
-        <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}

@@ -3,11 +3,11 @@ import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 
 import type { Stats } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
-import type { GalleryAlbum, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
+import type { ArchiveContents, GalleryAlbum, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
-import { renderEditedPhoto, type EditedPhotoFormat } from "@/lib/photo-edits-server";
+import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import { StorageError } from "@/lib/storage/errors";
-import { findAvailableFilePath, movePath, pathExists } from "@/lib/storage/fs-utils";
+import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@/lib/storage/fs-utils";
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
 
 /**
@@ -19,11 +19,17 @@ import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
  * into a folder named after it. Adding photos to an existing album, removing
  * them, or deleting the album only changes the index, so photos are never
  * lost and a photo can belong to several albums.
+ *
+ * Photos sent to the Protected Archive move into a hidden folder, which the
+ * scan skips, so they leave every view, album and picker. Their thumbnails and
+ * unedited originals go with them, and each remembers its folder and albums so
+ * it can be put back where it was.
  */
 const GALLERY_DIR = "gallery";
 const INDEX_FILE = ".libera-gallery.json";
 const THUMBNAILS_DIR = ".thumbnails";
 const ORIGINALS_DIR = ".originals";
+const PROTECTED_DIR = ".protected";
 const THUMBNAIL_SIZE = 640;
 const INDEX_VERSION = 2;
 const GALLERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]);
@@ -54,12 +60,22 @@ type PhotoRecord = {
 
 type AlbumRecord = { id: string; name: string; folder: string; createdAt: string; photoIds: string[] };
 
+/** A photo in the Protected Archive; `path` is its file name in the archive folder. */
+type ArchivedRecord = PhotoRecord & {
+  archivedAt: string;
+  /** Where the photo was, so restoring puts it back. */
+  folder: string;
+  albumIds: string[];
+};
+
 type GalleryIndex = {
   version: typeof INDEX_VERSION;
   photos: Record<string, PhotoRecord>;
   albums: AlbumRecord[];
   /** Folders already seen, so a deleted album's folder is not turned back into an album. */
   folders: string[];
+  /** Photos in the Protected Archive, keyed by the id they had in the gallery. */
+  archive: Record<string, ArchivedRecord>;
   /** Prompts from the first index format, keyed by path, until their files are matched. */
   legacy?: Record<string, PhotoDetails>;
 };
@@ -74,6 +90,10 @@ function indexPath() {
 
 function absolutePath(relative: string) {
   return path.join(getGalleryRoot(), ...relative.split("/"));
+}
+
+function protectedRoot() {
+  return path.join(getGalleryRoot(), PROTECTED_DIR);
 }
 
 function folderOf(relative: string) {
@@ -104,7 +124,7 @@ function resolvePhotoPath(photoPath: string) {
 }
 
 function emptyIndex(): GalleryIndex {
-  return { version: INDEX_VERSION, photos: {}, albums: [], folders: [] };
+  return { version: INDEX_VERSION, photos: {}, albums: [], folders: [], archive: {} };
 }
 
 async function loadIndex(): Promise<GalleryIndex> {
@@ -116,6 +136,7 @@ async function loadIndex(): Promise<GalleryIndex> {
       photos: (parsed.photos && typeof parsed.photos === "object" ? parsed.photos : {}) as GalleryIndex["photos"],
       albums: Array.isArray(parsed.albums) ? parsed.albums as AlbumRecord[] : [],
       folders: Array.isArray(parsed.folders) ? parsed.folders.filter((entry): entry is string => typeof entry === "string") : [],
+      archive: (parsed.archive && typeof parsed.archive === "object" ? parsed.archive : {}) as GalleryIndex["archive"],
     };
   }
   // The first format kept prompts by path and treated every folder as an album;
@@ -253,17 +274,13 @@ function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promis
   return next;
 }
 
-function toContents(index: GalleryIndex): GalleryContents {
-  const albumIdsByPhoto = new Map<string, string[]>();
-  for (const album of index.albums) {
-    for (const id of album.photoIds) albumIdsByPhoto.set(id, [...(albumIdsByPhoto.get(id) ?? []), album.id]);
-  }
-  const photos: GalleryPhoto[] = Object.entries(index.photos).map(([id, record]) => ({
+function toPhoto(id: string, record: PhotoRecord, albumIds: string[]): GalleryPhoto {
+  return {
     id,
     path: record.path,
     name: path.posix.basename(record.path),
     folder: folderOf(record.path),
-    albumIds: albumIdsByPhoto.get(id) ?? [],
+    albumIds,
     createdAt: record.createdAt,
     updatedAt: new Date(record.mtimeMs).toISOString(),
     size: record.size,
@@ -273,7 +290,15 @@ function toContents(index: GalleryIndex): GalleryContents {
     model: record.model,
     starred: record.starred === true,
     edited: Boolean(record.original),
-  }));
+  };
+}
+
+function toContents(index: GalleryIndex): GalleryContents {
+  const albumIdsByPhoto = new Map<string, string[]>();
+  for (const album of index.albums) {
+    for (const id of album.photoIds) albumIdsByPhoto.set(id, [...(albumIdsByPhoto.get(id) ?? []), album.id]);
+  }
+  const photos = Object.entries(index.photos).map(([id, record]) => toPhoto(id, record, albumIdsByPhoto.get(id) ?? []));
   const albums: GalleryAlbum[] = index.albums.map((album) => {
     const cover = album.photoIds
       .map((id) => ({ id, record: index.photos[id] }))
@@ -390,10 +415,11 @@ export function setPhotosStarred(ids: string[], starred: boolean) {
   });
 }
 
-async function thumbnailPathFor(relative: string) {
-  const stats = await stat(absolutePath(relative));
+/** Thumbnails are keyed by the file's identity, inside `root` (the gallery or the archive). */
+async function thumbnailPathFor(relative: string, root = getGalleryRoot()) {
+  const stats = await stat(path.join(root, ...relative.split("/")));
   const key = createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex");
-  return path.join(getGalleryRoot(), THUMBNAILS_DIR, `${key}.webp`);
+  return path.join(root, THUMBNAILS_DIR, `${key}.webp`);
 }
 
 export function deletePhotos(ids: string[]) {
@@ -411,6 +437,128 @@ export function deletePhotos(ids: string[]) {
     }
     for (const album of index.albums) album.photoIds = album.photoIds.filter((id) => index.photos[id]);
     return { deleted, gallery: toContents(index) };
+  });
+}
+
+function toArchiveContents(index: GalleryIndex): ArchiveContents {
+  const albumIds = new Set(index.albums.map((album) => album.id));
+  const photos = Object.entries(index.archive).map(([id, record]) => ({
+    ...toPhoto(id, record, record.albumIds.filter((albumId) => albumIds.has(albumId))),
+    path: `${PROTECTED_DIR}/${record.path}`,
+    name: record.path,
+    // The folder it returns to when restored.
+    folder: record.folder,
+    archivedAt: record.archivedAt,
+  }));
+  return { photos };
+}
+
+/** Move an unedited original between the gallery's and the archive's backup folders. */
+async function moveOriginal(name: string, fromRoot: string, toRoot: string) {
+  const source = path.join(fromRoot, ORIGINALS_DIR, name);
+  if (!(await pathExists(source))) return undefined;
+  await mkdir(path.join(toRoot, ORIGINALS_DIR), { recursive: true });
+  await moveFileIfExists(source, path.join(toRoot, ORIGINALS_DIR, name));
+  return name;
+}
+
+/** Drop archive entries whose files were removed by hand, and notice files changed by hand. */
+async function reconcileArchive(index: GalleryIndex) {
+  for (const [id, record] of Object.entries(index.archive)) {
+    const stats = await stat(path.join(protectedRoot(), record.path)).catch(() => null);
+    if (!stats?.isFile()) {
+      if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      delete index.archive[id];
+    } else if (record.mtimeMs !== stats.mtimeMs || record.size !== stats.size) {
+      Object.assign(record, { mtimeMs: stats.mtimeMs, size: stats.size }, await imageSize(path.join(protectedRoot(), record.path)));
+    }
+  }
+}
+
+/**
+ * Send photos to the Protected Archive. They leave the gallery, its albums and
+ * its thumbnail cache, and are only listed again once the archive is unlocked.
+ */
+export function archivePhotos(ids: string[]) {
+  return withGallery(async (index) => {
+    let archived = 0;
+    for (const id of new Set(ids)) {
+      const record = index.photos[id];
+      if (!record) continue;
+      await mkdir(protectedRoot(), { recursive: true });
+      const thumbnail = await thumbnailPathFor(record.path).catch(() => null);
+      const destination = await findAvailableFilePath(protectedRoot(), path.posix.basename(record.path));
+      await movePath(absolutePath(record.path), destination.path);
+      if (thumbnail) await rm(thumbnail, { force: true });
+      const original = record.original ? await moveOriginal(record.original, getGalleryRoot(), protectedRoot()) : undefined;
+      index.archive[id] = {
+        ...record,
+        path: destination.name,
+        original,
+        archivedAt: new Date().toISOString(),
+        folder: folderOf(record.path),
+        albumIds: index.albums.filter((album) => album.photoIds.includes(id)).map((album) => album.id),
+      };
+      delete index.photos[id];
+      archived += 1;
+    }
+    for (const album of index.albums) album.photoIds = album.photoIds.filter((id) => index.photos[id]);
+    return { archived, gallery: toContents(index) };
+  });
+}
+
+export function getArchive() {
+  return withGallery(async (index) => {
+    await reconcileArchive(index);
+    return toArchiveContents(index);
+  });
+}
+
+/** Put archived photos back in the folder and albums they came from, where those still exist. */
+export function restoreArchivedPhotos(ids: string[]) {
+  return withGallery(async (index) => {
+    await reconcileArchive(index);
+    let restored = 0;
+    for (const id of new Set(ids)) {
+      const record = index.archive[id];
+      if (!record) continue;
+      const folder = record.folder && isVisibleEntry(record.folder) && await pathExists(path.join(getGalleryRoot(), record.folder)) ? record.folder : "";
+      const thumbnail = await thumbnailPathFor(record.path, protectedRoot()).catch(() => null);
+      const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), record.path);
+      await movePath(path.join(protectedRoot(), record.path), destination.path);
+      if (thumbnail) await rm(thumbnail, { force: true });
+      const restoredRecord: PhotoRecord & Partial<ArchivedRecord> = {
+        ...record,
+        path: folder ? `${folder}/${destination.name}` : destination.name,
+        original: record.original ? await moveOriginal(record.original, protectedRoot(), getGalleryRoot()) : undefined,
+      };
+      delete restoredRecord.archivedAt;
+      delete restoredRecord.folder;
+      delete restoredRecord.albumIds;
+      index.photos[id] = restoredRecord;
+      for (const album of index.albums) if (record.albumIds.includes(album.id) && !album.photoIds.includes(id)) album.photoIds.push(id);
+      delete index.archive[id];
+      restored += 1;
+    }
+    return { restored, gallery: toContents(index), archive: toArchiveContents(index) };
+  });
+}
+
+/** Delete archived photos from disk for good. */
+export function deleteArchivedPhotos(ids: string[]) {
+  return withGallery(async (index) => {
+    let deleted = 0;
+    for (const id of new Set(ids)) {
+      const record = index.archive[id];
+      if (!record) continue;
+      const thumbnail = await thumbnailPathFor(record.path, protectedRoot()).catch(() => null);
+      await rm(path.join(protectedRoot(), record.path), { force: true });
+      if (thumbnail) await rm(thumbnail, { force: true });
+      if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      delete index.archive[id];
+      deleted += 1;
+    }
+    return { deleted, archive: toArchiveContents(index) };
   });
 }
 
@@ -473,14 +621,6 @@ export async function importGalleryPhoto(albumId: string, fileName: string, body
   return writeGalleryPhoto(albumId, name, body, {});
 }
 
-function editedFormat(relative: string): { format: EditedPhotoFormat; extension: string } {
-  const extension = path.extname(relative).toLowerCase();
-  if (extension === ".jpg" || extension === ".jpeg") return { format: "jpeg", extension };
-  if (extension === ".webp") return { format: "webp", extension };
-  // GIF frames cannot be kept through an edit, so the result is a PNG.
-  return { format: "png", extension: ".png" };
-}
-
 function withExtension(relative: string, extension: string) {
   return relative.slice(0, relative.length - path.extname(relative).length) + extension;
 }
@@ -494,7 +634,7 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     const record = findPhoto(index, id);
     if (path.extname(record.path).toLowerCase() === ".svg") throw new StorageError("Vector images cannot be edited here.");
     if (!hasEdits(edits)) throw new StorageError("There are no changes to save.");
-    const { format, extension } = editedFormat(record.path);
+    const { format, extension } = editedPhotoFormat(record.path);
     const body = await renderEditedPhoto(absolutePath(record.path), edits, format);
 
     if (mode === "copy") {
@@ -556,8 +696,9 @@ export function revertPhoto(id: string) {
   });
 }
 
-export async function readGalleryPhoto(photoPath: string) {
-  const photo = resolvePhotoPath(photoPath);
+type PhotoFile = { name: string; relative: string; absolute: string };
+
+async function readPhotoFile(photo: PhotoFile) {
   return {
     name: photo.name,
     body: await readFile(photo.absolute),
@@ -565,12 +706,10 @@ export async function readGalleryPhoto(photoPath: string) {
   };
 }
 
-/** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
-export async function readGalleryThumbnail(photoPath: string) {
-  const photo = resolvePhotoPath(photoPath);
+async function readThumbnail(photo: PhotoFile, root: string) {
   // Vector images are already small and scale cleanly.
-  if (path.extname(photo.name).toLowerCase() === ".svg") return readGalleryPhoto(photoPath);
-  const target = await thumbnailPathFor(photo.relative);
+  if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
+  const target = await thumbnailPathFor(photo.relative, root);
   try {
     return { name: photo.name, body: await readFile(target), contentType: "image/webp" };
   } catch {
@@ -583,4 +722,31 @@ export async function readGalleryThumbnail(photoPath: string) {
     await writeFile(target, body).catch(() => undefined);
     return { name: photo.name, body, contentType: "image/webp" };
   }
+}
+
+export async function readGalleryPhoto(photoPath: string) {
+  return readPhotoFile(resolvePhotoPath(photoPath));
+}
+
+/** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
+export async function readGalleryThumbnail(photoPath: string) {
+  return readThumbnail(resolvePhotoPath(photoPath), getGalleryRoot());
+}
+
+/** Validate an archived photo's file name from a request. */
+function resolveArchivedPath(name: string): PhotoFile {
+  if (typeof name !== "string") throw new StorageError("Photo path is invalid.");
+  const safeName = assertSafeUserSegment(name, "Photo name");
+  if (!GALLERY_EXTENSIONS.has(path.extname(safeName).toLowerCase())) throw new StorageError("Only images are kept in the gallery.");
+  return { name: safeName, relative: safeName, absolute: path.join(protectedRoot(), safeName) };
+}
+
+/** Archived photos are read only through the archive's own route, which checks it is unlocked. */
+export async function readArchivedPhoto(name: string) {
+  return readPhotoFile(resolveArchivedPath(name));
+}
+
+/** Archive thumbnails are cached inside the archive folder, never beside the gallery's. */
+export async function readArchivedThumbnail(name: string) {
+  return readThumbnail(resolveArchivedPath(name), protectedRoot());
 }

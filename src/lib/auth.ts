@@ -1,12 +1,19 @@
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE_NAME = "libera_session";
+/** Proof that the password was entered again to open the Protected Archive. */
+export const ARCHIVE_COOKIE_NAME = "libera_archive";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
+/** The archive relocks after this long without a request that renews it. */
+export const ARCHIVE_MAX_AGE_SECONDS = 60 * 10;
 const SESSION_SUBJECT = "admin";
+const ARCHIVE_SUBJECT = "archive";
+
+type TokenSubject = typeof SESSION_SUBJECT | typeof ARCHIVE_SUBJECT;
 
 type SessionPayload = {
-  sub: typeof SESSION_SUBJECT;
+  sub: TokenSubject;
   exp: number;
 };
 
@@ -83,10 +90,10 @@ export function verifyPassword(password: string): PasswordVerification {
   return { ok: false, reason: "missing-config" };
 }
 
-export function createSessionToken() {
+function createToken(subject: TokenSubject, maxAgeSeconds: number) {
   const payload: SessionPayload = {
-    sub: SESSION_SUBJECT,
-    exp: Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
+    sub: subject,
+    exp: Date.now() + maxAgeSeconds * 1000,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const signature = createHmac("sha256", getSessionSecret())
@@ -96,7 +103,7 @@ export function createSessionToken() {
   return `${encodedPayload}.${signature}`;
 }
 
-export function verifySessionToken(token: string | undefined) {
+function verifyToken(token: string | undefined, subject: TokenSubject) {
   if (!token) {
     return false;
   }
@@ -120,10 +127,26 @@ export function verifySessionToken(token: string | undefined) {
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as Partial<SessionPayload>;
 
-    return payload.sub === SESSION_SUBJECT && typeof payload.exp === "number" && payload.exp > Date.now();
+    return payload.sub === subject && typeof payload.exp === "number" && payload.exp > Date.now();
   } catch {
     return false;
   }
+}
+
+export function createSessionToken() {
+  return createToken(SESSION_SUBJECT, SESSION_MAX_AGE_SECONDS);
+}
+
+export function verifySessionToken(token: string | undefined) {
+  return verifyToken(token, SESSION_SUBJECT);
+}
+
+export function createArchiveToken() {
+  return createToken(ARCHIVE_SUBJECT, ARCHIVE_MAX_AGE_SECONDS);
+}
+
+export function verifyArchiveToken(token: string | undefined) {
+  return verifyToken(token, ARCHIVE_SUBJECT);
 }
 
 export function getSessionCookieOptions() {
@@ -134,4 +157,36 @@ export function getSessionCookieOptions() {
     sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production" && process.env.LIBERA_ELECTRON !== "1",
   };
+}
+
+export function getArchiveCookieOptions() {
+  return { ...getSessionCookieOptions(), maxAge: ARCHIVE_MAX_AGE_SECONDS, sameSite: "strict" as const };
+}
+
+/** Cookie options that remove a cookie at once. */
+export function getExpiredCookieOptions() {
+  return { ...getSessionCookieOptions(), maxAge: 0 };
+}
+
+/**
+ * Wrong archive passwords slow down further tries, so someone at an unlocked
+ * computer cannot guess their way in. The count lives in memory: Libera has one user.
+ */
+const ARCHIVE_FREE_ATTEMPTS = 5;
+const archiveAttempts = { failures: 0, lockedUntil: 0 };
+
+export function archiveUnlockRetryAfterMs(now = Date.now()) {
+  return Math.max(0, archiveAttempts.lockedUntil - now);
+}
+
+export function recordArchiveUnlockAttempt(ok: boolean, now = Date.now()) {
+  if (ok) {
+    archiveAttempts.failures = 0;
+    archiveAttempts.lockedUntil = 0;
+    return;
+  }
+  archiveAttempts.failures += 1;
+  const extra = archiveAttempts.failures - ARCHIVE_FREE_ATTEMPTS;
+  // 30 s after the fifth wrong try, doubling each time, up to 15 minutes.
+  if (extra >= 0) archiveAttempts.lockedUntil = now + Math.min(15 * 60_000, 30_000 * 2 ** extra);
 }

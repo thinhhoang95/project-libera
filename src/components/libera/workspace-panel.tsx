@@ -30,6 +30,8 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
+import { encodeFilePath } from "@/components/libera/api-client";
+import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
@@ -47,6 +49,7 @@ import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
+import type { PhotoEdits } from "@/lib/photo-edits";
 import type {
   ImageTabViewState,
   LatexTabViewState,
@@ -139,6 +142,9 @@ type WorkspacePanelProps = {
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  /** Shows another image from the same folder in this image tab. */
+  onShowImage?: (file: LiberaFileNode) => void;
+  onSaveEditedImageCopy?: (sourcePath: string, edits: PhotoEdits) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onRegisterEditorDraft?: RegisterEditorDraft;
@@ -527,6 +533,8 @@ const PANEL_CALLBACKS = [
   "onInsertImage",
   "onInsertMarkdown",
   "onOpenFile",
+  "onShowImage",
+  "onSaveEditedImageCopy",
   "onSave",
   "onSetDraft",
   "onRegisterEditorDraft",
@@ -544,6 +552,7 @@ export function WorkspacePanel(props: WorkspacePanelProps) {
 
 function WorkspacePanelScope(props: WorkspacePanelProps) {
   const paneTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const { textareaRef: activeTextareaRef } = props;
   const { tabs, ...contentProps } = props;
   const scope = useRef(props);
   useLayoutEffect(() => { scope.current = { ...contentProps, tabs }; });
@@ -556,6 +565,16 @@ function WorkspacePanelScope(props: WorkspacePanelProps) {
   ])) as Pick<WorkspacePanelProps, typeof PANEL_CALLBACKS[number]>, [scope]);
   const readOpenTabs = useCallback(() => scope.current.tabs, [scope]);
 
+  // Focus changes the target of global commands, never the pane's own ref.
+  useLayoutEffect(() => {
+    if (props.focused === false) return;
+    const textarea = paneTextareaRef.current;
+    activeTextareaRef.current = textarea;
+    return () => {
+      if (activeTextareaRef.current === textarea) activeTextareaRef.current = null;
+    };
+  }, [props.focused, activeTextareaRef, props.markdownEditorMode, props.activePreviewTabId]);
+
   // Only data for this document crosses the memo boundary. Link suggestions
   // read the latest open-tab positions when invoked, without subscribing the
   // whole editor to every other tab's scrolling and draft publications.
@@ -564,7 +583,7 @@ function WorkspacePanelScope(props: WorkspacePanelProps) {
       {...contentProps}
       {...callbacks}
       readOpenTabs={readOpenTabs}
-      textareaRef={props.focused === false ? paneTextareaRef : props.textareaRef}
+      textareaRef={paneTextareaRef}
     />
   );
 }
@@ -607,6 +626,8 @@ function WorkspacePanelContent({
   onInsertImage,
   onInsertMarkdown,
   onOpenFile,
+  onShowImage,
+  onSaveEditedImageCopy,
   onSave,
   onSetDraft,
   onRegisterEditorDraft,
@@ -635,6 +656,9 @@ function WorkspacePanelContent({
   const previewContentStaleRef = useRef(false);
   const pendingStaleEditorScrollStateRef = useRef<PendingMarkdownScrollState | null>(null);
   const markdownRestoreViewStateRef = useRef<MarkdownTabViewState | undefined>(undefined);
+  const pendingPreviewRestoreRef = useRef<MarkdownTabViewState | null>(null);
+  const sourceRestoredRef = useRef(false);
+  const pendingMarkdownViewportRef = useRef<MarkdownTabViewState>({});
   const activeFileType = activeTab?.file.fileType;
   const activeMarkdownDraft = activeFileType === "markdown" ? activeTab?.draft ?? "" : "";
   const activeTabStatus = activeTab?.status;
@@ -667,6 +691,23 @@ function WorkspacePanelContent({
     activeTab?.file.fileType === "pdf" ? activeTab.viewState?.pdf : undefined;
   const activeImageViewState =
     activeTab?.file.fileType === "image" ? activeTab.viewState?.image : undefined;
+  // The images beside this one in its folder, for stepping through them.
+  const activeImageFile = activeTab?.file.fileType === "image" && !isGalleryTab(activeTab) ? activeTab.file : undefined;
+  const imageSiblings = useMemo(() => {
+    if (!activeImageFile) {
+      return undefined;
+    }
+
+    const folder = activeImageFile.path.slice(0, activeImageFile.path.lastIndexOf("/"));
+    return files
+      .filter((file) => file.fileType === "image" && file.path.slice(0, file.path.lastIndexOf("/")) === folder)
+      .sort((first, second) => first.name.localeCompare(second.name, undefined, { numeric: true, sensitivity: "base" }))
+      .map((file) => ({ path: file.path, src: `/api/files/raw/${encodeFilePath(file.path)}` }));
+  }, [activeImageFile, files]);
+  const imageFileByPath = useMemo(
+    () => new Map(files.map((file) => [file.path, file])),
+    [files],
+  );
   const previewMarkdownDraft = useDebouncedPreviewContent(
     activeMarkdownDraft,
     activeTabId,
@@ -754,6 +795,24 @@ function WorkspacePanelContent({
     [activeTabId, onSetViewState],
   );
 
+  const captureMarkdownViewState = useCallback(() => {
+    if (markdownEditorMode !== "source" || !sourceRestoredRef.current) return;
+    const textarea = textareaRef.current;
+    const preview = markdownPreviewRef.current;
+    updateMarkdownViewState({
+      ...pendingMarkdownViewportRef.current,
+      ...(textarea?.isConnected ? {
+        editorScrollLeft: textarea.scrollLeft, editorScrollTop: textarea.scrollTop,
+        selectionStart: textarea.selectionStart, selectionEnd: textarea.selectionEnd,
+      } : {}),
+      ...(preview?.isConnected && !pendingPreviewRestoreRef.current ? {
+        previewScrollLeft: preview.scrollLeft, previewScrollTop: preview.scrollTop,
+      } : {}),
+    });
+  }, [markdownEditorMode, textareaRef, updateMarkdownViewState]);
+  useCanvasViewStateCapture(captureMarkdownViewState);
+  useLayoutEffect(() => () => captureMarkdownViewState(), [captureMarkdownViewState, previewFullscreen, markdownSlidesPresenting]);
+
   useEffect(() => {
     previewContentStaleRef.current = previewContentStale;
 
@@ -794,7 +853,7 @@ function WorkspacePanelContent({
     return openMarkdownFileLinkRef.current(sourcePath, href);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     markdownRestoreViewStateRef.current = activeMarkdownViewState;
   }, [activeMarkdownViewState]);
 
@@ -1015,6 +1074,8 @@ function WorkspacePanelContent({
     }
 
     function handleEditorScroll() {
+      pendingMarkdownViewportRef.current = { ...pendingMarkdownViewportRef.current,
+        editorScrollLeft: editor.scrollLeft, editorScrollTop: editor.scrollTop };
       if (editorScrollFrame) {
         return;
       }
@@ -1023,6 +1084,8 @@ function WorkspacePanelContent({
     }
 
     function handlePreviewScroll() {
+      if (!pendingPreviewRestoreRef.current) pendingMarkdownViewportRef.current = { ...pendingMarkdownViewportRef.current,
+        previewScrollLeft: previewPane.scrollLeft, previewScrollTop: previewPane.scrollTop };
       if (previewScrollFrame) {
         return;
       }
@@ -1062,17 +1125,21 @@ function WorkspacePanelContent({
     updateMarkdownViewState,
   ]);
 
+  const lastSyncedMarkdownRef = useRef(activeMarkdownDraft);
   useEffect(() => {
     if (
       activeFileType !== "markdown" ||
       !activeTabId ||
       previewFullscreen ||
       activeMarkdownIsSlides ||
-      previewContentStale
+      previewContentStale ||
+      pendingPreviewRestoreRef.current ||
+      lastSyncedMarkdownRef.current === previewMarkdownDraft
     ) {
       return;
     }
 
+    lastSyncedMarkdownRef.current = previewMarkdownDraft;
     const animationFrame = window.requestAnimationFrame(
       syncMarkdownPreviewToActiveEditorPosition,
     );
@@ -1090,15 +1157,16 @@ function WorkspacePanelContent({
     syncMarkdownPreviewToActiveEditorPosition,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeFileType !== "markdown" || !activeTabId) {
       return;
     }
 
+    sourceRestoredRef.current = false;
+    const viewState = markdownRestoreViewStateRef.current;
+    pendingPreviewRestoreRef.current = viewState ?? {};
     const animationFrame = window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
-      const preview = markdownPreviewRef.current;
-      const viewState = markdownRestoreViewStateRef.current;
 
       if (textarea && !previewFullscreen && !markdownSlidesPresenting) {
         markProgrammaticEditorScroll();
@@ -1119,11 +1187,7 @@ function WorkspacePanelContent({
         }
       }
 
-      if (preview) {
-        markProgrammaticPreviewScroll();
-        preview.scrollLeft = viewState?.previewScrollLeft ?? 0;
-        preview.scrollTop = viewState?.previewScrollTop ?? 0;
-      }
+      sourceRestoredRef.current = true;
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
@@ -1137,6 +1201,17 @@ function WorkspacePanelContent({
     previewFullscreen,
     textareaRef,
   ]);
+
+  // The worker must mount matching content before a scroll offset can fit.
+  useLayoutEffect(() => {
+    const restore = pendingPreviewRestoreRef.current;
+    const preview = markdownPreviewRef.current;
+    if (!restore || !preview || (!previewFullscreen && !activeMarkdownIsSlides && previewContentStale)) return;
+    markProgrammaticPreviewScroll();
+    preview.scrollLeft = restore.previewScrollLeft ?? 0;
+    preview.scrollTop = restore.previewScrollTop ?? 0;
+    pendingPreviewRestoreRef.current = null;
+  }, [renderedPreview, previewContentStale, previewFullscreen, activeMarkdownIsSlides, markdownEditorMode, markProgrammaticPreviewScroll]);
 
   useEffect(() => {
     if (!previewFullscreen || !focused) {
@@ -1163,7 +1238,7 @@ function WorkspacePanelContent({
     };
   }, [focused, previewFullscreen, setActivePreviewTabId, textareaRef]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeFileType !== "markdown" || !activeTabId) {
       return;
     }
@@ -1765,6 +1840,18 @@ function WorkspacePanelContent({
             // live, and screenshots take their name from the photo.
             annotatable={!isGalleryTab(activeTab)}
             filePath={isGalleryTab(activeTab) ? activeTab.file.name : activeTab.file.path}
+            details={{
+              createdAt: activeTab.file.createdAt,
+              location: isGalleryTab(activeTab) ? "Gallery" : activeTab.file.path,
+              size: activeTab.file.size,
+              updatedAt: activeTab.file.updatedAt,
+            }}
+            siblings={imageSiblings}
+            onShowSibling={(path) => {
+              const file = imageFileByPath.get(path);
+              if (file) onShowImage?.(file);
+            }}
+            onSaveEditedCopy={isGalleryTab(activeTab) ? undefined : async (edits) => { await onSaveEditedImageCopy?.(activeTab.file.path, edits); }}
             initialViewState={activeImageViewState}
             screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
             onViewStateChange={updateImageViewState}
