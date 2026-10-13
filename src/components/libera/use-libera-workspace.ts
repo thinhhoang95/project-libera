@@ -20,6 +20,7 @@ import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events"
 import type {
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
+  MarkdownSelectionLinkOption,
   MarkdownImageSelection,
   MarkdownScreenshotSnipMode,
   MarkdownScreenshotSnipSession,
@@ -42,6 +43,16 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { findMarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
+import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
+import {
+  createMarkdownLinkQuote,
+  isMarkdownSourceRange,
+  markdownLinkQuoteLabel,
+  resolveMarkdownLinkQuote,
+} from "@/lib/markdown-selection-links";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { createDeferredSave, flushPendingState, registerStateFlusher } from "./deferred-save";
@@ -1034,10 +1045,44 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function openMarkdownFileLink(sourcePath: string, href: string) {
+    if (href.startsWith("#")) {
+      const sourceTab = tabs.find((tab) => tab.file.path === sourcePath);
+
+      if (!sourceTab || sourceTab.file.fileType !== "markdown") {
+        return false;
+      }
+
+      const markdown =
+        sourceTab.id === activeTabId && textareaRef.current
+          ? textareaRef.current.value
+          : getTabDraft(sourceTab);
+
+      return openMarkdownHeading(sourceTab.file, markdown, href);
+    }
+
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
 
     if (!resolvedLink) {
       return false;
+    }
+
+    const quote = resolvedLink.metadata?.quote;
+
+    if ((resolvedLink.headingFragment || quote) && resolvedLink.file.fileType === "markdown") {
+      const markdown = await readMarkdownForLink(resolvedLink.file);
+
+      if (resolvedLink.headingFragment && await openMarkdownHeading(resolvedLink.file, markdown, resolvedLink.headingFragment)) {
+        return true;
+      }
+
+      const range = quote
+        ? resolveMarkdownLinkQuote(markdown, quote, resolvedLink.metadata?.viewState?.markdown?.selectionStart)
+        : null;
+
+      if (range) {
+        await revealMarkdownRange(resolvedLink.file, markdown, range.start, range.end);
+        return true;
+      }
     }
 
     const time = resolvedLink.file.fileType === "audio" ? resolvedLink.metadata?.viewState?.audio?.currentTime : undefined;
@@ -1045,9 +1090,88 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       // A link to a moment in a recording plays it from there.
       viewState: time !== undefined
         ? { audio: { currentTime: time, reveal: { seconds: time, nonce: Date.now() } } }
-        : resolvedLink.metadata?.viewState,
+        : withAnnotationReveal(resolvedLink.metadata?.viewState),
     });
     return true;
+  }
+
+  // An annotation link (one without a saved view) asks the PDF or image viewer
+  // to show its annotation, instead of restoring the tab's own scroll or pan.
+  function withAnnotationReveal(viewState: OpenTabViewState | undefined): OpenTabViewState | undefined {
+    const pdf = viewState?.pdf;
+    const image = viewState?.image;
+
+    if (pdf?.selectedAnnotationId && pdf.scrollTop === undefined) {
+      return { ...viewState, pdf: { ...pdf, revealSelectedAnnotation: true } };
+    }
+
+    if (image?.selectedAnnotationId && image.panX === undefined) {
+      return { ...viewState, image: { ...image, revealSelectedAnnotation: true } };
+    }
+
+    return viewState;
+  }
+
+  async function readMarkdownForLink(file: LiberaFileNode) {
+    const openTab = tabs.find((tab) => tab.id === file.path);
+
+    if (openTab) {
+      return openTab.id === activeTabId && textareaRef.current
+        ? textareaRef.current.value
+        : getTabDraft(openTab);
+    }
+
+    try {
+      const payload = await apiRequest<LiberaFilePayload>(
+        `/api/files?path=${encodeURIComponent(file.path)}`,
+      );
+      return payload.content ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  // Opens a Markdown file at the heading a `#fragment` names.
+  async function openMarkdownHeading(file: LiberaFileNode, markdown: string, fragment: string) {
+    const heading = findMarkdownHeadingAnchor(markdown, fragment);
+
+    if (!heading) {
+      return false;
+    }
+
+    await revealMarkdownRange(file, markdown, heading.offset);
+    return true;
+  }
+
+  // Opens a Markdown file at a source offset, or with a source range selected,
+  // in the source editor or the visual editor, whichever shows the document.
+  async function revealMarkdownRange(file: LiberaFileNode, markdown: string, start: number, end?: number) {
+    await openFile(file, {
+      viewState: {
+        markdown: {
+          line: lineForOffset(markdown, start),
+          selectionEnd: end ?? start,
+          selectionStart: start,
+        },
+      },
+    });
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+
+        if (textarea && textarea.value === markdown) {
+          textarea.focus();
+          textarea.setSelectionRange(start, end ?? start);
+          scrollTextareaToOffset(textarea, start, { block: end === undefined ? "start" : "center" });
+          return;
+        }
+
+        window.dispatchEvent(new CustomEvent<MarkdownOutlineNavigateDetail>(MARKDOWN_OUTLINE_NAVIGATE_EVENT, {
+          detail: { documentPath: file.path, end, markdown, offset: start },
+        }));
+      });
+    });
   }
 
   const closeTabsWithoutConfirm = useCallback((tabIds: string[]) => {
@@ -1531,6 +1655,74 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  /** The passage highlighted in a Markdown tab's source or visual editor. */
+  function markdownTabHighlight(tab: OpenTab, viewState = tab.viewState) {
+    if (tab.file.fileType !== "markdown" || isGalleryTab(tab)) {
+      return null;
+    }
+
+    const markdown = getTabDraft(tab);
+    const range = viewState?.markdown?.linkSelection;
+
+    if (!isMarkdownSourceRange(range, markdown)) {
+      return null;
+    }
+
+    const quote = createMarkdownLinkQuote(markdown, range);
+
+    return { label: markdownLinkQuoteLabel(quote.text), quote, range };
+  }
+
+  /** The annotation selected in a PDF or image tab, which a link can point to. */
+  function annotationTabHighlight(tab: OpenTab, viewState = tab.viewState) {
+    if (isGalleryTab(tab)) {
+      return null;
+    }
+
+    const fileType = tab.file.fileType;
+    const id = fileType === "pdf"
+      ? viewState?.pdf?.selectedAnnotationId
+      : fileType === "image" ? viewState?.image?.selectedAnnotationId : undefined;
+
+    if (!id) {
+      return null;
+    }
+
+    const annotation = findRememberedAnnotation(tab.file.path, id);
+    const kind = annotation?.type === "highlight" ? "highlight" : annotation ? "note" : "annotation";
+
+    return { id, kind, label: annotationLinkLabel(annotation, `Selected ${kind}`) };
+  }
+
+  /** "Link to the highlighted text / selected annotation in <tab>" choices for the link dialogs. */
+  function listMarkdownSelectionLinks(sourcePath: string): MarkdownSelectionLinkOption[] {
+    return tabs.flatMap((tab) => {
+      if (tab.file.path === sourcePath) {
+        return [];
+      }
+
+      const highlighted = markdownTabHighlight(tab) ?? annotationTabHighlight(tab);
+
+      if (!highlighted?.label) {
+        return [];
+      }
+
+      return [{
+        href: createMarkdownFileLinkDestination({
+          metadata: createMarkdownFileLinkMetadata({ file: tab.file, source: "tab", tabId: tab.id, viewState: tab.viewState }),
+          sourcePath,
+          targetPath: tab.file.path,
+        }),
+        id: tab.id,
+        label: highlighted.label,
+        tabName: tab.file.name,
+        title: "kind" in highlighted
+          ? `Link to ${highlighted.kind} in ${tab.file.name}`
+          : `Link to highlighted text in ${tab.file.name}`,
+      }];
+    });
+  }
+
   function createMarkdownFileLinkMetadata(
     selection: MarkdownFileLinkSelection,
   ): MarkdownFileLinkMetadata | undefined {
@@ -1542,7 +1734,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       (tab) => tab.id === selection.tabId || tab.file.path === selection.file.path,
     );
     const viewState = selection.viewState ?? targetTab?.viewState ?? {};
-    const markdownSelectionStart = viewState.markdown?.selectionStart;
+    const highlighted = targetTab ? markdownTabHighlight(targetTab, viewState) : null;
+    const annotation = targetTab ? annotationTabHighlight(targetTab, viewState) : null;
+    const markdownSelectionStart = highlighted?.range.start ?? viewState.markdown?.selectionStart;
     const line =
       targetTab?.file.fileType === "markdown" &&
       typeof markdownSelectionStart === "number"
@@ -1552,14 +1746,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return {
       fileType: selection.file.fileType,
       line,
+      quote: highlighted?.quote,
       v: 1,
       viewState: {
         audio:
           selection.file.fileType === "audio"
             ? { currentTime: viewState.audio?.currentTime }
             : undefined,
+        // An annotation link carries no pan, zoom or scroll: the target tab
+        // keeps its own and shows the annotation (see withAnnotationReveal).
         image:
-          selection.file.fileType === "image"
+          selection.file.fileType === "image" && annotation
+            ? { selectedAnnotationId: annotation.id }
+            : selection.file.fileType === "image"
             ? {
                 fontSize: viewState.image?.fontSize,
                 panX: viewState.image?.panX ?? 0,
@@ -1577,14 +1776,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
                 line,
                 previewScrollLeft: viewState.markdown?.previewScrollLeft ?? 0,
                 previewScrollTop: viewState.markdown?.previewScrollTop ?? 0,
-                selectionEnd: viewState.markdown?.selectionEnd,
-                selectionStart: viewState.markdown?.selectionStart,
+                selectionEnd: highlighted?.range.end ?? viewState.markdown?.selectionEnd,
+                selectionStart: highlighted?.range.start ?? viewState.markdown?.selectionStart,
                 slideIndex: viewState.markdown?.slideIndex,
                 zoom: viewState.markdown?.zoom,
               }
             : undefined,
         pdf:
-          selection.file.fileType === "pdf"
+          selection.file.fileType === "pdf" && annotation
+            ? { selectedAnnotationId: annotation.id }
+            : selection.file.fileType === "pdf"
             ? {
                 fontSize: viewState.pdf?.fontSize,
                 scrollLeft: viewState.pdf?.scrollLeft ?? 0,
@@ -1606,11 +1807,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const metadata = createMarkdownFileLinkMetadata(selection);
     const destination = createMarkdownFileLinkDestination({
-      metadata: createMarkdownFileLinkMetadata(selection),
+      metadata,
       sourcePath: activeTab.file.path,
       targetPath: selection.file.path,
     });
+    const linkedTab = selection.source === "tab"
+      ? tabs.find((tab) => tab.id === selection.tabId || tab.file.path === selection.file.path)
+      : undefined;
+    const annotationLabel = linkedTab
+      ? annotationTabHighlight(linkedTab, selection.viewState ?? linkedTab.viewState)?.label
+      : undefined;
+    const label = ((metadata?.quote && markdownLinkQuoteLabel(metadata.quote.text)) || annotationLabel || selection.file.name)
+      .replace(/[\[\]\\]/g, "\\$&");
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
     const draft = textarea?.value ?? getTabDraft(activeTab);
@@ -1627,12 +1837,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const replacement =
       hasLinkShell && (destinationCloseIndex < 0 || destinationCloseIndex >= end)
         ? `${destination}${destinationCloseIndex < 0 ? ")" : ""}`
-        : `[${selection.file.name}](${destination})`;
+        : `[${label}](${destination})`;
     const nextDraft = `${draft.slice(0, start)}${replacement}${draft.slice(end)}`;
     const nextSelectionStart = hasLinkShell ? start : start + 1;
     const nextSelectionEnd = hasLinkShell
       ? start + destination.length
-      : start + 1 + selection.file.name.length;
+      : start + 1 + label.length;
 
     if (
       textarea &&
@@ -3975,6 +4185,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       showImageInTab,
       saveEditedImageCopy,
       openMarkdownFileLink,
+      listMarkdownSelectionLinks,
       openCreateNotebookDialog,
       openCreateNotebookGroupDialog,
       openEditNotebookDialog,

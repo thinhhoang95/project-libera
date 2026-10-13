@@ -1,6 +1,6 @@
 "use client";
 
-import { FileAudio, FileText, Image as ImageIcon, PanelTop, ScrollText } from "lucide-react";
+import { FileAudio, FileText, Hash, Image as ImageIcon, PanelTop, ScrollText } from "lucide-react";
 import type {
   MarkdownFileLinkSelection,
   OpenTab,
@@ -8,6 +8,9 @@ import type {
 } from "@/components/libera/types";
 import { formatClock } from "@/lib/transcription/format";
 import type { LiberaFileNode } from "@/lib/types";
+import type { MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
+import { isMarkdownSourceRange, markdownLinkQuoteLabel } from "@/lib/markdown-selection-links";
+import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
 
 export type MarkdownFileLinkPopupOption = {
   file: LiberaFileNode;
@@ -145,6 +148,16 @@ function scoreFile(file: LiberaFileNode, query: string) {
 }
 
 function currentViewSubtitle(tab: OpenTab) {
+  const annotationId = tab.file.fileType === "pdf"
+    ? tab.viewState?.pdf?.selectedAnnotationId
+    : tab.file.fileType === "image" ? tab.viewState?.image?.selectedAnnotationId : undefined;
+
+  if (annotationId) {
+    const annotation = findRememberedAnnotation(tab.file.path, annotationId);
+    const kind = annotation?.type === "highlight" ? "Highlight" : "Note";
+    return `${kind} · “${annotationLinkLabel(annotation, "selected")}”`;
+  }
+
   if (tab.file.fileType === "pdf") {
     const scrollTop = Math.round(tab.viewState?.pdf?.scrollTop ?? 0);
     const zoom = Math.round((tab.viewState?.pdf?.zoom ?? 1) * 100);
@@ -160,6 +173,12 @@ function currentViewSubtitle(tab: OpenTab) {
 
   if (tab.file.fileType === "audio") {
     return `Current position · ${formatClock(tab.viewState?.audio?.currentTime ?? 0)}`;
+  }
+
+  const highlighted = tab.viewState?.markdown?.linkSelection;
+
+  if (isMarkdownSourceRange(highlighted, tab.draft)) {
+    return `Highlighted text · “${markdownLinkQuoteLabel(tab.draft.slice(highlighted.start, highlighted.end))}”`;
   }
 
   const line = tab.viewState?.markdown?.line;
@@ -247,6 +266,66 @@ export function MarkdownFileLinkPopup({
           })}
         </div>
       ))}
+    </div>
+  );
+}
+
+export function MarkdownHeadingLinkPopup({
+  activeIndex,
+  headings,
+  x,
+  y,
+  onSelect,
+}: {
+  activeIndex: number;
+  headings: MarkdownHeadingAnchor[];
+  x: number;
+  y: number;
+  onSelect: (heading: MarkdownHeadingAnchor) => void;
+}) {
+  if (!headings.length) {
+    return (
+      <div
+        className="fixed z-40 w-80 rounded-lg border border-border bg-card p-3 text-sm text-muted-foreground shadow-xl"
+        style={{ left: x, top: y }}
+      >
+        No matching headings
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed z-40 max-h-96 w-96 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-border bg-card p-1 shadow-xl"
+      style={{ left: x, top: y }}
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      <div className="py-1">
+        <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Headings in this document
+        </div>
+        {headings.map((heading, index) => (
+          <button
+            key={heading.offset}
+            className={`flex w-full min-w-0 items-center gap-2 rounded px-2.5 py-2 text-left ${
+              index === activeIndex ? "bg-muted" : "hover:bg-muted"
+            }`}
+            ref={index === activeIndex ? (element) => element?.scrollIntoView?.({ block: "nearest" }) : undefined}
+            type="button"
+            onClick={() => onSelect(heading)}
+          >
+            <span className="shrink-0 text-muted-foreground"><Hash aria-hidden className="h-4 w-4" /></span>
+            <span className="min-w-0 flex-1" style={{ paddingLeft: `${(heading.level - 1) * 0.5}rem` }}>
+              <span className="block truncate text-sm font-medium text-foreground">
+                {heading.text}
+              </span>
+              <span className="block truncate text-xs text-muted-foreground">
+                H{heading.level} · line {heading.line} · #{heading.slug}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -72,6 +72,7 @@ import type {
   LatexTabViewState,
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
+  MarkdownSelectionLinkOption,
   MarkdownEditorMode,
   MarkdownTabViewState,
   MarkdownScreenshotSnipMode,
@@ -179,6 +180,8 @@ type WorkspacePanelProps = {
   onRegisterEditorDraft?: RegisterEditorDraft;
   onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
+  /** Links to passages highlighted in other open Markdown tabs. */
+  onReadMarkdownSelectionLinks?: (sourcePath: string) => MarkdownSelectionLinkOption[];
   onStartScreenshotSnip: (mode?: MarkdownScreenshotSnipMode, editor?: "source" | "visual") => void;
 };
 
@@ -574,6 +577,7 @@ const PANEL_CALLBACKS = [
   "onRegisterEditorDraft",
   "onSetViewState",
   "onOpenMarkdownFileLink",
+  "onReadMarkdownSelectionLinks",
   "onStartScreenshotSnip",
 ] as const;
 
@@ -676,6 +680,7 @@ function WorkspacePanelContent({
   onRegisterEditorDraft,
   onSetViewState,
   onOpenMarkdownFileLink,
+  onReadMarkdownSelectionLinks,
   onStartScreenshotSnip,
 }: PanelContentProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
@@ -913,6 +918,9 @@ function WorkspacePanelContent({
       ...(textarea?.isConnected ? {
         editorScrollLeft: textarea.scrollLeft, editorScrollTop: textarea.scrollTop,
         selectionStart: textarea.selectionStart, selectionEnd: textarea.selectionEnd,
+        linkSelection: textarea.selectionEnd > textarea.selectionStart
+          ? { start: textarea.selectionStart, end: textarea.selectionEnd }
+          : undefined,
       } : {}),
       ...(preview?.isConnected && !pendingPreviewRestoreRef.current ? {
         previewScrollLeft: preview.scrollLeft, previewScrollTop: preview.scrollTop,
@@ -1414,6 +1422,7 @@ function WorkspacePanelContent({
 
     updateMarkdownViewState({
       line: getMarkdownLineForOffset(markdownDraft, selection.start),
+      linkSelection: selection.end > selection.start ? selection : undefined,
       selectionEnd: selection.end,
       selectionStart: selection.start,
     });
@@ -1790,6 +1799,7 @@ function WorkspacePanelContent({
               onChange={sharedVisual ? ignoreSharedDraft : handleMarkdownDraftChange} onSave={onSave}
               onRegisterDraft={sharedVisual ? undefined : registerMarkdownDraft}
               onOpenFileLink={handleOpenMarkdownFileLink}
+              readSelectionLinks={() => onReadMarkdownSelectionLinks?.(activeTab.file.path) ?? []}
               canStartScreenshotSnip={canStartScreenshotSnip}
               onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "visual")}
               pendingInsertion={pendingVisualInsertion}
@@ -1805,6 +1815,7 @@ function WorkspacePanelContent({
             markdownBaseFontSize={markdownPreferences.baseFontSize}
             markdownContent={activeTab.draft}
             markdownZoom={markdownZoom}
+            readSelectionLinks={() => onReadMarkdownSelectionLinks?.(activeTab.file.path) ?? []}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}

@@ -40,6 +40,7 @@ import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import { NoteLinksButton } from "./note-links-dialog";
 import { TableInsertButton } from "./table-grid-picker";
+import type { MarkdownSelectionLinkOption } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 
@@ -69,6 +70,7 @@ type MarkdownToolbarProps = {
   previewFullscreen: boolean;
   /** An unsaved draft: fact-checking needs a saved file. */
   untitled?: boolean;
+  readSelectionLinks?: () => MarkdownSelectionLinkOption[];
 };
 
 const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
@@ -143,8 +145,9 @@ export function MarkdownToolbar({
   onOpenFileLink,
   previewFullscreen,
   untitled = false,
+  readSelectionLinks,
 }: MarkdownToolbarProps) {
-  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string } | null>(null);
+  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toolbarMeasureRef = useRef<HTMLDivElement>(null);
   const toolbarRowRef = useRef<HTMLDivElement>(null);
@@ -579,7 +582,7 @@ export function MarkdownToolbar({
           setLinkDraft(null);
         }}>Insert link</button>
       }>
-        <MarkdownLinkInput files={files} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft({ href, label })} />
+        <MarkdownLinkInput files={files} markdown={markdownContent} sourcePath={documentPath} value={linkDraft?.href ?? ""} selectionLinks={linkDraft?.selectionLinks} onChange={(href, label) => setLinkDraft((current) => ({ ...current, href, label }))} />
       </ModalDialog>
       <input
         ref={imageInputRef}
@@ -725,7 +728,7 @@ export function MarkdownToolbar({
           className="toolbar-button"
           title="Link"
           type="button"
-          onClick={() => setLinkDraft({ href: "" })}
+          onClick={() => setLinkDraft({ href: "", selectionLinks: readSelectionLinks?.() })}
         >
           <Link aria-hidden className="h-4 w-4" />
         </button>
