@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, AlertTriangle, ChevronDown, Eraser, Info, Loader2, Play, ScrollText, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, ChevronDown, Eraser, Info, Loader2, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
@@ -11,6 +11,7 @@ import {
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
 import type { SynctexPdfLocation, SynctexSourceLocation } from "@/lib/latex/synctex";
+import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
@@ -18,6 +19,7 @@ import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu"
 import { LatexEditor, type LatexEditorHandle } from "./latex-editor";
 import { registerLatexEditor } from "./latex-editor-registry";
 import { LatexPdfPreview, type PdfHighlightRequest, type PdfZoom } from "./latex-pdf-preview";
+import { closeLatexPdfWindow, openLatexPdfWindow, registerLatexPdfWindowHandlers, sendLatexPdfHighlight, useLatexPdfWindowOpen } from "./latex-pdf-window";
 
 type LatexWorkspaceProps = {
   tab: OpenTab;
@@ -166,17 +168,12 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     if (build.result?.status === "failure" || build.requestError) setLogOpen(true);
   }
 
-  async function save() {
-    await onSave();
-    if (!latest.current.autoCompile) compile();
-  }
-
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     if (key === "s" && !event.shiftKey) {
       event.preventDefault();
-      if (tab.status !== "saving") void save();
+      if (tab.status !== "saving") void onSave();
     } else if (key === "enter" && !event.shiftKey) {
       event.preventDefault();
       compile();
@@ -239,9 +236,9 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   /* ---- SyncTeX ---------------------------------------------------------------- */
 
-  const openNotebookPath = useCallback(async (path: string, line: number) => {
+  const openNotebookPath = useCallback(async (path: string, line: number, hint?: SynctexTextHint) => {
     if (path === filePath) {
-      editorRef.current?.revealCompiledLine(line);
+      editorRef.current?.revealCompiledLine(line, 0, hint);
       return;
     }
     const file = files.find((candidate) => candidate.path === path);
@@ -249,10 +246,10 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       setSyncError(`${path} is not in this notebook.`);
       return;
     }
-    await onOpenFile(file, { viewState: { latex: { revealLine: { line, nonce: Date.now() } } } });
+    await onOpenFile(file, { viewState: { latex: { revealLine: { line, hint, nonce: Date.now() } } } });
   }, [filePath, files, onOpenFile]);
 
-  const inverseSync = useCallback(async (location: { page: number; x: number; y: number }) => {
+  const inverseSync = useCallback(async ({ hint, ...location }: { page: number; x: number; y: number; hint?: SynctexTextHint }) => {
     if (!build.buildId) return;
     setSyncError("");
     try {
@@ -260,7 +257,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         method: "POST",
         body: JSON.stringify({ direction: "inverse", rootPath, buildId: build.buildId, ...location }),
       });
-      if (source) await openNotebookPath(source.path, source.line);
+      if (source) await openNotebookPath(source.path, source.line, hint);
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "Could not find this spot in the source.");
     }
@@ -280,12 +277,34 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     }
   }, [build.buildId, filePath, isTex, rootPath]);
 
+  /* ---- PDF in a separate window ------------------------------------------------- */
+
+  const pdfWindowOpen = useLatexPdfWindowOpen(rootPath);
+  const showsPdfWindow = isTex && canCompile && pdfWindowOpen;
+
+  useEffect(() => {
+    if (!showsPdfWindow) return;
+    return registerLatexPdfWindowHandlers(rootPath, { onInverseSync: (location) => void inverseSync(location), onCompile: compile });
+  }, [compile, inverseSync, rootPath, showsPdfWindow]);
+
+  useEffect(() => {
+    if (showsPdfWindow && highlight) sendLatexPdfHighlight(rootPath, highlight);
+  }, [highlight, rootPath, showsPdfWindow]);
+
+  function togglePdfWindow() {
+    if (pdfWindowOpen) {
+      closeLatexPdfWindow(rootPath);
+    } else if (!openLatexPdfWindow(rootPath)) {
+      setSyncError("Could not open the PDF window. Please allow pop-up windows and try again.");
+    }
+  }
+
   // Requests from other views to reveal a line (outline, SyncTeX from another file).
   const revealLine = viewState?.revealLine;
   useEffect(() => {
     if (!revealLine) return;
     const frame = requestAnimationFrame(() => {
-      editorRef.current?.revealLine(revealLine.line);
+      editorRef.current?.revealLine(revealLine.line, revealLine.hint);
       onSetViewState({ revealLine: undefined });
     });
     return () => cancelAnimationFrame(frame);
@@ -363,6 +382,17 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       onAiError={setAiError}
     />
   );
+
+  const logPanel = logOpen ? (
+    <LatexLogPanel
+      diagnostics={diagnostics}
+      log={result?.log || result?.output || ""}
+      rawLog={rawLog}
+      onRawLogChange={setRawLog}
+      onReveal={revealDiagnostic}
+      onClose={() => { setLogOpen(false); onSetViewState({ logOpen: false }); }}
+    />
+  ) : null;
 
   return (
     <div className="libera-latex-workspace flex min-h-0 flex-1 flex-col overflow-hidden" onKeyDown={handleKeyDown}>
@@ -446,6 +476,19 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               <ScrollText aria-hidden className="h-3.5 w-3.5" />
             </button>
           ) : null}
+          {isTex ? (
+            <button
+              type="button"
+              className="libera-latex-icon-button disabled:opacity-50"
+              aria-label={pdfWindowOpen ? "Show PDF beside the editor" : "Open PDF in a separate window"}
+              aria-pressed={pdfWindowOpen}
+              title={pdfWindowOpen ? "Close the PDF window and show the PDF beside the editor" : "Open the PDF in a separate window"}
+              disabled={!canCompile}
+              onClick={togglePdfWindow}
+            >
+              <PictureInPicture2 aria-hidden className="h-4 w-4" />
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -464,7 +507,12 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         </div>
       ) : null}
 
-      {isTex ? (
+      {showsPdfWindow ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="grid min-h-0 flex-1">{editor}</div>
+          {logPanel}
+        </div>
+      ) : isTex ? (
         <div
           ref={splitRef}
           className={`markdown-split-grid min-h-0 flex-1 overflow-hidden ${dragging ? "select-none" : ""}`}
@@ -509,16 +557,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               onScrollChange={(scrollTop, scrollLeft) => onSetViewState({ pdfScrollTop: scrollTop, pdfScrollLeft: scrollLeft })}
               onInverseSync={(location) => void inverseSync(location)}
             />
-            {logOpen ? (
-              <LatexLogPanel
-                diagnostics={diagnostics}
-                log={result?.log || result?.output || ""}
-                rawLog={rawLog}
-                onRawLogChange={setRawLog}
-                onReveal={revealDiagnostic}
-                onClose={() => { setLogOpen(false); onSetViewState({ logOpen: false }); }}
-              />
-            ) : null}
+            {logPanel}
           </div>
         </div>
       ) : (

@@ -151,6 +151,12 @@ async function latexmkRcArguments() {
   return ["-norc"];
 }
 
+/** latexmk runs biber from the source folder, and when its `.fdb_latexmk`
+ * record is missing it passes only the job name, so biber would read a stale
+ * `.bcf` that another editor left next to the document (and write its `.bbl`
+ * there). Always point it at the build folder instead. */
+const LATEXMK_BIBER_RC = 'sub libera_biber { my $base = pop @_; $base = "$aux_dir/$base" unless $base =~ m{^/}; return system("biber", "--output-directory=$aux_dir", @_, $base); } $biber = "internal libera_biber %O %B";';
+
 function withLock<T>(key: string, task: () => Promise<T>) {
   const previous = buildLocks.get(key) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(task);
@@ -281,7 +287,7 @@ async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, p
   const aux = await readFile(path.join(paths.workDirectory, `${paths.jobName}.aux`), "utf8").catch(() => "");
   const usesBiber = await modifiedAt(path.join(paths.workDirectory, `${paths.jobName}.bcf`)) !== null;
   if (usesBiber) {
-    output += (await runProcess(texExecutable(toolchain, "biber"), [`--input-directory=${paths.sourceDirectory}`, `--output-directory=${paths.workDirectory}`, paths.jobName], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
+    output += (await runProcess(texExecutable(toolchain, "biber"), [`--output-directory=${paths.workDirectory}`, path.join(paths.workDirectory, paths.jobName)], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
   } else if (/\\bibdata\{/.test(aux)) {
     output += (await runProcess(texExecutable(toolchain, "bibtex"), [paths.jobName], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `bibtex: ${error.message}\n` }))).output;
   }
@@ -380,7 +386,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
         // or after a failed run, since latexmk tracks dependencies by path.
         const force = previousState?.signature !== signature || previousState?.status !== "success";
         result = await runProcess(texExecutable(toolchain, "latexmk"), [
-          ...(await latexmkRcArguments()), engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
+          ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
           `-outdir=${paths.workDirectory}`, path.join(paths.workDirectory, `${paths.jobName}.tex`),
         ], { cwd: paths.sourceDirectory, env, signal });
       } else {

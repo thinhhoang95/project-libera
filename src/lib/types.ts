@@ -87,8 +87,19 @@ export type LiberaNotebookViewOptions = {
   showArchive: boolean;
 };
 
+export type LiberaLinkedFolderInfo = {
+  /** Absolute path of the folder on disk. */
+  path: string;
+  /** Very large folders only show part of their contents. */
+  truncated: boolean;
+  /** The folder was moved or its drive is unplugged. It stays linked. */
+  missing?: boolean;
+};
+
 export type LiberaNotebookNode = {
   relatedNotebookNames?: string[];
+  /** Present when this entry is an external folder linked into the library. */
+  folder?: LiberaLinkedFolderInfo;
   illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
   kind: "notebook";
   name: string;
@@ -103,14 +114,14 @@ export type LiberaNotebookNode = {
 
 export type LiberaTree = {
   archiveIncluded?: boolean;
-  /** Present in Directory mode: the open folder is the only notebook. */
-  directory?: { name: string; path: string; truncated: boolean };
   lastNotebookName?: string;
   root: string;
   notebookPanelExpandedPaths: string[] | null;
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
   starredFilePaths: string[];
+  /** Manual tags keyed by file path; files without tags are absent. */
+  fileTags: Record<string, string[]>;
   notebooks: LiberaNotebookNode[];
 };
 

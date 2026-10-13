@@ -74,9 +74,9 @@ const flashField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-export function revealPosition(view: EditorView, pos: number, options: { select?: boolean } = {}) {
+export function revealPosition(view: EditorView, pos: number, options: { select?: boolean; selectTo?: number } = {}) {
   view.dispatch({
-    selection: options.select === false ? undefined : { anchor: pos },
+    selection: options.select === false ? undefined : { anchor: pos, head: options.selectTo ?? pos },
     effects: [EditorView.scrollIntoView(pos, { y: "center" }), flashLine.of(pos)],
   });
   window.setTimeout(() => {

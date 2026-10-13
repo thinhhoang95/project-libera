@@ -69,7 +69,6 @@ function collectFileSearchResults(
   }
 }
 
-const PENDING_OPEN_FILE_KEY = "libera:pending-open-file";
 
 function subscribeToNothing() {
   return () => undefined;
@@ -305,6 +304,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     useState<WorkspaceConfirmDialogState | null>(null);
   const [workspaceConfirmDialogSubmitting, setWorkspaceConfirmDialogSubmitting] =
     useState(false);
+  const [fileTagsDialogFile, setFileTagsDialogFile] = useState<LiberaFileNode | null>(null);
+  const [fileTagsDialogSubmitting, setFileTagsDialogSubmitting] = useState(false);
+  const [fileTagsDialogError, setFileTagsDialogError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [uploadNotebook, setUploadNotebook] = useState("");
   const activeTabHistoryRef = useRef<string[]>([]);
@@ -322,7 +324,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const pendingOpenViewStateByPathRef = useRef<Record<string, OpenTabViewState | undefined>>({});
   const expandedRef = useRef<Set<string>>(new Set());
   const treeLoadedRef = useRef(false);
-  const contextSwitchingRef = useRef(false);
   const expansionSaveInFlightRef = useRef(false);
   const queuedExpansionSaveRef = useRef<string[] | null>(null);
 
@@ -540,37 +541,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       .catch((error) => setWorkspaceError(error instanceof Error ? error.message : "Could not remember the last notebook."));
   }, [authenticated, selectedNotebookName]);
 
-  type DirectoryActionResult = { changed?: boolean; filePath?: string };
+  type DirectoryActionResult = { changed?: boolean; filePath?: string; name?: string };
 
-  // Switching between Notebook and Directory mode saves the current session,
-  // changes the server's context, then reloads into the other saved session.
-  async function switchDirectoryContext(request: () => Promise<DirectoryActionResult>) {
-    if (contextSwitchingRef.current) return;
+  // Linked folders sit next to notebooks, so opening or removing one only
+  // changes the tree; the session and open tabs carry on.
+  async function linkDirectory(request: () => Promise<DirectoryActionResult>) {
     setWorkspaceError("");
-    let resume: (() => void) | null = null;
 
     try {
-      resume = await workspaceManager.suspendForContextSwitch();
-      const result = await request();
-
-      if (result.changed === false) {
-        resume();
-        resume = null;
-        if (result.filePath) await openFileByPath(result.filePath, await refreshTree());
-        return;
-      }
-
-      contextSwitchingRef.current = true;
-      if (result.filePath) {
-        try { window.sessionStorage.setItem(PENDING_OPEN_FILE_KEY, result.filePath); }
-        catch { /* The folder still opens; the file can be picked from the sidebar. */ }
-      }
-      await window.liberaDirectory?.notifyChanged().catch(() => undefined);
-      window.location.reload();
+      // A newly linked folder joins the active workspace like a new notebook.
+      const result = await workspaceManager.runFileChange(request, (linked) =>
+        linked.changed && linked.name ? { paths: [linked.name] } : {},
+      );
+      const nextTree = await refreshTree(result.name);
+      if (result.changed) await window.liberaDirectory?.notifyChanged().catch(() => undefined);
+      return { result, nextTree };
     } catch (error) {
-      contextSwitchingRef.current = false;
-      resume?.();
       setWorkspaceError(error instanceof Error ? error.message : "Could not open the folder.");
+      return null;
     }
   }
 
@@ -580,35 +568,76 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       .find((candidate) => candidate.path === filePath);
 
     if (!file) {
-      setWorkspaceError("That file is hidden in this folder, so Libera cannot open it.");
+      setWorkspaceError("That file is hidden in its folder, so Libera cannot open it.");
       return;
     }
 
     await openFile(file);
   }
 
+  function showLinkedFolder(name: string) {
+    setSelectedNotebookName(name);
+    setActiveTabId("");
+    updateExpanded((current) => new Set(current).add(name));
+  }
+
   async function openDirectory(directoryPath?: string) {
     const chosenPath = directoryPath ?? await window.liberaDirectory?.chooseFolder();
     if (!chosenPath) return;
-    if (tree.directory?.path === chosenPath) return;
-    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
+    const linked = tree.notebooks.find((notebook) => notebook.folder?.path === chosenPath);
+    if (linked) {
+      showLinkedFolder(linked.name);
+      return;
+    }
+    const opened = await linkDirectory(() => apiRequest<DirectoryActionResult>("/api/directory", {
       method: "POST", body: JSON.stringify({ action: "open", path: chosenPath }),
     }));
+    if (opened?.result.name) showLinkedFolder(opened.result.name);
   }
 
   async function openFileFromDisk(filePath?: string) {
     const chosenPath = filePath ?? await window.liberaDirectory?.chooseFile();
     if (!chosenPath) return;
-    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
+    const opened = await linkDirectory(() => apiRequest<DirectoryActionResult>("/api/directory", {
       method: "POST", body: JSON.stringify({ action: "open-file", path: chosenPath }),
     }));
+    if (opened?.result.filePath) await openFileByPath(opened.result.filePath, opened.nextTree);
   }
 
-  async function closeDirectory() {
-    if (!tree.directory) return;
-    await switchDirectoryContext(() => apiRequest<DirectoryActionResult>("/api/directory", {
-      method: "POST", body: JSON.stringify({ action: "close" }),
-    }));
+  function closeDirectory(name: string) {
+    const dirtyTabCount = tabs.filter((tab) =>
+      tab.file.notebook === name && getTabDraft(tab) !== tab.saved,
+    ).length;
+
+    if (dirtyTabCount) {
+      setWorkspaceConfirmDialog({ mode: "remove-folder", notebook: name, dirtyTabCount });
+      return;
+    }
+
+    void removeLinkedFolder(name);
+  }
+
+  /** Remove a linked folder from the library. Files on disk are left alone. */
+  async function removeLinkedFolder(name: string) {
+    try {
+      await apiRequest("/api/directory", {
+        method: "POST", body: JSON.stringify({ action: "close", name }),
+      });
+      const nextTree = await refreshTree();
+      setSelectedNotebookName((current) =>
+        current === name ? nextTree.notebooks[0]?.name ?? "" : current,
+      );
+      tabs.forEach((tab) => {
+        if (tab.file.notebook === name) {
+          forgetTabDraft(tab.id);
+        }
+      });
+      setTabs((currentTabs) => currentTabs.filter((tab) => tab.file.notebook !== name));
+      setActiveTabId((current) => (current.startsWith(`${name}/`) ? "" : current));
+      await window.liberaDirectory?.notifyChanged().catch(() => undefined);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not remove the folder.");
+    }
   }
 
   async function clearRecentDirectories() {
@@ -631,7 +660,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     directoryCommandRef.current = (command) => {
       if (command.type === "open-directory") void openDirectory(command.path);
       else if (command.type === "open-file") void openFileFromDisk(command.path);
-      else if (command.type === "close-directory") void closeDirectory();
+      else if (command.type === "close-directory") closeDirectory(command.name);
       else void clearRecentDirectories();
     };
   });
@@ -645,19 +674,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   useEffect(() => {
     if (authenticated && tree.root) void window.liberaDirectory?.notifyChanged().catch(() => undefined);
   }, [authenticated, tree.root]);
-
-  // Open the file chosen with File > Open File once its folder has loaded.
-  useEffect(() => {
-    if (!authenticated || !workspaceManager.ready || !tree.root) return;
-    let pendingPath: string | null = null;
-    try {
-      pendingPath = window.sessionStorage.getItem(PENDING_OPEN_FILE_KEY);
-      window.sessionStorage.removeItem(PENDING_OPEN_FILE_KEY);
-    } catch { /* Nothing to open. */ }
-    if (pendingPath) void openFileByPath(pendingPath, tree);
-    // Run once per loaded context; later tree refreshes must not reopen it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authenticated, workspaceManager.ready, tree.root]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -841,6 +857,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+
   async function openMarkdownFileLink(sourcePath: string, href: string) {
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
 
@@ -889,6 +906,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const closeTabWithoutConfirm = useCallback((tabId: string) => {
     closeTabsWithoutConfirm([tabId]);
   }, [closeTabsWithoutConfirm]);
+
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
@@ -2001,6 +2019,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           }),
         }, () => ({ moved: { from: previousName, to: nextName }, notebookGroup }));
         await applyCompleteTree(nextTree);
+        // The File menu lists linked folders by name.
+        if (notebookDialog.notebook.folder && previousName !== nextName) {
+          void window.liberaDirectory?.notifyChanged().catch(() => undefined);
+        }
         updateExpanded((current) => {
           const next = new Set<string>();
 
@@ -2176,6 +2198,35 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       await applyCompleteTree(nextTree);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not update star.");
+    }
+  }
+
+  function openFileTagsDialog(file: LiberaFileNode) {
+    setFileTagsDialogError("");
+    setFileTagsDialogFile(file);
+  }
+
+  function closeFileTagsDialog() {
+    if (!fileTagsDialogSubmitting) setFileTagsDialogFile(null);
+  }
+
+  async function saveFileTags(tags: string[]) {
+    if (!fileTagsDialogFile) return;
+    setFileTagsDialogSubmitting(true);
+    setFileTagsDialogError("");
+
+    try {
+      const nextTree = await apiRequest<LiberaTree>("/api/file-tags", {
+        method: "PATCH",
+        body: JSON.stringify({ path: fileTagsDialogFile.path, tags }),
+      });
+
+      await applyCompleteTree(nextTree);
+      setFileTagsDialogFile(null);
+    } catch (error) {
+      setFileTagsDialogError(error instanceof Error ? error.message : "Could not save tags.");
+    } finally {
+      setFileTagsDialogSubmitting(false);
     }
   }
 
@@ -2846,6 +2897,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         await deleteNotebook(workspaceConfirmDialog.notebook);
       }
 
+      if (workspaceConfirmDialog.mode === "remove-folder") {
+        await removeLinkedFolder(workspaceConfirmDialog.notebook);
+      }
+
       if (workspaceConfirmDialog.mode === "move-file-node") {
         await moveFileNode(
           workspaceConfirmDialog.file,
@@ -3110,8 +3165,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      // A folder switch has already saved drafts with the session.
-      if (contextSwitchingRef.current) return;
       if (tabs.some((tab) => getTabDraft(tab) !== tab.saved)) {
         event.preventDefault();
         event.returnValue = "";
@@ -3159,7 +3212,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       textareaRef,
       tree: visibleTree,
       fullTree: tree,
-      directory: tree.directory ?? null,
       canOpenDirectories,
       openDirectory,
       openFileFromDisk,
@@ -3170,6 +3222,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       workspaceConfirmDialogSubmitting,
       workspaceInputDialog,
       workspaceInputDialogSubmitting,
+      fileTagsDialog: fileTagsDialogFile
+        ? { file: fileTagsDialogFile, error: fileTagsDialogError, submitting: fileTagsDialogSubmitting }
+        : null,
       workspaceError,
       closeOtherTabs,
       closeTab,
@@ -3246,6 +3301,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       toggleFileStar,
       toggleNotebook,
       updateNotebookViewOptions,
+      openFileTagsDialog,
+      closeFileTagsDialog,
+      saveFileTags,
     },
   };
 }

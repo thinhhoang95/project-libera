@@ -10,6 +10,8 @@ export type LiberaWorkspaceMetadata = {
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
   starredFilePaths: string[];
+  /** Manual tags keyed by relative file path. */
+  fileTags: Record<string, string[]>;
 };
 
 const DEFAULT_NOTEBOOK_VIEW_OPTIONS: LiberaNotebookViewOptions = {
@@ -23,6 +25,7 @@ const DEFAULT_WORKSPACE_METADATA: LiberaWorkspaceMetadata = {
   notebookGroups: [],
   notebookViewOptions: DEFAULT_NOTEBOOK_VIEW_OPTIONS,
   starredFilePaths: [],
+  fileTags: {},
 };
 
 function normalizeDate(value: unknown, fallback: string) {
@@ -45,6 +48,34 @@ function normalizeStringArray(value: unknown) {
         .map((item) => item.trim())
         .filter(Boolean),
     ),
+  );
+}
+
+const MAX_TAG_LENGTH = 40;
+
+/** Trims, de-duplicates (case-insensitively) and drops empty tags. */
+export function normalizeFileTags(value: unknown) {
+  const seen = new Set<string>();
+
+  return normalizeStringArray(value)
+    .map((tag) => tag.replace(/\s+/g, " ").slice(0, MAX_TAG_LENGTH))
+    .filter((tag) => {
+      const key = tag.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function normalizeFileTagMap(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([filePath, tags]) => [filePath, normalizeFileTags(tags)] as const)
+      .filter(([filePath, tags]) => filePath && tags.length),
   );
 }
 
@@ -120,6 +151,7 @@ export function normalizeWorkspaceMetadata(value: unknown): LiberaWorkspaceMetad
     notebookGroups: normalizeNotebookGroups(candidate.notebookGroups),
     notebookViewOptions: normalizeNotebookViewOptions(candidate.notebookViewOptions),
     starredFilePaths: normalizeStringArray(candidate.starredFilePaths),
+    fileTags: normalizeFileTagMap(candidate.fileTags),
   };
 }
 
@@ -228,41 +260,55 @@ export async function setStarredFilePath(filePath: string, starred: boolean) {
   });
 }
 
-export async function renameStarredFilePath(currentPath: string, nextPath: string) {
+/** Keeps per-file metadata (stars, tags) attached to a file that moved. */
+export async function renameFileMetadataPath(currentPath: string, nextPath: string) {
   if (currentPath === nextPath) {
     return;
   }
 
   const workspaceMetadata = await readWorkspaceMetadata();
+  const tags = workspaceMetadata.fileTags[currentPath];
 
-  if (!workspaceMetadata.starredFilePaths.includes(currentPath)) {
+  if (!workspaceMetadata.starredFilePaths.includes(currentPath) && !tags) {
     return;
+  }
+
+  const fileTags = { ...workspaceMetadata.fileTags };
+
+  if (tags) {
+    delete fileTags[currentPath];
+    fileTags[nextPath] = tags;
   }
 
   await writeWorkspaceMetadata({
     ...workspaceMetadata,
+    fileTags,
     starredFilePaths: workspaceMetadata.starredFilePaths.map((starredFilePath) =>
       starredFilePath === currentPath ? nextPath : starredFilePath,
     ),
   });
 }
 
-export async function removeStarredFilePath(filePath: string) {
+export async function removeFileMetadataPath(filePath: string) {
   const workspaceMetadata = await readWorkspaceMetadata();
 
-  if (!workspaceMetadata.starredFilePaths.includes(filePath)) {
+  if (!workspaceMetadata.starredFilePaths.includes(filePath) && !workspaceMetadata.fileTags[filePath]) {
     return;
   }
 
+  const fileTags = { ...workspaceMetadata.fileTags };
+  delete fileTags[filePath];
+
   await writeWorkspaceMetadata({
     ...workspaceMetadata,
+    fileTags,
     starredFilePaths: workspaceMetadata.starredFilePaths.filter(
       (starredFilePath) => starredFilePath !== filePath,
     ),
   });
 }
 
-export async function renameStarredFilePathPrefix(
+export async function renameFileMetadataPathPrefix(
   currentPrefix: string,
   nextPrefix: string,
 ) {
@@ -272,14 +318,18 @@ export async function renameStarredFilePathPrefix(
 
   const workspaceMetadata = await readWorkspaceMetadata();
   let changed = false;
-  const starredFilePaths = workspaceMetadata.starredFilePaths.map((starredFilePath) => {
-    if (!starredFilePath.startsWith(`${currentPrefix}/`)) {
-      return starredFilePath;
+  const remap = (filePath: string) => {
+    if (!filePath.startsWith(`${currentPrefix}/`)) {
+      return filePath;
     }
 
     changed = true;
-    return `${nextPrefix}/${starredFilePath.slice(currentPrefix.length + 1)}`;
-  });
+    return `${nextPrefix}/${filePath.slice(currentPrefix.length + 1)}`;
+  };
+  const starredFilePaths = workspaceMetadata.starredFilePaths.map(remap);
+  const fileTags = Object.fromEntries(
+    Object.entries(workspaceMetadata.fileTags).map(([filePath, tags]) => [remap(filePath), tags]),
+  );
 
   if (!changed) {
     return;
@@ -287,22 +337,43 @@ export async function renameStarredFilePathPrefix(
 
   await writeWorkspaceMetadata({
     ...workspaceMetadata,
+    fileTags,
     starredFilePaths,
   });
 }
 
-export async function removeStarredFilePathPrefix(prefix: string) {
+export async function removeFileMetadataPathPrefix(prefix: string) {
   const workspaceMetadata = await readWorkspaceMetadata();
-  const starredFilePaths = workspaceMetadata.starredFilePaths.filter(
-    (starredFilePath) => !starredFilePath.startsWith(`${prefix}/`),
+  const inside = (filePath: string) => filePath.startsWith(`${prefix}/`);
+  const starredFilePaths = workspaceMetadata.starredFilePaths.filter((filePath) => !inside(filePath));
+  const fileTags = Object.fromEntries(
+    Object.entries(workspaceMetadata.fileTags).filter(([filePath]) => !inside(filePath)),
   );
 
-  if (starredFilePaths.length === workspaceMetadata.starredFilePaths.length) {
+  if (
+    starredFilePaths.length === workspaceMetadata.starredFilePaths.length &&
+    Object.keys(fileTags).length === Object.keys(workspaceMetadata.fileTags).length
+  ) {
     return;
   }
 
   await writeWorkspaceMetadata({
     ...workspaceMetadata,
+    fileTags,
     starredFilePaths,
   });
+}
+
+export async function setFileTagsForPath(filePath: string, tags: string[]) {
+  const workspaceMetadata = await readWorkspaceMetadata();
+  const fileTags = { ...workspaceMetadata.fileTags };
+  const normalized = normalizeFileTags(tags);
+
+  if (normalized.length) {
+    fileTags[filePath] = normalized;
+  } else {
+    delete fileTags[filePath];
+  }
+
+  await writeWorkspaceMetadata({ ...workspaceMetadata, fileTags });
 }

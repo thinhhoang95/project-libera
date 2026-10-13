@@ -32,6 +32,7 @@ export function emptyTree(): LiberaTree {
       showArchive: false,
     },
     starredFilePaths: [],
+    fileTags: {},
     notebooks: [],
   };
 }

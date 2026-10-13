@@ -16,7 +16,6 @@ import {
   Pencil,
   Star,
   Trash2,
-  X,
 } from "lucide-react";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
@@ -71,10 +70,11 @@ type NativeMenuPoint = {
 
 export type NotebookPanelProps = {
   workspaceActive?: boolean;
-  /** Desktop builds can pick a folder to open in Directory mode. */
+  /** Desktop builds can link folders from disk next to the notebooks. */
   canOpenDirectories?: boolean;
   onOpenDirectory?: () => void;
-  onCloseDirectory?: () => void;
+  /** Removes a linked folder from the library; its files stay on disk. */
+  onCloseDirectory?: (name: string) => void;
   onManageWorkspace?: () => void;
   activeTabId: string;
   expanded: Set<string>;
@@ -111,6 +111,7 @@ export type NotebookPanelProps = {
   onSelectSearchResult: (result: SearchResult) => void;
   onStartUpload: (notebook: string) => void;
   onToggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
+  onEditFileTags: (file: LiberaFileNode) => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
   onUploadFiles: (
@@ -499,12 +500,12 @@ export function NotebookPanel({
   onSelectSearchResult,
   onStartUpload,
   onToggleFileStar,
+  onEditFileTags,
   onToggleNotebook,
   onUploadChange,
   onUploadFiles,
   onUpdateNotebookViewOptions,
 }: NotebookPanelProps) {
-  const directory = tree.directory;
   const [draggingFile, setDraggingFile] = useState<LiberaFileNode | null>(null);
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
@@ -629,6 +630,7 @@ export function NotebookPanel({
               type: "checkbox",
               checked: fileIsStarred,
             },
+            { id: "edit-tags", label: "Edit Tags…" },
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
@@ -682,6 +684,8 @@ export function NotebookPanel({
         onDuplicateMarkdown(target.file);
       } else if (selectedItemId === "toggle-star") {
         await onToggleFileStar(target.file, !fileIsStarred);
+      } else if (selectedItemId === "edit-tags") {
+        onEditFileTags(target.file);
       } else if (selectedItemId === "download") {
         onDownloadFile(target.file);
       } else if (selectedItemId === "copy") {
@@ -731,13 +735,8 @@ export function NotebookPanel({
             option.key === sortPreference.key &&
             option.direction === sortPreference.direction,
         })),
-        // An open folder has no notebooks or groups to hide.
-        ...(directory && !workspaceActive
-          ? []
-          : [
-              { type: "separator" as const },
-              { id: "view-options", label: workspaceActive ? "Workspace visibility…" : "View Options" },
-            ]),
+        { type: "separator" as const },
+        { id: "view-options", label: workspaceActive ? "Workspace visibility…" : "View Options" },
       ],
       nativeMenuPointFromButton(event.currentTarget),
     );
@@ -771,21 +770,20 @@ export function NotebookPanel({
       <SidebarSearch
         query={query}
         searchResults={searchResults}
+        placeholder="Search notebooks, folders and files"
         onDeepSearch={openDeepSearch}
         onQueryChange={onQueryChange}
         onSelectSearchResult={onSelectSearchResult}
       />
 
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="min-w-0 truncate text-sm font-semibold" title={directory?.path}>
-          {directory ? "Folder" : "Notebooks"}
-        </h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">Library</h2>
         <div className="flex items-center gap-2">
           <button
             aria-haspopup="menu"
-            aria-label={directory ? "Sort files" : "Sort notebooks and files"}
+            aria-label="Sort notebooks and files"
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-            title={directory ? "Sort files" : "Sort notebooks and files"}
+            title="Sort notebooks and files"
             type="button"
             onClick={(event) => void openSortMenu(event)}
           >
@@ -795,25 +793,13 @@ export function NotebookPanel({
             <button
               aria-label="Open folder"
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              title="Open folder…"
+              title="Open a folder from disk alongside your notebooks"
               type="button"
               onClick={onOpenDirectory}
             >
               <FolderOpen aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
-          {directory ? (
-            <button
-              aria-label="Close folder"
-              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              title="Close folder and return to notebooks"
-              type="button"
-              onClick={onCloseDirectory}
-            >
-              <X aria-hidden className="h-4 w-4" />
-            </button>
-          ) : null}
-          {directory ? null : <>
           <button
             aria-label="New group"
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
@@ -832,14 +818,8 @@ export function NotebookPanel({
           >
             <BookPlus aria-hidden className="h-4 w-4" />
           </button>
-          </>}
         </div>
       </div>
-      {directory?.truncated ? (
-        <p className="mx-3 mb-1 rounded-lg border border-dashed border-input px-3 py-2 text-xs text-muted-foreground">
-          This folder is very large, so only part of it is shown. Open a smaller folder to see everything.
-        </p>
-      ) : null}
 
       <input
         ref={uploadInputRef}
@@ -853,12 +833,12 @@ export function NotebookPanel({
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!hasPanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks yet."}
+            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks or folders yet."}
           </div>
         ) : null}
         {hasPanelItems && !hasVisiblePanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            No notebooks are visible.
+            No notebooks or folders are visible.
           </div>
         ) : null}
 
@@ -902,7 +882,7 @@ export function NotebookPanel({
               onDropFile={dropFileOnPath}
               onDownloadNotebook={onDownloadNotebook}
               onEditNotebook={onEditNotebook}
-              onCloseDirectory={directory ? onCloseDirectory : undefined}
+              onRemoveFolder={onCloseDirectory}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
@@ -939,6 +919,7 @@ export function NotebookPanel({
               onDropFile={dropFileOnPath}
               onEditGroup={onEditNotebookGroup}
               onEditNotebook={onEditNotebook}
+              onRemoveFolder={onCloseDirectory}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
@@ -1099,7 +1080,7 @@ function NotebookSection({
   onDropFile,
   onDownloadNotebook,
   onEditNotebook,
-  onCloseDirectory,
+  onRemoveFolder,
   onOpenFile,
   onSelectNotebook,
   onShowMoreNodes,
@@ -1110,8 +1091,8 @@ function NotebookSection({
   onUploadFiles,
   visibleNodeLimitForPath,
 }: {
-  /** Set when this section is the folder open in Directory mode. */
-  onCloseDirectory?: () => void;
+  /** Removes a linked folder from the library. */
+  onRemoveFolder?: (name: string) => void;
   activeTabId: string;
   dragOverPath: string;
   draggingFile: LiberaFileNode | null;
@@ -1146,6 +1127,7 @@ function NotebookSection({
   ) => Promise<void>;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const linkedFolder = notebook.folder;
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1155,13 +1137,14 @@ function NotebookSection({
   const remainingChildrenCount = notebook.children.length - visibleChildren.length;
 
   async function openNotebookActionsAtPoint(point: NativeMenuPoint) {
+    const available = !linkedFolder?.missing;
     const selectedItemId = await showNativeMenu(
       [
-        { id: "new-note", label: "New note" },
-        { id: "new-slides", label: "New slides" },
-        { id: "new-latex", label: "New LaTeX document", enabled: Boolean(onCreateLatex) },
-        { id: "new-folder", label: "New folder" },
-        { id: "upload", label: "Upload" },
+        { id: "new-note", label: "New note", enabled: available },
+        { id: "new-slides", label: "New slides", enabled: available },
+        { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
+        { id: "new-folder", label: "New folder", enabled: available },
+        { id: "upload", label: "Upload", enabled: available },
         { type: "separator" },
         {
           id: "show-archive",
@@ -1170,15 +1153,16 @@ function NotebookSection({
           checked: showArchive,
         },
         { type: "separator" },
-        ...(onCloseDirectory
+        ...(linkedFolder
           ? [
+              { id: "edit", label: "Edit" },
               {
                 id: "reveal-in-file-explorer",
                 label: "Reveal in File Explorer",
-                enabled: Boolean(window.liberaFileExplorer),
+                enabled: available && Boolean(window.liberaFileExplorer),
               },
               { type: "separator" as const },
-              { id: "close-directory", label: "Close Folder" },
+              { id: "remove-folder", label: "Remove from Libera", enabled: Boolean(onRemoveFolder) },
             ]
           : [
               { id: "edit", label: "Edit" },
@@ -1219,8 +1203,8 @@ function NotebookSection({
       await revealNotebookInFileExplorer(notebook.name);
     } else if (selectedItemId === "delete") {
       await onDeleteNotebook(notebook.name);
-    } else if (selectedItemId === "close-directory") {
-      onCloseDirectory?.();
+    } else if (selectedItemId === "remove-folder") {
+      onRemoveFolder?.(notebook.name);
     }
   }
 
@@ -1314,18 +1298,25 @@ function NotebookSection({
               <Link2 aria-hidden className="h-3.5 w-3.5" />
             </span>
           ) : null}
-          <span className="min-w-0">
-            <span className="block truncate">{notebook.name}</span>
+          <span className="min-w-0" title={linkedFolder?.path}>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate">{notebook.name}</span>
+              {linkedFolder ? (
+                <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : null}
+            </span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
-              Updated {new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+              {linkedFolder?.missing
+                ? "Folder not found"
+                : `Updated ${new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`}
             </span>
           </span>
         </button>
         <button
           aria-haspopup="menu"
-          aria-label={`${onCloseDirectory ? "Folder" : "Notebook"} actions for ${notebook.name}`}
+          aria-label={`${linkedFolder ? "Folder" : "Notebook"} actions for ${notebook.name}`}
           className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-          title={onCloseDirectory ? "Folder actions" : "Notebook actions"}
+          title={linkedFolder ? "Folder actions" : "Notebook actions"}
           type="button"
           onClick={openNotebookActionsMenu}
         >
@@ -1353,6 +1344,11 @@ function NotebookSection({
           }
         >
           <div className="space-y-1">
+            {linkedFolder?.truncated ? (
+              <p className="rounded-lg border border-dashed border-input px-3 py-2 text-xs text-muted-foreground">
+                This folder is very large, so only part of it is shown.
+              </p>
+            ) : null}
             {visibleChildren.map((node) => (
               <TreeNodeRow
                 key={node.path}
@@ -1383,7 +1379,11 @@ function NotebookSection({
               />
             ) : null}
             {!notebook.children.length ? (
-              <p className="px-2 py-2 text-sm text-muted-foreground">No files.</p>
+              <p className="px-2 py-2 text-sm text-muted-foreground">
+                {linkedFolder?.missing
+                  ? "This folder was moved or its drive is disconnected."
+                  : "No files."}
+              </p>
             ) : null}
           </div>
         </div>
@@ -1415,6 +1415,7 @@ function NotebookGroupSection({
   onDropFile,
   onEditGroup,
   onEditNotebook,
+  onRemoveFolder,
   onOpenFile,
   onSelectNotebook,
   onShowMoreNodes,
@@ -1447,6 +1448,7 @@ function NotebookGroupSection({
   onDropFile: (destinationPath: string) => Promise<void>;
   onEditGroup: (group: LiberaNotebookGroup) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
+  onRemoveFolder?: (name: string) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
   onShowMoreNodes: (path: string) => void;
@@ -1521,6 +1523,7 @@ function NotebookGroupSection({
               onDownloadNotebook={onDownloadNotebook}
               onDropFile={onDropFile}
               onEditNotebook={onEditNotebook}
+              onRemoveFolder={onRemoveFolder}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={onShowMoreNodes}

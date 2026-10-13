@@ -27,11 +27,11 @@ export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    const body = await request.json() as { action?: unknown; path?: unknown };
+    const body = await request.json() as { action?: unknown; name?: unknown; path?: unknown };
     switch (body.action) {
       case "open": return NextResponse.json(await openDirectory(body.path));
       case "open-file": return NextResponse.json(await openFileLocation(body.path));
-      case "close": return NextResponse.json(closeDirectory());
+      case "close": return NextResponse.json(closeDirectory(body.name));
       case "clear-recent": return NextResponse.json(clearRecentDirectories());
       default: return NextResponse.json({ error: "Unknown folder action." }, { status: 400 });
     }

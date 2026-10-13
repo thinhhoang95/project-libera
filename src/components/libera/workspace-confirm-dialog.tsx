@@ -50,6 +50,16 @@ function getDialogContent(dialog: WorkspaceConfirmDialogState) {
         confirmLabel: "Delete notebook",
         destructive: true,
       };
+    case "remove-folder": {
+      const tabLabel = dialog.dirtyTabCount === 1 ? "open tab has" : "open tabs have";
+
+      return {
+        title: "Remove folder from Libera",
+        description: `${dialog.dirtyTabCount} ${tabLabel} unsaved edits in ${dialog.notebook}. The folder and its files stay on disk.`,
+        confirmLabel: "Remove without saving",
+        destructive: true,
+      };
+    }
     case "move-file-node":
     case "move-file-folder":
       return {

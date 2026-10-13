@@ -9,21 +9,31 @@ import {
   readNotebookMetadata,
   writeNotebookMetadata,
 } from "@/lib/storage/notebook-metadata";
-import { ensureAdminRoot, getMountedDirectory, notebookPath } from "@/lib/storage/paths";
-import { getTree } from "@/lib/storage/tree";
+import { renameLinkedFolder } from "@/lib/storage/directory-mode";
+import {
+  assertSafeSegment,
+  ensureAdminRoot,
+  getLinkedFolder,
+  getLinkedFolders,
+  notebookPath,
+} from "@/lib/storage/paths";
+import { getTree, LINKED_FOLDER_METADATA_DEFAULTS } from "@/lib/storage/tree";
 import {
   removeNotebookPanelExpandedPathPrefix,
   readWorkspaceMetadata,
-  removeStarredFilePathPrefix,
+  removeFileMetadataPathPrefix,
   renameNotebookPanelExpandedPathPrefix,
-  renameStarredFilePathPrefix,
+  renameFileMetadataPathPrefix,
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
 
-function assertNotebookMode() {
-  if (getMountedDirectory()) {
-    throw new StorageError("Close the open folder to manage notebooks.", 409);
+/** Notebooks and linked folders share one namespace of top-level names. */
+function assertNameNotUsedByFolder(name: string, except?: string) {
+  const normalized = name.trim().toLowerCase();
+
+  if (getLinkedFolders().some((folder) => folder.name !== except && folder.name.toLowerCase() === normalized)) {
+    throw new StorageError("A linked folder already uses this name.", 409);
   }
 }
 
@@ -31,7 +41,7 @@ export async function createNotebook(
   name: string,
   metadataInput?: Partial<LiberaNotebookMetadata>,
 ) {
-  assertNotebookMode();
+  assertNameNotUsedByFolder(name);
   await ensureAdminRoot();
   const targetPath = notebookPath(name);
 
@@ -56,23 +66,36 @@ export async function renameNotebook(
   nextName: string,
   metadataInput?: Partial<LiberaNotebookMetadata>,
 ) {
-  assertNotebookMode();
   await ensureAdminRoot();
-  const currentPath = notebookPath(currentName);
-  const nextPath = notebookPath(nextName);
-  const currentStats = await stat(currentPath);
-  const existingMetadata = await readNotebookMetadata(
-    currentName,
-    currentStats.birthtime.toISOString(),
-  );
+  const safeCurrentName = assertSafeSegment(currentName, "Notebook name");
+  const safeNextName = assertSafeSegment(nextName, "Notebook name");
+  const linkedFolder = getLinkedFolder(safeCurrentName);
+  assertNameNotUsedByFolder(safeNextName, linkedFolder?.name);
+  const currentPath = notebookPath(safeCurrentName);
+  const existingMetadata = linkedFolder
+    ? await readNotebookMetadata(safeCurrentName, new Date(0).toISOString(), LINKED_FOLDER_METADATA_DEFAULTS)
+    : await readNotebookMetadata(
+        safeCurrentName,
+        (await stat(currentPath)).birthtime.toISOString(),
+      );
 
-  if (currentPath !== nextPath && (await pathExists(nextPath))) {
-    throw new StorageError("Destination notebook already exists.", 409);
+  if (linkedFolder) {
+    // Only the folder's name in Libera changes; the folder on disk keeps its name.
+    renameLinkedFolder(safeCurrentName, safeNextName);
+  } else {
+    const nextPath = notebookPath(safeNextName);
+
+    if (currentPath !== nextPath && (await pathExists(nextPath))) {
+      throw new StorageError("Destination notebook already exists.", 409);
+    }
+
+    if (currentPath !== nextPath) {
+      await rename(currentPath, nextPath);
+    }
   }
 
-  if (currentPath !== nextPath) {
-    await rename(currentPath, nextPath);
-  }
+  currentName = safeCurrentName;
+  nextName = safeNextName;
 
   await writeNotebookMetadata(
     nextName,
@@ -89,19 +112,23 @@ export async function renameNotebook(
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
-  await renameStarredFilePathPrefix(currentName, nextName);
+  await renameFileMetadataPathPrefix(currentName, nextName);
 
   return getTree();
 }
 
 export async function deleteNotebook(name: string) {
-  assertNotebookMode();
+  if (getLinkedFolder(assertSafeSegment(name, "Notebook name"))) {
+    // Never delete a user's own folder from disk through the notebook action.
+    throw new StorageError("Remove the folder from Libera instead. Its files stay on disk.", 409);
+  }
+
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
   await removeNotebookPanelExpandedPathPrefix(name);
   await deleteReviewPath(name);
-  await removeStarredFilePathPrefix(name);
+  await removeFileMetadataPathPrefix(name);
 
   return getTree();
 }

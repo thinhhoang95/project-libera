@@ -98,7 +98,7 @@ test("panel highlights related notebooks in both grouped and ungrouped sections"
     onEditNotebook: noop, onEditNotebookGroup: noop, onMoveFile: noop,
     onOpenFile: noop, onQueryChange: noop, onRenameFolder: noop, onRenameFile: noop,
     onSelectNotebook: noop, onSelectSearchResult: noop, onStartUpload: noop,
-    onToggleFileStar: noop, onToggleNotebook: noop, onUploadChange: noop,
+    onToggleFileStar: noop, onEditFileTags: noop, onToggleNotebook: noop, onUploadChange: noop,
     onUploadFiles: noop, onUpdateNotebookViewOptions: noop,
   };
   function sections(selectedNotebookName: string) {

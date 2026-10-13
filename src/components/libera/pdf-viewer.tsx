@@ -31,6 +31,7 @@ import type {
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
@@ -1534,6 +1535,7 @@ function PdfPageContent({
 }: PdfPageContentProps) {
   const pageNumber = pageLayout.pageNumber;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const detailHostRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
@@ -1641,6 +1643,8 @@ function PdfPageContent({
     };
   }, [pageNumber, pdfDocument, requestRenderSlot, textContentCache, zoom]);
 
+  usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument, pageNumber, scale: zoom });
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const textLayerElement = textLayerRef.current;
@@ -1721,6 +1725,7 @@ function PdfPageContent({
       onClick={selectHighlightAtPoint}
     >
       <canvas ref={canvasRef} className="absolute inset-0 z-0" />
+      <div ref={detailHostRef} className="pointer-events-none absolute inset-0 z-0" aria-hidden />
 
       <div className="pdf-highlight-layer" aria-hidden>
         {highlights.map((annotation) => (

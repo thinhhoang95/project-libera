@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
 
@@ -45,6 +45,20 @@ export async function findAvailableFilePath(directory: string, fileName: string)
   };
 }
 
+/**
+ * Rename, falling back to copy and delete when the target is on another drive,
+ * as it is when a file moves between a notebook and a linked folder.
+ */
+export async function movePath(currentPath: string, nextPath: string) {
+  try {
+    await rename(currentPath, nextPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await cp(currentPath, nextPath, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    await rm(currentPath, { recursive: true, force: true });
+  }
+}
+
 export async function moveFileIfExists(currentPath: string, nextPath: string) {
   if (currentPath === nextPath) {
     return;
@@ -56,7 +70,7 @@ export async function moveFileIfExists(currentPath: string, nextPath: string) {
 
   await ensureParentDirectory(nextPath);
   await rm(nextPath, { force: true });
-  await rename(currentPath, nextPath);
+  await movePath(currentPath, nextPath);
 }
 
 export async function copyFileIfExists(currentPath: string, nextPath: string) {

@@ -53,7 +53,7 @@ function setEntry(rootPath: string, update: (entry: LatexBuildEntry) => LatexBui
   for (const listener of listeners.get(rootPath) ?? []) listener();
 }
 
-function subscribe(rootPath: string, listener: Listener) {
+export function subscribeLatexBuild(rootPath: string, listener: Listener) {
   const set = listeners.get(rootPath) ?? new Set();
   set.add(listener);
   listeners.set(rootPath, set);
@@ -67,7 +67,7 @@ const emptyEntries = new Map<string, LatexBuildEntry>();
 
 export function useLatexBuild(rootPath: string) {
   return useSyncExternalStore(
-    (listener) => subscribe(rootPath, listener),
+    (listener) => subscribeLatexBuild(rootPath, listener),
     () => entries.get(rootPath) ?? (emptyEntries.get(rootPath) ?? emptyEntries.set(rootPath, emptyEntry(rootPath)).get(rootPath)!),
     () => emptyEntries.get(rootPath) ?? emptyEntries.set(rootPath, emptyEntry(rootPath)).get(rootPath)!,
   );

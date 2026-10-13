@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -12,24 +12,37 @@ import {
   openDirectory,
   openFileLocation,
 } from "../../src/lib/storage/directory-mode";
-import { createMarkdownFile, readLiberaFile, updateMarkdownFile } from "../../src/lib/storage/files";
+import {
+  createMarkdownFile,
+  moveFileToDirectory,
+  readLiberaFile,
+  updateMarkdownFile,
+} from "../../src/lib/storage/files";
 import { writePdfAnnotations } from "../../src/lib/storage/annotations";
-import { createNotebook } from "../../src/lib/storage/notebooks";
+import { createNotebook, deleteNotebook, renameNotebook } from "../../src/lib/storage/notebooks";
+import { createNotebookGroup } from "../../src/lib/storage/notebook-groups";
 import { getAdminRoot } from "../../src/lib/storage/paths";
+import { updateStarredFile } from "../../src/lib/storage/starred-files";
 import { getTree } from "../../src/lib/storage/tree";
 import { readWorkspaces, writeWorkspaces } from "../../src/lib/storage/workspaces";
 import { emptyWorkspaceLibrary } from "../../src/lib/workspaces";
-import type { LiberaTreeNode } from "../../src/lib/types";
+import type { LiberaTree, LiberaTreeNode } from "../../src/lib/types";
 
 const require = createRequire(import.meta.url);
-const { contextStateRoot, directoryStateRoot } = require("../../electron/directory-mode.cjs");
+const { directoryModeStatePath, directoryStateRoot } = require("../../electron/directory-mode.cjs");
 
 function filePaths(nodes: LiberaTreeNode[]): string[] {
   return nodes.flatMap((node) => node.kind === "file" ? [node.path] : filePaths(node.children));
 }
 
-async function withDataDirectory(run: (paths: { data: string; project: string }) => Promise<void>) {
-  const scratch = await mkdtemp(path.join(os.tmpdir(), "libera-directory-mode-"));
+function notebookNamed(tree: LiberaTree, name: string) {
+  const notebook = tree.notebooks.find((candidate) => candidate.name === name);
+  assert.ok(notebook, `${name} is in the library`);
+  return notebook;
+}
+
+async function withDataDirectory(run: (paths: { scratch: string; project: string }) => Promise<void>) {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "libera-linked-folders-"));
   const previous = process.env.LIBERA_DATA_DIR;
   process.env.LIBERA_DATA_DIR = path.join(scratch, "data");
   const project = path.join(scratch, "Thesis Project");
@@ -45,25 +58,31 @@ async function withDataDirectory(run: (paths: { data: string; project: string })
   try {
     await createNotebook("Library");
     await createMarkdownFile("Library", "Private.md", "library only");
-    await run({ data: process.env.LIBERA_DATA_DIR, project });
+    await run({ scratch, project });
   } finally {
-    closeDirectory();
+    for (const folder of getDirectoryModeSummary().folders) closeDirectory(folder.name);
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
     await rm(scratch, { recursive: true, force: true });
   }
 }
 
-test("an open folder replaces the notebook library and only exposes its own files", async () => {
+test("a linked folder sits next to the notebooks and both stay usable", async () => {
   await withDataDirectory(async ({ project }) => {
-    const summary = await openDirectory(project);
-    assert.deepEqual(summary.current, { name: "Thesis Project", path: project });
-    assert.deepEqual(summary.recent, [project]);
+    const linked = await openDirectory(project);
+    assert.equal(linked.name, "Thesis Project");
+    assert.equal(linked.changed, true);
+    assert.deepEqual(linked.folders, [{ name: "Thesis Project", path: project }]);
+    assert.deepEqual(linked.recent, [project]);
+    assert.equal((await openDirectory(project)).changed, false, "linking twice keeps one link");
 
     const tree = await getTree();
-    assert.equal(tree.root, project);
-    assert.deepEqual(tree.directory, { name: "Thesis Project", path: project, truncated: false });
-    assert.deepEqual(tree.notebooks.map((notebook) => notebook.name), ["Thesis Project"]);
-    assert.deepEqual(filePaths(tree.notebooks[0].children).sort(), [
+    assert.equal(tree.root, getAdminRoot(), "the library stays the context");
+    assert.deepEqual(tree.notebooks.map((notebook) => notebook.name).sort(), ["Library", "Thesis Project"]);
+    const folder = notebookNamed(tree, "Thesis Project");
+    assert.deepEqual(folder.folder, { path: project, truncated: false });
+    assert.equal(folder.emoji, "📁");
+    assert.equal(notebookNamed(tree, "Library").folder, undefined);
+    assert.deepEqual(filePaths(folder.children).sort(), [
       "Thesis Project/README.md",
       "Thesis Project/chapters/intro.md",
       "Thesis Project/paper.pdf",
@@ -71,56 +90,106 @@ test("an open folder replaces the notebook library and only exposes its own file
 
     assert.equal((await readLiberaFile("Thesis Project/chapters/intro.md")).content, "Intro\n");
     await updateMarkdownFile("Thesis Project/chapters/intro.md", "Edited\n");
-    assert.equal((await readLiberaFile("Thesis Project/chapters/intro.md")).content, "Edited\n");
-
-    await assert.rejects(readLiberaFile("Library/Private.md"), /open folder/, "notebooks are unreachable");
+    assert.equal(await readFile(path.join(project, "chapters", "intro.md"), "utf8"), "Edited\n");
+    assert.equal((await readLiberaFile("Library/Private.md")).content, "library only", "notebooks stay reachable");
     await assert.rejects(readLiberaFile("Thesis Project/../Library/Private.md"));
-    await assert.rejects(createNotebook("Another"), /Close the open folder/);
+
+    await createNotebook("Another");
+    assert.ok(notebookNamed(await getTree(), "Another"), "notebooks can be created while folders are linked");
+    await assert.rejects(createNotebook("thesis project"), /linked folder already uses/);
   });
 });
 
-test("app state for an open folder lives in the data directory, not in the folder", async () => {
+test("folder names never collide with notebooks", async () => {
+  await withDataDirectory(async ({ scratch }) => {
+    const clash = path.join(scratch, "Library");
+    await mkdir(clash);
+    await writeFile(path.join(clash, "a.md"), "folder copy\n");
+    const linked = await openDirectory(clash);
+    assert.equal(linked.name, "Library (2)");
+    assert.equal((await readLiberaFile("Library (2)/a.md")).content, "folder copy\n");
+    assert.equal((await readLiberaFile("Library/Private.md")).content, "library only");
+  });
+});
+
+test("app state for a linked folder lives in the data directory, not in the folder", async () => {
   await withDataDirectory(async ({ project }) => {
     await openDirectory(project);
     await writePdfAnnotations("Thesis Project/paper.pdf", []);
+    await getTree();
     assert.deepEqual((await readdir(project)).sort(), ["README.md", "chapters", "node_modules", "notes.docx", "paper.pdf", ".git"].sort());
-    assert.ok(existsSync(path.join(directoryStateRoot(getAdminRoot(), project), ".libera", "annotations", "pdf", "paper.pdf.json")));
+    const stateRoot = directoryStateRoot(getAdminRoot(), project);
+    assert.ok(existsSync(path.join(stateRoot, ".libera", "annotations", "pdf", "paper.pdf.json")));
+    assert.ok(existsSync(path.join(stateRoot, ".libera", "notebook-links.json")), "link index stays out of the folder");
   });
 });
 
-test("Notebook mode and each folder keep separate workspace sessions", async () => {
+test("files move between notebooks and linked folders with their metadata", async () => {
+  await withDataDirectory(async ({ project }) => {
+    await openDirectory(project);
+    await updateStarredFile("Library/Private.md", true);
+    await moveFileToDirectory("Library/Private.md", "Thesis Project/chapters");
+    assert.equal(await readFile(path.join(project, "chapters", "Private.md"), "utf8"), "library only");
+    let tree = await getTree();
+    assert.deepEqual(tree.starredFilePaths, ["Thesis Project/chapters/Private.md"]);
+
+    await moveFileToDirectory("Thesis Project/chapters/Private.md", "Library");
+    tree = await getTree();
+    assert.deepEqual(tree.starredFilePaths, ["Library/Private.md"]);
+    assert.equal(existsSync(path.join(project, "chapters", "Private.md")), false);
+  });
+});
+
+test("linked folders can be renamed, grouped and removed without touching disk", async () => {
+  await withDataDirectory(async ({ project }) => {
+    await openDirectory(project);
+    await updateStarredFile("Thesis Project/README.md", true);
+
+    let tree = await renameNotebook("Thesis Project", "Thesis", { emoji: "🎓" });
+    const renamed = notebookNamed(tree, "Thesis");
+    assert.equal(renamed.emoji, "🎓");
+    assert.deepEqual(tree.starredFilePaths, ["Thesis/README.md"]);
+    assert.ok(existsSync(path.join(project, "README.md")), "the folder on disk keeps its name");
+    await assert.rejects(renameNotebook("Thesis", "Library"), /already uses this name/);
+
+    tree = await createNotebookGroup({ title: "Research", notebookNames: ["Thesis", "Library"] });
+    const groupId = tree.notebookGroups[0].id;
+    assert.equal(notebookNamed(tree, "Thesis").groupId, groupId);
+    assert.equal(notebookNamed(tree, "Library").groupId, groupId);
+
+    await assert.rejects(deleteNotebook("Thesis"), /Remove the folder/);
+    assert.deepEqual(closeDirectory("Thesis").folders, []);
+    assert.ok(existsSync(path.join(project, "README.md")), "removing a folder keeps its files");
+    tree = await getTree();
+    assert.deepEqual(tree.notebooks.map((notebook) => notebook.name), ["Library"]);
+    assert.throws(() => closeDirectory("Thesis"), /not linked/);
+  });
+});
+
+test("notebooks and folders share one workspace session", async () => {
   await withDataDirectory(async ({ project }) => {
     const adminRoot = getAdminRoot();
     await writeWorkspaces({ ...emptyWorkspaceLibrary(), updatedAt: 10 }, adminRoot);
     await openDirectory(project);
-    assert.equal((await readWorkspaces(project)).updatedAt, 0, "a new folder starts empty");
-    await writeWorkspaces({ ...emptyWorkspaceLibrary(), updatedAt: 20 }, project);
-    // A notebook page that is still closing after the switch saves its own session.
-    await writeWorkspaces({ ...emptyWorkspaceLibrary(), updatedAt: 11 }, adminRoot);
-    assert.equal((await readWorkspaces(project)).updatedAt, 20);
-    assert.equal((await readWorkspaces(adminRoot)).updatedAt, 11);
-    assert.throws(() => writeWorkspaces(emptyWorkspaceLibrary(), "/never/opened"), /no longer open/);
-
-    closeDirectory();
-    assert.equal((await readWorkspaces()).updatedAt, 11, "closing returns to the library session");
-    assert.equal(contextStateRoot(adminRoot, project), directoryStateRoot(adminRoot, project), "recent folders can still save");
+    assert.equal((await readWorkspaces(adminRoot)).updatedAt, 10, "linking a folder keeps the session");
+    assert.throws(() => writeWorkspaces(emptyWorkspaceLibrary(), project), /out of date/);
   });
 });
 
-test("opening a file opens its folder unless it is already in the open context", async () => {
+test("opening a file opens it in place or links its folder", async () => {
   await withDataDirectory(async ({ project }) => {
     const opened = await openFileLocation(path.join(project, "chapters", "intro.md"));
     assert.equal(opened.changed, true);
     assert.equal(opened.filePath, "chapters/intro.md");
-    assert.equal(opened.current?.path, path.join(project, "chapters"));
+    assert.deepEqual(opened.folders, [{ name: "chapters", path: path.join(project, "chapters") }]);
 
     await openDirectory(project);
     const inside = await openFileLocation(path.join(project, "chapters", "intro.md"));
     assert.equal(inside.changed, false);
-    assert.equal(inside.filePath, "Thesis Project/chapters/intro.md");
-    assert.deepEqual(getDirectoryModeSummary().recent, [project, path.join(project, "chapters")]);
+    assert.equal(inside.filePath, "chapters/intro.md", "the deepest linked folder wins");
+    const readme = await openFileLocation(path.join(project, "README.md"));
+    assert.equal(readme.filePath, "Thesis Project/README.md");
 
-    closeDirectory();
     const library = await openFileLocation(path.join(getAdminRoot(), "Library", "Private.md"));
     assert.equal(library.changed, false);
     assert.equal(library.filePath, "Library/Private.md");
@@ -129,30 +198,50 @@ test("opening a file opens its folder unless it is already in the open context",
   });
 });
 
-test("closing, missing folders and clearing recents return to the library", async () => {
+test("missing folders stay linked and invalid folders are refused", async () => {
   await withDataDirectory(async ({ project }) => {
     await openDirectory(project);
-    assert.equal(closeDirectory().current, null);
-    const tree = await getTree();
-    assert.equal(tree.directory, undefined);
-    assert.deepEqual(tree.notebooks.map((notebook) => notebook.name), ["Library"]);
-    assert.deepEqual(getDirectoryModeSummary().recent, [project], "closed folders stay recent");
-
     const moved = path.join(path.dirname(project), "Moved");
-    await openDirectory(project);
-    await rm(moved, { recursive: true, force: true });
-    await import("node:fs/promises").then(({ rename }) => rename(project, moved));
-    assert.deepEqual((await getTree()).notebooks.map((notebook) => notebook.name), ["Library"], "a vanished folder falls back to notebooks");
-    assert.equal(getDirectoryModeSummary().current, null);
+    await rename(project, moved);
+    let folder = notebookNamed(await getTree(), "Thesis Project");
+    assert.deepEqual(folder.folder, { path: project, truncated: false, missing: true });
+    assert.deepEqual(folder.children, []);
+    assert.equal(notebookNamed(await getTree(), "Library").children.length, 1, "notebooks still load");
+
+    await rename(moved, project);
+    folder = notebookNamed(await getTree(), "Thesis Project");
+    assert.equal(folder.folder?.missing, undefined, "the folder returns when it is back");
 
     assert.deepEqual(clearRecentDirectories().recent, []);
-    await assert.rejects(openDirectory(project), /not found/);
-    await assert.rejects(openDirectory(getAdminRoot()), /Libera library/);
+    await assert.rejects(openDirectory(path.join(project, "missing")), /not found/);
+    await assert.rejects(openDirectory(getAdminRoot()), /already part of your Libera library/);
+    await assert.rejects(openDirectory(path.join(getAdminRoot(), "Library")), /already part of your Libera library/);
     await assert.rejects(openDirectory("relative/path"), /Folder was not found|Choose a folder/);
   });
 });
 
-test("menu commands save the session before switching folders and recover from failures", async () => {
+test("a folder open in the old single-folder mode joins the library with its stars", async () => {
+  await withDataDirectory(async ({ project }) => {
+    const adminRoot = getAdminRoot();
+    const stateRoot = directoryStateRoot(adminRoot, project);
+    await mkdir(stateRoot, { recursive: true });
+    await writeFile(path.join(stateRoot, ".libera-workspace.json"), JSON.stringify({
+      starredFilePaths: ["Thesis Project/README.md"],
+      fileTags: { "Thesis Project/paper.pdf": ["reading"] },
+    }));
+    await mkdir(path.dirname(directoryModeStatePath(adminRoot)), { recursive: true });
+    await writeFile(directoryModeStatePath(adminRoot), JSON.stringify({ version: 1, current: project, recent: [project] }));
+
+    assert.deepEqual(getDirectoryModeSummary().folders, [{ name: "Thesis Project", path: project }]);
+    const tree = await getTree();
+    assert.deepEqual(tree.notebooks.map((notebook) => notebook.name).sort(), ["Library", "Thesis Project"]);
+    assert.deepEqual(tree.starredFilePaths, ["Thesis Project/README.md"]);
+    assert.deepEqual(tree.fileTags, { "Thesis Project/paper.pdf": ["reading"] });
+    assert.equal(existsSync(path.join(stateRoot, ".libera-workspace.json")), false, "merged once");
+  });
+});
+
+test("menu commands link folders in place without reloading", async () => {
   const { JSDOM, VirtualConsole } = await import("jsdom");
   const { act, createElement } = await import("react");
   const { createRoot } = await import("react-dom/client");
@@ -168,13 +257,28 @@ test("menu commands save the session before switching folders and recover from f
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   const originalFetch = globalThis.fetch;
   const requests: string[] = [];
-  let directoryResponse: Response | null = null;
+  const now = new Date().toISOString();
+  const introFile = {
+    kind: "file" as const, name: "intro.md", path: "Thesis/intro.md", notebook: "Thesis",
+    fileType: "markdown" as const, createdAt: now, updatedAt: now, size: 6,
+  };
+  const libraryTree: LiberaTree = { ...emptyTree(), root: "/library" };
+  const linkedTree: LiberaTree = {
+    ...libraryTree,
+    notebooks: [{
+      kind: "notebook", name: "Thesis", path: "Thesis", folder: { path: "/projects/Thesis", truncated: false },
+      createdAt: now, updatedAt: now, color: "#475569", emoji: "📁", groupId: null, children: [introFile],
+    }],
+  };
+  let currentTree = libraryTree;
+  let directoryResponse: () => Response = () => Response.json({});
   globalThis.fetch = async (url, init) => {
     const target = String(url);
     requests.push(`${init?.method ?? "GET"} ${target}`);
     if (target.startsWith("/api/workspaces")) return Response.json(init?.method === "PUT" ? { saved: true } : emptyWorkspaceLibrary());
-    if (target === "/api/directory") return directoryResponse!;
-    return Response.json({ ...emptyTree(), root: "/library" });
+    if (target === "/api/directory") return directoryResponse();
+    if (target.startsWith("/api/files?")) return Response.json({ file: introFile, content: "Intro\n" });
+    return Response.json(currentTree);
   };
   let listener: ((command: LiberaDirectoryCommand) => void) | undefined;
   let notified = 0;
@@ -194,21 +298,34 @@ test("menu commands save the session before switching folders and recover from f
     assert.ok(listener, "the hook listens for File menu commands");
     const notifiedAfterLoad = notified;
 
-    directoryResponse = Response.json({ error: "Folder was not found." }, { status: 404 });
+    directoryResponse = () => Response.json({ error: "Folder was not found." }, { status: 404 });
     await act(async () => { listener!({ type: "open-directory", path: "/projects/Missing" }); });
     assert.equal(workspace.workspaceError, "Folder was not found.");
-    assert.equal(workspace.workspaceManager.switching, false, "a failed switch resumes the session");
-    assert.equal(navigations.length, 0);
+    assert.equal(workspace.workspaceManager.ready, true, "a failed link leaves the session running");
+
+    directoryResponse = () => {
+      currentTree = linkedTree;
+      return Response.json({ changed: true, name: "Thesis", folders: [{ name: "Thesis", path: "/projects/Thesis" }], recent: [] });
+    };
+    await act(async () => { listener!({ type: "open-directory", path: "/projects/Thesis" }); });
+    assert.equal(workspace.workspaceError, "");
+    assert.equal(workspace.selectedNotebookName, "Thesis", "the linked folder is shown");
+    assert.ok(workspace.expanded.has("Thesis"));
+    assert.equal(notified, notifiedAfterLoad + 1, "the native menu is refreshed");
 
     requests.length = 0;
-    directoryResponse = Response.json({ changed: true, filePath: "Thesis/intro.md", current: { name: "Thesis", path: "/projects/Thesis" }, recent: [] });
+    directoryResponse = () => Response.json({ changed: false, filePath: "Thesis/intro.md", folders: [], recent: [] });
     await act(async () => { listener!({ type: "open-file", path: "/projects/Thesis/intro.md" }); });
-    const saved = requests.findIndex((request) => request === `PUT /api/workspaces?root=${encodeURIComponent("/library")}`);
-    const switched = requests.indexOf("POST /api/directory");
-    assert.ok(saved >= 0 && saved < switched, "the notebook session is saved under its own root first");
-    assert.equal(window.sessionStorage.getItem("libera:pending-open-file"), "Thesis/intro.md");
-    assert.equal(notified, notifiedAfterLoad + 1, "the native menu is refreshed");
-    assert.equal(navigations.length, 1, "the page reloads into the folder");
+    assert.ok(requests.includes(`GET /api/files?path=${encodeURIComponent("Thesis/intro.md")}`), "the file opens in a tab");
+    assert.equal(workspace.activeTabId, "Thesis/intro.md");
+
+    directoryResponse = () => {
+      currentTree = libraryTree;
+      return Response.json({ folders: [], recent: [] });
+    };
+    await act(async () => { listener!({ type: "close-directory", name: "Thesis" }); });
+    assert.equal(workspace.tabs.length, 0, "tabs from the removed folder close");
+    assert.equal(navigations.length, 0, "the page never reloads");
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

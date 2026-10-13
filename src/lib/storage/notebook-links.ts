@@ -4,8 +4,7 @@ import path from "node:path";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
-import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
-import { filePathFromParts, notebookPath } from "@/lib/storage/paths";
+import { filePathFromParts, notebookSystemDirectoryPath } from "@/lib/storage/paths";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 const parser = unified().use(remarkParse);
@@ -53,7 +52,8 @@ async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
 }
 
 async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[]) {
-  const directory = path.join(notebookPath(notebook.name), LIBERA_SYSTEM_DIR);
+  // Linked folders keep this index in the data folder, never in the user's folder.
+  const directory = notebookSystemDirectoryPath(notebook.name);
   const indexPath = path.join(directory, "notebook-links.json");
   const previous = await readLinkIndex(indexPath);
   const next: LinkIndex = { version: 1, files: {} };

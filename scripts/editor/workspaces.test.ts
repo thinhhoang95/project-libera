@@ -503,11 +503,11 @@ test("sorting controls and group changes stay in their workspace across switches
       onOpenFile: workspace.openFile, onQueryChange: workspace.setQuery, onRenameFolder: workspace.renameFolderFromPrompt,
       onRenameFile: workspace.renameFileNodeFromPrompt, onSelectNotebook: workspace.selectNotebook,
       onSelectSearchResult: workspace.selectSearchResult, onStartUpload: workspace.startUpload,
-      onToggleFileStar: workspace.toggleFileStar, onToggleNotebook: workspace.toggleNotebook,
+      onToggleFileStar: workspace.toggleFileStar, onEditFileTags: workspace.openFileTagsDialog, onToggleNotebook: workspace.toggleNotebook,
       onUploadChange: workspace.handleUploadChange, onUploadFiles: workspace.uploadFilesToNotebook,
       onUpdateNotebookViewOptions: workspace.updateNotebookViewOptions,
     });
-    const home = workspace.selectedNotebook ? createElement(NotebookHome, { yourName: "Test", notebook: workspace.selectedNotebook, onCreateMarkdown: workspace.createMarkdownFromPrompt, onCreateSlides: workspace.createMarkdownSlidesFromPrompt, onOpenFile: workspace.openFile }) : null;
+    const home = workspace.selectedNotebook ? createElement(NotebookHome, { yourName: "Test", notebook: workspace.selectedNotebook, fileTags: workspace.tree.fileTags, onEditFileTags: workspace.openFileTagsDialog, onCreateMarkdown: workspace.createMarkdownFromPrompt, onCreateSlides: workspace.createMarkdownSlidesFromPrompt, onOpenFile: workspace.openFile }) : null;
     return createElement(WorkspaceViewContext.Provider, { value: { view: manager.activeWorkspace?.view, updateView: manager.updateView } }, panel, home);
   }
   let root = createRoot(document.getElementById("root")!);

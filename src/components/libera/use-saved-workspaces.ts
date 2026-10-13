@@ -41,7 +41,7 @@ export function useSavedWorkspaces(options: Options) {
   useLayoutEffect(() => { current.current = options; });
 
   const journalKey = `libera:workspaces:v1:${options.tree.root}`;
-  // Notebook mode and each open folder have their own saved sessions.
+  // Keyed by the library root, which notebooks and linked folders share.
   const workspacesUrl = `/api/workspaces?root=${encodeURIComponent(options.tree.root)}`;
   function publish(next: WorkspaceLibrary) {
     libraryRef.current = next;
@@ -270,22 +270,5 @@ export function useSavedWorkspaces(options: Options) {
       void persist(next).catch((error: Error) => current.current.onError(error.message));
     },
     checkpoint: async () => { if (readyRef.current) await persist(snapshot()); },
-    /**
-     * Save the session and stop checkpointing before the page switches between
-     * Notebook and Directory mode. Returns a function that resumes on failure.
-     */
-    suspendForContextSwitch: async () => {
-      if (locked.current || !readyRef.current) throw new Error("Please wait for your workspace to finish loading.");
-      await Promise.allSettled([...fileChanges.current]);
-      await persist(snapshot());
-      locked.current = true;
-      readyRef.current = false;
-      setSwitching(true);
-      return () => {
-        locked.current = false;
-        readyRef.current = true;
-        setSwitching(false);
-      };
-    },
   };
 }

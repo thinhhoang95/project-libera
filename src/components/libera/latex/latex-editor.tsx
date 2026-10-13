@@ -12,6 +12,7 @@ import {
 } from "@codemirror/view";
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 import type { LatexDiagnostic } from "@/lib/latex/build";
+import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
 import { latexLanguageSupport } from "@/lib/latex/codemirror/language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
@@ -28,9 +29,9 @@ import { LatexChangeBar } from "./latex-change-bar";
 export type LatexEditorHandle = {
   view: EditorView;
   /** Reveal a line given in the numbering of the compiled text (SyncTeX, log). */
-  revealCompiledLine: (line: number, column?: number) => void;
-  /** Reveal a line in the current text (outline). */
-  revealLine: (line: number) => void;
+  revealCompiledLine: (line: number, column?: number, hint?: SynctexTextHint) => void;
+  /** Reveal a line in the current text (outline), refined to the hinted word if given. */
+  revealLine: (line: number, hint?: SynctexTextHint) => void;
   markCompileStarted: () => void;
   markCompileShown: () => void;
   text: () => string;
@@ -192,12 +193,6 @@ export function LatexEditor({
           }
         }),
         EditorView.domEventHandlers({
-          dblclick: (event, target) => {
-            const pos = target.posAtCoords({ x: event.clientX, y: event.clientY });
-            // Let the word be selected as usual, then show the spot in the PDF.
-            if (pos !== null && isTex) window.setTimeout(() => callbacks.current.onForwardSync(compiledLocationForPosition(target.state, pos)), 0);
-            return false;
-          },
           contextmenu: (event, target) => {
             event.preventDefault();
             const pos = target.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -246,13 +241,16 @@ export function LatexEditor({
     if (!view) return;
     editorRef.current = {
       view,
-      revealCompiledLine: (line, column = 0) => {
-        revealPosition(view, positionForCompiledLine(view.state, line, column));
+      revealCompiledLine: (line, column = 0, hint) => {
+        const pos = positionForCompiledLine(view.state, line, column);
+        const word = hint ? locateTextHint(view.state.doc.toString(), view.state.doc.lineAt(pos).number, hint) : null;
+        revealPosition(view, word?.from ?? pos, { selectTo: word?.to });
         view.focus();
       },
-      revealLine: (line) => {
+      revealLine: (line, hint) => {
         const target = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, line)));
-        revealPosition(view, target.from);
+        const word = hint ? locateTextHint(view.state.doc.toString(), target.number, hint) : null;
+        revealPosition(view, word?.from ?? target.from, { selectTo: word?.to });
         view.focus();
       },
       markCompileStarted: () => view.dispatch({ effects: markCompileStarted.of(null) }),

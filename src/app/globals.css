@@ -1623,3 +1623,10 @@ html.dark .libera-latex-pdf-page { box-shadow: 0 4px 20px rgb(0 0 0 / .45); }
 .libera-latex-compile > button:hover:not(:disabled) { background: color-mix(in srgb, var(--latex-compile) 12%, transparent); }
 .libera-latex-compile > button + button { border-left: 1px solid color-mix(in srgb, var(--latex-compile) 45%, transparent); }
 .libera-latex-compile kbd { font-family: inherit; font-size: 11px; opacity: .75; }
+
+/* Manual file tags: one hue per tag (set inline as --tag-hue). */
+.libera-tag-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; color: hsl(var(--tag-hue) 55% 32%); background: hsl(var(--tag-hue) 80% 94%); border: 1px solid hsl(var(--tag-hue) 60% 86%); }
+.libera-tag-chip button { display: inline-grid; place-items: center; margin-right: -3px; padding: 1px; border-radius: 999px; opacity: .7; }
+.libera-tag-chip button:hover { opacity: 1; background: hsl(var(--tag-hue) 60% 86%); }
+html.dark .libera-tag-chip { color: hsl(var(--tag-hue) 80% 82%); background: hsl(var(--tag-hue) 35% 22%); border-color: hsl(var(--tag-hue) 35% 32%); }
+html.dark .libera-tag-chip button:hover { background: hsl(var(--tag-hue) 35% 32%); }

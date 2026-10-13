@@ -10,14 +10,13 @@ const storagePath = (stateRoot: string) => path.join(stateRoot, ".libera-workspa
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * Notebook mode and each opened folder keep separate sessions. Clients name the
- * tree root they loaded so a page that is closing after a mode switch still
- * saves into its own session.
+ * Notebooks and linked folders share the library's session. Clients name the
+ * tree root they loaded so a page from an older build cannot save elsewhere.
  */
 export function workspaceStateRoot(contextRoot?: string | null) {
   if (!contextRoot) return getStateRoot();
   const stateRoot = contextStateRoot(getAdminRoot(), contextRoot);
-  if (!stateRoot) throw new StorageError("This folder is no longer open in Libera.", 409);
+  if (!stateRoot) throw new StorageError("This window is out of date. Reload Libera to keep working.", 409);
   return stateRoot;
 }
 

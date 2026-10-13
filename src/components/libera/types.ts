@@ -1,4 +1,5 @@
 import type { FormEvent, RefObject } from "react";
+import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -68,7 +69,7 @@ export type LatexTabViewState = {
   selectionEnd?: number;
   selectionStart?: number;
   /** One-shot request from another view (SyncTeX, outline) to reveal a line. */
-  revealLine?: { line: number; column?: number; nonce: number };
+  revealLine?: { line: number; column?: number; hint?: SynctexTextHint; nonce: number };
 };
 
 export type ImageTabViewState = {
@@ -205,6 +206,11 @@ export type WorkspaceConfirmDialogState =
       notebook: string;
     }
   | {
+      mode: "remove-folder";
+      notebook: string;
+      dirtyTabCount: number;
+    }
+  | {
       mode: "move-file-node";
       destinationName: string;
       destinationNotebook: string;
@@ -277,6 +283,7 @@ export type LiberaWorkspace = {
   workspaceConfirmDialogSubmitting: boolean;
   workspaceInputDialog: WorkspaceInputDialogState | null;
   workspaceInputDialogSubmitting: boolean;
+  fileTagsDialog: { file: LiberaFileNode; error: string; submitting: boolean } | null;
   workspaceError: string;
   closeOtherTabs: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -359,4 +366,7 @@ export type LiberaWorkspace = {
   submitWorkspaceInputDialog: (values: WorkspaceInputDialogValues) => Promise<void>;
   toggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
   toggleNotebook: (notebook: string) => void;
+  openFileTagsDialog: (file: LiberaFileNode) => void;
+  closeFileTagsDialog: () => void;
+  saveFileTags: (tags: string[]) => Promise<void>;
 };

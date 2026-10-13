@@ -14,6 +14,7 @@ import {
   ensureParentDirectory,
   findAvailableFilePath,
   moveFileIfExists,
+  movePath,
   pathExists,
 } from "@/lib/storage/fs-utils";
 import {
@@ -45,11 +46,11 @@ import {
 import { getTree, getFileNode } from "@/lib/storage/tree";
 import {
   removeNotebookPanelExpandedPathPrefix,
-  removeStarredFilePath,
-  removeStarredFilePathPrefix,
+  removeFileMetadataPath,
+  removeFileMetadataPathPrefix,
   renameNotebookPanelExpandedPathPrefix,
-  renameStarredFilePath,
-  renameStarredFilePathPrefix,
+  renameFileMetadataPath,
+  renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 
@@ -159,7 +160,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     throw new StorageError("Destination file already exists.", 409);
   }
 
-  await rename(currentPath, nextPath);
+  await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
     current.name,
@@ -171,7 +172,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -238,7 +239,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
     ]),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameStarredFilePathPrefix(
+  await renameFileMetadataPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
   );
@@ -298,7 +299,7 @@ export async function archiveFolder(relativePath: string) {
     markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameStarredFilePathPrefix(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
 
   return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
@@ -321,7 +322,7 @@ export async function deleteFolder(relativePath: string) {
     recursive: true,
   });
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
-  await removeStarredFilePathPrefix(relativeFilePath(current.notebook, current.pathParts));
+  await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
   );
@@ -360,7 +361,7 @@ export async function moveFileToDirectory(
     throw new StorageError("Destination file already exists.", 409);
   }
 
-  await rename(currentPath, nextPath);
+  await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
     current.name,
@@ -372,7 +373,7 @@ export async function moveFileToDirectory(
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -409,7 +410,7 @@ export async function archiveFile(relativePath: string) {
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -479,7 +480,7 @@ export async function deleteFile(relativePath: string) {
     });
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
-  await removeStarredFilePath(relativeFilePath(notebook, pathParts));
+  await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
 
   return getTree();
 }
@@ -584,7 +585,7 @@ async function moveRelatedMetadata(
 
     if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
       await ensureParentDirectory(nextAssetsPath);
-      await rename(currentAssetsPath, nextAssetsPath);
+      await movePath(currentAssetsPath, nextAssetsPath);
     }
 
     const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
@@ -599,7 +600,7 @@ async function moveRelatedMetadata(
       !(await pathExists(nextLegacyAssetsPath))
     ) {
       await ensureParentDirectory(nextLegacyAssetsPath);
-      await rename(currentLegacyAssetsPath, nextLegacyAssetsPath);
+      await movePath(currentLegacyAssetsPath, nextLegacyAssetsPath);
     }
   }
 }

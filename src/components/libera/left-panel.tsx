@@ -188,6 +188,7 @@ function LeftPanelRail({
       >
         {LEFT_PANEL_TABS.map((tab) => {
           const Icon = tab.icon;
+          const label = tab.label;
           const selected = activePanel === tab.id;
 
           return (
@@ -195,11 +196,11 @@ function LeftPanelRail({
               key={tab.id}
               id={`left-panel-tab-${tab.id}`}
               aria-controls={`left-panel-${tab.id}`}
-              aria-label={`${tab.label} tab`}
+              aria-label={`${label} tab`}
               aria-selected={selected}
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
               role="tab"
-              title={tab.label}
+              title={label}
               type="button"
               onClick={() => onSelectPanel(tab.id)}
             >

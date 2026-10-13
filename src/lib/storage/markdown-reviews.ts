@@ -100,3 +100,14 @@ export async function copyReviewPath(from: string, to: string) {
 export async function listRecoverableReviews() {
   return (await readDatabase()).documents.filter((d) => d.key.startsWith("draft:") && (d.threads.length || d.session)).map((d) => ({ id: d.id, key: d.key, snapshot: d.snapshot, commentCount: d.threads.length }));
 }
+/** Add review documents kept elsewhere, skipping ones the library already has. */
+export async function mergeReviewDocuments(documents: ReviewDocument[]) {
+  if (!documents.length) return;
+  return transaction((db, unchanged) => {
+    const ids = new Set(db.documents.map((d) => d.id));
+    const keys = new Set(db.documents.map((d) => d.key));
+    const added = documents.filter((d) => d && typeof d.id === "string" && typeof d.key === "string" && !ids.has(d.id) && !keys.has(d.key));
+    if (!added.length) { unchanged(); return; }
+    db.documents.push(...added);
+  });
+}

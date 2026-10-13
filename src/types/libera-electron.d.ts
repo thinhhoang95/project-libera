@@ -39,7 +39,7 @@ declare global {
   type LiberaDirectoryCommand =
     | { type: "open-directory"; path: string }
     | { type: "open-file"; path: string }
-    | { type: "close-directory" }
+    | { type: "close-directory"; name: string }
     | { type: "clear-recent" };
 
   type LiberaUpdaterStatus =

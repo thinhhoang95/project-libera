@@ -445,7 +445,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
           { id: "export-chat", label: "Export Chat", enabled: !!chat?.messages.length, submenu: [
             { id: "create-draft", label: "Create a new draft" },
             { id: "save-md", label: "Save MD file" },
-            { id: "save-notebook", label: "Save to Notebook (or Notebook Folder)" },
+            { id: "save-notebook", label: "Save to Notebook or Folder" },
           ] },
           { id: "increase-font-size", label: "Increase Font Size", enabled: !fontSizeSaving && fontSize < MAX_CHAT_FONT_SIZE },
           { id: "decrease-font-size", label: "Decrease Font Size", enabled: !fontSizeSaving && fontSize > MIN_CHAT_FONT_SIZE },
@@ -581,7 +581,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
         <p className="px-2 text-xs text-muted-foreground">Export Chat</p>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("create-draft")}>Create a new draft</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-md")}>Save MD file</button>
-        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook (or Notebook Folder)</button>
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook or Folder</button>
       </div>
     </ModalDialog>
     {exportSnapshot && <DocumentChatExportDialog snapshot={exportSnapshot} onClose={() => setExportSnapshot(null)} onSaved={onExportSaved} onSaveToNotebook={onSaveToNotebook} />}

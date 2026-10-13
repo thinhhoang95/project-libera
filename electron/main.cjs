@@ -27,6 +27,7 @@ const { clearLoginCookie } = require("./login-cookies.cjs");
 const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
 const {
   contextStateRoot,
+  findLinkedFolder,
   readDirectoryModeState,
 } = require("./directory-mode.cjs");
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
@@ -1025,7 +1026,7 @@ function readDirectoryModeStateFromConfig() {
   try {
     return readDirectoryModeState(getAdminRootFromConfig());
   } catch {
-    return { version: 1, current: null, recent: [] };
+    return { version: 2, folders: [], recent: [] };
   }
 }
 
@@ -1039,8 +1040,8 @@ function recentDirectoryLabel(directoryPath) {
   return shown.replace(/&/g, "&&");
 }
 
-// The renderer owns the switch: it saves the current session, asks the server
-// to open or close the folder, then reloads into the new context.
+// The renderer asks the server to link or remove the folder and refreshes its
+// library in place.
 function sendDirectoryCommand(command) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -1081,18 +1082,15 @@ async function chooseFileAndOpen() {
   if (filePath) sendDirectoryCommand({ type: "open-file", path: filePath });
 }
 
-/** Map a notebook-relative item path to disk, following an open folder. */
+/** Map a notebook-relative item path to disk, following linked folders. */
 function resolveContextItemPath(relativePath) {
   const { notebook, pathParts } = splitNotebookItemPath(relativePath);
   const adminRoot = getAdminRootFromConfig();
-  const { current } = readDirectoryModeState(adminRoot);
+  const folder = findLinkedFolder(readDirectoryModeState(adminRoot), notebook);
 
-  if (current) {
-    if (notebook !== (path.basename(current).trim() || "Folder")) {
-      throw new Error("Item is outside the open folder.");
-    }
-    const targetPath = path.join(current, ...pathParts);
-    assertPathInside(current, targetPath);
+  if (folder) {
+    const targetPath = path.join(folder.path, ...pathParts);
+    assertPathInside(folder.path, targetPath);
     return targetPath;
   }
 
@@ -1107,8 +1105,8 @@ function installDirectoryModeHandlers() {
   ipcMain.handle("directory:choose-file", (event) =>
     showFileDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow));
   ipcMain.handle("directory:changed", () => {
-    const { current } = readDirectoryModeStateFromConfig();
-    if (current) app.addRecentDocument(current);
+    const [latest] = readDirectoryModeStateFromConfig().recent;
+    if (latest) app.addRecentDocument(latest);
     installApplicationMenu();
   });
 }
@@ -1161,9 +1159,16 @@ function installApplicationMenu() {
         : [{ enabled: false, label: "No Recent Folders" }],
     },
     {
-      click: () => sendDirectoryCommand({ type: "close-directory" }),
-      enabled: Boolean(directoryState.current),
-      label: "Close Folder",
+      label: "Remove Folder from Libera",
+      enabled: directoryState.folders.length > 0,
+      submenu: directoryState.folders.length
+        ? directoryState.folders.map((folder) => ({
+            click: () => sendDirectoryCommand({ type: "close-directory", name: folder.name }),
+            // Electron treats "&" as a mnemonic marker on Windows and Linux.
+            label: folder.name.replace(/&/g, "&&"),
+            toolTip: folder.path,
+          }))
+        : [{ enabled: false, label: "No Linked Folders" }],
     },
     { type: "separator" },
   ];
@@ -1400,9 +1405,9 @@ function installFileExplorerHandlers() {
   ipcMain.handle("file-explorer:reveal-notebook", async (_event, notebook) => {
     const safeNotebook = assertSafePathSegment(notebook, "Notebook name");
     const adminRoot = getAdminRootFromConfig();
-    const { current } = readDirectoryModeState(adminRoot);
-    const notebookDirectory = current ?? path.join(adminRoot, safeNotebook);
-    if (!current) assertPathInside(adminRoot, notebookDirectory);
+    const folder = findLinkedFolder(readDirectoryModeState(adminRoot), safeNotebook);
+    const notebookDirectory = folder?.path ?? path.join(adminRoot, safeNotebook);
+    if (!folder) assertPathInside(adminRoot, notebookDirectory);
 
     const stats = await fsp.stat(notebookDirectory);
 
@@ -1453,7 +1458,7 @@ function installWindowControlHandlers() {
           new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
         throw new Error("Workspace checkpoint sender is invalid.");
       }
-      // Notebook mode and each open folder keep their own session.
+      // Notebooks and linked folders share the library session.
       const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
       if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
       writeWorkspaceRecovery(stateRoot, body);
@@ -1747,8 +1752,8 @@ async function createMainWindow(url) {
     dispatchRendererTabShortcut(mainWindow.webContents, Boolean(input.shift));
   });
   // Same-origin pages the renderer may open as child windows: duplicated
-  // Markdown previews and duplicated PDF/image tabs.
-  const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]]]);
+  // Markdown previews, duplicated PDF/image tabs and popped-out LaTeX PDFs.
+  const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]], ["/latex-pdf-window", [900, 1000]]]);
   const childWindowSize = (targetUrl) =>
     isSameOrigin(targetUrl, url) ? childWindowSizes.get(new URL(targetUrl).pathname) : undefined;
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {

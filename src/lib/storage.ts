@@ -40,6 +40,9 @@ export {
   updateStarredFile,
 } from "@/lib/storage/starred-files";
 export {
+  updateFileTags,
+} from "@/lib/storage/file-tags";
+export {
   setNotebookPanelExpandedPaths,
 } from "@/lib/storage/workspace-metadata";
 export {

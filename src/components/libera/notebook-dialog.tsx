@@ -51,11 +51,17 @@ export function NotebookDialog({
           groupId: "",
         };
 
+  const linkedFolder = dialog.mode === "edit" ? dialog.notebook.folder : undefined;
+
   return (
     <ModalDialog
       open
-      title={dialog.mode === "create" ? "New notebook" : "Edit notebook"}
-      description="Choose a name, group, color, and emoji for this notebook."
+      title={dialog.mode === "create" ? "New notebook" : linkedFolder ? "Edit folder" : "Edit notebook"}
+      description={
+        linkedFolder
+          ? "Choose how this folder appears in Libera. Renaming it here does not rename the folder on disk."
+          : "Choose a name, group, color, and emoji for this notebook."
+      }
       onClose={onClose}
       footer={
         <>

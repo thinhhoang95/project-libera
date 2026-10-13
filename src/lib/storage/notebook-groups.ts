@@ -2,8 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { StorageError } from "@/lib/storage/errors";
 import { readNotebookMetadata, writeNotebookMetadata } from "@/lib/storage/notebook-metadata";
-import { ensureAdminRoot, getAdminRoot, notebookPath } from "@/lib/storage/paths";
-import { getTree } from "@/lib/storage/tree";
+import {
+  ensureAdminRoot,
+  getAdminRoot,
+  getLinkedFolder,
+  getLinkedFolders,
+  notebookPath,
+} from "@/lib/storage/paths";
+import { getTree, LINKED_FOLDER_METADATA_DEFAULTS } from "@/lib/storage/tree";
 import {
   normalizeNotebookViewOptions,
   readWorkspaceMetadata,
@@ -69,14 +75,24 @@ async function listNotebookNames() {
 
   const entries = await readdir(getAdminRoot(), { withFileTypes: true });
 
-  return entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => entry.name);
+  const folderNames = getLinkedFolders().map((folder) => folder.name);
+
+  return [
+    ...entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !folderNames.includes(entry.name))
+      .map((entry) => entry.name),
+    ...folderNames,
+  ];
 }
 
 async function readNotebookMetadataWithFallback(
   notebook: string,
 ): Promise<LiberaNotebookMetadata> {
+  if (getLinkedFolder(notebook)) {
+    // A linked folder may be unplugged; its metadata lives in the data folder.
+    return readNotebookMetadata(notebook, new Date(0).toISOString(), LINKED_FOLDER_METADATA_DEFAULTS);
+  }
+
   const notebookStats = await stat(notebookPath(notebook));
   return readNotebookMetadata(notebook, notebookStats.birthtime.toISOString());
 }

@@ -105,6 +105,9 @@ type WorkspacePanelProps = {
   recentFiles: LiberaFileNode[];
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   selectedNotebook?: LiberaNotebookNode;
+  isFolder?: boolean;
+  fileTags: Record<string, string[]>;
+  onEditFileTags: (file: LiberaFileNode) => void;
   tabs: OpenTab[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
@@ -513,6 +516,7 @@ const PANEL_CALLBACKS = [
   "onCreateSlides",
   "onCreateLatex",
   "onCreateNotebook",
+  "onEditFileTags",
   "onCancelScreenshotSnip",
   "onCompleteScreenshotSnip",
   "onInsertExistingImage",
@@ -581,6 +585,9 @@ function WorkspacePanelContent({
   recentFiles,
   screenshotSnipSession,
   selectedNotebook,
+  isFolder,
+  fileTags,
+  onEditFileTags,
   readOpenTabs,
   textareaRef,
   onAiFormatSelection,
@@ -1435,6 +1442,9 @@ function WorkspacePanelContent({
         <NotebookHome
           yourName={yourName}
           notebook={selectedNotebook}
+          isFolder={isFolder}
+          fileTags={fileTags}
+          onEditFileTags={onEditFileTags}
           onCreateMarkdown={onCreateMarkdown}
           onCreateSlides={onCreateSlides}
           onCreateLatex={onCreateLatex}
@@ -1721,6 +1731,7 @@ function WorkspacePanelContent({
           ) : null}
           <ExistingImageDialog
             notebook={selectedNotebook}
+            isFolder={isFolder}
             open={existingImageDialogOpen}
             onClose={() => setExistingImageDialogOpen(false)}
             onSelect={async (file) => {

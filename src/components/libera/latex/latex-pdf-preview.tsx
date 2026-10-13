@@ -5,7 +5,9 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/
 import { Download, Loader2, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import type { SynctexPdfLocation } from "@/lib/latex/synctex";
+import { textHintAt, type SynctexTextHint } from "@/lib/latex/synctex-text";
 
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url).toString();
 
@@ -44,7 +46,7 @@ type LatexPdfPreviewProps = {
   emptyState: ReactNode;
   onZoomChange: (zoom: PdfZoom) => void;
   onScrollChange: (scrollTop: number, scrollLeft: number) => void;
-  onInverseSync: (location: { page: number; x: number; y: number }) => void;
+  onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
 };
 
 export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, downloadUrl, emptyState, onZoomChange, onScrollChange, onInverseSync }: LatexPdfPreviewProps) {
@@ -274,10 +276,11 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
   textCache: PdfTextContentCache;
   flash: { rects: SynctexPdfLocation[]; nonce: number } | null;
   registerPage: (pageNumber: number, element: HTMLDivElement | null) => void;
-  onInverseSync: (location: { page: number; x: number; y: number }) => void;
+  onInverseSync: (location: { page: number; x: number; y: number; hint?: SynctexTextHint }) => void;
 }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
+  const detailHostRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -339,6 +342,8 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
     };
   }, [active, pageNumber, pdf, scale, textCache]);
 
+  usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument: pdf, pageNumber, scale, active });
+
   return (
     <div
       ref={pageRef}
@@ -347,10 +352,12 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
       style={{ top, width, height }}
       onDoubleClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
-        onInverseSync({ page: pageNumber, x: (event.clientX - rect.left) / scale, y: (event.clientY - rect.top) / scale });
+        const hint = textLayerRef.current ? textHintAtPoint(textLayerRef.current, event.clientX, event.clientY) : null;
+        onInverseSync({ page: pageNumber, x: (event.clientX - rect.left) / scale, y: (event.clientY - rect.top) / scale, hint: hint ?? undefined });
       }}
     >
       <div ref={canvasHostRef} className="absolute inset-0" />
+      <div ref={detailHostRef} className="pointer-events-none absolute inset-0" aria-hidden />
       <div ref={textLayerRef} className="absolute inset-0" />
       {flash ? flash.rects.map((rect, index) => (
         <div
@@ -369,3 +376,33 @@ const LatexPdfPage = memo(function LatexPdfPage({ pdf, pageNumber, scale, width,
     </div>
   );
 });
+
+/** The caret under a point, in whichever form this browser supports. */
+function caretAtPoint(x: number, y: number): { node: Node; offset: number } | null {
+  const withPosition = document as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
+  if (withPosition.caretPositionFromPoint) {
+    const caret = withPosition.caretPositionFromPoint(x, y);
+    return caret ? { node: caret.offsetNode, offset: caret.offset } : null;
+  }
+  const range = document.caretRangeFromPoint?.(x, y);
+  return range ? { node: range.startContainer, offset: range.startOffset } : null;
+}
+
+/** The PDF word under a point, with the page text around it, to refine inverse search. */
+function textHintAtPoint(layer: HTMLElement, x: number, y: number) {
+  const caret = caretAtPoint(x, y);
+  if (!caret || caret.node.nodeType !== Node.TEXT_NODE || !layer.contains(caret.node)) return null;
+  // Read the text layer in order; its runs are separate spans, one per line piece.
+  let text = "";
+  let offset = -1;
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      if ((node as Element).tagName === "BR") text += " ";
+      continue;
+    }
+    if (node === caret.node) offset = text.length + caret.offset;
+    text += node.textContent ?? "";
+  }
+  return offset < 0 ? null : textHintAt(text, offset);
+}

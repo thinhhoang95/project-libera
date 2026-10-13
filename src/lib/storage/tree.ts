@@ -1,5 +1,6 @@
 import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
+import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
@@ -7,12 +8,12 @@ import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
 import { readNotebookMetadata } from "@/lib/storage/notebook-metadata";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
-import { closeDirectory } from "@/lib/storage/directory-mode";
+import { mergeLegacyFolderState } from "@/lib/storage/directory-mode";
 import {
   ensureAdminRoot,
   filePathFromParts,
   getAdminRoot,
-  getMountedDirectory,
+  getLinkedFolders,
   imageAnnotationsPath,
   itemPath,
   legacyImageAnnotationsPath,
@@ -21,7 +22,7 @@ import {
   pdfAnnotationsPath,
   relativeFilePath,
   relativeItemPath,
-  type MountedDirectory,
+  type LinkedFolder,
 } from "@/lib/storage/paths";
 import type {
   LiberaFileNode,
@@ -33,15 +34,14 @@ import type {
 
 type TreeReadOptions = {
   showArchive?: boolean;
-  /** Set for an open folder, which may be a large project rather than a notebook. */
+  /** Set for a linked folder, which may be a large project rather than a notebook. */
   budget?: { remaining: number; truncated: boolean };
 };
 
 // Dependency and build folders hold no notes and can be enormous.
-const SKIPPED_DIRECTORY_MODE_FOLDERS = new Set(["node_modules", "__pycache__", "bower_components"]);
-const DIRECTORY_MODE_ENTRY_LIMIT = 20_000;
-const DIRECTORY_MODE_EMOJI = "📁";
-const DIRECTORY_MODE_COLOR = "#475569";
+const SKIPPED_LINKED_FOLDER_ENTRIES = new Set(["node_modules", "__pycache__", "bower_components"]);
+const LINKED_FOLDER_ENTRY_LIMIT = 20_000;
+export const LINKED_FOLDER_METADATA_DEFAULTS = { emoji: "📁", color: "#475569" };
 
 function shouldSkipTreeEntry(name: string, options?: TreeReadOptions) {
   return (
@@ -50,16 +50,8 @@ function shouldSkipTreeEntry(name: string, options?: TreeReadOptions) {
     name === "__MACOSX" ||
     name === MARKDOWN_ASSETS_DIR ||
     (name === ARCHIVE_DIR && !options?.showArchive) ||
-    (Boolean(options?.budget) && SKIPPED_DIRECTORY_MODE_FOLDERS.has(name))
+    (Boolean(options?.budget) && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
   );
-}
-
-async function isDirectory(targetPath: string) {
-  try {
-    return (await stat(targetPath)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function sortTreeNodes(left: LiberaTreeNode, right: LiberaTreeNode) {
@@ -245,80 +237,68 @@ async function readTreeDirectory(
   return children.sort(sortTreeNodes);
 }
 
-async function getDirectoryTree(
-  mounted: MountedDirectory,
-  options: { includeArchive?: boolean },
-): Promise<LiberaTree> {
-  const workspaceMetadata = await readWorkspaceMetadata();
-  const showArchive = Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive);
-  const budget = { remaining: DIRECTORY_MODE_ENTRY_LIMIT, truncated: false };
-  const directoryStats = await stat(mounted.path);
-  const children = await readTreeDirectory(mounted.name, [], { showArchive, budget });
-  const filePaths = new Set<string>();
-  const expandablePaths = new Set<string>([mounted.name]);
-  collectFilePaths(children, filePaths);
-  collectExpandablePaths(children, expandablePaths);
+async function getLinkedFolderNode(
+  folder: LinkedFolder,
+  options: { showArchive: boolean; validGroupIds: Set<string> },
+): Promise<LiberaNotebookNode> {
+  let folderStats: Stats | null = null;
+
+  try {
+    folderStats = await stat(folder.path);
+    if (!folderStats.isDirectory()) folderStats = null;
+  } catch {
+    // A moved folder or an unplugged drive stays linked and shows as missing.
+  }
+
+  const fallbackDate = (folderStats?.birthtime ?? new Date(0)).toISOString();
+  const metadata = await readNotebookMetadata(folder.name, fallbackDate, LINKED_FOLDER_METADATA_DEFAULTS);
+  const budget = { remaining: LINKED_FOLDER_ENTRY_LIMIT, truncated: false };
+  const children = folderStats
+    ? await readTreeDirectory(folder.name, [], { showArchive: options.showArchive, budget })
+    : [];
 
   return {
-    archiveIncluded: showArchive,
-    root: mounted.path,
-    directory: { name: mounted.name, path: mounted.path, truncated: budget.truncated },
-    lastNotebookName: mounted.name,
-    notebookPanelExpandedPaths:
-      workspaceMetadata.notebookPanelExpandedPaths === null
-        ? null
-        : workspaceMetadata.notebookPanelExpandedPaths.filter((expandedPath) =>
-            expandablePaths.has(expandedPath),
-          ),
-    notebookGroups: [],
-    notebookViewOptions: { hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: workspaceMetadata.notebookViewOptions.showArchive },
-    starredFilePaths: workspaceMetadata.starredFilePaths.filter((filePath) =>
-      filePaths.has(filePath),
+    kind: "notebook",
+    name: folder.name,
+    path: folder.name,
+    folder: { path: folder.path, truncated: budget.truncated, ...(folderStats ? {} : { missing: true }) },
+    createdAt: metadata.createdAt,
+    color: metadata.color,
+    emoji: metadata.emoji,
+    illustration: metadata.illustration,
+    groupId:
+      metadata.groupId && options.validGroupIds.has(metadata.groupId)
+        ? metadata.groupId
+        : null,
+    updatedAt: latestIsoDate(
+      folderStats?.mtime.toISOString() ?? fallbackDate,
+      ...latestTreeNodeUpdatedAt(children),
     ),
-    notebooks: [{
-      kind: "notebook",
-      name: mounted.name,
-      path: mounted.name,
-      createdAt: directoryStats.birthtime.toISOString(),
-      color: DIRECTORY_MODE_COLOR,
-      emoji: DIRECTORY_MODE_EMOJI,
-      illustration: "azure-coast",
-      groupId: null,
-      updatedAt: latestIsoDate(
-        directoryStats.mtime.toISOString(),
-        ...latestTreeNodeUpdatedAt(children),
-      ),
-      children,
-    }],
+    children,
   };
 }
 
 export async function getTree(options: { includeArchive?: boolean } = {}): Promise<LiberaTree> {
   await ensureAdminRoot();
 
-  const mounted = getMountedDirectory();
-
-  if (mounted) {
-    if (await isDirectory(mounted.path)) {
-      return getDirectoryTree(mounted, options);
-    }
-
-    // A moved folder or an unplugged drive must not lock the app out of its
-    // library. The folder stays in the recent list.
-    closeDirectory();
-  }
+  const linkedFolders = getLinkedFolders();
+  // Folders carried over from the single-folder mode bring their stars and tags.
+  for (const folder of linkedFolders) await mergeLegacyFolderState(folder);
 
   const workspaceMetadata = await readWorkspaceMetadata();
   const validGroupIds = new Set(
     workspaceMetadata.notebookGroups.map((group) => group.id),
   );
   const entries = await readdir(getAdminRoot(), { withFileTypes: true });
+  const linkedFolderNames = new Set(linkedFolders.map((folder) => folder.name));
+  const showArchive = Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive);
   const notebooks: LiberaNotebookNode[] = [];
   const filePaths = new Set<string>();
   const expandablePaths = new Set<string>();
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+    // A linked folder's name wins over a notebook created on disk behind Libera's back.
+    if (!entry.isDirectory() || entry.name.startsWith(".") || linkedFolderNames.has(entry.name)) {
       continue;
     }
 
@@ -328,9 +308,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
       entry.name,
       notebookStats.birthtime.toISOString(),
     );
-    const children = await readTreeDirectory(entry.name, [], {
-      showArchive: options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive,
-    });
+    const children = await readTreeDirectory(entry.name, [], { showArchive });
 
     notebooks.push({
       kind: "notebook",
@@ -355,10 +333,18 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     collectExpandablePaths(children, expandablePaths);
   }
 
+  for (const folder of linkedFolders) {
+    const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
+    notebooks.push(node);
+    collectFilePaths(node.children, filePaths);
+    expandablePaths.add(node.name);
+    collectExpandablePaths(node.children, expandablePaths);
+  }
+
   await populateRelatedNotebooks(notebooks);
 
   return {
-    archiveIncluded: Boolean(options.includeArchive || workspaceMetadata.notebookViewOptions.showArchive),
+    archiveIncluded: showArchive,
     root: getAdminRoot(),
     lastNotebookName: await readLastNotebookName(),
     notebookPanelExpandedPaths:
@@ -375,6 +361,9 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     }),
     starredFilePaths: workspaceMetadata.starredFilePaths.filter((filePath) =>
       filePaths.has(filePath),
+    ),
+    fileTags: Object.fromEntries(
+      Object.entries(workspaceMetadata.fileTags).filter(([filePath]) => filePaths.has(filePath)),
     ),
     notebooks: notebooks.sort((left, right) => left.name.localeCompare(right.name)),
   };

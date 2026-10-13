@@ -86,27 +86,23 @@ function assertInsideRoot(rootPath: string, targetPath: string) {
   }
 }
 
-/** An external folder opened in Directory mode. It replaces the notebook library. */
-export type MountedDirectory = {
-  /** The single notebook name that addresses the folder, e.g. `name/notes.md`. */
+/** An external folder linked into the library. It is addressed like a notebook. */
+export type LinkedFolder = {
+  /** The unique top-level name that addresses the folder, e.g. `name/notes.md`. */
   name: string;
   path: string;
   /** App-owned state for this folder, kept in the data directory. */
   stateRoot: string;
 };
 
-type MountedDirectoryCache = { key: string; mounted: MountedDirectory | null };
-const MOUNTED_DIRECTORY_CACHE = Symbol.for("libera.mountedDirectory");
-
-export function mountedDirectoryName(directoryPath: string) {
-  return path.basename(directoryPath).trim() || "Folder";
-}
+type LinkedFoldersCache = { key: string; folders: LinkedFolder[] };
+const LINKED_FOLDERS_CACHE = Symbol.for("libera.linkedFolders");
 
 /**
- * Read the open folder. The state file can be written by another server
+ * Read the linked folders. The state file can be written by another server
  * worker, so cache only while its identity on disk is unchanged.
  */
-export function getMountedDirectory(): MountedDirectory | null {
+export function getLinkedFolders(): LinkedFolder[] {
   const adminRoot = getAdminRoot();
   const statePath = directoryModeStatePath(adminRoot);
   let key = `${statePath}:missing`;
@@ -115,45 +111,52 @@ export function getMountedDirectory(): MountedDirectory | null {
     const stats = statSync(statePath);
     key = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
   } catch {
-    // No state file means Notebook mode.
+    // No state file means no linked folders.
   }
 
-  const cache = globalThis as { [MOUNTED_DIRECTORY_CACHE]?: MountedDirectoryCache };
-  const cached = cache[MOUNTED_DIRECTORY_CACHE];
+  const cache = globalThis as { [LINKED_FOLDERS_CACHE]?: LinkedFoldersCache };
+  const cached = cache[LINKED_FOLDERS_CACHE];
 
   if (cached?.key === key) {
-    return cached.mounted;
+    return cached.folders;
   }
 
-  const { current } = readDirectoryModeState(adminRoot);
-  const mounted = current
-    ? { name: mountedDirectoryName(current), path: current, stateRoot: directoryStateRoot(adminRoot, current) }
-    : null;
-  cache[MOUNTED_DIRECTORY_CACHE] = { key, mounted };
-  return mounted;
+  const folders = readDirectoryModeState(adminRoot).folders.map((folder) => ({
+    name: folder.name,
+    path: folder.path,
+    stateRoot: directoryStateRoot(adminRoot, folder.path),
+  }));
+  // Reading may migrate an older state file, which changes its identity.
+  let storedKey = key;
+  try {
+    const stats = statSync(statePath);
+    storedKey = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    // Still no state file.
+  }
+  cache[LINKED_FOLDERS_CACHE] = { key: storedKey, folders };
+  return folders;
 }
 
-/** Where library-level state lives: the admin root, or the open folder's state root. */
+export function getLinkedFolder(name: string): LinkedFolder | null {
+  return getLinkedFolders().find((folder) => folder.name === name) ?? null;
+}
+
+/** Library-level state (sessions, stars, tags, reviews) is shared by notebooks and linked folders. */
 export function getStateRoot() {
-  return getMountedDirectory()?.stateRoot ?? getAdminRoot();
+  return getAdminRoot();
 }
 
 function notebookRootPath(safeNotebook: string) {
-  const mounted = getMountedDirectory();
+  const folder = getLinkedFolder(safeNotebook);
 
-  if (!mounted) {
-    const targetPath = path.join(getAdminRoot(), safeNotebook);
-    assertInsideAdminRoot(targetPath);
-    return targetPath;
+  if (folder) {
+    return folder.path;
   }
 
-  // Directory mode only exposes the open folder; links and attachments cannot
-  // reach notebooks or other folders.
-  if (safeNotebook !== mounted.name) {
-    throw new StorageError("Only files in the open folder are available.", 404);
-  }
-
-  return mounted.path;
+  const targetPath = path.join(getAdminRoot(), safeNotebook);
+  assertInsideAdminRoot(targetPath);
+  return targetPath;
 }
 
 function notebookChildPath(safeNotebook: string, ...parts: string[]) {
@@ -163,19 +166,22 @@ function notebookChildPath(safeNotebook: string, ...parts: string[]) {
   return targetPath;
 }
 
-/** Libera's per-notebook system folder. An open folder keeps it in the data directory. */
+/** Libera's per-notebook system folder. A linked folder keeps it in the data directory. */
 function notebookSystemPath(safeNotebook: string, ...parts: string[]) {
-  const mounted = getMountedDirectory();
+  const folder = getLinkedFolder(safeNotebook);
 
-  if (!mounted) {
+  if (!folder) {
     return notebookChildPath(safeNotebook, LIBERA_SYSTEM_DIR, ...parts);
   }
 
-  notebookRootPath(safeNotebook);
-  const systemRoot = path.join(mounted.stateRoot, LIBERA_SYSTEM_DIR);
+  const systemRoot = path.join(folder.stateRoot, LIBERA_SYSTEM_DIR);
   const targetPath = path.join(systemRoot, ...parts);
   assertInsideRoot(systemRoot, targetPath);
   return targetPath;
+}
+
+export function notebookSystemDirectoryPath(name: string) {
+  return notebookSystemPath(assertSafeSegment(name, "Notebook name"));
 }
 
 export function notebookPath(name: string) {
@@ -323,11 +329,10 @@ export function markdownAssetsDirectoryPath(notebook: string, markdownName: stri
 
 export function notebookMetadataPath(name: string) {
   const safeName = assertSafeSegment(name, "Notebook name");
-  const mounted = getMountedDirectory();
+  const folder = getLinkedFolder(safeName);
 
-  if (mounted) {
-    notebookRootPath(safeName);
-    return path.join(mounted.stateRoot, NOTEBOOK_METADATA_FILE);
+  if (folder) {
+    return path.join(folder.stateRoot, NOTEBOOK_METADATA_FILE);
   }
 
   return notebookChildPath(safeName, NOTEBOOK_METADATA_FILE);

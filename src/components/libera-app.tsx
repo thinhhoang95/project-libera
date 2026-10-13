@@ -22,6 +22,7 @@ import { TabStrip } from "@/components/libera/tab-strip";
 import type { OpenTab } from "@/components/libera/types";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
+import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import { CanvasSplitView } from "@/components/libera/canvas-split-view";
@@ -246,6 +247,9 @@ export function LiberaApp({
         recentFiles={workspace.recentFiles}
         screenshotSnipSession={workspace.screenshotSnipSession}
         selectedNotebook={workspace.selectedNotebook}
+        isFolder={Boolean(workspace.selectedNotebook?.folder)}
+        fileTags={workspace.tree.fileTags}
+        onEditFileTags={workspace.openFileTagsDialog}
         tabs={workspace.tabs}
         textareaRef={workspace.textareaRef}
         onAiFormatSelection={workspace.formatSelectionWithAi}
@@ -351,6 +355,7 @@ export function LiberaApp({
           onSetDraft={workspace.setActiveDraft}
           onStartUpload={workspace.startUpload}
           onToggleFileStar={workspace.toggleFileStar}
+          onEditFileTags={workspace.openFileTagsDialog}
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
@@ -358,7 +363,7 @@ export function LiberaApp({
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
           canOpenDirectories={workspace.canOpenDirectories}
           onOpenDirectory={() => void workspace.openDirectory()}
-          onCloseDirectory={() => void workspace.closeDirectory()}
+          onCloseDirectory={workspace.closeDirectory}
         />
 
         <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden" data-ai-active={aiActive}>
@@ -484,6 +489,12 @@ export function LiberaApp({
         submitting={workspace.noteDialogSubmitting}
         onClose={workspace.closeNoteDialog}
         onSubmit={workspace.submitNoteDialog}
+      />
+      <FileTagsDialog
+        dialog={workspace.fileTagsDialog}
+        fileTags={workspace.tree.fileTags}
+        onClose={workspace.closeFileTagsDialog}
+        onSubmit={workspace.saveFileTags}
       />
       <WorkspaceInputDialog
         dialog={workspace.workspaceInputDialog}
