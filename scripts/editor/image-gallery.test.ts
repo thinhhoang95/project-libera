@@ -201,3 +201,42 @@ test("reference photos must be image data URLs", () => {
   assert.throws(() => parseReferenceImages(["data:image/svg+xml;base64,PHN2Zz4="]), /PNG, JPEG/);
   assert.throws(() => parseReferenceImages("nope"), /Too many/);
 });
+
+test("photos from the computer are added to the gallery or an album, and non-images are refused", () => withDataDirectory(async () => {
+  const { importGalleryPhoto } = await import("../../src/lib/storage/gallery");
+  const { POST } = await import("../../src/app/api/gallery/photos/upload/route");
+  const { NextRequest } = await import("next/server");
+  const { createSessionToken, SESSION_COOKIE_NAME } = await import("../../src/lib/auth");
+
+  const loose = await importGalleryPhoto("", "holiday.png", await tile());
+  assert.equal(loose.path, "holiday.png");
+  const { album } = await createAlbum("Trips");
+  const inAlbum = await importGalleryPhoto(album.id, "C:\\Users\\me\\holiday.png", await tile("#20a060"));
+  assert.equal(inAlbum.path, "Trips/holiday.png", "a Windows path keeps only the file name");
+  const clash = await importGalleryPhoto("", "holiday.png", await tile());
+  assert.equal(clash.path, "holiday-1.png", "a name clash never overwrites a photo");
+  assert.deepEqual((await getGallery()).albums[0].count, 1);
+  await assert.rejects(importGalleryPhoto("", "notes.txt", Buffer.from("hello")), /Only PNG/);
+  await assert.rejects(importGalleryPhoto("", "fake.png", Buffer.from("not really a png")), /not a valid image/);
+  await assert.rejects(importGalleryPhoto("", "renamed.jpg", await tile()), /not a valid image/, "the extension must match the content");
+  await assert.rejects(importGalleryPhoto("missing", "x.png", await tile()), /no longer exists/);
+  await importGalleryPhoto("", "logo.svg", Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>'));
+
+  const body = new FormData();
+  body.set("albumId", album.id);
+  body.append("files", new File([new Uint8Array(await tile("#a02060"))], "beach.png", { type: "image/png" }));
+  body.append("files", new File(["oops"], "broken.png", { type: "image/png" }));
+  const post = (authenticated: boolean) => POST(new NextRequest("http://localhost/api/gallery/photos/upload", {
+    method: "POST", body, headers: authenticated ? { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` } : {},
+  }));
+  assert.equal((await post(false)).status, 401);
+  const response = await post(true);
+  assert.equal(response.status, 200);
+  const result = await response.json() as { added: string[]; failed: Array<{ name: string; error: string }>; gallery: { photos: Array<{ id: string; path: string; albumIds: string[] }> } };
+  assert.equal(result.added.length, 1, "one bad file does not stop the others");
+  assert.deepEqual(result.failed.map((item) => item.name), ["broken.png"]);
+  const beach = result.gallery.photos.find((photo) => photo.id === result.added[0])!;
+  assert.equal(beach.path, "Trips/beach.png");
+  assert.deepEqual(beach.albumIds, [album.id]);
+  assert.deepEqual(await files("Trips"), ["beach.png", "holiday.png"]);
+}));

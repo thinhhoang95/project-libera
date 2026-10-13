@@ -29,6 +29,7 @@ import dynamic from "next/dynamic";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
+import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
@@ -614,6 +615,7 @@ function WorkspacePanelContent({
   onStartScreenshotSnip,
 }: PanelContentProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
+  const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
@@ -1564,6 +1566,7 @@ function WorkspacePanelContent({
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
+            onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={onStartScreenshotSnip}
@@ -1730,6 +1733,16 @@ function WorkspacePanelContent({
               textScale={markdownZoomScale}
             />
           ) : null}
+          <GalleryPhotoPicker
+            open={galleryPickerOpen}
+            onClose={() => setGalleryPickerOpen(false)}
+            onInsert={async (photos) => {
+              const photoFiles = await Promise.all(photos.map(galleryPhotoFile));
+              setGalleryPickerOpen(false);
+              // One at a time: each lands after the previous one, in the order picked.
+              for (const file of photoFiles) await onInsertImage(file);
+            }}
+          />
           <ExistingImageDialog
             notebook={selectedNotebook}
             isFolder={isFolder}

@@ -20,6 +20,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
+const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
@@ -371,6 +372,8 @@ function normalizedImportedPreferences(input) {
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input.aiFunctions, openRouterModel),
     quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
+    // Backups made before snippets existed leave the saved snippets alone.
+    ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
     passwordHash,
   };
 }
@@ -429,7 +432,7 @@ async function importPreferences(parentWindow) {
     title: "Load Preferences Backup?",
     message: "Replace all saved Libera preferences with this backup?",
     detail:
-      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, theme, and master password verifier.",
+      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
   });
 
   if (confirmation.response !== 0) return { canceled: true };
@@ -982,6 +985,8 @@ async function openConfigurationWindow() {
         ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
+        : key === "latexSnippets"
+          ? JSON.stringify(updatedConfig.latexSnippets) !== JSON.stringify(previousConfig.latexSnippets)
         : key === "smartPaste"
           ? updatedConfig.smartPaste !== normalizeSmartPaste(previousConfig.smartPaste)
         : updatedConfig[key] !== previousConfig[key]),

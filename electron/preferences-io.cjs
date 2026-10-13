@@ -19,6 +19,7 @@ const PREFERENCE_KEYS = Object.freeze([
   "openRouterModel",
   "aiFunctions",
   "quickPrompts",
+  "latexSnippets",
   "passwordHash",
 ]);
 

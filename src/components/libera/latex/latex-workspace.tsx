@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, AlertTriangle, ChevronDown, Eraser, Info, Loader2, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, ChevronDown, Info, Loader2, PictureInPicture2, Play, ScrollText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
@@ -10,6 +10,7 @@ import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
 } from "@/lib/latex/project";
+import { usesPackage } from "@/lib/latex/snippets";
 import type { SynctexPdfLocation, SynctexSourceLocation } from "@/lib/latex/synctex";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
@@ -18,8 +19,10 @@ import { LatexCacheDialog } from "./latex-cache-dialog";
 import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu";
 import { LatexEditor, type LatexEditorHandle } from "./latex-editor";
 import { registerLatexEditor } from "./latex-editor-registry";
+import { LatexInsertToolbar } from "./latex-insert-toolbar";
 import { LatexPdfPreview, type PdfHighlightRequest, type PdfZoom } from "./latex-pdf-preview";
 import { closeLatexPdfWindow, openLatexPdfWindow, registerLatexPdfWindowHandlers, sendLatexPdfHighlight, useLatexPdfWindowOpen } from "./latex-pdf-window";
+import { LatexSnippetDialog, type LatexSnippetDialogRequest } from "./latex-snippet-dialog";
 
 type LatexWorkspaceProps = {
   tab: OpenTab;
@@ -103,6 +106,8 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const autoCompile = viewState?.autoCompile ?? true;
   const [aiError, setAiError] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [snippetDialog, setSnippetDialog] = useState<LatexSnippetDialogRequest | null>(null);
   const [highlight, setHighlight] = useState<PdfHighlightRequest | null>(null);
   const [logOpen, setLogOpen] = useState(viewState?.logOpen ?? false);
   const [rawLog, setRawLog] = useState(false);
@@ -233,6 +238,14 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   }, [build.version, readOpenTabs, tab.file.notebook, tab.id]);
 
   const project = useMemo<LatexProjectData>(() => ({ labels: otherLabels, bibEntries, files: projectFiles }), [bibEntries, otherLabels, projectFiles]);
+
+  /** Of packages a chapter file could not load itself, those its main file lacks too. */
+  const missingInMainFile = useCallback(async (packages: string[]) => {
+    if (rootPath === filePath) return packages;
+    const open = latest.current.readOpenTabs().find((other) => other.file.path === rootPath);
+    const text = open?.draft ?? await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(rootPath)}`).then((payload) => payload.content ?? "").catch(() => null);
+    return text === null ? packages : packages.filter((name) => !usesPackage(text, name));
+  }, [filePath, rootPath]);
 
   /* ---- SyncTeX ---------------------------------------------------------------- */
 
@@ -380,6 +393,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       onCompile={compile}
       onForwardSync={(location) => void forwardSync(location)}
       onAiError={setAiError}
+      onAddSnippet={(body) => { if (body.trim()) setSnippetDialog({ mode: "create", body }); }}
     />
   );
 
@@ -396,14 +410,15 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   return (
     <div className="libera-latex-workspace flex min-h-0 flex-1 flex-col overflow-hidden" onKeyDown={handleKeyDown}>
-      <div className="libera-latex-toolbar flex h-11 shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-card px-3">
+      {/* A container, so narrow panes drop the status text and shortcut hint. */}
+      <div className="libera-latex-toolbar @container flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card px-3">
         {isTex ? (
           <>
             <div ref={compileMenuAnchorRef} className="libera-latex-compile flex shrink-0 items-stretch overflow-hidden rounded-lg">
               <button type="button" className="inline-flex items-center gap-1.5 px-3 py-1 text-sm font-medium disabled:opacity-50" disabled={!canCompile} onClick={compile} title={`Recompile ${rootPath.split("/").at(-1)} (${compileShortcut})`} aria-keyshortcuts="Meta+Enter Control+Enter">
                 {build.compiling ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Play aria-hidden className="h-3.5 w-3.5" />}
                 {compileTarget === "current" ? "Recompile file" : "Recompile"}
-                <kbd>{compileShortcut}</kbd>
+                <kbd className="hidden @min-[80rem]:inline">{compileShortcut}</kbd>
               </button>
               <button
                 type="button"
@@ -411,7 +426,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
                 aria-label="Compile options"
                 aria-haspopup="menu"
                 aria-expanded={compileMenuOpen}
-                title="Choose which file to compile"
+                title={`Compile options · ${LATEX_ENGINE_LABELS[resolvedEngine]}${autoCompile ? " · auto compile on" : ""}`}
                 onClick={() => setCompileMenuOpen((open) => !open)}
               >
                 <ChevronDown aria-hidden className="h-3.5 w-3.5" />
@@ -425,52 +440,39 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
                 currentName={tab.file.name}
                 currentDisabledReason={currentDisabledReason}
                 onSelect={(target) => onSetViewState({ compileTarget: target })}
+                autoCompile={autoCompile}
+                onAutoCompileChange={(value) => onSetViewState({ autoCompile: value })}
+                engine={engineSetting}
+                resolvedEngine={resolveLatexEngine(draftForAnalysis, "auto")}
+                onEngineChange={(engine) => onSetViewState({ engine })}
+                clearCacheDisabled={!canCompile || build.compiling}
+                onClearCache={() => setCacheDialogOpen(true)}
                 onClose={() => setCompileMenuOpen(false)}
               />
             ) : null}
-            <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground" title="Compile automatically when you pause typing">
-              <input type="checkbox" checked={autoCompile} onChange={(event) => onSetViewState({ autoCompile: event.target.checked })} />
-              Auto compile
-            </label>
-            <label className="relative flex shrink-0 items-center text-xs text-muted-foreground" title="TeX engine. A “% !TEX program = …” line in the document takes precedence.">
-              <span className="sr-only">TeX engine</span>
-              <select
-                className="appearance-none rounded-md border border-border bg-card py-1 pl-2 pr-6 text-xs text-foreground"
-                value={engineSetting}
-                onChange={(event) => onSetViewState({ engine: event.target.value as LatexEngineSetting })}
-              >
-                <option value="auto">Auto ({LATEX_ENGINE_LABELS[resolvedEngine]})</option>
-                <option value="pdflatex">pdfLaTeX</option>
-                <option value="xelatex">XeLaTeX</option>
-                <option value="lualatex">LuaLaTeX</option>
-              </select>
-              <ChevronDown aria-hidden className="pointer-events-none absolute right-1.5 h-3 w-3" />
-            </label>
-            <button
-              type="button"
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:hover:bg-transparent"
-              disabled={!canCompile || build.compiling}
-              onClick={() => setCacheDialogOpen(true)}
-              title="Delete cached build files so the next compile starts clean"
-            >
-              <Eraser aria-hidden className="h-3.5 w-3.5" />
-              Clear cache
-            </button>
-            {rootPath !== filePath ? <span className="shrink-0 truncate text-xs text-muted-foreground" title={`Typesetting ${rootPath} (set by % !TEX root)`}>Main file: {rootPath.split("/").at(-1)}</span> : null}
+            <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <LatexInsertToolbar
+              editorRef={editorRef}
+              projectFiles={projectFiles}
+              onSnippetDialog={setSnippetDialog}
+              missingInMainFile={missingInMainFile}
+              onNotice={setNotice}
+            />
           </>
         ) : (
           <span className="text-xs text-muted-foreground">{/\.bib$/i.test(filePath) ? "Bibliography database" : "LaTeX source"} · compile the main .tex file to see changes</span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          {isTex && rootPath !== filePath ? <span className="max-w-[10rem] shrink-0 truncate text-xs text-muted-foreground" title={`Typesetting ${rootPath} (set by % !TEX root)`}>Main file: {rootPath.split("/").at(-1)}</span> : null}
           {isTex ? (
             <button
               type="button"
               className="libera-latex-status inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
               aria-expanded={logOpen}
               onClick={() => { setLogOpen((open) => !open); onSetViewState({ logOpen: !logOpen }); }}
-              title="Show logs and problems"
+              title={status ? `${status} · Show logs and problems` : "Show logs and problems"}
             >
-              <span className={result?.status === "failure" || build.requestError ? "text-destructive" : undefined}>{status}</span>
+              <span className={`sr-only max-w-[14rem] truncate @min-[80rem]:not-sr-only ${result?.status === "failure" || build.requestError ? "text-destructive" : ""}`}>{status}</span>
               {counts.error ? <span className="inline-flex items-center gap-0.5 text-destructive"><AlertCircle aria-hidden className="h-3.5 w-3.5" />{counts.error}</span> : null}
               {counts.warning ? <span className="libera-latex-warning-count inline-flex items-center gap-0.5"><AlertTriangle aria-hidden className="h-3.5 w-3.5" />{counts.warning}</span> : null}
               <ScrollText aria-hidden className="h-3.5 w-3.5" />
@@ -492,6 +494,8 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         </div>
       </div>
 
+      {snippetDialog ? <LatexSnippetDialog request={snippetDialog} onClose={() => { setSnippetDialog(null); editorRef.current?.view.focus(); }} /> : null}
+
       {cacheDialogOpen && isTex && canCompile ? (
         <LatexCacheDialog
           rootPath={rootPath}
@@ -504,6 +508,14 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
         <div role="alert" className="flex items-start gap-2 border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
           <span className="min-w-0 flex-1">{aiError || syncError}</span>
           <button type="button" aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-destructive/10" onClick={() => { setAiError(""); setSyncError(""); }}><X aria-hidden className="h-4 w-4" /></button>
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div role="status" className="flex items-start gap-2 border-b border-border bg-muted px-4 py-2 text-sm text-foreground">
+          <Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1">{notice}</span>
+          <button type="button" aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-card" onClick={() => setNotice("")}><X aria-hidden className="h-4 w-4" /></button>
         </div>
       ) : null}
 

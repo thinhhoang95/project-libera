@@ -38,6 +38,8 @@ Direct child folders are notebooks. Files inside notebooks currently support:
 
 The API rejects unsafe paths that escape the admin master directory.
 
+Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
+
 ## Math Rendering
 
 Markdown rendering is wired through:
@@ -264,3 +266,55 @@ Click **LATEX** in either the WYSIWYG or Source Editor toolbar to configure and 
 Install TeX Live or MiKTeX on the computer running Libera. `pdflatex` is discovered from `PATH` or the standard macOS TeX location; set `LIBERA_PDFLATEX_PATH` to an executable path and restart Libera if needed. In the desktop app, compilation runs on the user's computer; a remotely hosted web instance compiles on its server. Exports use temporary directories, disable shell escape, and restrict TeX file access. Documents are limited to 200,000 characters and exports time out after 15 minutes. Local Markdown images are resolved using the document’s notebook asset paths, converted to PNG, and copied into the temporary compilation directory. Embedded PNG/JPEG/GIF/WebP images are supported. Unreadable or nonlocal image sources produce an explicit error. Image exports include a LaTeX ZIP download with all referenced image files. External bibliography tools are not used. Long paragraphs split at plain-text whitespace, code at complete lines, lists at item boundaries, and tables at whole rows with repeated headers. Inline syntax and display equations stay intact, and reference links/footnotes retain their definitions across chunks. An indivisible block longer than two chunks fails with a request to split it manually. Block tracking detects missing or empty blocks but cannot guarantee sentence-level fidelity; review the generated PDF when content accuracy matters.
 
 Libera remembers the last selected notebook in the workspace data and reopens its home page on startup. Opening a file or switching tabs also updates this selection. If that notebook no longer exists, Libera opens the first available notebook.
+
+## Split panels
+
+Work on several files side by side by splitting the editor area into panels. Choose **Split Right** or **Split Down** in the file actions menu (Cmd/Ctrl+\ and Cmd/Ctrl+Shift+\), or right-click a tab and choose **Open to the Right** or **Open Below**. You can also drag a tab onto a panel: the highlighted zone shows whether it will split left, right, up, or down, or replace the panel's file. Panels can be split again in either direction. Drag a divider to resize panels, or double-click it to even them out. **Close Panel** and **Close Other Panels** are in the same menu. Each file shows in one panel at a time, so two editors never change the same draft. The layout is saved with the workspace.
+
+## AI writing and editing
+
+### AI Rewrite and Write with AI
+
+Right-click selected text in either editor and describe the change under **AI Rewrite**. Right-click without a selection to use **Write with AI**, which writes new text at that spot as its own paragraph, so existing paragraphs and lists are never split. In either prompt, type `/` to pick a saved quick prompt (configured as `quickPrompts` in the config file, or in `LIBERA_QUICK_PROMPTS`). **Include whole document as context** sends the full document along with the selection; it is on by default and remembered on each device.
+
+### Live previews of AI edits
+
+In the Visual and LaTeX editors, AI Rewrite, Write with AI, AI Format, AI Image to Markdown, and Agentic review show their results in place as a diff, like a code review: removed text is struck through next to the new text, and unchanged text stays as it is. Each change has its own **Accept** and **Reject** buttons, and a bar at the top of the editor counts the changes, steps through them with **Previous change** and **Next change**, and offers **Accept all** (Cmd/Ctrl+Shift+Enter) and **Reject all** (Cmd/Ctrl+Shift+Backspace).
+
+### Agentic review
+
+Comment on a document, then let the AI work through the comments. Turn on **Review mode** with its button in the tab bar of a Markdown or LaTeX document, select a passage in either editor, and add a comment (Cmd/Ctrl+Alt+M). Comments appear in the **Comments** panel of the left rail, where you can reply, edit, resolve, reattach a comment to a new selection, delete, and search them. Comments work in Markdown and LaTeX documents.
+
+Click **Agentic review** in the Comments panel to open the review in the chat panel. The AI first writes a plan that covers each selected comment, notes conflicts and open questions, and explains when no edit is needed. Discuss and revise the plan in the conversation, and type `@` to include reference files. **Confirm plan & generate changes** then turns the plan into separate proposals, each showing the original and proposed text with its reason. Accept or reject each proposal, or use **Request revision** to have one redone. Changes that only work together are marked as linked and accepted together. **Accept all remaining**, **Reject all remaining**, and **Undo acceptance** are also available. Nothing changes in the document until you accept it.
+
+### Copy and paste from AI services
+
+Paste answers from ChatGPT, Claude, Gemini, or other AI chats straight into either editor. Rich text is converted into Libera's Markdown, keeping headings, lists, tables, and formatting, and equations rendered with KaTeX paste as their LaTeX source. If a pasted answer writes math as `\(...\)` or `\[...\]`, click **Fix ChatGPT equations** in the Source toolbar to switch it to the math markers Libera uses. Copying rendered text from Libera, including AI chat answers, puts Markdown on the clipboard, with equations as LaTeX.
+
+## Image Gallery
+
+Open the **Image Gallery** tab in the left rail (Cmd/Ctrl+5). The left panel generates images and the main area shows the gallery. Open documents stay as they were while the gallery is in front.
+
+### Generating images
+
+Describe the image and press **Generate** (Cmd/Ctrl+Enter). Libera uses OpenRouter's Images API with the configured OpenRouter API key. The model list comes from OpenRouter, and each model shows only the settings it supports: aspect ratio, resolution, quality, background, format, compression, number of images, and seed. The default model is `google/gemini-3.1-flash-image`; set `LIBERA_AI_IMAGE_MODEL` to change it. The model, its settings (remembered per model), and the save destination persist across restarts in `.libera/image-generation.json`.
+
+Add **Reference photos** for models that edit or build on photos: use **Add**, drop photos on the panel, or paste them into the prompt. Photos larger than 2048 px are scaled down before they are sent, and the panel shows how many photos the chosen model accepts. In the gallery, **Use as reference** sends photos to the panel.
+
+Under **Save to**, choose the gallery (optionally an album) or a **Notebook folder**. Images saved to a notebook folder stay with the notebook and do not appear in the gallery.
+
+### Browsing
+
+**Photos** shows every photo grouped by day, **Starred** collects starred photos, and **Albums** lists albums. Sort newest or oldest first. Change the thumbnail size with the zoom buttons, the slider, `+`/`-`, or pinch (Cmd/Ctrl+scroll), and switch between a square grid and a layout that keeps each photo's shape. Hover a photo to select it or star it; Shift-click selects a range, a day's checkbox selects the whole day, Cmd/Ctrl+A selects everything, and Esc clears the selection. With photos selected you can star them, add them to an album, use them as references, or delete them. Deleting removes the files from disk.
+
+### Albums
+
+Albums are folders inside the gallery folder; photos outside any album sit at its top level. Creating an album creates a folder with its name and moves the chosen photos into it. This is the only time photos move on disk. Adding photos to an existing album, removing them, and deleting an album only change the gallery's index (`.libera-gallery.json`), so a photo can belong to several albums and deleting an album never deletes photos. Renaming an album renames its folder when that name is free. Folders and photos added in Finder or Explorer are picked up: a new folder becomes an album, and photos moved by hand keep their stars and albums. In **Starred**, **Create album** turns the starred photos into an album.
+
+### Viewing and editing
+
+Click a photo to open the viewer. Zoom with the scroll wheel, pinch, double-click, `+`/`-`/`0`, or the zoom buttons, and drag to pan. Use the arrow keys for the previous and next photo, S to star, Space for a slideshow, F for full screen, and I for info (date, size, albums, location on disk, model, and prompt, with **Reuse prompt**). Photos can also be downloaded or copied.
+
+Press E (or **Edit**) to rotate, flip, and crop (Free, Original, Square, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), adjust brightness, contrast, saturation, warmth, tint, and vignette, or apply a filter preset. **Save** (Cmd/Ctrl+S) replaces the photo and keeps the original, so **Revert to original** in the info panel can undo it; **Save as copy** adds a new photo beside the original, in the same albums. The saved photo uses the same calculations as the preview. SVG images cannot be edited.
+
+To view a photo next to notes and PDFs, right-click it (or select one photo, or use the viewer's button) and choose **Open in tab**, **Open to the right**, or **Open below**. Gallery photos open as read-only image tabs and work with split right and split down.

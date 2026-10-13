@@ -2,7 +2,7 @@
 
 import { toggleComment } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
-import { ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareText, PenLine, Scissors, Sparkles, Wand2 } from "lucide-react";
+import { BookmarkPlus, ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareText, PenLine, Scissors, Sparkles, Wand2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { IncludeDocumentContextCheckbox } from "@/components/libera/ai-document-context-preference";
@@ -14,13 +14,14 @@ export type LatexAiMenuState = { from: number; to: number; x: number; y: number 
 const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 const MENU_WIDTH = 296;
 
-export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync }: {
+export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForwardSync, onAddSnippet }: {
   view: EditorView;
   menu: LatexAiMenuState;
   documentPath: string;
   onClose: () => void;
   onError: (message: string) => void;
   onForwardSync: (pos: number) => void;
+  onAddSnippet: (range: { from: number; to: number }) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const rewriteRef = useRef<HTMLTextAreaElement>(null);
@@ -131,6 +132,11 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
           <button type="button" role="menuitem" className={itemClass} onClick={() => { onClose(); onForwardSync(menu.to); }}>
             <FileSearch aria-hidden className="h-4 w-4" />Show in PDF
             <kbd className="ml-auto text-xs font-normal text-muted-foreground">⇧⌘J</kbd>
+          </button>
+        ) : null}
+        {hasText ? (
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onClose(); onAddSnippet({ from: menu.from, to: menu.to }); }} title="Save the selected LaTeX to insert it again from the Snippets menu or by typing /name">
+            <BookmarkPlus aria-hidden className="h-4 w-4" />Add as Snippet…
           </button>
         ) : null}
         <button type="button" role="menuitem" className={itemClass} onClick={() => { onClose(); toggleComment(view); view.focus(); }}>

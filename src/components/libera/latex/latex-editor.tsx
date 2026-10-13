@@ -16,6 +16,8 @@ import { locateTextHint, type SynctexTextHint } from "@/lib/latex/synctex-text";
 import { latexCompletionSource, latexFormattingKeymap, latexInputHandler, latexProjectField, setLatexProject, syncEnvironmentNames, type LatexProjectData } from "@/lib/latex/codemirror/editing";
 import { latexLanguageSupport } from "@/lib/latex/codemirror/language";
 import { latexMathPreview } from "@/lib/latex/codemirror/preview";
+import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
+import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
@@ -25,6 +27,7 @@ import { registerEditorSelectionReader } from "@/components/libera/editor-select
 import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
 import { LatexAiMenu, type LatexAiMenuState } from "./latex-ai-menu";
 import { LatexChangeBar } from "./latex-change-bar";
+import { getLatexSnippets } from "./latex-snippets-store";
 
 export type LatexEditorHandle = {
   view: EditorView;
@@ -55,6 +58,8 @@ type LatexEditorProps = {
   onCompile: () => void;
   onForwardSync: (location: { line: number; column: number }) => void;
   onAiError: (message: string) => void;
+  /** Offers the selected code, without its shared indentation, to save as a snippet. */
+  onAddSnippet: (body: string) => void;
 };
 
 const DRAFT_DELAY_MS = 250;
@@ -90,7 +95,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
-  onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError,
+  onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet,
 }: LatexEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -152,7 +157,7 @@ export function LatexEditor({
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
-        autocompletion({ override: isTex ? [latexCompletionSource] : [], activateOnTypingDelay: 60, maxRenderedOptions: 80, icons: false }),
+        autocompletion({ override: isTex ? [latexCompletionSource, latexSnippetCompletionSource(getLatexSnippets)] : [], activateOnTypingDelay: 60, maxRenderedOptions: 80, icons: false }),
         rectangularSelection(),
         crosshairCursor(),
         highlightActiveLine(),
@@ -307,7 +312,17 @@ export function LatexEditor({
       style={{ "--latex-editor-font": fontFamily, "--latex-editor-font-size": `${fontSizePx}px`, "--latex-editor-line-height": String(lineHeight) } as CSSProperties}
     >
       <div ref={hostRef} className="absolute inset-0" />
-      {view && menu ? <LatexAiMenu view={view} menu={menu} documentPath={documentPath} onClose={() => setMenu(null)} onError={onAiError} onForwardSync={(pos) => onForwardSync(compiledLocationForPosition(view.state, pos))} /> : null}
+      {view && menu ? (
+        <LatexAiMenu
+          view={view}
+          menu={menu}
+          documentPath={documentPath}
+          onClose={() => setMenu(null)}
+          onError={onAiError}
+          onForwardSync={(pos) => onForwardSync(compiledLocationForPosition(view.state, pos))}
+          onAddSnippet={({ from, to }) => onAddSnippet(snippetBodyFromSelection(view.state.sliceDoc(from, to), /^[ \t]*/.exec(view.state.doc.lineAt(from).text)![0]))}
+        />
+      ) : null}
       {view && hunks.length ? <LatexChangeBar view={view} hunks={hunks} /> : null}
     </div>
   );

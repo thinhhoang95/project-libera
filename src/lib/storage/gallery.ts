@@ -442,6 +442,37 @@ export async function writeGalleryPhoto(albumRef: string, fileName: string, body
   });
 }
 
+export const MAX_GALLERY_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** Whether the bytes are an image of the kind the file name says. */
+async function isImageContent(extension: string, body: Buffer) {
+  if (extension === ".svg") return /<svg[\s>]/i.test(body.subarray(0, 4096).toString("utf8"));
+  try {
+    const { format } = await sharp(body, { animated: false }).metadata();
+    const expected: Record<string, string[]> = { ".png": ["png"], ".jpg": ["jpeg"], ".jpeg": ["jpeg"], ".webp": ["webp"], ".gif": ["gif"] };
+    return Boolean(format && expected[extension]?.includes(format));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Add a photo from the user's computer, into an album's folder when an album
+ * id is given. Name clashes get a numbered name; nothing is overwritten.
+ */
+export async function importGalleryPhoto(albumId: string, fileName: string, body: Buffer) {
+  const name = path.basename(fileName.replaceAll("\\", "/")).trim();
+  const extension = path.extname(name).toLowerCase();
+  if (!isGalleryImage(name)) throw new StorageError("Only PNG, JPEG, WebP, GIF and SVG images can be added to the gallery.", 415);
+  if (!body.length) throw new StorageError("The file is empty.", 400);
+  if (body.length > MAX_GALLERY_UPLOAD_BYTES) throw new StorageError("Photos must be 50 MB or smaller.", 413);
+  if (!(await isImageContent(extension, body))) throw new StorageError("The file is not a valid image.", 415);
+  if (albumId && !(await withGallery(async (index) => index.albums.some((album) => album.id === albumId)))) {
+    throw new StorageError("The album no longer exists.", 404);
+  }
+  return writeGalleryPhoto(albumId, name, body, {});
+}
+
 function editedFormat(relative: string): { format: EditedPhotoFormat; extension: string } {
   const extension = path.extname(relative).toLowerCase();
   if (extension === ".jpg" || extension === ".jpeg") return { format: "jpeg", extension };

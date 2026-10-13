@@ -1618,6 +1618,12 @@ html.dark .libera-latex-pdf-page { box-shadow: 0 4px 20px rgb(0 0 0 / .45); }
 .libera-latex-icon-button:hover:not(:disabled) { background: var(--muted); color: var(--foreground); }
 .libera-latex-icon-button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .libera-latex-icon-button:disabled { opacity: .4; }
+.libera-latex-icon-button { flex-shrink: 0; }
+.libera-latex-icon-button.libera-latex-menu-button { width: auto; gap: 1px; padding: 0 4px 0 6px; }
+.libera-latex-icon-button[aria-expanded="true"] { background: var(--muted); color: var(--foreground); }
+.libera-latex-icon-button.is-danger:hover:not(:disabled) { color: var(--destructive); }
+.libera-latex-snippets-button[aria-expanded="true"] { background: var(--muted); color: var(--foreground); }
+.libera-latex-editor .cm-completionInfo .libera-latex-snippet-info { margin: 0; max-height: 16rem; overflow: hidden; font-family: var(--latex-editor-font, ui-monospace, monospace); font-size: 11px; line-height: 1.45; white-space: pre; }
 .libera-latex-warning-count { color: var(--latex-warning); }
 .libera-latex-compile { border: 1px solid var(--latex-compile); color: var(--latex-compile); }
 .libera-latex-compile > button:hover:not(:disabled) { background: color-mix(in srgb, var(--latex-compile) 12%, transparent); }

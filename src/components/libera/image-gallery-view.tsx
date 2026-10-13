@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowDownWideNarrow,
@@ -24,6 +24,7 @@ import {
   Star,
   StarOff,
   Trash2,
+  Upload,
   X,
   ZoomIn,
   ZoomOut,
@@ -53,6 +54,33 @@ type Dialog =
   | { kind: "delete-photos"; ids: string[] };
 type AlbumMenuState = { photoIds: string[]; x: number; y: number; excludeAlbumId?: string };
 type OpenMenuState = { photo: GalleryPhoto; x: number; y: number };
+
+const UPLOAD_EXTENSIONS = /\.(png|jpe?g|webp|gif|svg)$/i;
+const UPLOAD_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/svg+xml,.png,.jpg,.jpeg,.webp,.gif,.svg";
+// Requests stay small so a large drop shows progress and one bad batch costs little.
+const UPLOAD_BATCH_FILES = 8;
+const UPLOAD_BATCH_BYTES = 48 * 1024 * 1024;
+type UploadResult = { added: string[]; failed: Array<{ name: string; error: string }>; gallery: GalleryContents };
+
+function hasFiles(event: { dataTransfer: DataTransfer | null }) {
+  return Boolean(event.dataTransfer?.types.includes("Files"));
+}
+
+function uploadBatches(files: File[]) {
+  const batches: File[][] = [];
+  let bytes = 0;
+  for (const file of files) {
+    const last = batches.at(-1);
+    if (!last || last.length >= UPLOAD_BATCH_FILES || bytes + file.size > UPLOAD_BATCH_BYTES) {
+      batches.push([file]);
+      bytes = file.size;
+    } else {
+      last.push(file);
+      bytes += file.size;
+    }
+  }
+  return batches;
+}
 
 const SORT_STORAGE_KEY = "libera.gallery.sort";
 const LAYOUT_STORAGE_KEY = "libera.gallery.layout";
@@ -139,6 +167,11 @@ export function ImageGalleryView({ onOpenInCanvas }: {
   const [openMenu, setOpenMenu] = useState<OpenMenuState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [upload, setUpload] = useState<{ done: number; total: number } | null>(null);
+  const [notice, setNotice] = useState("");
+  const [dropping, setDropping] = useState(false);
+  const dragDepthRef = useRef(0);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const [width, setWidth] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const wheelRef = useRef(0);
@@ -289,6 +322,82 @@ export function ImageGalleryView({ onOpenInCanvas }: {
     }
   }
 
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  /** Adds photos from the computer to `albumId`, or to the top of the gallery. */
+  async function uploadPhotos(files: File[], albumId = "") {
+    if (upload) return;
+    const images = files.filter((file) => UPLOAD_EXTENSIONS.test(file.name));
+    const skipped = files.length - images.length;
+    if (!images.length) {
+      setError(files.length ? "Only PNG, JPEG, WebP, GIF and SVG images can be added to the gallery." : "");
+      return;
+    }
+    setError("");
+    setNotice("");
+    setUpload({ done: 0, total: images.length });
+    const failed: UploadResult["failed"] = [];
+    let added = 0;
+    try {
+      for (const batch of uploadBatches(images)) {
+        const body = new FormData();
+        body.set("albumId", albumId);
+        for (const file of batch) body.append("files", file, file.name);
+        try {
+          const result = await apiRequest<UploadResult>("/api/gallery/photos/upload", { method: "POST", body });
+          applyGallery(result.gallery);
+          added += result.added.length;
+          failed.push(...result.failed);
+        } catch (failure) {
+          const message = failure instanceof Error ? failure.message : "Could not add this photo.";
+          failed.push(...batch.map((file) => ({ name: file.name, error: message })));
+        }
+        setUpload((current) => current && { ...current, done: current.done + batch.length });
+      }
+    } finally {
+      setUpload(null);
+    }
+    const album = albumId ? albumById.get(albumId) : undefined;
+    if (added) setNotice(`Added ${added} ${added === 1 ? "photo" : "photos"}${album ? ` to ${album.name}` : ""}`);
+    const problems = [
+      ...(failed.length ? [failed.length === 1 ? `${failed[0].name}: ${failed[0].error}` : `${failed.length} photos could not be added (${failed.slice(0, 3).map((item) => item.name).join(", ")}${failed.length > 3 ? ", …" : ""}). ${failed[0].error}`] : []),
+      ...(skipped ? [`${skipped} ${skipped === 1 ? "file was" : "files were"} skipped because ${skipped === 1 ? "it is not an image" : "they are not images"}.`] : []),
+    ];
+    if (problems.length) setError(problems.join(" "));
+  }
+
+  // Photos dropped anywhere on the gallery go to the album being shown.
+  const uploadTargetAlbum = currentAlbum;
+  const dropHandlers = {
+    onDragEnter(event: ReactDragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      setDropping(true);
+    },
+    onDragOver(event: ReactDragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = upload ? "none" : "copy";
+    },
+    onDragLeave(event: ReactDragEvent) {
+      if (!hasFiles(event)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (!dragDepthRef.current) setDropping(false);
+    },
+    onDrop(event: ReactDragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setDropping(false);
+      void uploadPhotos([...event.dataTransfer.files], uploadTargetAlbum?.id);
+    },
+  };
+
   function openAlbumMenu(photoIds: string[], element: HTMLElement) {
     setAlbumMenu({ photoIds, ...menuPosition(element), excludeAlbumId: currentAlbum?.id });
   }
@@ -320,7 +429,13 @@ export function ImageGalleryView({ onOpenInCanvas }: {
   const title = view.kind === "album" ? currentAlbum?.name ?? "" : view.kind === "albums" ? "Albums" : view.kind === "starred" ? "Starred" : "Photos";
   const size = GALLERY_ZOOM_LEVELS[layout.zoom];
 
-  return <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+  return <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background" {...dropHandlers}>
+    <input ref={uploadInputRef} type="file" multiple accept={UPLOAD_ACCEPT} className="hidden" aria-hidden tabIndex={-1}
+      onChange={(event) => {
+        const files = [...(event.target.files ?? [])];
+        event.target.value = "";
+        void uploadPhotos(files, uploadTargetAlbum?.id);
+      }} />
     <header className="flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
       {selecting ? <>
         <button className={iconButton} aria-label="Clear selection" title="Clear selection (Esc)" onClick={() => setSelected(new Set())}><X className="h-4 w-4" /></button>
@@ -362,6 +477,8 @@ export function ImageGalleryView({ onOpenInCanvas }: {
             {sort === "newest" ? <ArrowDownWideNarrow className="h-4 w-4" /> : <ArrowUpWideNarrow className="h-4 w-4" />}
           </button>
         </>}
+        <button className={toolbarButton} disabled={Boolean(upload)} title={currentAlbum ? `Add photos from your computer to ${currentAlbum.name}` : "Add photos from your computer"}
+          onClick={() => uploadInputRef.current?.click()}><Upload className="h-4 w-4" />{upload ? `Adding ${upload.done} of ${upload.total}…` : "Upload"}</button>
         {view.kind === "starred" && starredCount > 0 && <button className={toolbarButton} disabled={busy} title="Create an album from all starred photos" onClick={() => setDialog({ kind: "create-album", photoIds: photos.map((photo) => photo.id) })}><FolderPlus className="h-4 w-4" />Create album</button>}
         {currentAlbum ? <>
           <button className={iconButton} aria-label="Rename album" title="Rename album" disabled={busy} onClick={() => setDialog({ kind: "rename-album", album: currentAlbum })}><Pencil className="h-4 w-4" /></button>
@@ -371,11 +488,19 @@ export function ImageGalleryView({ onOpenInCanvas }: {
     </header>
 
     {(error || gallery.error) && <div role="alert" className="flex items-center gap-2 border-b border-destructive/30 bg-destructive-muted px-4 py-2 text-sm text-destructive"><span className="mr-auto">{error || gallery.error}</span><button aria-label="Dismiss" onClick={() => setError("")}><X className="h-4 w-4" /></button></div>}
+    {notice && <div role="status" className="pointer-events-none absolute bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-foreground px-4 py-2 text-sm text-background shadow-lg">{notice}</div>}
+    {upload && <div role="status" aria-live="polite" className="sr-only">Adding {upload.done} of {upload.total} photos</div>}
+    {/* Over the album list the cards stay visible, so each one can take a drop. */}
+    {dropping && !upload && <div aria-hidden className={`pointer-events-none absolute z-30 flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary text-sm font-medium ${view.kind === "albums" ? "inset-x-2 bottom-2 bg-card px-4 py-3 shadow-lg" : "inset-2 flex-col bg-background/85"}`}>
+      <Upload className={view.kind === "albums" ? "h-5 w-5 text-primary" : "h-8 w-8 text-primary"} />
+      {view.kind === "albums" ? "Drop on an album to add photos to it, or anywhere to add them to Photos" : `Drop to add photos to ${uploadTargetAlbum ? uploadTargetAlbum.name : "Photos"}`}
+    </div>}
 
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-4 pb-8">
       {!contents ? <p role="status" className="py-10 text-center text-sm text-muted-foreground">{gallery.loading ? "Opening your gallery…" : ""}</p>
-        : view.kind === "albums" ? <AlbumGrid contents={contents} photoById={photoById} onOpen={(id) => openView({ kind: "album", id })} onCreate={() => setDialog({ kind: "create-album", photoIds: [] })} />
-        : !photos.length ? <EmptyPhotos view={view.kind} />
+        : view.kind === "albums" ? <AlbumGrid contents={contents} photoById={photoById} onOpen={(id) => openView({ kind: "album", id })} onCreate={() => setDialog({ kind: "create-album", photoIds: [] })}
+          onDropFiles={(albumId, files) => { dragDepthRef.current = 0; setDropping(false); void uploadPhotos(files, albumId); }} />
+        : !photos.length ? <EmptyPhotos view={view.kind} onUpload={view.kind === "starred" ? undefined : () => uploadInputRef.current?.click()} />
         : groups.map((group) => {
           const allSelected = group.photos.every((photo) => selected.has(photo.id));
           return <section key={group.key} className="pt-5">
@@ -516,15 +641,25 @@ function PhotoTile({ photo, style, compact, selected, selecting, onToggle, onOpe
   </div>;
 }
 
-function AlbumGrid({ contents, photoById, onOpen, onCreate }: { contents: GalleryContents; photoById: Map<string, GalleryPhoto>; onOpen: (id: string) => void; onCreate: () => void }) {
+function AlbumGrid({ contents, photoById, onOpen, onCreate, onDropFiles }: { contents: GalleryContents; photoById: Map<string, GalleryPhoto>; onOpen: (id: string) => void; onCreate: () => void; onDropFiles: (albumId: string, files: File[]) => void }) {
+  const [dropTarget, setDropTarget] = useState("");
   return <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-4 pt-5">
     <button type="button" className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-sm text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onCreate}>
       <Plus className="h-6 w-6" />New album
     </button>
     {contents.albums.map((album) => {
       const cover = album.coverId ? photoById.get(album.coverId) : undefined;
-      return <button key={album.id} type="button" className="group text-left" onClick={() => onOpen(album.id)}>
-        <span className="block aspect-square overflow-hidden rounded-xl bg-muted">
+      return <button key={album.id} type="button" className="group text-left" onClick={() => onOpen(album.id)}
+        onDragOver={(event) => { if (!hasFiles(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropTarget(album.id); }}
+        onDragLeave={() => setDropTarget((current) => (current === album.id ? "" : current))}
+        onDrop={(event) => {
+          if (!hasFiles(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setDropTarget("");
+          onDropFiles(album.id, [...event.dataTransfer.files]);
+        }}>
+        <span className={`block aspect-square overflow-hidden rounded-xl bg-muted ${dropTarget === album.id ? "ring-4 ring-primary" : ""}`}>
           {/* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */}
           {cover ? <img src={galleryRawUrl(cover, true)} alt="" loading="lazy" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
             : <span className="flex h-full items-center justify-center text-muted-foreground"><Images className="h-8 w-8" /></span>}
@@ -536,7 +671,7 @@ function AlbumGrid({ contents, photoById, onOpen, onCreate }: { contents: Galler
   </div>;
 }
 
-function EmptyPhotos({ view }: { view: GalleryView["kind"] }) {
+function EmptyPhotos({ view, onUpload }: { view: GalleryView["kind"]; onUpload?: () => void }) {
   const copy = view === "starred"
     ? { title: "No starred photos yet", body: "Star the photos you love: hover a photo and click its star, or press S in the viewer. They gather here, ready to become an album." }
     : view === "album"
@@ -546,6 +681,10 @@ function EmptyPhotos({ view }: { view: GalleryView["kind"] }) {
     {view === "starred" ? <Star className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /> : <Sparkles className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />}
     <p className="text-sm font-medium">{copy.title}</p>
     <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{copy.body}</p>
+    {onUpload && <>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">You can also drop photos here from your computer.</p>
+      <button type="button" className={`${secondary} mt-4 inline-flex items-center gap-2`} onClick={onUpload}><Upload className="h-4 w-4" />Upload photos</button>
+    </>}
   </div>;
 }
 

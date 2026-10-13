@@ -13,7 +13,7 @@ import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
 import katex from "katex";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
@@ -31,6 +31,7 @@ import { MarkdownTextWidth } from "./markdown-text-width";
 import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
 import { MarkdownLinkInput } from "./markdown-link-input";
+import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
 
 type Props = {
@@ -109,6 +110,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
+  const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [uploadCount, setUploadCount] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -636,7 +638,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
         </select>
         <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to })}><Link2 className="h-4 w-4" /></button>
-        <button type="button" aria-label="Insert image" title="Insert image (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
+        <button type="button" aria-label="Insert image from file" title="Insert image from file (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
+        <button type="button" aria-label="Insert image from gallery" title="Insert images from the photo gallery" className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
@@ -647,6 +650,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
+      <GalleryPhotoPicker open={galleryPickerOpen} onClose={() => setGalleryPickerOpen(false)} onInsert={async (photos) => {
+        // Read the selection first: the photos download before they are placed.
+        const pos = editor.state.selection.from;
+        const files = await Promise.all(photos.map(galleryPhotoFile));
+        setGalleryPickerOpen(false);
+        await insertImages(files, pos);
+      }} />
       {error ? <div role="alert" className="flex items-center justify-between bg-destructive-muted px-4 py-2 text-sm text-destructive">{error}<button type="button" onClick={() => setError("")}>Dismiss</button></div> : null}
       <MarkdownTextWidth canvasRef={scrollContainerRef} />
       <div className="relative min-h-0 flex-1">

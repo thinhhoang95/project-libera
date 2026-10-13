@@ -170,16 +170,16 @@ export function LatexPdfPreview({ url, zoom, initialScrollTop, highlight, busy, 
 
   useEffect(() => { updateCurrentPage(); }, [updateCurrentPage]);
 
-  // Forward search: bring the box into view and flash it.
+  // Forward search: bring the box into view and flash it. Only scroll
+  // vertically — the reader's horizontal position is theirs to keep.
   useEffect(() => {
     if (!highlight || !highlight.locations.length || !sizes.length) return;
     const first = highlight.locations[0];
     const element = scrollRef.current;
     const pageTop = offsets[first.page - 1];
     if (!element || pageTop === undefined) return;
-    const pageLeft = Math.max(PAGE_PADDING, (element.scrollWidth - sizes[first.page - 1].width * scale) / 2);
     const top = pageTop + Math.max(0, first.top) * scale;
-    element.scrollTo({ top: Math.max(0, top - element.clientHeight * 0.35), left: Math.max(0, pageLeft + first.left * scale - element.clientWidth / 2), behavior: "smooth" });
+    element.scrollTo({ top: Math.max(0, top - element.clientHeight * 0.35), behavior: "smooth" });
     setFlash({ page: first.page, rects: highlight.locations.filter((location) => location.page === first.page), nonce: highlight.nonce });
     const timer = window.setTimeout(() => setFlash((current) => (current?.nonce === highlight.nonce ? null : current)), 2600);
     return () => window.clearTimeout(timer);
