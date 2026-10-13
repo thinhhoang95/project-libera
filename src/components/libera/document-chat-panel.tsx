@@ -227,7 +227,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
         if ((chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) throw new Error(`Attach up to ${MAX_CHAT_PHOTOS} photos per message.`);
         if (!file.size || file.size > MAX_CHAT_PHOTO_BYTES) throw new Error(`${file.name} must be 5 MB or smaller to attach.`);
         const rawPath = file.path.split("/").map(encodeURIComponent).join("/");
-        const response = await fetch(`/api/files/raw/${rawPath}`);
+        // Gallery photo tabs carry their own URL; their path is not a notebook path.
+        const response = await fetch(tab?.gallery && tab.rawUrl ? tab.rawUrl : `/api/files/raw/${rawPath}`);
         if (!response.ok) throw new Error(`Could not read ${file.name}.`);
         const blob = await response.blob();
         if (!/^image\/(png|jpeg|webp|gif)$/.test(blob.type) || !blob.size || blob.size > MAX_CHAT_PHOTO_BYTES) {

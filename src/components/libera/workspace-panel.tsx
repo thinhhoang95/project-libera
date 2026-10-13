@@ -30,6 +30,7 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { ImageViewer } from "@/components/libera/image-viewer";
+import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
@@ -1747,7 +1748,10 @@ function WorkspacePanelContent({
             key={activeTab.id}
             src={activeTab.rawUrl}
             alt={activeTab.file.name}
-            filePath={activeTab.file.path}
+            // Gallery photos are not notebook files: annotations have nowhere to
+            // live, and screenshots take their name from the photo.
+            annotatable={!isGalleryTab(activeTab)}
+            filePath={isGalleryTab(activeTab) ? activeTab.file.name : activeTab.file.path}
             initialViewState={activeImageViewState}
             screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
             onViewStateChange={updateImageViewState}

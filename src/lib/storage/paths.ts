@@ -19,7 +19,7 @@ import {
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 
-function getDataRoot() {
+export function getDataRoot() {
   const configuredDataRoot = process.env.LIBERA_DATA_DIR;
 
   if (!configuredDataRoot) {

@@ -18,6 +18,8 @@ export type OpenTab = {
   draft: string;
   saved: string;
   rawUrl?: string;
+  /** Set on read-only tabs that show a gallery photo instead of a notebook file. */
+  gallery?: { photoId: string };
   untitled?: boolean;
   standaloneSaveId?: string;
   saveDirectory?: string;

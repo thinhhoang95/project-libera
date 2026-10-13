@@ -182,7 +182,8 @@ export function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
   }
   function validSession(session: WorkspaceSession) {
     return session && typeof session.activeTabId === "string" && typeof session.selectedNotebookName === "string" && strings(session.expandedPaths) && Array.isArray(session.tabs) && session.tabs.every((tab) =>
-      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "latex", "text", "pdf", "image"].includes(tab.file.fileType));
+      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "latex", "text", "pdf", "image"].includes(tab.file.fileType) &&
+      (tab.gallery === undefined || (Boolean(tab.gallery) && typeof tab.gallery.photoId === "string")));
   }
   if (!library || library.version !== 1 || !Number.isFinite(library.updatedAt) || !Array.isArray(library.workspaces) ||
     !(library.activeWorkspaceId === null || typeof library.activeWorkspaceId === "string") ||
@@ -202,6 +203,7 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
     expandedPaths: value.expandedPaths.map(remap),
     ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remap) } : {}),
     tabs: value.tabs.map((tab) => {
+      if (tab.gallery) return tab; // Gallery photos live outside notebooks.
       const path = remap(tab.file.path);
       return path === tab.file.path ? tab : { ...tab, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
     }),

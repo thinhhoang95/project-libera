@@ -39,6 +39,10 @@ import {
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { useCanvasLayout } from "./use-canvas-layout";
+import { useGallery } from "./gallery-store";
+import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
+import { focusedCanvasPane } from "@/lib/canvas-layout";
+import type { GalleryPhoto } from "@/lib/image-generation";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
@@ -857,6 +861,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  // Opens a gallery photo as a read-only image tab, in the focused panel or in a
+  // new panel to its right or below, like a notebook image.
+  function openGalleryPhoto(photo: GalleryPhoto, placement: GalleryTabPlacement = "tab") {
+    setWorkspaceError("");
+    const tab = createGalleryTab(photo);
+    setTabs((currentTabs) => currentTabs.some((currentTab) => currentTab.id === tab.id)
+      ? currentTabs
+      : [...currentTabs, tab]);
+
+    const focusedTabId = focusedCanvasPane(canvas.layout)?.tabId;
+    // An empty panel, or one already showing the photo, has nothing to split from.
+    if (placement === "tab" || !focusedTabId || focusedTabId === tab.id) {
+      setActiveTabId(tab.id);
+      return;
+    }
+
+    canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
+  }
 
   async function openMarkdownFileLink(sourcePath: string, href: string) {
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
@@ -895,10 +917,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       setActiveTabId(nextActiveTab?.id ?? "");
 
-      if (nextActiveTab) {
-        setSelectedNotebookName(nextActiveTab.file.notebook);
-      } else if (fallbackTab) {
-        setSelectedNotebookName(fallbackTab.file.notebook);
+      const notebookTab = nextActiveTab ?? fallbackTab;
+      if (notebookTab && !isGalleryTab(notebookTab)) {
+        setSelectedNotebookName(notebookTab.file.notebook);
       }
     }
   }, [activeTabId, canvas, tabs]);
@@ -907,6 +928,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     closeTabsWithoutConfirm([tabId]);
   }, [closeTabsWithoutConfirm]);
 
+  // The gallery store is shared with the gallery view, so moves into albums,
+  // edits and deletions there reach open photo tabs here.
+  const galleryContents = useGallery().contents;
+  useEffect(() => {
+    if (!galleryContents) return;
+    const reconciled = reconcileGalleryTabs(tabs, galleryContents.photos);
+    if (reconciled.tabs !== tabs) {
+      const changed = new Map(reconciled.tabs.map((tab) => [tab.id, tab]));
+      setTabs((currentTabs) => currentTabs.map((tab) => isGalleryTab(tab) ? changed.get(tab.id) ?? tab : tab));
+    }
+    if (reconciled.closedTabIds.length) closeTabsWithoutConfirm(reconciled.closedTabIds);
+  }, [closeTabsWithoutConfirm, galleryContents, tabs]);
 
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
@@ -2285,7 +2318,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       link.href = URL.createObjectURL(blob);
       window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
     } else {
-      link.href = `/api/files/raw/${encodeFilePath(file.path)}`;
+      const galleryTab = tabs.find((tab) => isGalleryTab(tab) && tab.file.path === file.path);
+      link.href = galleryTab?.rawUrl ?? `/api/files/raw/${encodeFilePath(file.path)}`;
     }
 
     link.download = file.name;
@@ -3041,7 +3075,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function activateTab(tabId: string) {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab) {
+    // Gallery photos belong to no notebook and stay out of recent files.
+    if (tab && !isGalleryTab(tab)) {
       setSelectedNotebookName(tab.file.notebook);
       recordFileInteraction(tab.file);
     }
@@ -3070,7 +3105,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     function activateShortcutTab(tabId: string) {
       const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-      if (tab) {
+      if (tab && !isGalleryTab(tab)) {
         const interactedAt = new Date().toISOString();
 
         setSelectedNotebookName(tab.file.notebook);
@@ -3267,6 +3302,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,
+      openGalleryPhoto,
       openMarkdownFileLink,
       openCreateNotebookDialog,
       openCreateNotebookGroupDialog,

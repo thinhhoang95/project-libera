@@ -7,6 +7,7 @@ import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
+import { isGalleryTab } from "./gallery-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
@@ -171,7 +172,8 @@ export function TabStrip({
                 { type: "separator" as const },
               ]
             : []),
-          { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
+          // Gallery photos have no notebook file for another window to open.
+          ...(isGalleryTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -396,6 +398,8 @@ function ActiveFileActions({
 
   const isMarkdown = activeTab.file.fileType === "markdown";
   const isLatex = activeTab.file.fileType === "latex";
+  // Gallery photos are renamed, moved and deleted from the gallery itself.
+  const isGalleryPhoto = isGalleryTab(activeTab);
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
   const downloadContent = isMarkdown || isLatex ? activeTab.draft : undefined;
 
@@ -469,12 +473,16 @@ function ActiveFileActions({
                   { id: "download-markdown", label: "Download" },
                 ]
               : [{ id: "download-original", label: "Download" }]),
-          { type: "separator" },
-          ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
-          { id: "rename", label: "Rename" },
-          { id: "move", label: "Move" },
-          { type: "separator" },
-          { id: "delete", label: "Delete" },
+          ...(isGalleryPhoto
+            ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
+            : [
+                { type: "separator" as const },
+                ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
+                { id: "rename", label: "Rename" },
+                { id: "move", label: "Move" },
+                { type: "separator" as const },
+                { id: "delete", label: "Delete" },
+              ]),
         ],
       })
       .catch(() => null);
