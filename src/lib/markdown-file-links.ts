@@ -1,4 +1,5 @@
 import type { LiberaFileNode, LiberaFileType } from "@/lib/types";
+import type { MarkdownLinkQuote } from "@/lib/markdown-selection-links";
 
 export type MarkdownLinkViewState = {
   image?: {
@@ -33,12 +34,16 @@ export type MarkdownLinkViewState = {
 export type MarkdownFileLinkMetadata = {
   fileType?: LiberaFileType;
   line?: number;
+  /** The linked passage of a Markdown file, re-found when the file has changed. */
+  quote?: MarkdownLinkQuote;
   v: 1;
   viewState?: MarkdownLinkViewState;
 };
 
 export type ResolvedMarkdownFileLink = {
   file: LiberaFileNode;
+  /** A heading fragment such as `#introduction`, when the hash is not Libera metadata. */
+  headingFragment?: string;
   metadata?: MarkdownFileLinkMetadata;
 };
 
@@ -236,10 +241,7 @@ export function resolveMarkdownFileLink(
   const relativeFile = relativePath ? fileByPath.get(relativePath) : undefined;
 
   if (relativeFile) {
-    return {
-      file: relativeFile,
-      metadata: parseMarkdownFileLinkMetadata(hash),
-    };
+    return resolvedFileLink(relativeFile, hash);
   }
 
   const directPath = normalizeWorkspacePath(decodedPath);
@@ -249,8 +251,13 @@ export function resolveMarkdownFileLink(
     return null;
   }
 
-  return {
-    file: directFile,
-    metadata: parseMarkdownFileLinkMetadata(hash),
-  };
+  return resolvedFileLink(directFile, hash);
+}
+
+function resolvedFileLink(file: LiberaFileNode, hash: string): ResolvedMarkdownFileLink {
+  const metadata = parseMarkdownFileLinkMetadata(hash);
+  const headingFragment =
+    !metadata && hash && !new URLSearchParams(hash).has(LIBERA_LINK_HASH_KEY) ? hash : undefined;
+
+  return { file, headingFragment, metadata };
 }

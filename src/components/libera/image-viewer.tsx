@@ -41,6 +41,7 @@ import { TextAnnotationStyleControls } from "@/components/libera/annotation-styl
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
 import {
   DEFAULT_PDF_TEXT_COLOR,
   DEFAULT_PDF_TEXT_FONT,
@@ -140,6 +141,8 @@ export function ImageViewer({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
+  // The file whose annotations have finished loading (successfully or not).
+  const [annotationsLoadedPath, setAnnotationsLoadedPath] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
     initialViewState?.selectedAnnotationId ?? "",
   );
@@ -207,9 +210,11 @@ export function ImageViewer({
 
         latestAnnotationsRef.current = payload.annotations;
         setAnnotations(payload.annotations);
+        setAnnotationsLoadedPath(filePath);
       })
       .catch((loadError) => {
         if (active) {
+          setAnnotationsLoadedPath(filePath);
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -349,6 +354,39 @@ export function ImageViewer({
   function zoomBy(factor: number) {
     zoomTo(transformRef.current.zoom * factor);
   }
+
+  useEffect(() => {
+    if (annotatable) rememberFileAnnotations(filePath, annotations);
+  }, [annotatable, annotations, filePath]);
+
+  // Following a link: select its note once and, when zoomed in, center it.
+  const revealSelectedAnnotation = initialViewState?.revealSelectedAnnotation;
+  const revealAnnotationId = initialViewState?.selectedAnnotationId ?? "";
+  const annotationsLoaded = !annotatable || annotationsLoadedPath === filePath;
+  useEffect(() => {
+    if (!revealSelectedAnnotation || !annotationsLoaded) return;
+    const animationFrame = window.requestAnimationFrame(() => {
+      const annotation = latestAnnotationsRef.current.find((current) => current.id === revealAnnotationId);
+      if (!annotation) {
+        updateViewState({ revealSelectedAnnotation: undefined });
+        return;
+      }
+      const current = transformRef.current;
+      const nextPan = current.zoom > 1 && imageSize.width
+        ? panCenteringRect(annotation.rect, imageSize, current.zoom)
+        : current.pan;
+      transformRef.current = { zoom: current.zoom, pan: nextPan };
+      setPan(nextPan);
+      setSelectedAnnotationId(annotation.id);
+      updateViewState({
+        panX: nextPan.x,
+        panY: nextPan.y,
+        revealSelectedAnnotation: undefined,
+        selectedAnnotationId: annotation.id,
+      });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [annotationsLoaded, imageSize, revealAnnotationId, revealSelectedAnnotation, updateViewState]);
 
   // At zoom 1 the image fits the view; this is its share of the real pixels.
   const fitScale = naturalSize.width && imageSize.width ? imageSize.width / naturalSize.width : 1;

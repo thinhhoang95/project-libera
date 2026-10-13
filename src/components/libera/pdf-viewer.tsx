@@ -38,6 +38,7 @@ import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
 import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
+import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
 import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -631,6 +632,55 @@ export function PdfViewer({
 
     return () => window.cancelAnimationFrame(animationFrame);
   }, [loading, pageLayouts.length, pdfDocument, updateCurrentPage]);
+
+  // Following a link: scroll to its annotation once, in place of (and after)
+  // the saved-position restore, then save the new position as this tab's own.
+  const revealSelectedAnnotation = initialViewState?.revealSelectedAnnotation;
+  useEffect(() => {
+    if (!revealSelectedAnnotation || loading || !pdfDocument || !pageLayouts.length) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const scrollContainer = scrollContainerRef.current;
+      const id = initialViewStateRef.current?.selectedAnnotationId ?? "";
+      const annotation = latestAnnotationsRef.current.find((current) => current.id === id);
+      const page = annotation && pageElementRefs.current.get(annotation.pageNumber);
+      const annotationScrollState = annotationScrollStateRef.current;
+
+      annotationScrollState.lastSelectedAnnotationId = id;
+      annotationScrollState.allowInitialScroll = false;
+
+      if (!scrollContainer || !annotation || !page) {
+        updateViewState({ revealSelectedAnnotation: undefined });
+        return;
+      }
+
+      const pageBounds = page.getBoundingClientRect();
+      const containerBounds = scrollContainer.getBoundingClientRect();
+      scrollContainer.scrollTop = scrollTopCenteringRect(
+        pageBounds.top - containerBounds.top + scrollContainer.scrollTop,
+        pageBounds.height,
+        annotationAnchorRect(annotation),
+        scrollContainer.clientHeight,
+      );
+      pendingScrollRestoreRef.current = null;
+      updateCurrentPage(scrollContainer);
+      setSelectedAnnotationId(id);
+      updateViewState({
+        revealSelectedAnnotation: undefined,
+        scrollLeft: scrollContainer.scrollLeft,
+        scrollTop: scrollContainer.scrollTop,
+        selectedAnnotationId: id,
+      });
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [loading, pageLayouts.length, pdfDocument, revealSelectedAnnotation, updateCurrentPage, updateViewState]);
+
+  useEffect(() => {
+    rememberFileAnnotations(filePath, annotations);
+  }, [annotations, filePath]);
 
   useCanvasViewStateCapture(() => {
     const element = scrollContainerRef.current;

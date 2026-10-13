@@ -33,6 +33,8 @@ export type MarkdownTabViewState = {
   editorScrollLeft?: number;
   editorScrollTop?: number;
   line?: number;
+  /** The highlighted passage in either editor, as source offsets, for "link to selection". */
+  linkSelection?: { end: number; start: number };
   previewScrollLeft?: number;
   previewScrollTop?: number;
   selectionEnd?: number;
@@ -52,6 +54,9 @@ export type PdfTabViewState = {
   scrollLeft?: number;
   scrollTop?: number;
   selectedAnnotationId?: string;
+  /** One-shot request, cleared by the viewer: scroll to the selected annotation
+   * instead of restoring the saved scroll position (set when following a link). */
+  revealSelectedAnnotation?: boolean;
   textColor?: string;
   tool?: "select" | "highlight" | "text";
   zoom?: number;
@@ -83,6 +88,8 @@ export type ImageTabViewState = {
   panX?: number;
   panY?: number;
   selectedAnnotationId?: string;
+  /** One-shot request, cleared by the viewer: select and show the annotation. */
+  revealSelectedAnnotation?: boolean;
   textColor?: string;
   tool?: "select" | "text";
   zoom?: number;
@@ -242,6 +249,16 @@ export type MarkdownFileLinkSelection = {
   viewState?: OpenTabViewState;
 };
 
+/** A link to the passage highlighted in another open Markdown tab. */
+export type MarkdownSelectionLinkOption = {
+  href: string;
+  id: string;
+  label: string;
+  tabName: string;
+  /** For example "Link to highlight in paper.pdf". */
+  title: string;
+};
+
 export type MarkdownFileLinkRange = {
   end: number;
   start: number;
@@ -344,6 +361,7 @@ export type LiberaWorkspace = {
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   openFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
+  listMarkdownSelectionLinks: (sourcePath: string) => MarkdownSelectionLinkOption[];
   openCreateNotebookDialog: () => void;
   openCreateNotebookGroupDialog: () => void;
   openEditNotebookDialog: (notebook: LiberaNotebookNode) => void;

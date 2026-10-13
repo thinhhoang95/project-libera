@@ -297,6 +297,7 @@ export function LiberaApp({
         }}
         onSaveEditedImageCopy={workspace.saveEditedImageCopy}
         onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
+        onReadMarkdownSelectionLinks={workspace.listMarkdownSelectionLinks}
         onSave={workspace.saveActiveTab}
         onSetDraft={(value) => {
           if (tab) workspace.setTabDraft(tab.id, value);

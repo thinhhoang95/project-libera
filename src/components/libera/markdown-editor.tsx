@@ -37,6 +37,7 @@ import {
 } from "react";
 import {
   MarkdownFileLinkPopup,
+  MarkdownHeadingLinkPopup,
   buildMarkdownFileLinkSections,
   flattenMarkdownFileLinkSections,
 } from "@/components/libera/markdown-file-link-popup";
@@ -52,6 +53,12 @@ import {
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import {
+  filterMarkdownHeadingAnchors,
+  markdownHeadingAnchors,
+  markdownHeadingHref,
+  type MarkdownHeadingAnchor,
+} from "@/lib/markdown-heading-anchors";
 import {
   createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
@@ -80,6 +87,8 @@ type EditorContextMenuState = {
 type FileLinkPopupContext = {
   destinationEnd: number;
   destinationStart: number;
+  /** This document's headings, parsed once when the destination starts with "#". */
+  headings?: MarkdownHeadingAnchor[];
   query: string;
   x: number;
   y: number;
@@ -606,6 +615,7 @@ function isSameFileLinkPopupContext(
     left?.destinationEnd === right?.destinationEnd &&
     left?.destinationStart === right?.destinationStart &&
     left?.query === right?.query &&
+    !left?.headings === !right?.headings &&
     left?.x === right?.x &&
     left?.y === right?.y
   );
@@ -782,9 +792,16 @@ export function MarkdownEditor({
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
   }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
+  const headingLinkOptions = useMemo(
+    () =>
+      fileLinkPopup?.headings
+        ? filterMarkdownHeadingAnchors(fileLinkPopup.headings, fileLinkPopup.query)
+        : null,
+    [fileLinkPopup],
+  );
   const fileLinkSections = useMemo(
     () =>
-      fileLinkPopup
+      fileLinkPopup && !fileLinkPopup.headings
         ? buildMarkdownFileLinkSections({
             activeFilePath,
             files,
@@ -799,8 +816,9 @@ export function MarkdownEditor({
     () => flattenMarkdownFileLinkSections(fileLinkSections),
     [fileLinkSections],
   );
-  const selectedFileLinkIndex = fileLinkOptions.length
-    ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1)
+  const linkOptionCount = headingLinkOptions ? headingLinkOptions.length : fileLinkOptions.length;
+  const selectedFileLinkIndex = linkOptionCount
+    ? Math.min(activeFileLinkIndex, linkOptionCount - 1)
     : 0;
   const contextMenuHeadingLevels = useMemo(() => {
     if (!contextMenu || contextMenu.start === contextMenu.end) {
@@ -1032,11 +1050,19 @@ export function MarkdownEditor({
       const point = getTextareaClientPointForOffset(textarea, cursor);
       const width = Math.min(384, window.innerWidth - 16);
       const height = 384;
+      const query = destination.replace(/^</, "");
+      const currentPopup = fileLinkPopupRef.current;
+      const headings = query.startsWith("#")
+        ? currentPopup?.destinationStart === destinationStart && currentPopup.headings
+          ? currentPopup.headings
+          : markdownHeadingAnchors(nextValue)
+        : undefined;
 
       return {
         destinationEnd: cursor,
         destinationStart,
-        query: destination.replace(/^</, ""),
+        headings,
+        query,
         x: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
         y: Math.max(8, Math.min(point.y + 6, window.innerHeight - height - 8)),
       };
@@ -1097,6 +1123,44 @@ export function MarkdownEditor({
 
     closeFileLinkPopup();
     onInsertFileLink(selection, range);
+  }
+
+  function insertHeadingLink(heading: MarkdownHeadingAnchor) {
+    const popup = fileLinkPopup;
+    const textarea = textareaRef.current;
+
+    closeFileLinkPopup();
+
+    if (!popup || !textarea) {
+      return;
+    }
+
+    const value = editorValueRef.current;
+    const href = markdownHeadingHref(heading);
+    const lineEnd = value.indexOf("\n", popup.destinationEnd);
+    const closeIndex = value.indexOf(")", popup.destinationEnd);
+    const hasClose = closeIndex >= 0 && (lineEnd < 0 || closeIndex < lineEnd);
+    const replacement = hasClose ? href : `${href})`;
+    const caret = popup.destinationStart + href.length + 1;
+    const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: popup.destinationStart,
+      selectionEnd: popup.destinationEnd,
+      replacement,
+      nextSelectionStart: caret,
+      nextSelectionEnd: caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    });
+
+    if (!usedNativeUndo) {
+      commitEditorValue(
+        textarea,
+        `${value.slice(0, popup.destinationStart)}${replacement}${value.slice(popup.destinationEnd)}`,
+      );
+      textarea.setSelectionRange(caret, caret);
+    }
+    readDraft();
+    textarea.focus();
   }
 
   useEffect(() => {
@@ -1460,23 +1524,24 @@ export function MarkdownEditor({
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "ArrowDown") {
+      if (linkOptionCount && event.key === "ArrowDown") {
         event.preventDefault();
-        setActiveFileLinkIndex((current) => (current + 1) % fileLinkOptions.length);
+        setActiveFileLinkIndex((current) => (current + 1) % linkOptionCount);
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "ArrowUp") {
+      if (linkOptionCount && event.key === "ArrowUp") {
         event.preventDefault();
         setActiveFileLinkIndex(
-          (current) => (current - 1 + fileLinkOptions.length) % fileLinkOptions.length,
+          (current) => (current - 1 + linkOptionCount) % linkOptionCount,
         );
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "Enter") {
+      if (linkOptionCount && event.key === "Enter") {
         event.preventDefault();
-        insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        if (headingLinkOptions) insertHeadingLink(headingLinkOptions[selectedFileLinkIndex]);
+        else insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
         return;
       }
     }
@@ -1873,7 +1938,15 @@ export function MarkdownEditor({
         </div>
       ) : null}
 
-      {fileLinkPopup ? (
+      {fileLinkPopup && headingLinkOptions ? (
+        <MarkdownHeadingLinkPopup
+          activeIndex={selectedFileLinkIndex}
+          headings={headingLinkOptions}
+          x={fileLinkPopup.x}
+          y={fileLinkPopup.y}
+          onSelect={insertHeadingLink}
+        />
+      ) : fileLinkPopup ? (
         <MarkdownFileLinkPopup
           activeIndex={selectedFileLinkIndex}
           sections={fileLinkSections}

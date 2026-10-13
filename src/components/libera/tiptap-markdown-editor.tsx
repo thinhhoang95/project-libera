@@ -1,12 +1,12 @@
 "use client";
 
-import { TiptapReview } from "@/lib/tiptap-review";
+import { sourceRangeForTiptapTextSelection, tiptapSelectionForSourceRange, TiptapReview } from "@/lib/tiptap-review";
 import { TiptapChanges } from "@/lib/tiptap-changes";
 import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { MarkdownTabViewState } from "@/components/libera/types";
+import type { MarkdownSelectionLinkOption, MarkdownTabViewState } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { changeTiptapHeadingLevels, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
@@ -54,6 +54,7 @@ type Props = {
   onRegisterDraft?: (read: () => string) => () => void;
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
+  readSelectionLinks?: () => MarkdownSelectionLinkOption[];
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -108,9 +109,9 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
-  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
+  const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const [error, setError] = useState("");
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [uploadCount, setUploadCount] = useState(0);
@@ -145,6 +146,17 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       onViewStateChange?.({ line });
     }
   }, [onViewStateChange]);
+  // Remembers the highlighted passage as source offsets, so another tab can
+  // link to it after this editor has unmounted.
+  const lastLinkSelectionRef = useRef<string | null>(null);
+  const reportLinkSelection = useCallback((current: Editor, markdown: string) => {
+    const { from, to, empty } = current.state.selection;
+    const range = empty ? null : sourceRangeForTiptapTextSelection(current, markdown, from, to);
+    const key = range ? `${range.start}:${range.end}` : null;
+    if (key === lastLinkSelectionRef.current) return;
+    lastLinkSelectionRef.current = key;
+    onViewStateChangeRef.current?.({ linkSelection: range ?? undefined });
+  }, []);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
@@ -363,7 +375,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     function navigate(event: Event) {
       const detail = (event as CustomEvent<MarkdownOutlineNavigateDetail>).detail;
       if (detail.documentPath !== documentPath || detail.markdown !== readMarkdown()) return;
-      navigateTiptapToMarkdownHeading(editor!, detail.markdown, detail.offset);
+      if (detail.end !== undefined) {
+        const range = tiptapSelectionForSourceRange(editor!, detail.markdown, { start: detail.offset, end: detail.end });
+        if (range) {
+          editor!.commands.setTextSelection(range);
+          editor!.view.dom.focus({ preventScroll: true });
+          const { node } = editor!.view.domAtPos(range.from);
+          (node instanceof HTMLElement ? node : node.parentElement)?.scrollIntoView({ block: "center", inline: "nearest" });
+        }
+      } else navigateTiptapToMarkdownHeading(editor!, detail.markdown, detail.offset);
       // Explicit outline navigation should report its destination immediately.
       reportVisualPosition(editor!, detail.markdown, editor!.state.selection.from);
     }
@@ -378,7 +398,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       visualPositionTimerRef.current = null;
       if (current.isDestroyed) return;
       if (current.view.composing) { scheduleVisualPosition(current); return; }
-      reportVisualPosition(current, readMarkdown(), current.state.selection.from);
+      const markdown = readMarkdown();
+      reportVisualPosition(current, markdown, current.state.selection.from);
+      reportLinkSelection(current, markdown);
     }, TIPTAP_DRAFT_DELAY_MS);
   }
 
@@ -659,7 +681,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           <option value="">Text color</option>
           {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
         </select>
-        <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to })}><Link2 className="h-4 w-4" /></button>
+        <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() })}><Link2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert image from file" title="Insert image from file (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert image from gallery" title="Insert images from the photo gallery" className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
@@ -758,7 +780,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         } else chain.unsetLink().run();
         setLinkDraft(null);
       }}>Apply link</button>}>
-        <MarkdownLinkInput files={files} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft((current) => current ? { ...current, href, label } : null)} />
+        <MarkdownLinkInput files={files} markdown={linkDraft?.markdown} selectionLinks={linkDraft?.selectionLinks} sourcePath={documentPath} value={linkDraft?.href ?? ""} onChange={(href, label) => setLinkDraft((current) => current ? { ...current, href, label } : null)} />
       </ModalDialog>
     </div>
   );

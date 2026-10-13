@@ -20,6 +20,7 @@ import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
+import { findMarkdownHeadingAnchorIndex, markdownHeadingAnchors } from "@/lib/markdown-heading-anchors";
 
 type MarkdownRendererProps = {
   mathMarkers?: MathMarkerSettings;
@@ -121,6 +122,14 @@ function parseExtendedMarkdownHeading(children: unknown) {
   };
 }
 
+// Rendered h1–h6 elements follow the parsed headings in document order.
+function scrollToRenderedHeading(root: HTMLElement | null, markdown: string, hash: string) {
+  const index = findMarkdownHeadingAnchorIndex(markdownHeadingAnchors(markdown), hash);
+  const element = index >= 0 ? root?.querySelectorAll("h1, h2, h3, h4, h5, h6")[index] : undefined;
+
+  element?.scrollIntoView({ block: "start", inline: "nearest" });
+}
+
 function openExternalLink(href: string) {
   window.open(href, "_blank", "noopener,noreferrer");
 }
@@ -153,6 +162,9 @@ function MarkdownRendererContent({
   renderImages = true,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  // Read at click time so heading links do not rebuild the component table.
+  const contentRef = useRef(content);
+  useLayoutEffect(() => { contentRef.current = content; }, [content]);
   const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
@@ -452,6 +464,13 @@ function MarkdownRendererContent({
               href={href}
               onClick={(event) => {
                 if (!href) {
+                  return;
+                }
+
+                if (href.startsWith("#")) {
+                  event.preventDefault();
+                  scrollToRenderedHeading(rootRef.current, contentRef.current, href);
+                  if (documentPath && onOpenFileLink) void onOpenFileLink(href);
                   return;
                 }
 

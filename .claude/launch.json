@@ -1,0 +1,50 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "libera-archive-test",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "LIBERA_DATA_DIR=/private/tmp/claude-501/-Volumes-CrucialX-project-libera/01b4dab5-c413-4f1d-802f-5af8146bef4b/scratchpad/archive-data",
+        "LIBERA_PASSWORD_HASH=",
+        "LIBERA_DEV_PASSWORD=archive-test-pw-7341",
+        "npx",
+        "next",
+        "dev",
+        "-p",
+        "3100"
+      ],
+      "port": 3100
+    },
+    {
+      "name": "libera-photo-chat-test",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "LIBERA_DATA_DIR=/private/tmp/claude-501/-Volumes-CrucialX-project-libera/6346381f-3218-4c75-a757-020fa1f1afc8/scratchpad/chat-data",
+        "LIBERA_PASSWORD_HASH=",
+        "LIBERA_DEV_PASSWORD=photo-chat-test-ae975d6e",
+        "npx",
+        "next",
+        "dev",
+        "-p",
+        "3101"
+      ],
+      "port": 3101
+    },
+    {
+      "name": "libera-links-test",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "LIBERA_DATA_DIR=/private/tmp/claude-501/-Volumes-CrucialX-project-libera/f1a65d05-e9a9-4671-afc9-e2b125367fac/scratchpad/links-data",
+        "LIBERA_PASSWORD_HASH=",
+        "LIBERA_DEV_PASSWORD=links-test-pw-5821",
+        "npx",
+        "next",
+        "dev",
+        "-p",
+        "3102"
+      ],
+      "port": 3102
+    }
+  ]
+}
