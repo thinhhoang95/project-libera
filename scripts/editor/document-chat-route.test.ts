@@ -6,6 +6,9 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import { POST } from "../../src/app/api/document-chat/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
+import { readChatResponse } from "../../src/components/libera/chat-stream-client";
+import type { ChatMessage } from "../../src/lib/document-chat";
+import type { OpenRouterMessage } from "../../src/lib/openrouter";
 
 test("chat authenticates, validates input, and uses the configured Preferences model", async () => {
   const originalFetch = globalThis.fetch;
@@ -71,5 +74,80 @@ test("chat authenticates, validates input, and uses the configured Preferences m
     if (originalInlineMarkers === undefined) delete process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS; else process.env.LIBERA_MARKDOWN_INLINE_MATH_MARKERS = originalInlineMarkers;
     if (originalBlockMarkers === undefined) delete process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS; else process.env.LIBERA_MARKDOWN_BLOCK_MATH_MARKERS = originalBlockMarkers;
     rmSync(configDirectory, { recursive: true, force: true });
+  }
+});
+
+test("selected Gemini model keeps a stable implicit-cache prefix across streamed turns", async () => {
+  const oldFetch = globalThis.fetch;
+  const environment = {
+    OPENROUTER_API_KEY: "test-key",
+    LIBERA_CONFIG_PATH: "",
+    LIBERA_AI_CHAT_MODEL: "test/default-chat-model",
+    LIBERA_AI_CHAT_ALTERNATIVE_MODELS: JSON.stringify(["google/gemini-3.8-flash"]),
+    LIBERA_AI_CHAT_PROMPT_CACHING: "true",
+    LIBERA_AI_CHAT_CUSTOM_INSTRUCTION: "Use concise answers.",
+  };
+  const previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, environment);
+  const requests: { model: string; session_id: string; provider: { only: string[] }; messages: OpenRouterMessage[] }[] = [];
+  let lookups = 0;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/endpoints")) {
+      lookups++;
+      assert.equal(String(input), "https://openrouter.ai/api/v1/models/google/gemini-3.8-flash/endpoints");
+      return Response.json({ data: { endpoints: [{
+        tag: "google-vertex/global", supports_implicit_caching: true,
+        supported_parameters: ["reasoning", "max_tokens"],
+        pricing: { input_cache_read: "0.000000075", input_cache_write: "0.0000000416666666666667" },
+      }] } });
+    }
+    const payload = JSON.parse(String(init?.body));
+    requests.push(payload);
+    assert.equal(payload.stream, true);
+    assert.deepEqual(payload.stream_options, { include_usage: true });
+    const cachedTokens = requests.length === 1 ? 0 : 8192;
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Answer" } }] })}\n\ndata: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 9893, completion_tokens: 23, prompt_tokens_details: { cached_tokens: cachedTokens } } })}\n\ndata: [DONE]\n\n`);
+  };
+  const opening: ChatMessage = {
+    id: "opening-id", role: "user", text: "Summarize this document.", createdAt: "2026-10-06T15:39:00.000Z",
+    contexts: [{ kind: "document", path: "notes.md", name: "notes.md", text: "Stable reference material.\n".repeat(2000) }],
+  };
+  async function send(messages: ChatMessage[]) {
+    const response = await POST(new NextRequest("http://localhost/api/document-chat", {
+      method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` },
+      body: JSON.stringify({ stream: true, model: "google/gemini-3.8-flash", sessionId: "gemini-cache-session", messages }),
+    }));
+    assert.equal(response.status, 200);
+    const usage: unknown[] = [];
+    let text = "";
+    await readChatResponse(response, new AbortController().signal, (delta) => { text += delta; }, (value) => usage.push(value));
+    assert.equal(text, "Answer");
+    return usage;
+  }
+  try {
+    assert.deepEqual(await send([opening]), [{ inputTokens: 9893, outputTokens: 23, cachedTokens: 0 }]);
+    assert.deepEqual(await send([
+      opening, { id: "reply-id", role: "assistant", text: "Answer" },
+      { id: "followup-id", role: "user", text: "Explain the second point.", createdAt: "2026-10-06T15:40:00.000Z" },
+    ]), [{ inputTokens: 9893, outputTokens: 23, cachedTokens: 8192 }]);
+    assert.equal(lookups, 1);
+    for (const request of requests) {
+      assert.equal(request.model, "google/gemini-3.8-flash");
+      assert.equal(request.session_id, "gemini-cache-session");
+      assert.deepEqual(request.provider.only, ["google-vertex/global"]);
+      const serialized = JSON.stringify(request.messages);
+      assert.ok(!serialized.includes("cache_control"), "implicit Gemini does not receive explicit cache markers");
+      assert.ok(!serialized.includes(opening.createdAt!), "timestamps do not enter the cached prompt");
+      assert.ok(!serialized.includes(opening.id), "message IDs do not enter the cached prompt");
+    }
+    assert.deepEqual(requests[1].messages.slice(0, 2), requests[0].messages, "follow-ups preserve the opening system and document messages exactly");
+    assert.deepEqual(requests[1].messages.slice(2), [
+      { role: "assistant", content: "Answer" }, { role: "user", content: "Explain the second point." },
+    ]);
+  } finally {
+    globalThis.fetch = oldFetch;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });

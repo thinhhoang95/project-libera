@@ -14,22 +14,27 @@ const {
 const { createHash, randomBytes, scryptSync, timingSafeEqual } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
-const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
+const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
 const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
+const {
+  contextStateRoot,
+  findLinkedFolder,
+  readDirectoryModeState,
+} = require("./directory-mode.cjs");
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
+const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
-const SERVER_READY_TIMEOUT_MS = 90_000;
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
 const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
 const ADMIN_USER = "admin";
@@ -65,6 +70,8 @@ let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
+let shutdownPromise = null;
+let shutdownComplete = false;
 const updaterService = createUpdaterService({
   getMainWindow: () => mainWindow,
   onBeforeInstall: prepareToQuit,
@@ -208,6 +215,10 @@ function normalizeYourName(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeSmartPaste(value) {
+  return value === true;
+}
+
 function normalizeThemePreference(themePreference) {
   return THEME_PREFERENCES.has(themePreference) ? themePreference : "system";
 }
@@ -338,6 +349,7 @@ function normalizedImportedPreferences(input) {
   return {
     themePreference: normalizeThemePreference(input.themePreference),
     yourName: normalizeYourName(input.yourName),
+    smartPaste: normalizeSmartPaste(input.smartPaste),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -360,6 +372,8 @@ function normalizedImportedPreferences(input) {
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input.aiFunctions, openRouterModel),
     quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
+    // Backups made before snippets existed leave the saved snippets alone.
+    ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
     passwordHash,
   };
 }
@@ -418,7 +432,7 @@ async function importPreferences(parentWindow) {
     title: "Load Preferences Backup?",
     message: "Replace all saved Libera preferences with this backup?",
     detail:
-      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, theme, and master password verifier.",
+      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
   });
 
   if (confirmation.response !== 0) return { canceled: true };
@@ -442,6 +456,7 @@ function getConfigStatus(config = readConfig()) {
   return {
     themePreference: normalizeThemePreference(config.themePreference),
     yourName: normalizeYourName(config.yourName),
+    smartPaste: normalizeSmartPaste(config.smartPaste),
     dataDir: typeof config.dataDir === "string" ? config.dataDir : "",
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
@@ -602,6 +617,7 @@ function validateSetupInput(input, existingConfig) {
   return {
     themePreference: normalizeThemePreference(input?.themePreference),
     yourName: normalizeYourName(input?.yourName),
+    smartPaste: normalizeSmartPaste(input?.smartPaste),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -695,6 +711,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         ...existingConfig,
         themePreference: validated.themePreference,
         yourName: validated.yourName,
+        smartPaste: validated.smartPaste,
         dataDir: validated.dataDir,
         markdownInlineMathMarkers: validated.markdownInlineMathMarkers,
         markdownBlockMathMarkers: validated.markdownBlockMathMarkers,
@@ -968,6 +985,10 @@ async function openConfigurationWindow() {
         ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
+        : key === "latexSnippets"
+          ? JSON.stringify(updatedConfig.latexSnippets) !== JSON.stringify(previousConfig.latexSnippets)
+        : key === "smartPaste"
+          ? updatedConfig.smartPaste !== normalizeSmartPaste(previousConfig.smartPaste)
         : updatedConfig[key] !== previousConfig[key]),
     );
     if (!requiresRestart) return;
@@ -995,6 +1016,106 @@ async function openConfigurationWindow() {
   }
 }
 
+function getAdminRootFromConfig() {
+  const config = readConfig();
+  const dataDir = typeof config.dataDir === "string" ? config.dataDir : "";
+
+  if (!dataDir) {
+    throw new Error("Libera data directory is not configured.");
+  }
+
+  return path.join(dataDir, "users", ADMIN_USER);
+}
+
+function readDirectoryModeStateFromConfig() {
+  try {
+    return readDirectoryModeState(getAdminRootFromConfig());
+  } catch {
+    return { version: 2, folders: [], recent: [] };
+  }
+}
+
+function recentDirectoryLabel(directoryPath) {
+  const home = app.getPath("home");
+  const relativeToHome = path.relative(home, directoryPath);
+  const shown = relativeToHome && !relativeToHome.startsWith("..") && !path.isAbsolute(relativeToHome)
+    ? `~${path.sep}${relativeToHome}`
+    : directoryPath;
+  // Electron treats "&" as a mnemonic marker on Windows and Linux.
+  return shown.replace(/&/g, "&&");
+}
+
+// The renderer asks the server to link or remove the folder and refreshes its
+// library in place.
+function sendDirectoryCommand(command) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+  mainWindow.webContents.send("directory:command", command);
+}
+
+function showOpenDialogFor(parentWindow, options) {
+  return parentWindow ? dialog.showOpenDialog(parentWindow, options) : dialog.showOpenDialog(options);
+}
+
+async function showDirectoryDialog(parentWindow) {
+  const result = await showOpenDialogFor(parentWindow, {
+    buttonLabel: "Open",
+    properties: ["openDirectory", "createDirectory"],
+    title: "Open Folder",
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+}
+
+async function showFileDialog(parentWindow) {
+  const result = await showOpenDialogFor(parentWindow, {
+    // The server decides which file types Libera can open.
+    buttonLabel: "Open",
+    properties: ["openFile"],
+    title: "Open File",
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+}
+
+async function chooseDirectoryAndOpen() {
+  const directoryPath = await showDirectoryDialog(mainWindow);
+  if (directoryPath) sendDirectoryCommand({ type: "open-directory", path: directoryPath });
+}
+
+async function chooseFileAndOpen() {
+  const filePath = await showFileDialog(mainWindow);
+  if (filePath) sendDirectoryCommand({ type: "open-file", path: filePath });
+}
+
+/** Map a notebook-relative item path to disk, following linked folders. */
+function resolveContextItemPath(relativePath) {
+  const { notebook, pathParts } = splitNotebookItemPath(relativePath);
+  const adminRoot = getAdminRootFromConfig();
+  const folder = findLinkedFolder(readDirectoryModeState(adminRoot), notebook);
+
+  if (folder) {
+    const targetPath = path.join(folder.path, ...pathParts);
+    assertPathInside(folder.path, targetPath);
+    return targetPath;
+  }
+
+  const targetPath = path.join(adminRoot, notebook, ...pathParts);
+  assertPathInside(adminRoot, targetPath);
+  return targetPath;
+}
+
+function installDirectoryModeHandlers() {
+  ipcMain.handle("directory:choose-folder", (event) =>
+    showDirectoryDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow));
+  ipcMain.handle("directory:choose-file", (event) =>
+    showFileDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow));
+  ipcMain.handle("directory:changed", () => {
+    const [latest] = readDirectoryModeStateFromConfig().recent;
+    if (latest) app.addRecentDocument(latest);
+    installApplicationMenu();
+  });
+}
+
 function installApplicationMenu() {
   applyApplicationIdentity();
 
@@ -1013,6 +1134,49 @@ function installApplicationMenu() {
     click: showAboutDialog,
     label: `About ${APP_DISPLAY_NAME}`,
   };
+  const directoryState = readDirectoryModeStateFromConfig();
+  const openMenuItems = [
+    {
+      accelerator: "CmdOrCtrl+O",
+      click: () => void chooseFileAndOpen(),
+      label: "Open File...",
+    },
+    {
+      accelerator: "CmdOrCtrl+Shift+O",
+      click: () => void chooseDirectoryAndOpen(),
+      label: "Open Folder...",
+    },
+    {
+      label: "Open Recent",
+      submenu: directoryState.recent.length
+        ? [
+            ...directoryState.recent.map((directoryPath) => ({
+              click: () => sendDirectoryCommand({ type: "open-directory", path: directoryPath }),
+              label: recentDirectoryLabel(directoryPath),
+              toolTip: directoryPath,
+            })),
+            { type: "separator" },
+            {
+              click: () => sendDirectoryCommand({ type: "clear-recent" }),
+              label: "Clear Recently Opened",
+            },
+          ]
+        : [{ enabled: false, label: "No Recent Folders" }],
+    },
+    {
+      label: "Remove Folder from Libera",
+      enabled: directoryState.folders.length > 0,
+      submenu: directoryState.folders.length
+        ? directoryState.folders.map((folder) => ({
+            click: () => sendDirectoryCommand({ type: "close-directory", name: folder.name }),
+            // Electron treats "&" as a mnemonic marker on Windows and Linux.
+            label: folder.name.replace(/&/g, "&&"),
+            toolTip: folder.path,
+          }))
+        : [{ enabled: false, label: "No Linked Folders" }],
+    },
+    { type: "separator" },
+  ];
   const checkForUpdatesMenuItem = {
     click: () => void updaterService.check(),
     enabled: app.isPackaged,
@@ -1043,6 +1207,7 @@ function installApplicationMenu() {
     {
       label: "File",
       submenu: [
+        ...openMenuItems,
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
         closeTabMenuItem,
         ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
@@ -1242,22 +1407,12 @@ function installNativeMenuHandlers() {
 }
 
 function installFileExplorerHandlers() {
-  function getAdminRootFromConfig() {
-    const config = readConfig();
-    const dataDir = typeof config.dataDir === "string" ? config.dataDir : "";
-
-    if (!dataDir) {
-      throw new Error("Libera data directory is not configured.");
-    }
-
-    return path.join(dataDir, "users", ADMIN_USER);
-  }
-
   ipcMain.handle("file-explorer:reveal-notebook", async (_event, notebook) => {
     const safeNotebook = assertSafePathSegment(notebook, "Notebook name");
     const adminRoot = getAdminRootFromConfig();
-    const notebookDirectory = path.join(adminRoot, safeNotebook);
-    assertPathInside(adminRoot, notebookDirectory);
+    const folder = findLinkedFolder(readDirectoryModeState(adminRoot), safeNotebook);
+    const notebookDirectory = folder?.path ?? path.join(adminRoot, safeNotebook);
+    if (!folder) assertPathInside(adminRoot, notebookDirectory);
 
     const stats = await fsp.stat(notebookDirectory);
 
@@ -1273,10 +1428,7 @@ function installFileExplorerHandlers() {
   });
 
   ipcMain.handle("file-explorer:reveal-item", async (_event, relativePath) => {
-    const { notebook, pathParts } = splitNotebookItemPath(relativePath);
-    const adminRoot = getAdminRootFromConfig();
-    const targetPath = path.join(adminRoot, notebook, ...pathParts);
-    assertPathInside(adminRoot, targetPath);
+    const targetPath = resolveContextItemPath(relativePath);
 
     const stats = await fsp.stat(targetPath);
 
@@ -1292,10 +1444,7 @@ function installFileExplorerHandlers() {
       throw new Error("Copy path mode is invalid.");
     }
 
-    const { notebook, pathParts } = splitNotebookItemPath(relativePath);
-    const adminRoot = getAdminRootFromConfig();
-    const targetPath = path.join(adminRoot, notebook, ...pathParts);
-    assertPathInside(adminRoot, targetPath);
+    const targetPath = resolveContextItemPath(relativePath);
 
     const stats = await fsp.stat(targetPath);
 
@@ -1308,15 +1457,16 @@ function installFileExplorerHandlers() {
 }
 
 function installWindowControlHandlers() {
-  ipcMain.on("workspaces:checkpoint", (event, body) => {
+  ipcMain.on("workspaces:checkpoint", (event, body, contextRoot) => {
     try {
       if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
           new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
         throw new Error("Workspace checkpoint sender is invalid.");
       }
-      const config = readConfig();
-      if (!config.dataDir) throw new Error("Libera data directory is not configured.");
-      writeWorkspaceRecovery(path.join(config.dataDir, "users", ADMIN_USER), body);
+      // Notebooks and linked folders share the library session.
+      const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
+      if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
+      writeWorkspaceRecovery(stateRoot, body);
       event.returnValue = { saved: true };
     } catch (error) {
       event.returnValue = { saved: false, error: error.message };
@@ -1373,47 +1523,6 @@ function getFreePort() {
   });
 }
 
-function requestUrl(url) {
-  return new Promise((resolve, reject) => {
-    const request = http.get(url, (response) => {
-      response.resume();
-      resolve(response.statusCode ?? 0);
-    });
-
-    request.once("error", reject);
-    request.setTimeout(2_000, () => {
-      request.destroy(new Error("Timed out waiting for the Next.js server."));
-    });
-  });
-}
-
-async function waitForServer(url) {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < SERVER_READY_TIMEOUT_MS) {
-    try {
-      const statusCode = await requestUrl(url);
-
-      if (statusCode >= 200 && statusCode < 500) {
-        return;
-      }
-    } catch {
-      // The server is still starting.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  throw new Error("The Next.js server did not start in time.");
-}
-
-async function cleanDevTurbopackCache(appRoot) {
-  await fsp.rm(path.join(appRoot, ".next", "dev", "cache", "turbopack"), {
-    force: true,
-    recursive: true,
-  });
-}
-
 function getNodeExecutable() {
   return process.env.npm_node_execpath || process.env.NODE || "node";
 }
@@ -1457,6 +1566,7 @@ async function startNextServer(config) {
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
+    LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
     LIBERA_MARKDOWN_BLOCK_MATH_MARKERS: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
@@ -1497,10 +1607,6 @@ async function startNextServer(config) {
       : [nextBin, mode, "-H", "127.0.0.1", "-p", String(port)];
   const cwd = useStandalone ? path.dirname(standaloneServer) : appRoot;
 
-  if (mode === "dev") {
-    await cleanDevTurbopackCache(appRoot);
-  }
-
   if (useStandalone) {
     applyServerEnv(env);
     require(standaloneServer);
@@ -1514,6 +1620,7 @@ async function startNextServer(config) {
   nextProcess = spawn(getNodeExecutable(), commandArgs, {
     cwd,
     env,
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -1525,10 +1632,13 @@ async function startNextServer(config) {
     process.stderr.write(`[next] ${chunk}`);
   });
 
-  nextProcess.on("exit", (code, signal) => {
-    nextProcess = null;
-
-    if (!isQuitting) {
+  const serverProcess = nextProcess;
+  let serverReady = false;
+  serverProcess.on("error", (error) => {
+    console.error(`[next] ${error.message}`);
+  });
+  serverProcess.on("exit", (code, signal) => {
+    if (serverReady && !isQuitting) {
       dialog.showErrorBox(
         `${APP_DISPLAY_NAME} server stopped`,
         `The local Next.js server stopped unexpectedly (${signal ?? code}).`,
@@ -1537,7 +1647,8 @@ async function startNextServer(config) {
     }
   });
 
-  await waitForServer(url);
+  await waitForServer(url, { child: serverProcess });
+  serverReady = true;
 
   return url;
 }
@@ -1646,8 +1757,8 @@ async function createMainWindow(url) {
     dispatchRendererTabShortcut(mainWindow.webContents, Boolean(input.shift));
   });
   // Same-origin pages the renderer may open as child windows: duplicated
-  // Markdown previews and duplicated PDF/image tabs.
-  const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]]]);
+  // Markdown previews, duplicated PDF/image tabs and popped-out LaTeX PDFs.
+  const childWindowSizes = new Map([["/markdown-preview", [900, 800]], ["/file-window", [1000, 850]], ["/latex-pdf-window", [900, 1000]]]);
   const childWindowSize = (targetUrl) =>
     isSameOrigin(targetUrl, url) ? childWindowSizes.get(new URL(targetUrl).pathname) : undefined;
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
@@ -1720,15 +1831,18 @@ async function bootstrap() {
     }
 
     const url = await startNextServer(config);
+    if (isQuitting) return;
     nextServerUrl = url;
     installExportHandlers();
     installNativeMenuHandlers();
     installFileExplorerHandlers();
+    installDirectoryModeHandlers();
     installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);
     updaterService.initialize();
   } catch (error) {
+    if (isQuitting) return;
     if (error.message !== "Setup was canceled.") {
       dialog.showErrorBox(`Unable to start ${APP_DISPLAY_NAME}`, error.message);
     }
@@ -1740,18 +1854,27 @@ async function bootstrap() {
 app.on("ready", bootstrap);
 
 function prepareToQuit() {
+  if (shutdownPromise) return shutdownPromise;
   isQuitting = true;
   updaterService.dispose();
-
-  if (nextProcess) {
-    nextProcess.kill();
+  shutdownPromise = stopProcessTree(nextProcess).catch((error) => {
+    console.error(`Could not stop the Next.js server: ${error.message}`);
+  }).finally(() => {
     nextProcess = null;
-  }
+    shutdownComplete = true;
+  });
+  return shutdownPromise;
 }
 
-app.on("before-quit", () => {
-  prepareToQuit();
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  void prepareToQuit().then(() => app.quit());
 });
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => app.quit());
+}
 
 app.on("window-all-closed", () => {
   app.quit();

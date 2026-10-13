@@ -38,6 +38,8 @@ Direct child folders are notebooks. Files inside notebooks currently support:
 
 The API rejects unsafe paths that escape the admin master directory.
 
+Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
+
 ## Math Rendering
 
 Markdown rendering is wired through:
@@ -128,16 +130,21 @@ Run the desktop app in development with:
 npm run electron:dev
 ```
 
-On macOS arm64, when the Windows dependency tree is active in `node_modules`,
-run `npm run dev:mac` instead. It reads the existing macOS dependency cache and
-starts Electron and Next.js from a temporary app directory. Source edits are
-mirrored into that directory for development; the active dependencies and the
-project's `.next` output are left unchanged. The temporary directory is removed
-when the app exits. If the macOS cache is missing or stale, the command reports
-that condition without installing or activating dependencies.
+On macOS arm64, `electron:dev` automatically starts Electron and Next.js from a
+local temporary app directory, avoiding compilation stalls on external ExFAT
+volumes. `npm run dev:mac` also starts this launcher directly. It uses the macOS
+dependencies from either the platform cache or the active `node_modules`, even
+when Windows dependencies are active in the project. Source edits are mirrored
+into that directory for development; the active dependencies and the project's
+`.next` output are left unchanged. The temporary directory is removed when the
+app exits. If the macOS cache is missing or stale, run `npm run deps:setup` on
+macOS first.
 
 Electron development starts Next.js with webpack because Turbopack's persistent
 dev cache can fail on external macOS volumes that create `._*` sidecar files.
+Startup allows up to 90 seconds for an HTTP response, with 30 seconds per request
+so the initial page can compile. Server exits are reported immediately. Quitting
+or interrupting the app stops the Next.js CLI and its server subprocesses.
 
 Run it against a production Next.js build with:
 
@@ -242,6 +249,8 @@ Drop or paste PNG, JPEG, GIF, or WebP photos into a note, or use **Insert image*
 
 Use **Enumerate Headings** in the visual toolbar to number all headings or selected headings with a custom starting value. The same actions are available in the right-click menu, along with **Indent Headings**, **Unindent Headings**, **AI Format**, and **AI Rewrite**. Right-click a photo for **AI Image to Markdown**. Numbering preserves heading formatting and supports undo. AI results replace the original selection while preserving edits elsewhere; if that selection changes during the request, retry on the updated text.
 
+Turn on **Smart Paste** in Preferences → General to paste Markdown with headings into either editor so it fits the document: the pasted text's highest heading is moved to the document's highest heading level (the highest numbered level, in a numbered document), and if any heading is numbered, every heading is renumbered so the numbering continues through the pasted text (`1.1` or `1.1.` style is kept). Unnumbered headings above the numbered level, such as a title, are left alone. The paste is a single undo step; pastes without headings, or into code, are unchanged. Restart Libera after toggling it.
+
 Use **Source** to access the existing source/preview workflow, screenshot insertion, file-link picker, and slide controls. Slide decks continue using the source editor. Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
 
 Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`) retain their existing syntax. Underlines use `<u>text</u>`. Font size and line spacing use safe numeric span attributes, for example `<span data-font-size="24" data-line-height="2">text</span>`, supported by both the visual editor and Markdown preview/export. Other Markdown viewers may ignore these presentation attributes.
@@ -252,8 +261,60 @@ Run the editor's Markdown round-trip regression tests with `npm run test:editor`
 
 Use the optional **Custom instructions** textarea to guide the model (for example, add a table of contents or style section headings). Instructions are saved with the other export settings and applied during generation and automatic repairs. The field accepts up to 10,000 characters; selected page settings take precedence.
 
-Click **LATEX** in either the WYSIWYG or Source Editor toolbar to configure and export the current draft. Set an optional author and a date (today by default); choose A4 (default), Letter, or A5 paper; margins in inches (left/right 1, top/bottom 1 by default); image width as a fraction of text width (0.75 by default); and optional header/footer text. Choose a 10pt, 11pt, or 12pt (default) article font size. Custom headers are centered. An empty footer shows the current page number / total pages in the same footer position. Custom footers are left-aligned unless **Show app name** is checked, which centers the custom footer and places “Libera by Thinh Hoang” on the right. Click **Generate PDF** to save these settings and begin. The settings persist on disk across app restarts and are shared by both editors. Libera uses the configured OpenRouter API key with `openai/gpt-5.6-luna` and low reasoning, collects up to three response parts, and compiles the source with `pdflatex`. Compilation errors trigger up to two automatic repair attempts. The dialog shows progress, supports cancellation, and provides a PDF preview plus **Save PDF** and **Save LaTeX** downloads.
+Click **LATEX** in either the WYSIWYG or Source Editor toolbar to configure and export the current draft. Set an optional author and a date (today by default); choose A4 (default), Letter, or A5 paper; margins in inches (left/right 1, top/bottom 1 by default); image width as a fraction of text width (0.75 by default); and optional header/footer text. Choose a 10pt, 11pt, or 12pt (default) article font size. Custom headers are centered. An empty footer shows the current page number / total pages in the same footer position. Custom footers are left-aligned unless **Show app name** is checked, which centers the custom footer and places “Libera by Thinh Hoang” on the right. Click **Generate PDF** to save these settings and begin. The settings persist on disk across app restarts and are shared by both editors. Libera uses the configured OpenRouter API key and LaTeX model settings (default: `openai/gpt-5.6-luna` with low reasoning). It splits the Markdown into ordered chunks sized to about 10,000 output tokens each (roughly 30,000 characters of English; less for CJK and other dense scripts), leaving headroom under the 16,000-token response limit. The whole export runs as one conversation with a single session id, so the growing prompt prefix can be served from the provider's prompt cache: the model first writes the shared preamble, then converts each chunk in order with the preamble and earlier chunks in view. A reply cut off by the token limit is continued in place. Chunks may request extra `\usepackage` lines, which Libera moves into the shared preamble. Block end comments verify that every block was converted once, in order; a rejected reply is sent back in the same conversation (up to three attempts), and on a chunk's last attempt a complete-looking response with garbled comments is accepted. Libera then joins the pieces and compiles them with `pdflatex`. Each compiler error is returned to the same conversation with numbered source lines around the failure, and the model answers with small SEARCH/REPLACE edits, repeated until the PDF compiles (at most eight rounds). The dialog shows progress, supports cancellation, and provides a PDF preview plus **Save PDF** and **Save LaTeX** downloads.
 
-Install TeX Live or MiKTeX on the computer running Libera. `pdflatex` is discovered from `PATH` or the standard macOS TeX location; set `LIBERA_PDFLATEX_PATH` to an executable path and restart Libera if needed. In the desktop app, compilation runs on the user's computer; a remotely hosted web instance compiles on its server. Exports use temporary directories, disable shell escape, and restrict TeX file access. Documents are limited to 200,000 characters and exports time out after 15 minutes. Local Markdown images are resolved using the document’s notebook asset paths, converted to PNG, and copied into the temporary compilation directory. Embedded PNG/JPEG/GIF/WebP images are supported. Unreadable or nonlocal image sources produce an explicit error. Image exports include a LaTeX ZIP download with all referenced image files. External bibliography tools are not used.
+Install TeX Live or MiKTeX on the computer running Libera. `pdflatex` is discovered from `PATH` or the standard macOS TeX location; set `LIBERA_PDFLATEX_PATH` to an executable path and restart Libera if needed. In the desktop app, compilation runs on the user's computer; a remotely hosted web instance compiles on its server. Exports use temporary directories, disable shell escape, and restrict TeX file access. Documents are limited to 200,000 characters and exports time out after 15 minutes. Local Markdown images are resolved using the document’s notebook asset paths, converted to PNG, and copied into the temporary compilation directory. Embedded PNG/JPEG/GIF/WebP images are supported. Unreadable or nonlocal image sources produce an explicit error. Image exports include a LaTeX ZIP download with all referenced image files. External bibliography tools are not used. Long paragraphs split at plain-text whitespace, code at complete lines, lists at item boundaries, and tables at whole rows with repeated headers. Inline syntax and display equations stay intact, and reference links/footnotes retain their definitions across chunks. An indivisible block longer than two chunks fails with a request to split it manually. Block tracking detects missing or empty blocks but cannot guarantee sentence-level fidelity; review the generated PDF when content accuracy matters.
 
 Libera remembers the last selected notebook in the workspace data and reopens its home page on startup. Opening a file or switching tabs also updates this selection. If that notebook no longer exists, Libera opens the first available notebook.
+
+## Split panels
+
+Work on several files side by side by splitting the editor area into panels. Choose **Split Right** or **Split Down** in the file actions menu (Cmd/Ctrl+\ and Cmd/Ctrl+Shift+\), or right-click a tab and choose **Open to the Right** or **Open Below**. You can also drag a tab onto a panel: the highlighted zone shows whether it will split left, right, up, or down, or replace the panel's file. Panels can be split again in either direction. Drag a divider to resize panels, or double-click it to even them out. **Close Panel** and **Close Other Panels** are in the same menu. Each file shows in one panel at a time, so two editors never change the same draft. The layout is saved with the workspace.
+
+## AI writing and editing
+
+### AI Rewrite and Write with AI
+
+Right-click selected text in either editor and describe the change under **AI Rewrite**. Right-click without a selection to use **Write with AI**, which writes new text at that spot as its own paragraph, so existing paragraphs and lists are never split. In either prompt, type `/` to pick a saved quick prompt (configured as `quickPrompts` in the config file, or in `LIBERA_QUICK_PROMPTS`). **Include whole document as context** sends the full document along with the selection; it is on by default and remembered on each device.
+
+### Live previews of AI edits
+
+In the Visual and LaTeX editors, AI Rewrite, Write with AI, AI Format, AI Image to Markdown, and Agentic review show their results in place as a diff, like a code review: removed text is struck through next to the new text, and unchanged text stays as it is. Each change has its own **Accept** and **Reject** buttons, and a bar at the top of the editor counts the changes, steps through them with **Previous change** and **Next change**, and offers **Accept all** (Cmd/Ctrl+Shift+Enter) and **Reject all** (Cmd/Ctrl+Shift+Backspace).
+
+### Agentic review
+
+Comment on a document, then let the AI work through the comments. Turn on **Review mode** with its button in the tab bar of a Markdown or LaTeX document, select a passage in either editor, and add a comment (Cmd/Ctrl+Alt+M). Comments appear in the **Comments** panel of the left rail, where you can reply, edit, resolve, reattach a comment to a new selection, delete, and search them. Comments work in Markdown and LaTeX documents.
+
+Click **Agentic review** in the Comments panel to open the review in the chat panel. The AI first writes a plan that covers each selected comment, notes conflicts and open questions, and explains when no edit is needed. Discuss and revise the plan in the conversation, and type `@` to include reference files. **Confirm plan & generate changes** then turns the plan into separate proposals, each showing the original and proposed text with its reason. Accept or reject each proposal, or use **Request revision** to have one redone. Changes that only work together are marked as linked and accepted together. **Accept all remaining**, **Reject all remaining**, and **Undo acceptance** are also available. Nothing changes in the document until you accept it.
+
+### Copy and paste from AI services
+
+Paste answers from ChatGPT, Claude, Gemini, or other AI chats straight into either editor. Rich text is converted into Libera's Markdown, keeping headings, lists, tables, and formatting, and equations rendered with KaTeX paste as their LaTeX source. If a pasted answer writes math as `\(...\)` or `\[...\]`, click **Fix ChatGPT equations** in the Source toolbar to switch it to the math markers Libera uses. Copying rendered text from Libera, including AI chat answers, puts Markdown on the clipboard, with equations as LaTeX.
+
+## Image Gallery
+
+Open the **Image Gallery** tab in the left rail (Cmd/Ctrl+5). The left panel generates images and the main area shows the gallery. Open documents stay as they were while the gallery is in front.
+
+### Generating images
+
+Describe the image and press **Generate** (Cmd/Ctrl+Enter). Libera uses OpenRouter's Images API with the configured OpenRouter API key. The model list comes from OpenRouter, and each model shows only the settings it supports: aspect ratio, resolution, quality, background, format, compression, number of images, and seed. The default model is `google/gemini-3.1-flash-image`; set `LIBERA_AI_IMAGE_MODEL` to change it. The model, its settings (remembered per model), and the save destination persist across restarts in `.libera/image-generation.json`.
+
+Add **Reference photos** for models that edit or build on photos: use **Add**, drop photos on the panel, or paste them into the prompt. Photos larger than 2048 px are scaled down before they are sent, and the panel shows how many photos the chosen model accepts. In the gallery, **Use as reference** sends photos to the panel.
+
+Under **Save to**, choose the gallery (optionally an album) or a **Notebook folder**. Images saved to a notebook folder stay with the notebook and do not appear in the gallery.
+
+### Browsing
+
+**Photos** shows every photo grouped by day, **Starred** collects starred photos, and **Albums** lists albums. Sort newest or oldest first. Change the thumbnail size with the zoom buttons, the slider, `+`/`-`, or pinch (Cmd/Ctrl+scroll), and switch between a square grid and a layout that keeps each photo's shape. Hover a photo to select it or star it; Shift-click selects a range, a day's checkbox selects the whole day, Cmd/Ctrl+A selects everything, and Esc clears the selection. With photos selected you can star them, add them to an album, use them as references, or delete them. Deleting removes the files from disk.
+
+### Albums
+
+Albums are folders inside the gallery folder; photos outside any album sit at its top level. Creating an album creates a folder with its name and moves the chosen photos into it. This is the only time photos move on disk. Adding photos to an existing album, removing them, and deleting an album only change the gallery's index (`.libera-gallery.json`), so a photo can belong to several albums and deleting an album never deletes photos. Renaming an album renames its folder when that name is free. Folders and photos added in Finder or Explorer are picked up: a new folder becomes an album, and photos moved by hand keep their stars and albums. In **Starred**, **Create album** turns the starred photos into an album.
+
+### Viewing and editing
+
+Click a photo to open the viewer. Zoom with the scroll wheel, pinch, double-click, `+`/`-`/`0`, or the zoom buttons, and drag to pan. Use the arrow keys for the previous and next photo, S to star, Space for a slideshow, F for full screen, and I for info (date, size, albums, location on disk, model, and prompt, with **Reuse prompt**). Photos can also be downloaded or copied.
+
+Press E (or **Edit**) to rotate, flip, and crop (Free, Original, Square, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), adjust brightness, contrast, saturation, warmth, tint, and vignette, or apply a filter preset. **Save** (Cmd/Ctrl+S) replaces the photo and keeps the original, so **Revert to original** in the info panel can undo it; **Save as copy** adds a new photo beside the original, in the same albums. The saved photo uses the same calculations as the preview. SVG images cannot be edited.
+
+To view a photo next to notes and PDFs, right-click it (or select one photo, or use the viewer's button) and choose **Open in tab**, **Open to the right**, or **Open below**. Gallery photos open as read-only image tabs and work with split right and split down.

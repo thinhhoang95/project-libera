@@ -8,6 +8,7 @@ import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/t
 
 type ExistingImageDialogProps = {
   notebook?: LiberaNotebookNode;
+  isFolder?: boolean;
   open: boolean;
   onClose: () => void;
   onSelect: (file: LiberaFileNode) => Promise<void>;
@@ -36,6 +37,7 @@ function rawFileUrl(file: LiberaFileNode) {
 
 export function ExistingImageDialog({
   notebook,
+  isFolder,
   open,
   onClose,
   onSelect,
@@ -62,7 +64,7 @@ export function ExistingImageDialog({
       description={
         notebook
           ? `Select an image from ${notebook.name}.`
-          : "Select an image from the current notebook."
+          : `Select an image from the current ${isFolder ? "folder" : "notebook"}.`
       }
       onClose={onClose}
       footer={

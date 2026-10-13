@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { DocumentChatPanel } from "@/components/libera/document-chat-panel";
+import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -17,16 +18,21 @@ import { NotebookDialog } from "@/components/libera/notebook-dialog";
 import { WorkspaceViewContext } from "@/components/libera/workspace-view-context";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
+import { useAiActivity } from "@/lib/ai-activity";
 import { TabStrip } from "@/components/libera/tab-strip";
 import type { OpenTab } from "@/components/libera/types";
+import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
+import type { GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
+import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
+import { isTextFileType } from "@/lib/types";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -62,13 +68,20 @@ export function LiberaApp({
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
 }: LiberaAppProps) {
+  const aiActive = useAiActivity();
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
-  const openComments = useCallback(() => {
-    setActiveLeftPanel("comments");
-    setNotebooksCollapsed(false);
+  // Opening a gallery photo in the canvas returns to the panel used before the gallery.
+  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery">>("notebook");
+  const changeLeftPanel = useCallback((panel: LeftPanelTab) => {
+    if (panel !== "gallery") lastCanvasPanelRef.current = panel;
+    setActiveLeftPanel(panel);
   }, []);
+  const openComments = useCallback(() => {
+    changeLeftPanel("comments");
+    setNotebooksCollapsed(false);
+  }, [changeLeftPanel]);
   const markdownEditorMode = workspace.activeTab?.viewState?.markdown?.editorMode ?? "visual";
   const [activePreviewTabId, setActivePreviewTabId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -102,7 +115,7 @@ export function LiberaApp({
 
   useEffect(() => {
     const unsavedDocumentCount = workspace.tabs.filter(
-      (tab) => tab.file.fileType === "markdown" && tab.draft !== tab.saved,
+      (tab) => isTextFileType(tab.file.fileType) && tab.draft !== tab.saved,
     ).length;
 
     void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
@@ -159,10 +172,17 @@ export function LiberaApp({
   }, [chatWidth, saveChatPanel]);
 
   const canvas = workspace.canvas;
+  // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
+  function openGalleryPhoto(photo: GalleryPhoto, placement: GalleryTabPlacement) {
+    setActiveLeftPanel(lastCanvasPanelRef.current);
+    workspace.openGalleryPhoto(photo, placement);
+  }
 
   // ⌘/Ctrl+\ splits the focused panel to the right, adding Shift splits it down.
+  // The gallery covers the canvas, so splitting waits until it is closed.
+  const galleryOpen = activeLeftPanel === "gallery";
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || galleryOpen) return;
     function splitCanvas(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.code !== "Backslash" || event.repeat || event.isComposing) return;
       event.preventDefault();
@@ -170,7 +190,7 @@ export function LiberaApp({
     }
     window.addEventListener("keydown", splitCanvas);
     return () => window.removeEventListener("keydown", splitCanvas);
-  }, [authenticated, canvas]);
+  }, [authenticated, canvas, galleryOpen]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -243,6 +263,9 @@ export function LiberaApp({
         recentFiles={workspace.recentFiles}
         screenshotSnipSession={workspace.screenshotSnipSession}
         selectedNotebook={workspace.selectedNotebook}
+        isFolder={Boolean(workspace.selectedNotebook?.folder)}
+        fileTags={workspace.tree.fileTags}
+        onEditFileTags={workspace.openFileTagsDialog}
         tabs={workspace.tabs}
         textareaRef={workspace.textareaRef}
         onAiFormatSelection={workspace.formatSelectionWithAi}
@@ -251,6 +274,7 @@ export function LiberaApp({
         onAiWriteAt={workspace.writeWithAiAt}
         onCreateMarkdown={workspace.createMarkdownFromPrompt}
         onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+        onCreateLatex={workspace.createLatexFromPrompt}
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
         onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
@@ -306,7 +330,7 @@ export function LiberaApp({
           workspaceManager={workspace.workspaceManager}
           fullTree={workspace.fullTree}
           activePanel={activeLeftPanel}
-          onPanelChange={setActiveLeftPanel}
+          onPanelChange={changeLeftPanel}
           activeTab={workspace.activeTab}
           activeTabId={workspace.activeTabId}
           collapsed={notebooksCollapsed}
@@ -325,6 +349,7 @@ export function LiberaApp({
           onCreateFolder={workspace.createFolderFromPrompt}
           onCreateMarkdown={workspace.createMarkdownFromPrompt}
           onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+          onCreateLatex={workspace.createLatexFromPrompt}
           onCreateNotebook={workspace.openCreateNotebookDialog}
           onCreateNotebookGroup={workspace.openCreateNotebookGroupDialog}
           onDeleteFile={workspace.deleteFileNodeFromPrompt}
@@ -346,14 +371,30 @@ export function LiberaApp({
           onSetDraft={workspace.setActiveDraft}
           onStartUpload={workspace.startUpload}
           onToggleFileStar={workspace.toggleFileStar}
+          onEditFileTags={workspace.openFileTagsDialog}
           onToggleCollapsed={() => setNotebooksCollapsed((current) => !current)}
+          onGeneratedFilesSaved={(files) => {
+            void workspace.refreshTree(files[0]?.notebook).catch(() => undefined);
+          }}
           onToggleNotebook={workspace.toggleNotebook}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
+          canOpenDirectories={workspace.canOpenDirectories}
+          onOpenDirectory={() => void workspace.openDirectory()}
+          onCloseDirectory={workspace.closeDirectory}
         />
 
-        <section className="libera-workspace-region flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <section className="libera-workspace-region relative flex min-h-0 min-w-0 flex-col overflow-hidden" data-ai-active={aiActive}>
+          <div aria-hidden className="libera-ai-glow" />
+          {/* The gallery covers the canvas instead of replacing it, so open
+              editors keep their state while the Image Gallery tab is active. */}
+          {activeLeftPanel === "gallery" ? (
+            <div className="absolute inset-0 z-20 flex min-h-0 flex-col">
+              <ImageGalleryView onOpenInCanvas={openGalleryPhoto} />
+            </div>
+          ) : null}
+          <div className="contents" inert={activeLeftPanel === "gallery"}>
           <TabStrip
             chatOpen={!chatCollapsed}
             onToggleChat={() => changeChatCollapsed(!chatCollapsed)}
@@ -407,6 +448,7 @@ export function LiberaApp({
             onDropTab={canvas.dropTab}
             onResizeSplit={canvas.resizeSplit}
           />
+          </div>
         </section>
 
         <DocumentChatPanel files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
@@ -475,6 +517,12 @@ export function LiberaApp({
         submitting={workspace.noteDialogSubmitting}
         onClose={workspace.closeNoteDialog}
         onSubmit={workspace.submitNoteDialog}
+      />
+      <FileTagsDialog
+        dialog={workspace.fileTagsDialog}
+        fileTags={workspace.tree.fileTags}
+        onClose={workspace.closeFileTagsDialog}
+        onSubmit={workspace.saveFileTags}
       />
       <WorkspaceInputDialog
         dialog={workspace.workspaceInputDialog}

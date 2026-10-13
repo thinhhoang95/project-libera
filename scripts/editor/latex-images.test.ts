@@ -85,17 +85,19 @@ test("export repairs omitted images, preserves width and bundles compilable sour
     assert.ok(body.messages[0].content.includes(String.raw`width=0.6\textwidth`));
     assert.ok(body.messages[0].content.includes("image-1.png"));
     calls++;
-    const content = String.raw`\documentclass{article}
+    const content = body.messages.at(-1).content.startsWith("TASK: shared preamble")
+      ? String.raw`\documentclass{article}
 \usepackage{graphicx}
 \begin{document}
-` + (calls === 1 ? "Placeholder" : String.raw`\includegraphics[width=0.6\textwidth]{image-1.png}`) + String.raw`
-\end{document}`;
+% LIBERA_PREAMBLE_DONE`
+      : (calls === 2 ? "Placeholder" : String.raw`\includegraphics[width=0.6\textwidth]{image-1.png}`) + "\n% LIBERA_BLOCK_1_END";
+    if (calls === 3) assert.match(body.messages.at(-1).content, /rejected:\n.*image-1\.png/);
     return Response.json({ choices: [{ message: { content }, finish_reason: "stop" }] });
   });
   try {
     const image = (await photo()).toString("base64");
     const result = await exportLatexPdf(`![Photo](data:image/jpeg;base64,${image})`, signal, () => {}, { ...DEFAULT_LATEX_OPTIONS, imageWidth: 0.6 });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.match(Buffer.from(result.pdf, "base64").toString("latin1"), /\/Subtype \/Image/);
     assert.ok(result.archive);
     const archive = await JSZip.loadAsync(result.archive, { base64: true });

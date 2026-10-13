@@ -2,16 +2,17 @@
 
 import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
+import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
 import { ChatFileComposer } from "./chat-file-composer";
-import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
+import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { readChatResponse } from "./chat-stream-client";
 import { ChatTokenUsage } from "./chat-token-usage";
@@ -61,6 +62,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const deletedRequestRef = useRef<AbortController | null>(null);
   const [pending, setPending] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const latestStore = useRef<ChatStore | null>(null);
   const saveQueue = useRef(Promise.resolve());
   const persistedStore = useRef<ChatStore | null>(null);
@@ -74,7 +77,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
   const followResponseRef = useRef(true);
   const chat = store?.chats.find((item) => item.id === store.activeId);
   const lastMessageText = chat?.messages.at(-1)?.text;
-  const document = useMemo<ChatContext | null>(() => (activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "markdown" ? activeTab.draft : "" } : null, [activeTab]);
+  const document = useMemo<ChatContext | null>(() => (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" ? "" : activeTab.draft } : null, [activeTab]);
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
 
@@ -156,6 +159,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
       let text = "";
       if (activeTab?.file.fileType === "markdown" && target instanceof HTMLTextAreaElement && target.classList.contains("markdown-editor-input")) {
         text = target.value.slice(target.selectionStart, target.selectionEnd);
+      } else if ((activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text") && target.closest("[data-libera-code-editor]")) {
+        text = readRegisteredEditorSelection(target) ?? "";
       } else if (activeTab?.file.fileType === "markdown" && target.closest(".libera-tiptap")) {
         const selection = window.getSelection();
         if (selection?.anchorNode && selection.focusNode && target.closest(".libera-tiptap")?.contains(selection.anchorNode) && target.closest(".libera-tiptap")?.contains(selection.focusNode)) text = selection.toString();
@@ -222,7 +227,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
         if ((chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) throw new Error(`Attach up to ${MAX_CHAT_PHOTOS} photos per message.`);
         if (!file.size || file.size > MAX_CHAT_PHOTO_BYTES) throw new Error(`${file.name} must be 5 MB or smaller to attach.`);
         const rawPath = file.path.split("/").map(encodeURIComponent).join("/");
-        const response = await fetch(`/api/files/raw/${rawPath}`);
+        // Gallery photo tabs carry their own URL; their path is not a notebook path.
+        const response = await fetch(tab?.gallery && tab.rawUrl ? tab.rawUrl : `/api/files/raw/${rawPath}`);
         if (!response.ok) throw new Error(`Could not read ${file.name}.`);
         const blob = await response.blob();
         if (!/^image\/(png|jpeg|webp|gif)$/.test(blob.type) || !blob.size || blob.size > MAX_CHAT_PHOTO_BYTES) {
@@ -248,7 +254,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
           text = tab.draft;
         } else {
           const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(file.path)}`);
-          if (payload.file.fileType !== "markdown" || typeof payload.content !== "string") throw new Error(`Could not read ${file.name}.`);
+          if (!isTextFileType(payload.file.fileType) || typeof payload.content !== "string") throw new Error(`Could not read ${file.name}.`);
           text = payload.content;
         }
         if (text.length > 500_000) throw new Error(`${file.name} is too large to attach (maximum 500,000 characters).`);
@@ -275,6 +281,24 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
     void attachFile(attachmentRequest.tab.file, attachmentRequest.tab);
   }, [attachmentRequest, attachFile, chat, loadingFiles, onAttachmentHandled, review]);
 
+  function startEdit(message: { id: string; text: string }) {
+    if (pending || requestRef.current || loadingPhotos || loadingFiles) return;
+    setEditing({ id: message.id, text: message.text });
+  }
+  function submitEdit() {
+    if (!editing) return;
+    const edit = editing;
+    setEditing(null);
+    void send(undefined, edit);
+  }
+  async function copyResponse(message: { id: string; text: string }) {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      setCopiedId(message.id);
+      window.setTimeout(() => setCopiedId((current) => current === message.id ? null : current), 1500);
+    } catch { setError("Could not copy to the clipboard."); }
+  }
+
   function branch(messageId: string) {
     if (!chat || requestRef.current || loadingPhotos || loadingFiles) return;
     const index = chat.messages.findIndex((message) => message.id === messageId && message.role === "assistant");
@@ -287,16 +311,20 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
-  async function send(retryMessageId?: string) {
-    if (!chat || (!retryMessageId && !chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
+  async function send(retryMessageId?: string, edit?: { id: string; text: string }) {
+    const replay = Boolean(retryMessageId || edit);
+    if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length) || requestRef.current || loadingPhotos || loadingFiles) return;
     const retryIndex = retryMessageId ? chat.messages.findIndex((message) => message.id === retryMessageId && message.role === "assistant") : -1;
     if (retryMessageId && (retryIndex < 1 || chat.messages[retryIndex - 1].role !== "user")) return;
+    const editIndex = edit ? chat.messages.findIndex((item) => item.id === edit.id && item.role === "user") : -1;
+    if (edit && (editIndex < 0 || (!edit.text.trim() && !chat.messages[editIndex].photos?.length))) return;
     const id = chat.id;
     const prompt = chat.prompt;
     const selections = chat.selections;
     const photos = chat.photos ?? [];
     const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument ? [includedDocument] : [])]).sort((a, b) => Number(a.kind === "selection") - Number(b.kind === "selection")) };
-    const messages = retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
+    const messages = edit ? [...chat.messages.slice(0, editIndex), { ...chat.messages[editIndex], text: edit.text.trim(), createdAt: new Date().toISOString() }]
+      : retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
     requestRef.current = controller;
     setPending(id);
@@ -320,7 +348,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
       });
     }
     try {
-      if (!retryMessageId) {
+      if (!replay) {
         message.contexts = await Promise.all(message.contexts
           .filter((context) => context.kind !== "document" || !chat.excludedDocumentPaths?.includes(context.path))
           .map(async (context) => {
@@ -330,7 +358,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
           }));
       }
       controller.signal.throwIfAborted();
-      updateChat(id, (current) => retryMessageId ? { ...current, messages } : ({ ...current,
+      updateChat(id, (current) => replay ? { ...current, messages } : ({ ...current,
         title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || photos[0]?.name || "Photo chat").slice(0, 60), messages,
         prompt: current.prompt === prompt ? "" : current.prompt,
         selections: current.selections.filter((item) => !selections.includes(item)),
@@ -361,8 +389,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
         publish("interrupted");
         setError(controller.signal.aborted ? "" : cause instanceof Error ? cause.message : "Chat failed.");
       } else {
-        setError(controller.signal.aborted ? retryMessageId ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
-        if (committed) updateChat(id, (current) => retryMessageId ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
+        setError(controller.signal.aborted ? replay ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
+        if (committed) updateChat(id, (current) => replay ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
@@ -418,7 +446,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
           { id: "export-chat", label: "Export Chat", enabled: !!chat?.messages.length, submenu: [
             { id: "create-draft", label: "Create a new draft" },
             { id: "save-md", label: "Save MD file" },
-            { id: "save-notebook", label: "Save to Notebook (or Notebook Folder)" },
+            { id: "save-notebook", label: "Save to Notebook or Folder" },
           ] },
           { id: "increase-font-size", label: "Increase Font Size", enabled: !fontSizeSaving && fontSize < MAX_CHAT_FONT_SIZE },
           { id: "decrease-font-size", label: "Decrease Font Size", enabled: !fontSizeSaving && fontSize > MIN_CHAT_FONT_SIZE },
@@ -449,7 +477,8 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
   if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
 
   return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card">
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div aria-hidden className="libera-chat-glow" data-active={pending === chat?.id} />
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
         <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>
         <label className="sr-only" htmlFor="document-chat-history">Chat history</label>
@@ -492,18 +521,22 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
                 { icon: BookOpen, label: "Make sense of a topic", prompt: "Help me understand this topic: " },
               ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
-            <p className="libera-chat-context-hint">{includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
+            <p className="libera-chat-context-hint">{includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
             <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
           </div>}
-          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.contexts?.map((context, index) => {
+          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title="Edit message (regenerates from here)" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
           })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
-          </div>)}<ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
+          </div>)}{editing?.id === message.id ? <div className="space-y-2">
+            <textarea autoFocus aria-label="Edit message" className="min-h-20 w-full resize-y rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-ring" value={editing.text} onChange={(event) => setEditing({ id: message.id, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submitEdit(); } }} />
+            <div className="flex items-center justify-end gap-2"><span className="mr-auto text-xs text-muted-foreground">Later messages will be replaced.</span><button type="button" className="rounded-lg border border-border px-3 py-1 text-xs hover:bg-muted" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!editing.text.trim() && !message.photos?.length} onClick={submitEdit}>Save &amp; regenerate</button></div>
+          </div> : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
           {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
+            <button type="button" className={buttonClass} aria-label="Copy response as Markdown" title="Copy response as Markdown" onClick={() => void copyResponse(message)}>{copiedId === message.id ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}</button>
             <button type="button" className={buttonClass} aria-label="Regenerate response" title="Regenerate response (replaces this response and later messages)" disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user"} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
             <button type="button" className={buttonClass} aria-label="Branch conversation" title="Branch into a new chat from this response" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => branch(message.id)}><GitBranch aria-hidden size={14} /></button>
             {message.createdAt ? <time className="ml-1 text-xs tabular-nums" dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>{formatChatTimestamp(message.createdAt, now)}</time> : <span className="ml-1 text-xs">Time unavailable</span>}
@@ -549,7 +582,7 @@ export function DocumentChatPanel({ files = [], tabs = [], attachmentRequest, on
         <p className="px-2 text-xs text-muted-foreground">Export Chat</p>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("create-draft")}>Create a new draft</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-md")}>Save MD file</button>
-        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook (or Notebook Folder)</button>
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={!chat?.messages.length} onClick={() => void handleChatAction("save-notebook")}>Save to Notebook or Folder</button>
       </div>
     </ModalDialog>
     {exportSnapshot && <DocumentChatExportDialog snapshot={exportSnapshot} onClose={() => setExportSnapshot(null)} onSaved={onExportSaved} onSaveToNotebook={onSaveToNotebook} />}

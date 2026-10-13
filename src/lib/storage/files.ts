@@ -1,7 +1,7 @@
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ARCHIVE_DIR } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import {
   assertSupportedFileName,
@@ -14,6 +14,7 @@ import {
   ensureParentDirectory,
   findAvailableFilePath,
   moveFileIfExists,
+  movePath,
   pathExists,
 } from "@/lib/storage/fs-utils";
 import {
@@ -45,29 +46,47 @@ import {
 import { getTree, getFileNode } from "@/lib/storage/tree";
 import {
   removeNotebookPanelExpandedPathPrefix,
-  removeStarredFilePath,
-  removeStarredFilePathPrefix,
+  removeFileMetadataPath,
+  removeFileMetadataPathPrefix,
   renameNotebookPanelExpandedPathPrefix,
-  renameStarredFilePath,
-  renameStarredFilePathPrefix,
+  renameFileMetadataPath,
+  renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
-import type { LiberaFilePayload } from "@/lib/types";
+import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 
-export async function readLiberaFile(relativePath: string): Promise<LiberaFilePayload> {
+/** Reads a file for a tab. Text files come with their content, except plain
+ * text files that are too large or turn out to be binary: those throw when
+ * `requireContent` is set (opening a tab) and otherwise only get a raw URL. */
+export async function readLiberaFile(
+  relativePath: string,
+  { requireContent = false }: { requireContent?: boolean } = {},
+): Promise<LiberaFilePayload> {
   await ensureAdminRoot();
   const { notebook, pathParts } = splitFilePath(relativePath);
   const node = await getFileNode(notebook, pathParts);
+  const raw = { file: node, rawUrl: rawFileUrl(node.path) };
 
-  if (node.fileType !== "markdown") {
-    return {
-      file: node,
-      rawUrl: rawFileUrl(node.path),
-    };
+  if (!isTextFileType(node.fileType)) {
+    return raw;
+  }
+
+  if (node.fileType === "text" && node.size > MAX_TEXT_FILE_BYTES) {
+    if (!requireContent) return raw;
+    throw new StorageError(`${node.name} is too large to open as text (limit ${MAX_TEXT_FILE_BYTES / 1024 / 1024} MB).`, 413);
+  }
+
+  const content = await readFile(filePathFromParts(notebook, pathParts), "utf8");
+
+  // A NUL byte means the file is binary despite its name; editing and saving
+  // it as text would corrupt it.
+  if (node.fileType === "text" && content.includes("\u0000")) {
+    if (!requireContent) return raw;
+    throw new StorageError(`${node.name} is not a text file.`, 415);
   }
 
   return {
     file: node,
-    content: await readFile(filePathFromParts(notebook, pathParts), "utf8"),
+    content,
   };
 }
 
@@ -107,12 +126,12 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
 
-  if (fileType !== "markdown") {
-    throw new StorageError("Only Markdown files can be edited.");
+  if (!isTextFileType(fileType)) {
+    throw new StorageError("Only text files can be edited.");
   }
 
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
-  await pruneUnusedMarkdownImageAssets(relativePath, content);
+  if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content);
 
   return readLiberaFile(relativePath);
 }
@@ -141,7 +160,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     throw new StorageError("Destination file already exists.", 409);
   }
 
-  await rename(currentPath, nextPath);
+  await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
     current.name,
@@ -153,7 +172,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -220,7 +239,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
     ]),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameStarredFilePathPrefix(
+  await renameFileMetadataPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
   );
@@ -280,7 +299,7 @@ export async function archiveFolder(relativePath: string) {
     markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
-  await renameStarredFilePathPrefix(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
 
   return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
@@ -303,7 +322,7 @@ export async function deleteFolder(relativePath: string) {
     recursive: true,
   });
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
-  await removeStarredFilePathPrefix(relativeFilePath(current.notebook, current.pathParts));
+  await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
   );
@@ -342,7 +361,7 @@ export async function moveFileToDirectory(
     throw new StorageError("Destination file already exists.", 409);
   }
 
-  await rename(currentPath, nextPath);
+  await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
     current.name,
@@ -354,7 +373,7 @@ export async function moveFileToDirectory(
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -391,7 +410,7 @@ export async function archiveFile(relativePath: string) {
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
-  await renameStarredFilePath(currentRelativePath, nextRelativePath);
+  await renameFileMetadataPath(currentRelativePath, nextRelativePath);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -461,7 +480,7 @@ export async function deleteFile(relativePath: string) {
     });
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
-  await removeStarredFilePath(relativeFilePath(notebook, pathParts));
+  await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
 
   return getTree();
 }
@@ -566,7 +585,7 @@ async function moveRelatedMetadata(
 
     if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
       await ensureParentDirectory(nextAssetsPath);
-      await rename(currentAssetsPath, nextAssetsPath);
+      await movePath(currentAssetsPath, nextAssetsPath);
     }
 
     const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
@@ -581,7 +600,7 @@ async function moveRelatedMetadata(
       !(await pathExists(nextLegacyAssetsPath))
     ) {
       await ensureParentDirectory(nextLegacyAssetsPath);
-      await rename(currentLegacyAssetsPath, nextLegacyAssetsPath);
+      await movePath(currentLegacyAssetsPath, nextLegacyAssetsPath);
     }
   }
 }

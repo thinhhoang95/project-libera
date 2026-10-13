@@ -3,7 +3,8 @@ import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getAiFunctionOptions } from "@/lib/ai-preferences";
-import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { createOpenRouterCompletion, createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { LATEX_FORMAT_PROMPT, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as { text?: string };
+    const body = (await request.json()) as { text?: string; format?: string };
     const text = body.text ?? "";
 
     if (!text.trim()) {
@@ -35,16 +36,21 @@ export async function POST(request: NextRequest) {
       return jsonError("Selection is too large to format in one request.", 413);
     }
 
-    const formattedText = await createOpenRouterMarkdownCompletion([
-      {
-        role: "system",
-        content: await readSystemPrompt(),
-      },
-      {
-        role: "user",
-        content: text,
-      },
-    ], getAiFunctionOptions("formatting"));
+    const formattedText = body.format === "latex"
+      ? normalizeLatexOutput((await createOpenRouterCompletion([
+        { role: "system", content: LATEX_FORMAT_PROMPT },
+        { role: "user", content: text },
+      ], getAiFunctionOptions("formatting"))).content)
+      : await createOpenRouterMarkdownCompletion([
+        {
+          role: "system",
+          content: await readSystemPrompt(),
+        },
+        {
+          role: "user",
+          content: text,
+        },
+      ], getAiFunctionOptions("formatting"));
 
     if (!formattedText.trim()) {
       return jsonError("AI formatting returned an empty response.", 502);

@@ -6,20 +6,19 @@ const os = require("node:os");
 const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
-const macCache = path.join(projectRoot, ".platform-deps", "darwin-arm64");
-const macModules = path.join(macCache, "node_modules");
 const mirroredDirectories = new Set(["src", "public", "assets", "prompts"]);
 
 function includeSource(source) {
   return !path.basename(source).startsWith("._");
 }
 
-async function assertMacCacheReady() {
+async function assertMacCacheReady(root = projectRoot) {
   if (process.platform !== "darwin" || process.arch !== "arm64") {
     throw new Error("dev:mac requires macOS arm64.");
   }
 
-  const manifest = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
+  const cache = path.join(root, ".platform-deps", "darwin-arm64");
+  const manifest = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   const hash = createHash("sha256");
   hash.update("schema:2");
   hash.update(JSON.stringify({
@@ -27,11 +26,11 @@ async function assertMacCacheReady() {
     devDependencies: manifest.devDependencies,
     optionalDependencies: manifest.optionalDependencies,
   }));
-  hash.update(await fs.readFile(path.join(projectRoot, "package-lock.json")));
+  hash.update(await fs.readFile(path.join(root, "package-lock.json")));
 
   let metadata;
   try {
-    metadata = JSON.parse(await fs.readFile(path.join(macCache, ".libera-platform-deps.json"), "utf8"));
+    metadata = JSON.parse(await fs.readFile(path.join(cache, ".libera-platform-deps.json"), "utf8"));
   } catch {
     throw new Error("The macOS dependency cache is missing. Run npm run deps:setup on macOS first.");
   }
@@ -40,19 +39,32 @@ async function assertMacCacheReady() {
     throw new Error("The macOS dependency cache is stale. Run npm run deps:setup on macOS first.");
   }
 
+  let modules = path.join(cache, "node_modules");
+  try {
+    await fs.access(modules);
+  } catch {
+    const active = JSON.parse(await fs.readFile(path.join(root, ".platform-deps", ".active.json"), "utf8").catch(() => "{}"));
+    if (active.platformKey !== "darwin-arm64") {
+      throw new Error("The macOS dependency cache is missing. Run npm run deps:setup on macOS first.");
+    }
+    modules = path.join(root, "node_modules");
+  }
+
   for (const item of [
     "next/dist/bin/next",
     "electron/dist/Electron.app/Contents/MacOS/Electron",
   ]) {
     try {
-      await fs.access(path.join(macModules, item));
+      await fs.access(path.join(modules, item));
     } catch {
       throw new Error(`The macOS dependency cache is incomplete: ${item}`);
     }
   }
+  return modules;
 }
 
-async function makeIsolatedApp() {
+async function makeIsolatedApp(modules) {
+  modules ??= await assertMacCacheReady();
   const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "libera-dev-mac-"));
   const excluded = new Set([
     ".git", ".next", ".platform-deps", ".electron-build", "dist-electron",
@@ -74,7 +86,7 @@ async function makeIsolatedApp() {
       }
     }
 
-    await fs.symlink(macModules, path.join(appRoot, "node_modules"), "dir");
+    await fs.symlink(modules, path.join(appRoot, "node_modules"), "dir");
     return appRoot;
   } catch (error) {
     await fs.rm(appRoot, { recursive: true, force: true });
@@ -126,13 +138,15 @@ function watchSource(appRoot) {
 }
 
 async function main() {
-  await assertMacCacheReady();
-  const appRoot = await makeIsolatedApp();
-  const electron = path.join(macModules, "electron", "dist", "Electron.app", "Contents", "MacOS", "Electron");
-  const stopWatching = watchSource(appRoot);
+  const modules = await assertMacCacheReady();
+  const appRoot = await makeIsolatedApp(modules);
+  const electron = path.join(modules, "electron", "dist", "Electron.app", "Contents", "MacOS", "Electron");
+  let stopWatching;
+  const signalHandlers = new Map();
 
   console.log(`Starting macOS development app from ${appRoot}`);
   try {
+    stopWatching = watchSource(appRoot);
     const child = spawn(electron, [appRoot], {
       cwd: appRoot,
       env: { ...process.env, LIBERA_ELECTRON_NEXT_MODE: "dev" },
@@ -140,7 +154,9 @@ async function main() {
     });
 
     for (const signal of ["SIGINT", "SIGTERM"]) {
-      process.on(signal, () => child.kill(signal));
+      const handler = () => child.kill(signal);
+      signalHandlers.set(signal, handler);
+      process.on(signal, handler);
     }
 
     const outcome = await new Promise((resolve, reject) => {
@@ -149,12 +165,13 @@ async function main() {
     });
     process.exitCode = outcome.signal ? 128 + os.constants.signals[outcome.signal] : outcome.code ?? 1;
   } finally {
-    stopWatching();
+    for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+    stopWatching?.();
     await fs.rm(appRoot, { recursive: true, force: true });
   }
 }
 
-module.exports = { assertMacCacheReady, makeIsolatedApp, watchSource };
+module.exports = { assertMacCacheReady, makeIsolatedApp, watchSource, main };
 
 if (require.main === module) {
   main().catch((error) => {

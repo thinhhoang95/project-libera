@@ -16,6 +16,10 @@ Each workspace saves its sidebar sorting, notebook-home sorting, list/grid layou
 
 New workspaces start with a copy of the library's sorting and groups. Existing workspaces inherit those settings once when first loaded after this update, then keep their own independent copies. Library-level hidden groups and notebooks do not override a workspace's file selection. Empty workspace groups remain available so they can be edited later.
 
+## Starred files
+
+Starring is per workspace. Stars set inside a workspace appear only there, and new workspaces start with none. Stars set under All notebooks stay with the library view. Renames and deletions update a workspace's stars. Existing workspaces keep showing the library's stars until you first star or unstar a file in them.
+
 ## Continuity
 
 Sessions retain tab order, the active tab (or notebook home), notebook selection, expanded folders, unsaved drafts, and the view state already tracked by Markdown, PDF, and image viewers. Changing visibility does not discard open tabs or drafts. A new workspace starts with an empty tab strip. On reopening, clean tabs load current file contents and dirty tabs retain their saved drafts. Missing clean files are skipped; drafts from missing files become untitled documents so they can be saved elsewhere.

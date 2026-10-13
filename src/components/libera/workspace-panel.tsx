@@ -25,10 +25,13 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
+import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
 import { ImageViewer } from "@/components/libera/image-viewer";
+import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
@@ -46,6 +49,7 @@ import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import type {
   ImageTabViewState,
+  LatexTabViewState,
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
   MarkdownEditorMode,
@@ -54,6 +58,7 @@ import type {
   OpenTab,
   OpenTabViewState,
   PdfTabViewState,
+  TextTabViewState,
 } from "@/components/libera/types";
 import { enumerateMarkdownHeadings } from "@/lib/markdown-heading-enumeration";
 import type {
@@ -102,6 +107,9 @@ type WorkspacePanelProps = {
   recentFiles: LiberaFileNode[];
   screenshotSnipSession: MarkdownScreenshotSnipSession | null;
   selectedNotebook?: LiberaNotebookNode;
+  isFolder?: boolean;
+  fileTags: Record<string, string[]>;
+  onEditFileTags: (file: LiberaFileNode) => void;
   tabs: OpenTab[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
@@ -118,6 +126,7 @@ type WorkspacePanelProps = {
   onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
   onCompleteScreenshotSnip: (file: File) => Promise<void>;
@@ -129,7 +138,7 @@ type WorkspacePanelProps = {
   onInsertFileLinkPlaceholder: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
-  onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   onSave: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onRegisterEditorDraft?: RegisterEditorDraft;
@@ -137,6 +146,17 @@ type WorkspacePanelProps = {
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   onStartScreenshotSnip: () => void;
 };
+
+// CodeMirror and the PDF pane load only when a LaTeX file is opened.
+const LatexWorkspace = dynamic(
+  () => import("@/components/libera/latex/latex-workspace").then((module) => module.LatexWorkspace),
+  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading LaTeX editor…</div> },
+);
+
+const CodeEditor = dynamic(
+  () => import("@/components/libera/code-editor").then((module) => module.CodeEditor),
+  { ssr: false, loading: () => <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">Loading editor…</div> },
+);
 
 const DEFAULT_MARKDOWN_SPLIT_PERCENT = 50;
 const MARKDOWN_PROGRAMMATIC_SCROLL_GRACE_MS = 250;
@@ -496,7 +516,9 @@ const PANEL_CALLBACKS = [
   "onAiWriteAt",
   "onCreateMarkdown",
   "onCreateSlides",
+  "onCreateLatex",
   "onCreateNotebook",
+  "onEditFileTags",
   "onCancelScreenshotSnip",
   "onCompleteScreenshotSnip",
   "onInsertExistingImage",
@@ -565,6 +587,9 @@ function WorkspacePanelContent({
   recentFiles,
   screenshotSnipSession,
   selectedNotebook,
+  isFolder,
+  fileTags,
+  onEditFileTags,
   readOpenTabs,
   textareaRef,
   onAiFormatSelection,
@@ -573,6 +598,7 @@ function WorkspacePanelContent({
   onAiWriteAt,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
@@ -589,6 +615,7 @@ function WorkspacePanelContent({
   onStartScreenshotSnip,
 }: PanelContentProps) {
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
+  const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
   const [markdownSplitPercent, setMarkdownSplitPercent] = useState(
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
@@ -679,6 +706,28 @@ function WorkspacePanelContent({
       }
 
       onSetViewState({ markdown: patch }, activeTabId);
+    },
+    [activeTabId, onSetViewState],
+  );
+
+  const updateLatexViewState = useCallback(
+    (patch: LatexTabViewState) => {
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ latex: patch }, activeTabId);
+    },
+    [activeTabId, onSetViewState],
+  );
+
+  const updateTextViewState = useCallback(
+    (patch: TextTabViewState) => {
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ text: patch }, activeTabId);
     },
     [activeTabId, onSetViewState],
   );
@@ -1396,8 +1445,12 @@ function WorkspacePanelContent({
         <NotebookHome
           yourName={yourName}
           notebook={selectedNotebook}
+          isFolder={isFolder}
+          fileTags={fileTags}
+          onEditFileTags={onEditFileTags}
           onCreateMarkdown={onCreateMarkdown}
           onCreateSlides={onCreateSlides}
+          onCreateLatex={onCreateLatex}
           onOpenFile={onOpenFile}
         />
       );
@@ -1452,12 +1505,43 @@ function WorkspacePanelContent({
         </div>
       ) : null}
 
-      {activeTab.file.fileType === "markdown" ? (
+      {activeTab.file.fileType === "latex" ? (
+        <LatexWorkspace
+          key={activeTab.id}
+          tab={activeTab}
+          files={files}
+          fontFamily={markdownEditorFontFamily}
+          fontSizePx={markdownFontSizePx}
+          lineHeight={markdownPreferences.baseLineHeight}
+          readOpenTabs={readOpenTabs}
+          onSetDraft={onSetDraft}
+          onRegisterDraft={registerMarkdownDraft}
+          onSave={onSave}
+          onSetViewState={updateLatexViewState}
+          onOpenFile={onOpenFile}
+        />
+      ) : activeTab.file.fileType === "text" ? (
+        <CodeEditor
+          key={activeTab.id}
+          fileName={activeTab.file.name}
+          value={activeTab.draft}
+          fontFamily={markdownEditorFontFamily}
+          fontSizePx={markdownFontSizePx}
+          lineHeight={markdownPreferences.baseLineHeight}
+          initialViewState={activeTab.viewState?.text}
+          saving={activeTab.status === "saving"}
+          onChange={onSetDraft}
+          onRegisterDraft={registerMarkdownDraft}
+          onViewStateChange={updateTextViewState}
+          onSave={() => void onSave()}
+        />
+      ) : activeTab.file.fileType === "markdown" ? (
         <>
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
               files={files}
               mathMarkers={markdownPreferences}
+              smartPaste={markdownPreferences.smartPaste}
                 untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
               fontFamily={wysiwygEditorFontFamily}
@@ -1482,6 +1566,7 @@ function WorkspacePanelContent({
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
+            onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={onStartScreenshotSnip}
@@ -1545,6 +1630,7 @@ function WorkspacePanelContent({
                 fontSizePx={markdownFontSizePx}
                 lineHeightPx={markdownLineHeightPx}
                 mathMarkers={markdownPreferences}
+                smartPaste={markdownPreferences.smartPaste}
                 textareaRef={textareaRef}
                 value={activeTab.draft}
                 onAiFormatSelection={onAiFormatSelection}
@@ -1647,8 +1733,19 @@ function WorkspacePanelContent({
               textScale={markdownZoomScale}
             />
           ) : null}
+          <GalleryPhotoPicker
+            open={galleryPickerOpen}
+            onClose={() => setGalleryPickerOpen(false)}
+            onInsert={async (photos) => {
+              const photoFiles = await Promise.all(photos.map(galleryPhotoFile));
+              setGalleryPickerOpen(false);
+              // One at a time: each lands after the previous one, in the order picked.
+              for (const file of photoFiles) await onInsertImage(file);
+            }}
+          />
           <ExistingImageDialog
             notebook={selectedNotebook}
+            isFolder={isFolder}
             open={existingImageDialogOpen}
             onClose={() => setExistingImageDialogOpen(false)}
             onSelect={async (file) => {
@@ -1664,7 +1761,10 @@ function WorkspacePanelContent({
             key={activeTab.id}
             src={activeTab.rawUrl}
             alt={activeTab.file.name}
-            filePath={activeTab.file.path}
+            // Gallery photos are not notebook files: annotations have nowhere to
+            // live, and screenshots take their name from the photo.
+            annotatable={!isGalleryTab(activeTab)}
+            filePath={isGalleryTab(activeTab) ? activeTab.file.name : activeTab.file.path}
             initialViewState={activeImageViewState}
             screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
             onViewStateChange={updateImageViewState}

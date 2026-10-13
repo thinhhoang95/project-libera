@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getAdminRoot } from "./paths";
+import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
 import { newReview, type ReviewDocument } from "../markdown-review";
 
 type ReviewDatabase = { schemaVersion: 1; documents: ReviewDocument[] };
-const databasePath = () => path.join(getAdminRoot(), ".libera", "markdown-reviews.json");
+const databasePath = () => path.join(getStateRoot(), ".libera", "markdown-reviews.json");
 async function readDatabase(): Promise<ReviewDatabase> {
   try {
     const db = JSON.parse(await readFile(databasePath(), "utf8"));
@@ -99,4 +99,15 @@ export async function copyReviewPath(from: string, to: string) {
 }
 export async function listRecoverableReviews() {
   return (await readDatabase()).documents.filter((d) => d.key.startsWith("draft:") && (d.threads.length || d.session)).map((d) => ({ id: d.id, key: d.key, snapshot: d.snapshot, commentCount: d.threads.length }));
+}
+/** Add review documents kept elsewhere, skipping ones the library already has. */
+export async function mergeReviewDocuments(documents: ReviewDocument[]) {
+  if (!documents.length) return;
+  return transaction((db, unchanged) => {
+    const ids = new Set(db.documents.map((d) => d.id));
+    const keys = new Set(db.documents.map((d) => d.key));
+    const added = documents.filter((d) => d && typeof d.id === "string" && typeof d.key === "string" && !ids.has(d.id) && !keys.has(d.key));
+    if (!added.length) { unchanged(); return; }
+    db.documents.push(...added);
+  });
 }

@@ -56,12 +56,12 @@ export function DocumentChatExportDialog({ snapshot, onClose, onSaved, onSaveToN
   }
 
   const fieldClass = "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
-  return <ModalDialog open title="Save chat to notebook" onClose={() => { if (!savingRef.current) onClose(); }}>
+  return <ModalDialog open title="Save chat to notebook or folder" onClose={() => { if (!savingRef.current) onClose(); }}>
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <fieldset disabled={saving || loading} className="space-y-4">
         <label className="block text-sm">File name<input className={fieldClass} required value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label className="block text-sm">Notebook or folder<select className={fieldClass} value={directory} onChange={(event) => setDirectory(event.target.value)}>{directories.map((path) => <option key={path} value={path}>{path}</option>)}</select></label>
-        {loading && <p role="status" className="text-sm text-muted-foreground">Loading notebooks…</p>}
+        {loading && <p role="status" className="text-sm text-muted-foreground">Loading notebooks and folders…</p>}
         {!loading && !directories.length && !error && <p className="text-sm text-muted-foreground">Create a notebook to save your chat here.</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <div className="libera-dialog-actions flex justify-end gap-2"><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="libera-dialog-primary disabled:opacity-40" disabled={!directory || !name.trim()}>{saving ? "Saving…" : "Save"}</button></div>

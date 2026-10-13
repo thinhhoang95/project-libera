@@ -48,6 +48,8 @@ const SAVE_DEBOUNCE_MS = 350;
 
 type ImageViewerProps = {
   alt: string;
+  /** False shows the image read-only, without loading or saving text annotations. */
+  annotatable?: boolean;
   filePath: string;
   initialViewState?: ImageTabViewState;
   screenshotSnipping?: boolean;
@@ -70,6 +72,7 @@ function clampZoom(value: number) {
 
 export function ImageViewer({
   alt,
+  annotatable = true,
   filePath,
   initialViewState,
   screenshotSnipping = false,
@@ -87,7 +90,7 @@ export function ImageViewer({
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
     initialViewState?.selectedAnnotationId ?? "",
   );
-  const [tool, setTool] = useState<ImageTool>(initialViewState?.tool ?? "select");
+  const [tool, setTool] = useState<ImageTool>(annotatable ? initialViewState?.tool ?? "select" : "select");
   const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
   const [fontSize, setFontSize] = useState(
     initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
@@ -120,6 +123,10 @@ export function ImageViewer({
   }, [onViewStateChange]);
 
   useEffect(() => {
+    if (!annotatable) {
+      return;
+    }
+
     let active = true;
 
     queueMicrotask(() => {
@@ -156,7 +163,7 @@ export function ImageViewer({
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [filePath]);
+  }, [annotatable, filePath]);
 
   useEffect(() => {
     const imageFrame = imageFrameRef.current;
@@ -191,7 +198,7 @@ export function ImageViewer({
   // window has its own edit in flight, which will be saved over them anyway.
   const localSavePendingRef = useRef(false);
   useAnnotationSync<PdfTextAnnotation>("image", filePath, (remoteAnnotations) => {
-    if (localSavePendingRef.current) {
+    if (!annotatable || localSavePendingRef.current) {
       return;
     }
 
@@ -468,6 +475,7 @@ export function ImageViewer({
       <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <Move aria-hidden className="h-4 w-4 shrink-0" />
+          {annotatable ? <>
           <button
             className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
               tool === "select"
@@ -520,6 +528,7 @@ export function ImageViewer({
           >
             <Trash2 aria-hidden className="h-4 w-4" />
           </button>
+          </> : <span className="text-xs text-muted-foreground">View only</span>}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <span className="mr-2 text-xs text-muted-foreground">
@@ -609,7 +618,7 @@ export function ImageViewer({
               alt={alt}
               draggable={false}
             />
-            <TextAnnotationLayer
+            {annotatable ? <TextAnnotationLayer
               annotations={annotations}
               drawing={tool === "text"}
               interactive={tool === "select"}
@@ -625,7 +634,7 @@ export function ImageViewer({
               }}
               onSelectAnnotation={selectAnnotation}
               onUpdateAnnotation={updateTextAnnotation}
-            />
+            /> : null}
             <ScreenshotSnipLayer
               active={screenshotSnipping}
               pageSize={imageSize}

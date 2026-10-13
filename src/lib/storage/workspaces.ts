@@ -1,21 +1,34 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { ensureAdminRoot, getAdminRoot } from "@/lib/storage/paths";
+import { contextStateRoot } from "../../../electron/directory-mode.cjs";
+import { ensureAdminRoot, getAdminRoot, getStateRoot } from "@/lib/storage/paths";
 import { emptyWorkspaceLibrary, parseWorkspaceLibrary } from "@/lib/workspaces";
 import { StorageError } from "@/lib/storage/errors";
 
-const storagePath = () => path.join(getAdminRoot(), ".libera-workspaces.json");
+const storagePath = (stateRoot: string) => path.join(stateRoot, ".libera-workspaces.json");
 let writeQueue: Promise<unknown> = Promise.resolve();
 
-export async function readWorkspaces() {
+/**
+ * Notebooks and linked folders share the library's session. Clients name the
+ * tree root they loaded so a page from an older build cannot save elsewhere.
+ */
+export function workspaceStateRoot(contextRoot?: string | null) {
+  if (!contextRoot) return getStateRoot();
+  const stateRoot = contextStateRoot(getAdminRoot(), contextRoot);
+  if (!stateRoot) throw new StorageError("This window is out of date. Reload Libera to keep working.", 409);
+  return stateRoot;
+}
+
+export async function readWorkspaces(contextRoot?: string | null) {
   await writeQueue.catch(() => undefined);
+  const stateRoot = workspaceStateRoot(contextRoot);
   const read = async (target: string) => {
     try { return parseWorkspaceLibrary(JSON.parse(await readFile(target, "utf8"))); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   };
   const [disk, recovery] = await Promise.allSettled([
-    read(storagePath()), read(path.join(getAdminRoot(), ".libera-workspaces-recovery.json")),
+    read(storagePath(stateRoot)), read(path.join(stateRoot, ".libera-workspaces-recovery.json")),
   ]);
   const valid = [disk, recovery].flatMap((result) => result.status === "fulfilled" && result.value ? [result.value] : []);
   if (valid.length) return valid.sort((a, b) => b.updatedAt - a.updatedAt)[0];
@@ -24,14 +37,16 @@ export async function readWorkspaces() {
   return emptyWorkspaceLibrary();
 }
 
-export function writeWorkspaces(value: unknown) {
+export function writeWorkspaces(value: unknown, contextRoot?: string | null) {
   let library;
   try { library = parseWorkspaceLibrary(value); }
   catch { throw new StorageError("Invalid workspace data."); }
   const body = JSON.stringify(library);
-  const target = storagePath();
+  const stateRoot = workspaceStateRoot(contextRoot);
+  const target = storagePath(stateRoot);
   const write = writeQueue.catch(() => undefined).then(async () => {
     await ensureAdminRoot();
+    await mkdir(stateRoot, { recursive: true });
     const temporary = `${target}.${randomUUID()}.tmp`;
     await writeFile(temporary, body, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, target);

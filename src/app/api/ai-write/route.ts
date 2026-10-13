@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getAiFunctionOptions, getAiRewriteCustomInstruction } from "@/lib/ai-preferences";
 import { formatDocumentContext, INSERTION_MARKER, readDocumentContext } from "@/lib/ai-document-context";
-import { createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { createOpenRouterCompletion, createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
+import { latexWritePrompt, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
 import { MAX_QUICK_PROMPT_LENGTH } from "@/lib/quick-prompts";
 
 export const runtime = "nodejs";
@@ -39,7 +40,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as { prompt?: string; before?: string; after?: string };
+    const body = (await request.json()) as { prompt?: string; before?: string; after?: string; format?: string };
+    const latex = body.format === "latex";
     const prompt = body.prompt?.trim() ?? "";
 
     if (!prompt) {
@@ -51,20 +53,24 @@ export async function POST(request: NextRequest) {
     }
 
     const context = readDocumentContext(body);
-    const markdown = await createOpenRouterMarkdownCompletion([
+    const messages = [
       {
-        role: "system",
-        content: await readSystemPrompt(),
+        role: "system" as const,
+        content: latex ? latexWritePrompt(getAiRewriteCustomInstruction().trim()) : await readSystemPrompt(),
       },
       {
-        role: "user",
+        role: "user" as const,
         content: `${context ? `Full document, with the insertion point marked:
 ${formatDocumentContext(context, INSERTION_MARKER)}
 
 ` : ""}Instruction:
 ${prompt}`,
       },
-    ], getAiFunctionOptions("rewrite"));
+    ];
+    // The response key predates LaTeX support; it holds LaTeX for LaTeX documents.
+    const markdown = latex
+      ? normalizeLatexOutput((await createOpenRouterCompletion(messages, getAiFunctionOptions("rewrite"))).content)
+      : await createOpenRouterMarkdownCompletion(messages, getAiFunctionOptions("rewrite"));
 
     if (!markdown.trim()) {
       return jsonError("Write with AI returned an empty response.", 502);

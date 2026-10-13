@@ -6,6 +6,7 @@ import type { SearchResult } from "@/components/libera/types";
 type SidebarSearchProps = {
   query: string;
   searchResults: SearchResult[];
+  placeholder?: string;
   onDeepSearch: (query: string) => void;
   onQueryChange: (query: string) => void;
   onSelectSearchResult: (result: SearchResult) => void;
@@ -14,6 +15,7 @@ type SidebarSearchProps = {
 export function SidebarSearch({
   query,
   searchResults,
+  placeholder = "Search notebooks and files",
   onDeepSearch,
   onQueryChange,
   onSelectSearchResult,
@@ -28,9 +30,9 @@ export function SidebarSearch({
         className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
       />
       <input
-        aria-label="Search notebooks and files"
+        aria-label={placeholder}
         className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
-        placeholder="Search notebooks and files"
+        placeholder={placeholder}
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
       />
@@ -59,7 +61,7 @@ export function SidebarSearch({
                 {result.type === "notebook" ? (
                   <BookOpen aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                 ) : (
-                  <FileTypeIcon fileType={result.file.fileType} />
+                  <FileTypeIcon fileType={result.file.fileType} name={result.file.name} />
                 )}
                 <span className="truncate">{result.label}</span>
               </span>

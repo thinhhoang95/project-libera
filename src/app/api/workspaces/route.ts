@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
-  try { return NextResponse.json(await readWorkspaces()); }
+  try { return NextResponse.json(await readWorkspaces(request.nextUrl.searchParams.get("root"))); }
   catch (error) {
     const failure = toStorageError(error);
     return NextResponse.json({ error: failure.message }, { status: failure.status });
@@ -19,7 +19,7 @@ export async function PUT(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    await writeWorkspaces(await request.json());
+    await writeWorkspaces(await request.json(), request.nextUrl.searchParams.get("root"));
     return NextResponse.json({ saved: true });
   } catch (error) {
     const failure = toStorageError(error);

@@ -239,7 +239,7 @@ export function CanvasSplitView({
                 {tab ? (
                   <>
                     <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                      <FileTypeIcon fileType={tab.file.fileType} />
+                      <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                     </span>
                     <span className="min-w-0 flex-1 truncate font-medium">{tab.file.name}</span>
                     {tab.status === "dirty" ? (
@@ -368,7 +368,7 @@ function EmptyPanePicker({
                   onClick={() => onPick(tab.id)}
                 >
                   <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                    <FileTypeIcon fileType={tab.file.fileType} />
+                    <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                   </span>
                   <span className="min-w-0 flex-1 truncate">{tab.file.name}</span>
                   {tab.status === "dirty" ? (

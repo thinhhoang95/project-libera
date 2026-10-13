@@ -36,6 +36,12 @@ type LiberaNativeMenuInput = {
 };
 
 declare global {
+  type LiberaDirectoryCommand =
+    | { type: "open-directory"; path: string }
+    | { type: "open-file"; path: string }
+    | { type: "close-directory"; name: string }
+    | { type: "clear-recent" };
+
   type LiberaUpdaterStatus =
     | "unsupported"
     | "idle"
@@ -57,7 +63,13 @@ declare global {
   };
 
   interface Window {
-    liberaWorkspaces?: { checkpoint: (body: string) => { saved: boolean; error?: string } };
+    liberaWorkspaces?: { checkpoint: (body: string, root: string) => { saved: boolean; error?: string } };
+    liberaDirectory?: {
+      chooseFolder: () => Promise<string | null>;
+      chooseFile: () => Promise<string | null>;
+      notifyChanged: () => Promise<void>;
+      onCommand: (listener: (command: LiberaDirectoryCommand) => void) => () => void;
+    };
     liberaPlatform?: {
       isElectron: boolean;
       platform: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useRef, useState } from "react";
-import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save } from "lucide-react";
+import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search } from "lucide-react";
 import type { ReviewSuggestion } from "@/lib/markdown-review";
 import { reviewIntent } from "@/lib/markdown-review";
 import { useMarkdownReview } from "./markdown-review-context";
@@ -21,6 +21,7 @@ export function ReviewComments() {
   const r = useMarkdownReview();
   const [reply, setReply] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const selectedCard = useRef<HTMLElement | null>(null);
   useEffect(() => {
     selectedCard.current?.scrollIntoView({ block: "nearest" });
@@ -28,6 +29,13 @@ export function ReviewComments() {
   if (!r) return null;
   const threads = r.doc?.threads ?? [];
   const active = threads.find((t) => t.id === r.selectedThread);
+  // Comments keep their document numbering while filtered.
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
+    if (!terms.length) return true;
+    const haystack = [`comment ${index + 1}`, thread.status, thread.anchor.quote, ...thread.messages.map((m) => m.text)].join("\n").toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
     <header className="shrink-0 space-y-3 border-b border-border px-3 py-3">
       <div className="flex items-center gap-1">
@@ -38,14 +46,19 @@ export function ReviewComments() {
       </div>
       <button className={`${button} w-full`} aria-pressed={r.chatReview} title={r.chatReview ? "Return to regular chat" : "Plan how to address comments"} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> Agentic review</button>
       {r.doc && <>
+        {threads.length > 0 && <div className="review-comment-search relative">
+          <Search aria-hidden size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input type="search" aria-label="Search comments" placeholder="Search comments…" className="h-8 w-full rounded-md border border-border bg-card pl-8 pr-7 text-sm outline-none focus:border-accent" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
+          {query && <button type="button" className="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
+        </div>}
         <p className="text-xs text-muted-foreground">{r.enabled ? "Select a passage in either editor to comment. ⌘/Ctrl+Alt+M" : "Enable Review Mode to highlight passages and add comments."}</p>
       </>}
     </header>
     <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="mt-2 rounded border border-border p-2 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="text-sm text-muted-foreground">Open a Markdown document to see its comments.</p> : !threads.length && <p className="text-sm text-muted-foreground">No comments yet. Select a paragraph in either editor to add one.</p>}
-      {threads.map((thread, index) => <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} className={`review-comment-card rounded-lg border p-3 text-sm ${active?.id === thread.id ? "border-accent" : "border-border"}`} aria-label={`Comment ${index + 1}`}>
+      {!r.doc ? <p className="text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length ? <p className="text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && <p className="text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {shown.map(({ thread, index }) => <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} className={`review-comment-card rounded-lg border p-3 text-sm ${active?.id === thread.id ? "border-accent" : "border-border"}`} aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
           <span className="flex flex-wrap items-center justify-between gap-1"><strong>Comment {index + 1}</strong><span className="text-xs capitalize text-muted-foreground">{thread.status}{thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
           <span className="my-2 line-clamp-3 border-l-2 border-border pl-2 text-xs text-muted-foreground">{thread.anchor.quote}</span>

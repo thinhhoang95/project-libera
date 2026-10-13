@@ -1,4 +1,5 @@
 import type { FormEvent, RefObject } from "react";
+import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -17,6 +18,8 @@ export type OpenTab = {
   draft: string;
   saved: string;
   rawUrl?: string;
+  /** Set on read-only tabs that show a gallery photo instead of a notebook file. */
+  gallery?: { photoId: string };
   untitled?: boolean;
   standaloneSaveId?: string;
   saveDirectory?: string;
@@ -52,6 +55,25 @@ export type PdfTabViewState = {
   zoom?: number;
 };
 
+export type LatexTabViewState = {
+  autoCompile?: boolean;
+  /** "current" typesets the open file itself instead of its main file. */
+  compileTarget?: "main" | "current";
+  /** "auto" honors `% !TEX program` and the packages in the preamble. */
+  engine?: "auto" | "pdflatex" | "xelatex" | "lualatex";
+  editorScrollTop?: number;
+  line?: number;
+  logOpen?: boolean;
+  pdfScrollLeft?: number;
+  pdfScrollTop?: number;
+  /** A number, or "width" to fit the page width to the pane. */
+  pdfZoom?: number | "width";
+  selectionEnd?: number;
+  selectionStart?: number;
+  /** One-shot request from another view (SyncTeX, outline) to reveal a line. */
+  revealLine?: { line: number; column?: number; hint?: SynctexTextHint; nonce: number };
+};
+
 export type ImageTabViewState = {
   fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
@@ -63,10 +85,19 @@ export type ImageTabViewState = {
   zoom?: number;
 };
 
+export type TextTabViewState = {
+  editorScrollTop?: number;
+  line?: number;
+  selectionEnd?: number;
+  selectionStart?: number;
+};
+
 export type OpenTabViewState = {
   image?: ImageTabViewState;
+  latex?: LatexTabViewState;
   markdown?: MarkdownTabViewState;
   pdf?: PdfTabViewState;
+  text?: TextTabViewState;
 };
 
 export type SearchResult =
@@ -113,7 +144,7 @@ export type NoteFormValues = {
 };
 
 export type NoteDialogState = {
-  mode: "markdown" | "slides";
+  mode: "markdown" | "slides" | "latex";
   notebook: string;
   parentPath?: string;
   error?: string;
@@ -175,6 +206,11 @@ export type WorkspaceConfirmDialogState =
   | {
       mode: "delete-notebook";
       notebook: string;
+    }
+  | {
+      mode: "remove-folder";
+      notebook: string;
+      dirtyTabCount: number;
     }
   | {
       mode: "move-file-node";
@@ -249,6 +285,7 @@ export type LiberaWorkspace = {
   workspaceConfirmDialogSubmitting: boolean;
   workspaceInputDialog: WorkspaceInputDialogState | null;
   workspaceInputDialogSubmitting: boolean;
+  fileTagsDialog: { file: LiberaFileNode; error: string; submitting: boolean } | null;
   workspaceError: string;
   closeOtherTabs: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -263,6 +300,7 @@ export type LiberaWorkspace = {
   completeScreenshotSnip: (file: File) => Promise<void>;
   createMarkdownFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
   createMarkdownSlidesFromPrompt: (notebook: string) => Promise<void>;
+  createLatexFromPrompt: (notebook: string, parentPath?: string) => Promise<void>;
   createFolderFromPrompt: (parentPath: string) => Promise<void>;
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;
@@ -330,4 +368,7 @@ export type LiberaWorkspace = {
   submitWorkspaceInputDialog: (values: WorkspaceInputDialogValues) => Promise<void>;
   toggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
   toggleNotebook: (notebook: string) => void;
+  openFileTagsDialog: (file: LiberaFileNode) => void;
+  closeFileTagsDialog: () => void;
+  saveFileTags: (tags: string[]) => Promise<void>;
 };

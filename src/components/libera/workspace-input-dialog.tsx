@@ -27,6 +27,7 @@ function parentPathForFilePath(filePath: string, notebook: string) {
 }
 
 function getDialogContent(dialog: WorkspaceInputDialogState) {
+  const destination = "a notebook or folder";
   switch (dialog.mode) {
     case "create-folder":
       return {
@@ -42,7 +43,7 @@ function getDialogContent(dialog: WorkspaceInputDialogState) {
     case "copy-file":
       return {
         title: "Copy file",
-        description: `Copy ${dialog.file.name} to a notebook or folder.`,
+        description: `Copy ${dialog.file.name} to ${destination}.`,
         submitLabel: "Copy file",
         initialValues: {
           name: "",
@@ -53,7 +54,7 @@ function getDialogContent(dialog: WorkspaceInputDialogState) {
     case "move-file":
       return {
         title: "Move file",
-        description: `Move ${dialog.file.name} to a notebook or folder.`,
+        description: `Move ${dialog.file.name} to ${destination}.`,
         submitLabel: "Move file",
         initialValues: {
           name: "",

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import type { RefObject } from "react";
 import {
   BookOpen,
+  Images,
   Layers3,
   LogOut,
   ListTree,
@@ -12,6 +13,7 @@ import {
   PanelLeftOpen,
   type LucideIcon,
 } from "lucide-react";
+import { ImageGenerationPanel } from "@/components/libera/image-generation-panel";
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
 import { ReviewComments } from "@/components/libera/markdown-review-ui";
@@ -19,9 +21,9 @@ import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
 
 import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
-import type { LiberaTree } from "@/lib/types";
+import type { LiberaFileNode, LiberaTree } from "@/lib/types";
 
-export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces";
+export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery";
 
 type LeftPanelProps = NotebookPanelProps & {
   workspaceManager: WorkspaceManager;
@@ -34,6 +36,7 @@ type LeftPanelProps = NotebookPanelProps & {
   onLogout: () => Promise<void>;
   onSetDraft: (value: string) => void;
   onToggleCollapsed: () => void;
+  onGeneratedFilesSaved: (files: LiberaFileNode[]) => void;
 };
 
 const LEFT_PANEL_TABS: Array<{
@@ -45,6 +48,7 @@ const LEFT_PANEL_TABS: Array<{
   { id: "notebook", label: "Notebook", icon: BookOpen },
   { id: "outlines", label: "Outlines", icon: ListTree },
   { id: "comments", label: "Comments", icon: MessageSquare },
+  { id: "gallery", label: "Image Gallery", icon: Images },
 ];
 
 export function LeftPanel({
@@ -58,6 +62,7 @@ export function LeftPanel({
   onLogout,
   onSetDraft,
   onToggleCollapsed,
+  onGeneratedFilesSaved,
   ...notebookPanelProps
 }: LeftPanelProps) {
   function selectPanel(panel: LeftPanelTab) {
@@ -88,7 +93,9 @@ export function LeftPanel({
               ? "comments"
               : event.key === "4" || event.code === "Digit4"
                 ? "workspaces"
-                : null;
+                : event.key === "5" || event.code === "Digit5"
+                  ? "gallery"
+                  : null;
 
       if (!nextPanel) {
         return;
@@ -133,6 +140,15 @@ export function LeftPanel({
                 </div>}
                 <NotebookPanel {...notebookPanelProps} onManageWorkspace={() => selectPanel("workspaces")} workspaceActive={Boolean(workspaceManager.activeWorkspace)} />
               </>
+            ) : activePanel === "gallery" ? (
+              <ImageGenerationPanel
+                tree={notebookPanelProps.tree}
+                onFilesSaved={(files) => onGeneratedFilesSaved(files)}
+                onOpenFile={(file) => {
+                  onPanelChange("notebook");
+                  notebookPanelProps.onOpenFile(file);
+                }}
+              />
             ) : activePanel === "comments" ? (
               <ReviewComments key={activeTab?.id ?? "no-document"} />
             ) : (
@@ -188,6 +204,7 @@ function LeftPanelRail({
       >
         {LEFT_PANEL_TABS.map((tab) => {
           const Icon = tab.icon;
+          const label = tab.label;
           const selected = activePanel === tab.id;
 
           return (
@@ -195,11 +212,11 @@ function LeftPanelRail({
               key={tab.id}
               id={`left-panel-tab-${tab.id}`}
               aria-controls={`left-panel-${tab.id}`}
-              aria-label={`${tab.label} tab`}
+              aria-label={`${label} tab`}
               aria-selected={selected}
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
               role="tab"
-              title={tab.label}
+              title={label}
               type="button"
               onClick={() => onSelectPanel(tab.id)}
             >

@@ -152,7 +152,7 @@ test("workspace sessions preserve order, active tab, unsaved drafts, view state,
   let liveTree = structuredClone(tree);
   const files = [a, b, c, d];
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") {
         if (failSave) return Response.json({ error: "Disk unavailable" }, { status: 500 });
         disk = parseWorkspaceLibrary(JSON.parse(String(init.body)));
@@ -292,7 +292,7 @@ test("active workspace tracks file operations, persists them, and owns uploads t
     return folder!.kind === "folder" ? folder.children : [];
   }
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") { disk = parseWorkspaceLibrary(JSON.parse(String(init.body))); return Response.json({ saved: true }); }
       return Response.json(disk);
     }
@@ -465,7 +465,7 @@ test("sorting controls and group changes stay in their workspace across switches
   let notebookBody: Record<string, unknown> = {};
   let failSave = false;
   globalThis.fetch = async (url, init) => {
-    if (url === "/api/workspaces") {
+    if (String(url).startsWith("/api/workspaces")) {
       if (init?.method === "PUT") {
         if (failSave) return Response.json({ error: "Disk unavailable" }, { status: 500 });
         disk = parseWorkspaceLibrary(JSON.parse(String(init.body)));
@@ -503,11 +503,11 @@ test("sorting controls and group changes stay in their workspace across switches
       onOpenFile: workspace.openFile, onQueryChange: workspace.setQuery, onRenameFolder: workspace.renameFolderFromPrompt,
       onRenameFile: workspace.renameFileNodeFromPrompt, onSelectNotebook: workspace.selectNotebook,
       onSelectSearchResult: workspace.selectSearchResult, onStartUpload: workspace.startUpload,
-      onToggleFileStar: workspace.toggleFileStar, onToggleNotebook: workspace.toggleNotebook,
+      onToggleFileStar: workspace.toggleFileStar, onEditFileTags: workspace.openFileTagsDialog, onToggleNotebook: workspace.toggleNotebook,
       onUploadChange: workspace.handleUploadChange, onUploadFiles: workspace.uploadFilesToNotebook,
       onUpdateNotebookViewOptions: workspace.updateNotebookViewOptions,
     });
-    const home = workspace.selectedNotebook ? createElement(NotebookHome, { yourName: "Test", notebook: workspace.selectedNotebook, onCreateMarkdown: workspace.createMarkdownFromPrompt, onCreateSlides: workspace.createMarkdownSlidesFromPrompt, onOpenFile: workspace.openFile }) : null;
+    const home = workspace.selectedNotebook ? createElement(NotebookHome, { yourName: "Test", notebook: workspace.selectedNotebook, fileTags: workspace.tree.fileTags, onEditFileTags: workspace.openFileTagsDialog, onCreateMarkdown: workspace.createMarkdownFromPrompt, onCreateSlides: workspace.createMarkdownSlidesFromPrompt, onOpenFile: workspace.openFile }) : null;
     return createElement(WorkspaceViewContext.Provider, { value: { view: manager.activeWorkspace?.view, updateView: manager.updateView } }, panel, home);
   }
   let root = createRoot(document.getElementById("root")!);

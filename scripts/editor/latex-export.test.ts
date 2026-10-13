@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLatexPrompt, compileLatex, exportLatexPdf, findPdfLatex, generateLatex, parseLatexPart } from "../../src/lib/latex-export";
+import { buildLatexPrompt, compileLatex, exportLatexPdf, findPdfLatex } from "../../src/lib/latex-export";
+import { LatexThread } from "../../src/lib/latex-generation";
 
 import { DEFAULT_LATEX_OPTIONS, latexToday, latexLayoutPrompt, parseLatexOptions } from "../../src/lib/latex-options";
 
@@ -8,43 +9,45 @@ const signal = new AbortController().signal;
 const start = "\\documentclass{article}\n\\begin{document}\n";
 const end = "\\end{document}";
 
-test("LaTeX continuations preserve history and force the requested model and reasoning", async () => {
+test("the LaTeX thread keeps one session, forces the requested model and continues cut-off replies in place", async () => {
   let calls = 0;
   const instructions = "Use blue section headings.\nKeep tables near their references.";
   const prompt = buildLatexPrompt({ ...DEFAULT_LATEX_OPTIONS, customInstructions: instructions });
   assert.ok(prompt.includes(instructions));
   assert.ok(prompt.includes("Required page layout"));
   assert.equal(buildLatexPrompt({ ...DEFAULT_LATEX_OPTIONS, customInstructions: " \n " }), buildLatexPrompt(DEFAULT_LATEX_OPTIONS));
-  const source = await generateLatex([{ role: "system", content: prompt }, { role: "user", content: "Document" }], signal, () => {}, async (messages, options) => {
+  const sessions = new Set<string | undefined>();
+  const thread = new LatexThread(prompt, signal, () => {}, async (messages, options) => {
     assert.deepEqual(messages[0], { role: "system", content: prompt });
     assert.equal(options?.model, "openai/gpt-5.6-luna");
     assert.deepEqual(options?.reasoning, { effort: "low" });
+    assert.equal(options?.maxTokens, 16000);
+    sessions.add(options?.sessionId);
     calls++;
-    if (calls === 1) return { content: start + "First\n<to be continued>", finishReason: "stop" };
-    assert.equal(messages.at(-2)?.role, "assistant");
-    assert.match(String(messages.at(-1)?.content), /continue/);
-    return { content: "Second\n" + end, finishReason: "stop" };
+    if (calls === 1) return { content: "```latex\n" + start + "\\text", finishReason: "length" };
+    if (calls === 2) {
+      assert.equal(messages.at(-2)?.role, "assistant");
+      assert.match(String(messages.at(-1)?.content), /cut off/);
+      return { content: "bf{Hello}\n```", finishReason: "stop" };
+    }
+    // A later turn sees every earlier turn of the same conversation.
+    assert.deepEqual(messages.slice(1).map((message) => message.role), ["user", "assistant", "user", "assistant", "user"]);
+    return { content: "Next", finishReason: "stop" };
   });
-  assert.equal(source, start + "First\nSecond\n" + end);
-  assert.equal(calls, 2);
-});
-
-test("token-limited responses resume without inserting text into truncated commands", async () => {
-  let calls = 0;
-  const source = await generateLatex([], signal, () => {}, async () => ++calls === 1
-    ? { content: start + "\\text", finishReason: "length" }
-    : { content: "bf{Hello}\n" + end, finishReason: "stop" });
-  assert.match(source, /\\textbf\{Hello\}/);
-});
-
-test("incomplete and endless responses fail with bounded calls", async () => {
-  await assert.rejects(generateLatex([], signal, () => {}, async () => ({ content: start, finishReason: "stop" })), /incomplete/);
-  let calls = 0;
-  await assert.rejects(generateLatex([], signal, () => {}, async () => {
-    calls++; return { content: "More\n<to be continued>", finishReason: "stop" };
-  }), /three parts/);
+  assert.equal(await thread.ask("Document", "Converting"), start + "\\textbf{Hello}\n");
+  assert.equal(await thread.ask("More", "Converting"), "Next");
   assert.equal(calls, 3);
-  assert.equal(parseLatexPart("```latex\n" + start + end + "\n```").source, start + end);
+  assert.equal(sessions.size, 1);
+  assert.ok([...sessions][0]);
+});
+
+test("endless and empty replies fail with bounded calls", async () => {
+  let calls = 0;
+  await assert.rejects(new LatexThread("S", signal, () => {}, async () => { calls++; return { content: "More", finishReason: "length" }; }).ask("Go", "Converting"), /incomplete after 3 parts/);
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(new LatexThread("S", signal, () => {}, async () => { calls++; return { content: " ", finishReason: "stop" }; }).ask("Go", "Converting"), /empty/);
+  assert.equal(calls, 3);
 });
 
 test("pdflatex produces a PDF and reports errors for repair", async (context) => {
@@ -56,11 +59,12 @@ test("pdflatex produces a PDF and reports errors for repair", async (context) =>
 });
 
 
-test("export repairs compiler failures through OpenRouter and returns a valid PDF", async (context) => {
+test("export sends compiler failures back to the same thread and returns a valid PDF", async (context) => {
   try { await findPdfLatex(signal); } catch { context.skip("pdflatex is not installed"); return; }
   const oldKey = process.env.OPENROUTER_API_KEY;
   process.env.OPENROUTER_API_KEY = "test-key";
   let calls = 0;
+  const sessions = new Set<string>();
   context.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
     calls++;
     const body = JSON.parse(String(init.body));
@@ -73,12 +77,24 @@ test("export repairs compiler failures through OpenRouter and returns a valid PD
     assert.ok(body.messages[0].content.includes("Libera by Thinh Hoang"));
     assert.equal(body.messages[0].role, "system");
     assert.ok(body.messages[0].content.includes("Use blue section headings.\nKeep tables near their references."));
-    if (calls === 2) assert.match(body.messages[1].content, /Undefined control sequence/);
-    return Response.json({ choices: [{ message: { content: start + (calls === 1 ? "\\undefinedcommand" : "Repaired document") + "\n" + end }, finish_reason: "stop" }] });
+    sessions.add(body.session_id);
+    const task: string = body.messages.at(-1).content;
+    let content: string;
+    if (task.startsWith("TASK: shared preamble")) content = start + "% LIBERA_PREAMBLE_DONE";
+    else if (task.startsWith("TASK: convert chunk")) content = "\\undefinedcommand\n% LIBERA_BLOCK_1_END";
+    else {
+      assert.match(task, /Undefined control sequence/);
+      assert.match(task, /\(chunk 1\):/);
+      // The repair turn continues the conversation that produced the chunk.
+      assert.ok(body.messages.some((message: { role: string; content: string }) => message.role === "assistant" && message.content.includes("\\undefinedcommand")));
+      content = "<<<<<<< SEARCH\n\\undefinedcommand\n=======\nRepaired document\n>>>>>>> REPLACE";
+    }
+    return Response.json({ choices: [{ message: { content }, finish_reason: "stop" }] });
   });
   try {
     const result = await exportLatexPdf("# Test document", signal, () => {}, { ...DEFAULT_LATEX_OPTIONS, paperSize: "letter", fontSize: 12, author: "A&B", date: "2026-09-09", footer: "Custom footer", showAppName: true, customInstructions: "Use blue section headings.\nKeep tables near their references." });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3); // preamble, chunk, one repair edit
+    assert.equal(sessions.size, 1);
     assert.match(result.source, /Repaired document/);
     assert.equal(Buffer.from(result.pdf, "base64").subarray(0, 5).toString(), "%PDF-");
   } finally {
@@ -90,9 +106,9 @@ test("export repairs compiler failures through OpenRouter and returns a valid PD
 test("canceled exports do not call the model", async () => {
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(generateLatex([], controller.signal, () => {}, async () => {
+  await assert.rejects(new LatexThread("S", controller.signal, () => {}, async () => {
     assert.fail("Model must not be called after cancellation");
-  }), /abort/i);
+  }).ask("Document", "Converting"), /abort/i);
 });
 
 

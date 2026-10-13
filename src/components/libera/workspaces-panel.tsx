@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { ArrowRight, Check, ChevronRight, Folder, Layers3, LogOut, Pencil, Plus, Search, Settings2, Trash2 } from "lucide-react";
+import { ArrowDownAZ, ArrowUpAZ, Check, ChevronRight, Clock, Folder, Layers3, LogOut, Pencil, Plus, Search, Settings2, Trash2, X } from "lucide-react";
 import { ModalDialog } from "./modal-dialog";
 import { FileTypeIcon } from "./file-type";
 import type { LiberaNotebookNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
@@ -43,48 +43,103 @@ export function toggleWorkspacePath(nodes: PickerNode[], paths: string[], path: 
   return result;
 }
 
+type SortKey = "lastUsed" | "name";
+type SortDirection = "asc" | "desc";
+const SORT_STORAGE_KEY = "libera:workspaces-sort";
+const sortLabels: Record<SortKey, [string, string]> = {
+  lastUsed: ["Last used, most recent first", "Last used, oldest first"],
+  name: ["Name, A to Z", "Name, Z to A"],
+};
+
+function readSort(): { key: SortKey; direction: SortDirection } {
+  try {
+    const [key, direction] = (window.localStorage.getItem(SORT_STORAGE_KEY) ?? "").split(":");
+    if ((key === "lastUsed" || key === "name") && (direction === "asc" || direction === "desc")) return { key, direction };
+  } catch { /* storage unavailable */ }
+  return { key: "lastUsed", direction: "desc" };
+}
+
+async function popupMenu(items: Array<{ id: string; label: string; type: "radio"; checked: boolean }>, button: HTMLElement) {
+  const rect = button.getBoundingClientRect();
+  try { return await window.liberaMenu?.popup({ items, x: Math.round(rect.left), y: Math.round(rect.bottom) }) ?? null; }
+  catch { return null; }
+}
+
 export function WorkspacesPanel({ manager, tree }: { manager: WorkspaceManager; tree: LiberaTree }) {
   const [editing, setEditing] = useState<{ workspace?: SavedWorkspace; rename?: boolean } | null>(null);
   const [deleting, setDeleting] = useState<SavedWorkspace | null>(null);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: "lastUsed", direction: "desc" });
+  useEffect(() => setSort(readSort()), []);
+  function applySort(next: { key: SortKey; direction: SortDirection }) {
+    setSort(next);
+    try { window.localStorage.setItem(SORT_STORAGE_KEY, `${next.key}:${next.direction}`); } catch { /* storage unavailable */ }
+  }
+  async function openSortMenu(key: SortKey, button: HTMLElement) {
+    const items = (["desc", "asc"] as const).map((direction) => ({
+      id: `${key}:${direction}`, label: sortLabels[key][direction === "desc" ? 0 : 1], type: "radio" as const,
+      checked: sort.key === key && sort.direction === direction,
+    }));
+    const picked = await popupMenu(items, button);
+    if (picked) { const [, direction] = picked.split(":"); applySort({ key, direction: direction as SortDirection }); }
+  }
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const factor = sort.direction === "asc" ? 1 : -1;
+    return manager.workspaces
+      .filter((workspace) => !needle || workspace.name.toLowerCase().includes(needle))
+      .sort((a, b) => factor * (sort.key === "name"
+        ? a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true })
+        : (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0)) || a.name.localeCompare(b.name));
+  }, [manager.workspaces, query, sort]);
   async function run(action: () => Promise<void>) {
     setError("");
     try { await action(); } catch (failure) { setError(failure instanceof Error ? failure.message : "Could not update workspace."); }
   }
+  const sortButton = (key: SortKey, Icon: typeof Clock, label: string) => <button type="button" className={iconButton} title={label} aria-label={label} aria-haspopup="menu" aria-selected={sort.key === key} onClick={(event) => void openSortMenu(key, event.currentTarget)}><Icon className="h-4 w-4" /></button>;
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="flex items-center justify-between px-3 pb-2 pt-4">
       <h2 className="text-sm font-semibold">Workspaces</h2>
-      <button className={iconButton} title="Create workspace" aria-label="Create workspace" disabled={!manager.ready || manager.switching} onClick={() => setEditing({})}><Plus className="h-4 w-4" /></button>
-    </div>
-    <p className="px-3 pb-4 text-xs leading-relaxed text-muted-foreground">A little room for each project. Pick up right where you left off.</p>
-    {(error || manager.loadError) && <div role="alert" className="mx-3 mb-3 rounded-lg bg-destructive-muted p-3 text-xs text-destructive">{error || manager.loadError}{manager.loadError && <button className="ml-2 underline" onClick={manager.retry}>Try again</button>}</div>}
-    <div className="min-h-0 flex-1 space-y-2 overflow-auto px-3 pb-4">
-      {!manager.ready && !manager.loadError && <p role="status" className="text-sm text-muted-foreground">Opening your workspaces…</p>}
-      <div className="libera-notebook-section" data-selected={!manager.activeWorkspace} style={{ "--notebook-color": "#75839e" } as CSSProperties}>
-        <button className="libera-notebook-row flex w-full items-center gap-3 p-3 text-left disabled:opacity-60" aria-pressed={!manager.activeWorkspace} disabled={!manager.ready || manager.switching} onClick={() => void run(() => manager.switchWorkspace(null))}>
-          <span className="libera-notebook-emoji flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#75839e] text-white"><Layers3 className="h-4 w-4" /></span>
-          <span className="min-w-0 flex-1"><span className="block text-sm font-medium">All notebooks</span><span className="text-xs text-muted-foreground">Your whole library</span></span>
-        </button>
+      <div className="flex items-center gap-0.5">
+        {sortButton("lastUsed", Clock, "Sort by last used")}
+        {sortButton("name", sort.key === "name" && sort.direction === "desc" ? ArrowUpAZ : ArrowDownAZ, "Sort alphabetically")}
+        <button className={iconButton} title="Create workspace" aria-label="Create workspace" disabled={!manager.ready || manager.switching} onClick={() => setEditing({})}><Plus className="h-4 w-4" /></button>
       </div>
-      {manager.workspaces.map((workspace) => {
+    </div>
+    <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">A little room for each project. Pick up right where you left off.</p>
+    <div className="relative px-3 pb-3 pt-1">
+      <Search aria-hidden className="pointer-events-none absolute left-6 top-1/2 h-4 w-4 -translate-y-[calc(50%+0.125rem)] text-muted-foreground" />
+      <input aria-label="Search workspaces" className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring" placeholder="Search workspaces" value={query} onChange={(event) => setQuery(event.target.value)} />
+      {query && <button type="button" aria-label="Clear search" className="absolute right-5 top-1/2 inline-flex h-7 w-7 -translate-y-[calc(50%+0.125rem)] items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" onClick={() => setQuery("")} onMouseDown={(event) => event.preventDefault()}><X aria-hidden className="h-4 w-4" /></button>}
+    </div>
+    {(error || manager.loadError) && <div role="alert" className="mx-3 mb-3 rounded-lg bg-destructive-muted p-3 text-xs text-destructive">{error || manager.loadError}{manager.loadError && <button className="ml-2 underline" onClick={manager.retry}>Try again</button>}</div>}
+    <div className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-4">
+      {!manager.ready && !manager.loadError && <p role="status" className="text-sm text-muted-foreground">Opening your workspaces…</p>}
+      {!query.trim() && <div className="libera-notebook-section" data-selected={!manager.activeWorkspace} style={{ "--notebook-color": "#75839e" } as CSSProperties}>
+        <button className="libera-notebook-row libera-workspace-card flex w-full items-center gap-3 p-2.5 text-left disabled:opacity-60" aria-pressed={!manager.activeWorkspace} disabled={!manager.ready || manager.switching} onClick={() => void run(() => manager.switchWorkspace(null))}>
+          <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#75839e] text-white"><Layers3 className="h-4 w-4" /></span>
+          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">All notebooks</span><span className="block truncate text-xs text-muted-foreground">Your whole library{!manager.activeWorkspace && " · Active now"}</span></span>
+        </button>
+      </div>}
+      {visible.map((workspace) => {
         const active = manager.activeWorkspace?.id === workspace.id;
         const count = fileCount(filterWorkspaceTree(tree, workspace.scope).notebooks);
-        return <article key={workspace.id} className="libera-notebook-section" data-selected={active} style={{ "--notebook-color": workspace.color } as CSSProperties}>
-          <div className="libera-notebook-row">
-            <button className="flex w-full items-center gap-3 rounded-[10px] p-3 text-left disabled:opacity-60" disabled={manager.switching} aria-pressed={active} onClick={() => void run(() => manager.switchWorkspace(workspace.id))}>
-              <span className="libera-notebook-emoji flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white" style={{ backgroundColor: workspace.color }}><Layers3 className="h-4 w-4" /></span>
-              <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{workspace.name}</span><span className="block text-xs text-muted-foreground">{count} {count === 1 ? "file" : "files"} · {active ? "Active now" : `${workspace.session.tabs.length} saved ${workspace.session.tabs.length === 1 ? "tab" : "tabs"}`}</span></span>
-              {!active && <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground"><ArrowRight aria-hidden className="h-4 w-4" /></span>}
-            </button>
-            <div className="flex items-center justify-end gap-1 px-3 pb-3">
-              {active && <button className={`${iconButton} mr-auto`} title="Exit workspace" aria-label={`Exit ${workspace.name}`} disabled={manager.switching} onClick={() => void run(() => manager.switchWorkspace(null))}><LogOut className="h-3.5 w-3.5" /></button>}
-              <button className={iconButton} title="Rename workspace" aria-label={`Rename ${workspace.name}`} disabled={manager.switching} onClick={() => setEditing({ workspace, rename: true })}><Pencil className="h-3.5 w-3.5" /></button>
-              <button className={iconButton} title="Workspace settings" aria-label={`Modify ${workspace.name}`} disabled={manager.switching} onClick={() => setEditing({ workspace })}><Settings2 className="h-3.5 w-3.5" /></button>
-              <button className={iconButton} title="Delete workspace" aria-label={`Delete ${workspace.name}`} disabled={manager.switching} onClick={() => setDeleting(workspace)}><Trash2 className="h-3.5 w-3.5" /></button>
-            </div>
+        const action = "libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md disabled:opacity-50";
+        return <article key={workspace.id} className="libera-notebook-section libera-workspace-item group relative" data-selected={active} style={{ "--notebook-color": workspace.color } as CSSProperties}>
+          <button className="libera-notebook-row libera-workspace-card flex w-full items-center gap-3 p-2.5 text-left disabled:opacity-60" disabled={manager.switching} aria-pressed={active} onClick={() => void run(() => manager.switchWorkspace(workspace.id))}>
+            <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-white" style={{ backgroundColor: workspace.color }}><Layers3 className="h-4 w-4" /></span>
+            <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{workspace.name}</span><span className="block truncate text-xs text-muted-foreground">{count} {count === 1 ? "file" : "files"} · {active ? "Active now" : `${workspace.session.tabs.length} saved ${workspace.session.tabs.length === 1 ? "tab" : "tabs"}`}</span></span>
+          </button>
+          <div className="libera-workspace-actions absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-lg px-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            {active && <button className={action} title="Exit workspace" aria-label={`Exit ${workspace.name}`} disabled={manager.switching} onClick={() => void run(() => manager.switchWorkspace(null))}><LogOut className="h-3.5 w-3.5" /></button>}
+            <button className={action} title="Rename workspace" aria-label={`Rename ${workspace.name}`} disabled={manager.switching} onClick={() => setEditing({ workspace, rename: true })}><Pencil className="h-3.5 w-3.5" /></button>
+            <button className={action} title="Workspace settings" aria-label={`Modify ${workspace.name}`} disabled={manager.switching} onClick={() => setEditing({ workspace })}><Settings2 className="h-3.5 w-3.5" /></button>
+            <button className={action} title="Delete workspace" aria-label={`Delete ${workspace.name}`} data-tone="destructive" disabled={manager.switching} onClick={() => setDeleting(workspace)}><Trash2 className="h-3.5 w-3.5" /></button>
           </div>
         </article>;
       })}
+      {manager.ready && query.trim() && !visible.length && <p role="status" className="px-1 py-4 text-center text-sm text-muted-foreground">No workspaces match “{query.trim()}”.</p>}
       {manager.ready && !manager.workspaces.length && <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center"><Layers3 className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><p className="text-sm font-medium">Make space for your next idea</p><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Gather a few notes, papers, and images into a workspace.</p><button className={`${primary} mt-4`} onClick={() => setEditing({})}>Create a workspace</button></div>}
     </div>
     {editing && <WorkspaceSettings key={editing.workspace?.id ?? "new"} workspace={editing.workspace} renameOnly={editing.rename} tree={tree} manager={manager} onClose={() => setEditing(null)} />}
@@ -138,7 +193,7 @@ function PickerRow({ node, selected, includedPaths = [], query, onToggle }: { no
   return <div>
     <div className={`flex items-center rounded-lg hover:bg-muted ${checked ? "bg-primary/5" : ""}`}>
       {node.kind !== "file" ? <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} ${node.name}`} aria-expanded={expanded || Boolean(query)} onClick={() => setExpanded(!expanded)} className="flex h-8 w-6 shrink-0 items-center justify-center"><ChevronRight className={`h-3.5 w-3.5 transition ${expanded || query ? "rotate-90" : ""}`} /></button> : <span className="w-6 shrink-0" />}
-      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pr-2 text-sm"><input ref={input} type="checkbox" checked={checked} aria-label={node.path} aria-checked={partial ? "mixed" : checked} onChange={(event) => onToggle(node.path, event.target.checked)} className="h-4 w-4 shrink-0 accent-primary" />{node.kind === "file" ? <span className="shrink-0"><FileTypeIcon fileType={node.fileType} /></span> : <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />}<span className="truncate" title={node.path}>{node.name}</span>{node.kind !== "file" && <span className="ml-auto text-xs text-muted-foreground">{fileCount(node.children)}</span>}</label>
+      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1.5 pr-2 text-sm"><input ref={input} type="checkbox" checked={checked} aria-label={node.path} aria-checked={partial ? "mixed" : checked} onChange={(event) => onToggle(node.path, event.target.checked)} className="h-4 w-4 shrink-0 accent-primary" />{node.kind === "file" ? <span className="shrink-0"><FileTypeIcon fileType={node.fileType} name={node.name} /></span> : <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />}<span className="truncate" title={node.path}>{node.name}</span>{node.kind !== "file" && <span className="ml-auto text-xs text-muted-foreground">{fileCount(node.children)}</span>}</label>
     </div>
     {node.kind !== "file" && (expanded || query) && <div className="ml-4 border-l border-border pl-1">{node.children.map((child) => <PickerRow key={child.path} node={child} selected={selected} includedPaths={includedPaths} query={query} onToggle={onToggle} />)}</div>}
   </div>;

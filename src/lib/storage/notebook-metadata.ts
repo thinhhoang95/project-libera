@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { isNotebookIllustration, legacyNotebookIllustration } from "@/lib/notebook-illustrations";
 import {
   DEFAULT_NOTEBOOK_COLOR,
@@ -53,15 +54,16 @@ export function normalizeNotebookMetadata(
 export async function readNotebookMetadata(
   notebook: string,
   fallbackCreatedAt: string,
+  defaults?: Partial<LiberaNotebookMetadata>,
 ): Promise<LiberaNotebookMetadata> {
   try {
     const metadata = JSON.parse(
       await readFile(notebookMetadataPath(notebook), "utf8"),
     ) as Partial<LiberaNotebookMetadata>;
 
-    return normalizeNotebookMetadata(metadata, fallbackCreatedAt);
+    return normalizeNotebookMetadata({ ...defaults, ...metadata }, fallbackCreatedAt);
   } catch {
-    return normalizeNotebookMetadata(undefined, fallbackCreatedAt);
+    return normalizeNotebookMetadata(defaults, fallbackCreatedAt);
   }
 }
 
@@ -69,6 +71,8 @@ export async function writeNotebookMetadata(
   notebook: string,
   metadata: LiberaNotebookMetadata,
 ) {
+  // A linked folder keeps its metadata in its state root, which may not exist yet.
+  await mkdir(path.dirname(notebookMetadataPath(notebook)), { recursive: true });
   await writeFile(
     notebookMetadataPath(notebook),
     `${JSON.stringify(metadata, null, 2)}\n`,

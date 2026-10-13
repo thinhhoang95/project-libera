@@ -7,6 +7,7 @@ import { MoreHorizontal, Plus, Sparkles, X } from "lucide-react";
 import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
+import { isGalleryTab } from "./gallery-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 
@@ -171,7 +172,8 @@ export function TabStrip({
                 { type: "separator" as const },
               ]
             : []),
-          { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
+          // Gallery photos have no notebook file for another window to open.
+          ...(isGalleryTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -275,7 +277,7 @@ export function TabStrip({
                 }}
               >
                 <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                  <FileTypeIcon fileType={tab.file.fileType} />
+                  <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
                 </span>
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
@@ -395,8 +397,11 @@ function ActiveFileActions({
   }
 
   const isMarkdown = activeTab.file.fileType === "markdown";
+  const isLatex = activeTab.file.fileType === "latex";
+  // Gallery photos are renamed, moved and deleted from the gallery itself.
+  const isGalleryPhoto = isGalleryTab(activeTab);
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
-  const downloadContent = isMarkdown ? activeTab.draft : undefined;
+  const downloadContent = isMarkdown || isLatex ? activeTab.draft : undefined;
 
   async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
     if (!activeTab) {
@@ -458,13 +463,26 @@ function ActiveFileActions({
                   ],
                 },
               ]
-            : [{ id: "download-original", label: "Download" }]),
-          { type: "separator" },
-          ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
-          { id: "rename", label: "Rename" },
-          { id: "move", label: "Move" },
-          { type: "separator" },
-          { id: "delete", label: "Delete" },
+            : isLatex
+              ? [
+                  {
+                    id: "save",
+                    label: "Save",
+                    enabled: activeTab.status !== "saving" && activeTab.status !== "clean",
+                  },
+                  { id: "download-markdown", label: "Download" },
+                ]
+              : [{ id: "download-original", label: "Download" }]),
+          ...(isGalleryPhoto
+            ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
+            : [
+                { type: "separator" as const },
+                ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
+                { id: "rename", label: "Rename" },
+                { id: "move", label: "Move" },
+                { type: "separator" as const },
+                { id: "delete", label: "Delete" },
+              ]),
         ],
       })
       .catch(() => null);
@@ -498,7 +516,7 @@ function ActiveFileActions({
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown ? <ReviewToggle /> : null}
+      {isMarkdown || isLatex ? <ReviewToggle /> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
     </div>
   );

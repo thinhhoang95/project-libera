@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { BookOpen, Users } from "lucide-react";
+import { BookOpen } from "lucide-react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type {
   NotebookGroupDialogState,
@@ -60,7 +60,6 @@ export function NotebookGroupDialog({
   return (
     <ModalDialog
       open
-      icon={<Users aria-hidden />}
       sectioned
       title={dialog.mode === "create" ? "Create a new group" : "Edit group"}
       description="Bundle related notebooks into one focused workspace."

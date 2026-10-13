@@ -5,7 +5,7 @@ import { act, createElement } from "react";
 import { JSDOM } from "jsdom";
 import type { PdfTabViewState } from "../../src/components/libera/types";
 import type { PdfAnnotation } from "../../src/lib/types";
-import { PDF_MAX_CANVAS_PIXELS } from "../../src/components/libera/pdf-rendering";
+import { PDF_DETAIL_MARGIN, PDF_MAX_CANVAS_PIXELS } from "../../src/components/libera/pdf-rendering";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -37,7 +37,7 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       })) as IntersectionObserverEntry[], this as unknown as IntersectionObserver);
     }
   }
-  Object.assign(globalThis, { IntersectionObserver: FakeObserver });
+  Object.assign(globalThis, { IntersectionObserver: FakeObserver, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
   const require = createRequire(import.meta.url);
   const pdfModule = require.resolve("pdfjs-dist");
   const oldPdfModule = require.cache[pdfModule];
@@ -133,6 +133,38 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.equal((host.querySelector(".pdf-text-layer") as HTMLElement).style.pointerEvents, "auto");
       await unmount();
       assert.equal(destroys, 1);
+    });
+    await t.test("high zoom keeps a full-resolution detail canvas over the visible part of the page", async () => {
+      normalLoad();
+      await mount({ zoom: 4 });
+      const detailHost = host.querySelector<HTMLElement>('[data-pdf-page-number="1"] canvas + [aria-hidden]')!;
+      assert.equal(detailHost.childElementCount, 0);
+      // The page is scrolled 1000px down inside a 1024x768 window.
+      detailHost.getBoundingClientRect = () => ({ left: 0, top: -1000, right: 2448, bottom: 2168, width: 2448, height: 3168 } as DOMRect);
+      const before = renders.length;
+      await act(async () => {
+        document.dispatchEvent(new dom.window.Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      const detail = detailHost.querySelector("canvas")!;
+      assert.equal(renders.length, before + 1);
+      assert.deepEqual([detail.width, detail.height], [(1024 + PDF_DETAIL_MARGIN) * 2, (768 + PDF_DETAIL_MARGIN * 2) * 2]);
+      assert.deepEqual(renders.at(-1)!.transform, [2, 0, 0, 2, -0, -(1000 - PDF_DETAIL_MARGIN) * 2]);
+      assert.equal(detail.style.top, `${((1000 - PDF_DETAIL_MARGIN) / 3168) * 100}%`);
+
+      // Small scrolls inside the rendered margin reuse it.
+      detailHost.getBoundingClientRect = () => ({ left: 0, top: -1100, right: 2448, bottom: 2068, width: 2448, height: 3168 } as DOMRect);
+      await act(async () => {
+        document.dispatchEvent(new dom.window.Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      assert.equal(renders.length, before + 1);
+      assert.equal(detailHost.querySelector("canvas"), detail);
+
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reset zoom"]')!.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+      assert.equal(detailHost.childElementCount, 0, "The page canvas is sharp at 100%, so the detail is dropped");
+      await unmount();
     });
     await t.test("native scrolling and pinch never restart PDF rendering or install blocking gesture listeners", async () => {
       normalLoad();

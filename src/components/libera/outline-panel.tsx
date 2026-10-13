@@ -1,5 +1,6 @@
 "use client";
 
+import { LatexOutline } from "@/components/libera/latex/latex-outline";
 import {
   ChevronDown,
   ChevronRight,
@@ -460,6 +461,8 @@ export function OutlinePanel({
             onOpenFile={onOpenFile}
             onSetDraft={onSetDraft}
           />
+        ) : activeTab?.file.fileType === "latex" ? (
+          <LatexOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
         ) : activeTab?.file.fileType === "pdf" ? (
           <PdfOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
         ) : (
@@ -473,7 +476,7 @@ export function OutlinePanel({
 function EmptyOutline() {
   return (
     <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-      Open a Markdown or PDF file to see its outline.
+      Open a Markdown, LaTeX or PDF file to see its outline.
     </p>
   );
 }

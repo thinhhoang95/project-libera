@@ -51,7 +51,18 @@ contextBridge.exposeInMainWorld("liberaClipboard", {
 });
 
 contextBridge.exposeInMainWorld("liberaWorkspaces", {
-  checkpoint: (body) => ipcRenderer.sendSync("workspaces:checkpoint", body),
+  checkpoint: (body, root) => ipcRenderer.sendSync("workspaces:checkpoint", body, root),
+});
+
+contextBridge.exposeInMainWorld("liberaDirectory", {
+  chooseFolder: () => ipcRenderer.invoke("directory:choose-folder"),
+  chooseFile: () => ipcRenderer.invoke("directory:choose-file"),
+  notifyChanged: () => ipcRenderer.invoke("directory:changed"),
+  onCommand: (listener) => {
+    const handler = (_event, command) => listener(command);
+    ipcRenderer.on("directory:command", handler);
+    return () => ipcRenderer.removeListener("directory:command", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("liberaWindow", {

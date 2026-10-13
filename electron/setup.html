@@ -306,6 +306,12 @@
       .io-button svg { flex: 0 0 auto; }
       .io-warning { border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #f59e0b 9%, transparent); margin-top: 16px; padding: 12px; }
       .io-status { margin-top: 14px; min-height: 20px; }
+      .switch-row { align-items: center; display: flex; gap: 12px; justify-content: space-between; margin-top: 18px; }
+      .switch-row label { margin: 0; }
+      .libera-dialog input.switch { appearance: none; background: var(--input, #d4d4d8); border: 0; border-radius: 999px; cursor: pointer; flex: 0 0 auto; height: 22px; margin: 0; padding: 0; position: relative; transition: background 0.15s; width: 38px; }
+      .libera-dialog input.switch::after { background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); content: ""; height: 18px; left: 2px; position: absolute; top: 2px; transition: transform 0.15s; width: 18px; }
+      .libera-dialog input.switch:checked { background: var(--accent, #2563eb); }
+      .libera-dialog input.switch:checked::after { transform: translateX(16px); }
       .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
       :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
     </style>
@@ -315,7 +321,6 @@
     <main>
       <form id="setup-form" class="libera-dialog" aria-labelledby="form-title">
         <div class="dialog-header libera-dialog-header">
-          <span class="libera-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--card)"/><circle cx="15" cy="17" r="3" fill="var(--card)"/></svg></span>
           <div>
             <h1 id="form-title" class="libera-dialog-title">Set Up Libera by Thinh Hoang</h1>
             <p id="form-description" class="libera-dialog-description">
@@ -372,6 +377,14 @@
               <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" />
               <p id="your-name-help" class="field-help">
                 Optional. Adds a personal greeting to your notebooks and sign-in screen.
+              </p>
+
+              <div class="switch-row">
+                <label for="smart-paste">Smart Paste</label>
+                <input id="smart-paste" class="switch" type="checkbox" role="switch" aria-describedby="smart-paste-help" />
+              </div>
+              <p id="smart-paste-help" class="field-help">
+                When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.
               </p>
 
               <label for="data-dir">Libera by Thinh Hoang Master directory</label>
@@ -773,6 +786,7 @@
       themePreferenceInput.addEventListener("change", updateAppearance);
       systemAppearance.addEventListener("change", updateAppearance);
       const yourNameInput = document.querySelector("#your-name");
+      const smartPasteInput = document.querySelector("#smart-paste");
       const wysiwygEditorFontFamilyInput = document.querySelector(
         "#wysiwyg-editor-font-family",
       );
@@ -1113,6 +1127,7 @@
         themePreferenceInput.value = state.themePreference || "system";
         updateAppearance();
         yourNameInput.value = state.yourName || "";
+        smartPasteInput.checked = state.smartPaste === true;
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
@@ -1340,6 +1355,7 @@
             currentPassword: currentPasswordInput.value,
             themePreference: themePreferenceInput.value,
             yourName: yourNameInput.value,
+            smartPaste: smartPasteInput.checked,
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             wysiwygEditorFontFamily: wysiwygEditorFontFamilyInput.value,

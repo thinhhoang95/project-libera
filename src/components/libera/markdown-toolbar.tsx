@@ -16,6 +16,7 @@ import {
   Minimize2,
   Palette,
   Scissors,
+  GalleryHorizontalEnd,
   Sigma,
   Sparkles,
   Underline,
@@ -52,6 +53,7 @@ type MarkdownToolbarProps = {
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertExistingImage: () => void;
+  onInsertFromGallery?: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onMarkdownZoomChange: (zoom: number) => void;
   onStartScreenshotSnip: () => void;
@@ -94,6 +96,7 @@ export function MarkdownToolbar({
   onFixChatGptEquations,
   onInsert,
   onInsertExistingImage,
+  onInsertFromGallery,
   onInsertImage,
   onMarkdownZoomChange,
   onStartScreenshotSnip,
@@ -416,12 +419,23 @@ export function MarkdownToolbar({
         <button
           aria-label="Insert existing image"
           className="toolbar-button"
-          title="Insert existing image"
+          title="Insert an image already in this notebook"
           type="button"
           onClick={onInsertExistingImage}
         >
           <Images aria-hidden className="h-4 w-4" />
         </button>
+        {onInsertFromGallery ? (
+          <button
+            aria-label="Insert image from gallery"
+            className="toolbar-button"
+            title="Insert images from the photo gallery"
+            type="button"
+            onClick={onInsertFromGallery}
+          >
+            <GalleryHorizontalEnd aria-hidden className="h-4 w-4" />
+          </button>
+        ) : null}
         <button
           aria-label="Snip from image or PDF tab"
           className="toolbar-button disabled:cursor-not-allowed disabled:opacity-40"

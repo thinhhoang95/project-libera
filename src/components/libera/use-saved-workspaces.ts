@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiRequest, encodeFilePath } from "./api-client";
 import type { OpenTab } from "./types";
+import { refreshGallery } from "./gallery-store";
+import { isGalleryTab, restoreGalleryTab } from "./gallery-tabs";
 import type { LiberaFileNode, LiberaFilePayload, LiberaTree, LiberaTreeNode } from "@/lib/types";
 import {
   applyWorkspaceView, createWorkspaceView, captureWorkspaceSession, emptyWorkspaceLibrary, emptyWorkspaceSession,
@@ -41,6 +43,8 @@ export function useSavedWorkspaces(options: Options) {
   useLayoutEffect(() => { current.current = options; });
 
   const journalKey = `libera:workspaces:v1:${options.tree.root}`;
+  // Keyed by the library root, which notebooks and linked folders share.
+  const workspacesUrl = `/api/workspaces?root=${encodeURIComponent(options.tree.root)}`;
   function publish(next: WorkspaceLibrary) {
     libraryRef.current = next;
     setLibrary(next);
@@ -53,7 +57,7 @@ export function useSavedWorkspaces(options: Options) {
   }
   function journal(next: WorkspaceLibrary, closing = false) {
     if (closing && window.liberaWorkspaces) {
-      const result = window.liberaWorkspaces.checkpoint(JSON.stringify(next));
+      const result = window.liberaWorkspaces.checkpoint(JSON.stringify(next), current.current.tree.root);
       if (!result.saved) throw new Error(result.error ?? "Could not save workspace before closing.");
     }
     try { window.localStorage.setItem(journalKey, JSON.stringify(next)); }
@@ -63,7 +67,8 @@ export function useSavedWorkspaces(options: Options) {
     pendingSnapshot.current = next;
     journal(next);
     const body = JSON.stringify(next);
-    const task = queue.current.catch(() => undefined).then(() => apiRequest("/api/workspaces", { method: "PUT", body }));
+    const url = workspacesUrl;
+    const task = queue.current.catch(() => undefined).then(() => apiRequest(url, { method: "PUT", body }));
     queue.current = task;
     return task;
   }
@@ -76,7 +81,9 @@ export function useSavedWorkspaces(options: Options) {
       }
     }
     tree.notebooks.forEach((notebook) => collect(notebook.children));
+    const gallery = session.tabs.some(isGalleryTab) ? await refreshGallery() : null;
     const restored = await Promise.all(session.tabs.map(async (tab): Promise<OpenTab | null> => {
+      if (isGalleryTab(tab)) return restoreGalleryTab(tab, gallery);
       if (tab.untitled || tab.standaloneSaveId) return { ...tab, status: tab.draft === tab.saved ? "clean" : "dirty" };
       if (!files.has(tab.file.path)) {
         // Recover unsaved text even if its original file was removed outside Libera.
@@ -99,7 +106,7 @@ export function useSavedWorkspaces(options: Options) {
     async function load() {
       setReady(false);
       try {
-        let next = parseWorkspaceLibrary(await apiRequest("/api/workspaces"));
+        let next = parseWorkspaceLibrary(await apiRequest(workspacesUrl));
         let recovery: string | null = null;
         try { recovery = window.localStorage.getItem(journalKey); } catch { /* Disk persistence remains available. */ }
         if (recovery) {
@@ -127,7 +134,7 @@ export function useSavedWorkspaces(options: Options) {
     void load();
     return () => { cancelled = true; readyRef.current = false; };
     // The tree may refresh while editing; restore only on login or data-root changes.
-  }, [options.authenticated, options.tree.root, journalKey, attempt]);
+  }, [options.authenticated, options.tree.root, journalKey, workspacesUrl, attempt]);
 
   useEffect(() => {
     if (!ready || !options.authenticated) return;
@@ -182,7 +189,7 @@ export function useSavedWorkspaces(options: Options) {
       let next = change(previous);
       let restored: WorkspaceSession | undefined;
       if (switchTo !== undefined && switchTo !== previous.activeWorkspaceId) {
-        next = { ...next, activeWorkspaceId: switchTo };
+        next = { ...next, activeWorkspaceId: switchTo, workspaces: next.workspaces.map((workspace) => workspace.id === switchTo ? { ...workspace, lastUsedAt: Date.now() } : workspace) };
         const session = next.workspaces.find((workspace) => workspace.id === switchTo)?.session ?? next.librarySession ?? emptyWorkspaceSession();
         restored = await restore(session, await current.current.refreshTree());
       }

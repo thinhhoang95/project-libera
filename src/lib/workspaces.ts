@@ -12,7 +12,14 @@ export type WorkspaceView = {
   notebookGroups: LiberaNotebookGroup[];
   notebookGroupIds: Record<string, string | null>;
   notebookViewOptions: LiberaNotebookViewOptions;
+  // Optional: older snapshots keep showing the library's stars until first changed.
+  starredFilePaths?: string[];
 };
+
+export function toggleWorkspaceStar(view: WorkspaceView, fallback: string[], path: string, starred: boolean): WorkspaceView {
+  const others = (view.starredFilePaths ?? fallback).filter((item) => item !== path);
+  return { ...view, starredFilePaths: starred ? [path, ...others] : others };
+}
 
 export function createWorkspaceView(tree: LiberaTree): WorkspaceView {
   return {
@@ -20,6 +27,7 @@ export function createWorkspaceView(tree: LiberaTree): WorkspaceView {
     notebookGroups: tree.notebookGroups.map((group) => ({ ...group })),
     notebookGroupIds: Object.fromEntries(tree.notebooks.map((notebook) => [notebook.name, notebook.groupId])),
     notebookViewOptions: { hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: tree.notebookViewOptions.showArchive },
+    starredFilePaths: [],
   };
 }
 
@@ -31,6 +39,7 @@ export function applyWorkspaceView(tree: LiberaTree, view?: WorkspaceView): Libe
       .map((node) => node.kind === "folder" ? { ...node, children: visibleChildren(node.children) } : node);
   }
   return { ...tree, notebookGroups: view?.notebookGroups ?? tree.notebookGroups, notebookViewOptions,
+    starredFilePaths: view?.starredFilePaths ? view.starredFilePaths : tree.starredFilePaths,
     notebooks: tree.notebooks.map((notebook) => ({ ...notebook,
       children: visibleChildren(notebook.children),
       groupId: view ? Object.hasOwn(view.notebookGroupIds, notebook.name) ? view.notebookGroupIds[notebook.name] : null : notebook.groupId,
@@ -67,6 +76,7 @@ export type SavedWorkspace = {
   id: string;
   name: string;
   color: string;
+  lastUsedAt?: number;
   scope: WorkspaceScope;
   view?: WorkspaceView;
   session: WorkspaceSession;
@@ -105,6 +115,7 @@ export function trackWorkspaceFileChange(library: WorkspaceLibrary, workspaceId:
       }
     }
     let view = workspace.view;
+    if (view?.starredFilePaths && change.removed?.length) view = { ...view, starredFilePaths: view.starredFilePaths.filter(keep) };
     if (view && (change.removed?.length || (workspace.id === workspaceId && change.notebookGroup))) {
       view = { ...view, notebookGroupIds: Object.fromEntries(Object.entries(view.notebookGroupIds).filter(([name]) => keep(name))),
         notebookViewOptions: { ...view.notebookViewOptions, hiddenNotebookNames: view.notebookViewOptions.hiddenNotebookNames.filter(keep) } };
@@ -166,16 +177,18 @@ export function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
       Array.isArray(view.notebookGroups) && view.notebookGroups.every((group) => group && typeof group.id === "string" && group.id.length > 0 && typeof group.title === "string" && group.title.trim().length > 0 && typeof group.description === "string" && typeof group.createdAt === "string" && typeof group.updatedAt === "string") &&
       new Set(view.notebookGroups.map((group) => group.id)).size === view.notebookGroups.length &&
       view.notebookGroupIds && typeof view.notebookGroupIds === "object" && !Array.isArray(view.notebookGroupIds) && Object.values(view.notebookGroupIds).every((id) => id === null || view.notebookGroups.some((group) => group.id === id)) &&
-      view.notebookViewOptions && strings(view.notebookViewOptions.hiddenGroupIds) && strings(view.notebookViewOptions.hiddenNotebookNames) && typeof view.notebookViewOptions.showArchive === "boolean";
+      view.notebookViewOptions && strings(view.notebookViewOptions.hiddenGroupIds) && strings(view.notebookViewOptions.hiddenNotebookNames) && typeof view.notebookViewOptions.showArchive === "boolean" &&
+      (view.starredFilePaths === undefined || strings(view.starredFilePaths));
   }
   function validSession(session: WorkspaceSession) {
     return session && typeof session.activeTabId === "string" && typeof session.selectedNotebookName === "string" && strings(session.expandedPaths) && Array.isArray(session.tabs) && session.tabs.every((tab) =>
-      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "pdf", "image"].includes(tab.file.fileType));
+      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "latex", "text", "pdf", "image"].includes(tab.file.fileType) &&
+      (tab.gallery === undefined || (Boolean(tab.gallery) && typeof tab.gallery.photoId === "string")));
   }
   if (!library || library.version !== 1 || !Number.isFinite(library.updatedAt) || !Array.isArray(library.workspaces) ||
     !(library.activeWorkspaceId === null || typeof library.activeWorkspaceId === "string") ||
     !(library.librarySession === null || validSession(library.librarySession)) ||
-    !library.workspaces.every((workspace) => workspace && typeof workspace.id === "string" && workspace.id.length > 0 && typeof workspace.name === "string" && workspace.name.trim().length > 0 && workspace.name.length <= 100 && /^#[0-9a-f]{6}$/i.test(workspace.color) && workspace.scope && ["all", "include", "exclude"].includes(workspace.scope.mode) && strings(workspace.scope.paths) && (workspace.scope.includedPaths === undefined || strings(workspace.scope.includedPaths)) && validSession(workspace.session) && validView(workspace.view)) ||
+    !library.workspaces.every((workspace) => workspace && typeof workspace.id === "string" && workspace.id.length > 0 && typeof workspace.name === "string" && workspace.name.trim().length > 0 && workspace.name.length <= 100 && /^#[0-9a-f]{6}$/i.test(workspace.color) && (workspace.lastUsedAt === undefined || Number.isFinite(workspace.lastUsedAt)) && workspace.scope && ["all", "include", "exclude"].includes(workspace.scope.mode) && strings(workspace.scope.paths) && (workspace.scope.includedPaths === undefined || strings(workspace.scope.includedPaths)) && validSession(workspace.session) && validView(workspace.view)) ||
     new Set(library.workspaces.map((workspace) => workspace.id)).size !== library.workspaces.length ||
     (library.activeWorkspaceId !== null && !library.workspaces.some((workspace) => workspace.id === library.activeWorkspaceId))) {
     throw new Error("Workspace data is invalid. Your saved workspaces have not been replaced.");
@@ -190,6 +203,7 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
     expandedPaths: value.expandedPaths.map(remap),
     ...(value.canvasLayout ? { canvasLayout: mapCanvasLayoutTabIds(value.canvasLayout, remap) } : {}),
     tabs: value.tabs.map((tab) => {
+      if (tab.gallery) return tab; // Gallery photos live outside notebooks.
       const path = remap(tab.file.path);
       return path === tab.file.path ? tab : { ...tab, id: remap(tab.id), file: { ...tab.file, path, name: path.split("/").at(-1)!, notebook: path.split("/")[0] }, rawUrl: `/api/files/raw/${path.split("/").map(encodeURIComponent).join("/")}` };
     }),
@@ -199,5 +213,6 @@ export function remapWorkspacePaths(library: WorkspaceLibrary, from: string, to:
       ...(workspace.view ? { view: { ...workspace.view,
         notebookGroupIds: Object.fromEntries(Object.entries(workspace.view.notebookGroupIds).map(([name, id]) => [remap(name), id])),
         notebookViewOptions: { ...workspace.view.notebookViewOptions, hiddenNotebookNames: workspace.view.notebookViewOptions.hiddenNotebookNames.map(remap) },
+        ...(workspace.view.starredFilePaths ? { starredFilePaths: workspace.view.starredFilePaths.map(remap) } : {}),
       } } : {}), scope: { ...workspace.scope, paths: workspace.scope.paths.map(remap), ...(workspace.scope.includedPaths ? { includedPaths: workspace.scope.includedPaths.map(remap) } : {}) }, session: session(workspace.session) })) };
 }

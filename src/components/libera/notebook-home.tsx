@@ -2,16 +2,20 @@
 
 import {
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  FileCode2,
   FilePlus2,
   FileText,
   FolderOpen,
   Image as ImageIcon,
   LayoutGrid,
   List,
+  Plus,
   Sparkles,
+  Tag,
   ArrowUpRight,
   RotateCcw,
   Search,
@@ -21,6 +25,8 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   PointerEvent,
   WheelEvent,
   useEffect,
@@ -30,7 +36,16 @@ import {
   useSyncExternalStore,
 } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
-import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
+import { FileTypeIcon } from "@/components/libera/file-type";
+import {
+  FILE_KIND_LABELS,
+  TagChip,
+  collectAllTags,
+  completeTagQuery,
+  fileKind,
+  fileMatchesTags,
+  parseTagQuery,
+} from "@/components/libera/file-tags";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 import styles from "./notebook-home.module.css";
@@ -54,8 +69,13 @@ const ZOOM_STEP = 0.25;
 type NotebookHomeProps = {
   yourName: string;
   notebook: LiberaNotebookNode;
+  /** The selected entry is a linked folder from disk, so call it a folder. */
+  isFolder?: boolean;
+  fileTags: Record<string, string[]>;
+  onEditFileTags: (file: LiberaFileNode) => void;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
 };
 
@@ -90,7 +110,7 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
 
     files.push(node);
 
-    if (node.fileType === "markdown") {
+    if (node.fileType === "markdown" || node.fileType === "latex") {
       notes.push(node);
     }
 
@@ -104,8 +124,12 @@ function collectNotebookFiles(nodes: LiberaTreeNode[]) {
 
 export function NotebookHome({
   notebook,
+  isFolder = false,
+  fileTags,
+  onEditFileTags,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onOpenFile,
 }: NotebookHomeProps) {
   const { files, notes, images, folders } = useMemo(
@@ -114,17 +138,25 @@ export function NotebookHome({
   );
   const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const tagQuery = useMemo(() => parseTagQuery(fileSearchQuery), [fileSearchQuery]);
   const fileSearchResults = useMemo(() => {
-    const normalizedQuery = fileSearchQuery.trim().toLowerCase();
+    const text = tagQuery.text.toLowerCase();
 
-    if (!normalizedQuery) {
+    if (!text && !tagQuery.tags.length) {
       return [];
     }
 
     return files
-      .filter((file) => file.name.toLowerCase().includes(normalizedQuery))
-      .slice(0, 10);
-  }, [fileSearchQuery, files]);
+      .filter((file) => file.name.toLowerCase().includes(text) && fileMatchesTags(fileTags[file.path], tagQuery.tags))
+      .slice(0, 20);
+  }, [tagQuery, files, fileTags]);
+  // While a `tags:` filter is being typed, offer this notebook's tags to complete it.
+  const tagSuggestions = useMemo(() => {
+    if (tagQuery.partialTag === null) return [];
+    const partial = tagQuery.partialTag.replace(/^"/, "").toLowerCase();
+    const notebookTags = collectAllTags(Object.fromEntries(files.map((file) => [file.path, fileTags[file.path] ?? []])));
+    return notebookTags.filter((tag) => tag.toLowerCase().startsWith(partial) && tag.toLowerCase() !== partial).slice(0, 12);
+  }, [tagQuery.partialTag, files, fileTags]);
   const workspaceView = useWorkspaceView();
   const librarySort = useSyncExternalStore(
     subscribeNotebookHomePreferences,
@@ -188,12 +220,13 @@ export function NotebookHome({
               </div>
             </div>
             <div className={styles.actions}>
-              <button className={styles.secondaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}>
-                <FileText aria-hidden size={17} /> New note
-              </button>
-              <button className={styles.primaryButton} type="button" onClick={() => onCreateSlides(notebook.name)}>
-                <FilePlus2 aria-hidden size={17} /> New slides
-              </button>
+              <NewMenu
+                items={[
+                  { label: "Note", icon: <FileText aria-hidden size={16} />, onSelect: () => onCreateMarkdown(notebook.name) },
+                  ...(onCreateLatex ? [{ label: "LaTeX document", icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
+                  { label: "Slides", icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
+                ]}
+              />
             </div>
           </header>
 
@@ -206,7 +239,7 @@ export function NotebookHome({
               <Search aria-hidden className={styles.searchIcon} size={20} />
               <input
                 aria-label={`Search files in ${notebook.name}`}
-                placeholder="Search files in this notebook…"
+                placeholder={`Search files in this ${isFolder ? "folder" : "notebook"}… (tags:name to filter)`}
                 value={fileSearchQuery}
                 onChange={(event) => setFileSearchQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -218,13 +251,24 @@ export function NotebookHome({
                 <>
                   <button className={styles.clearSearch} type="button" aria-label="Clear notebook search" onClick={() => setFileSearchQuery("")}><X size={16} /></button>
                   <div className={styles.searchResults}>
+                    {tagSuggestions.length ? (
+                      <div className={styles.tagSuggestions}>
+                        <span>Tags</span>
+                        {tagSuggestions.map((tag) => (
+                          <button key={tag} type="button" aria-label={`Filter by tag ${tag}`} onClick={() => setFileSearchQuery((query) => completeTagQuery(query, tag))}>
+                            <TagChip tag={tag} />
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     {fileSearchResults.length ? fileSearchResults.map((file) => (
                       <button key={file.path} type="button" onClick={() => openSearchResult(file)}>
-                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
+                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
                         <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
-                        <span className={styles.fileType}>{fileTypeLabel(file.fileType)}</span>
+                        <span className={styles.resultTags}>{(fileTags[file.path] ?? []).map((tag) => <TagChip key={tag} tag={tag} />)}</span>
+                        <span className={styles.kindChip} data-kind={fileKind(file)}>{FILE_KIND_LABELS[fileKind(file)]}</span>
                       </button>
-                    )) : <p className={styles.noResults}>No files found in this notebook.</p>}
+                    )) : !tagSuggestions.length ? <p className={styles.noResults}>No files found in this {isFolder ? "folder" : "notebook"}.</p> : null}
                   </div>
                 </>
               ) : null}
@@ -245,7 +289,7 @@ export function NotebookHome({
           <div className={styles.sectionHeader}>
             <h3 id="notebook-files">Files <span>{files.length}</span></h3>
             <div className={styles.fileControls}>
-              <select aria-label="Sort notebook files" value={sort} onChange={(event) => changeSort(event.target.value === "name" ? "name" : "updated")}>
+              <select aria-label={`Sort ${isFolder ? "folder" : "notebook"} files`} value={sort} onChange={(event) => changeSort(event.target.value === "name" ? "name" : "updated")}>
                 <option value="updated">Last modified</option><option value="name">Name</option>
               </select>
               <div className={styles.viewToggle} aria-label="File view" role="group">
@@ -256,23 +300,44 @@ export function NotebookHome({
           </div>
           {sortedFiles.length ? (
             <div className={view === "list" ? styles.fileList : styles.fileGrid}>
-              {view === "list" ? <div className={styles.tableHeading}><span>Name</span><span>Last modified</span><span /></div> : null}
-              {sortedFiles.map((file) => (
-                <button key={file.path} className={styles.fileRow} type="button" onClick={() => onOpenFile(file)}>
-                  <span className={styles.fileDetails}>
-                    <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} /></span>
-                    <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
-                  </span>
-                  <time className={styles.fileDate} dateTime={file.updatedAt}>{formatDate(file.updatedAt)}</time>
-                  <ArrowUpRight aria-hidden className={styles.openArrow} size={16} />
-                </button>
-              ))}
+              {view === "list" ? <div className={styles.tableHeading}><span>Name</span><span>Type</span><span>Tags</span><span>Last modified</span><span /></div> : null}
+              {sortedFiles.map((file) => {
+                const tags = fileTags[file.path] ?? [];
+                const kind = fileKind(file);
+                return (
+                  <div key={file.path} className={styles.fileRow}>
+                    {/* The open button stretches over the whole row; the tag button sits above it. */}
+                    <button className={styles.fileOpen} type="button" onClick={() => onOpenFile(file)}>
+                      <span className={styles.fileDetails}>
+                        <span className={styles.fileIcon} data-type={file.fileType}><FileTypeIcon fileType={file.fileType} name={file.name} /></span>
+                        <span className={styles.fileName}><strong>{file.name}</strong><small>{relativePath(file)}</small></span>
+                      </span>
+                    </button>
+                    <span className={styles.fileKind}><span className={styles.kindChip} data-kind={kind}>{FILE_KIND_LABELS[kind]}</span></span>
+                    <span className={styles.fileTags}>
+                      {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
+                      <button
+                        className={styles.editTags}
+                        data-empty={!tags.length}
+                        type="button"
+                        aria-label={`Edit tags for ${file.name}`}
+                        title="Edit tags"
+                        onClick={() => onEditFileTags(file)}
+                      >
+                        <Tag aria-hidden size={12} />{tags.length ? null : <span>Add tag</span>}
+                      </button>
+                    </span>
+                    <time className={styles.fileDate} dateTime={file.updatedAt}>{formatDate(file.updatedAt)}</time>
+                    <ArrowUpRight aria-hidden className={styles.openArrow} size={16} />
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className={styles.emptyState}>
               <span className={styles.emptyIllustration}><FilePlus2 aria-hidden size={34} /><Sparkles aria-hidden size={20} /></span>
               <h4>Big ideas start with a blank page.</h4>
-              <p>Create your first note and give this notebook a little life.</p>
+              <p>Create your first note and give this {isFolder ? "folder" : "notebook"} a little life.</p>
               <button className={styles.primaryButton} type="button" onClick={() => onCreateMarkdown(notebook.name)}><FilePlus2 aria-hidden size={16} /> Create a note</button>
             </div>
           )}
@@ -526,6 +591,75 @@ function ImagePreviewModal({
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+type NewMenuItem = { label: string; icon: ReactNode; onSelect: () => void };
+
+/** The cover's single "New" button; opens a menu of the file kinds a notebook can create. */
+function NewMenu({ items }: { items: NewMenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const close = (event: Event) => {
+      if (event.target instanceof Node && rootRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [open]);
+
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape" || event.key === "Tab") {
+      if (event.key === "Escape") { event.preventDefault(); triggerRef.current?.focus(); }
+      setOpen(false);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      buttons[(index + step + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      buttons[event.key === "Home" ? 0 : buttons.length - 1]?.focus();
+    }
+  }
+
+  return (
+    <div ref={rootRef} className={styles.newMenu}>
+      <button
+        ref={triggerRef}
+        className={styles.primaryButton}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && !open) { event.preventDefault(); setOpen(true); }
+        }}
+      >
+        <Plus aria-hidden size={17} /> New <ChevronDown aria-hidden size={15} className={styles.newMenuChevron} data-open={open} />
+      </button>
+      {open ? (
+        <div ref={menuRef} role="menu" aria-label="Create new" className={styles.newMenuList} onKeyDown={onMenuKeyDown}>
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); item.onSelect(); }}
+            >
+              {item.icon} {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

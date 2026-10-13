@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  FolderOpen,
   FolderPlus,
   Link2,
   MoreHorizontal,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
+import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
 import { SidebarSearch } from "@/components/libera/sidebar-search";
@@ -43,6 +45,8 @@ import {
   type SidebarSortPreference,
 } from "./sidebar-sort-preference";
 
+const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS].join(",");
+
 type SidebarMenuTarget =
   | { kind: "file"; file: LiberaFileNode }
   | { kind: "folder"; folder: LiberaFolderNode };
@@ -66,6 +70,11 @@ type NativeMenuPoint = {
 
 export type NotebookPanelProps = {
   workspaceActive?: boolean;
+  /** Desktop builds can link folders from disk next to the notebooks. */
+  canOpenDirectories?: boolean;
+  onOpenDirectory?: () => void;
+  /** Removes a linked folder from the library; its files stay on disk. */
+  onCloseDirectory?: (name: string) => void;
   onManageWorkspace?: () => void;
   activeTabId: string;
   expanded: Set<string>;
@@ -82,6 +91,7 @@ export type NotebookPanelProps = {
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCreateNotebookGroup: () => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
@@ -101,6 +111,7 @@ export type NotebookPanelProps = {
   onSelectSearchResult: (result: SearchResult) => void;
   onStartUpload: (notebook: string) => void;
   onToggleFileStar: (file: LiberaFileNode, starred: boolean) => Promise<void>;
+  onEditFileTags: (file: LiberaFileNode) => void;
   onToggleNotebook: (notebook: string) => void;
   onUploadChange: () => Promise<void>;
   onUploadFiles: (
@@ -450,6 +461,9 @@ async function copyItemPath(
 
 export function NotebookPanel({
   workspaceActive,
+  canOpenDirectories,
+  onOpenDirectory,
+  onCloseDirectory,
   onManageWorkspace,
   activeTabId,
   expanded,
@@ -466,6 +480,7 @@ export function NotebookPanel({
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onCreateNotebook,
   onCreateNotebookGroup,
   onDeleteFile,
@@ -485,6 +500,7 @@ export function NotebookPanel({
   onSelectSearchResult,
   onStartUpload,
   onToggleFileStar,
+  onEditFileTags,
   onToggleNotebook,
   onUploadChange,
   onUploadFiles,
@@ -614,6 +630,7 @@ export function NotebookPanel({
               type: "checkbox",
               checked: fileIsStarred,
             },
+            { id: "edit-tags", label: "Edit Tags…" },
             { type: "separator" },
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
@@ -642,6 +659,7 @@ export function NotebookPanel({
           ]
         : [
             { id: "add-note", label: "Add Note" },
+            { id: "add-latex", label: "Add LaTeX Document", enabled: Boolean(onCreateLatex) },
             { id: "new-folder", label: "New folder" },
             { type: "separator" },
             { id: "rename", label: "Rename" },
@@ -666,6 +684,8 @@ export function NotebookPanel({
         onDuplicateMarkdown(target.file);
       } else if (selectedItemId === "toggle-star") {
         await onToggleFileStar(target.file, !fileIsStarred);
+      } else if (selectedItemId === "edit-tags") {
+        onEditFileTags(target.file);
       } else if (selectedItemId === "download") {
         onDownloadFile(target.file);
       } else if (selectedItemId === "copy") {
@@ -689,6 +709,8 @@ export function NotebookPanel({
 
     if (selectedItemId === "add-note") {
       await onCreateMarkdown(target.folder.notebook, target.folder.path);
+    } else if (selectedItemId === "add-latex") {
+      await onCreateLatex?.(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "new-folder") {
       await onCreateFolder(target.folder.path);
     } else if (selectedItemId === "rename") {
@@ -748,15 +770,14 @@ export function NotebookPanel({
       <SidebarSearch
         query={query}
         searchResults={searchResults}
+        placeholder="Search notebooks, folders and files"
         onDeepSearch={openDeepSearch}
         onQueryChange={onQueryChange}
         onSelectSearchResult={onSelectSearchResult}
       />
 
       <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
-        <h2 className="text-sm font-semibold">
-          Notebooks
-        </h2>
+        <h2 className="min-w-0 truncate text-sm font-semibold">Library</h2>
         <div className="flex items-center gap-2">
           <button
             aria-haspopup="menu"
@@ -768,6 +789,17 @@ export function NotebookPanel({
           >
             <ArrowDownUp aria-hidden className="h-4 w-4" />
           </button>
+          {canOpenDirectories && onOpenDirectory ? (
+            <button
+              aria-label="Open folder"
+              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
+              title="Open a folder from disk alongside your notebooks"
+              type="button"
+              onClick={onOpenDirectory}
+            >
+              <FolderOpen aria-hidden className="h-4 w-4" />
+            </button>
+          ) : null}
           <button
             aria-label="New group"
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
@@ -794,19 +826,19 @@ export function NotebookPanel({
         className="hidden"
         type="file"
         multiple
-        accept=".md,.markdown,.png,.jpg,.jpeg,.gif,.webp,.pdf"
+        accept={UPLOAD_ACCEPT}
         onChange={onUploadChange}
       />
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
         {!hasPanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks yet."}
+            {workspaceActive ? "No files selected for this workspace. Open Workspaces to adjust your selection." : "No notebooks or folders yet."}
           </div>
         ) : null}
         {hasPanelItems && !hasVisiblePanelItems ? (
           <div className="rounded-lg border border-dashed border-input p-4 text-sm text-muted-foreground">
-            No notebooks are visible.
+            No notebooks or folders are visible.
           </div>
         ) : null}
 
@@ -844,11 +876,13 @@ export function NotebookPanel({
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
+              onCreateLatex={onCreateLatex}
               onContextMenu={openContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDropFile={dropFileOnPath}
               onDownloadNotebook={onDownloadNotebook}
               onEditNotebook={onEditNotebook}
+              onRemoveFolder={onCloseDirectory}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
@@ -877,6 +911,7 @@ export function NotebookPanel({
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
+              onCreateLatex={onCreateLatex}
               onContextMenu={openContextMenu}
               onDeleteGroup={onDeleteNotebookGroup}
               onDeleteNotebook={onDeleteNotebook}
@@ -884,6 +919,7 @@ export function NotebookPanel({
               onDropFile={dropFileOnPath}
               onEditGroup={onEditNotebookGroup}
               onEditNotebook={onEditNotebook}
+              onRemoveFolder={onCloseDirectory}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={showMoreNodes}
@@ -1038,11 +1074,13 @@ function NotebookSection({
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onContextMenu,
   onDeleteNotebook,
   onDropFile,
   onDownloadNotebook,
   onEditNotebook,
+  onRemoveFolder,
   onOpenFile,
   onSelectNotebook,
   onShowMoreNodes,
@@ -1053,6 +1091,8 @@ function NotebookSection({
   onUploadFiles,
   visibleNodeLimitForPath,
 }: {
+  /** Removes a linked folder from the library. */
+  onRemoveFolder?: (name: string) => void;
   activeTabId: string;
   dragOverPath: string;
   draggingFile: LiberaFileNode | null;
@@ -1067,6 +1107,7 @@ function NotebookSection({
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteNotebook: (notebook: string) => Promise<void>;
   onDropFile: (destinationPath: string) => Promise<void>;
@@ -1086,6 +1127,7 @@ function NotebookSection({
   ) => Promise<void>;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const linkedFolder = notebook.folder;
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1095,12 +1137,14 @@ function NotebookSection({
   const remainingChildrenCount = notebook.children.length - visibleChildren.length;
 
   async function openNotebookActionsAtPoint(point: NativeMenuPoint) {
+    const available = !linkedFolder?.missing;
     const selectedItemId = await showNativeMenu(
       [
-        { id: "new-note", label: "New note" },
-        { id: "new-slides", label: "New slides" },
-        { id: "new-folder", label: "New folder" },
-        { id: "upload", label: "Upload" },
+        { id: "new-note", label: "New note", enabled: available },
+        { id: "new-slides", label: "New slides", enabled: available },
+        { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
+        { id: "new-folder", label: "New folder", enabled: available },
+        { id: "upload", label: "Upload", enabled: available },
         { type: "separator" },
         {
           id: "show-archive",
@@ -1109,15 +1153,28 @@ function NotebookSection({
           checked: showArchive,
         },
         { type: "separator" },
-        { id: "edit", label: "Edit" },
-        { id: "download", label: "Download" },
-        {
-          id: "reveal-in-file-explorer",
-          label: "Reveal in File Explorer",
-          enabled: Boolean(window.liberaFileExplorer),
-        },
-        { type: "separator" },
-        { id: "delete", label: "Delete" },
+        ...(linkedFolder
+          ? [
+              { id: "edit", label: "Edit" },
+              {
+                id: "reveal-in-file-explorer",
+                label: "Reveal in File Explorer",
+                enabled: available && Boolean(window.liberaFileExplorer),
+              },
+              { type: "separator" as const },
+              { id: "remove-folder", label: "Remove from Libera", enabled: Boolean(onRemoveFolder) },
+            ]
+          : [
+              { id: "edit", label: "Edit" },
+              { id: "download", label: "Download" },
+              {
+                id: "reveal-in-file-explorer",
+                label: "Reveal in File Explorer",
+                enabled: Boolean(window.liberaFileExplorer),
+              },
+              { type: "separator" as const },
+              { id: "delete", label: "Delete" },
+            ]),
       ],
       point,
     );
@@ -1130,6 +1187,8 @@ function NotebookSection({
       await onCreateMarkdown(notebook.name);
     } else if (selectedItemId === "new-slides") {
       await onCreateSlides(notebook.name);
+    } else if (selectedItemId === "new-latex") {
+      await onCreateLatex?.(notebook.name);
     } else if (selectedItemId === "new-folder") {
       await onCreateFolder(notebook.path);
     } else if (selectedItemId === "upload") {
@@ -1144,6 +1203,8 @@ function NotebookSection({
       await revealNotebookInFileExplorer(notebook.name);
     } else if (selectedItemId === "delete") {
       await onDeleteNotebook(notebook.name);
+    } else if (selectedItemId === "remove-folder") {
+      onRemoveFolder?.(notebook.name);
     }
   }
 
@@ -1237,18 +1298,25 @@ function NotebookSection({
               <Link2 aria-hidden className="h-3.5 w-3.5" />
             </span>
           ) : null}
-          <span className="min-w-0">
-            <span className="block truncate">{notebook.name}</span>
+          <span className="min-w-0" title={linkedFolder?.path}>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate">{notebook.name}</span>
+              {linkedFolder ? (
+                <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : null}
+            </span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
-              Updated {new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+              {linkedFolder?.missing
+                ? "Folder not found"
+                : `Updated ${new Date(notebook.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`}
             </span>
           </span>
         </button>
         <button
           aria-haspopup="menu"
-          aria-label={`Notebook actions for ${notebook.name}`}
+          aria-label={`${linkedFolder ? "Folder" : "Notebook"} actions for ${notebook.name}`}
           className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-          title="Notebook actions"
+          title={linkedFolder ? "Folder actions" : "Notebook actions"}
           type="button"
           onClick={openNotebookActionsMenu}
         >
@@ -1276,6 +1344,11 @@ function NotebookSection({
           }
         >
           <div className="space-y-1">
+            {linkedFolder?.truncated ? (
+              <p className="rounded-lg border border-dashed border-input px-3 py-2 text-xs text-muted-foreground">
+                This folder is very large, so only part of it is shown.
+              </p>
+            ) : null}
             {visibleChildren.map((node) => (
               <TreeNodeRow
                 key={node.path}
@@ -1306,7 +1379,11 @@ function NotebookSection({
               />
             ) : null}
             {!notebook.children.length ? (
-              <p className="px-2 py-2 text-sm text-muted-foreground">No files.</p>
+              <p className="px-2 py-2 text-sm text-muted-foreground">
+                {linkedFolder?.missing
+                  ? "This folder was moved or its drive is disconnected."
+                  : "No files."}
+              </p>
             ) : null}
           </div>
         </div>
@@ -1330,6 +1407,7 @@ function NotebookGroupSection({
   onCreateFolder,
   onCreateMarkdown,
   onCreateSlides,
+  onCreateLatex,
   onContextMenu,
   onDeleteGroup,
   onDeleteNotebook,
@@ -1337,6 +1415,7 @@ function NotebookGroupSection({
   onDropFile,
   onEditGroup,
   onEditNotebook,
+  onRemoveFolder,
   onOpenFile,
   onSelectNotebook,
   onShowMoreNodes,
@@ -1361,6 +1440,7 @@ function NotebookGroupSection({
   onCreateFolder: (parentPath: string) => Promise<void>;
   onCreateMarkdown: (notebook: string, parentPath?: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onCreateLatex?: (notebook: string, parentPath?: string) => Promise<void>;
   onContextMenu: (event: MouseEvent, target: SidebarMenuTarget) => void;
   onDeleteGroup: (group: LiberaNotebookGroup) => Promise<void>;
   onDeleteNotebook: (notebook: string) => Promise<void>;
@@ -1368,6 +1448,7 @@ function NotebookGroupSection({
   onDropFile: (destinationPath: string) => Promise<void>;
   onEditGroup: (group: LiberaNotebookGroup) => void;
   onEditNotebook: (notebook: LiberaNotebookNode) => void;
+  onRemoveFolder?: (name: string) => void;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
   onSelectNotebook: (notebook: string) => void;
   onShowMoreNodes: (path: string) => void;
@@ -1436,11 +1517,13 @@ function NotebookGroupSection({
               onCreateFolder={onCreateFolder}
               onCreateMarkdown={onCreateMarkdown}
               onCreateSlides={onCreateSlides}
+              onCreateLatex={onCreateLatex}
               onContextMenu={onContextMenu}
               onDeleteNotebook={onDeleteNotebook}
               onDownloadNotebook={onDownloadNotebook}
               onDropFile={onDropFile}
               onEditNotebook={onEditNotebook}
+              onRemoveFolder={onRemoveFolder}
               onOpenFile={onOpenFile}
               onSelectNotebook={onSelectNotebook}
               onShowMoreNodes={onShowMoreNodes}
@@ -1656,8 +1739,8 @@ function TreeNodeRow({
         onSetDragOverPath("");
       }}
     >
-      <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType)}>
-        <FileTypeIcon fileType={node.fileType} />
+      <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType, node.name)}>
+        <FileTypeIcon fileType={node.fileType} name={node.name} />
       </span>
       <span className="min-w-0 flex-1 truncate">{node.name}</span>
       {showNotebookName ? (

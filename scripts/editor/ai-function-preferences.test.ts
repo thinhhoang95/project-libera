@@ -7,7 +7,7 @@ import { POST as rewrite } from "../../src/app/api/ai-rewrite/route";
 import { POST as chat } from "../../src/app/api/document-chat/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 import { getAiFunctionOptions } from "../../src/lib/ai-preferences";
-import { generateLatex } from "../../src/lib/latex-export";
+import { LatexThread } from "../../src/lib/latex-generation";
 
 const functions = ["formatting", "rewrite", "chat", "imageToMarkdown", "latex"] as const;
 const environmentNames = { formatting: "FORMATTING", rewrite: "REWRITE", chat: "CHAT", imageToMarkdown: "IMAGE_TO_MARKDOWN", latex: "LATEX" } as const;
@@ -43,11 +43,11 @@ test("each AI endpoint uses its own model and effort; chat overrides remain loca
       ["custom/formatting", "low"], ["custom/rewrite", "high"], ["custom/imageToMarkdown", "medium"], ["custom/chat", "xhigh"], ["custom/chat", "medium"],
     ]);
     let parts = 0;
-    await generateLatex([], new AbortController().signal, () => {}, async (_messages, options) => {
+    await new LatexThread("System", new AbortController().signal, () => {}, async (_messages, options) => {
       assert.equal(options?.model, "custom/latex");
       assert.equal(options?.reasoning?.effort, "max");
-      return { content: ++parts === 1 ? "\\documentclass{article}\n\\begin{document}\n<to be continued>" : "Complete\n\\end{document}", finishReason: "stop" };
-    });
+      return { content: ++parts === 1 ? "\\documentclass{article}\n\\begin{document}\n\\sec" : "tion{Complete}", finishReason: parts === 1 ? "length" : "stop" };
+    }).ask("Document", "Converting");
     assert.equal(parts, 2);
     assert.equal(getAiFunctionOptions("chat").promptCaching, true);
     assert.equal(getAiFunctionOptions("chat").reasoning.effort, "xhigh");

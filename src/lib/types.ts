@@ -1,4 +1,9 @@
-export type LiberaFileType = "markdown" | "image" | "pdf";
+export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
+
+/** File types whose content is edited as text in a tab. */
+export function isTextFileType(fileType: LiberaFileType | undefined): fileType is "markdown" | "latex" | "text" {
+  return fileType === "markdown" || fileType === "latex" || fileType === "text";
+}
 
 export type PdfAnnotationRect = {
   x: number;
@@ -82,8 +87,19 @@ export type LiberaNotebookViewOptions = {
   showArchive: boolean;
 };
 
+export type LiberaLinkedFolderInfo = {
+  /** Absolute path of the folder on disk. */
+  path: string;
+  /** Very large folders only show part of their contents. */
+  truncated: boolean;
+  /** The folder was moved or its drive is unplugged. It stays linked. */
+  missing?: boolean;
+};
+
 export type LiberaNotebookNode = {
   relatedNotebookNames?: string[];
+  /** Present when this entry is an external folder linked into the library. */
+  folder?: LiberaLinkedFolderInfo;
   illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
   kind: "notebook";
   name: string;
@@ -104,6 +120,8 @@ export type LiberaTree = {
   notebookGroups: LiberaNotebookGroup[];
   notebookViewOptions: LiberaNotebookViewOptions;
   starredFilePaths: string[];
+  /** Manual tags keyed by file path; files without tags are absent. */
+  fileTags: Record<string, string[]>;
   notebooks: LiberaNotebookNode[];
 };
 
@@ -144,6 +162,8 @@ export type MarkdownImageAssetPayload = {
 
 export type DeepSearchResultSource =
   | "markdown"
+  | "latex"
+  | "text"
   | "pdf-text"
   | "pdf-annotation"
   | "image-annotation";
