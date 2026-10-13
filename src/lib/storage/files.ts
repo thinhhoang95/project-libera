@@ -3,6 +3,8 @@ import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/pr
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
+import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import {
   assertSupportedFileName,
   ensureMarkdownName,
@@ -512,6 +514,38 @@ export async function writeUploadedFile(
   await writeFile(targetPath, Buffer.from(await upload.arrayBuffer()));
 
   return getFileNode(safeNotebook, targetParts);
+}
+
+/**
+ * Render edits to a notebook image as a new file beside it. The original, and
+ * the text annotations placed on it, are left as they are.
+ */
+export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdits) {
+  await ensureAdminRoot();
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+
+  if (assertSupportedFileName(name) !== "image") {
+    throw new StorageError("Only images can be edited here.");
+  }
+
+  if (!hasEdits(edits)) {
+    throw new StorageError("There are no changes to save.");
+  }
+
+  const { format, extension } = editedPhotoFormat(name);
+  const body = await renderEditedPhoto(filePathFromParts(notebook, pathParts), edits, format);
+  const directoryParts = pathParts.slice(0, -1);
+  const available = await findAvailableFilePath(
+    itemPath(notebook, directoryParts),
+    `${path.basename(name, path.extname(name))} (edited)${extension}`,
+  );
+
+  await writeFile(available.path, body, { flag: "wx" });
+
+  return {
+    file: await getFileNode(notebook, [...directoryParts, available.name]),
+    tree: await getTree(),
+  };
 }
 
 export async function getRawFile(relativePath: string) {

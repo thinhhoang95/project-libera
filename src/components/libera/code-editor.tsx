@@ -11,6 +11,7 @@ import {
 } from "@codemirror/view";
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { codeHighlightStyle, codeLanguageName, findCodeLanguage, loadCodeLanguage } from "@/lib/code-languages";
+import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { TextTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
 
@@ -62,6 +63,21 @@ export function CodeEditor({
     }
     return text;
   }, []);
+
+  const reportViewState = useCallback((target: EditorView) => {
+      const selection = target.state.selection.main;
+      callbacks.current.onViewStateChange({
+        selectionStart: selection.anchor,
+        selectionEnd: selection.head,
+        line: target.state.doc.lineAt(selection.head).number,
+        editorScrollTop: target.scrollDOM.scrollTop,
+        editorScrollLeft: target.scrollDOM.scrollLeft,
+      });
+  }, []);
+  useCanvasViewStateCapture(() => {
+    publishDraft();
+    if (viewRef.current) reportViewState(viewRef.current);
+  });
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -117,15 +133,13 @@ export function CodeEditor({
             const line = update.state.doc.lineAt(selection.head);
             setCursor({ line: line.number, column: selection.head - line.from + 1, selected: selection.to - selection.from });
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-            viewStateTimerRef.current = setTimeout(() => {
-              callbacks.current.onViewStateChange({ selectionStart: selection.anchor, selectionEnd: selection.head, line: line.number });
-            }, VIEW_STATE_DELAY_MS);
+            viewStateTimerRef.current = setTimeout(() => reportViewState(update.view), VIEW_STATE_DELAY_MS);
           }
         }),
         EditorView.domEventHandlers({
           scroll: (_event, target) => {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-            viewStateTimerRef.current = setTimeout(() => callbacks.current.onViewStateChange({ editorScrollTop: target.scrollDOM.scrollTop }), VIEW_STATE_DELAY_MS);
+            viewStateTimerRef.current = setTimeout(() => reportViewState(target), VIEW_STATE_DELAY_MS);
             return false;
           },
         }),
@@ -137,8 +151,13 @@ export function CodeEditor({
     const head = created.state.selection.main.head;
     const headLine = created.state.doc.lineAt(head);
     setCursor({ line: headLine.number, column: head - headLine.from + 1, selected: 0 });
-    if (restore?.editorScrollTop) {
-      requestAnimationFrame(() => { created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0; });
+    let restoreFrame: number | undefined;
+    if (restore?.editorScrollTop !== undefined || restore?.editorScrollLeft !== undefined) {
+      restoreFrame = requestAnimationFrame(() => {
+        created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0;
+        created.scrollDOM.scrollLeft = restore.editorScrollLeft ?? 0;
+        restoreFrame = undefined;
+      });
     } else if (restore?.selectionStart !== undefined) {
       created.dispatch({ effects: EditorView.scrollIntoView(head, { y: "center" }) });
     }
@@ -156,12 +175,16 @@ export function CodeEditor({
     return () => {
       disposed = true;
       unregisterSelection();
+      if (restoreFrame !== undefined) cancelAnimationFrame(restoreFrame);
+      // Layout cleanup runs while the editor is still attached. A switch must
+      // flush both selection and scroll, even inside the debounce interval.
+      if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
       created.destroy();
       viewRef.current = null;
     };
-  }, [publishDraft]);
+  }, [publishDraft, reportViewState]);
 
   useLayoutEffect(() => {
     const unregister = onRegisterDraft?.(publishDraft);

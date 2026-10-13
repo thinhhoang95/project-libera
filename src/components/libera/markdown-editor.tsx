@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
+import { useCanvasViewStateCapture } from "./canvas-view-state";
 import type {
   ClipboardEvent as ReactClipboardEvent,
   DragEvent,
@@ -668,6 +669,15 @@ export function MarkdownEditor({
   const publishRef = useRef(onChange);
   const lastPublishedRef = useRef(value);
   useLayoutEffect(() => { publishRef.current = onChange; }, [onChange]);
+  const selectionCallbackRef = useRef(onSelectionChange);
+  useLayoutEffect(() => { selectionCallbackRef.current = onSelectionChange; }, [onSelectionChange]);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    return () => {
+      if (textarea) selectionCallbackRef.current?.({ start: textarea.selectionStart, end: textarea.selectionEnd });
+    };
+  }, [textareaRef]);
+
   const readDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = null;
@@ -685,6 +695,7 @@ export function MarkdownEditor({
     window.addEventListener("pagehide", readDraft);
     return () => { readDraft(); unregister?.(); window.removeEventListener("pagehide", readDraft); };
   }, [onRegisterDraft, readDraft]);
+  useCanvasViewStateCapture(readDraft);
   const review = useSourceReview(textareaRef, (text) => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = null;

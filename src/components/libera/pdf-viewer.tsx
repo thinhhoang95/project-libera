@@ -1,5 +1,6 @@
 "use client";
 
+import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import {
   Copy,
@@ -18,6 +19,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -487,6 +489,9 @@ export function PdfViewer({
 
   const handleScroll = useCallback(
     (event: ReactUIEvent<HTMLDivElement>) => {
+      // Loading temporarily collapses the scroll area. Do not save that zero
+      // over the position we are about to restore.
+      if (pendingScrollRestoreRef.current) return;
       pendingScrollViewStateRef.current = {
         scrollLeft: event.currentTarget.scrollLeft,
         scrollTop: event.currentTarget.scrollTop,
@@ -590,7 +595,7 @@ export function PdfViewer({
     };
   }, [filePath, src]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const pendingScrollRestore = pendingScrollRestoreRef.current;
 
     if (loading || !pdfDocument || !pendingScrollRestore || !pageLayouts.length) {
@@ -627,7 +632,20 @@ export function PdfViewer({
     return () => window.cancelAnimationFrame(animationFrame);
   }, [loading, pageLayouts.length, pdfDocument, updateCurrentPage]);
 
-  useEffect(() => flushPendingScrollViewState, [flushPendingScrollViewState]);
+  useCanvasViewStateCapture(() => {
+    const element = scrollContainerRef.current;
+    if (element && !pendingScrollRestoreRef.current) {
+      updateViewState({ scrollLeft: element.scrollLeft, scrollTop: element.scrollTop });
+    }
+  });
+
+  useLayoutEffect(() => () => {
+    const element = scrollContainerRef.current;
+    if (element && !pendingScrollRestoreRef.current) {
+      pendingScrollViewStateRef.current = { scrollLeft: element.scrollLeft, scrollTop: element.scrollTop };
+    }
+    flushPendingScrollViewState();
+  }, [flushPendingScrollViewState]);
 
   const setPageElement = useCallback((pageNumber: number, element: HTMLElement | null) => {
     if (element) {

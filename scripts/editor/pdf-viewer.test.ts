@@ -257,6 +257,85 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       await unmount();
       assert.deepEqual(changes.at(-1), { scrollTop: 123, scrollLeft: 0 });
     });
+    await t.test("PDF tabs restore both scroll axes and zoom after a rapid switch", async () => {
+      normalLoad();
+      const proto = dom.window.HTMLElement.prototype;
+      Object.defineProperties(proto, {
+        scrollWidth: { configurable: true, get: () => 4000 },
+        scrollHeight: { configurable: true, get: () => 20000 },
+      });
+      try {
+        await mount({ zoom: 2, scrollTop: 1400.5, scrollLeft: 180.25 });
+        await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+        const scroller = host.querySelector<HTMLElement>(".overflow-auto")!;
+        assert.equal(scroller.scrollTop, 1400.5);
+        assert.equal(scroller.scrollLeft, 180.25);
+        assert.equal(host.querySelector("canvas")!.style.width, "1224px");
+        await act(async () => {
+          scroller.scrollTop = 2100.5;
+          scroller.scrollLeft = 220.25;
+          scroller.dispatchEvent(new dom.window.Event("scroll"));
+        });
+        await unmount();
+        const saved = changes.at(-1)!;
+        assert.deepEqual(saved, { scrollTop: 2100.5, scrollLeft: 220.25 });
+        await mount({ ...saved, zoom: 2 });
+        await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+        assert.equal(host.querySelector<HTMLElement>(".overflow-auto")!.scrollTop, 2100.5);
+        assert.equal(host.querySelector<HTMLElement>(".overflow-auto")!.scrollLeft, 220.25);
+        await unmount();
+      } finally {
+        Reflect.deleteProperty(proto, "scrollWidth");
+        Reflect.deleteProperty(proto, "scrollHeight");
+      }
+    });
+    await t.test("LaTeX preview restores scroll and flushes switches before its debounce", async () => {
+      normalLoad();
+      const { LatexPdfPreview } = await import("../../src/components/libera/latex/latex-pdf-preview");
+      Object.assign(pdf, { destroy: async () => {} });
+      const proto = dom.window.HTMLElement.prototype;
+      Object.defineProperty(proto, "clientWidth", { configurable: true, get: () => 800 });
+      const positions: { top: number; left: number }[] = [];
+      const props = {
+        url: "/preview.pdf", zoom: 2, initialScrollTop: 1600.5, initialScrollLeft: 90.25,
+        highlight: null, busy: false, downloadUrl: null, emptyState: "Empty",
+        onZoomChange: () => {}, onInverseSync: () => {},
+        onScrollChange: (top: number, left: number) => positions.push({ top, left }),
+      };
+      try {
+        await act(async () => root.render(createElement(LatexPdfPreview, props)));
+        const scroller = host.querySelector<HTMLElement>(".libera-latex-pdf-scroll")!;
+        assert.equal(scroller.scrollTop, 1600.5);
+        assert.equal(scroller.scrollLeft, 90.25);
+        await act(async () => {
+          scroller.scrollTop = 2400.75;
+          scroller.scrollLeft = 140.5;
+          scroller.dispatchEvent(new dom.window.Event("scroll"));
+        });
+        await unmount();
+        assert.deepEqual(positions.at(-1), { top: 2400.75, left: 140.5 });
+        await act(async () => root.render(createElement(LatexPdfPreview, { ...props, initialScrollTop: positions.at(-1)!.top, initialScrollLeft: positions.at(-1)!.left })));
+        assert.equal(host.querySelector<HTMLElement>(".libera-latex-pdf-scroll")!.scrollTop, 2400.75);
+        assert.equal(host.querySelector<HTMLElement>(".libera-latex-pdf-scroll")!.scrollLeft, 140.5);
+        await unmount();
+      } finally { Reflect.deleteProperty(proto, "clientWidth"); }
+    });
+    await t.test("image tabs restore zoom and pan after remounting", async () => {
+      const { ImageViewer } = await import("../../src/components/libera/image-viewer");
+      const states: import("../../src/components/libera/types").ImageTabViewState[] = [];
+      const props = { src: "/photo.png", filePath: "photo.png", alt: "Photo", annotatable: false,
+        initialViewState: { zoom: 2.5, panX: 42.5, panY: -90.25 },
+        onViewStateChange: (patch: import("../../src/components/libera/types").ImageTabViewState) => states.push(patch) };
+      await act(async () => root.render(createElement(ImageViewer, props)));
+      assert.match(host.querySelector<HTMLElement>(".libera-photo-frame")!.style.transform, /translate\(42.5px, -90.25px\) scale\(2.5\)/);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+      const zoom = states.at(-1)!.zoom!;
+      assert.ok(zoom > 2.5);
+      await unmount();
+      await act(async () => root.render(createElement(ImageViewer, { ...props, initialViewState: { ...props.initialViewState, zoom } })));
+      assert.equal(host.querySelector<HTMLElement>(".libera-photo-frame")!.style.transform, `translate(42.5px, -90.25px) scale(${zoom})`);
+      await unmount();
+    });
     await t.test("annotations use display coordinates at capped resolution and selection tools still work", async () => {
       normalLoad([{
         id: "highlight", type: "highlight", pageNumber: 1, color: "#fde047",

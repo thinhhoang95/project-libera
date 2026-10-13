@@ -15,6 +15,7 @@ export {
   moveFileToDirectory,
   readLiberaFile,
   renameFolder,
+  saveEditedImageCopy,
   updateMarkdownFile,
   writeUploadedFile,
 } from "@/lib/storage/files";

@@ -39,10 +39,12 @@ import {
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { useCanvasLayout } from "./use-canvas-layout";
+import { captureCanvasViewState } from "./canvas-view-state";
 import { useGallery } from "./gallery-store";
 import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
 import type { GalleryPhoto } from "@/lib/image-generation";
+import type { PhotoEdits } from "@/lib/photo-edits";
 import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
@@ -880,6 +882,42 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
   }
 
+  // Steps an image tab to another image in its folder, in place: the tab keeps
+  // its position and panel instead of a new tab opening for every photo.
+  function showImageInTab(tabId: string, file: LiberaFileNode) {
+    if (file.fileType !== "image" || tabId === file.path) {
+      return;
+    }
+
+    if (tabs.some((tab) => tab.id === file.path) || !tabs.some((tab) => tab.id === tabId)) {
+      void openFile(file);
+      return;
+    }
+
+    forgetTabDraft(tabId);
+    rememberTabDraft(file.path, "");
+    updateTab(tabId, () => ({
+      id: file.path,
+      file,
+      draft: "",
+      saved: "",
+      rawUrl: `/api/files/raw/${encodeFilePath(file.path)}`,
+      status: "clean",
+    }));
+    setActiveTabId((current) => (current === tabId ? file.path : current));
+  }
+
+  /** Saves edits to a notebook image as a copy beside it, and opens the copy. */
+  async function saveEditedImageCopy(sourcePath: string, edits: PhotoEdits) {
+    const result = await workspaceFileRequest<{ file: LiberaFileNode; tree: LiberaTree }>(
+      "/api/files/edit-image",
+      { method: "POST", body: JSON.stringify({ path: sourcePath, edits }) },
+      (payload) => ({ paths: [payload.file.path] }),
+    );
+    await applyCompleteTree(result.tree);
+    await openFile(result.file);
+  }
+
   async function openMarkdownFileLink(sourcePath: string, href: string) {
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
 
@@ -1020,6 +1058,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const setActiveTabViewState = useCallback(
     (viewState: OpenTabViewState, tabId?: string) => {
       const targetTabId = tabId ?? activeTabId;
+      if (viewState.markdown?.editorMode !== undefined) captureCanvasViewState();
 
       if (!targetTabId) {
         return;
@@ -1040,13 +1079,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           pdf: viewState.pdf
             ? { ...tab.viewState?.pdf, ...viewState.pdf }
             : tab.viewState?.pdf,
+          text: viewState.text
+            ? { ...tab.viewState?.text, ...viewState.text }
+            : tab.viewState?.text,
         };
 
         if (
           shallowEqualRecord(tab.viewState?.image, nextViewState.image) &&
           shallowEqualRecord(tab.viewState?.latex, nextViewState.latex) &&
           shallowEqualRecord(tab.viewState?.markdown, nextViewState.markdown) &&
-          shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf)
+          shallowEqualRecord(tab.viewState?.pdf, nextViewState.pdf) &&
+          shallowEqualRecord(tab.viewState?.text, nextViewState.text)
         ) {
           return tab;
         }
@@ -3073,6 +3116,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function activateTab(tabId: string) {
+    if (tabId !== activeTabId) captureCanvasViewState();
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
     // Gallery photos belong to no notebook and stay out of recent files.
@@ -3303,6 +3347,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       moveFileToFolder,
       openFile,
       openGalleryPhoto,
+      showImageInTab,
+      saveEditedImageCopy,
       openMarkdownFileLink,
       openCreateNotebookDialog,
       openCreateNotebookGroupDialog,

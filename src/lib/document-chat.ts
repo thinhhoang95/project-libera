@@ -10,12 +10,13 @@ export function isChatReasoningEffort(value: unknown): value is ChatReasoningEff
 export type ChatContext = { kind: "document" | "selection"; path: string; name: string; text: string };
 export const MAX_CHAT_PHOTOS = 4;
 export const MAX_CHAT_PHOTO_BYTES = 5 * 1024 * 1024;
-export type ChatPhoto = { id: string; name: string; dataUrl: string };
+/** `source` identifies a photo attached from elsewhere in the app, such as the gallery viewer. */
+export type ChatPhoto = { id: string; name: string; dataUrl: string; source?: string };
 export function validateChatPhotos(value: unknown): value is ChatPhoto[] {
-  return Array.isArray(value) && value.length <= MAX_CHAT_PHOTOS && value.every((photo) => photo && typeof photo.id === "string" && typeof photo.name === "string" && typeof photo.dataUrl === "string" && photo.dataUrl.length <= Math.ceil(MAX_CHAT_PHOTO_BYTES / 3) * 4 + 64 && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+={0,2}$/i.test(photo.dataUrl));
+  return Array.isArray(value) && value.length <= MAX_CHAT_PHOTOS && value.every((photo) => photo && typeof photo.id === "string" && typeof photo.name === "string" && typeof photo.dataUrl === "string" && (photo.source === undefined || (typeof photo.source === "string" && photo.source.length <= 512)) && photo.dataUrl.length <= Math.ceil(MAX_CHAT_PHOTO_BYTES / 3) * 4 + 64 && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+={0,2}$/i.test(photo.dataUrl));
 }
 export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string; contexts?: ChatContext[]; photos?: ChatPhoto[]; status?: "streaming" | "interrupted" };
-export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; usageRequests?: ChatUsageRequest[] };
+export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
 
 export function formatChatTimestamp(createdAt: string, now = new Date()) {
@@ -27,6 +28,12 @@ export function formatChatTimestamp(createdAt: string, now = new Date()) {
 
 export function newDocumentContext(messages: ChatMessage[], document: ChatContext | null): ChatContext[] {
   return newChatContexts(messages, document ? [document] : []);
+}
+
+// Like documents, a viewed photo is attached once per conversation; the model
+// keeps it in the history for follow-up questions.
+export function chatHasPhotoSource(messages: ChatMessage[], source: string) {
+  return messages.some((message) => message.photos?.some((photo) => photo.source === source));
 }
 
 // Keep a single snapshot per file in each conversation, including explicit file
@@ -59,7 +66,7 @@ export function validateChatStore(value: unknown): value is ChatStore {
   if (!value || typeof value !== "object") return false;
   const store = value as ChatStore;
   return Array.isArray(store.chats) && store.chats.length > 0 && store.chats.some((item) => item.id === store.activeId) && store.chats.every((item) =>
-    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
+    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
     (item.usageRequests === undefined || validateUsageRequests(item.usageRequests)) &&
     (!item.messages.length || validateChatMessages(item.messages, false)) && validateChatMessages([{ id: "draft", role: "user", text: "", contexts: item.selections }], false));
 }

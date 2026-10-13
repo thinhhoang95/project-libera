@@ -40,6 +40,8 @@ export type MarkdownTabViewState = {
   slideIndex?: number;
   visualScrollLeft?: number;
   visualScrollTop?: number;
+  /** ProseMirror selection JSON, independent of source-text offsets. */
+  visualSelection?: Record<string, unknown>;
   zoom?: number;
 };
 
@@ -62,6 +64,7 @@ export type LatexTabViewState = {
   /** "auto" honors `% !TEX program` and the packages in the preamble. */
   engine?: "auto" | "pdflatex" | "xelatex" | "lualatex";
   editorScrollTop?: number;
+  editorScrollLeft?: number;
   line?: number;
   logOpen?: boolean;
   pdfScrollLeft?: number;
@@ -87,6 +90,7 @@ export type ImageTabViewState = {
 
 export type TextTabViewState = {
   editorScrollTop?: number;
+  editorScrollLeft?: number;
   line?: number;
   selectionEnd?: number;
   selectionStart?: number;

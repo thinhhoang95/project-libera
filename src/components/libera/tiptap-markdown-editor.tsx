@@ -15,6 +15,8 @@ import { createMathExtensions } from "@/lib/tiptap-math";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
 import katex from "katex";
+import { Selection } from "@tiptap/pm/state";
+import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
@@ -295,11 +297,28 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     } : null;
   } });
 
+  function captureVisualState() {
+    const container = scrollContainerRef.current;
+    if (!editor || editor.isDestroyed || !container) return;
+    readMarkdown();
+    onViewStateChangeRef.current?.({
+      visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop,
+      visualSelection: editor.state.selection.toJSON(),
+    });
+  }
+  useCanvasViewStateCapture(captureVisualState);
+
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!editor || !container) return;
     // TipTap renders asynchronously. Restore after EditorContent mounts, once
     // per editor mount, so scrolling and edits never reapply an old position.
+    const selection = initialViewStateRef.current?.visualSelection;
+    if (selection) {
+      try {
+        editor.view.dispatch(editor.state.tr.setSelection(Selection.fromJSON(editor.state.doc, selection)));
+      } catch { /* A reload may have replaced the document since this selection. */ }
+    }
     container.scrollLeft = initialViewStateRef.current?.visualScrollLeft ?? 0;
     container.scrollTop = initialViewStateRef.current?.visualScrollTop ?? 0;
     const frame = window.requestAnimationFrame(() => {
@@ -319,7 +338,10 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     visualScrollFrameRef.current = frame;
     return () => {
       // A tab/mode switch can unmount before the next scroll frame runs.
-      onViewStateChangeRef.current?.({ visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop });
+      if (!editor.isDestroyed) onViewStateChangeRef.current?.({
+        visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop,
+        visualSelection: editor.state.selection.toJSON(),
+      });
       window.cancelAnimationFrame(frame);
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
     };
