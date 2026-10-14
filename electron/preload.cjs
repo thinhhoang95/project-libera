@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   getState: () => ipcRenderer.invoke("setup:get-state"),
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
+  selectSearchWeights: (kind) => ipcRenderer.invoke("setup:select-search-weights", kind),
+  selectSearchIndexFile: (mode) => ipcRenderer.invoke("setup:select-search-index-file", mode),
+  revealSearchIndex: (filePath) => ipcRenderer.invoke("setup:reveal-search-index", filePath),
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
   loadAiChatCustomInstructionFile: () =>
@@ -43,6 +46,15 @@ contextBridge.exposeInMainWorld("liberaMenu", {
 contextBridge.exposeInMainWorld("liberaFileExplorer", {
   revealNotebook: (notebook) => ipcRenderer.invoke("file-explorer:reveal-notebook", notebook),
   revealItem: (relativePath) => ipcRenderer.invoke("file-explorer:reveal-item", relativePath),
+});
+
+contextBridge.exposeInMainWorld("liberaSearch", {
+  revealIndex: (filePath) => ipcRenderer.invoke("search:reveal-index", filePath),
+  useExistingIndex: () => ipcRenderer.invoke("search:use-existing-index"),
+});
+
+contextBridge.exposeInMainWorld("liberaPreferences", {
+  open: (section) => ipcRenderer.invoke("preferences:open", section),
 });
 
 contextBridge.exposeInMainWorld("liberaClipboard", {

@@ -353,6 +353,7 @@
               Markdown
             </button>
             <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
+            <button class="nav-item" data-section-button="search" type="button" aria-selected="false">Search</button>
             <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
@@ -615,6 +616,81 @@
 
             </section>
 
+            <section class="settings-section hidden" data-section="search">
+              <h2>Search</h2>
+              <p class="settings-section-description">
+                Global Search finds notes, PDFs, LaTeX, code and images by meaning with Google’s EmbeddingGemma 2,
+                running on this computer. Keyword search works without it. Changes apply without restarting.
+              </p>
+
+              <h3>EmbeddingGemma 2 weights</h3>
+              <p class="field-help">
+                Download the ONNX model from Hugging Face (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json,
+                tokenizer_config.json, processor_config.json and preprocessor_config.json, plus the weight files below, each with
+                its .onnx_data file. Keep the weights outside Libera; choose them here. On a CPU, the 8-bit files
+                (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
+              </p>
+              <label for="search-text-weights">Text model weights</label>
+              <div class="directory-row">
+                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="…/embeddinggemma-2-ONNX/onnx/model_quantized.onnx" />
+                <button id="search-text-weights-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p>
+
+              <label for="search-vision-weights">Vision encoder weights</label>
+              <div class="directory-row">
+                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Optional: …/onnx/vision_encoder_quantized.onnx" />
+                <button id="search-vision-weights-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; leave empty for text only.</p>
+
+              <h3>Index</h3>
+              <label for="search-dimensions">Embedding size</label>
+              <select id="search-dimensions">
+                <option value="768">768 dimensions (best quality)</option>
+                <option value="512">512 dimensions</option>
+                <option value="256">256 dimensions (smaller index)</option>
+                <option value="128">128 dimensions (text only; images lose quality)</option>
+              </select>
+              <p class="field-help">Smaller vectors make the index smaller and searches faster. Changing the size re-embeds everything.</p>
+
+              <label for="search-vision-tokens">Image detail</label>
+              <select id="search-vision-tokens">
+                <option value="70">Low (fastest)</option>
+                <option value="140">Standard (about 2 seconds per photo on a laptop CPU)</option>
+                <option value="280">High (about twice as slow)</option>
+                <option value="560">Very high</option>
+              </select>
+
+              <div class="switch-row">
+                <label for="search-index-images">Index photos</label>
+                <input id="search-index-images" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="field-help">Notebook images and the Image Gallery, using the vision encoder.</p>
+
+              <div class="switch-row">
+                <label for="search-background-indexing">Keep the index up to date in the background</label>
+                <input id="search-background-indexing" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="field-help">When off, the index is updated when you open Search.</p>
+
+              <label for="search-index-file">Index file</label>
+              <div class="directory-row">
+                <input id="search-index-file" autocomplete="off" spellcheck="false" placeholder="Default: on this computer, in Libera’s application data" />
+                <button id="search-index-reveal-button" class="secondary" type="button">Reveal</button>
+              </div>
+              <div class="textarea-actions">
+                <button id="search-index-existing-button" class="secondary" type="button">Use existing index…</button>
+                <button id="search-index-new-button" class="secondary" type="button">New index file…</button>
+                <button id="search-index-default-button" class="secondary" type="button">Use default</button>
+              </div>
+              <p id="search-index-help" class="field-help">
+                By default the index stays on this computer, outside the Master directory, so a notes folder synced to the cloud
+                never uploads it. To skip building it again, use an index Libera built before, for example copied from another
+                computer with the same notes. Keep the index on a local disk.
+              </p>
+            </section>
+
             <section class="settings-section hidden" data-section="markdown">
               <h2>Markdown</h2>
               <p class="settings-section-description">
@@ -737,7 +813,7 @@
               <div class="io-grid">
                 <article class="io-card">
                   <h3>Export settings</h3>
-                  <p class="field-help">Save the currently stored General, Markdown, and AI preferences to a JSON file.</p>
+                  <p class="field-help">Save the currently stored General, Markdown, AI, and Search preferences to a JSON file.</p>
                   <button id="export-preferences-button" class="secondary io-button" type="button">
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
                     Export settings
@@ -849,6 +925,15 @@
       const markdownPdfBaseLineHeightInput = document.querySelector(
         "#markdown-pdf-base-line-height",
       );
+      const searchTextWeightsInput = document.querySelector("#search-text-weights");
+      const searchVisionWeightsInput = document.querySelector("#search-vision-weights");
+      const searchDimensionsInput = document.querySelector("#search-dimensions");
+      const searchVisionTokensInput = document.querySelector("#search-vision-tokens");
+      const searchIndexImagesInput = document.querySelector("#search-index-images");
+      const searchBackgroundIndexingInput = document.querySelector("#search-background-indexing");
+      const searchIndexFileInput = document.querySelector("#search-index-file");
+      const searchIndexHelp = document.querySelector("#search-index-help");
+      let searchDefaultIndexFile = "";
       const errorBox = document.querySelector("#error");
       const closeButton = document.querySelector("#close-button");
       const headerCloseButton = document.querySelector("#header-close-button");
@@ -1182,6 +1267,17 @@
           state.markdownPdfBaseLineHeight || 1.75,
         );
 
+        const search = state.search || {};
+        searchTextWeightsInput.value = search.textWeights || "";
+        searchVisionWeightsInput.value = search.visionWeights || "";
+        searchDimensionsInput.value = String(search.dimensions || 768);
+        searchVisionTokensInput.value = String(search.visionTokens || 140);
+        searchIndexImagesInput.checked = search.indexImages !== false;
+        searchBackgroundIndexingInput.checked = search.backgroundIndexing !== false;
+        searchIndexFileInput.value = search.indexFile || "";
+        searchDefaultIndexFile = state.searchDefaultIndexFile || "";
+        if (searchDefaultIndexFile) searchIndexFileInput.placeholder = `Default: ${searchDefaultIndexFile}`;
+
         if (state.hasApiKey) {
           apiKeyInput.placeholder = "Saved API key";
           apiKeyLocked.classList.remove("hidden");
@@ -1335,6 +1431,38 @@
         }
       });
 
+      document.querySelector("#search-text-weights-button").addEventListener("click", async () => {
+        clearError();
+        const file = await window.liberaSetup.selectSearchWeights("text");
+        if (file) searchTextWeightsInput.value = file;
+      });
+
+      document.querySelector("#search-vision-weights-button").addEventListener("click", async () => {
+        clearError();
+        const file = await window.liberaSetup.selectSearchWeights("vision");
+        if (file) searchVisionWeightsInput.value = file;
+      });
+
+      for (const [id, mode] of [["#search-index-existing-button", "existing"], ["#search-index-new-button", "new"]]) {
+        document.querySelector(id).addEventListener("click", async () => {
+          clearError();
+          const file = await window.liberaSetup.selectSearchIndexFile(mode);
+          if (file) searchIndexFileInput.value = file;
+        });
+      }
+
+      document.querySelector("#search-index-default-button").addEventListener("click", () => {
+        searchIndexFileInput.value = "";
+      });
+
+      document.querySelector("#search-index-reveal-button").addEventListener("click", async () => {
+        clearError();
+        const file = searchIndexFileInput.value.trim() || searchDefaultIndexFile;
+        if (!file || !(await window.liberaSetup.revealSearchIndex(file))) {
+          searchIndexHelp.textContent = "That index file does not exist yet. Build it from the Search panel, or choose an existing one.";
+        }
+      });
+
       browseButton.addEventListener("click", async () => {
         clearError();
         const directory = await window.liberaSetup.selectDataDir();
@@ -1378,6 +1506,15 @@
               } : {}),
               ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
             }])),
+            search: {
+              textWeights: searchTextWeightsInput.value,
+              visionWeights: searchVisionWeightsInput.value,
+              dimensions: searchDimensionsInput.value,
+              visionTokens: searchVisionTokensInput.value,
+              indexImages: searchIndexImagesInput.checked,
+              backgroundIndexing: searchBackgroundIndexingInput.checked,
+              indexFile: searchIndexFileInput.value,
+            },
             quickPrompts: quickPromptCards().map((card) => ({
               identifier: card.querySelector(".quick-prompt-identifier").value,
               prompt: card.querySelector(".quick-prompt-text").value,
@@ -1406,6 +1543,11 @@
           saveButton.disabled = false;
         }
       });
+
+      const requestedSection = new URLSearchParams(window.location.search).get("section");
+      if (requestedSection && sections.some((section) => section.dataset.section === requestedSection)) {
+        setActiveSection(requestedSection);
+      }
 
       loadState().catch((error) => {
         showError(error.message || "Unable to load setup state.");

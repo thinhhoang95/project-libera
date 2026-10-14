@@ -27,7 +27,8 @@
     "test:electron-release": "node --test scripts/**/*.test.cjs",
     "test:editor": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint",
-    "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs"
+    "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
+    "search:download-model": "node scripts/download-embeddinggemma.cjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -40,6 +41,7 @@
     "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.14",
+    "@huggingface/transformers": "^4.3.1",
     "@lezer/highlight": "^1.2.5",
     "@tiptap/core": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
@@ -73,6 +75,7 @@
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "sharp": "^0.34.5",
+    "sqlite-vec": "^0.1.9",
     "unified": "^11.0.5"
   },
   "devDependencies": {

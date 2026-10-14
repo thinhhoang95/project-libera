@@ -10,7 +10,9 @@ const compatibilityPreload = path
 
 function runNextBuild() {
   const preloadOption = `--require=${JSON.stringify(compatibilityPreload)}`;
-  const nodeOptions = [process.env.NODE_OPTIONS?.trim(), preloadOption]
+  // The optimized build needs more than Node's default heap on 8 GB machines.
+  const heapOption = /--max-old-space-size/.test(process.env.NODE_OPTIONS ?? "") ? "" : "--max-old-space-size=4096";
+  const nodeOptions = [process.env.NODE_OPTIONS?.trim(), heapOption, preloadOption]
     .filter(Boolean)
     .join(" ");
 

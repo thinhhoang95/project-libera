@@ -751,6 +751,29 @@ function WorkspacePanelContent({
     [activeTabId, onSetViewState],
   );
 
+  // A one-shot request (Global Search) to select a passage. The visual editor
+  // handles its own; in the source editor, select the passage in the textarea
+  // after the tab's scroll and selection are restored.
+  const markdownReveal = activeMarkdownViewState?.reveal;
+  const markdownUsesSourceEditor = markdownEditorMode !== "visual" || activeMarkdownIsSlides;
+  useEffect(() => {
+    if (!markdownReveal || !markdownUsesSourceEditor) return;
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          const start = Math.min(markdownReveal.start, textarea.value.length);
+          const end = Math.min(markdownReveal.end, textarea.value.length);
+          textarea.focus({ preventScroll: true });
+          textarea.setSelectionRange(start, end);
+          scrollTextareaToOffset(textarea, start, { block: "center" });
+        }
+        updateMarkdownViewState({ reveal: undefined, selectionStart: markdownReveal.start, selectionEnd: markdownReveal.end });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [markdownReveal, markdownUsesSourceEditor, textareaRef, updateMarkdownViewState]);
+
   const updateLatexViewState = useCallback(
     (patch: LatexTabViewState) => {
       if (!activeTabId) {

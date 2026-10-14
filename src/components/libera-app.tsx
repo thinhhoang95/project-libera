@@ -11,6 +11,9 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { DocumentChatPanel, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
+import { SearchView } from "@/components/libera/global-search/search-view";
+import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
+import type { SearchEntry } from "@/components/libera/global-search/search-results";
 import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -32,7 +35,7 @@ import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
-import { isTextFileType } from "@/lib/types";
+import { isTextFileType, type LiberaFileNode, type LiberaTreeNode } from "@/lib/types";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -72,10 +75,13 @@ export function LiberaApp({
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
-  // Opening a gallery photo in the canvas returns to the panel used before the gallery.
-  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery">>("notebook");
+  // Opening a gallery photo or a search result in the canvas returns to the
+  // panel used before the gallery or the Search page covered it.
+  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery" | "search">>("notebook");
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const changeLeftPanel = useCallback((panel: LeftPanelTab) => {
-    if (panel !== "gallery") lastCanvasPanelRef.current = panel;
+    if (panel === "search") setSearchFocusRequest((request) => request + 1);
+    else if (panel !== "gallery") lastCanvasPanelRef.current = panel;
     setActiveLeftPanel(panel);
   }, []);
   const openComments = useCallback(() => {
@@ -186,9 +192,57 @@ export function LiberaApp({
     workspace.openGalleryPhoto(photo, placement);
   }
 
+  // Global Search opens a hit at its passage: the page, section or lines.
+  function openSearchResult({ result, hit }: SearchEntry, placement: "tab" | "right") {
+    setActiveLeftPanel(lastCanvasPanelRef.current);
+    if (result.source === "gallery") {
+      if (result.photo) workspace.openGalleryPhoto(galleryPhotoFromSearch(result.photo), placement);
+      return;
+    }
+    const file = workspace.files.find((candidate) => candidate.path === result.path) ?? result.file;
+    if (!file) return;
+    const target = result.hits[hit] ?? result.hits[0];
+    void workspace.openFile(file, { viewState: searchRevealViewState(result.kind, target), placement });
+  }
+
+  // Search only what the active workspace shows. Without a workspace or hidden
+  // notebooks everything is visible, and nothing needs to be sent.
+  const searchScope = useMemo(() => {
+    const collect = (nodes: LiberaTreeNode[], into: LiberaFileNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "file") into.push(node);
+        else collect(node.children, into);
+      }
+      return into;
+    };
+    const everything = workspace.fullTree.notebooks.reduce((count, notebook) => count + collect(notebook.children, []).length, 0);
+    return workspace.files.length < everything ? workspace.files.map((file) => file.path) : undefined;
+  }, [workspace.files, workspace.fullTree]);
+  const searchIncludesArchive = Boolean(workspace.fullTree.archiveIncluded);
+
+  // Keep the search index current in the background; the server skips this
+  // when background indexing is off and limits how often it scans.
+  useEffect(() => {
+    if (!authenticated) return;
+    const update = () => {
+      void apiRequest("/api/search/index", { method: "POST", body: JSON.stringify({ action: "background" }) }).catch(() => undefined);
+    };
+    const first = window.setTimeout(update, 20_000);
+    const interval = window.setInterval(update, 10 * 60_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(interval);
+    };
+  }, [authenticated]);
+
+  // Only the desktop app has a Preferences window. The Search page renders on the client only.
+  const openSearchPreferences = typeof window !== "undefined" && window.liberaPreferences
+    ? () => void window.liberaPreferences?.open("search")
+    : undefined;
+
   // ⌘/Ctrl+\ splits the focused panel to the right, adding Shift splits it down.
-  // The gallery covers the canvas, so splitting waits until it is closed.
-  const galleryOpen = activeLeftPanel === "gallery";
+  // The gallery and the Search page cover the canvas, so splitting waits until they close.
+  const galleryOpen = activeLeftPanel === "gallery" || activeLeftPanel === "search";
   useEffect(() => {
     if (!authenticated || galleryOpen) return;
     function splitCanvas(event: KeyboardEvent) {
@@ -389,6 +443,7 @@ export function LiberaApp({
             void workspace.refreshTree(files[0]?.notebook).catch(() => undefined);
           }}
           onToggleNotebook={workspace.toggleNotebook}
+          onOpenSearchPreferences={openSearchPreferences}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
@@ -399,14 +454,28 @@ export function LiberaApp({
 
         <section className="libera-workspace-region relative flex min-h-0 min-w-0 flex-col overflow-hidden" data-ai-active={aiActive}>
           <div aria-hidden className="libera-ai-glow" />
-          {/* The gallery covers the canvas instead of replacing it, so open
-              editors keep their state while the Image Gallery tab is active. */}
+          {/* The gallery and the Search page cover the canvas instead of
+              replacing it, so open editors keep their state. They sit above
+              the editors' sticky toolbars (up to z-40) and below menus (z-50). */}
           {activeLeftPanel === "gallery" ? (
-            <div className="absolute inset-0 z-20 flex min-h-0 flex-col">
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
               <ImageGalleryView onOpenInCanvas={openGalleryPhoto} chat={galleryChat} onViewingPhotoChange={setGalleryViewingPhoto} />
             </div>
+          ) : activeLeftPanel === "search" ? (
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
+              <SearchView
+                files={workspace.files}
+                scope={searchScope}
+                includeArchive={searchIncludesArchive}
+                mathMarkers={markdownPreferences}
+                focusRequest={searchFocusRequest}
+                onOpenResult={openSearchResult}
+                onClose={() => setActiveLeftPanel(lastCanvasPanelRef.current)}
+                onOpenPreferences={openSearchPreferences}
+              />
+            </div>
           ) : null}
-          <div className="contents" inert={activeLeftPanel === "gallery"}>
+          <div className="contents" inert={galleryOpen}>
           <TabStrip
             chatOpen={!chatCollapsed}
             onToggleChat={() => changeChatCollapsed(!chatCollapsed)}

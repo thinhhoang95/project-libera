@@ -71,6 +71,21 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
+  // Find a given phrase, e.g. the passage a Global Search result points to,
+  // starting at its occurrence on `page` when there is one.
+  const [preferredPage, setPreferredPage] = useState<number | null>(null);
+  function findText(text: string, page?: number) {
+    setQuery(text);
+    setActiveIndex(0);
+    setPreferredPage(page ?? null);
+    setOpen(true);
+  }
+  if (preferredPage !== null && ready) {
+    const index = matches.findIndex((match) => match.pageNumber === preferredPage);
+    setPreferredPage(null);
+    if (index > 0) setActiveIndex(index);
+  }
+
   function closeFind() {
     setOpen(false);
     viewerRef.current?.focus({ preventScroll: true });
@@ -81,7 +96,7 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
   const buttonClass = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40";
 
   return {
-    openFind, activeMatch, matchesByPage,
+    openFind, findText, activeMatch, matchesByPage,
     bar: open ? (
       <div role="search" aria-label="Search PDF" className="flex flex-wrap items-center justify-end gap-1 border-b border-input bg-card px-4 py-2"
         onKeyDown={(event) => {

@@ -20,6 +20,7 @@ const PREFERENCE_KEYS = Object.freeze([
   "aiFunctions",
   "quickPrompts",
   "latexSnippets",
+  "search",
   "passwordHash",
 ]);
 

@@ -72,3 +72,86 @@ export function navigateTiptapToMarkdownHeading(editor: Editor, markdown: string
     element.scrollIntoView({ block: "start", inline: "nearest" });
   }
 }
+
+/** The plain words a Markdown passage shows once rendered, lower-cased with single spaces. */
+export function markdownPassageWords(source: string) {
+  return source
+    .replace(/^[ \t]*(#{1,6}[ \t]+|[-*+][ \t]+(\[[ xX]\][ \t]+)?|\d+[.)][ \t]+|[a-z]?>[ \t]?)/gm, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[\/?color(=[^\]]*)?\]/g, "")
+    .replace(/[a-z]?>>>|<<</g, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*\$/g, " ")
+    .replace(/\*\*|__|~~|`|(?<![\p{L}\p{N}])[*_]|[*_](?![\p{L}\p{N}])/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Select a passage given by Markdown source offsets (a Global Search hit): go
+ * to its section's heading, then find the passage's first words after it and
+ * select that paragraph. Falls back to the heading when the words are not found.
+ */
+export function revealTiptapMarkdownRange(editor: Editor, markdown: string, start: number, end: number) {
+  if (editor.isDestroyed || !editor.markdown) return;
+
+  const doc = editor.state.doc;
+  const offsets = markdownHeadingOffsets(markdown);
+  const headingOffset = offsets.filter((offset) => offset <= start).at(-1);
+  let anchor = 0;
+  if (headingOffset !== undefined) {
+    navigateTiptapToMarkdownHeading(editor, markdown, headingOffset);
+    anchor = editor.state.selection.from;
+  }
+
+  // Rendered text after the anchor, lower-cased with single spaces, and the document position of each character.
+  let text = "";
+  const positions: number[] = [];
+  doc.nodesBetween(anchor, doc.content.size, (node, position) => {
+    if (node.isText) {
+      const value = node.text ?? "";
+      for (let index = 0; index < value.length; index += 1) {
+        if (position + index < anchor) continue;
+        const character = /\s/.test(value[index]) ? " " : value[index].toLowerCase();
+        if (character === " " && (!text || text.endsWith(" "))) continue;
+        text += character;
+        positions.push(position + index);
+      }
+    } else if (node.isBlock && text && !text.endsWith(" ")) {
+      text += " ";
+      positions.push(position);
+    }
+    return true;
+  });
+
+  const words = markdownPassageWords(markdown.slice(start, end)).split(" ");
+  const candidates = [words.slice(0, 8), words.slice(0, 4), words.slice(2, 6), words.slice(-6)]
+    .map((part) => part.join(" ").trim())
+    .filter((needle) => needle.length >= 8);
+  let from = -1;
+  let found = -1;
+  for (const needle of candidates) {
+    found = text.indexOf(needle);
+    if (found >= 0) {
+      from = positions[found];
+      break;
+    }
+  }
+  if (from < 0) return;
+
+  // Select through the paragraph where the passage ends.
+  const tail = words.slice(-5).join(" ");
+  const tailIndex = tail.length >= 8 ? text.indexOf(tail, found) : -1;
+  const $from = doc.resolve(from);
+  const $to = tailIndex >= 0 ? doc.resolve(positions[Math.min(positions.length - 1, tailIndex + tail.length - 1)]) : $from;
+  editor.commands.setTextSelection({
+    from: $from.parent.isTextblock ? $from.start() : from,
+    to: $to.parent.isTextblock ? $to.end() : $to.pos,
+  });
+  editor.view.dom.focus({ preventScroll: true });
+  const { node } = editor.view.domAtPos(from);
+  const element = node instanceof HTMLElement ? node : node.parentElement;
+  element?.scrollIntoView({ block: "center", inline: "nearest" });
+}

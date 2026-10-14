@@ -21,6 +21,7 @@ const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
+const { INDEX_FILE_NAME, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
@@ -374,6 +375,7 @@ function normalizedImportedPreferences(input) {
     quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
     // Backups made before snippets existed leave the saved snippets alone.
     ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
+    ...(Object.hasOwn(input, "search") ? { search: normalizeSearchPreferences(input.search) } : {}),
     passwordHash,
   };
 }
@@ -432,7 +434,7 @@ async function importPreferences(parentWindow) {
     title: "Load Preferences Backup?",
     message: "Replace all saved Libera preferences with this backup?",
     detail:
-      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
+      "This includes the notebook directory, API key, AI, Markdown and Search settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
   });
 
   if (confirmation.response !== 0) return { canceled: true };
@@ -479,6 +481,10 @@ function getConfigStatus(config = readConfig()) {
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
+    search: normalizeSearchPreferences(config.search),
+    searchDefaultIndexFile: typeof config.dataDir === "string" && config.dataDir
+      ? defaultSearchIndexFile({ adminRoot: path.join(config.dataDir, "users", ADMIN_USER), configPath: getConfigPath() })
+      : "",
   };
 }
 
@@ -535,6 +541,59 @@ async function loadAiRewriteCustomInstructionFile(parentWindow) {
     canceled: false,
     content: await fsp.readFile(result.filePaths[0], "utf8"),
   };
+}
+
+async function selectSearchWeights(parentWindow, kind) {
+  const isVision = kind === "vision";
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: isVision ? "Choose the EmbeddingGemma 2 vision encoder" : "Choose the EmbeddingGemma 2 text model",
+    message: isVision
+      ? "Choose vision_encoder_*.onnx. Its .onnx_data file must be next to it."
+      : "Choose model_*.onnx. Its .onnx_data file must be next to it, and config.json and tokenizer.json next to it or one folder up.",
+    properties: ["openFile"],
+    filters: [{ name: "ONNX models", extensions: ["onnx"] }],
+  });
+
+  return result.canceled ? "" : result.filePaths[0] ?? "";
+}
+
+/** Pick an existing index file, or where a new one should be created. */
+async function selectSearchIndexFile(parentWindow, mode) {
+  if (mode === "new") {
+    const result = await dialog.showSaveDialog(parentWindow, {
+      title: "Create the search index",
+      defaultPath: path.join(app.getPath("documents"), INDEX_FILE_NAME),
+      buttonLabel: "Create Here",
+      filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+    });
+    return result.canceled ? "" : result.filePath ?? "";
+  }
+
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Use an existing search index",
+    message: "Choose a libera-search.sqlite file built by Libera, for example copied from another computer.",
+    properties: ["openFile"],
+    filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+  });
+  return result.canceled ? "" : result.filePaths[0] ?? "";
+}
+
+/** Show the index file in Finder or Explorer; only SQLite files that exist. */
+function revealSearchIndex(filePath) {
+  if (typeof filePath !== "string" || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== ".sqlite") {
+    return false;
+  }
+  if (!fs.existsSync(filePath)) return false;
+  shell.showItemInFolder(filePath);
+  return true;
+}
+
+/** Save the index file in Preferences → Search; the server picks it up on its next request. */
+async function useSearchIndexFile(filePath) {
+  const config = readConfig();
+  const search = normalizeSearchPreferences({ ...normalizeSearchPreferences(config.search), indexFile: filePath });
+  await writeConfig({ ...config, search });
+  return search.indexFile;
 }
 
 function showMessageBox(parentWindow, options) {
@@ -632,6 +691,7 @@ function validateSetupInput(input, existingConfig) {
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
     quickPrompts,
+    search: normalizeSearchPreferences(input?.search ?? existingConfig.search),
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -639,7 +699,7 @@ function validateSetupInput(input, existingConfig) {
   };
 }
 
-async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
+async function createSetupWindow({ mode = "setup", parentWindow = null, section = "" } = {}) {
   if (activeSetupWindow && !activeSetupWindow.isDestroyed()) {
     activeSetupWindow.focus();
     return activeSetupPromise;
@@ -682,6 +742,12 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
     ipcMain.handle("setup:get-state", () => getConfigStatus());
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
+
+    ipcMain.handle("setup:select-search-weights", (_event, kind) => selectSearchWeights(setupWindow, kind));
+
+    ipcMain.handle("setup:select-search-index-file", (_event, mode) => selectSearchIndexFile(setupWindow, mode));
+
+    ipcMain.handle("setup:reveal-search-index", (_event, filePath) => revealSearchIndex(filePath));
 
     ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
 
@@ -726,6 +792,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
         quickPrompts: validated.quickPrompts,
+        search: validated.search,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -743,6 +810,9 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       ipcMain.removeHandler("setup:close");
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
+      ipcMain.removeHandler("setup:select-search-weights");
+      ipcMain.removeHandler("setup:select-search-index-file");
+      ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
       ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
@@ -765,7 +835,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
     });
 
     setupHost.webContents.loadFile(path.join(__dirname, "setup.html"), {
-      query: { mode, presentation: overlay ? "overlay" : "window" },
+      query: { mode, presentation: overlay ? "overlay" : "window", section },
     }).catch((error) => {
       reject(error);
       setupHost.close();
@@ -968,20 +1038,22 @@ function dispatchCloseTabToFocusedWindow() {
   dispatchRendererCloseTabShortcut(focusedWindow?.webContents);
 }
 
-async function openConfigurationWindow() {
+async function openConfigurationWindow(section = "") {
   try {
     const previousConfig = readConfig();
     const updatedConfig = await createSetupWindow({
       mode: "configuration",
       parentWindow: mainWindow,
+      section: typeof section === "string" ? section : "",
     });
 
     if (!updatedConfig) {
       return;
     }
 
+    // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
-      (key) => key !== "themePreference" && (key === "aiFunctions"
+      (key) => key !== "themePreference" && key !== "search" && (key === "aiFunctions"
         ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
@@ -1472,6 +1544,20 @@ function installWindowControlHandlers() {
       event.returnValue = { saved: false, error: error.message };
     }
   });
+  ipcMain.handle("search:reveal-index", (_event, filePath) => revealSearchIndex(filePath));
+
+  ipcMain.handle("search:use-existing-index", async (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    if (parentWindow !== mainWindow) return "";
+    const filePath = await selectSearchIndexFile(parentWindow, "existing");
+    return filePath ? useSearchIndexFile(filePath) : "";
+  });
+
+  ipcMain.handle("preferences:open", (event, section) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return;
+    void openConfigurationWindow(section);
+  });
+
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();
   });
@@ -1565,6 +1651,7 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),

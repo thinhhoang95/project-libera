@@ -37,31 +37,31 @@ export function ReviewComments() {
     return terms.every((term) => haystack.includes(term));
   });
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
-    <header className="shrink-0 space-y-3 border-b border-border px-3 py-3">
-      <div className="flex items-center gap-1">
+    <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
+      <div className="libera-notebook-heading flex items-center gap-1">
         <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs text-muted-foreground">{threads.filter((t) => t.status !== "resolved").length} open</span>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full disabled:opacity-40" aria-label="Undo acceptance" title="Undo acceptance" disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full disabled:opacity-40" aria-label="Redo acceptance" title="Redo acceptance" disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
+        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{threads.filter((t) => t.status !== "resolved").length} open</span>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Undo acceptance" title="Undo acceptance" disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Redo acceptance" title="Redo acceptance" disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
       </div>
-      <button className={`${button} w-full`} aria-pressed={r.chatReview} title={r.chatReview ? "Return to regular chat" : "Plan how to address comments"} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> Agentic review</button>
+      <button type="button" className="libera-panel-button h-9 w-full" aria-pressed={r.chatReview} title={r.chatReview ? "Return to regular chat" : "Plan how to address comments"} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> Agentic review</button>
       {r.doc && <>
         {threads.length > 0 && <div className="review-comment-search relative">
           <Search aria-hidden size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input type="search" aria-label="Search comments" placeholder="Search comments…" className="h-8 w-full rounded-md border border-border bg-card pl-8 pr-7 text-sm outline-none focus:border-accent" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
-          {query && <button type="button" className="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
+          <input type="search" aria-label="Search comments" placeholder="Search comments…" className="libera-panel-field h-9 w-full pl-8 pr-7 text-xs" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
+          {query && <button type="button" className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
         </div>}
-        <p className="text-xs text-muted-foreground">{r.enabled ? "Select a passage in either editor to comment. ⌘/Ctrl+Alt+M" : "Enable Review Mode to highlight passages and add comments."}</p>
+        <p className="px-1 text-xs leading-relaxed text-muted-foreground">{r.enabled ? "Select a passage in either editor to comment. ⌘/Ctrl+Alt+M" : "Enable Review Mode to highlight passages and add comments."}</p>
       </>}
     </header>
-    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
-    {r.recovery && <div className="mt-2 rounded border border-border p-2 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length ? <p className="text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && <p className="text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
-      {shown.map(({ thread, index }) => <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} className={`review-comment-card rounded-lg border p-3 text-sm ${active?.id === thread.id ? "border-accent" : "border-border"}`} aria-label={`Comment ${index + 1}`}>
+    {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {shown.map(({ thread, index }) => <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
-          <span className="flex flex-wrap items-center justify-between gap-1"><strong>Comment {index + 1}</strong><span className="text-xs capitalize text-muted-foreground">{thread.status}{thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
-          <span className="my-2 line-clamp-3 border-l-2 border-border pl-2 text-xs text-muted-foreground">{thread.anchor.quote}</span>
+          <span className="flex flex-wrap items-center justify-between gap-1"><strong className="text-xs font-semibold">Comment {index + 1}</strong><span className="text-[11px] capitalize text-muted-foreground">{thread.status}{thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
+          <span className="my-2 line-clamp-3 border-l-2 border-[#91a4c566] pl-2 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
           <span className="block whitespace-pre-wrap">{thread.messages[0]?.text}</span>
           {thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
         </button>

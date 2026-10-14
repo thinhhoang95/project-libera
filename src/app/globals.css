@@ -1404,7 +1404,9 @@ button.border[class*="border-white"]:hover {
 /* Review annotations are UI decorations, never serialized document content. */
 .review-comments { overflow: hidden; }
 .review-comment-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-.review-comment-card { background: var(--card); overflow-wrap: anywhere; }
+.review-comment-card { overflow-wrap: anywhere; }
+.review-comment-card[data-selected="false"]:hover { background: #ffffff66; }
+html.dark .review-comment-card[data-selected="false"]:hover { background: #a3bbef12; }
 .review-comment-actions { display: flex; align-items: center; gap: .5rem; }
 .review-comment-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 2rem; height: 2rem; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: .55rem; background: color-mix(in srgb, currentColor 8%, var(--card)); cursor: pointer; transition: background .15s, opacity .15s; }
 /* Explicit light and dark values: the CSS pipeline compiles light-dark() into a
@@ -1518,6 +1520,99 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
 }
 
 .libera-workspace-card { border-radius: 10px; }
+
+/* Search left panel: the same quiet glass rows and tiles as Notebooks/Workspaces. */
+.libera-search-panel-card { border-radius: 10px; background: #ffffff44; }
+.libera-search-panel-stat { background: #ffffff38; box-shadow: inset 0 0 0 1px #94a8ce14; }
+html.dark .libera-search-panel-card { background: #a3bbef0c; }
+html.dark .libera-search-panel-stat { background: #a3bbef08; box-shadow: inset 0 0 0 1px #8298cb1a; }
+.libera-search-status-dot { display: inline-block; width: 6px; height: 6px; flex-shrink: 0; border-radius: 999px; background: var(--muted-foreground); opacity: 0.6; }
+.libera-search-status-dot[data-tone="ready"] { background: #22a06b; opacity: 1; }
+.libera-search-status-dot[data-tone="busy"] { background: #e0a43a; opacity: 1; }
+.libera-search-status-dot[data-tone="error"] { background: var(--destructive); opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .libera-search-status-dot[data-tone="busy"] { animation: libera-search-dot-pulse 1.2s ease-in-out infinite; }
+}
+@keyframes libera-search-dot-pulse { 50% { opacity: 0.35; } }
+
+/* Glass form controls for the Create images and Comments panels: translucent
+   fills, soft blue-grey rings and the rail's blue selection, so fields sit in
+   the sheen like the notebook rows instead of as opaque cards. */
+.libera-panel-card { border-radius: 10px; background: #ffffff44; box-shadow: inset 0 0 0 1px #94a8ce14; }
+.libera-panel-card[data-selected="true"] { background: #ffffff7a; box-shadow: inset 0 0 0 1px #3979e855, 0 2px 8px #4e699a0d; }
+.libera-panel-field {
+  border: 1px solid var(--input);
+  border-radius: 10px;
+  background-color: #ffffff85;
+  box-shadow: 0 2px 5px #4e699a03;
+  color: inherit;
+  outline: none;
+  transition: background-color 150ms, border-color 150ms, box-shadow 150ms;
+}
+.libera-panel-field::placeholder { color: color-mix(in srgb, var(--muted-foreground) 75%, transparent); }
+.libera-panel-field:hover:not(:disabled):not(:focus) { background-color: #ffffffa8; }
+.libera-panel-field:focus { border-color: #457be666; background-color: #ffffffc2; box-shadow: 0 0 0 3px #457be61a; }
+.libera-panel-field:disabled { opacity: 0.6; }
+select.libera-panel-field {
+  appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2377829b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");
+  background-position: right 0.6rem center;
+  background-repeat: no-repeat;
+  background-size: 14px;
+  cursor: default;
+}
+.libera-panel-segmented { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: #7392d112; box-shadow: inset 0 0 0 1px #94a8ce14; }
+.libera-panel-segmented > button { flex: 1; border-radius: 7px; padding: 0.35rem 0.5rem; font-size: 12px; font-weight: 500; color: var(--muted-foreground); transition: background 150ms, color 150ms, box-shadow 150ms; }
+.libera-panel-segmented > button:hover:not(:disabled) { color: #457be6; }
+.libera-panel-segmented > button[aria-pressed="true"] { background: #ffffffc2; color: #3979e8; box-shadow: 0 1px 3px #4e699a1a, inset 0 1px 0 #ffffff; }
+.libera-panel-segmented > button:disabled { opacity: 0.5; }
+.libera-panel-tile { border-radius: 10px; background: #ffffff38; box-shadow: inset 0 0 0 1px #94a8ce1f; color: var(--muted-foreground); transition: background 150ms, color 150ms, box-shadow 150ms; }
+.libera-panel-tile:hover:not(:disabled) { background: #ffffff70; color: #457be6; }
+.libera-panel-tile[aria-pressed="true"] { background: #d8e7ff9e; color: #3979e8; font-weight: 500; box-shadow: inset 0 0 0 1px #3979e84d, inset 0 1px 0 #ffffff6b; }
+.libera-panel-tile[data-dashed="true"] { box-shadow: none; border: 1px dashed #91a4c566; }
+.libera-panel-tile:disabled { opacity: 0.5; }
+.libera-panel-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; border-radius: 10px; background: #ffffff5c; box-shadow: inset 0 0 0 1px #94a8ce26, 0 1px 2px #4e699a08; font-size: 12px; font-weight: 500; transition: background 150ms, color 150ms, box-shadow 150ms; }
+.libera-panel-button:hover:not(:disabled) { background: #ffffff90; color: #457be6; }
+.libera-panel-button[aria-pressed="true"] { background: #d8e7ff9e; color: #3979e8; box-shadow: inset 0 0 0 1px #3979e84d, inset 0 1px 0 #ffffff6b; }
+.libera-panel-button:disabled { opacity: 0.5; }
+.libera-panel-primary { display: flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: 10px; background: linear-gradient(180deg, #6697f2, #3f74e0); color: #ffffff; font-size: 13px; font-weight: 600; box-shadow: inset 0 1px 0 #ffffff40, 0 1px 2px #2a4f9a33, 0 4px 12px #3f74e026; transition: filter 150ms, box-shadow 150ms, opacity 150ms; }
+.libera-panel-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: inset 0 1px 0 #ffffff40, 0 1px 2px #2a4f9a33, 0 6px 16px #3f74e033; }
+.libera-panel-primary:disabled { opacity: 0.45; box-shadow: none; }
+.libera-panel-range { accent-color: #3f74e0; }
+.libera-panel-field:focus-visible, .libera-panel-segmented > button:focus-visible, .libera-panel-tile:focus-visible, .libera-panel-button:focus-visible, .libera-panel-primary:focus-visible { outline: 2px solid #457be6; outline-offset: 2px; }
+html.dark .libera-panel-card { background: #a3bbef0c; box-shadow: inset 0 0 0 1px #8298cb1a; }
+html.dark .libera-panel-card[data-selected="true"] { background: #a3bbef14; box-shadow: inset 0 0 0 1px #7aa5ef66; }
+html.dark .libera-panel-field { background-color: #b3c8ef0d; }
+html.dark .libera-panel-field:hover:not(:disabled):not(:focus) { background-color: #b3c8ef14; }
+html.dark .libera-panel-field:focus { border-color: #7aa5ef80; background-color: #b3c8ef17; box-shadow: 0 0 0 3px #7aa5ef1f; }
+html.dark select.libera-panel-field { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23adb9d1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E"); }
+html.dark .libera-panel-field option { background: #252d3f; color: #e1e8f7; }
+html.dark .libera-panel-segmented { background: #a3bbef0a; box-shadow: inset 0 0 0 1px #8298cb1a; }
+html.dark .libera-panel-segmented > button:hover:not(:disabled), html.dark .libera-panel-tile:hover:not(:disabled), html.dark .libera-panel-button:hover:not(:disabled) { color: #a2c9ff; }
+html.dark .libera-panel-segmented > button[aria-pressed="true"] { background: #678dcc2e; color: #a2c9ff; box-shadow: inset 0 1px 0 #ffffff0d; }
+html.dark .libera-panel-tile { background: #a3bbef08; box-shadow: inset 0 0 0 1px #8298cb1f; }
+html.dark .libera-panel-tile:hover:not(:disabled) { background: #a3bbef12; }
+html.dark .libera-panel-tile[aria-pressed="true"], html.dark .libera-panel-button[aria-pressed="true"] { background: #678dcc26; color: #a2c9ff; box-shadow: inset 0 0 0 1px #7aa5ef4d; }
+html.dark .libera-panel-tile[data-dashed="true"] { box-shadow: none; border-color: #8298cb40; }
+html.dark .libera-panel-button { background: #a3bbef0c; box-shadow: inset 0 0 0 1px #8298cb26; }
+html.dark .libera-panel-button:hover:not(:disabled) { background: #a3bbef17; }
+html.dark .libera-panel-primary { background: linear-gradient(180deg, #5b8def, #3a6ad0); box-shadow: inset 0 1px 0 #ffffff26, 0 4px 14px #00000033; }
+html.dark .libera-panel-range { accent-color: #7aa5ef; }
+html.dark .libera-panel-field:focus-visible, html.dark .libera-panel-segmented > button:focus-visible, html.dark .libera-panel-tile:focus-visible, html.dark .libera-panel-button:focus-visible, html.dark .libera-panel-primary:focus-visible { outline-color: #7aa5ef; }
+
+/* Review styles default to opaque card surfaces (they also live in the chat
+   panel and popover); inside the left panel they take the glass treatment. */
+.libera-left-panel .review-comment-icon { width: 1.75rem; height: 1.75rem; border: 0; border-radius: 8px; background: color-mix(in srgb, currentColor 9%, transparent); }
+.libera-left-panel .review-comment-icon:hover:not(:disabled) { background: color-mix(in srgb, currentColor 16%, transparent); }
+.libera-left-panel .review-button { border: 0; border-radius: 8px; background: #ffffff5c; box-shadow: inset 0 0 0 1px #94a8ce26; }
+.libera-left-panel .review-button:hover:not(:disabled) { background: #ffffff90; color: #457be6; }
+.libera-left-panel .review-textarea { border: 1px solid var(--input); border-radius: 10px; background: #ffffff85; font-size: 13px; outline: none; transition: border-color 150ms, box-shadow 150ms; }
+.libera-left-panel .review-textarea:focus { border-color: #457be666; box-shadow: 0 0 0 3px #457be61a; }
+html.dark .libera-left-panel .review-button { background: #a3bbef0c; box-shadow: inset 0 0 0 1px #8298cb26; }
+html.dark .libera-left-panel .review-button:hover:not(:disabled) { background: #a3bbef17; color: #a2c9ff; }
+html.dark .libera-left-panel .review-textarea { background: #b3c8ef0d; }
+html.dark .libera-left-panel .review-textarea:focus { border-color: #7aa5ef80; box-shadow: 0 0 0 3px #7aa5ef1f; }
 .libera-workspace-actions { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--card) 85%, transparent) 25%); backdrop-filter: blur(6px); }
 
 /* Gemini-style gradient wash behind the chat header while the model works. */
@@ -1644,3 +1739,34 @@ html.dark .libera-latex-pdf-page { box-shadow: 0 4px 20px rgb(0 0 0 / .45); }
 .libera-tag-chip button:hover { opacity: 1; background: hsl(var(--tag-hue) 60% 86%); }
 html.dark .libera-tag-chip { color: hsl(var(--tag-hue) 80% 82%); background: hsl(var(--tag-hue) 35% 22%); border-color: hsl(var(--tag-hue) 35% 32%); }
 html.dark .libera-tag-chip button:hover { background: hsl(var(--tag-hue) 35% 32%); }
+
+/* Global Search: image chips inside the query box, matched words, and the previewed passage. */
+.libera-search-input { white-space: pre-wrap; word-break: break-word; }
+.libera-search-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; margin: 0 2px; padding: 2px 4px 2px 2px; vertical-align: middle; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); color: var(--foreground); font-size: 12px; line-height: 1; user-select: none; cursor: default; }
+.libera-search-chip img { width: 22px; height: 22px; border-radius: 5px; object-fit: cover; }
+.libera-search-chip-label { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.libera-search-chip-remove { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 999px; color: var(--muted-foreground); font-size: 13px; line-height: 1; }
+.libera-search-chip-remove:hover { background: color-mix(in srgb, var(--foreground) 10%, transparent); color: var(--foreground); }
+.libera-search-mark { border-radius: 3px; padding: 0 1px; background: color-mix(in srgb, #facc15 45%, transparent); color: inherit; }
+::highlight(libera-search-term) { background-color: color-mix(in srgb, #facc15 45%, transparent); }
+.libera-search-passage { position: relative; margin: 6px -10px; padding: 6px 10px; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.libera-search-markdown .markdown-renderer > :first-child, .libera-search-passage .markdown-renderer > :first-child { margin-top: 0; }
+.libera-search-pdf-rect { border-radius: 2px; background: color-mix(in srgb, #14b8a6 26%, transparent); mix-blend-mode: multiply; }
+html.dark .libera-search-pdf-rect { mix-blend-mode: normal; background: color-mix(in srgb, #14b8a6 32%, transparent); }
+
+/* Global Search welcome page. */
+.libera-search-hero { position: relative; isolation: isolate; }
+.libera-search-hero::before { content: ""; position: absolute; z-index: -1; left: 50%; top: -28px; width: 260px; height: 150px; transform: translateX(-50%); border-radius: 999px; background: radial-gradient(closest-side, color-mix(in srgb, #5b8def 22%, transparent), color-mix(in srgb, #8b7fd1 10%, transparent) 55%, transparent); filter: blur(10px); pointer-events: none; }
+.libera-search-hero-icon { background-color: #5b8def; background-image: linear-gradient(145deg, #ffffff55, transparent 60%), linear-gradient(135deg, #5b8def, #8b7fd1); box-shadow: inset 0 1px 1px #ffffff80, 0 8px 22px -6px #5b8def80; }
+.libera-search-example { background: color-mix(in srgb, var(--card) 70%, transparent); box-shadow: inset 0 0 0 1px var(--border), 0 1px 2px #1a2a4a08; transition: background 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
+.libera-search-example:hover { background: var(--card); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, var(--border)), 0 6px 16px -8px #1a2a4a30; transform: translateY(-1px); }
+.libera-search-example:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+html.dark .libera-search-example { background: #a3bbef08; }
+html.dark .libera-search-example:hover { background: #a3bbef12; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, var(--border)), 0 8px 20px -10px #00000080; }
+@media (prefers-reduced-motion: reduce) { .libera-search-example:hover { transform: none; } }
+.libera-search-inline-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 5px; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); color: var(--foreground); font-size: 11px; vertical-align: 1px; }
+.libera-search-notice { text-align: left; }
+.libera-search-notice[data-tone="warning"] { background: color-mix(in srgb, #f59e0b 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, #f59e0b 25%, transparent); }
+.libera-search-notice[data-tone="error"] { background: var(--destructive-muted); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--destructive) 25%, transparent); }
+.libera-kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--border), inset 0 -1px 0 var(--border); color: var(--foreground); font-family: inherit; font-size: 11px; line-height: 1; }
+html.dark .libera-kbd { background: #a3bbef10; }

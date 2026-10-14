@@ -11,8 +11,10 @@ import {
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  ScanSearch,
   type LucideIcon,
 } from "lucide-react";
+import { SearchPanel } from "@/components/libera/global-search/search-panel";
 import { ImageGenerationPanel } from "@/components/libera/image-generation-panel";
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
@@ -23,7 +25,7 @@ import type { OpenTab } from "@/components/libera/types";
 import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
 import type { LiberaFileNode, LiberaTree } from "@/lib/types";
 
-export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery";
+export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search";
 
 type LeftPanelProps = NotebookPanelProps & {
   workspaceManager: WorkspaceManager;
@@ -37,6 +39,7 @@ type LeftPanelProps = NotebookPanelProps & {
   onSetDraft: (value: string) => void;
   onToggleCollapsed: () => void;
   onGeneratedFilesSaved: (files: LiberaFileNode[]) => void;
+  onOpenSearchPreferences?: () => void;
 };
 
 const LEFT_PANEL_TABS: Array<{
@@ -49,6 +52,7 @@ const LEFT_PANEL_TABS: Array<{
   { id: "outlines", label: "Outlines", icon: ListTree },
   { id: "comments", label: "Comments", icon: MessageSquare },
   { id: "gallery", label: "Image Gallery", icon: Images },
+  { id: "search", label: "Search", icon: ScanSearch },
 ];
 
 export function LeftPanel({
@@ -63,6 +67,7 @@ export function LeftPanel({
   onSetDraft,
   onToggleCollapsed,
   onGeneratedFilesSaved,
+  onOpenSearchPreferences,
   ...notebookPanelProps
 }: LeftPanelProps) {
   function selectPanel(panel: LeftPanelTab) {
@@ -95,7 +100,9 @@ export function LeftPanel({
                 ? "workspaces"
                 : event.key === "5" || event.code === "Digit5"
                   ? "gallery"
-                  : null;
+                  : event.key === "6" || event.code === "Digit6"
+                    ? "search"
+                    : null;
 
       if (!nextPanel) {
         return;
@@ -109,8 +116,28 @@ export function LeftPanel({
       }
     }
 
+    // ⌘/Ctrl+Shift+F searches everything, from anywhere. It is handled before
+    // the editors, whose find bars take ⌘/Ctrl+F with or without Shift.
+    function handleGlobalSearchKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.code !== "KeyF" || event.repeat || event.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      onPanelChange("search");
+
+      if (collapsed) {
+        onToggleCollapsed();
+      }
+    }
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleGlobalSearchKey, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleGlobalSearchKey, true);
+    };
   }, [collapsed, onToggleCollapsed, onPanelChange]);
 
   return (
@@ -149,6 +176,8 @@ export function LeftPanel({
                   notebookPanelProps.onOpenFile(file);
                 }}
               />
+            ) : activePanel === "search" ? (
+              <SearchPanel onOpenPreferences={onOpenSearchPreferences} />
             ) : activePanel === "comments" ? (
               <ReviewComments key={activeTab?.id ?? "no-document"} />
             ) : (

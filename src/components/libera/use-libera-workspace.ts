@@ -774,12 +774,24 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     );
   }
 
+  // Shows a tab in the focused panel, or in a new panel beside it.
+  function showOpenedTab(tabId: string, placement: GalleryTabPlacement) {
+    const focusedTabId = focusedCanvasPane(canvas.layout)?.tabId;
+    // An empty panel, or one already showing the tab, has nothing to split from.
+    if (placement === "tab" || !focusedTabId || focusedTabId === tabId) {
+      setActiveTabId(tabId);
+      return;
+    }
+    canvas.splitPane(canvas.layout.focusedPaneId, placement, tabId);
+  }
+
   async function openFile(
     file: LiberaFileNode,
-    options: { viewState?: OpenTabViewState } = {},
+    options: { viewState?: OpenTabViewState; placement?: GalleryTabPlacement } = {},
   ) {
     setWorkspaceError("");
     setSelectedNotebookName(file.notebook);
+    const placement = options.placement ?? "tab";
 
     const existingTab = tabs.find((tab) => tab.id === file.path);
 
@@ -801,7 +813,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       }
 
       recordFileInteraction(file);
-      setActiveTabId(file.path);
+      showOpenedTab(file.path, placement);
       return;
     }
 
@@ -853,7 +865,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         rememberTabDraft(nextTab.id, draft);
         return [...currentTabs, nextTab];
       });
-      setActiveTabId(nextTab.id);
+      showOpenedTab(nextTab.id, placement);
       recordFileInteraction(payload.file);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not open file.");

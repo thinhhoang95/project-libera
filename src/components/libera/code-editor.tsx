@@ -211,6 +211,28 @@ export function CodeEditor({
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
   }, []);
 
+  // A one-shot request (Global Search) to show and select lines.
+  const reveal = initialViewState?.reveal;
+  useEffect(() => {
+    if (!reveal) return;
+    // After the scroll restore, which runs in an animation frame.
+    const frame = requestAnimationFrame(() => {
+      const current = viewRef.current;
+      if (current) {
+        const { doc } = current.state;
+        const first = doc.line(Math.max(1, Math.min(reveal.line, doc.lines)));
+        const last = doc.line(Math.max(first.number, Math.min(reveal.endLine ?? reveal.line, doc.lines)));
+        current.dispatch({
+          selection: { anchor: first.from, head: last.to },
+          effects: EditorView.scrollIntoView(first.from, { y: "center" }),
+        });
+        current.focus();
+      }
+      callbacks.current.onViewStateChange({ reveal: undefined });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [reveal]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div

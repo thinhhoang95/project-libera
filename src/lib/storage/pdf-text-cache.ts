@@ -48,7 +48,7 @@ function normalizeWhitespace(text: string) {
     .trim();
 }
 
-function pageTextFromItems(items: unknown[]) {
+export function pageTextFromItems(items: unknown[]) {
   let text = "";
 
   for (const item of items) {
@@ -175,8 +175,14 @@ async function extractPdfTextPages(targetPath: string): Promise<PdfTextPage[]> {
   }
 }
 
+/**
+ * Read a PDF's text by page, extracting and caching it when the cache is stale.
+ * `extractPages` lets a caller extract elsewhere (Global Search uses its worker
+ * process); the result is cached the same way.
+ */
 export async function readPdfTextCache(
   relativePath: string,
+  { extractPages = extractPdfTextPages }: { extractPages?: (absolutePath: string) => Promise<PdfTextPage[]> } = {},
 ): Promise<PdfTextCachePayload> {
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(relativePath);
@@ -207,7 +213,7 @@ export async function readPdfTextCache(
     pdfUpdatedAt,
     pdfSize: stats.size,
     generatedAt: new Date().toISOString(),
-    pages: await extractPdfTextPages(targetPath),
+    pages: await extractPages(targetPath),
   };
 
   await ensureParentDirectory(cachePath);

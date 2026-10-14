@@ -3,6 +3,7 @@
   "productName": "Libera by Thinh Hoang",
   "asar": false,
   "npmRebuild": false,
+  "afterPack": "scripts/after-pack.cjs",
   "artifactName": "Libera-${version}-${os}-${arch}.${ext}",
   "electronUpdaterCompatibility": ">=2.16",
   "publish": {

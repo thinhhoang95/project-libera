@@ -632,6 +632,25 @@ export function PdfViewer({
     return () => window.cancelAnimationFrame(animationFrame);
   }, [loading, pageLayouts.length, pdfDocument, updateCurrentPage]);
 
+  // A one-shot request (Global Search) to show a page and find a passage on it.
+  const reveal = initialViewState?.reveal;
+  const findTextRef = useRef(pdfFind.findText);
+  useEffect(() => {
+    findTextRef.current = pdfFind.findText;
+  });
+  useEffect(() => {
+    if (!reveal || loading || !pdfDocument || !pageLayouts.length) return;
+    // After the scroll restore, which also runs in an animation frame.
+    const frame = window.requestAnimationFrame(() => {
+      pendingScrollRestoreRef.current = null;
+      const page = Math.max(1, Math.min(reveal.page, pageLayouts.length));
+      pageElementRefs.current.get(page)?.scrollIntoView({ block: "start", inline: "nearest" });
+      if (reveal.text) findTextRef.current(reveal.text, page);
+      updateViewState({ reveal: undefined });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, pageLayouts.length, pdfDocument, reveal, updateViewState]);
+
   useCanvasViewStateCapture(() => {
     const element = scrollContainerRef.current;
     if (element && !pendingScrollRestoreRef.current) {

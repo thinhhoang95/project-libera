@@ -19,7 +19,7 @@ import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
-import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
@@ -370,6 +370,28 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     window.addEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
     return () => window.removeEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
   }, [documentPath, editor, readMarkdown, reportVisualPosition]);
+
+  // A one-shot request (Global Search) to select a passage, once the restored
+  // scroll position has been applied.
+  const reveal = initialViewState?.reveal;
+  useEffect(() => {
+    if (!editor || !reveal) return;
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        if (editor.isDestroyed) return;
+        const markdown = readMarkdown();
+        revealTiptapMarkdownRange(editor, markdown, reveal.start, reveal.end);
+        reportVisualPosition(editor, markdown, editor.state.selection.from);
+        const container = scrollContainerRef.current;
+        onViewStateChangeRef.current?.({
+          reveal: undefined,
+          visualSelection: editor.state.selection.toJSON(),
+          ...(container ? { visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop } : {}),
+        });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editor, readMarkdown, reportVisualPosition, reveal]);
 
   function scheduleVisualPosition(current: Editor) {
     if (!onViewStateChange) return;

@@ -88,6 +88,16 @@ declare global {
       revealNotebook: (notebook: string) => Promise<void>;
       revealItem: (relativePath: string) => Promise<void>;
     };
+    liberaSearch?: {
+      /** Show the search index file in Finder or Explorer; false when it does not exist. */
+      revealIndex: (filePath: string) => Promise<boolean>;
+      /** Choose an existing index file and save it in Preferences; "" when canceled. */
+      useExistingIndex: () => Promise<string>;
+    };
+    liberaPreferences?: {
+      /** Open Preferences at a section, e.g. "search". */
+      open: (section?: string) => Promise<void>;
+    };
     liberaClipboard?: {
       copyItemPath: (
         relativePath: string,

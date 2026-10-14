@@ -43,6 +43,8 @@ export type MarkdownTabViewState = {
   /** ProseMirror selection JSON, independent of source-text offsets. */
   visualSelection?: Record<string, unknown>;
   zoom?: number;
+  /** One-shot request (Global Search) to show and select a passage, by source offsets. */
+  reveal?: { start: number; end: number; nonce: number };
 };
 
 export type PdfTabViewState = {
@@ -55,6 +57,8 @@ export type PdfTabViewState = {
   textColor?: string;
   tool?: "select" | "highlight" | "text";
   zoom?: number;
+  /** One-shot request (Global Search) to show a page and find a passage on it. */
+  reveal?: { page: number; text?: string; nonce: number };
 };
 
 export type LatexTabViewState = {
@@ -94,6 +98,8 @@ export type TextTabViewState = {
   line?: number;
   selectionEnd?: number;
   selectionStart?: number;
+  /** One-shot request (Global Search) to show and select lines. */
+  reveal?: { line: number; endLine?: number; nonce: number };
 };
 
 export type OpenTabViewState = {
@@ -342,7 +348,10 @@ export type LiberaWorkspace = {
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
-  openFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  openFile: (
+    file: LiberaFileNode,
+    options?: { viewState?: OpenTabViewState; placement?: "tab" | "right" | "bottom" },
+  ) => Promise<void>;
   openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   openCreateNotebookDialog: () => void;
   openCreateNotebookGroupDialog: () => void;
