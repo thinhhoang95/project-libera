@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { SearchFileKind } from "@/lib/global-search";
+import { documentFileTitle, documentPrompt } from "@/lib/search/chunking";
 
 /**
  * The Global Search index: one SQLite file holding files, their passages, a
@@ -54,7 +56,8 @@ export type IndexedFile = {
 };
 
 export type NewChunk = {
-  hash: string;
+  /** Image content hash. Text identities are calculated from the complete prompt. */
+  hash?: string;
   title: string;
   text: string;
   context: string;
@@ -67,12 +70,14 @@ export type NewChunk = {
 
 export type PendingChunk = {
   id: number;
+  generation: number;
   fileId: number;
   kind: SearchFileKind;
   key: string;
   source: "library" | "gallery";
   path: string;
   name: string;
+  signature: string;
   title: string;
   text: string;
   context: string;
@@ -102,6 +107,13 @@ function vectorBlob(vector: Float32Array) {
   return new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
 }
 
+const LEGACY_IMAGE_HASH = /^image:[a-f0-9]{40}$/;
+
+function promptHash(kind: SearchFileKind, name: string, chunk: Pick<NewChunk, "title" | "text" | "context">) {
+  return createHash("sha256")
+    .update(`${kind}\u0000${documentPrompt(kind, documentFileTitle(name), chunk)}`).digest("hex");
+}
+
 /** Keep the leading dimensions (Matryoshka) and restore unit length. */
 export function truncateVector(vector: Float32Array, dimensions: number) {
   const truncated = new Float32Array(vector.subarray(0, dimensions));
@@ -116,6 +128,7 @@ export class SearchDatabase {
   readonly filePath: string;
   private readonly db: DatabaseSync;
   private dimensions = 0;
+  private generation = 0;
   private readonly statements = new Map<string, StatementSync>();
 
   constructor(filePath: string) {
@@ -190,9 +203,36 @@ export class SearchDatabase {
       );
     `);
     this.setMeta("schema", SCHEMA_VERSION);
+    this.transaction(() => {
+      // Also recognize old hashes in indexes already opened by an earlier repair.
+      // Hash the saved prompt so unchanged text keeps its original chunk and vector.
+      const legacy = this.db.prepare(`
+        SELECT c.id, c.hash, c.title, c.text, c.context, f.kind, f.name
+        FROM chunks c JOIN files f ON f.id = c.file_id
+        WHERE f.kind != 'image' AND length(c.hash) = 40
+      `).all() as Array<NewChunk & { id: number; kind: SearchFileKind; name: string }>;
+      const updateHash = this.statement("UPDATE chunks SET hash = ? WHERE id = ?");
+      for (const chunk of legacy) {
+        const oldHash = createHash("sha1").update(`${chunk.kind}\u0000${chunk.title}\u0000${chunk.text}`).digest("hex");
+        if (chunk.hash === oldHash) updateHash.run(promptHash(chunk.kind, chunk.name, chunk), chunk.id);
+      }
+      const images = this.db.prepare(`
+        SELECT c.hash FROM chunks c JOIN files f ON f.id = c.file_id
+        WHERE f.kind = 'image' AND c.embedded = 1
+      `).all();
+      if (images.some((chunk) => LEGACY_IMAGE_HASH.test(String(chunk.hash)))) this.setMeta("legacy_image_vectors", "1");
+      if (this.getMeta("content_version") !== "2") {
+        this.db.exec("UPDATE files SET signature = ''");
+        this.setMeta("content_version", "2");
+      }
+    });
   }
 
   close() {
+    this.generation += 1;
+    // Do not leave this connection's WAL to be replayed over a replacement
+    // index at the same path when the indexer reopens it.
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
     this.db.close();
   }
 
@@ -253,40 +293,57 @@ export class SearchDatabase {
     const sizeDiffers = storedDimensions > 0 && storedDimensions !== dimensions;
     const textDiffers = Boolean(textSignature && storedText && textSignature !== storedText);
     const visionDiffers = Boolean(visionSignature && storedVision && visionSignature !== storedVision);
+    const legacyImageFlag = this.getMeta("legacy_image_vectors") === "1";
+    const legacyImages = legacyImageFlag && Boolean(this.statement(`
+      SELECT 1 FROM chunks c JOIN files f ON f.id = c.file_id
+      WHERE f.kind = 'image' AND c.embedded = 1 LIMIT 1
+    `).get());
 
-    if (hasVectors && !allowReset && (sizeDiffers || textDiffers || visionDiffers)) {
+    if (hasVectors && !allowReset && (sizeDiffers || textDiffers || visionDiffers || legacyImages)) {
       this.ensureVectorTable(storedDimensions || dimensions);
       const reasons = [
         sizeDiffers ? `${storedDimensions} dimensions instead of ${dimensions}` : "",
         textDiffers ? `the text model ${storedText.split(":")[0]}` : "",
-        visionDiffers && !textDiffers ? `the vision encoder ${storedVision.split("|").at(-1)?.split(":")[0]}` : "",
+        visionDiffers && !textDiffers ? "different vision encoder or image detail settings" : "",
+        legacyImages ? "older partial image fingerprints (re-embed to verify their contents)" : "",
       ].filter(Boolean);
       return `This index was built with ${reasons.join(" and ")}.`;
     }
 
-    const resetAll = storedDimensions !== dimensions || textDiffers;
-    if (resetAll) {
-      this.db.exec("DROP TABLE IF EXISTS chunks_vec");
-      this.statements.clear();
-      this.db.exec("UPDATE chunks SET embedded = 0");
-      this.setMeta("dimensions", String(dimensions));
-    }
-    this.ensureVectorTable(dimensions);
+    const previousDimensions = this.dimensions;
+    try {
+      return this.transaction(() => {
+        if (legacyImageFlag && !legacyImages) this.setMeta("legacy_image_vectors", "");
+        const resetAll = allowReset || storedDimensions !== dimensions || textDiffers || legacyImages;
+        if (resetAll) {
+          this.generation += 1;
+          this.db.exec("DROP TABLE IF EXISTS chunks_vec");
+          this.statements.clear();
+          this.db.exec("UPDATE chunks SET embedded = 0");
+          this.setMeta("dimensions", String(dimensions));
+          this.setMeta("legacy_image_vectors", "");
+        }
+        this.ensureVectorTable(dimensions);
 
-    if (!resetAll && visionDiffers) {
-      this.transaction(() => {
-        const ids = this.db.prepare(
-          "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.kind = 'image' AND c.embedded = 1",
-        ).all();
-        const remove = this.statement("DELETE FROM chunks_vec WHERE rowid = ?");
-        for (const row of ids) remove.run(BigInt(row.id as number));
-        this.db.exec("UPDATE chunks SET embedded = 0 WHERE file_id IN (SELECT id FROM files WHERE kind = 'image')");
+        if (!resetAll && visionDiffers) {
+          this.generation += 1;
+          const ids = this.db.prepare(
+            "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.kind = 'image' AND c.embedded = 1",
+          ).all();
+          const remove = this.statement("DELETE FROM chunks_vec WHERE rowid = ?");
+          for (const row of ids) remove.run(BigInt(row.id as number));
+          this.db.exec("UPDATE chunks SET embedded = 0 WHERE file_id IN (SELECT id FROM files WHERE kind = 'image')");
+        }
+
+        if (textSignature) this.setMeta("text_signature", textSignature);
+        if (visionSignature) this.setMeta("vision_signature", visionSignature);
+        return null;
       });
+    } catch (error) {
+      this.dimensions = previousDimensions;
+      this.statements.clear();
+      throw error;
     }
-
-    if (textSignature) this.setMeta("text_signature", textSignature);
-    if (visionSignature) this.setMeta("vision_signature", visionSignature);
-    return null;
   }
 
   private ensureVectorTable(dimensions: number) {
@@ -329,6 +386,7 @@ export class SearchDatabase {
   }
 
   deleteFile(fileId: number) {
+    this.generation += 1;
     this.transaction(() => {
       this.deleteChunkRows(this.chunkIdsOf(fileId).map((chunk) => chunk.id));
       this.statement("DELETE FROM files WHERE id = ?").run(fileId);
@@ -345,6 +403,7 @@ export class SearchDatabase {
     chunks: NewChunk[],
     ftsName: string,
   ) {
+    this.generation += 1;
     return this.transaction(() => {
       const now = new Date().toISOString();
       const existing = this.statement("SELECT id FROM files WHERE key = ?").get(file.key) as { id: number } | undefined;
@@ -370,13 +429,18 @@ export class SearchDatabase {
       }
 
       const keep = new Set<number>();
+      // Partial image hashes cannot prove that the pixels are unchanged. Retain
+      // their vectors, blocked by prepareVectors(), until the user resets them.
+      const legacyImage = file.kind === "image" && this.getMeta("legacy_image_vectors") === "1"
+        ? previous.find((chunk) => chunk.embedded === 1 && LEGACY_IMAGE_HASH.test(chunk.hash)) : undefined;
       const updateChunk = this.statement(
-        "UPDATE chunks SET ordinal = ?, title = ?, context = ?, page = ?, line = ?, end_line = ?, start = ?, end = ? WHERE id = ?",
+        "UPDATE chunks SET ordinal = ?, title = ?, text = ?, context = ?, page = ?, line = ?, end_line = ?, start = ?, end = ?, embedded = CASE WHEN embedded = 2 THEN 0 ELSE embedded END WHERE id = ?",
       );
       const insertChunk = this.statement(
         "INSERT INTO chunks(file_id, ordinal, hash, title, text, context, page, line, end_line, start, end, embedded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
       );
       const insertFts = this.statement("INSERT INTO chunks_fts(rowid, name, title, text) VALUES (?, ?, ?, ?)");
+      const removeFts = this.statement("DELETE FROM chunks_fts WHERE rowid = ?");
       const findShared = this.statement(
         "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.hash = ? AND c.embedded = 1 AND f.kind = ? LIMIT 1",
       );
@@ -385,17 +449,22 @@ export class SearchDatabase {
       const markEmbedded = this.statement("UPDATE chunks SET embedded = 1 WHERE id = ?");
 
       chunks.forEach((chunk, ordinal) => {
-        const match = reusable.get(chunk.hash)?.shift();
+        const hash = file.kind === "image" ? chunk.hash : promptHash(file.kind, file.name, chunk);
+        if (!hash) throw new Error("An image passage needs a content fingerprint.");
+        const match = reusable.get(hash)?.shift() ?? (ordinal === 0 ? legacyImage : undefined);
         if (match) {
           keep.add(match.id);
-          updateChunk.run(ordinal, chunk.title, chunk.context, chunk.page ?? null, chunk.line ?? null, chunk.endLine ?? null, chunk.start ?? null, chunk.end ?? null, match.id);
+          this.statement("UPDATE chunks SET hash = ? WHERE id = ?").run(hash, match.id);
+          updateChunk.run(ordinal, chunk.title, chunk.text, chunk.context, chunk.page ?? null, chunk.line ?? null, chunk.endLine ?? null, chunk.start ?? null, chunk.end ?? null, match.id);
+          removeFts.run(match.id);
+          insertFts.run(match.id, ftsName, chunk.title, chunk.text);
           return;
         }
 
-        const id = Number(insertChunk.run(fileId, ordinal, chunk.hash, chunk.title, chunk.text, chunk.context, chunk.page ?? null, chunk.line ?? null, chunk.endLine ?? null, chunk.start ?? null, chunk.end ?? null).lastInsertRowid);
+        const id = Number(insertChunk.run(fileId, ordinal, hash, chunk.title, chunk.text, chunk.context, chunk.page ?? null, chunk.line ?? null, chunk.endLine ?? null, chunk.start ?? null, chunk.end ?? null).lastInsertRowid);
         insertFts.run(id, ftsName, chunk.title, chunk.text);
 
-        const shared = findShared.get(chunk.hash, file.kind) as { id: number } | undefined;
+        const shared = findShared.get(hash, file.kind) as { id: number } | undefined;
         const vector = shared ? readVector.get(BigInt(shared.id))?.embedding : undefined;
         if (vector instanceof Uint8Array) {
           insertVector.run(BigInt(id), vector, file.kind);
@@ -408,19 +477,40 @@ export class SearchDatabase {
     });
   }
 
-  /** Record a file that could not be read, so it is not retried until it changes. */
+  /**
+   * Point an entry at another path (see `planIndexRepair`), keeping its
+   * passages and vectors. The file name is part of the keyword index, so its
+   * passages are indexed again under the new name.
+   */
+  relocateFile(fileId: number, file: Pick<IndexedFile, "key" | "path" | "name" | "notebook" | "meta">, ftsName: string) {
+    this.generation += 1;
+    this.transaction(() => {
+      // A path/size match is a candidate, not proof of identical contents.
+      this.statement("UPDATE files SET key = ?, path = ?, name = ?, notebook = ?, meta = ?, signature = '' WHERE id = ?")
+        .run(file.key, file.path, file.name, file.notebook, file.meta, fileId);
+      const removeFts = this.statement("DELETE FROM chunks_fts WHERE rowid = ?");
+      const insertFts = this.statement("INSERT INTO chunks_fts(rowid, name, title, text) VALUES (?, ?, ?, ?)");
+      const chunks = this.statement("SELECT id, title, text FROM chunks WHERE file_id = ?").all(fileId);
+      for (const chunk of chunks) {
+        removeFts.run(chunk.id as number);
+        insertFts.run(chunk.id as number, ftsName, chunk.title as string, chunk.text as string);
+      }
+    });
+  }
+
+  /** Record a failed read; the next scan retries even if its metadata is unchanged. */
   markFailed(file: Omit<IndexedFile, "id" | "status" | "meta"> & { meta?: string | null }, error: string, ftsName: string) {
     this.replaceFile({ ...file, meta: file.meta ?? null, status: "error", error }, [], ftsName);
   }
 
   pendingChunks(limit: number, includeImages: boolean): PendingChunk[] {
     return this.statement(`
-      SELECT c.id, c.file_id AS fileId, f.kind, f.key, f.source, f.path, f.name, c.title, c.text, c.context
+      SELECT c.id, c.file_id AS fileId, f.kind, f.key, f.source, f.path, f.name, f.signature, c.title, c.text, c.context
       FROM chunks c JOIN files f ON f.id = c.file_id
       WHERE c.embedded = 0 AND (f.kind != 'image' OR ?)
       ORDER BY (f.kind = 'image'), c.file_id, c.ordinal
       LIMIT ?
-    `).all(includeImages ? 1 : 0, limit) as PendingChunk[];
+    `).all(includeImages ? 1 : 0, limit).map((row) => ({ ...row, generation: this.generation })) as PendingChunk[];
   }
 
   countPending(includeImages: boolean) {
@@ -431,7 +521,7 @@ export class SearchDatabase {
     return Number(row?.n ?? 0);
   }
 
-  storeVectors(entries: Array<{ id: number; kind: SearchFileKind; vector: Float32Array }>) {
+  storeVectors(entries: Array<{ id: number; generation: number; kind: SearchFileKind; vector: Float32Array }>) {
     this.transaction(() => {
       const exists = this.statement("SELECT 1 FROM chunks WHERE id = ? AND embedded = 0");
       const remove = this.statement("DELETE FROM chunks_vec WHERE rowid = ?");
@@ -439,7 +529,7 @@ export class SearchDatabase {
       const mark = this.statement("UPDATE chunks SET embedded = 1 WHERE id = ?");
       for (const entry of entries) {
         // The passage may have been replaced while it was being embedded.
-        if (!exists.get(entry.id)) continue;
+        if (entry.generation !== this.generation || !exists.get(entry.id)) continue;
         remove.run(BigInt(entry.id));
         insert.run(BigInt(entry.id), vectorBlob(truncateVector(entry.vector, this.dimensions)), entry.kind);
         mark.run(entry.id);
@@ -448,9 +538,13 @@ export class SearchDatabase {
   }
 
   /** Passages the model could not read are skipped until the model or the file changes. */
-  markEmbeddingFailed(ids: number[]) {
-    const mark = this.statement("UPDATE chunks SET embedded = 2 WHERE id = ?");
-    for (const id of ids) mark.run(id);
+  markEmbeddingFailed(chunks: Pick<PendingChunk, "id" | "generation">[]) {
+    const mark = this.statement("UPDATE chunks SET embedded = 2 WHERE id = ? AND embedded = 0");
+    for (const chunk of chunks) if (chunk.generation === this.generation) mark.run(chunk.id);
+  }
+
+  retryFailedEmbeddings() {
+    this.db.exec("UPDATE chunks SET embedded = 0 WHERE embedded = 2");
   }
 
   nearest(vector: Float32Array, limit: number, kinds?: SearchFileKind[]) {
@@ -506,6 +600,7 @@ export class SearchDatabase {
 
   /** Forget everything; the next scan indexes the library from scratch. */
   clear() {
+    this.generation += 1;
     this.transaction(() => {
       this.db.exec("DELETE FROM chunks_fts; DELETE FROM chunks; DELETE FROM files;");
       this.db.exec("DELETE FROM chunks_vec");

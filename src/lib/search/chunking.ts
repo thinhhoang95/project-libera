@@ -416,6 +416,12 @@ export function embeddingText(kind: string, text: string) {
   return value.replace(/[ \t]+/g, " ").replace(/ \n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/** The file title used in both the stored vector identity and the model input. */
+export function documentFileTitle(name: string) {
+  const dot = name.lastIndexOf(".");
+  return (dot > 0 ? name.slice(0, dot) : name).replace(/[_-]+/g, " ").trim() || name;
+}
+
 /** The document side of EmbeddingGemma 2's retrieval prompt. */
 export function documentPrompt(kind: string, fileTitle: string, chunk: Pick<SourceChunk, "title" | "text" | "context">) {
   const title = [fileTitle, chunk.title].map((value) => value.replace(/[|\n]+/g, " ").trim()).filter(Boolean).join(" — ") || "none";

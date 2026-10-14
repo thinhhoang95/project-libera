@@ -183,7 +183,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   if (!plainText && !imageParts.length) return { results: [], mode: "keyword", terms: [], tookMs: 0 };
 
   const indexer = getSearchIndexer();
-  const db = indexer.database();
+  const db = await indexer.databaseForSearch();
   if (!db) {
     return {
       results: [],
@@ -215,11 +215,15 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
         ? { text: plainText ? `${SEARCH_QUERY_PREFIX}${text}` : undefined, images }
         : { text: `${SEARCH_QUERY_PREFIX}${plainText}` };
       const [vector] = await worker.embed([input], "query");
-      nearest = db.nearest(vector, CANDIDATES, filter);
+      if (indexer.database() === db && indexer.vectorsUsable) nearest = db.nearest(vector, CANDIDATES, filter);
     } catch (error) {
       if (error instanceof StorageError) throw error;
       warnings.push(`Semantic search is unavailable (${error instanceof Error ? error.message : "unknown error"}). Showing keyword matches.`);
     }
+  }
+
+  if (indexer.database() !== db) {
+    return { results: [], mode: "keyword", terms, tookMs: Date.now() - started, warning: "The search index changed during the search. Search again." };
   }
 
   // With images, the words describe the images ("like this, but at night"),
@@ -263,7 +267,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
 
   for (const candidate of fused) {
     const row = rows.get(candidate.id);
-    if (!row) continue;
+    if (!row || indexer.isStale(row.fileId)) continue;
     if (row.source === "library" && scope && !scope.has(row.path)) continue;
     if (row.source === "library" && !includeArchive && row.path.split("/").includes(ARCHIVE_DIR)) continue;
     const entry = files.get(row.key) ?? { row, hits: [] };

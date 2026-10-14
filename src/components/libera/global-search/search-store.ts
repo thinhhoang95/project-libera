@@ -128,7 +128,7 @@ function schedulePoll() {
   if (!pollers) return;
   const busy = state.status?.state === "scanning" || state.status?.state === "embedding" || state.status?.model.state === "loading";
   pollTimer = setTimeout(async () => {
-    await refreshSearchStatus();
+    await refreshSearchStatus(true);
     schedulePoll();
   }, busy ? BUSY_POLL_MS : IDLE_POLL_MS);
 }

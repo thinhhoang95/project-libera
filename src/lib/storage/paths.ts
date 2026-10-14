@@ -109,7 +109,7 @@ export function getLinkedFolders(): LinkedFolder[] {
 
   try {
     const stats = statSync(statePath);
-    key = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    key = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     // No state file means no linked folders.
   }
@@ -130,7 +130,7 @@ export function getLinkedFolders(): LinkedFolder[] {
   let storedKey = key;
   try {
     const stats = statSync(statePath);
-    storedKey = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    storedKey = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     // Still no state file.
   }

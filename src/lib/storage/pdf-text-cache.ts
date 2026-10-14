@@ -2,6 +2,7 @@ import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertPdfFileName } from "@/lib/storage/file-types";
+import { readFileSignature } from "@/lib/storage/file-signature";
 import {
   copyFileIfExists,
   ensureParentDirectory,
@@ -18,7 +19,7 @@ import {
 } from "@/lib/storage/paths";
 import type { PdfTextCachePayload, PdfTextPage } from "@/lib/types";
 
-const PDF_TEXT_CACHE_VERSION = 1;
+const PDF_TEXT_CACHE_VERSION = 2;
 // Resolve from the running server bundle so this also works in standalone builds.
 // Webpack replaces createRequire(import.meta.url) with undefined and rewrites
 // direct require.resolve calls to bundle IDs instead of filesystem paths.
@@ -36,6 +37,7 @@ type StoredPdfTextCache = {
   path?: unknown;
   pdfUpdatedAt?: unknown;
   pdfSize?: unknown;
+  pdfSignature?: unknown;
   generatedAt?: unknown;
   pages?: unknown;
 };
@@ -133,12 +135,14 @@ function isFreshCache(
   relativePath: string,
   pdfUpdatedAt: string,
   pdfSize: number,
+  pdfSignature: string,
 ) {
   return (
     cache.version === PDF_TEXT_CACHE_VERSION &&
     cache.path === relativePath &&
     cache.pdfUpdatedAt === pdfUpdatedAt &&
     cache.pdfSize === pdfSize &&
+    cache.pdfSignature === pdfSignature &&
     Array.isArray(cache.pages)
   );
 }
@@ -190,6 +194,7 @@ export async function readPdfTextCache(
 
   const targetPath = filePathFromParts(notebook, pathParts);
   const stats = await stat(targetPath);
+  const pdfSignature = await readFileSignature(targetPath);
   const normalizedRelativePath = relativeFilePath(notebook, pathParts);
   const pdfUpdatedAt = stats.mtime.toISOString();
   const cachePath = pdfTextCachePath(notebook, pathParts);
@@ -200,7 +205,8 @@ export async function readPdfTextCache(
         await readFile(cachePath, "utf8"),
       ) as StoredPdfTextCache;
 
-      if (isFreshCache(storedCache, normalizedRelativePath, pdfUpdatedAt, stats.size)) {
+      if (isFreshCache(storedCache, normalizedRelativePath, pdfUpdatedAt, stats.size, pdfSignature)) {
+        if (await readFileSignature(targetPath) !== pdfSignature) throw new Error("The PDF changed while being read.");
         return normalizeStoredCache(storedCache, normalizedRelativePath);
       }
     }
@@ -216,10 +222,12 @@ export async function readPdfTextCache(
     pages: await extractPages(targetPath),
   };
 
+  if (await readFileSignature(targetPath) !== pdfSignature) throw new Error("The PDF changed while being read. Try again.");
+
   await ensureParentDirectory(cachePath);
   await writeFile(
     cachePath,
-    `${JSON.stringify({ version: PDF_TEXT_CACHE_VERSION, ...payload }, null, 2)}\n`,
+    `${JSON.stringify({ version: PDF_TEXT_CACHE_VERSION, pdfSignature, ...payload }, null, 2)}\n`,
     "utf8",
   );
 

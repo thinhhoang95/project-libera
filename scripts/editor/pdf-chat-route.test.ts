@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,9 +50,9 @@ test("PDF chat context authenticates and extracts page-labelled text with size a
     const response = await GET(request());
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { text: "## Page 1\n\nComplete PDF text" });
-    const stats = await stat(file);
+    const storedCache = JSON.parse(await readFile(cachePath, "utf8"));
     async function cachedPages(pages: { pageNumber: number; text: string }[]) {
-      await writeFile(cachePath, JSON.stringify({ version: 1, path: "Notes/paper.pdf", pdfUpdatedAt: stats.mtime.toISOString(), pdfSize: stats.size, generatedAt: new Date().toISOString(), pages }));
+      await writeFile(cachePath, JSON.stringify({ ...storedCache, pages }));
     }
     await cachedPages([{ pageNumber: 1, text: "First page" }, { pageNumber: 2, text: "Second page" }]);
     assert.deepEqual(await (await GET(request())).json(), { text: "## Page 1\n\nFirst page\n\n## Page 2\n\nSecond page" });

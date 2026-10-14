@@ -34,6 +34,8 @@ class SearchWorkerClient {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private config: WorkerConfig = { textWeights: "", visionWeights: "", threads: 1, visionTokens: 140 };
   private configKey = "";
+  private modelSignature = "";
+  private generation = 0;
   private loadPromise: Promise<ModelInfo> | null = null;
   private loadFailedAt = 0;
 
@@ -44,18 +46,19 @@ class SearchWorkerClient {
   modelInfo: ModelInfo | null = null;
 
   /** Apply Preferences → Search; a change restarts the worker on its next request. Returns whether anything changed. */
-  configure(preferences: SearchPreferences) {
+  configure(preferences: SearchPreferences, modelSignature = this.modelSignature) {
     const config: WorkerConfig = {
       textWeights: preferences.textWeights,
       visionWeights: preferences.visionWeights,
       threads: searchWorkerThreads(),
       visionTokens: preferences.visionTokens,
     };
-    const key = JSON.stringify(config);
+    const key = JSON.stringify([config, modelSignature]);
     if (key === this.configKey) return false;
 
     const changed = Boolean(this.configKey);
     this.config = config;
+    this.modelSignature = modelSignature;
     this.configKey = key;
     this.stop();
     this.modelState = "idle";
@@ -131,6 +134,7 @@ class SearchWorkerClient {
   }
 
   stop() {
+    this.generation += 1;
     const child = this.child;
     this.child = null;
     this.ready = null;
@@ -159,9 +163,10 @@ class SearchWorkerClient {
   }
 
   private async request<T>(message: Record<string, unknown>): Promise<T> {
-    await this.start();
+    const ready = this.start();
     const child = this.child;
-    if (!child?.connected) throw new Error("The search worker is not running.");
+    await ready;
+    if (child !== this.child || !child?.connected) throw new Error("The search worker was restarted.");
     if (this.idleTimer) clearTimeout(this.idleTimer);
 
     const id = this.nextId++;
@@ -185,14 +190,17 @@ class SearchWorkerClient {
     }
 
     this.loadPromise ??= (async () => {
+      const generation = this.generation;
       this.modelState = "loading";
       try {
         const info = await this.request<ModelInfo>({ type: "load" });
+        if (generation !== this.generation) throw new Error("The search worker was restarted.");
         this.modelInfo = info;
         this.modelState = "ready";
         this.modelError = "";
         return info;
       } catch (error) {
+        if (generation !== this.generation) throw error;
         this.loadPromise = null;
         this.modelState = "error";
         this.modelError = error instanceof Error ? error.message : "Could not load the embedding model.";
@@ -205,9 +213,13 @@ class SearchWorkerClient {
   }
 
   async embed(inputs: EmbedInput[], priority: "query" | "index") {
+    const generation = this.generation;
     if (priority === "query") this.lastQueryAt = Date.now();
     await this.ensureModel();
-    return this.request<Float32Array[]>({ type: "embed", inputs, priority });
+    if (generation !== this.generation) throw new Error("The search worker was restarted.");
+    const vectors = await this.request<Float32Array[]>({ type: "embed", inputs, priority });
+    if (generation !== this.generation) throw new Error("The search worker was restarted.");
+    return vectors;
   }
 
   pdfText(filePath: string, from: number, to: number) {

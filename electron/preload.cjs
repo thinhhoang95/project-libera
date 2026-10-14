@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   selectSearchIndexFile: (mode) => ipcRenderer.invoke("setup:select-search-index-file", mode),
   revealSearchIndex: (filePath) => ipcRenderer.invoke("setup:reveal-search-index", filePath),
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
+  listOpenRouterModels: (options) => ipcRenderer.invoke("setup:list-openrouter-models", options),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
   loadAiChatCustomInstructionFile: () =>
     ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),

@@ -25,6 +25,7 @@ const { INDEX_FILE_NAME, defaultSearchIndexFile, normalizeSearchPreferences } = 
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
+const { createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
 const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
 const {
@@ -67,6 +68,7 @@ applyApplicationIdentity();
 
 let activeSetupPromise = null;
 let activeSetupWindow = null;
+let openRouterModelCatalog = null;
 let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
@@ -751,6 +753,15 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
 
+    ipcMain.handle("setup:list-openrouter-models", async (_event, options) => {
+      openRouterModelCatalog ??= createOpenRouterModelCatalog({ cacheDir: app.getPath("userData") });
+      try {
+        return { ok: true, ...(await openRouterModelCatalog.list({ refresh: options?.refresh === true })) };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+
     ipcMain.handle("setup:import-preferences", async () => {
       const result = await importPreferences(setupWindow);
 
@@ -814,6 +825,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:select-search-index-file");
       ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
+      ipcMain.removeHandler("setup:list-openrouter-models");
       ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
       ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");

@@ -21,7 +21,7 @@ export function getSearchPreferences(): SearchPreferences {
   let key = `${configPath}:missing`;
   try {
     const stats = statSync(configPath);
-    key = `${configPath}:${stats.mtimeMs}:${stats.size}`;
+    key = `${configPath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     // Fall back to the environment below.
   }

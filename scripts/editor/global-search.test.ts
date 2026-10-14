@@ -14,6 +14,8 @@ import {
 } from "../../src/lib/search/chunking";
 import { SearchDatabase, truncateVector } from "../../src/lib/search/database";
 import { fuseRankings, keywordMatchExpression, relevantSemanticHits } from "../../src/lib/search/query";
+import { planIndexRepair } from "../../src/lib/search/repair";
+import type { LiberaFileNode } from "../../src/lib/types";
 import {
   findTermRanges,
   searchLocationLabel,
@@ -205,7 +207,7 @@ test("the index stores passages, finds them both ways, and reuses vectors", asyn
     assert.equal(db.countPending(true), 2);
 
     const pending = db.pendingChunks(10, true);
-    db.storeVectors(pending.map((chunk) => ({ id: chunk.id, kind: chunk.kind, vector: chunk.title === "Tunneling" ? unit([1, 0, 0, 0]) : unit([0, 1, 0, 0]) })));
+    db.storeVectors(pending.map((chunk) => ({ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector: chunk.title === "Tunneling" ? unit([1, 0, 0, 0]) : unit([0, 1, 0, 0]) })));
     assert.equal(db.countPending(true), 0);
 
     const nearest = db.nearest(unit([0.9, 0.1, 0, 0]), 2);
@@ -222,12 +224,12 @@ test("the index stores passages, finds them both ways, and reuses vectors", asyn
     assert.equal(db.countPending(true), 1);
 
     // A copy of the file borrows the vectors of identical passages.
-    db.replaceFile({ ...file, key: "Physics/copy.md", path: "Physics/copy.md", name: "copy.md" }, [chunks[0]], "Physics copy.md");
+    db.replaceFile({ ...file, key: "Other/notes.md", path: "Other/notes.md", notebook: "Other" }, [chunks[0]], "Other notes.md");
     assert.equal(db.countPending(true), 1);
 
-    const copy = db.listFiles().find((entry) => entry.key === "Physics/copy.md")!;
+    const copy = db.listFiles().find((entry) => entry.key === "Other/notes.md")!;
     db.deleteFile(copy.id);
-    assert.equal(db.keyword(keywordMatchExpression(["copy"]), 10).length, 0);
+    assert.equal(db.keyword(keywordMatchExpression(["other"]), 10).length, 0);
     assert.deepEqual(db.counts(), { files: 1, failedFiles: 0, images: 0, chunks: 2, embeddedChunks: 1 });
 
     // Another embedding size or model keeps the vectors (re-embedding is costly) until a reset is allowed.
@@ -264,6 +266,74 @@ test("an existing index is reused, and other SQLite files are never taken over",
     foreign.close();
     assert.throws(() => new SearchDatabase(other), /not a Libera search index/);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function libraryFile(filePath: string, size = 10, fileType: LiberaFileNode["fileType"] = "markdown"): LiberaFileNode {
+  return { kind: "file", name: filePath.split("/").at(-1)!, path: filePath, notebook: filePath.split("/")[0], fileType, createdAt: "", size, updatedAt: "" };
+}
+
+test("an index from another computer is repaired: drifted paths move, missing files are stale", () => {
+  const entry = (id: number, key: string, extra: Partial<{ source: "library" | "gallery"; kind: LiberaFileNode["fileType"]; path: string; size: number }> = {}) => ({
+    id,
+    key,
+    source: extra.source ?? "library" as const,
+    kind: extra.kind ?? "markdown" as const,
+    path: extra.path ?? key,
+    name: key.split("/").at(-1)!,
+    notebook: key.split("/")[0],
+    signature: `${extra.size ?? 10}:2026-01-01T00:00:00.000Z`,
+    meta: null,
+    status: "ok",
+  });
+  const indexed = [
+    entry(1, "Physics/notes.md"),
+    entry(2, "Physics/Cafe\u0301.md"),
+    entry(3, "Thesis (laptop)/chapters/intro.tex", { kind: "latex" }),
+    entry(4, "Physics/gone.md"),
+    entry(5, "gallery:old-id", { source: "gallery", kind: "image", path: "Trips/beach.png", size: 500 }),
+    entry(6, "Old/readme.md", { size: 10 }),
+    entry(7, "Old/a.md"),
+  ];
+  const files = [
+    libraryFile("Physics/notes.md"),
+    libraryFile("physics/Caf\u00e9.md"),
+    libraryFile("Thesis/chapters/intro.tex", 10, "latex"),
+    libraryFile("One/readme.md", 10),
+    libraryFile("Two/readme.md", 99),
+    libraryFile("One/a.md"),
+    libraryFile("Two/a.md"),
+  ];
+  const photos = [{ id: "new-id", path: "Trips/beach.png", name: "beach.png", updatedAt: "", size: 500 }];
+  const { relocations, stale } = planIndexRepair(indexed, files, photos);
+  const moved = new Map(relocations.map((relocation) => [relocation.id, relocation.key]));
+
+  assert.equal(moved.has(1), false, "entries that still match are left alone");
+  assert.equal(moved.get(2), "physics/Caf\u00e9.md", "Unicode form and letter case do not matter");
+  assert.equal(moved.get(3), "Thesis/chapters/intro.tex", "a linked folder with another name keeps its entries");
+  assert.equal(moved.get(5), "gallery:new-id", "gallery photos are found by path when their ids changed");
+  assert.equal(moved.get(6), "One/readme.md", "the size decides between files at the same inner path");
+  assert.deepEqual(stale.sort(), [4, 7], "a missing or ambiguous file is stale, never guessed");
+});
+
+test("a relocated entry keeps its vectors and is found under its new name", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-"));
+  const db = new SearchDatabase(path.join(directory, "libera-search.sqlite"));
+  try {
+    db.prepareVectors(4, "model_q4.onnx:1", "");
+    const id = db.replaceFile({ key: "Laptop/notes.md", source: "library", kind: "markdown", path: "Laptop/notes.md", name: "notes.md", notebook: "Laptop", signature: "1", meta: null },
+      [{ hash: "a", title: "", text: "Wave functions collapse.", context: "" }], "Laptop notes.md");
+    db.storeVectors(db.pendingChunks(10, true).map((chunk) => ({ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector: unit([1, 0, 0, 0]) })));
+
+    db.relocateFile(id, { key: "Desktop/notes.md", path: "Desktop/notes.md", name: "notes.md", notebook: "Desktop", meta: null }, "Desktop notes.md");
+    assert.deepEqual(db.listFiles().map((file) => file.key), ["Desktop/notes.md"]);
+    assert.equal(db.countPending(true), 0, "no passage has to be embedded again");
+    assert.equal(db.keyword(keywordMatchExpression(["desktop"]), 10).length, 1);
+    assert.equal(db.keyword(keywordMatchExpression(["laptop"]), 10).length, 0);
+    assert.equal(db.keyword(keywordMatchExpression(["wave"]), 10).length, 1);
+  } finally {
+    db.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

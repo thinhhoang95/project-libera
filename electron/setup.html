@@ -314,6 +314,19 @@
       .libera-dialog input.switch:checked::after { transform: translateX(16px); }
       .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
       :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
+      .model-catalog-status { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 12px; }
+      .model-catalog-status .field-help { margin: 0; }
+      .model-catalog-refresh { background: none; border: 0; color: var(--accent, #2563eb); cursor: pointer; font-size: 12px; padding: 0; }
+      .model-catalog-refresh:disabled { cursor: default; opacity: 0.55; }
+      .model-picker-row { margin-top: 8px; }
+      .model-suggestions { background: var(--dialog-surface, #fff); border: 1px solid var(--input, #d4d4d8); border-radius: 10px; box-shadow: 0 12px 32px #161c3c2e; list-style: none; margin: 0; max-height: 260px; overflow-y: auto; padding: 4px; position: fixed; scrollbar-width: thin; z-index: 50; }
+      .model-suggestion { border-radius: 7px; cursor: pointer; display: grid; gap: 1px 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 6px 9px; }
+      .model-suggestion[aria-selected="true"] { background: var(--muted, #f4f4f5); }
+      .model-suggestion-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-suggestion-name { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-suggestion-meta { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+      .model-suggestion mark { background: none; color: var(--accent, #2563eb); font-weight: 600; }
+      .model-suggestions-empty { color: var(--muted-foreground, #71717a); font-size: 12px; padding: 8px 9px; }
     </style>
     <link rel="stylesheet" href="modal-dialog.css" />
   </head>
@@ -439,6 +452,10 @@
               <h2>AI</h2>
               <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
               <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically.</p>
+              <div class="model-catalog-status">
+                <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
+                <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
+              </div>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
@@ -530,7 +547,16 @@
                   rows="3"
                   spellcheck="false"
                 ></textarea>
-                <p class="field-help">Optional. Enter one OpenRouter model identifier per line. Duplicate entries and the default AI Chat model are ignored.</p>
+                <input
+                  id="ai-chat-alternative-model-picker"
+                  class="model-picker-row"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="Add an alternative model"
+                  placeholder="Search OpenRouter models to add…"
+                />
+                <p class="field-help">Optional. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored.</p>
                 <label for="ai-chat-effort">Reasoning effort</label>
                 <select id="ai-chat-effort">
                   <option value="low">Low</option>
@@ -612,7 +638,7 @@
                   <option value="true">Enabled</option>
                 </select>
               </fieldset>
-              <p class="field-help">Enter OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
+              <p class="field-help">Enter or search OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
 
             </section>
 
@@ -972,6 +998,8 @@
         sections.forEach((section) => {
           section.classList.toggle("hidden", section.dataset.section !== sectionId);
         });
+        activeModelCombobox?.close();
+        if (sectionId === "ai") loadOpenRouterModels();
       }
 
       function showError(message) {
@@ -1205,6 +1233,266 @@
           loadRenderedSystemFontsButton.textContent = "Reload system fonts";
         }
       }
+
+      const modelCatalogStatus = document.querySelector("#model-catalog-status");
+      const modelCatalogRefreshButton = document.querySelector("#model-catalog-refresh");
+      const aiChatAlternativeModelPicker = document.querySelector("#ai-chat-alternative-model-picker");
+      let openRouterModels = [];
+      let openRouterModelsPromise = null;
+      let activeModelCombobox = null;
+
+      function formatCatalogAge(fetchedAt) {
+        const minutes = Math.round((fetchedAt - Date.now()) / 60_000);
+        const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+        if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
+        if (Math.abs(minutes) < 60 * 24) return format.format(Math.round(minutes / 60), "hour");
+        return format.format(Math.round(minutes / (60 * 24)), "day");
+      }
+
+      function formatContextLength(tokens) {
+        if (!tokens) return "";
+        return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : `${Math.round(tokens / 1000)}K`;
+      }
+
+      // The main process caches the OpenRouter catalog for a day (memory + disk),
+      // so this is cheap to call whenever the AI section or a model field is used.
+      function loadOpenRouterModels({ refresh = false } = {}) {
+        if (!window.liberaSetup?.listOpenRouterModels) return Promise.resolve(openRouterModels);
+        if (openRouterModelsPromise && !refresh) return openRouterModelsPromise;
+        modelCatalogRefreshButton.disabled = true;
+        modelCatalogStatus.textContent = refresh ? "Refreshing OpenRouter models…" : "Loading OpenRouter models…";
+        openRouterModelsPromise = window.liberaSetup.listOpenRouterModels({ refresh })
+          .then((result) => {
+            if (!result?.ok) throw new Error(result?.error || "Unknown error.");
+            openRouterModels = result.models;
+            modelCatalogStatus.textContent =
+              `${openRouterModels.length} OpenRouter models, updated ${formatCatalogAge(result.fetchedAt)}.` +
+              (result.stale ? " OpenRouter is unreachable, so the cached list is shown." : "");
+            return openRouterModels;
+          })
+          .catch((error) => {
+            openRouterModelsPromise = null;
+            modelCatalogStatus.textContent =
+              `Unable to load OpenRouter models. You can still type a model ID. (${error.message})`;
+            return openRouterModels;
+          })
+          .finally(() => {
+            modelCatalogRefreshButton.disabled = false;
+            activeModelCombobox?.render();
+          });
+        return openRouterModelsPromise;
+      }
+
+      function appendHighlighted(parent, text, terms) {
+        const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        const pattern = escaped.length ? new RegExp("(" + escaped.join("|") + ")", "gi") : null;
+        (pattern ? text.split(pattern) : [text]).forEach((part, index) => {
+          if (!part) return;
+          if (index % 2 === 1) {
+            const mark = document.createElement("mark");
+            mark.textContent = part;
+            parent.append(mark);
+          } else {
+            parent.append(part);
+          }
+        });
+      }
+
+      function attachModelCombobox(input, { visionOnly = false, onPick = null } = {}) {
+        const list = document.createElement("ul");
+        list.className = "model-suggestions";
+        list.id = `${input.id}-suggestions`;
+        list.setAttribute("role", "listbox");
+        list.hidden = true;
+        form.append(list);
+        input.setAttribute("role", "combobox");
+        input.setAttribute("aria-autocomplete", "list");
+        input.setAttribute("aria-controls", list.id);
+        input.setAttribute("aria-expanded", "false");
+        let isOpen = false;
+        let showAll = false;
+        let items = [];
+        let activeIndex = -1;
+
+        function matches() {
+          const query = showAll ? "" : input.value.trim().toLowerCase();
+          const terms = query.split(/\s+/).filter(Boolean);
+          const pool = visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels;
+          const rank = (model) => {
+            const id = model.id.toLowerCase();
+            if (id === query) return 0;
+            return id.startsWith(query) || id.split("/").pop().startsWith(query) ? 1 : 2;
+          };
+          const found = pool.filter((model) => {
+            const haystack = `${model.id} ${model.name}`.toLowerCase();
+            return terms.every((term) => haystack.includes(term));
+          });
+          if (query) found.sort((a, b) => rank(a) - rank(b));
+          return { terms, found: found.slice(0, 100) };
+        }
+
+        function position() {
+          const rect = input.getBoundingClientRect();
+          const below = window.innerHeight - rect.bottom;
+          list.style.left = `${rect.left}px`;
+          list.style.width = `${rect.width}px`;
+          const above = below < 220 && rect.top > below;
+          list.style.maxHeight = `${Math.max(120, Math.min(260, (above ? rect.top : below) - 12))}px`;
+          if (above) {
+            list.style.top = "";
+            list.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+          } else {
+            list.style.bottom = "";
+            list.style.top = `${rect.bottom + 4}px`;
+          }
+        }
+
+        function setActive(index) {
+          list.querySelector('[aria-selected="true"]')?.setAttribute("aria-selected", "false");
+          activeIndex = index;
+          const option = index >= 0 ? list.children[index] : null;
+          if (option) {
+            option.setAttribute("aria-selected", "true");
+            option.scrollIntoView({ block: "nearest" });
+            input.setAttribute("aria-activedescendant", option.id);
+          } else {
+            input.removeAttribute("aria-activedescendant");
+          }
+        }
+
+        function render() {
+          if (!isOpen) return;
+          const { terms, found } = matches();
+          items = found;
+          list.replaceChildren(...found.map((model, index) => {
+            const option = document.createElement("li");
+            option.className = "model-suggestion";
+            option.id = `${list.id}-${index}`;
+            option.setAttribute("role", "option");
+            option.setAttribute("aria-selected", "false");
+            const id = document.createElement("span");
+            id.className = "model-suggestion-id";
+            appendHighlighted(id, model.id, terms);
+            const name = document.createElement("span");
+            name.className = "model-suggestion-name";
+            appendHighlighted(name, model.name, terms);
+            const meta = document.createElement("span");
+            meta.className = "model-suggestion-meta";
+            meta.textContent = [formatContextLength(model.contextLength), model.vision ? "image" : ""].filter(Boolean).join(" · ");
+            option.append(id, name, meta);
+            option.addEventListener("mousedown", (event) => {
+              event.preventDefault();
+              pick(model.id);
+            });
+            option.addEventListener("mousemove", () => {
+              if (activeIndex !== index) setActive(index);
+            });
+            return option;
+          }));
+          if (!found.length) {
+            const empty = document.createElement("li");
+            empty.className = "model-suggestions-empty";
+            empty.textContent = openRouterModels.length
+              ? "No matching OpenRouter models. The typed ID will be used as entered."
+              : openRouterModelsPromise ? "Loading OpenRouter models…" : "No model suggestions are available.";
+            list.append(empty);
+          }
+          position();
+          setActive(showAll ? found.findIndex((model) => model.id === input.value.trim()) : -1);
+        }
+
+        function open() {
+          if (activeModelCombobox && activeModelCombobox !== api) activeModelCombobox.close();
+          activeModelCombobox = api;
+          isOpen = true;
+          list.hidden = false;
+          input.setAttribute("aria-expanded", "true");
+          render();
+          loadOpenRouterModels();
+        }
+
+        function close() {
+          if (!isOpen) return;
+          isOpen = false;
+          list.hidden = true;
+          input.setAttribute("aria-expanded", "false");
+          setActive(-1);
+          if (activeModelCombobox === api) activeModelCombobox = null;
+        }
+
+        function pick(modelId) {
+          if (onPick) {
+            onPick(modelId);
+          } else {
+            input.value = modelId;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          close();
+        }
+
+        input.addEventListener("focus", () => {
+          showAll = true;
+          open();
+        });
+        input.addEventListener("click", () => {
+          if (isOpen) return;
+          showAll = true;
+          open();
+        });
+        input.addEventListener("input", () => {
+          showAll = false;
+          if (isOpen) render();
+          else open();
+        });
+        input.addEventListener("blur", close);
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!isOpen) {
+              showAll = true;
+              open();
+              return;
+            }
+            if (!items.length) return;
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            setActive(activeIndex < 0 ? (step > 0 ? 0 : items.length - 1) : (activeIndex + step + items.length) % items.length);
+          } else if (event.key === "Enter") {
+            if (isOpen && activeIndex >= 0) {
+              event.preventDefault();
+              pick(items[activeIndex].id);
+            } else if (onPick && input.value.trim()) {
+              event.preventDefault();
+              pick(input.value.trim());
+            }
+          } else if (event.key === "Escape" && isOpen) {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+          } else if (event.key === "Tab") {
+            close();
+          }
+        });
+
+        const api = { close, render, position };
+        return api;
+      }
+
+      window.addEventListener("resize", () => activeModelCombobox?.position());
+      document.addEventListener("scroll", () => activeModelCombobox?.position(), true);
+      modelCatalogRefreshButton.addEventListener("click", () => loadOpenRouterModels({ refresh: true }));
+      attachModelCombobox(openRouterModelInput);
+      for (const name of aiFunctionNames) {
+        attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
+      }
+      attachModelCombobox(aiChatAlternativeModelPicker, {
+        onPick(modelId) {
+          const models = aiChatAlternativeModelsInput.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          if (!models.includes(modelId) && modelId !== aiFunctionInputs.chat.model.value.trim()) {
+            aiChatAlternativeModelsInput.value = [...models, modelId].join("\n");
+          }
+          aiChatAlternativeModelPicker.value = "";
+        },
+      });
 
       async function loadState() {
         const state = await window.liberaSetup.getState();

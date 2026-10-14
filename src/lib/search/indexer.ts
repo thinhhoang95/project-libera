@@ -1,22 +1,24 @@
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { SearchFileKind, SearchGalleryPhoto, SearchIndexStatus } from "@/lib/global-search";
+import type { SearchGalleryPhoto, SearchIndexStatus } from "@/lib/global-search";
 import {
   chunkLatex,
   chunkMarkdown,
   chunkPdfPages,
   chunkPlainText,
   documentPrompt,
+  documentFileTitle,
   type SourceChunk,
 } from "@/lib/search/chunking";
 import { SearchDatabase, type IndexedFile, type NewChunk, type PendingChunk } from "@/lib/search/database";
+import { contentHash, weightsSignature } from "@/lib/search/fingerprints";
+import { galleryMeta, planIndexRepair } from "@/lib/search/repair";
 import { getSearchPreferences, searchIndexFile, type SearchPreferences } from "@/lib/search/settings";
 import { getSearchWorker } from "@/lib/search/worker-client";
-import { pathExists } from "@/lib/storage/fs-utils";
+import { readFileSignature } from "@/lib/storage/file-signature";
 import { getGallery, getGalleryRoot } from "@/lib/storage/gallery";
-import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, getAdminRoot, getLinkedFolders, splitFilePath } from "@/lib/storage/paths";
 import { pageTextFromItems, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { getTree } from "@/lib/storage/tree";
 import type { LiberaFileNode, LiberaTreeNode, PdfTextPage } from "@/lib/types";
@@ -46,25 +48,14 @@ function collectFiles(nodes: LiberaTreeNode[], files: LiberaFileNode[]) {
   }
 }
 
-function fileStem(name: string) {
-  const extension = path.extname(name);
-  return (extension ? name.slice(0, -extension.length) : name).replace(/[_-]+/g, " ").trim() || name;
-}
-
-function textHash(kind: string, title: string, text: string) {
-  return createHash("sha1").update(`${kind}\u0000${title}\u0000${text}`).digest("hex");
-}
-
 /** Identity of an image's content, so a moved or copied photo keeps its vector. */
-async function imageHash(filePath: string, size: number) {
-  const handle = await open(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(Math.min(size, 256 * 1024));
-    await handle.read(buffer, 0, buffer.length, 0);
-    return `image:${createHash("sha1").update(buffer).update(String(size)).digest("hex")}`;
-  } finally {
-    await handle.close();
-  }
+async function imageHash(filePath: string) {
+  return `image:${await contentHash(filePath)}`;
+}
+
+function ftsNameOf(source: IndexedFile["source"], relativePath: string) {
+  const words = relativePath.replaceAll("/", " ");
+  return source === "gallery" ? `Gallery ${words}` : words;
 }
 
 function libraryAbsolutePath(relativePath: string) {
@@ -72,16 +63,8 @@ function libraryAbsolutePath(relativePath: string) {
   return filePathFromParts(notebook, pathParts);
 }
 
-function weightsSignature(filePath: string) {
-  if (!filePath) return Promise.resolve("");
-  return stat(filePath)
-    .then((stats) => `${path.basename(filePath)}:${stats.size}`)
-    .catch(() => "");
-}
-
-function toNewChunks(kind: SearchFileKind, chunks: SourceChunk[]): NewChunk[] {
+function toNewChunks(chunks: SourceChunk[]): NewChunk[] {
   return chunks.map((chunk) => ({
-    hash: textHash(kind, chunk.title, chunk.text),
     title: chunk.title,
     text: chunk.text,
     context: chunk.context,
@@ -94,8 +77,8 @@ function toNewChunks(kind: SearchFileKind, chunks: SourceChunk[]): NewChunk[] {
 }
 
 /** A file with nothing to read still gets one passage, so its name can be found. */
-function nameOnlyChunk(kind: SearchFileKind, name: string): NewChunk[] {
-  return [{ hash: textHash(kind, "", name), title: "", text: name, context: "" }];
+function nameOnlyChunk(name: string): NewChunk[] {
+  return [{ title: "", text: name, context: "" }];
 }
 
 /**
@@ -106,9 +89,11 @@ function nameOnlyChunk(kind: SearchFileKind, name: string): NewChunk[] {
  * embeds the passages that have no vector yet, text before images, in small
  * batches on the worker, so searches stay quick while it runs.
  */
-class SearchIndexer {
+export class SearchIndexer {
   private db: SearchDatabase | null = null;
   private dbFile = "";
+  private dbRoot = "";
+  private dbIdentity = "";
   private running: Promise<void> | null = null;
   private rescanRequested = false;
   private paused = false;
@@ -123,6 +108,14 @@ class SearchIndexer {
   private mismatch: string | null = null;
   /** Set when the user asked to embed again with the current preferences. */
   private resetRequested = false;
+  private rebuildRequested = false;
+  private buildFile = "";
+  private resetFile = "";
+  private rebuildFile = "";
+  private preparedKey = "";
+  private embeddingEpoch = 0;
+  /** Entries that match no file; hidden from searches until the scan removes them. */
+  private staleFileIds = new Set<number>();
 
   /**
    * The index for the current preferences, reopened when its file changes.
@@ -131,43 +124,111 @@ class SearchIndexer {
    */
   database({ create = false }: { create?: boolean } = {}) {
     const file = searchIndexFile();
-    if (this.db && this.dbFile === file) return this.db;
+    const root = this.libraryKey();
+    let identity = "";
+    try {
+      const stats = statSync(file);
+      identity = `${stats.dev}:${stats.ino}:${stats.birthtimeMs}`;
+    } catch { /* A removed index must not keep its old open handle. */ }
+    if (this.db && this.dbFile === file && this.dbRoot === root && this.dbIdentity === identity && identity) return this.db;
 
     this.db?.close();
     this.db = null;
     this.dbFile = "";
+    this.dbRoot = "";
+    this.dbIdentity = "";
+    this.preparedKey = "";
+    this.lastScanStartedAt = 0;
+    this.lastScanAt = "";
     this.mismatch = null;
+    this.staleFileIds.clear();
     if (!create && !existsSync(file)) return null;
 
     const db = new SearchDatabase(file);
     this.db = db;
     this.dbFile = file;
+    this.dbRoot = root;
+    const stats = statSync(file);
+    this.dbIdentity = `${stats.dev}:${stats.ino}:${stats.birthtimeMs}`;
     this.mismatch = db.prepareVectors(getSearchPreferences().dimensions, "", "");
     return db;
   }
 
+  /** The entry matches no file any more and is about to be removed. */
+  isStale(fileId: number) {
+    return this.staleFileIds.has(fileId);
+  }
+
   /** The vectors can be searched: they were made with the current model and size. */
   get vectorsUsable() {
-    return !this.mismatch;
+    return !this.mismatch && this.preparedKey === this.configurationKey(getSearchPreferences());
+  }
+
+  private configurationKey(preferences: SearchPreferences) {
+    return JSON.stringify([this.libraryKey(), preferences]);
+  }
+
+  private libraryKey() {
+    return JSON.stringify([getAdminRoot(), getLinkedFolders().map(({ name, path }) => [name, path])]);
+  }
+
+  private isCurrent(db: SearchDatabase, preferences: SearchPreferences) {
+    if (this.db === db && this.dbRoot === this.libraryKey() && !this.rebuildRequested &&
+        this.configurationKey(preferences) === this.configurationKey(getSearchPreferences()) && db.filePath === searchIndexFile()) return true;
+    this.rescanRequested = true;
+    return false;
+  }
+
+  /** Verify persisted vector settings before a query can use them. */
+  async databaseForSearch() {
+    if (!this.database()) return null;
+    return this.prepare(getSearchPreferences());
   }
 
   private async prepare(preferences: SearchPreferences) {
     const worker = getSearchWorker();
-    worker.configure(preferences);
-    const db = this.database({ create: true })!;
-    const [textSignature, visionSignature] = await Promise.all([
-      weightsSignature(preferences.textWeights),
-      weightsSignature(preferences.visionWeights),
-    ]);
+    if (worker.configure(preferences)) this.invalidateEmbeddings();
+    const db = this.database();
+    if (!db) return null;
+    const key = this.configurationKey(preferences);
+    // A routine verification of the same settings must not disable a query
+    // that has just validated them and requested a background scan.
+    if (this.preparedKey !== key) this.preparedKey = "";
+    let textSignature: string;
+    let visionSignature: string;
+    try {
+      [textSignature, visionSignature] = await Promise.all([
+        weightsSignature(preferences.textWeights, true),
+        weightsSignature(preferences.visionWeights),
+      ]);
+    } catch (error) {
+      if (!this.isCurrent(db, preferences)) return null;
+      this.mismatch = error instanceof Error ? error.message : "Could not read the model files.";
+      return db;
+    }
+    if (!this.isCurrent(db, preferences)) return null;
+    if (worker.configure(preferences, `${textSignature}|${visionSignature}`)) this.invalidateEmbeddings();
+    if (this.resetRequested && this.resetFile === db.filePath) this.invalidateEmbeddings();
     // Images are embedded by both encoders; the text model is part of their signature.
     this.mismatch = db.prepareVectors(
       preferences.dimensions,
       textSignature,
-      visionSignature && `${textSignature}|${visionSignature}`,
-      this.resetRequested,
+      visionSignature && `${textSignature}|${visionSignature}|tokens:${preferences.visionTokens}`,
+      this.resetRequested && this.resetFile === db.filePath,
     );
     this.resetRequested = false;
+    this.resetFile = "";
+    this.preparedKey = key;
     return db;
+  }
+
+  private invalidateEmbeddings() {
+    this.embeddingEpoch += 1;
+    if (this.running && this.state === "embedding") this.rescanRequested = true;
+  }
+
+  private canEmbed(db: SearchDatabase, preferences: SearchPreferences, epoch: number) {
+    return this.isCurrent(db, preferences) && this.embeddingEpoch === epoch && !this.mismatch;
   }
 
   /**
@@ -176,10 +237,12 @@ class SearchIndexer {
    */
   requestScan({ force = false, build = false }: { force?: boolean; build?: boolean } = {}) {
     if (!build && !existsSync(searchIndexFile())) return;
+    if (build) this.buildFile = searchIndexFile();
     if (this.running) {
-      if (force) this.rescanRequested = true;
-      return;
+      if (force || (this.state === "embedding" && Date.now() - this.lastScanStartedAt >= MIN_SCAN_INTERVAL_MS)) this.rescanRequested = true;
+      return this.running;
     }
+    if (!this.database({ create: build })) return;
     if (!force && Date.now() - this.lastScanStartedAt < MIN_SCAN_INTERVAL_MS) return;
 
     // Report the pass at once; the scan itself starts after the first await.
@@ -190,6 +253,7 @@ class SearchIndexer {
       this.running = null;
     });
     this.running.catch(() => undefined);
+    return this.running;
   }
 
   pause() {
@@ -202,14 +266,17 @@ class SearchIndexer {
   }
 
   async rebuild() {
-    this.database({ create: true })!.clear();
+    this.rebuildRequested = true;
+    this.rebuildFile = searchIndexFile();
     this.resetRequested = true;
+    this.resetFile = this.rebuildFile;
     this.requestScan({ force: true, build: true });
   }
 
   /** Drop vectors made with other settings and embed again with the current ones. */
   reembed() {
     this.resetRequested = true;
+    this.resetFile = searchIndexFile();
     this.requestScan({ force: true, build: true });
   }
 
@@ -218,15 +285,26 @@ class SearchIndexer {
     try {
       do {
         this.rescanRequested = false;
-        const preferences = getSearchPreferences();
-        const db = await this.prepare(preferences);
-        await this.scan(db, preferences);
-        if (!this.mismatch) await this.embedPending(db, preferences);
+        try {
+          const preferences = getSearchPreferences();
+          const target = this.database({ create: this.buildFile === searchIndexFile(preferences) });
+          this.buildFile = "";
+          if (!target) break;
+          if (this.rebuildRequested) {
+            if (this.rebuildFile === target.filePath) target.clear();
+            this.rebuildRequested = false;
+            this.rebuildFile = "";
+          }
+          const db = await this.prepare(preferences);
+          if (!db || !this.isCurrent(db, preferences)) continue;
+          await this.scan(db, preferences);
+          if (this.isCurrent(db, preferences) && !this.mismatch) await this.embedPending(db, preferences);
+        } catch (error) {
+          if (this.rescanRequested) continue;
+          this.error = error instanceof Error ? error.message : "Indexing failed.";
+        }
       } while (this.rescanRequested);
-      this.state = this.paused ? "paused" : "idle";
-    } catch (error) {
-      this.state = "error";
-      this.error = error instanceof Error ? error.message : "Indexing failed.";
+      this.state = this.error ? "error" : this.paused ? "paused" : "idle";
     } finally {
       this.current = "";
       this.db?.checkpoint();
@@ -238,15 +316,22 @@ class SearchIndexer {
     this.state = "scanning";
 
     const tree = await getTree({ includeArchive: true });
+    if (!this.isCurrent(db, preferences)) return;
     const files: LiberaFileNode[] = [];
     for (const notebook of tree.notebooks) collectFiles(notebook.children, files);
 
-    // Reading the gallery reconciles its index; leave a gallery that does not exist alone.
-    const photos = preferences.indexImages && (await pathExists(getGalleryRoot()))
-      ? (await getGallery().catch(() => null))?.photos ?? []
-      : [];
+    // A failed gallery must not block library updates or be treated as empty.
+    let galleryReadable = true;
+    const photos = preferences.indexImages ? (await getGallery().catch((error) => {
+      galleryReadable = false;
+      this.error = error instanceof Error ? error.message : "Could not scan the gallery.";
+      return null;
+    }))?.photos ?? [] : [];
+    if (!this.isCurrent(db, preferences)) return;
+    const indexedFiles = files.filter((file) => file.fileType !== "image" || preferences.indexImages);
+    this.repair(db, indexedFiles, photos.map(galleryMeta), galleryReadable);
     const known = new Map(db.listFiles().map((file) => [file.key, file]));
-    const seen = new Set<string>();
+    const seen = new Set<string>(galleryReadable ? [] : [...known.values()].filter((file) => file.source === "gallery").map((file) => file.key));
 
     this.done = 0;
     this.total = files.length + photos.length;
@@ -255,11 +340,9 @@ class SearchIndexer {
       this.done += 1;
       if (file.fileType === "image" && !preferences.indexImages) continue;
       seen.add(file.path);
-      const signature = `${file.size}:${file.updatedAt}`;
-      if (known.get(file.path)?.signature === signature) continue;
-
       this.current = file.path;
-      await this.indexLibraryFile(db, file, signature);
+      await this.indexLibraryFile(db, file, known.get(file.path), preferences);
+      if (!this.isCurrent(db, preferences)) return;
       await yieldToServer();
     }
 
@@ -267,20 +350,11 @@ class SearchIndexer {
       this.done += 1;
       const key = `gallery:${photo.id}`;
       seen.add(key);
-      const signature = `${photo.size}:${photo.updatedAt}:${photo.prompt ?? ""}`;
       const record = known.get(key);
-      const meta: SearchGalleryPhoto = {
-        id: photo.id,
-        path: photo.path,
-        name: photo.name,
-        updatedAt: photo.updatedAt,
-        size: photo.size,
-        prompt: photo.prompt,
-      };
-      if (record?.signature === signature && record.path === photo.path) continue;
-
+      const meta = galleryMeta(photo);
       this.current = `Gallery/${photo.path}`;
-      await this.indexGalleryPhoto(db, meta, signature);
+      await this.indexGalleryPhoto(db, meta, record, preferences);
+      if (!this.isCurrent(db, preferences)) return;
       await yieldToServer();
     }
 
@@ -288,11 +362,32 @@ class SearchIndexer {
     for (const [key, file] of known) {
       if (!seen.has(key)) db.deleteFile(file.id);
     }
+    this.staleFileIds.clear();
+    db.retryFailedEmbeddings();
 
     this.lastScanAt = new Date().toISOString();
   }
 
-  private async indexLibraryFile(db: SearchDatabase, file: LiberaFileNode, signature: string) {
+  /**
+   * Move entries whose paths drifted (an index from another computer, a
+   * renamed notebook) to the files they stand for, and hide the ones that
+   * match no file. Those stay until the end of the scan, so a file that was
+   * really moved can still borrow their vectors.
+   */
+  private repair(db: SearchDatabase, files: LiberaFileNode[], photos: SearchGalleryPhoto[], galleryReadable: boolean) {
+    const indexed = db.listFiles().filter((file) => galleryReadable || file.source !== "gallery");
+    const { relocations, stale } = planIndexRepair(indexed, files, photos);
+    const sources = new Map(indexed.map((file) => [file.id, file.source]));
+    for (const relocation of relocations) {
+      db.relocateFile(relocation.id, relocation, ftsNameOf(sources.get(relocation.id) ?? "library", relocation.path));
+    }
+    this.staleFileIds = new Set([...stale, ...relocations.map((entry) => entry.id)]);
+    if (relocations.length || stale.length) {
+      console.info(`Global Search repaired its index: ${relocations.length} entries moved to their files, ${stale.length} stale.`);
+    }
+  }
+
+  private async indexLibraryFile(db: SearchDatabase, file: LiberaFileNode, known: IndexedFile | undefined, preferences: SearchPreferences) {
     const record: Omit<IndexedFile, "id" | "status"> = {
       key: file.path,
       source: "library",
@@ -300,14 +395,23 @@ class SearchIndexer {
       path: file.path,
       name: file.name,
       notebook: file.notebook,
-      signature,
+      signature: "",
       meta: null,
     };
-    const ftsName = file.path.replaceAll("/", " ");
+    const ftsName = ftsNameOf("library", file.path);
 
     try {
-      db.replaceFile(record, await this.chunkLibraryFile(file), ftsName);
+      const absolutePath = libraryAbsolutePath(file.path);
+      record.signature = await readFileSignature(absolutePath);
+      if (!this.isCurrent(db, preferences)) return;
+      if (known?.status === "ok" && known.signature === record.signature && known.kind === file.fileType) return;
+      const chunks = await this.chunkLibraryFile({ ...file, size: Number(record.signature.split(":")[0]) });
+      const after = await readFileSignature(absolutePath);
+      if (!this.isCurrent(db, preferences)) return;
+      if (record.signature !== after) { this.rescanRequested = true; return; }
+      db.replaceFile(record, chunks, ftsName);
     } catch (error) {
+      if (!this.isCurrent(db, preferences)) return;
       db.markFailed(record, error instanceof Error ? error.message : "Could not read the file.", ftsName);
     }
   }
@@ -316,28 +420,28 @@ class SearchIndexer {
     const absolutePath = libraryAbsolutePath(file.path);
 
     if (file.fileType === "image") {
-      return [{ hash: await imageHash(absolutePath, file.size), title: "", text: file.name, context: "" }];
+      return [{ hash: await imageHash(absolutePath), title: "", text: file.name, context: "" }];
     }
 
     if (file.fileType === "pdf") {
       // Without the worker (it could not start), parse here as Deep Search does.
       const { pages } = await readPdfTextCache(file.path, { extractPages: (target) => this.extractPdfPages(target) })
         .catch(() => readPdfTextCache(file.path));
-      const chunks = toNewChunks("pdf", chunkPdfPages(pages));
-      return chunks.length ? chunks : nameOnlyChunk("pdf", file.name);
+      const chunks = toNewChunks(chunkPdfPages(pages));
+      return chunks.length ? chunks : nameOnlyChunk(file.name);
     }
 
-    if (file.size > MAX_INDEXED_TEXT_BYTES) return nameOnlyChunk(file.fileType, file.name);
+    if (file.size > MAX_INDEXED_TEXT_BYTES) return nameOnlyChunk(file.name);
 
     const source = await readFile(absolutePath, "utf8");
-    if (source.includes("\u0000")) return nameOnlyChunk(file.fileType, file.name);
+    if (source.includes("\u0000")) return nameOnlyChunk(file.name);
 
     const chunks = file.fileType === "markdown"
       ? chunkMarkdown(source)
       : file.fileType === "latex"
         ? chunkLatex(source, file.name)
         : chunkPlainText(source);
-    return chunks.length ? toNewChunks(file.fileType, chunks) : nameOnlyChunk(file.fileType, file.name);
+    return chunks.length ? toNewChunks(chunks) : nameOnlyChunk(file.name);
   }
 
   /** Parse the PDF in the worker, a few pages at a time, so searches can run in between. */
@@ -360,7 +464,7 @@ class SearchIndexer {
     return pages;
   }
 
-  private async indexGalleryPhoto(db: SearchDatabase, photo: SearchGalleryPhoto, signature: string) {
+  private async indexGalleryPhoto(db: SearchDatabase, photo: SearchGalleryPhoto, known: IndexedFile | undefined, preferences: SearchPreferences) {
     const record: Omit<IndexedFile, "id" | "status"> = {
       key: `gallery:${photo.id}`,
       source: "gallery",
@@ -368,15 +472,23 @@ class SearchIndexer {
       path: photo.path,
       name: photo.name,
       notebook: "",
-      signature,
+      signature: "",
       meta: JSON.stringify(photo),
     };
-    const ftsName = `Gallery ${photo.path.replaceAll("/", " ")}`;
+    const ftsName = ftsNameOf("gallery", photo.path);
 
     try {
-      const hash = await imageHash(path.join(getGalleryRoot(), ...photo.path.split("/")), photo.size);
+      const absolutePath = path.join(getGalleryRoot(), ...photo.path.split("/"));
+      record.signature = await readFileSignature(absolutePath);
+      if (!this.isCurrent(db, preferences)) return;
+      if (known?.status === "ok" && known.signature === record.signature && known.meta === record.meta) return;
+      const hash = await imageHash(absolutePath);
+      const after = await readFileSignature(absolutePath);
+      if (!this.isCurrent(db, preferences)) return;
+      if (record.signature !== after) { this.rescanRequested = true; return; }
       db.replaceFile(record, [{ hash, title: "", text: [photo.name, photo.prompt].filter(Boolean).join("\n"), context: "" }], ftsName);
     } catch (error) {
+      if (!this.isCurrent(db, preferences)) return;
       db.markFailed(record, error instanceof Error ? error.message : "Could not read the photo.", ftsName);
     }
   }
@@ -390,6 +502,7 @@ class SearchIndexer {
   private async embedPending(db: SearchDatabase, preferences: SearchPreferences) {
     const worker = getSearchWorker();
     if (!worker.configured || this.paused) return;
+    const epoch = this.embeddingEpoch;
 
     const includeImages = preferences.indexImages && worker.visionConfigured;
     this.total = db.countPending(includeImages);
@@ -404,10 +517,11 @@ class SearchIndexer {
       return;
     }
 
-    while (!this.paused && !this.rescanRequested) {
-      while (!this.paused && Date.now() - worker.lastQueryAt < SEARCH_ACTIVITY_PAUSE_MS) {
+    while (!this.paused && !this.rescanRequested && this.canEmbed(db, preferences, epoch)) {
+      while (!this.paused && !this.rescanRequested && Date.now() - worker.lastQueryAt < SEARCH_ACTIVITY_PAUSE_MS) {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+      if (this.paused || this.rescanRequested || !this.canEmbed(db, preferences, epoch)) return;
       const batch = db.pendingChunks(TEXT_BATCH_SIZE, includeImages);
       if (!batch.length) break;
 
@@ -417,12 +531,21 @@ class SearchIndexer {
 
       try {
         const vectors = await worker.embed(work.map((chunk) => this.embedInput(chunk)), "index");
-        db.storeVectors(work.map((chunk, index) => ({ id: chunk.id, kind: chunk.kind, vector: vectors[index] })));
+        // A routine rescan can wait until this valid batch is stored. Otherwise
+        // polling repeatedly discards slow inference and the queue never advances.
+        if (!this.canEmbed(db, preferences, epoch)) return;
+        if (work[0].kind === "image" && await readFileSignature(this.imagePath(work[0])).catch(() => "") !== work[0].signature) {
+          this.rescanRequested = true;
+          return;
+        }
+        if (!this.canEmbed(db, preferences, epoch)) return;
+        db.storeVectors(work.map((chunk, index) => ({ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector: vectors[index] })));
       } catch (error) {
+        if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
         if (worker.modelState === "error") return;
         // One unreadable passage or photo must not stall the queue: skip it.
-        if (work.length === 1) db.markEmbeddingFailed([work[0].id]);
-        else await this.embedOneByOne(db, work);
+        if (work.length === 1) db.markEmbeddingFailed(work);
+        else await this.embedOneByOne(db, work, preferences, epoch);
         console.warn(`Global Search could not embed ${this.current}: ${error instanceof Error ? error.message : error}`);
       }
 
@@ -431,21 +554,24 @@ class SearchIndexer {
     }
   }
 
-  private async embedOneByOne(db: SearchDatabase, chunks: PendingChunk[]) {
+  private async embedOneByOne(db: SearchDatabase, chunks: PendingChunk[], preferences: SearchPreferences, epoch: number) {
     const worker = getSearchWorker();
     for (const chunk of chunks) {
+      if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
       try {
         const [vector] = await worker.embed([this.embedInput(chunk)], "index");
-        db.storeVectors([{ id: chunk.id, kind: chunk.kind, vector }]);
+        if (!this.canEmbed(db, preferences, epoch)) return;
+        db.storeVectors([{ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector }]);
       } catch {
-        db.markEmbeddingFailed([chunk.id]);
+        if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
+        db.markEmbeddingFailed([chunk]);
       }
     }
   }
 
   private embedInput(chunk: PendingChunk) {
     if (chunk.kind === "image") return { images: [{ path: this.imagePath(chunk) }] };
-    return { text: documentPrompt(chunk.kind, fileStem(chunk.name), chunk) };
+    return { text: documentPrompt(chunk.kind, documentFileTitle(chunk.name), chunk) };
   }
 
   status(): SearchIndexStatus {
