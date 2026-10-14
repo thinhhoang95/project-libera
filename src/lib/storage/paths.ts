@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   directoryModeStatePath,
+  directoryMachineKey,
   directoryStateRoot,
   readDirectoryModeState,
 } from "../../../electron/directory-mode.cjs";
@@ -93,6 +94,8 @@ export type LinkedFolder = {
   path: string;
   /** App-owned state for this folder, kept in the data directory. */
   stateRoot: string;
+  /** The folder has not yet been located on this computer. */
+  unresolved?: boolean;
 };
 
 type LinkedFoldersCache = { key: string; folders: LinkedFolder[] };
@@ -105,11 +108,11 @@ const LINKED_FOLDERS_CACHE = Symbol.for("libera.linkedFolders");
 export function getLinkedFolders(): LinkedFolder[] {
   const adminRoot = getAdminRoot();
   const statePath = directoryModeStatePath(adminRoot);
-  let key = `${statePath}:missing`;
+  let key = `${statePath}:${directoryMachineKey()}:missing`;
 
   try {
     const stats = statSync(statePath);
-    key = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
+    key = `${statePath}:${directoryMachineKey()}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     // No state file means no linked folders.
   }
@@ -124,13 +127,14 @@ export function getLinkedFolders(): LinkedFolder[] {
   const folders = readDirectoryModeState(adminRoot).folders.map((folder) => ({
     name: folder.name,
     path: folder.path,
-    stateRoot: directoryStateRoot(adminRoot, folder.path),
+    stateRoot: directoryStateRoot(adminRoot, folder.path, folder.id),
+    ...(folder.unresolved ? { unresolved: true } : {}),
   }));
   // Reading may migrate an older state file, which changes its identity.
   let storedKey = key;
   try {
     const stats = statSync(statePath);
-    storedKey = `${statePath}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
+    storedKey = `${statePath}:${directoryMachineKey()}:${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     // Still no state file.
   }
@@ -151,6 +155,7 @@ function notebookRootPath(safeNotebook: string) {
   const folder = getLinkedFolder(safeNotebook);
 
   if (folder) {
+    if (folder.unresolved) throw new StorageError("Open this linked folder on this computer to reconnect it.", 404);
     return folder.path;
   }
 
@@ -214,10 +219,22 @@ export function filePathFromParts(notebook: string, pathParts: string[]) {
   return itemPath(notebook, pathParts, "File path segment");
 }
 
-export function pdfAnnotationsPath(notebook: string, name: string) {
-  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
-  const safeName = assertSafeSegment(name, "File name");
-  return notebookSystemPath(safeNotebook, ANNOTATIONS_DIR, "pdf", `${safeName}.json`);
+/** Versioned, path-scoped sidecars cannot collide with the old flat filenames. */
+export function pdfAnnotationsDirectoryPath(notebook: string, pathParts: string[] = []) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "pdf", "by-path",
+    ...pathParts.map((part) => assertSafeUserSegment(part, "Folder path segment")));
+}
+
+export function pdfAnnotationsPath(notebook: string, nameOrParts: string | string[]) {
+  const parts = Array.isArray(nameOrParts) ? nameOrParts : [nameOrParts];
+  if (!parts.length) throw new StorageError("PDF annotation path is invalid.");
+  const safeParts = parts.map((part) => assertSafeUserSegment(part, "File path segment"));
+  return path.join(pdfAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
+}
+
+export function legacyFlatPdfAnnotationsPath(notebook: string, name: string) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "pdf",
+    `${assertSafeSegment(name, "File name")}.json`);
 }
 
 export function legacyPdfAnnotationsPath(notebook: string, name: string) {

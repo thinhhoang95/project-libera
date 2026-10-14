@@ -291,6 +291,12 @@ Click **Agentic review** in the Comments panel to open the review in the chat pa
 
 Paste answers from ChatGPT, Claude, Gemini, or other AI chats straight into either editor. Rich text is converted into Libera's Markdown, keeping headings, lists, tables, and formatting, and equations rendered with KaTeX paste as their LaTeX source. If a pasted answer writes math as `\(...\)` or `\[...\]`, click **Fix ChatGPT equations** in the Source toolbar to switch it to the math markers Libera uses. Copying rendered text from Libera, including AI chat answers, puts Markdown on the clipboard, with equations as LaTeX.
 
+### AI Agent
+
+Switch the AI panel from **Chat** to **Agent** to have the AI work on your library itself: it searches notes and PDFs, reads what it needs, and edits files, showing each step as it goes. Choose what it may change next to the switch: **Read Only**, **Modify opened files only**, or **Modify all files in Notebook/Folder**. PDFs are read from their cached extracted text, page by page, never sent whole. Edits appear in open tabs at once, and every changed file can be undone from the reply. Put conventions for the agent in an `AGENT_NOTES.md` file at a notebook's root.
+
+See [docs/features/ai-agent.md](docs/features/ai-agent.md) for permissions, tools, undo and limits.
+
 ## Global Search
 
 Open **Search** in the left rail (Cmd/Ctrl+6), or press Cmd/Ctrl+Shift+F anywhere, to search every notebook, linked folder and the Image Gallery. Describe what you are looking for in your own words, put words in quotes for an exact phrase, or paste, drop or pick an image to find similar photos. Images sit in the box between words, so “photos like [image] but at night” searches by both. Results show the matching passage with its page, section or lines and a preview, and open at that passage in the editor or PDF viewer.

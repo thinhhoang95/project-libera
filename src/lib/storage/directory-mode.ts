@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   baseFolderName,
+  directoryMachineKey,
+  ensureDirectoryIdentity,
   libraryNotebookNames,
   normalizeDirectoryPath,
   readDirectoryModeState,
@@ -132,7 +134,8 @@ export async function openDirectory(input: unknown) {
   await ensureAdminRoot();
   const adminRoot = getAdminRoot();
   const state = readDirectoryModeState(adminRoot);
-  const existing = state.folders.find((folder) => folder.path === directoryPath);
+  const id = ensureDirectoryIdentity(adminRoot, directoryPath);
+  const existing = state.folders.find((folder) => folder.path === directoryPath || (id && folder.id === id));
   const name = existing?.name ?? uniqueFolderName(
     baseFolderName(directoryPath),
     [...libraryNotebookNames(adminRoot), ...state.folders.map((folder) => folder.name)],
@@ -140,7 +143,10 @@ export async function openDirectory(input: unknown) {
 
   writeDirectoryModeState(adminRoot, {
     ...state,
-    folders: existing ? state.folders : [...state.folders, { name, path: directoryPath }],
+    folders: existing
+      ? state.folders.map((folder) => folder === existing ? { ...folder, path: directoryPath, ...(id ? { id } : {}),
+        locations: { ...folder.locations, [directoryMachineKey()]: directoryPath } } : folder)
+      : [...state.folders, { name, path: directoryPath, ...(id ? { id } : {}), locations: { [directoryMachineKey()]: directoryPath } }],
     recent: withRecentDirectory(state.recent, directoryPath),
   });
 
@@ -150,7 +156,7 @@ export async function openDirectory(input: unknown) {
     await mergeLegacyFolderState(folder);
   }
 
-  return { ...getDirectoryModeSummary(), name, changed: !existing };
+  return { ...getDirectoryModeSummary(), name, changed: !existing || existing.path !== directoryPath };
 }
 
 /** Remove a folder from the library. Its files on disk are never touched. */

@@ -1,6 +1,7 @@
 import { normalizeChatGptCopiedMarkdown } from "./chatgpt-markdown-normalizer";
 import type { MathMarkerSettings } from "./math-markers";
 import { validateUsageRequests, type ChatUsageRequest } from "./chat-token-usage";
+import { isAgentPermission, validateAgentRunRecord, type AgentPermission, type AgentRunRecord } from "./agent/types";
 
 export const CHAT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ChatReasoningEffort = typeof CHAT_REASONING_EFFORTS[number];
@@ -15,8 +16,13 @@ export type ChatPhoto = { id: string; name: string; dataUrl: string; source?: st
 export function validateChatPhotos(value: unknown): value is ChatPhoto[] {
   return Array.isArray(value) && value.length <= MAX_CHAT_PHOTOS && value.every((photo) => photo && typeof photo.id === "string" && typeof photo.name === "string" && typeof photo.dataUrl === "string" && (photo.source === undefined || (typeof photo.source === "string" && photo.source.length <= 512)) && photo.dataUrl.length <= Math.ceil(MAX_CHAT_PHOTO_BYTES / 3) * 4 + 64 && /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+={0,2}$/i.test(photo.dataUrl));
 }
-export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string; contexts?: ChatContext[]; photos?: ChatPhoto[]; status?: "streaming" | "interrupted" };
-export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
+/** `agent` is set on replies produced in Agent mode: the steps, tasks and file changes of the run. */
+export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; createdAt?: string; contexts?: ChatContext[]; photos?: ChatPhoto[]; status?: "streaming" | "interrupted"; agent?: AgentRunRecord };
+export type ChatMode = "chat" | "agent";
+export function isChatMode(value: unknown): value is ChatMode {
+  return value === "chat" || value === "agent";
+}
+export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
 
 export function formatChatTimestamp(createdAt: string, now = new Date()) {
@@ -53,6 +59,7 @@ export function validateChatMessages(value: unknown, enforceLimits = true): valu
     message && typeof message.id === "string" && (message.role === "user" || message.role === "assistant") &&
     (message.createdAt === undefined || (typeof message.createdAt === "string" && Number.isFinite(Date.parse(message.createdAt)))) &&
     (message.status === undefined || message.status === "streaming" || message.status === "interrupted") && (message.photos === undefined || validateChatPhotos(message.photos)) && typeof message.text === "string" && (!enforceLimits || message.text.length <= 100_000) &&
+    (message.agent === undefined || (message.role === "assistant" && validateAgentRunRecord(message.agent))) &&
     (message.contexts === undefined || (Array.isArray(message.contexts) && (!enforceLimits || message.contexts.length <= 30) && message.contexts.every((context: ChatContext) =>
       context && (context.kind === "document" || context.kind === "selection") &&
       typeof context.path === "string" && typeof context.name === "string" && typeof context.text === "string" && (!enforceLimits || context.text.length <= 500_000)))));
@@ -66,7 +73,7 @@ export function validateChatStore(value: unknown): value is ChatStore {
   if (!value || typeof value !== "object") return false;
   const store = value as ChatStore;
   return Array.isArray(store.chats) && store.chats.length > 0 && store.chats.some((item) => item.id === store.activeId) && store.chats.every((item) =>
-    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
+    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.mode === undefined || isChatMode(item.mode)) && (item.agentPermission === undefined || isAgentPermission(item.agentPermission)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
     (item.usageRequests === undefined || validateUsageRequests(item.usageRequests)) &&
     (!item.messages.length || validateChatMessages(item.messages, false)) && validateChatMessages([{ id: "draft", role: "user", text: "", contexts: item.selections }], false));
 }

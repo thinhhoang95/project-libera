@@ -1,3 +1,4 @@
+import { deletePdfAnnotationDirectory, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -34,12 +35,12 @@ import {
   imageAnnotationsPath,
   itemPath,
   legacyImageAnnotationsPath,
-  legacyPdfAnnotationsPath,
   markdownAssetsDirectoryPath,
   markdownAssetsDirectoryPathForDirectory,
   markdownAssetsDirectoryPathFromParts,
   notebookPath,
   pdfAnnotationsPath,
+  pdfAnnotationsDirectoryPath,
   rawFileUrl,
   relativeFilePath,
   splitDirectoryPath,
@@ -162,6 +163,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     throw new StorageError("Destination file already exists.", 409);
   }
 
+  if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
@@ -228,7 +230,9 @@ export async function renameFolder(relativePath: string, nextName: string) {
     throw new StorageError("Destination folder already exists.", 409);
   }
 
+  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, nextPath);
+  await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
@@ -294,7 +298,9 @@ export async function archiveFolder(relativePath: string) {
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(current.notebook, nextParts);
 
+  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, available.path);
+  await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(
     markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
@@ -317,7 +323,9 @@ export async function deleteFolder(relativePath: string) {
 
   const targetPath = itemPath(current.notebook, current.pathParts);
   await assertDirectoryExists(targetPath, "Folder was not found.");
+  await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rm(targetPath, { recursive: true });
+  await deletePdfAnnotationDirectory(current.notebook, current.pathParts);
   await deletePdfTextCacheDirectory(current.notebook, current.pathParts);
   await rm(markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts), {
     force: true,
@@ -363,6 +371,7 @@ export async function moveFileToDirectory(
     throw new StorageError("Destination file already exists.", 409);
   }
 
+  if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   await movePath(currentPath, nextPath);
   await moveRelatedMetadata(
     current.notebook,
@@ -400,6 +409,7 @@ export async function archiveFile(relativePath: string) {
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(current.notebook, nextParts);
 
+  if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   await rename(currentPath, available.path);
   await moveRelatedMetadata(
     current.notebook,
@@ -438,6 +448,7 @@ export async function copyFileToDirectory(
   const safeNextName = available.name;
   const nextParts = [...destination.pathParts, safeNextName];
 
+  if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path);
   await copyRelatedMetadata(
     current.notebook,
@@ -458,11 +469,11 @@ export async function deleteFile(relativePath: string) {
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
 
+  if (fileType === "pdf") await migratePdfAnnotations(notebook, pathParts);
   await rm(filePathFromParts(notebook, pathParts));
 
   if (fileType === "pdf") {
-    await rm(pdfAnnotationsPath(notebook, name), { force: true });
-    await rm(legacyPdfAnnotationsPath(notebook, name), { force: true });
+    await rm(pdfAnnotationsPath(notebook, pathParts), { force: true });
     await deletePdfTextCache(notebook, pathParts);
   }
 
@@ -574,12 +585,8 @@ async function moveRelatedMetadata(
 ) {
   if (currentFileType === "pdf" && nextFileType === "pdf") {
     await moveFileIfExists(
-      pdfAnnotationsPath(currentNotebook, currentName),
-      pdfAnnotationsPath(nextNotebook, nextName),
-    );
-    await moveFileIfExists(
-      legacyPdfAnnotationsPath(currentNotebook, currentName),
-      pdfAnnotationsPath(nextNotebook, nextName),
+      pdfAnnotationsPath(currentNotebook, currentPathParts),
+      pdfAnnotationsPath(nextNotebook, nextPathParts),
     );
     await movePdfTextCache(
       currentNotebook,
@@ -588,8 +595,7 @@ async function moveRelatedMetadata(
       nextPathParts,
     );
   } else if (currentFileType === "pdf") {
-    await rm(pdfAnnotationsPath(currentNotebook, currentName), { force: true });
-    await rm(legacyPdfAnnotationsPath(currentNotebook, currentName), { force: true });
+    await rm(pdfAnnotationsPath(currentNotebook, currentPathParts), { force: true });
     await deletePdfTextCache(currentNotebook, currentPathParts);
   }
 
@@ -650,8 +656,8 @@ async function copyRelatedMetadata(
 ) {
   if (currentFileType === "pdf") {
     await copyFileIfExists(
-      pdfAnnotationsPath(currentNotebook, currentName),
-      pdfAnnotationsPath(nextNotebook, nextName),
+      pdfAnnotationsPath(currentNotebook, currentPathParts),
+      pdfAnnotationsPath(nextNotebook, nextPathParts),
     );
     await copyPdfTextCache(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
   }

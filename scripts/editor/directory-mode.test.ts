@@ -117,9 +117,9 @@ test("app state for a linked folder lives in the data directory, not in the fold
     await openDirectory(project);
     await writePdfAnnotations("Thesis Project/paper.pdf", []);
     await getTree();
-    assert.deepEqual((await readdir(project)).sort(), ["README.md", "chapters", "node_modules", "notes.docx", "paper.pdf", ".git"].sort());
+    assert.deepEqual((await readdir(project)).sort(), ["README.md", "chapters", "node_modules", "notes.docx", "paper.pdf", ".git", ".libera-folder.json"].sort());
     const stateRoot = directoryStateRoot(getAdminRoot(), project);
-    assert.ok(existsSync(path.join(stateRoot, ".libera", "annotations", "pdf", "paper.pdf.json")));
+    assert.ok(existsSync(path.join(stateRoot, ".libera", "annotations", "pdf", "by-path", "paper.pdf.json")));
     assert.ok(existsSync(path.join(stateRoot, ".libera", "notebook-links.json")), "link index stays out of the folder");
   });
 });

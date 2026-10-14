@@ -1049,6 +1049,56 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return true;
   }
 
+  /** The live draft of an open text tab, or null when the file is not open. */
+  function readOpenTabDraft(path: string) {
+    const tab = tabs.find((item) => item.id === path && !item.untitled);
+    return tab && isTextFileType(tab.file.fileType) ? getReviewDraft(path) : null;
+  }
+
+  /**
+   * Shows a file the AI agent changed on disk in its open tab. The tab follows
+   * the new content unless the user typed since `baseline` (the draft the agent
+   * started from); then their draft stays and only the saved copy moves on.
+   */
+  async function syncTabFromDisk(path: string, baseline?: string): Promise<{ content: string; keptDraft: boolean } | null> {
+    if (readOpenTabDraft(path) === null) return null;
+    const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`);
+    const content = payload.content ?? "";
+    const draft = readOpenTabDraft(path);
+    if (draft === null) return null;
+    const follow = baseline === undefined || draft === baseline || draft === content;
+    if (follow) rememberTabDraft(path, content);
+    updateTab(path, (current) => ({
+      ...current, file: payload.file, saved: content, draft: follow ? content : current.draft,
+      status: (follow ? content : draft) === content ? "clean" : "dirty", error: undefined,
+    }));
+    return { content, keptDraft: !follow };
+  }
+
+  /** After an agent change is undone, put the tab back as it was: the restored file, and any unsaved draft the agent started from. */
+  function restoreTabAfterUndo(path: string, result: { status: "restored" | "deleted"; content?: string; draft?: string }) {
+    const tab = tabs.find((item) => item.id === path && !item.untitled);
+    if (!tab) return;
+    const draft = getTabDraft(tab);
+    const untouched = draft === tab.saved;
+    if (result.status === "deleted") {
+      if (untouched) closeTabsWithoutConfirm([path]);
+      return;
+    }
+    const saved = result.content ?? "";
+    const next = untouched ? result.draft ?? saved : draft;
+    if (untouched) rememberTabDraft(path, next);
+    updateTab(path, (current) => ({ ...current, saved, draft: untouched ? next : current.draft, status: next === saved ? "clean" : "dirty", error: undefined }));
+  }
+
+  /** Files the agent created join the active workspace, like files created in the app. */
+  async function refreshAfterAgentChanges(createdPaths: string[]) {
+    if (createdPaths.length) {
+      await workspaceManager.runFileChange(async () => createdPaths, (paths) => ({ paths })).catch(() => undefined);
+    }
+    await refreshTree().catch((error: Error) => setWorkspaceError(error.message));
+  }
+
   function setActiveDraft(value: string) {
     if (activeTab) {
       setTabDraft(activeTab.id, value);
@@ -3380,6 +3430,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       getReviewDraft,
       recoverReviewDraft,
       applyReviewDraft,
+      readOpenTabDraft,
+      syncTabFromDisk,
+      restoreTabAfterUndo,
+      refreshAfterAgentChanges,
       setActiveTabId: activateTab,
       setActiveTabViewState,
       setPassword,

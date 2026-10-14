@@ -9,7 +9,7 @@ import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
-import { DocumentChatPanel, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
+import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
@@ -35,7 +35,7 @@ import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
-import { isTextFileType, type LiberaFileNode, type LiberaTreeNode } from "@/lib/types";
+import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -184,6 +184,21 @@ export function LiberaApp({
   const viewedPhotoUrl = galleryViewingPhoto ? galleryRawUrl(galleryViewingPhoto) : null;
   const chatViewedPhoto = useMemo<ChatViewedPhoto | null>(() => viewedPhotoSource && viewedPhotoName && viewedPhotoUrl ? { source: viewedPhotoSource, name: viewedPhotoName, url: viewedPhotoUrl } : null, [viewedPhotoSource, viewedPhotoName, viewedPhotoUrl]);
   const galleryChat = useMemo(() => ({ open: !chatCollapsed, onToggle: () => changeChatCollapsed(!chatCollapsed) }), [chatCollapsed, changeChatCollapsed]);
+  // Agent mode reads open drafts and puts its file changes back into the editor.
+  const agentWorkspace: AgentWorkspaceBridge = {
+    notebook: workspace.selectedNotebookName || undefined,
+    readTabDraft: workspace.readOpenTabDraft,
+    syncTabFromDisk: workspace.syncTabFromDisk,
+    restoreTabAfterUndo: workspace.restoreTabAfterUndo,
+    refreshAfterChanges: workspace.refreshAfterAgentChanges,
+    openFile: (path) => {
+      const file = workspace.files.find((item) => item.path === path);
+      if (file) { void workspace.openFile(file); return; }
+      // A file outside the active workspace's view is still opened by path.
+      void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
+        .then((payload) => workspace.openFile(payload.file)).catch(() => undefined);
+    },
+  };
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
@@ -532,7 +547,7 @@ export function LiberaApp({
           </div>
         </section>
 
-        <DocumentChatPanel viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
