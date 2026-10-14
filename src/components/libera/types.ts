@@ -260,7 +260,18 @@ export type MarkdownScreenshotSnipSession = {
   selectionStart: number;
   sourceTabId: string;
   targetTabId: string;
+  /** "image" inserts the snip as a picture; "markdown" reads it into Markdown with the local model. */
+  mode: MarkdownScreenshotSnipMode;
+  /** The visual editor inserts at its own saved selection instead of the source offsets above. */
+  editor: "source" | "visual";
+  /** Set while a Markdown snip is being read. */
+  converting?: { startedAt: number };
 };
+
+export type MarkdownScreenshotSnipMode = "image" | "markdown";
+
+/** Markdown waiting for the visual editor of a tab to insert at its selection. */
+export type PendingVisualInsertion = { id: string; markdown: string };
 
 export type LiberaWorkspace = {
   activeTab?: OpenTab;

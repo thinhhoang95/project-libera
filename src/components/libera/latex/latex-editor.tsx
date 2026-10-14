@@ -235,6 +235,9 @@ export function LatexEditor({
       restoreFrame = requestAnimationFrame(() => {
         created.scrollDOM.scrollTop = restore.editorScrollTop ?? 0;
         created.scrollDOM.scrollLeft = restore.editorScrollLeft ?? 0;
+        // The initial measurement runs before this frame restores the scroll.
+        // Refresh the virtual viewport even if no scroll event is delivered.
+        created.requestMeasure();
         restoreFrame = undefined;
       });
     } else if (restore?.selectionStart !== undefined) {

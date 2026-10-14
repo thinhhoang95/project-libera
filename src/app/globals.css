@@ -1519,6 +1519,58 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* Files whose Markdown links to the open file (backlinks). */
+.libera-left-panel button[data-backlink="true"] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.libera-left-panel button[data-backlink="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.libera-backlink-count {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* Links dialog: backlinks and forward links of the open note. */
+.libera-links-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.libera-links-tabs button {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-bottom: -1px; padding: 6px 10px;
+  border-bottom: 2px solid transparent;
+  font-size: 13px; color: var(--muted-foreground);
+}
+.libera-links-tabs button:hover { color: var(--foreground); }
+.libera-links-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--foreground); font-weight: 500; }
+.libera-links-count {
+  flex-shrink: 0; min-width: 18px; padding: 1px 6px; border-radius: 999px;
+  background: var(--muted); color: var(--muted-foreground);
+  font-size: 11px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums;
+}
+.libera-links-list { max-height: min(55vh, 520px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.libera-links-group-header {
+  display: flex; width: 100%; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; text-align: left; font-size: 13px;
+}
+.libera-links-group-header:hover { background: var(--muted); }
+.libera-links-item {
+  display: flex; width: 100%; align-items: baseline; gap: 8px;
+  padding: 6px 8px 6px 32px; border-radius: 6px; text-align: left;
+  font-size: 13px; line-height: 1.5; color: var(--muted-foreground);
+}
+.libera-links-item[data-active="true"] { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.libera-links-line { flex-shrink: 0; min-width: 2.5rem; font-size: 11px; font-variant-numeric: tabular-nums; }
+.libera-links-anchor { color: var(--accent); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+.libera-links-match { background: color-mix(in srgb, #facc15 45%, transparent); color: inherit; border-radius: 2px; }
+
 .libera-workspace-card { border-radius: 10px; }
 
 /* Search left panel: the same quiet glass rows and tiles as Notebooks/Workspaces. */

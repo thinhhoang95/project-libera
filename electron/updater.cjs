@@ -70,11 +70,11 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
       : await dialog.showMessageBox(options);
 
     if (!hasUnsavedDocuments && result.response === 0) {
-      restartAndInstall();
+      await restartAndInstall();
     }
   }
 
-  function restartAndInstall() {
+  async function restartAndInstall() {
     if (!autoUpdater || state.status !== "downloaded") {
       throw new Error("No downloaded update is ready to install.");
     }
@@ -83,7 +83,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
       throw new Error("Save all open edits before restarting to install the update.");
     }
 
-    onBeforeInstall();
+    await onBeforeInstall();
     autoUpdater.quitAndInstall(false, true);
   }
 
@@ -143,7 +143,7 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
         throw new Error("Update installation is unavailable from this window.");
       }
 
-      restartAndInstall();
+      return restartAndInstall();
     });
 
     ipcMain.handle("updater:set-dirty-document-count", (event, count) => {
@@ -199,7 +199,9 @@ function createUpdaterService({ getMainWindow, onBeforeInstall }) {
         availableVersion: event.version,
         percent: 100,
       });
-      void promptForRestart(event.version);
+      void promptForRestart(event.version).catch((error) => {
+        publishState({ status: "downloaded", error: friendlyError(error) });
+      });
     });
     autoUpdater.on("error", (error) => {
       publishState({ status: "error", error: friendlyError(error), percent: undefined });

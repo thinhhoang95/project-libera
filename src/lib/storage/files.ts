@@ -56,6 +56,7 @@ import {
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -120,6 +121,7 @@ export async function createMarkdownFile(
   }
 
   await writeFile(targetPath, content, "utf8");
+  notifySearchChanges([relativeFilePath(safeNotebook, targetParts)]);
 
   return readLiberaFile(relativeFilePath(safeNotebook, targetParts));
 }
@@ -135,6 +137,7 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
 
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
   if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content);
+  notifySearchChanges([relativePath]);
 
   return readLiberaFile(relativePath);
 }
@@ -177,6 +180,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  notifySearchChanges([currentRelativePath, nextRelativePath]);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -253,6 +257,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
   );
+  notifySearchChanges();
 
   return getTree();
 }
@@ -309,6 +314,7 @@ export async function archiveFolder(relativePath: string) {
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
+  notifySearchChanges();
 
   return { ...await getTree(), moved: { from: currentRelativePath, to: nextRelativePath } };
 }
@@ -336,6 +342,7 @@ export async function deleteFolder(relativePath: string) {
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
   );
+  notifySearchChanges();
 
   return getTree();
 }
@@ -385,6 +392,7 @@ export async function moveFileToDirectory(
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  notifySearchChanges([currentRelativePath, nextRelativePath]);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -423,6 +431,7 @@ export async function archiveFile(relativePath: string) {
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  notifySearchChanges([currentRelativePath, nextRelativePath]);
 
   return readLiberaFile(nextRelativePath);
 }
@@ -461,6 +470,7 @@ export async function copyFileToDirectory(
   );
 
   await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
+  notifySearchChanges([relativeFilePath(destination.notebook, nextParts)]);
   return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
 }
 
@@ -494,6 +504,7 @@ export async function deleteFile(relativePath: string) {
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
+  notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
   return getTree();
 }
@@ -523,6 +534,7 @@ export async function writeUploadedFile(
   }
 
   await writeFile(targetPath, Buffer.from(await upload.arrayBuffer()));
+  notifySearchChanges([relativeFilePath(safeNotebook, targetParts)]);
 
   return getFileNode(safeNotebook, targetParts);
 }
@@ -552,6 +564,7 @@ export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdit
   );
 
   await writeFile(available.path, body, { flag: "wx" });
+  notifySearchChanges([relativeFilePath(notebook, [...directoryParts, available.name])]);
 
   return {
     file: await getFileNode(notebook, [...directoryParts, available.name]),

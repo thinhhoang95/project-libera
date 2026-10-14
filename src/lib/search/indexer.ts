@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { SearchGalleryPhoto, SearchIndexStatus } from "@/lib/global-search";
 import {
@@ -14,14 +14,15 @@ import {
 import { SearchDatabase, type IndexedFile, type NewChunk, type PendingChunk } from "@/lib/search/database";
 import { contentHash, weightsSignature } from "@/lib/search/fingerprints";
 import { galleryMeta, planIndexRepair } from "@/lib/search/repair";
+import { readSearchFile, readSearchLibrary } from "@/lib/search/library-files";
 import { getSearchPreferences, searchIndexFile, type SearchPreferences } from "@/lib/search/settings";
 import { getSearchWorker } from "@/lib/search/worker-client";
 import { readFileSignature } from "@/lib/storage/file-signature";
 import { getGallery, getGalleryRoot } from "@/lib/storage/gallery";
-import { filePathFromParts, getAdminRoot, getLinkedFolders, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, splitFilePath } from "@/lib/storage/paths";
 import { pageTextFromItems, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
-import { getTree } from "@/lib/storage/tree";
-import type { LiberaFileNode, LiberaTreeNode, PdfTextPage } from "@/lib/types";
+import { isVisibleTreeFile } from "@/lib/storage/tree";
+import type { LiberaFileNode, PdfTextPage } from "@/lib/types";
 
 // Larger text files (logs, data dumps) are indexed by name only.
 const MAX_INDEXED_TEXT_BYTES = 2 * 1024 * 1024;
@@ -34,6 +35,9 @@ const SEARCH_ACTIVITY_PAUSE_MS = 2_000;
 const PDF_PAGE_BATCH = 25;
 // A scan reads only file metadata; repeat it at most this often unless asked.
 const MIN_SCAN_INTERVAL_MS = 30_000;
+const CHANGE_DEBOUNCE_MS = 1_000;
+const MAX_IMMEDIATE_PASSES = 3;
+const UNSTABLE_RETRY_MS = 30_000;
 
 type IndexState = SearchIndexStatus["state"];
 
@@ -41,11 +45,11 @@ function yieldToServer() {
   return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function collectFiles(nodes: LiberaTreeNode[], files: LiberaFileNode[]) {
-  for (const node of nodes) {
-    if (node.kind === "file") files.push(node);
-    else collectFiles(node.children, files);
-  }
+function indexIdentity(file: string) {
+  try {
+    const stats = statSync(file);
+    return `${stats.dev}:${stats.ino}:${stats.birthtimeMs}`;
+  } catch { return ""; }
 }
 
 /** Identity of an image's content, so a moved or copied photo keeps its vector. */
@@ -97,7 +101,13 @@ export class SearchIndexer {
   private running: Promise<void> | null = null;
   private rescanRequested = false;
   private paused = false;
-  private lastScanStartedAt = 0;
+  private manualPass = false;
+  private manualRequested = false;
+  private fullScanRequested = false;
+  private changedPaths = new Set<string>();
+  private galleryChanged = false;
+  private changeTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastFullScanAt = 0;
   private state: IndexState = "idle";
   private done = 0;
   private total = 0;
@@ -116,6 +126,7 @@ export class SearchIndexer {
   private embeddingEpoch = 0;
   /** Entries that match no file; hidden from searches until the scan removes them. */
   private staleFileIds = new Set<number>();
+  private unavailablePaths = new Set<string>();
 
   /**
    * The index for the current preferences, reopened when its file changes.
@@ -125,32 +136,30 @@ export class SearchIndexer {
   database({ create = false }: { create?: boolean } = {}) {
     const file = searchIndexFile();
     const root = this.libraryKey();
-    let identity = "";
-    try {
-      const stats = statSync(file);
-      identity = `${stats.dev}:${stats.ino}:${stats.birthtimeMs}`;
-    } catch { /* A removed index must not keep its old open handle. */ }
+    const identity = indexIdentity(file);
     if (this.db && this.dbFile === file && this.dbRoot === root && this.dbIdentity === identity && identity) return this.db;
 
-    this.db?.close();
+    const previous = this.db;
     this.db = null;
     this.dbFile = "";
     this.dbRoot = "";
     this.dbIdentity = "";
     this.preparedKey = "";
-    this.lastScanStartedAt = 0;
+    this.fullScanRequested = true;
+    this.lastFullScanAt = 0;
     this.lastScanAt = "";
     this.mismatch = null;
     this.staleFileIds.clear();
+    this.unavailablePaths.clear();
+    previous?.close();
     if (!create && !existsSync(file)) return null;
 
     const db = new SearchDatabase(file);
     this.db = db;
     this.dbFile = file;
     this.dbRoot = root;
-    const stats = statSync(file);
-    this.dbIdentity = `${stats.dev}:${stats.ino}:${stats.birthtimeMs}`;
-    this.mismatch = db.prepareVectors(getSearchPreferences().dimensions, "", "");
+    this.dbIdentity = indexIdentity(file);
+    this.mismatch = db.prepareVectors(getSearchPreferences().dimensions, "", "", false, !create && !this.indexingAllowed());
     return db;
   }
 
@@ -169,14 +178,28 @@ export class SearchIndexer {
   }
 
   private libraryKey() {
-    return JSON.stringify([getAdminRoot(), getLinkedFolders().map(({ name, path }) => [name, path])]);
+    return JSON.stringify([getAdminRoot(), getLinkedFolders().map(({ name, path, unresolved }) => [name, path, Boolean(unresolved)])]);
   }
 
   private isCurrent(db: SearchDatabase, preferences: SearchPreferences) {
-    if (this.db === db && this.dbRoot === this.libraryKey() && !this.rebuildRequested &&
+    if (this.db === db && this.dbIdentity === indexIdentity(db.filePath) && this.dbRoot === this.libraryKey() && !this.rebuildRequested &&
         this.configurationKey(preferences) === this.configurationKey(getSearchPreferences()) && db.filePath === searchIndexFile()) return true;
     this.rescanRequested = true;
+    this.fullScanRequested = true;
     return false;
+  }
+
+  private automaticUpdatesAllowed() {
+    return !this.paused && getSearchPreferences().backgroundIndexing;
+  }
+
+  private indexingAllowed() {
+    return this.manualPass || this.automaticUpdatesAllowed();
+  }
+
+  /** Checked after awaits too: pausing or disabling background work stops writes. */
+  private canIndex(db: SearchDatabase, preferences: SearchPreferences) {
+    return this.indexingAllowed() && this.isCurrent(db, preferences);
   }
 
   /** Verify persisted vector settings before a query can use them. */
@@ -185,7 +208,7 @@ export class SearchIndexer {
     return this.prepare(getSearchPreferences());
   }
 
-  private async prepare(preferences: SearchPreferences) {
+  private async prepare(preferences: SearchPreferences, indexing = false) {
     const worker = getSearchWorker();
     if (worker.configure(preferences)) this.invalidateEmbeddings();
     const db = this.database();
@@ -207,17 +230,22 @@ export class SearchIndexer {
       return db;
     }
     if (!this.isCurrent(db, preferences)) return null;
+    if (indexing && !this.canIndex(db, preferences)) return null;
     if (worker.configure(preferences, `${textSignature}|${visionSignature}`)) this.invalidateEmbeddings();
-    if (this.resetRequested && this.resetFile === db.filePath) this.invalidateEmbeddings();
+    const reset = indexing && this.resetRequested && this.resetFile === db.filePath;
+    if (reset) this.invalidateEmbeddings();
     // Images are embedded by both encoders; the text model is part of their signature.
     this.mismatch = db.prepareVectors(
       preferences.dimensions,
       textSignature,
       visionSignature && `${textSignature}|${visionSignature}|tokens:${preferences.visionTokens}`,
-      this.resetRequested && this.resetFile === db.filePath,
+      reset,
+      !indexing && !this.automaticUpdatesAllowed(),
     );
-    this.resetRequested = false;
-    this.resetFile = "";
+    if (indexing) {
+      this.resetRequested = false;
+      this.resetFile = "";
+    }
     this.preparedKey = key;
     return db;
   }
@@ -228,22 +256,50 @@ export class SearchIndexer {
   }
 
   private canEmbed(db: SearchDatabase, preferences: SearchPreferences, epoch: number) {
-    return this.isCurrent(db, preferences) && this.embeddingEpoch === epoch && !this.mismatch;
+    return this.canIndex(db, preferences) && this.embeddingEpoch === epoch && !this.mismatch;
+  }
+
+  /** Storage mutations coalesce; ordinary saves read only the affected files. */
+  notifyChanges(paths?: string[], gallery = false) {
+    if (!this.automaticUpdatesAllowed() || !existsSync(searchIndexFile())) return;
+    if (gallery) this.galleryChanged = true;
+    else if (paths) paths.forEach((filePath) => this.changedPaths.add(filePath));
+    else this.fullScanRequested = true;
+    this.scheduleChanges();
+  }
+
+  private scheduleChanges(delay = CHANGE_DEBOUNCE_MS) {
+    if (this.changeTimer) clearTimeout(this.changeTimer);
+    this.changeTimer = setTimeout(() => {
+      this.changeTimer = null;
+      this.requestScan({ force: true, manual: false, incremental: true });
+    }, delay);
+    this.changeTimer.unref();
   }
 
   /**
    * Start a pass, or note that another one is needed after the current pass.
-   * Only `build` creates an index that does not exist yet.
+   * `force` bypasses throttling, never Pause or Preferences. Only an explicit
+   * `manual` action (or `build`) may do that. Only `build` creates an index.
    */
-  requestScan({ force = false, build = false }: { force?: boolean; build?: boolean } = {}) {
+  requestScan({ force = false, build = false, manual = build, incremental = false }: {
+    force?: boolean; build?: boolean; manual?: boolean; incremental?: boolean;
+  } = {}) {
+    if (!manual && !this.automaticUpdatesAllowed()) return;
     if (!build && !existsSync(searchIndexFile())) return;
     if (build) this.buildFile = searchIndexFile();
     if (this.running) {
-      if (force || (this.state === "embedding" && Date.now() - this.lastScanStartedAt >= MIN_SCAN_INTERVAL_MS)) this.rescanRequested = true;
+      if (force || (this.state === "embedding" && Date.now() - this.lastFullScanAt >= MIN_SCAN_INTERVAL_MS)) {
+        this.rescanRequested = true;
+        this.fullScanRequested ||= !incremental;
+        this.manualRequested ||= manual;
+      }
       return this.running;
     }
     if (!this.database({ create: build })) return;
-    if (!force && Date.now() - this.lastScanStartedAt < MIN_SCAN_INTERVAL_MS) return;
+    if (!force && Date.now() - this.lastFullScanAt < MIN_SCAN_INTERVAL_MS) return;
+    this.fullScanRequested ||= !incremental;
+    this.manualRequested ||= manual;
 
     // Report the pass at once; the scan itself starts after the first await.
     this.state = "scanning";
@@ -258,11 +314,23 @@ export class SearchIndexer {
 
   pause() {
     this.paused = true;
+    this.manualPass = false;
+    this.manualRequested = false;
+    this.rescanRequested = false;
+    this.resetRequested = false;
+    this.rebuildRequested = false;
+    this.resetFile = "";
+    this.rebuildFile = "";
+    this.buildFile = "";
+    if (this.changeTimer) clearTimeout(this.changeTimer);
+    this.changeTimer = null;
   }
 
   resume() {
     this.paused = false;
-    this.requestScan({ force: true });
+    // Notifications are intentionally skipped while paused. Reconcile all
+    // sources on resume, including changes made outside Libera during the pause.
+    this.requestScan({ force: true, manual: true });
   }
 
   async rebuild() {
@@ -282,9 +350,21 @@ export class SearchIndexer {
 
   private async run() {
     this.error = "";
+    let passes = 0;
     try {
       do {
+        if (++passes > MAX_IMMEDIATE_PASSES) {
+          // A sync client continuously rewriting a file must not create a hot loop.
+          this.manualRequested = false;
+          this.rescanRequested = false;
+          this.error = "Some files are still changing. They will be retried on the next update.";
+          if (this.automaticUpdatesAllowed()) this.scheduleChanges(UNSTABLE_RETRY_MS);
+          break;
+        }
         this.rescanRequested = false;
+        this.manualPass = this.manualRequested;
+        this.manualRequested = false;
+        if (!this.manualPass && !this.automaticUpdatesAllowed()) break;
         try {
           const preferences = getSearchPreferences();
           const target = this.database({ create: this.buildFile === searchIndexFile(preferences) });
@@ -295,30 +375,48 @@ export class SearchIndexer {
             this.rebuildRequested = false;
             this.rebuildFile = "";
           }
-          const db = await this.prepare(preferences);
-          if (!db || !this.isCurrent(db, preferences)) continue;
-          await this.scan(db, preferences);
-          if (this.isCurrent(db, preferences) && !this.mismatch) await this.embedPending(db, preferences);
+          const db = await this.prepare(preferences, true);
+          if (!db || !this.canIndex(db, preferences)) {
+            if (this.rescanRequested && this.manualPass) this.manualRequested = true;
+            continue;
+          }
+          const fullScan = this.fullScanRequested;
+          const paths = [...this.changedPaths];
+          const gallery = this.galleryChanged;
+          this.fullScanRequested = false;
+          this.changedPaths.clear();
+          this.galleryChanged = false;
+          if (fullScan) await this.scan(db, preferences);
+          else await this.scanChanges(db, preferences, paths, gallery);
+          if (this.canIndex(db, preferences) && !this.mismatch) await this.embedPending(db, preferences);
         } catch (error) {
-          if (this.rescanRequested) continue;
+          if (this.rescanRequested) {
+            if (this.manualPass) this.manualRequested = true;
+            continue;
+          }
           this.error = error instanceof Error ? error.message : "Indexing failed.";
         }
+        // A superseded manual pass may need to retry while automatic work is paused.
+        if (this.rescanRequested && this.manualPass) this.manualRequested = true;
       } while (this.rescanRequested);
+      if (this.unavailablePaths.size && !this.error) {
+        this.error = "Some folders or files are unavailable. Their index entries were kept; reconnect or restore access and update the index.";
+      }
       this.state = this.error ? "error" : this.paused ? "paused" : "idle";
     } finally {
+      this.manualPass = false;
       this.current = "";
-      this.db?.checkpoint();
+      if (this.db && this.dbIdentity === indexIdentity(this.db.filePath)) this.db.checkpoint();
     }
   }
 
   private async scan(db: SearchDatabase, preferences: SearchPreferences) {
-    this.lastScanStartedAt = Date.now();
+    this.lastFullScanAt = Date.now();
     this.state = "scanning";
 
-    const tree = await getTree({ includeArchive: true });
-    if (!this.isCurrent(db, preferences)) return;
-    const files: LiberaFileNode[] = [];
-    for (const notebook of tree.notebooks) collectFiles(notebook.children, files);
+    const { files, unavailable, cancelled } = await readSearchLibrary(() => this.canIndex(db, preferences));
+    if (cancelled || !this.canIndex(db, preferences)) return;
+    this.unavailablePaths = unavailable;
 
     // A failed gallery must not block library updates or be treated as empty.
     let galleryReadable = true;
@@ -327,26 +425,31 @@ export class SearchIndexer {
       this.error = error instanceof Error ? error.message : "Could not scan the gallery.";
       return null;
     }))?.photos ?? [] : [];
-    if (!this.isCurrent(db, preferences)) return;
+    if (!this.canIndex(db, preferences)) return;
     const indexedFiles = files.filter((file) => file.fileType !== "image" || preferences.indexImages);
     this.repair(db, indexedFiles, photos.map(galleryMeta), galleryReadable);
     const known = new Map(db.listFiles().map((file) => [file.key, file]));
-    const seen = new Set<string>(galleryReadable ? [] : [...known.values()].filter((file) => file.source === "gallery").map((file) => file.key));
+    const seen = new Set<string>([...known.values()]
+      .filter((file) => ((file.source === "gallery" && !galleryReadable) || this.isUnavailable(file)) &&
+        (preferences.indexImages || file.kind !== "image"))
+      .map((file) => file.key));
 
     this.done = 0;
     this.total = files.length + photos.length;
 
     for (const file of files) {
+      if (!this.canIndex(db, preferences)) return;
       this.done += 1;
       if (file.fileType === "image" && !preferences.indexImages) continue;
       seen.add(file.path);
       this.current = file.path;
       await this.indexLibraryFile(db, file, known.get(file.path), preferences);
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       await yieldToServer();
     }
 
     for (const photo of photos) {
+      if (!this.canIndex(db, preferences)) return;
       this.done += 1;
       const key = `gallery:${photo.id}`;
       seen.add(key);
@@ -354,17 +457,89 @@ export class SearchIndexer {
       const meta = galleryMeta(photo);
       this.current = `Gallery/${photo.path}`;
       await this.indexGalleryPhoto(db, meta, record, preferences);
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       await yieldToServer();
     }
 
     // Remove what is gone after adding what is new, so moved files can borrow vectors.
+    if (!this.canIndex(db, preferences)) return;
     for (const [key, file] of known) {
       if (!seen.has(key)) db.deleteFile(file.id);
     }
     this.staleFileIds.clear();
     db.retryFailedEmbeddings();
 
+    // Reserve the next routine scan from completion too. Otherwise a slow
+    // metadata walk is immediately repeated as soon as embedding begins.
+    this.lastFullScanAt = Date.now();
+    this.lastScanAt = new Date().toISOString();
+  }
+
+  private isUnavailable(file: Pick<IndexedFile, "source" | "path">) {
+    return file.source === "library" && [...this.unavailablePaths].some((prefix) => file.path === prefix || file.path.startsWith(`${prefix}/`));
+  }
+
+  /** A save/upload/move does not need a walk of the whole library. */
+  private async scanChanges(db: SearchDatabase, preferences: SearchPreferences, paths: string[], gallery: boolean) {
+    this.state = "scanning";
+    this.done = 0;
+    this.total = paths.length;
+    const known = new Map(db.listFiles().map((file) => [file.key, file]));
+    const removed = new Set<string>();
+
+    for (const filePath of paths) {
+      if (!this.canIndex(db, preferences)) return;
+      this.current = filePath;
+      try {
+        const { notebook, pathParts } = splitFilePath(filePath);
+        if (!isVisibleTreeFile(notebook, pathParts)) {
+          removed.add(filePath);
+          continue;
+        }
+        const file = await readSearchFile(notebook, pathParts);
+        if (!this.canIndex(db, preferences)) return;
+        if (this.isUnavailable({ source: "library", path: filePath })) {
+          this.fullScanRequested = true;
+          this.rescanRequested = true;
+        }
+        if (file.fileType === "image" && !preferences.indexImages) removed.add(filePath);
+        else await this.indexLibraryFile(db, file, known.get(filePath), preferences);
+      } catch (error) {
+        // Permission/read failures do not mean the file was deleted.
+        const notebook = filePath.split("/")[0];
+        const linked = getLinkedFolder(notebook);
+        const offline = linked && (linked.unresolved || !(await stat(linked.path).catch(() => null))?.isDirectory());
+        if (offline) this.unavailablePaths.add(notebook);
+        else if ((error as NodeJS.ErrnoException).code === "ENOENT") removed.add(filePath);
+        else this.error = error instanceof Error ? error.message : "Could not scan the file.";
+      }
+      this.done += 1;
+      await yieldToServer();
+    }
+
+    if (gallery) {
+      const photos = preferences.indexImages ? (await getGallery()).photos.map(galleryMeta) : [];
+      if (!this.canIndex(db, preferences)) return;
+      const seen = new Set(photos.map((photo) => `gallery:${photo.id}`));
+      this.total += photos.length;
+      for (const photo of photos) {
+        if (!this.canIndex(db, preferences)) return;
+        this.current = `Gallery/${photo.path}`;
+        await this.indexGalleryPhoto(db, photo, known.get(`gallery:${photo.id}`), preferences);
+        this.done += 1;
+        await yieldToServer();
+      }
+      for (const file of known.values()) {
+        if (file.source === "gallery" && !seen.has(file.key)) removed.add(file.key);
+      }
+    }
+
+    if (!this.canIndex(db, preferences)) return;
+    // Add destinations before removing sources, retaining reusable passage vectors.
+    for (const key of removed) {
+      const file = known.get(key);
+      if (file) db.deleteFile(file.id);
+    }
     this.lastScanAt = new Date().toISOString();
   }
 
@@ -375,7 +550,7 @@ export class SearchIndexer {
    * really moved can still borrow their vectors.
    */
   private repair(db: SearchDatabase, files: LiberaFileNode[], photos: SearchGalleryPhoto[], galleryReadable: boolean) {
-    const indexed = db.listFiles().filter((file) => galleryReadable || file.source !== "gallery");
+    const indexed = db.listFiles().filter((file) => (galleryReadable || file.source !== "gallery") && !this.isUnavailable(file));
     const { relocations, stale } = planIndexRepair(indexed, files, photos);
     const sources = new Map(indexed.map((file) => [file.id, file.source]));
     for (const relocation of relocations) {
@@ -403,15 +578,19 @@ export class SearchIndexer {
     try {
       const absolutePath = libraryAbsolutePath(file.path);
       record.signature = await readFileSignature(absolutePath);
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       if (known?.status === "ok" && known.signature === record.signature && known.kind === file.fileType) return;
       const chunks = await this.chunkLibraryFile({ ...file, size: Number(record.signature.split(":")[0]) });
       const after = await readFileSignature(absolutePath);
-      if (!this.isCurrent(db, preferences)) return;
-      if (record.signature !== after) { this.rescanRequested = true; return; }
+      if (!this.canIndex(db, preferences)) return;
+      if (record.signature !== after) {
+        this.changedPaths.add(file.path);
+        this.rescanRequested = true;
+        return;
+      }
       db.replaceFile(record, chunks, ftsName);
     } catch (error) {
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       db.markFailed(record, error instanceof Error ? error.message : "Could not read the file.", ftsName);
     }
   }
@@ -426,7 +605,10 @@ export class SearchIndexer {
     if (file.fileType === "pdf") {
       // Without the worker (it could not start), parse here as Deep Search does.
       const { pages } = await readPdfTextCache(file.path, { extractPages: (target) => this.extractPdfPages(target) })
-        .catch(() => readPdfTextCache(file.path));
+        .catch((error) => {
+          if (!this.indexingAllowed()) throw error;
+          return readPdfTextCache(file.path);
+        });
       const chunks = toNewChunks(chunkPdfPages(pages));
       return chunks.length ? chunks : nameOnlyChunk(file.name);
     }
@@ -452,6 +634,7 @@ export class SearchIndexer {
 
     try {
       for (let from = 1; from <= numPages; from += PDF_PAGE_BATCH) {
+        if (!this.indexingAllowed()) throw new Error("Indexing is paused.");
         const result = await worker.pdfText(absolutePath, from, from + PDF_PAGE_BATCH - 1);
         numPages = result.numPages;
         for (const page of result.pages) pages.push({ pageNumber: page.pageNumber, text: pageTextFromItems(page.items) });
@@ -480,32 +663,55 @@ export class SearchIndexer {
     try {
       const absolutePath = path.join(getGalleryRoot(), ...photo.path.split("/"));
       record.signature = await readFileSignature(absolutePath);
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       if (known?.status === "ok" && known.signature === record.signature && known.meta === record.meta) return;
       const hash = await imageHash(absolutePath);
       const after = await readFileSignature(absolutePath);
-      if (!this.isCurrent(db, preferences)) return;
-      if (record.signature !== after) { this.rescanRequested = true; return; }
+      if (!this.canIndex(db, preferences)) return;
+      if (record.signature !== after) {
+        this.galleryChanged = true;
+        this.rescanRequested = true;
+        return;
+      }
       db.replaceFile(record, [{ hash, title: "", text: [photo.name, photo.prompt].filter(Boolean).join("\n"), context: "" }], ftsName);
     } catch (error) {
-      if (!this.isCurrent(db, preferences)) return;
+      if (!this.canIndex(db, preferences)) return;
       db.markFailed(record, error instanceof Error ? error.message : "Could not read the photo.", ftsName);
     }
   }
 
-  private imagePath(chunk: PendingChunk) {
+  private sourcePath(chunk: PendingChunk) {
     return chunk.source === "gallery"
       ? path.join(getGalleryRoot(), ...chunk.path.split("/"))
       : libraryAbsolutePath(chunk.path);
   }
 
+  /** Text can change during inference too; never attach a vector to stale source text. */
+  private async sourcesCurrent(db: SearchDatabase, chunks: PendingChunk[], preferences: SearchPreferences) {
+    const seen = new Set<string>();
+    for (const chunk of chunks) {
+      if (seen.has(chunk.key)) continue;
+      seen.add(chunk.key);
+      const signature = await readFileSignature(this.sourcePath(chunk)).catch(() => "");
+      if (!this.canIndex(db, preferences)) return false;
+      if (signature !== chunk.signature) {
+        if (chunk.source === "gallery") this.galleryChanged = true;
+        else this.changedPaths.add(chunk.path);
+        this.rescanRequested = true;
+        return false;
+      }
+    }
+    return true;
+  }
+
   private async embedPending(db: SearchDatabase, preferences: SearchPreferences) {
     const worker = getSearchWorker();
-    if (!worker.configured || this.paused) return;
+    if (!worker.configured || !this.canIndex(db, preferences)) return;
     const epoch = this.embeddingEpoch;
 
     const includeImages = preferences.indexImages && worker.visionConfigured;
-    this.total = db.countPending(includeImages);
+    const excludedFileIds = db.listFiles().filter((file) => this.isUnavailable(file)).map((file) => file.id);
+    this.total = db.countPending(includeImages, excludedFileIds);
     this.done = 0;
     if (!this.total) return;
 
@@ -517,12 +723,12 @@ export class SearchIndexer {
       return;
     }
 
-    while (!this.paused && !this.rescanRequested && this.canEmbed(db, preferences, epoch)) {
-      while (!this.paused && !this.rescanRequested && Date.now() - worker.lastQueryAt < SEARCH_ACTIVITY_PAUSE_MS) {
+    while (!this.rescanRequested && this.canEmbed(db, preferences, epoch)) {
+      while (!this.rescanRequested && this.canEmbed(db, preferences, epoch) && Date.now() - worker.lastQueryAt < SEARCH_ACTIVITY_PAUSE_MS) {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      if (this.paused || this.rescanRequested || !this.canEmbed(db, preferences, epoch)) return;
-      const batch = db.pendingChunks(TEXT_BATCH_SIZE, includeImages);
+      if (this.rescanRequested || !this.canEmbed(db, preferences, epoch)) return;
+      const batch = db.pendingChunks(TEXT_BATCH_SIZE, includeImages, excludedFileIds);
       if (!batch.length) break;
 
       // Images go one at a time: each takes a while, and a search may be waiting.
@@ -530,18 +736,17 @@ export class SearchIndexer {
       this.current = work[0].source === "gallery" ? `Gallery/${work[0].path}` : work[0].path;
 
       try {
+        if (!await this.sourcesCurrent(db, work, preferences) || !this.canEmbed(db, preferences, epoch)) return;
         const vectors = await worker.embed(work.map((chunk) => this.embedInput(chunk)), "index");
         // A routine rescan can wait until this valid batch is stored. Otherwise
         // polling repeatedly discards slow inference and the queue never advances.
         if (!this.canEmbed(db, preferences, epoch)) return;
-        if (work[0].kind === "image" && await readFileSignature(this.imagePath(work[0])).catch(() => "") !== work[0].signature) {
-          this.rescanRequested = true;
-          return;
-        }
+        if (!await this.sourcesCurrent(db, work, preferences)) return;
         if (!this.canEmbed(db, preferences, epoch)) return;
         db.storeVectors(work.map((chunk, index) => ({ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector: vectors[index] })));
       } catch (error) {
         if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
+        if (!await this.sourcesCurrent(db, work, preferences)) return;
         if (worker.modelState === "error") return;
         // One unreadable passage or photo must not stall the queue: skip it.
         if (work.length === 1) db.markEmbeddingFailed(work);
@@ -559,18 +764,21 @@ export class SearchIndexer {
     for (const chunk of chunks) {
       if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
       try {
+        if (!await this.sourcesCurrent(db, [chunk], preferences)) return;
         const [vector] = await worker.embed([this.embedInput(chunk)], "index");
+        if (!await this.sourcesCurrent(db, [chunk], preferences)) return;
         if (!this.canEmbed(db, preferences, epoch)) return;
         db.storeVectors([{ id: chunk.id, generation: chunk.generation, kind: chunk.kind, vector }]);
       } catch {
         if (!this.canEmbed(db, preferences, epoch) || this.rescanRequested) return;
+        if (!await this.sourcesCurrent(db, [chunk], preferences)) return;
         db.markEmbeddingFailed([chunk]);
       }
     }
   }
 
   private embedInput(chunk: PendingChunk) {
-    if (chunk.kind === "image") return { images: [{ path: this.imagePath(chunk) }] };
+    if (chunk.kind === "image") return { images: [{ path: this.sourcePath(chunk) }] };
     return { text: documentPrompt(chunk.kind, documentFileTitle(chunk.name), chunk) };
   }
 
@@ -578,7 +786,7 @@ export class SearchIndexer {
     const preferences = getSearchPreferences();
     const worker = getSearchWorker();
     // New weights or settings: check the stored vectors against them again.
-    if (worker.configure(preferences)) this.requestScan({ force: true });
+    if (worker.configure(preferences)) this.requestScan({ force: true, manual: false });
     let counts = { files: 0, failedFiles: 0, images: 0, chunks: 0, embeddedChunks: 0 };
     let error = this.error;
     let exists = false;
@@ -594,6 +802,7 @@ export class SearchIndexer {
 
     return {
       state: this.paused && !this.running ? "paused" : this.running ? this.state : error ? "error" : "idle",
+      backgroundIndexing: preferences.backgroundIndexing,
       exists,
       mismatch: this.mismatch ?? undefined,
       model: {

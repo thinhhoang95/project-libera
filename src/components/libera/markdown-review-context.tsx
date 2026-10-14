@@ -5,6 +5,7 @@ import { syncReview, paragraphRange, plainParagraphRange, type ReviewDocument, t
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
+import { registerStateFlusher } from "./deferred-save";
 
 type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
 export type ReviewSelection = { range: ReviewRange; x: number; y: number };
@@ -39,6 +40,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const latest = useRef<ReviewDocument | null>(null);
   const pending = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
+  const metadataWrite = useRef<Promise<unknown> | null>(null);
+  useEffect(() => registerStateFlusher(() => metadataWrite.current ?? undefined), []);
   const lastTab = useRef<{ id: string; key: string; doc: ReviewDocument | null } | null>(null);
   const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
   const tabId = activeTab?.id;
@@ -96,7 +99,9 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     busyRef.current = true; setBusy(name); setError("");
     try {
       const before = snapshot();
-      const result = await apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", signal: controller.signal, body: JSON.stringify({ ...fields, action: name, id: stored.id, revision: stored.revision, snapshot: before }) });
+      const write = apiRequest<ReviewDocument>("/api/markdown-reviews", { method: "POST", signal: controller.signal, body: JSON.stringify({ ...fields, action: name, id: stored.id, revision: stored.revision, snapshot: before }) });
+      metadataWrite.current = write;
+      const result = await write;
       if (current.current.activeTab?.id !== tab.id || controller.signal.aborted) return false;
       if (result.snapshot !== before) {
         if (snapshot() !== before || !current.current.applyDraft(tab.id, before, result.snapshot)) {
@@ -115,7 +120,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       }
       return false;
     }
-    finally { if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
+    finally { metadataWrite.current = null; if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
   }, [publish, snapshot]);
 
   const generate = useCallback(async (stage: "plan" | "generate" | "revise", prompt: string, ids?: string[], references?: ChatContext[], suggestionId?: string) => {

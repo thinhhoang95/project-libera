@@ -65,6 +65,23 @@ contextBridge.exposeInMainWorld("liberaClipboard", {
 
 contextBridge.exposeInMainWorld("liberaWorkspaces", {
   checkpoint: (body, root) => ipcRenderer.sendSync("workspaces:checkpoint", body, root),
+  remember: (body, root) => ipcRenderer.sendSync("workspaces:remember", body, root),
+  readRecovery: (root) => ipcRenderer.invoke("workspaces:read-recovery", root),
+});
+
+contextBridge.exposeInMainWorld("liberaPersistence", {
+  onFlush: (listener) => {
+    const handler = async (_event, id) => {
+      try { await listener(); ipcRenderer.send("state:flushed", id); }
+      catch (error) { ipcRenderer.send("state:flushed", id, error?.message || "Could not save session state."); }
+    };
+    ipcRenderer.on("state:flush", handler);
+    ipcRenderer.send("state:ready", true);
+    return () => {
+      ipcRenderer.removeListener("state:flush", handler);
+      ipcRenderer.send("state:ready", false);
+    };
+  },
 });
 
 contextBridge.exposeInMainWorld("liberaDirectory", {

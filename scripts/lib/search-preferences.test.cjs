@@ -19,6 +19,7 @@ function openPreferences(state, overrides = {}, query = "?mode=configuration") {
         },
         selectSearchWeights: async (kind) => {
           calls.weights.push(kind);
+          if (kind === "reading") return "/models/granite-docling-258M-ONNX";
           return kind === "vision" ? "/models/onnx/vision_encoder_quantized.onnx" : "/models/onnx/model_quantized.onnx";
         },
         selectSearchIndexFile: async (mode) => (mode === "new" ? "/local/new-index.sqlite" : "/local/copied.sqlite"),
@@ -53,6 +54,7 @@ test("Search preferences load, choose weights and save with the other preference
 
     document.querySelector("#search-text-weights-button").click();
     document.querySelector("#search-vision-weights-button").click();
+    document.querySelector("#reading-model-directory-button").click();
     // Empty means the default, which Reveal shows.
     assert.match(document.querySelector("#search-index-file").placeholder, /search-index\/x\/libera-search\.sqlite/);
     document.querySelector("#search-index-reveal-button").click();
@@ -61,7 +63,7 @@ test("Search preferences load, choose weights and save with the other preference
     assert.match(document.querySelector("#search-index-help").textContent, /does not exist yet/);
     document.querySelector("#search-index-existing-button").click();
     await tick();
-    assert.deepEqual(calls.weights, ["text", "vision"]);
+    assert.deepEqual(calls.weights, ["text", "vision", "reading"]);
     document.querySelector("#search-index-images").checked = true;
 
     document.querySelector("#setup-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -74,6 +76,7 @@ test("Search preferences load, choose weights and save with the other preference
       indexImages: true,
       backgroundIndexing: true,
       indexFile: "/local/copied.sqlite",
+      readingModelDirectory: "/models/granite-docling-258M-ONNX",
     });
   } finally {
     dom.window.close();

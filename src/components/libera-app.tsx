@@ -9,6 +9,7 @@ import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
 import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { SearchView } from "@/components/libera/global-search/search-view";
@@ -29,6 +30,8 @@ import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
+import { DocumentOcrModelDialog } from "@/components/libera/document-ocr/document-ocr-model-dialog";
+import { SnipReadingCard } from "@/components/libera/document-ocr/snip-reading-card";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import { CanvasSplitView } from "@/components/libera/canvas-split-view";
@@ -168,14 +171,22 @@ export function LiberaApp({
     return () => { disposed = true; };
   }, [authenticated]);
 
+  const panelWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/document-chat/state", {
+    method: "PUT", body, keepalive: !window.liberaPersistence,
+  })), []);
+  useEffect(() => {
+    const unregister = registerStateFlusher(panelWriter.flush);
+    return () => { unregister(); void panelWriter.flush().catch(() => undefined); };
+  }, [panelWriter]);
   const saveChatPanel = useCallback((width: number, collapsed: boolean) => {
-    void apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "panel", value: { width, collapsed } }), keepalive: true }).catch(() => undefined);
-  }, []);
+    panelWriter.schedule({ kind: "panel", value: { width, collapsed } });
+  }, [panelWriter]);
 
   const changeChatCollapsed = useCallback((collapsed: boolean) => {
+    if (collapsed === chatCollapsed) return;
     setChatCollapsed(collapsed);
     saveChatPanel(chatWidth, collapsed);
-  }, [chatWidth, saveChatPanel]);
+  }, [chatWidth, chatCollapsed, saveChatPanel]);
 
   // The photo open in the gallery viewer is the AI chat's context while it is on screen.
   const [galleryViewingPhoto, setGalleryViewingPhoto] = useState<GalleryPhoto | null>(null);
@@ -355,6 +366,10 @@ export function LiberaApp({
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
         onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
+        pendingVisualInsertion={tab ? workspace.pendingVisualInsertions[tab.id] : undefined}
+        onFinishVisualInsertion={workspace.finishVisualInsertion}
+        onCreateMarkdownBesidePdf={workspace.createMarkdownBesidePdf}
+        onWriteConvertedMarkdown={workspace.writeConvertedMarkdown}
         onInsertExistingImage={workspace.insertExistingMarkdownImage}
         onInsertFileLink={workspace.insertMarkdownFileLink}
         onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
@@ -607,6 +622,8 @@ export function LiberaApp({
         onClose={workspace.closeNotebookGroupDialog}
         onSubmit={workspace.submitNotebookGroupDialog}
       />
+      <DocumentOcrModelDialog />
+      <SnipReadingCard session={workspace.screenshotSnipSession} onCancel={workspace.cancelScreenshotSnip} />
       {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.fullTree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
       <NoteDialog
         dialog={workspace.noteDialog}

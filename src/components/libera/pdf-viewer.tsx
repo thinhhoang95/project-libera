@@ -33,6 +33,8 @@ import type {
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
 import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { PDF_TEXT_ITEM_ATTRIBUTE, PdfLayoutStore, pdfRangePages, pdfSelectionMarkdown } from "@/components/libera/pdf-copy";
+import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
@@ -44,6 +46,9 @@ import {
   pngFileFromBlob,
 } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
+import { PdfMarkdownButton } from "@/components/libera/document-ocr/pdf-markdown-button";
+import type { PdfMarkdownConversion } from "@/components/libera/document-ocr/pdf-markdown-jobs";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
   ANNOTATION_UI_SELECTOR,
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
@@ -87,6 +92,8 @@ GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+// 2.5 × 72 DPI = 180 DPI for snips read into Markdown.
+const MARKDOWN_SNIP_RENDER_SCALE = 2.5;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
@@ -123,6 +130,11 @@ type PdfViewerProps = {
   onCancelScreenshotSnip?: () => void;
   onCompleteScreenshotSnip?: (file: File) => Promise<void>;
   onViewStateChange?: (viewState: PdfTabViewState) => void;
+  /** "markdown" snips are rendered sharper, since the local model reads them. */
+  screenshotSnipMode?: "image" | "markdown";
+  mathMarkers?: MathMarkerSettings;
+  /** Enables Convert PDF to Markdown: how to create, save and open the result. */
+  markdownConversion?: PdfMarkdownConversion;
 };
 
 function intersectClientRect(rect: DOMRect, bounds: DOMRect) {
@@ -255,6 +267,9 @@ export function PdfViewer({
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
   onViewStateChange,
+  screenshotSnipMode = "image",
+  mathMarkers,
+  markdownConversion,
 }: PdfViewerProps) {
   const paneFocused = useCanvasPaneFocused();
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -268,6 +283,10 @@ export function PdfViewer({
   const scrollViewStateTimeoutRef = useRef<number | null>(null);
   const onViewStateChangeRef = useRef(onViewStateChange);
   const screenshotCallbacksRef = useRef({ onCancelScreenshotSnip, onCompleteScreenshotSnip });
+  const screenshotSnipModeRef = useRef(screenshotSnipMode);
+  useLayoutEffect(() => {
+    screenshotSnipModeRef.current = screenshotSnipMode;
+  }, [screenshotSnipMode]);
   const initialViewStateRef = useRef(initialViewState);
   const annotationScrollStateRef = useRef<PdfAnnotationScrollState>({
     allowInitialScroll:
@@ -282,6 +301,11 @@ export function PdfViewer({
     [pdfDocument],
   );
   useEffect(() => () => textContentCache?.clear(), [textContentCache]);
+  const layoutStore = useMemo(
+    () => pdfDocument && textContentCache ? new PdfLayoutStore(pdfDocument, textContentCache) : null,
+    [pdfDocument, textContentCache],
+  );
+  useEffect(() => () => layoutStore?.clear(), [layoutStore]);
   const pdfFind = usePdfFind(pdfDocument, textContentCache, viewerRef);
   const activeSearchMatch = pdfFind.activeMatch;
   useEffect(() => {
@@ -802,7 +826,11 @@ export function PdfViewer({
 
     try {
       const page = await pdfDocument.getPage(pageNumber);
-      const renderScale = Math.max(1, window.devicePixelRatio || 1);
+      // The reading model needs small print at least ~180 DPI; pictures follow the screen.
+      const renderScale = Math.max(
+        screenshotSnipModeRef.current === "markdown" ? MARKDOWN_SNIP_RENDER_SCALE : 1,
+        window.devicePixelRatio || 1,
+      );
       const viewport = page.getViewport({ scale: renderScale });
       const sourceCanvas = document.createElement("canvas");
       const sourceContext = sourceCanvas.getContext("2d");
@@ -1137,6 +1165,34 @@ export function PdfViewer({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeSelectedAnnotationId, clearSelection, deleteSelectedAnnotation, paneFocused, selectionMenu]);
 
+  // Copy is synchronous, so measure the pages around a selection while it is made.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!layoutStore || !viewer) return;
+    let timer = 0;
+
+    function readAhead() {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const selection = window.getSelection();
+        if (!viewer || !selection || selection.isCollapsed || !selection.rangeCount) return;
+        const pages = pdfRangePages(selection.getRangeAt(0), viewer);
+        if (!pages.length) return;
+        const first = Math.min(...pages);
+        const last = Math.max(...pages);
+        const nearby: number[] = [];
+        for (let page = first - 2; page <= last + 2; page++) nearby.push(page);
+        void layoutStore?.ensure(nearby);
+      }, 120);
+    }
+
+    document.addEventListener("selectionchange", readAhead);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("selectionchange", readAhead);
+    };
+  }, [layoutStore]);
+
   // The quick-highlight menu follows the live selection and disappears with it.
   useEffect(() => {
     if (!selectionMenu) {
@@ -1220,8 +1276,21 @@ export function PdfViewer({
     });
   }
 
+  /** Clean Markdown for a PDF text selection; "" leaves the browser's plain text. */
+  function selectionMarkdown() {
+    const viewer = viewerRef.current;
+    return viewer && layoutStore ? pdfSelectionMarkdown(viewer, layoutStore) : "";
+  }
+
+  function handleCopy(event: React.ClipboardEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, [contenteditable]")) return;
+    const markdown = selectionMarkdown();
+    if (markdown) writeMarkdownClipboard(event.nativeEvent, markdown);
+  }
+
   function copySelection() {
-    const text = window.getSelection()?.toString() ?? "";
+    const text = selectionMarkdown() || (window.getSelection()?.toString() ?? "");
 
     if (text) {
       void navigator.clipboard?.writeText(text).catch(() => undefined);
@@ -1242,6 +1311,7 @@ export function PdfViewer({
   return (
     <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
       style={{ "--pdf-highlight-color": highlightColor } as React.CSSProperties}
+      onCopy={handleCopy}
       onPointerDown={(event) => {
         if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
           event.currentTarget.focus({ preventScroll: true });
@@ -1337,6 +1407,16 @@ export function PdfViewer({
             onClick={pdfFind.openFind}>
             <Search aria-hidden className="h-4 w-4" />
           </button>
+          {markdownConversion && src ? (
+            <PdfMarkdownButton
+              pdfPath={filePath}
+              src={src}
+              pageCount={pdfDocument?.numPages ?? 0}
+              mathMarkers={mathMarkers}
+              conversion={markdownConversion}
+              className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-input px-1.5 hover:bg-muted"
+            />
+          ) : null}
           <span className="mr-2 text-xs text-muted-foreground">
             {saveStatus === "saving"
               ? "Saving"
@@ -1442,7 +1522,7 @@ export function PdfViewer({
           </div>
         ) : null}
 
-        {!loading && pdfDocument && textContentCache ? (
+        {!loading && pdfDocument && textContentCache && layoutStore ? (
           <div className="mx-auto flex w-max flex-col gap-5">
             {pageLayouts.map((layout) => (
               <PdfPageView
@@ -1452,6 +1532,7 @@ export function PdfViewer({
                 newAnnotationFontSize={fontSize}
                 pageLayout={layout}
                 textContentCache={textContentCache}
+                layoutStore={layoutStore}
                 pdfDocument={pdfDocument}
                 searchMatches={pdfFind.matchesByPage.get(layout.pageNumber) ?? EMPTY_SEARCH_MATCHES}
                 activeSearchMatch={activeSearchMatch?.pageNumber === layout.pageNumber ? activeSearchMatch : undefined}
@@ -1496,6 +1577,7 @@ type PdfPageContentProps = {
   pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
   textContentCache: PdfTextContentCache;
+  layoutStore: PdfLayoutStore;
   requestRenderSlot: RequestRenderSlot;
   selectedAnnotationId: string;
   screenshotSnipping: boolean;
@@ -1557,6 +1639,7 @@ function PdfPageContent({
   pageLayout,
   pdfDocument,
   textContentCache,
+  layoutStore,
   requestRenderSlot,
   selectedAnnotationId,
   screenshotSnipping,
@@ -1654,6 +1737,9 @@ function PdfPageContent({
       await Promise.all([renderTask.promise, textLayer.render()]);
 
       if (active) {
+        // Copy maps selected spans back to their text items for Markdown rebuilding.
+        textLayer.textDivs.forEach((div, index) => div.setAttribute(PDF_TEXT_ITEM_ATTRIBUTE, String(index)));
+        layoutStore.record(page, textContent);
         setSearchLayer({ textDivs: textLayer.textDivs, page: buildPdfSearchPage(textContent) });
         setRendering(false);
       }
@@ -1678,7 +1764,7 @@ function PdfPageContent({
       textLayer?.cancel();
       releaseSlot();
     };
-  }, [pageNumber, pdfDocument, requestRenderSlot, textContentCache, zoom]);
+  }, [layoutStore, pageNumber, pdfDocument, requestRenderSlot, textContentCache, zoom]);
 
   usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument, pageNumber, scale: zoom });
 

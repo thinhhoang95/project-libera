@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { flushPendingState } from "../../src/components/libera/deferred-save";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import type { OpenTab } from "../../src/components/libera/types";
@@ -72,7 +73,7 @@ test("Agent mode sends open drafts and scope, shows activity, syncs tabs, and un
   const host = document.getElementById("root")!;
   const root = createRoot(host);
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
-  async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
+  async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); await act(flushPendingState); }
   async function mount() {
     await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: plan, tabs: [plan, other, pdf], files: [plan.file, other.file], collapsed: false, mathMarkers: {}, onCollapsedChange: () => undefined, onCreateDraft: () => undefined, agentWorkspace: bridge })));
     await settle();
@@ -151,9 +152,9 @@ test("Agent mode sends open drafts and scope, shows activity, syncs tabs, and un
     assert.ok(article.querySelector(".libera-agent-changes")?.textContent?.includes("undone"));
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="Regenerate response"]')!.disabled, false);
 
-    // The mode is fixed once the conversation starts; the permission stays adjustable.
+    // Mode and permission are fixed once the conversation starts.
     assert.equal(host.querySelector('[aria-label="Assistant mode"]'), null);
-    assert.ok(host.querySelector(".libera-agent-permission select"));
+    assert.equal(host.querySelector(".libera-agent-permission"), null);
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')!.click(); });
     assert.equal(modeButton("Agent").getAttribute("aria-pressed"), "true", "New chats start in the last used mode");
     await act(async () => { modeButton("Chat").click(); });

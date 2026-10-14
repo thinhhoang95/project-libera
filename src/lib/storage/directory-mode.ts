@@ -30,6 +30,7 @@ import {
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { ReviewDocument } from "@/lib/markdown-review";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 
 export type DirectoryModeSummary = {
   folders: Array<{ name: string; path: string }>;
@@ -156,7 +157,9 @@ export async function openDirectory(input: unknown) {
     await mergeLegacyFolderState(folder);
   }
 
-  return { ...getDirectoryModeSummary(), name, changed: !existing || existing.path !== directoryPath };
+  const changed = !existing || existing.path !== directoryPath;
+  if (changed) notifySearchChanges();
+  return { ...getDirectoryModeSummary(), name, changed };
 }
 
 /** Remove a folder from the library. Its files on disk are never touched. */
@@ -173,6 +176,7 @@ export function closeDirectory(name: unknown) {
     ...state,
     folders: state.folders.filter((folder) => folder.name !== safeName),
   });
+  notifySearchChanges();
   return getDirectoryModeSummary();
 }
 
@@ -205,6 +209,7 @@ export function renameLinkedFolder(currentName: string, nextName: string) {
     ...state,
     folders: state.folders.map((item) => item === folder ? { ...item, name: nextName } : item),
   });
+  notifySearchChanges();
 }
 
 export function clearRecentDirectories() {

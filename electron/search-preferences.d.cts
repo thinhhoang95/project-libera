@@ -7,6 +7,8 @@ export type SearchPreferences = {
   backgroundIndexing: boolean;
   /** The index's SQLite file; empty for the default location. */
   indexFile: string;
+  /** The PDF reading model's folder, laid out like its Hugging Face repository; empty when not chosen. */
+  readingModelDirectory: string;
 };
 
 export const DEFAULT_SEARCH_PREFERENCES: Readonly<SearchPreferences>;

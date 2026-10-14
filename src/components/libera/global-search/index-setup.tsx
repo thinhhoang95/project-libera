@@ -44,24 +44,40 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
   const { busy, error, run } = useIndexAction();
   const canChoose = canManageIndexFile();
 
+  const iconTile = (
+    <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#5b8def] text-white">
+      <Database aria-hidden className="h-4 w-4" />
+    </span>
+  );
+  const message = (
+    <>
+      <p className="text-sm font-medium">No search index yet</p>
+      <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+        Building reads every note, PDF and photo once. It runs in the background and can take a while for a large library.
+        {canChoose ? " If you already have an index for these notes, use it instead." : ""}
+      </p>
+    </>
+  );
+  // In the narrow side panel the buttons stack at full width, so neither hangs off to one side.
+  const buttonShape = compact ? "flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-sm" : "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm";
+
   return (
-    <div className={`libera-search-panel-card space-y-3 ${compact ? "p-3" : "p-4"}`}>
-      <div className="flex items-start gap-3">
-        <span className="libera-notebook-emoji flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#5b8def] text-white">
-          <Database aria-hidden className="h-4 w-4" />
-        </span>
-        <div className="min-w-0 text-left">
-          <p className="text-sm font-medium">No search index yet</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            Building reads every note, PDF and photo once. It runs in the background and can take a while for a large library.
-            {canChoose ? " If you already have an index for these notes, use it instead." : ""}
-          </p>
+    <div className={`libera-search-panel-card space-y-3 ${compact ? "p-3 text-center" : "p-4"}`}>
+      {compact ? (
+        <div className="flex flex-col items-center gap-2 pt-1">
+          {iconTile}
+          <div>{message}</div>
         </div>
-      </div>
-      <div className="flex flex-wrap gap-2">
+      ) : (
+        <div className="flex items-start gap-3">
+          {iconTile}
+          <div className="min-w-0 text-left">{message}</div>
+        </div>
+      )}
+      <div className={compact ? "flex flex-col gap-1.5" : "flex flex-wrap gap-2"}>
         <button
           type="button"
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className={`${buttonShape} bg-primary font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50`}
           disabled={busy}
           onClick={() => void run(() => searchIndexAction("build"))}
         >
@@ -71,7 +87,7 @@ export function IndexSetup({ status, compact = false }: { status: SearchIndexSta
         {canChoose ? (
           <button
             type="button"
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm hover:bg-muted disabled:opacity-50"
+            className={`${buttonShape} ${compact ? "border border-input" : ""} hover:bg-muted disabled:opacity-50`}
             disabled={busy}
             onClick={() => void run(async () => {
               const chosen = await window.liberaSearch?.useExistingIndex();

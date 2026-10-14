@@ -1,37 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { unified } from "unified";
-import remarkParse from "remark-parse";
+import { extractMarkdownLinkOccurrences } from "@/lib/markdown-link-occurrences";
 import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
 import { filePathFromParts, notebookSystemDirectoryPath } from "@/lib/storage/paths";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
-const parser = unified().use(remarkParse);
-
-// Parse only on the server, when a saved file's fingerprint changes. Using the
-// Markdown AST excludes code examples and supports reference-style links.
+// Parse only on the server, when a saved file's fingerprint changes. The links
+// panel extracts occurrences the same way, so both agree on what is a link.
 export function extractNotebookLinkDestinations(content: string): string[] {
-  const root = parser.parse(content);
-  const definitions = new Map<string, string>();
-  const references: string[] = [];
-  const destinations = new Set<string>();
-  function visit(node: { type: string; url?: string; identifier?: string; children?: typeof root.children }) {
-    if (node.type === "definition" && node.identifier && node.url) {
-      definitions.set(node.identifier.toUpperCase(), node.url);
-    } else if (node.type === "link" && node.url) {
-      destinations.add(node.url);
-    } else if (node.type === "linkReference" && node.identifier) {
-      references.push(node.identifier.toUpperCase());
-    }
-    node.children?.forEach(visit);
-  }
-  visit(root);
-  for (const reference of references) {
-    const destination = definitions.get(reference);
-    if (destination) destinations.add(destination);
-  }
-  return [...destinations];
+  return [...new Set(extractMarkdownLinkOccurrences(content).map((occurrence) => occurrence.href))];
 }
 
 type LinkEntry = { updatedAt: string; size: number; destinations: string[] };
@@ -92,10 +70,16 @@ export async function populateRelatedNotebooks(notebooks: LiberaNotebookNode[]) 
     const entries = await notebookDestinations(notebook, filesByNotebook[index]);
     const related = new Set<string>();
     for (const [sourcePath, entry] of Object.entries(entries)) {
+      const linked = new Set<string>();
       for (const href of entry.destinations) {
         const target = resolveMarkdownFileLink(href, sourcePath, allFiles)?.file;
-        if (target && target.notebook !== notebook.name) related.add(target.notebook);
+        if (!target || target.path === sourcePath) continue;
+        linked.add(target.path);
+        if (target.notebook !== notebook.name) related.add(target.notebook);
       }
+      // The panel inverts these to highlight files that link to the open one.
+      const source = allFiles.get(sourcePath);
+      if (source && linked.size) source.linkedFilePaths = [...linked].sort();
     }
     notebook.relatedNotebookNames = [...related].sort();
   }

@@ -14,6 +14,7 @@ const DEFAULT_SEARCH_PREFERENCES = Object.freeze({
   indexImages: true,
   backgroundIndexing: true,
   indexFile: "",
+  readingModelDirectory: "",
 });
 const INDEX_FILE_NAME = "libera-search.sqlite";
 
@@ -44,6 +45,8 @@ function normalizeSearchPreferences(input) {
     // Earlier versions named a folder; its index file had a fixed name.
     indexFile: normalizePath(value.indexFile) ||
       (normalizePath(value.indexDirectory) ? path.join(normalizePath(value.indexDirectory), INDEX_FILE_NAME) : ""),
+    // The PDF reading model (granite-docling): a folder like its Hugging Face repository.
+    readingModelDirectory: normalizePath(value.readingModelDirectory),
   };
 }
 
@@ -75,6 +78,7 @@ function searchPreferencesFromEnvironment(env = process.env) {
       : env.LIBERA_SEARCH_BACKGROUND_INDEXING !== "0",
     indexFile: env.LIBERA_SEARCH_INDEX_FILE,
     indexDirectory: env.LIBERA_SEARCH_INDEX_DIR,
+    readingModelDirectory: env.LIBERA_READING_MODEL_DIR,
   });
 }
 

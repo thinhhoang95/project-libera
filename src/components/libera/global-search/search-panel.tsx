@@ -78,7 +78,7 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
               <Play aria-hidden className="h-4 w-4" />
             </button>
           ) : (
-            <button type="button" className={iconButton} disabled={busy || !working} aria-label="Pause indexing" title="Pause after the current passage" onClick={() => void act("pause")}>
+            <button type="button" className={iconButton} disabled={busy || noIndex} aria-label="Pause indexing" title="Pause automatic index updates" onClick={() => void act("pause")}>
               <Pause aria-hidden className="h-4 w-4" />
             </button>
           )}
@@ -109,7 +109,7 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
             <span className="min-w-0 flex-1">
               <span role="status" className="block truncate text-sm font-medium">{summary.text}</span>
               <span className="block truncate text-xs text-muted-foreground" title={working ? status?.current : status?.indexPath}>
-                {working && status?.current ? fileName(status.current) : status?.state === "paused" ? "Resume to keep indexing" : status ? "Up to date as files change" : "Connecting…"}
+                {working && status?.current ? fileName(status.current) : status?.state === "paused" ? "Update once or resume indexing" : status?.backgroundIndexing === false ? "Updates only when requested" : status ? "Up to date as files change" : "Connecting…"}
               </span>
             </span>
             {progress !== null ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress}%</span> : null}

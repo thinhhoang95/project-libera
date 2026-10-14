@@ -20,10 +20,10 @@ const OUTCOME_NOTES: Record<string, string> = {
 
 type ToolStep = Extract<AgentStep, { kind: "tool" }>;
 
-const AgentText = memo(function AgentText({ text, streaming, mathMarkers, fontSize }: { text: string; streaming: boolean; mathMarkers: MathMarkerSettings; fontSize: number }) {
+const AgentText = memo(function AgentText({ text, streaming, mathMarkers, fontSize, onOpenFileLink }: { text: string; streaming: boolean; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean> }) {
   const content = useMemo(() => normalizeChatResponseMarkdown(text, streaming, mathMarkers), [text, streaming, mathMarkers]);
   return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
-    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
+    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} onOpenFileLink={onOpenFileLink} />;
 });
 
 function DiffView({ diff }: { diff: { removed: string; added: string } }) {
@@ -54,7 +54,7 @@ function ToolLine({ step }: { step: ToolStep }) {
   </li>;
 }
 
-export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, onUndo, onOpenFile }: {
+export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, onUndo, onOpenFile, onOpenFileLink }: {
   run: AgentRunRecord;
   streaming: boolean;
   mathMarkers: MathMarkerSettings;
@@ -62,6 +62,7 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
   undoing: boolean;
   onUndo: (paths?: string[]) => void;
   onOpenFile: (path: string) => void;
+  onOpenFileLink: (href: string) => Promise<boolean>;
 }) {
   // Consecutive tool steps read as one block of activity between the agent's messages.
   const blocks = useMemo(() => {
@@ -83,7 +84,7 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
 
   return <div className="libera-agent-run space-y-3">
     {blocks.map((block, index) => block.kind === "text"
-      ? <AgentText key={block.index} text={block.text} streaming={streaming && index === lastTextIndex} mathMarkers={mathMarkers} fontSize={fontSize} />
+      ? <AgentText key={block.index} text={block.text} streaming={streaming && index === lastTextIndex} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={onOpenFileLink} />
       : <ol key={block.index} className="libera-agent-tools" aria-label="Agent activity">{block.steps.map((step) => <ToolLine key={step.id} step={step} />)}</ol>)}
     {working && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Working…</p>}
     {!!run.tasks.length && <section className="libera-agent-tasks" aria-label="Agent tasks">

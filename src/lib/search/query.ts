@@ -196,7 +196,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   indexer.requestScan();
 
   const worker = getSearchWorker();
-  if (worker.configure(getSearchPreferences())) indexer.requestScan({ force: true });
+  if (worker.configure(getSearchPreferences())) indexer.requestScan({ force: true, manual: false });
   const warnings: string[] = [];
   const filter = kinds.length ? kinds : undefined;
   let nearest: Array<{ id: number; similarity: number }> = [];

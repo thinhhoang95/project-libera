@@ -27,6 +27,7 @@ import {
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 
 /** Notebooks and linked folders share one namespace of top-level names. */
 function assertNameNotUsedByFolder(name: string, except?: string) {
@@ -113,6 +114,7 @@ export async function renameNotebook(
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
   await renameFileMetadataPathPrefix(currentName, nextName);
+  if (currentName !== nextName) notifySearchChanges();
 
   return getTree();
 }
@@ -129,6 +131,7 @@ export async function deleteNotebook(name: string) {
   await removeNotebookPanelExpandedPathPrefix(name);
   await deleteReviewPath(name);
   await removeFileMetadataPathPrefix(name);
+  notifySearchChanges();
 
   return getTree();
 }

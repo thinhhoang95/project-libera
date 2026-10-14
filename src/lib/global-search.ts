@@ -94,6 +94,8 @@ export type SearchModelStatus = {
 
 export type SearchIndexStatus = {
   state: "idle" | "scanning" | "embedding" | "paused" | "error";
+  /** Automatic updates are disabled in Preferences; manual actions still work. */
+  backgroundIndexing?: boolean;
   /** False until the first index is built or an existing one is chosen. */
   exists: boolean;
   /** Set when the stored vectors were made with another model or size; they are not searched. */

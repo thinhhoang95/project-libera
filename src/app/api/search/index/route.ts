@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getSearchIndexer } from "@/lib/search/indexer";
-import { getSearchPreferences } from "@/lib/search/settings";
 import { toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -24,9 +23,9 @@ export async function POST(request: NextRequest) {
   try {
     const indexer = getSearchIndexer();
     if (action === "build") indexer.requestScan({ force: true, build: true });
-    else if (action === "scan") indexer.requestScan({ force: true });
+    else if (action === "scan") indexer.requestScan({ force: true, manual: true });
     else if (action === "reembed") indexer.reembed();
-    else if (action === "background" && getSearchPreferences().backgroundIndexing) indexer.requestScan();
+    else if (action === "background") indexer.requestScan();
     else if (action === "rebuild") await indexer.rebuild();
     else if (action === "pause") indexer.pause();
     else if (action === "resume") indexer.resume();

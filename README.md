@@ -251,7 +251,7 @@ Use **Enumerate Headings** in the visual toolbar to number all headings or selec
 
 Turn on **Smart Paste** in Preferences → General to paste Markdown with headings into either editor so it fits the document: the pasted text's highest heading is moved to the document's highest heading level (the highest numbered level, in a numbered document), and if any heading is numbered, every heading is renumbered so the numbering continues through the pasted text (`1.1` or `1.1.` style is kept). Unnumbered headings above the numbered level, such as a title, are left alone. The paste is a single undo step; pastes without headings, or into code, are unchanged. Restart Libera after toggling it.
 
-Use **Source** to access the existing source/preview workflow, screenshot insertion, file-link picker, and slide controls. Slide decks continue using the source editor. Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
+Both editors can snip a region of an open image or PDF tab, either as a picture or read into Markdown (see [PDF to Markdown](#pdf-to-markdown)). Use **Source** to access the existing source/preview workflow, file-link picker, and slide controls. Slide decks continue using the source editor. Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
 
 Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`) retain their existing syntax. Underlines use `<u>text</u>`. Font size and line spacing use safe numeric span attributes, for example `<span data-font-size="24" data-line-height="2">text</span>`, supported by both the visual editor and Markdown preview/export. Other Markdown viewers may ignore these presentation attributes.
 
@@ -270,6 +270,16 @@ Libera remembers the last selected notebook in the workspace data and reopens it
 ## Split panels
 
 Work on several files side by side by splitting the editor area into panels. Choose **Split Right** or **Split Down** in the file actions menu (Cmd/Ctrl+\ and Cmd/Ctrl+Shift+\), or right-click a tab and choose **Open to the Right** or **Open Below**. You can also drag a tab onto a panel: the highlighted zone shows whether it will split left, right, up, or down, or replace the panel's file. Panels can be split again in either direction. Drag a divider to resize panels, or double-click it to even them out. **Close Panel** and **Close Other Panels** are in the same menu. Each file shows in one panel at a time, so two editors never change the same draft. The layout is saved with the workspace.
+
+## Links between notes
+
+Libera follows the Markdown links between your files, so you can see how notes, PDFs, and photos connect.
+
+- **Backlinks in the Notebooks panel.** When a file is open, every note that links to it is highlighted in the left panel with a link icon. A collapsed notebook or folder shows how many linking notes it contains.
+- **Related notebooks.** Selecting a notebook highlights the other notebooks its notes link to.
+- **Links dialog.** Click **Backlinks and forward links** (the network icon) in the Visual or Source toolbar to see both directions in one place. **Backlinks** lists the saved notes that link to this one. **Forward links** lists every link in the note, including ones you haven't saved yet, grouped into library files, web links, and links whose target is missing. Each link shows its line and the text around it. Type in the search box to filter by note name, path, or surrounding text, then use ↑/↓ and Enter to open a result. Tab switches between the two lists. Opening a backlink jumps to the line that holds the link.
+
+Links count when they are written as Markdown links (`[text](path)` or reference links). Images embedded with `![](…)` and links inside code are not counted. Backlinks update when the linking note is saved. See [docs/features/related-notebooks.md](docs/features/related-notebooks.md) for details.
 
 ## AI writing and editing
 
@@ -304,6 +314,17 @@ Open **Search** in the left rail (Cmd/Ctrl+6), or press Cmd/Ctrl+Shift+F anywher
 Search combines meaning and exact words. Meaning comes from Google's EmbeddingGemma 2, which runs on this computer through Transformers.js in a background worker process; its weights stay outside the app. Choose the text model and vision encoder files in Preferences → Search, or run `npm run search:download-model` to download them. Without weights, Search still finds exact words. The index is a single SQLite file (full-text and sqlite-vec vector tables) kept on this computer in Libera's application data, outside the Master directory so a synced notes folder never uploads it (or in a file chosen in Preferences). The first index is built only when you click **Build index**, so you can instead choose an index built before with **Use existing index…**. After that it is kept up to date in the background: only changed passages are embedded again.
 
 See [docs/features/global-search.md](docs/features/global-search.md) for details and measured speeds.
+
+## PDF to Markdown
+
+Read PDF pages, scanned books, and images into Markdown on this computer, with no cloud service. Line breaks, page numbers, running headers, and words hyphenated across lines or pages are cleaned up. Tables, formulas (with your math markers), lists, code, and figures come out as Markdown.
+
+- **Snip as Markdown.** In either editor, click the text-scan button next to the snipping tool, then drag a rectangle over a PDF or image tab. The Markdown is inserted at the cursor, and figures inside the snip are saved as images next to the note.
+- **Convert PDF to Markdown.** In a PDF tab, click the text-scan button in the toolbar and choose the pages. Libera writes `<PDF name>.md` next to the PDF and saves after every page. The conversion keeps running while you switch tabs, and **Stop** keeps what was read so far.
+
+The model is IBM's granite-docling-258M (Apache-2.0), run on the CPU through Transformers.js in a background worker process. Like the Global Search weights, it lives in a folder you choose in Preferences → Search → **PDF reading model**. The first time you use either feature, Libera offers to download it there (about 600 MB), or you can put the files from Hugging Face there yourself. Expect several seconds for a small snip and one to three minutes for a full page. Small print such as footnotes can be missed; pages the model could not finish are listed when the conversion ends.
+
+See [docs/features/pdf-to-markdown.md](docs/features/pdf-to-markdown.md) for setup, file layout, and how it works.
 
 ## Image Gallery
 

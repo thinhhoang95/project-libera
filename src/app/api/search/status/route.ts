@@ -5,7 +5,7 @@ import { toStorageError } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
-/** Index and model status. `?scan=1` also starts a pass when the last one is not recent. */
+/** `?scan=1` requests a throttled automatic pass; pause and Preferences still apply. */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;

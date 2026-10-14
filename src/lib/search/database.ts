@@ -26,6 +26,7 @@ type DatabaseSync = {
   close(): void;
 };
 type SqliteModule = { DatabaseSync: new (path: string, options?: { allowExtension?: boolean }) => DatabaseSync };
+type IndexCounts = { files: number; failedFiles: number; images: number; chunks: number; embeddedChunks: number };
 
 const SCHEMA_VERSION = "1";
 // Resolve at run time from the server bundle, as the PDF text cache does for pdfjs.
@@ -116,10 +117,14 @@ function promptHash(kind: SearchFileKind, name: string, chunk: Pick<NewChunk, "t
 
 /** Keep the leading dimensions (Matryoshka) and restore unit length. */
 export function truncateVector(vector: Float32Array, dimensions: number) {
+  if (!(vector instanceof Float32Array) || vector.length < dimensions || !Number.isInteger(dimensions) || dimensions <= 0) {
+    throw new Error("The embedding has the wrong dimensions.");
+  }
   const truncated = new Float32Array(vector.subarray(0, dimensions));
   let norm = 0;
   for (let index = 0; index < truncated.length; index += 1) norm += truncated[index] * truncated[index];
-  norm = Math.sqrt(norm) || 1;
+  if (!Number.isFinite(norm) || norm <= 0) throw new Error("The embedding contains invalid values.");
+  norm = Math.sqrt(norm);
   for (let index = 0; index < truncated.length; index += 1) truncated[index] /= norm;
   return truncated;
 }
@@ -130,6 +135,7 @@ export class SearchDatabase {
   private dimensions = 0;
   private generation = 0;
   private readonly statements = new Map<string, StatementSync>();
+  private countsCache: { dataVersion: number; counts: IndexCounts } | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -139,6 +145,14 @@ export class SearchDatabase {
     const { DatabaseSync } = loadSqlite();
     this.db = new DatabaseSync(this.filePath, { allowExtension: true });
 
+    try { this.initialize(existing); }
+    catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+
+  private initialize(existing: boolean) {
     if (existing) {
       let schema: unknown;
       try {
@@ -147,8 +161,12 @@ export class SearchDatabase {
         schema = undefined;
       }
       if (typeof schema !== "string") {
-        this.db.close();
-        throw new Error(`${path.basename(filePath)} is not a Libera search index.`);
+        throw new Error(`${path.basename(this.filePath)} is not a Libera search index.`);
+      }
+      if (schema !== SCHEMA_VERSION) throw new Error(`Unsupported search index version: ${schema}. The index was not changed.`);
+      const tables = new Set(this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+      if (!["files", "chunks", "chunks_fts"].every((name) => tables.has(name))) {
+        throw new Error(`${path.basename(this.filePath)} is not a complete Libera search index. The index was not changed.`);
       }
     }
 
@@ -232,8 +250,8 @@ export class SearchDatabase {
     this.generation += 1;
     // Do not leave this connection's WAL to be replayed over a replacement
     // index at the same path when the indexer reopens it.
-    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    this.db.close();
+    try { this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); }
+    finally { this.db.close(); }
   }
 
   private statement(sql: string) {
@@ -261,6 +279,7 @@ export class SearchDatabase {
     try {
       const result = work();
       this.db.exec("COMMIT");
+      this.countsCache = null;
       return result;
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -274,7 +293,7 @@ export class SearchDatabase {
   }
 
   setMeta(key: string, value: string) {
-    this.statement("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+    this.statement("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE meta.value != excluded.value").run(key, value);
   }
 
   /**
@@ -285,11 +304,11 @@ export class SearchDatabase {
    * returned, and they are not used. Without a configured model nothing is
    * compared.
    */
-  prepareVectors(dimensions: number, textSignature: string, visionSignature: string, allowReset = false) {
+  prepareVectors(dimensions: number, textSignature: string, visionSignature: string, allowReset = false, checkOnly = false) {
     const storedDimensions = Number(this.getMeta("dimensions") ?? 0);
     const storedText = this.getMeta("text_signature") ?? "";
     const storedVision = this.getMeta("vision_signature") ?? "";
-    const hasVectors = this.countEmbedded() > 0;
+    const hasVectors = this.hasEmbeddedChunks();
     const sizeDiffers = storedDimensions > 0 && storedDimensions !== dimensions;
     const textDiffers = Boolean(textSignature && storedText && textSignature !== storedText);
     const visionDiffers = Boolean(visionSignature && storedVision && visionSignature !== storedVision);
@@ -300,7 +319,8 @@ export class SearchDatabase {
     `).get());
 
     if (hasVectors && !allowReset && (sizeDiffers || textDiffers || visionDiffers || legacyImages)) {
-      this.ensureVectorTable(storedDimensions || dimensions);
+      if (checkOnly) this.dimensions = storedDimensions || dimensions;
+      else this.ensureVectorTable(storedDimensions || dimensions);
       const reasons = [
         sizeDiffers ? `${storedDimensions} dimensions instead of ${dimensions}` : "",
         textDiffers ? `the text model ${storedText.split(":")[0]}` : "",
@@ -308,6 +328,13 @@ export class SearchDatabase {
         legacyImages ? "older partial image fingerprints (re-embed to verify their contents)" : "",
       ].filter(Boolean);
       return `This index was built with ${reasons.join(" and ")}.`;
+    }
+
+    // A query while indexing is paused/off only validates existing vectors;
+    // it must not reset tables or persist changed model metadata.
+    if (checkOnly) {
+      this.dimensions = storedDimensions || dimensions;
+      return null;
     }
 
     const previousDimensions = this.dimensions;
@@ -354,11 +381,11 @@ export class SearchDatabase {
     this.dimensions = dimensions;
   }
 
-  private countEmbedded() {
+  private hasEmbeddedChunks() {
     try {
-      return Number(this.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE embedded = 1").get()?.n ?? 0);
+      return Boolean(this.statement("SELECT 1 FROM chunks WHERE embedded = 1 LIMIT 1").get());
     } catch {
-      return 0;
+      return false;
     }
   }
 
@@ -503,21 +530,23 @@ export class SearchDatabase {
     this.replaceFile({ ...file, meta: file.meta ?? null, status: "error", error }, [], ftsName);
   }
 
-  pendingChunks(limit: number, includeImages: boolean): PendingChunk[] {
+  pendingChunks(limit: number, includeImages: boolean, excludedFileIds: number[] = []): PendingChunk[] {
     return this.statement(`
       SELECT c.id, c.file_id AS fileId, f.kind, f.key, f.source, f.path, f.name, f.signature, c.title, c.text, c.context
       FROM chunks c JOIN files f ON f.id = c.file_id
       WHERE c.embedded = 0 AND (f.kind != 'image' OR ?)
+        AND f.id NOT IN (SELECT value FROM json_each(?))
       ORDER BY (f.kind = 'image'), c.file_id, c.ordinal
       LIMIT ?
-    `).all(includeImages ? 1 : 0, limit).map((row) => ({ ...row, generation: this.generation })) as PendingChunk[];
+    `).all(includeImages ? 1 : 0, JSON.stringify(excludedFileIds), limit).map((row) => ({ ...row, generation: this.generation })) as PendingChunk[];
   }
 
-  countPending(includeImages: boolean) {
+  countPending(includeImages: boolean, excludedFileIds: number[] = []) {
     const row = this.statement(`
       SELECT COUNT(*) AS n FROM chunks c JOIN files f ON f.id = c.file_id
       WHERE c.embedded = 0 AND (f.kind != 'image' OR ?)
-    `).get(includeImages ? 1 : 0);
+        AND f.id NOT IN (SELECT value FROM json_each(?))
+    `).get(includeImages ? 1 : 0, JSON.stringify(excludedFileIds));
     return Number(row?.n ?? 0);
   }
 
@@ -581,6 +610,10 @@ export class SearchDatabase {
   }
 
   counts() {
+    // Status polling while paused should be constant work, even for a large
+    // index. SQLite's data_version also catches writes by another connection.
+    const dataVersion = Number(this.statement("PRAGMA data_version").get()?.data_version ?? 0);
+    if (this.countsCache?.dataVersion === dataVersion) return { ...this.countsCache.counts };
     const row = this.statement(`
       SELECT
         (SELECT COUNT(*) FROM files WHERE status = 'ok') AS files,
@@ -589,13 +622,15 @@ export class SearchDatabase {
         (SELECT COUNT(*) FROM chunks) AS chunks,
         (SELECT COUNT(*) FROM chunks WHERE embedded = 1) AS embedded
     `).get() ?? {};
-    return {
+    const counts = {
       files: Number(row.files ?? 0),
       failedFiles: Number(row.failed ?? 0),
       images: Number(row.images ?? 0),
       chunks: Number(row.chunks ?? 0),
       embeddedChunks: Number(row.embedded ?? 0),
     };
+    this.countsCache = { dataVersion, counts };
+    return { ...counts };
   }
 
   /** Forget everything; the next scan indexes the library from scratch. */

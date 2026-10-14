@@ -142,3 +142,26 @@ test('existing review loads are read-only and concurrent creation preserves one 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("unrelated file moves, copies and deletions do not rewrite the review database", async () => {
+  const { stat } = await import("node:fs/promises");
+  const { getAdminRoot } = await import("../../src/lib/storage/paths");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-review-noop-"));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = directory;
+  try {
+    const doc = await loadReview("Notes/a.md", "Initial snapshot.");
+    const target = path.join(getAdminRoot(), ".libera", "markdown-reviews.json");
+    const before = await stat(target);
+    await moveReviewPath("Other/missing.md", "Other/renamed.md");
+    await copyReviewPath("Other/missing.md", "Other/copy.md");
+    await deleteReviewPath("Other/missing.md");
+    const after = await stat(target);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.deepEqual(await readReview(doc.id), doc);
+  } finally {
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});

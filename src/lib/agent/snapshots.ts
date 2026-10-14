@@ -1,3 +1,4 @@
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -149,6 +150,7 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
       results.push({ path: filePath, status: "restored", content: file.original ?? "", ...(file.draft !== undefined ? { draft: file.draft } : {}) });
     }
     file.reverted = true;
+    notifySearchChanges([filePath]);
   }
   await writeManifest(manifest);
   return results;

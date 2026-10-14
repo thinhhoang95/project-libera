@@ -6,14 +6,14 @@ import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { MarkdownTabViewState } from "@/components/libera/types";
+import type { MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
-import { changeTiptapHeadingLevels, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
+import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -35,6 +35,7 @@ import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
+import { NoteLinksButton } from "./note-links-dialog";
 
 type Props = {
   files?: LiberaFileNode[];
@@ -54,6 +55,12 @@ type Props = {
   onRegisterDraft?: (read: () => string) => () => void;
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
+  /** Snip from an image or PDF tab, as a picture or read into Markdown. */
+  canStartScreenshotSnip?: boolean;
+  onStartScreenshotSnip?: (mode: "image" | "markdown") => void;
+  /** Markdown to insert at the saved selection once, e.g. a finished snip. */
+  pendingInsertion?: PendingVisualInsertion;
+  onPendingInsertionHandled?: (id: string) => void;
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -108,7 +115,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -307,6 +314,18 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     });
   }
   useCanvasViewStateCapture(captureVisualState);
+
+  // Runs after the saved selection is restored (a layout effect below), so a
+  // snip lands where the caret was when it started.
+  const handledInsertionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
+    handledInsertionRef.current = pendingInsertion.id;
+    const range = getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+    replaceTiptapRangeWithMarkdown(editor, range, pendingInsertion.markdown);
+    editor.commands.focus();
+    onPendingInsertionHandled?.(pendingInsertion.id);
+  }, [editor, pendingInsertion, onPendingInsertionHandled]);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -682,8 +701,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
         </select>
         <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to })}><Link2 className="h-4 w-4" /></button>
+        <NoteLinksButton className={buttonClass} documentPath={documentPath} files={files} getContent={() => editor.getMarkdown()} onOpenLink={onOpenFileLink} />
         <button type="button" aria-label="Insert image from file" title="Insert image from file (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert image from gallery" title="Insert images from the photo gallery" className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
+        {onStartScreenshotSnip ? (
+          <>
+            <button type="button" aria-label="Snip from image or PDF tab" title={canStartScreenshotSnip ? "Snip from image or PDF tab" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("image"); }}><Scissors className="h-4 w-4" /></button>
+            <button type="button" aria-label="Snip as Markdown" title={canStartScreenshotSnip ? "Snip as Markdown: read a region of an image or PDF tab into text" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
+          </>
+        ) : null}
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>

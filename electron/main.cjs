@@ -27,7 +27,8 @@ const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
 const { createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
-const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
+const { writeWorkspaceRecovery, localWorkspaceRecoveryRoot } = require("./workspace-recovery.cjs");
+const { requestStateFlush } = require("./state-flush.cjs");
 const {
   contextStateRoot,
   findLinkedFolder,
@@ -73,6 +74,8 @@ let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
+let rendererStateReady = false;
+let quitRequested = false;
 let shutdownPromise = null;
 let shutdownComplete = false;
 const updaterService = createUpdaterService({
@@ -546,6 +549,15 @@ async function loadAiRewriteCustomInstructionFile(parentWindow) {
 }
 
 async function selectSearchWeights(parentWindow, kind) {
+  if (kind === "reading") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose the PDF reading model folder",
+      message: "Choose an empty folder for Libera to download granite-docling into, or a folder that already holds it.",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
   const isVision = kind === "vision";
   const result = await dialog.showOpenDialog(parentWindow, {
     title: isVision ? "Choose the EmbeddingGemma 2 vision encoder" : "Choose the EmbeddingGemma 2 text model",
@@ -1541,20 +1553,41 @@ function installFileExplorerHandlers() {
 }
 
 function installWindowControlHandlers() {
+  function checkpointRoot(event, contextRoot) {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame ||
+        new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
+      throw new Error("Workspace checkpoint sender is invalid.");
+    }
+    const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
+    if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
+    return stateRoot;
+  }
+  ipcMain.on("state:ready", (event, ready) => {
+    if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === event.sender.mainFrame) {
+      rendererStateReady = ready === true;
+    }
+  });
   ipcMain.on("workspaces:checkpoint", (event, body, contextRoot) => {
     try {
-      if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
-          new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
-        throw new Error("Workspace checkpoint sender is invalid.");
-      }
       // Notebooks and linked folders share the library session.
-      const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
-      if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
-      writeWorkspaceRecovery(stateRoot, body);
+      writeWorkspaceRecovery(checkpointRoot(event, contextRoot), body);
       event.returnValue = { saved: true };
     } catch (error) {
       event.returnValue = { saved: false, error: error.message };
     }
+  });
+  ipcMain.on("workspaces:remember", (event, body, contextRoot) => {
+    try {
+      const stateRoot = checkpointRoot(event, contextRoot);
+      const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), stateRoot);
+      writeWorkspaceRecovery(localRoot, body, stateRoot);
+      event.returnValue = { saved: true };
+    } catch (error) { event.returnValue = { saved: false, error: error.message }; }
+  });
+  ipcMain.handle("workspaces:read-recovery", async (event, contextRoot) => {
+    const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), checkpointRoot(event, contextRoot));
+    try { return await fsp.readFile(path.join(localRoot, ".libera-workspaces-recovery.json"), "utf8"); }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
   });
   ipcMain.handle("search:reveal-index", (_event, filePath) => revealSearchIndex(filePath));
 
@@ -1664,6 +1697,7 @@ async function startNextServer(config) {
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
     LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
+    LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
@@ -1832,6 +1866,31 @@ async function createMainWindow(url) {
   enableNativePinch(mainWindow.webContents);
 
   mainWindow.setMenuBarVisibility(!isWindowsGlass);
+  let closingAfterFlush = false;
+  let closeFlush = null;
+  mainWindow.on("close", (event) => {
+    if (shutdownComplete || closingAfterFlush || !rendererStateReady) return;
+    event.preventDefault();
+    if (closeFlush) return;
+    const closingWindow = mainWindow;
+    closeFlush = requestStateFlush(closingWindow.webContents, ipcMain).then(() => {
+      if (closingWindow.isDestroyed()) return;
+      closingAfterFlush = true;
+      closingWindow.close();
+      // beforeunload may cancel closing because an editor has unsaved text.
+      closingAfterFlush = false;
+    }).catch((error) => {
+      dialog.showErrorBox("Could not save session", error.message);
+    }).finally(() => { closeFlush = null; });
+  });
+  mainWindow.webContents.on("did-start-loading", () => { rendererStateReady = false; });
+  mainWindow.on("closed", () => {
+    // BrowserWindow.webContents throws after destruction, even with optional
+    // chaining. Clear both references before quit re-enters the save path.
+    rendererStateReady = false;
+    mainWindow = null;
+    if (quitRequested) app.quit();
+  });
   if (isWindowsGlass) {
     maintainWindowsBackdrop(mainWindow, nativeTheme);
     mainWindow.once("ready-to-show", () => {
@@ -1954,13 +2013,21 @@ app.on("ready", bootstrap);
 
 function prepareToQuit() {
   if (shutdownPromise) return shutdownPromise;
-  isQuitting = true;
-  updaterService.dispose();
-  shutdownPromise = stopProcessTree(nextProcess).catch((error) => {
-    console.error(`Could not stop the Next.js server: ${error.message}`);
-  }).finally(() => {
+  shutdownPromise = (async () => {
+    if (rendererStateReady && mainWindow && !mainWindow.isDestroyed()) {
+      await requestStateFlush(mainWindow.webContents, ipcMain);
+    }
+    isQuitting = true;
+    updaterService.dispose();
+    await stopProcessTree(nextProcess).catch((error) => {
+      console.error(`Could not stop the Next.js server: ${error.message}`);
+    });
     nextProcess = null;
     shutdownComplete = true;
+  })().catch((error) => {
+    shutdownPromise = null;
+    isQuitting = false;
+    throw error;
   });
   return shutdownPromise;
 }
@@ -1968,7 +2035,16 @@ function prepareToQuit() {
 app.on("before-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
-  void prepareToQuit().then(() => app.quit());
+  // Let beforeunload accept or cancel closing while the server still runs.
+  // Once the main window closes, the next quit finishes server shutdown.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    quitRequested = true;
+    mainWindow.close();
+    return;
+  }
+  void prepareToQuit().then(() => app.quit()).catch((error) => {
+    dialog.showErrorBox("Could not save session", error.message);
+  });
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

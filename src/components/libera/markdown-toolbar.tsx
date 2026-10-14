@@ -15,6 +15,7 @@ import {
   Maximize2,
   Minimize2,
   Palette,
+  ScanText,
   Scissors,
   GalleryHorizontalEnd,
   Sigma,
@@ -36,6 +37,7 @@ import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enu
 
 import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
+import { NoteLinksButton } from "./note-links-dialog";
 import type { LiberaFileNode } from "@/lib/types";
 
 type MarkdownToolbarProps = {
@@ -56,8 +58,10 @@ type MarkdownToolbarProps = {
   onInsertFromGallery?: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onMarkdownZoomChange: (zoom: number) => void;
-  onStartScreenshotSnip: () => void;
+  onStartScreenshotSnip: (mode: "image" | "markdown") => void;
   onTogglePreviewFullscreen: () => void;
+  /** Opens a link written relative to this note. */
+  onOpenFileLink: (href: string) => Promise<boolean>;
   previewFullscreen: boolean;
 };
 
@@ -65,7 +69,7 @@ const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 19;
+const FULL_TOOLBAR_BUTTON_COUNT = 21;
 
 function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
   if (!button) {
@@ -101,6 +105,7 @@ export function MarkdownToolbar({
   onMarkdownZoomChange,
   onStartScreenshotSnip,
   onTogglePreviewFullscreen,
+  onOpenFileLink,
   previewFullscreen,
 }: MarkdownToolbarProps) {
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string } | null>(null);
@@ -446,9 +451,23 @@ export function MarkdownToolbar({
           }
           type="button"
           disabled={!canStartScreenshotSnip}
-          onClick={onStartScreenshotSnip}
+          onClick={() => onStartScreenshotSnip("image")}
         >
           <Scissors aria-hidden className="h-4 w-4" />
+        </button>
+        <button
+          aria-label="Snip as Markdown"
+          className="toolbar-button disabled:cursor-not-allowed disabled:opacity-40"
+          title={
+            canStartScreenshotSnip
+              ? "Snip as Markdown: read a region of an image or PDF tab into text"
+              : "Open an image or PDF tab to snip"
+          }
+          type="button"
+          disabled={!canStartScreenshotSnip}
+          onClick={() => onStartScreenshotSnip("markdown")}
+        >
+          <ScanText aria-hidden className="h-4 w-4" />
         </button>
         <button
           aria-label="Inline code"
@@ -673,6 +692,13 @@ export function MarkdownToolbar({
         >
           <Link aria-hidden className="h-4 w-4" />
         </button>
+        <NoteLinksButton
+          className="toolbar-button"
+          documentPath={documentPath}
+          files={files}
+          getContent={() => markdownContent}
+          onOpenLink={onOpenFileLink}
+        />
         {toolbarCollapsed ? (
           <button
             aria-expanded={toolbarExpanded}

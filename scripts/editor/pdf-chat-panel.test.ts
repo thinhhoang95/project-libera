@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { flushPendingState } from "../../src/components/libera/deferred-save";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import type { OpenTab } from "../../src/components/libera/types";
@@ -43,14 +44,16 @@ test("PDF selections retain their source and files attach once across turns, tab
   let opened = false;
   async function render(tab: OpenTab, collapsed = false, attachmentRequest?: { id: string; tab: OpenTab }) {
     await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [pdf.file, markdown.file, image], tabs: [pdf, markdown], attachmentRequest, collapsed, mathMarkers: {}, onCollapsedChange: () => { opened = true; }, onCreateDraft: () => undefined })));
+    await act(flushPendingState);
   }
-  async function click(label: string) { await act(async () => { const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
+  async function click(label: string) { await act(async () => { const button = host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); await act(flushPendingState); }
   async function prompt(text: string) {
     await act(async () => {
       const input = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
       input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     });
+    await act(flushPendingState);
   }
   async function send(text = "Explain this") { await prompt(text); await click("Send message"); }
   function chat() { assert.ok(savedHistory); return savedHistory.chats.find((item) => item.id === savedHistory!.activeId)!; }
@@ -59,6 +62,8 @@ test("PDF selections retain their source and files attach once across turns, tab
     window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
     // Native PDF text selection leaves focus on body, not on the text layer.
     await act(async () => document.body.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, code: "KeyL", shiftKey: true, metaKey, ctrlKey: !metaKey })));
+    await act(flushPendingState);
+    await act(flushPendingState);
   }
   const documents = () => requests.at(-1)!.messages.flatMap((message) => message.contexts ?? []).filter((context) => context.kind === "document");
   try {
@@ -129,6 +134,7 @@ test("PDF selections retain their source and files attach once across turns, tab
     await click("Remove document context");
     await render(pdf, false, { id: "reattach-pdf", tab: pdf });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await act(flushPendingState);
     assert.equal(chat().excludedDocumentPaths?.includes(pdf.file.path), false);
     assert.match(chat().selections.find((context) => context.path === pdf.file.path)?.text ?? "", /Complete PDF text/);
     await prompt("Ask @paper");
@@ -138,6 +144,7 @@ test("PDF selections retain their source and files attach once across turns, tab
     assert.ok(host.querySelector('[role="listbox"] [role="option"]'), "The @ picker offers images");
     await act(async () => { (host.querySelector('[role="listbox"] [role="option"]') as HTMLButtonElement).click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await act(flushPendingState);
     assert.match(chat().photos?.[0]?.dataUrl ?? "", /^data:image\/png;base64,/, host.textContent ?? "");
   } finally {
     await act(async () => root.unmount());

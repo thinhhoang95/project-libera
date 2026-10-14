@@ -114,6 +114,95 @@ test("a failed vector reset rolls back its table, pending flags and model metada
   });
 });
 
+test("invalid inference outputs roll back the whole vector batch without marking passages embedded", async () => {
+  await withDatabase((db) => {
+    db.replaceFile(file, [chunk, { ...chunk, text: "Another passage" }], "Notes a.md");
+    for (const invalid of [new Float32Array(4), new Float32Array([NaN, 0, 0, 0]), new Float32Array([Infinity, 0, 0, 0]), new Float32Array([1, 0])]) {
+      const pending = db.pendingChunks(2, false);
+      assert.throws(() => db.storeVectors([
+        { ...pending[0], vector }, { ...pending[1], vector: invalid },
+      ]), /embedding/);
+      assert.equal(db.counts().embeddedChunks, 0);
+      assert.equal(db.countPending(false), 2);
+    }
+    embedAll(db);
+    assert.equal(db.counts().embeddedChunks, 2);
+  });
+});
+
+test("unsupported and incomplete SQLite schemas are rejected without dropping their data", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-schema-"));
+  const { DatabaseSync } = (eval("require") as NodeRequire)("node:sqlite") as {
+    DatabaseSync: new (file: string) => { exec(sql: string): void; prepare(sql: string): { get(): { value?: string; id?: number } }; close(): void };
+  };
+  try {
+    for (const version of ["99", "1"]) {
+      const target = path.join(directory, `${version}.sqlite`);
+      const original = new DatabaseSync(target);
+      original.exec(`CREATE TABLE meta (key TEXT, value TEXT); INSERT INTO meta VALUES ('schema', '${version}'); CREATE TABLE files (id INTEGER); INSERT INTO files VALUES (42);`);
+      original.close();
+      assert.throws(() => new SearchDatabase(target), /not changed/);
+      const reopened = new DatabaseSync(target);
+      try {
+        assert.equal(reopened.prepare("SELECT value FROM meta WHERE key = 'schema'").get().value, version);
+        assert.equal(reopened.prepare("SELECT id FROM files").get().id, 42);
+      } finally { reopened.close(); }
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("failed index initialization closes its SQLite connection", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-open-"));
+  const { DatabaseSync } = (eval("require") as NodeRequire)("node:sqlite") as {
+    DatabaseSync: { prototype: { loadExtension(file: string): void; close(): void } };
+  };
+  const closed = context.mock.method(DatabaseSync.prototype, "close");
+  context.mock.method(DatabaseSync.prototype, "loadExtension", () => { throw new Error("Extension unavailable"); });
+  try {
+    assert.throws(() => new SearchDatabase(path.join(directory, "index.sqlite")), /Extension unavailable/);
+    assert.equal(closed.mock.callCount(), 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("cached status counts stay correct across local writes, caller mutation, and another SQLite connection", async () => {
+  await withDatabase((db, directory) => {
+    assert.equal(db.counts().files, 0);
+    db.replaceFile(file, [chunk], "Notes a.md");
+    const counts = db.counts();
+    assert.equal(counts.files, 1);
+    counts.files = 999;
+    assert.equal(db.counts().files, 1);
+    embedAll(db);
+    assert.equal(db.counts().embeddedChunks, 1);
+    const { DatabaseSync } = (eval("require") as NodeRequire)("node:sqlite") as {
+      DatabaseSync: new (file: string) => { exec(sql: string): void; close(): void };
+    };
+    const external = new DatabaseSync(path.join(directory, "index.sqlite"));
+    try { external.exec("UPDATE files SET status = 'error'"); }
+    finally { external.close(); }
+    assert.equal(db.counts().files, 0);
+    assert.equal(db.counts().failedFiles, 1);
+  });
+});
+
+test("a failed close checkpoint still releases the SQLite connection", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-close-"));
+  const db = new SearchDatabase(path.join(directory, "index.sqlite"));
+  const { DatabaseSync } = (eval("require") as NodeRequire)("node:sqlite") as {
+    DatabaseSync: { prototype: { exec(sql: string): void; close(): void } };
+  };
+  const original = DatabaseSync.prototype.exec;
+  const closed = context.mock.method(DatabaseSync.prototype, "close");
+  context.mock.method(DatabaseSync.prototype, "exec", function (this: unknown, sql: string) {
+    if (sql === "PRAGMA wal_checkpoint(TRUNCATE)") throw new Error("Checkpoint unavailable");
+    return original.call(this, sql);
+  });
+  try {
+    assert.throws(() => db.close(), /Checkpoint unavailable/);
+    assert.equal(closed.mock.callCount(), 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("fingerprints catch preserved-mtime edits, image-tail edits and changed model dependencies", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-fingerprint-"));
   try {

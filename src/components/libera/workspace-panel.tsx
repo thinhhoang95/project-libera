@@ -1,3 +1,4 @@
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
   BookPlus,
   CalendarPlus,
@@ -57,7 +58,9 @@ import type {
   MarkdownFileLinkSelection,
   MarkdownEditorMode,
   MarkdownTabViewState,
+  MarkdownScreenshotSnipMode,
   MarkdownScreenshotSnipSession,
+  PendingVisualInsertion,
   OpenTab,
   OpenTabViewState,
   PdfTabViewState,
@@ -132,7 +135,13 @@ type WorkspacePanelProps = {
   onCreateLatex?: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
-  onCompleteScreenshotSnip: (file: File) => Promise<void>;
+  onCompleteScreenshotSnip: (file: File, mathMarkers?: MathMarkerSettings) => Promise<void>;
+  /** Markdown the visual editor of this tab should insert at its selection. */
+  pendingVisualInsertion?: PendingVisualInsertion;
+  onFinishVisualInsertion: (tabId: string, id: string) => void;
+  /** Convert PDF to Markdown: create the file beside the PDF, then save pages into it. */
+  onCreateMarkdownBesidePdf: (pdfPath: string) => Promise<LiberaFileNode>;
+  onWriteConvertedMarkdown: (path: string, content: string) => Promise<void>;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
@@ -150,7 +159,7 @@ type WorkspacePanelProps = {
   onRegisterEditorDraft?: RegisterEditorDraft;
   onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
-  onStartScreenshotSnip: () => void;
+  onStartScreenshotSnip: (mode?: MarkdownScreenshotSnipMode, editor?: "source" | "visual") => void;
 };
 
 // CodeMirror and the PDF pane load only when a LaTeX file is opened.
@@ -527,6 +536,9 @@ const PANEL_CALLBACKS = [
   "onEditFileTags",
   "onCancelScreenshotSnip",
   "onCompleteScreenshotSnip",
+  "onFinishVisualInsertion",
+  "onCreateMarkdownBesidePdf",
+  "onWriteConvertedMarkdown",
   "onInsertExistingImage",
   "onInsertFileLink",
   "onInsertFileLinkPlaceholder",
@@ -621,6 +633,10 @@ function WorkspacePanelContent({
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
+  pendingVisualInsertion,
+  onFinishVisualInsertion,
+  onCreateMarkdownBesidePdf,
+  onWriteConvertedMarkdown,
   onInsertExistingImage,
   onInsertFileLink,
   onInsertImage,
@@ -1649,7 +1665,11 @@ function WorkspacePanelContent({
               onViewStateChange={updateMarkdownViewState}
               onChange={handleMarkdownDraftChange} onSave={onSave}
               onRegisterDraft={registerMarkdownDraft}
-              onOpenFileLink={handleOpenMarkdownFileLink} />
+              onOpenFileLink={handleOpenMarkdownFileLink}
+              canStartScreenshotSnip={canStartScreenshotSnip}
+              onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "visual")}
+              pendingInsertion={pendingVisualInsertion}
+              onPendingInsertionHandled={(id) => onFinishVisualInsertion(activeTab.id, id)} />
           ) : <>
           <MarkdownToolbar
             key={`${activeTab.id}-toolbar`}
@@ -1667,7 +1687,8 @@ function WorkspacePanelContent({
             onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
-            onStartScreenshotSnip={onStartScreenshotSnip}
+            onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "source")}
+            onOpenFileLink={handleOpenMarkdownFileLink}
             onTogglePreviewFullscreen={() =>
               setActivePreviewTabId((current) =>
                 current === activeTab.id ? null : activeTab.id,
@@ -1876,10 +1897,10 @@ function WorkspacePanelContent({
             }}
             onSaveEditedCopy={isGalleryTab(activeTab) ? undefined : async (edits) => { await onSaveEditedImageCopy?.(activeTab.file.path, edits); }}
             initialViewState={activeImageViewState}
-            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id && !screenshotSnipSession.converting}
             onViewStateChange={updateImageViewState}
             onCancelScreenshotSnip={onCancelScreenshotSnip}
-            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+            onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
       ) : activeTab.file.fileType === "pdf" ? (
@@ -1889,10 +1910,17 @@ function WorkspacePanelContent({
             src={activeTab.rawUrl}
             filePath={activeTab.file.path}
             initialViewState={activePdfViewState}
-            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id && !screenshotSnipSession.converting}
+            screenshotSnipMode={screenshotSnipSession?.mode}
+            mathMarkers={markdownPreferences}
+            markdownConversion={isGalleryTab(activeTab) ? undefined : {
+              createFile: onCreateMarkdownBesidePdf,
+              writeFile: onWriteConvertedMarkdown,
+              openFile: (file) => void onOpenFile(file),
+            }}
             onViewStateChange={updatePdfViewState}
             onCancelScreenshotSnip={onCancelScreenshotSnip}
-            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+            onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
       ) : (

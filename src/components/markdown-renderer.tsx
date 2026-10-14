@@ -455,11 +455,7 @@ function MarkdownRendererContent({
                   return;
                 }
 
-                if (
-                  documentPath &&
-                  onOpenFileLink &&
-                  isLikelyWorkspaceMarkdownLink(href)
-                ) {
+                if (onOpenFileLink && isLikelyWorkspaceMarkdownLink(href)) {
                   event.preventDefault();
                   void onOpenFileLink(href);
                   return;

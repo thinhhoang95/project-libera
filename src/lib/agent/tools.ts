@@ -1,3 +1,4 @@
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -681,6 +682,7 @@ async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, cont
   }
   await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
   await writeFile(resolved.absolutePath, content, "utf8");
+  notifySearchChanges([resolved.path]);
   await context.snapshots.recordWritten(resolved.path, content);
   context.drafts.delete(resolved.path);
   context.fileState.set(resolved.path, { hash: hashContent(content), partial: false });

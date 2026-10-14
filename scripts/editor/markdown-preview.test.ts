@@ -168,3 +168,21 @@ test('cached equations preserve fenced math, custom markers and invalid-formula 
     }
   }
 });
+
+test("workspace links open through onOpenFileLink without a document path, as in chat replies", async () => {
+  const dom = setupDom();
+  const opened: string[] = [];
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(createElement(MarkdownRenderer, {
+      content: "See [ROB-Kmin.md](Research/Plan%20A/ROB-Kmin.md#section-2).",
+      onOpenFileLink: async (href: string) => { opened.push(href); return true; },
+    }));
+  });
+  const link = document.querySelector("a")!;
+  const click = new dom.window.MouseEvent("click", { bubbles: true, cancelable: true });
+  await act(async () => { link.dispatchEvent(click); });
+  assert.deepEqual(opened, ["Research/Plan%20A/ROB-Kmin.md#section-2"]);
+  assert.equal(click.defaultPrevented, true);
+  await act(async () => { root.unmount(); });
+});

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { flushPendingState } from "../../src/components/libera/deferred-save";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -40,15 +41,18 @@ test("startup restores the last notebook and tracks home selections and tab acti
     await act(async () => { root.render(createElement(Harness)); });
     assert.equal(workspace!.selectedNotebookName, "Beta");
     await act(async () => { workspace.selectNotebook("Alpha"); });
+    await act(flushPendingState);
     assert.equal(remembered, "Alpha");
     await act(async () => { root.unmount(); });
     root = createRoot(document.getElementById("root")!);
     await act(async () => { root.render(createElement(Harness)); });
     assert.equal(workspace!.selectedNotebookName, "Alpha");
     await act(async () => { await workspace.openFile(file("Beta")); });
+    await act(flushPendingState);
     assert.equal(remembered, "Beta");
     await act(async () => { await workspace.openFile(file("Alpha")); });
     await act(async () => { workspace.setActiveTabId("Beta/Note.md"); });
+    await act(flushPendingState);
     assert.equal(remembered, "Beta");
     await act(async () => { root.unmount(); });
     remembered = "Removed notebook";

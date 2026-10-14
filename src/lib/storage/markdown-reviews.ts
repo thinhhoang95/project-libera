@@ -40,9 +40,10 @@ async function transaction<T>(fn: (db: ReviewDatabase, unchanged: () => void) =>
   const temporary = `${target}.${randomUUID()}.tmp`;
   try {
     const db = await readDatabase();
+    const before = JSON.stringify(db);
     let dirty = true;
     const result = await fn(db, () => { dirty = false; });
-    if (!dirty) return result;
+    if (!dirty || JSON.stringify(db) === before) return result;
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(JSON.stringify(db)); await handle.sync(); } finally { await handle.close(); }
     await rename(temporary, target);

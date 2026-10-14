@@ -11,6 +11,7 @@ import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
+import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
 import { ChatFileComposer } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
@@ -19,6 +20,7 @@ import { AgentRunView } from "./agent-activity";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
+import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 import { AGENT_PERMISSION_LABELS, AGENT_PERMISSIONS, compactAgentRunRecord, isAgentPermission, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 
@@ -109,13 +111,13 @@ function requestMessages(messages: ChatMessage[], agent: boolean) {
     : message);
 }
 
-const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize }: {
-  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number;
+const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize, onOpenFileLink }: {
+  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean>;
 }) {
   const content = useMemo(() => message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text,
     [message.role, message.text, message.status, mathMarkers]);
   return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
-    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
+    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} onOpenFileLink={onOpenFileLink} />;
 });
 
 /** How Agent mode reads and updates the editor: live drafts in, changed files back out. */
@@ -156,10 +158,20 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [defaultPermission, setDefaultPermission] = useState<AgentPermission>(DEFAULT_AGENT_PERMISSION);
   // Agent runs call back into the workspace after awaits; always use the latest bridge.
   const agentWorkspaceRef = useRef(agentWorkspace);
+  // Replies link files by workspace path; open them in the editor rather than navigating the window.
+  const openChatFileLink = useCallback(async (href: string) => {
+    const path = markdownLinkWorkspacePath(href);
+    if (!path) return false;
+    agentWorkspaceRef.current?.openFile(path);
+    return true;
+  }, []);
   useEffect(() => { agentWorkspaceRef.current = agentWorkspace; }, [agentWorkspace]);
   const latestStore = useRef<ChatStore | null>(null);
-  const saveQueue = useRef(Promise.resolve());
-  const persistedStore = useRef<ChatStore | null>(null);
+  const fontSizeWrite = useRef<Promise<unknown> | null>(null);
+  const historyWriter = useMemo(() => createDeferredSave(async (body) => {
+    await apiRequest("/api/document-chat/state", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+    setStorageError("");
+  }, () => setStorageError("Chat history could not be saved. Your next change will retry saving.")), []);
   const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const handledAttachmentRequest = useRef<string | null>(null);
@@ -213,6 +225,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setDefaultPermission(storedPermission);
       const first = createChat(storedMode, storedPermission);
       const restored = history ?? { chats: [first], activeId: first.id };
+      if (history) historyWriter.markSaved({ kind: "history", value: history });
       restored.chats = restored.chats.map((item) => {
         item = { ...item, messages: item.messages.map((message) => message.status === "streaming" ? { ...message, status: "interrupted" as const } : message) };
         const last = item.messages.at(-1);
@@ -223,29 +236,19 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     return () => { disposed = true; requestRef.current?.abort(); };
   }, []);
 
-  const persistStore = useCallback((snapshot: ChatStore | null) => {
-    if (!snapshot) return;
-    saveQueue.current = saveQueue.current.then(async () => {
-      if (latestStore.current !== snapshot || persistedStore.current === snapshot) return;
-      try {
-        await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "history", value: snapshot }) });
-        persistedStore.current = snapshot;
-        setStorageError("");
-      } catch { setStorageError("Chat history could not be saved. Your next change will retry saving."); }
-    });
-  }, []);
-
   useEffect(() => {
     latestStore.current = store;
-    if (!pending) persistStore(store);
-  }, [store, pending, persistStore]);
+    if (store) historyWriter.schedule({ kind: "history", value: store }, pending ? 30_000 : 1000);
+  }, [store, pending, historyWriter]);
 
   useEffect(() => {
-    if (!pending) return;
-    persistStore(latestStore.current);
-    const interval = window.setInterval(() => persistStore(latestStore.current), 1000);
-    return () => window.clearInterval(interval);
-  }, [pending, persistStore]);
+    const flush = () => {
+      if (latestStore.current) historyWriter.schedule({ kind: "history", value: latestStore.current });
+      return Promise.all([historyWriter.flush(), fontSizeWrite.current]);
+    };
+    const unregister = registerStateFlusher(flush);
+    return () => { unregister(); void flush().catch(() => undefined); };
+  }, [historyWriter]);
 
   useLayoutEffect(() => {
     const id = chat?.id;
@@ -660,10 +663,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setFontSizeSaving(true);
       setFontSizeError("");
       try {
-        await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "font-size", value: next }) });
+        const write = apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "font-size", value: next }) });
+        fontSizeWrite.current = write;
+        await write;
         setFontSize(next);
       } catch { setFontSizeError("Chat font size could not be saved. Please try again."); }
-      finally { setFontSizeSaving(false); }
+      finally { fontSizeWrite.current = null; setFontSizeSaving(false); }
       return;
     }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
@@ -752,12 +757,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
-      {/* The mode is chosen before a conversation starts; Agent chats keep their permission picker. */}
-      {(!chat?.messages.length || agentMode) && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
-        {!chat?.messages.length && <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
+      {/* Mode and permission are chosen before a conversation starts, then fixed. */}
+      {!chat?.messages.length && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
+        <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
           <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
           <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
-        </div>}
+        </div>
         {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${AGENT_PERMISSION_LABELS[permission]}`}>
           <span className="sr-only">Agent permission</span>
           <select value={permission} disabled={!chat || !!pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
@@ -832,8 +837,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             <textarea autoFocus aria-label="Edit message" className="min-h-20 w-full resize-y rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-ring" value={editing.text} onChange={(event) => setEditing({ id: message.id, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submitEdit(); } }} />
             <div className="flex items-center justify-end gap-2"><span className="mr-auto text-xs text-muted-foreground">Later messages will be replaced.</span><button type="button" className="rounded-lg border border-border px-3 py-1 text-xs hover:bg-muted" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!editing.text.trim() && !message.photos?.length} onClick={submitEdit}>Save &amp; regenerate</button></div>
           </div> : message.agent ? <AgentRunView run={message.agent} streaming={message.status === "streaming"} mathMarkers={mathMarkers} fontSize={fontSize}
-            undoing={undoingRunId === message.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} />
-            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
+            undoing={undoingRunId === message.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} onOpenFileLink={openChatFileLink} />
+            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={openChatFileLink} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
           {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
             <button type="button" className={buttonClass} aria-label="Copy response as Markdown" title="Copy response as Markdown" onClick={() => void copyResponse(message)}>{copiedId === message.id ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}</button>
             <button type="button" className={buttonClass} aria-label="Regenerate response" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's file changes before regenerating" : "Regenerate response (replaces this response and later messages)"} disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user" || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>

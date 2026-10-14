@@ -46,14 +46,26 @@ const LINKED_FOLDER_ENTRY_LIMIT = 20_000;
 export const LINKED_FOLDER_METADATA_DEFAULTS = { emoji: "📁", color: "#475569" };
 
 function shouldSkipTreeEntry(name: string, options?: TreeReadOptions) {
-  return (
+  return !isVisibleTreeEntry(name, Boolean(options?.budget)) ||
+    (name === ARCHIVE_DIR && !options?.showArchive);
+}
+
+/** Shared by the UI tree and the uncapped Search metadata walk. */
+export function isVisibleTreeEntry(name: string, linked = false) {
+  return !(
     name.startsWith(".") ||
     name.startsWith("._") ||
     name === "__MACOSX" ||
     name === MARKDOWN_ASSETS_DIR ||
-    (name === ARCHIVE_DIR && !options?.showArchive) ||
-    (Boolean(options?.budget) && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
+    (linked && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
   );
+}
+
+/** Targeted search updates use the same exclusions as a full library walk. */
+export function isVisibleTreeFile(notebook: string, pathParts: string[]) {
+  const linked = getLinkedFolders().some((folder) => folder.name === notebook);
+  return !notebook.startsWith(".") && pathParts.every((name) =>
+    isVisibleTreeEntry(name, linked));
 }
 
 function sortTreeNodes(left: LiberaTreeNode, right: LiberaTreeNode) {

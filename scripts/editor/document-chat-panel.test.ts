@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { flushPendingState } from "../../src/components/libera/deferred-save";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 import type { OpenTab } from "../../src/components/libera/types";
@@ -57,9 +58,9 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   const tab = { id: "draft-1", file: { name: "Draft.md", path: "notes/Draft.md", fileType: "markdown" }, draft: "# Unsaved document", saved: "# Saved", status: "dirty" } as OpenTab;
   const mathMarkers = { inlineMathMarkers: "@@ @@", blockMathMarkers: "%% %%" };
   const { DocumentChatPanel } = await import("../../src/components/libera/document-chat-panel");
-  async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); }
+  async function settle() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); }); await act(flushPendingState); }
   async function mount(collapsed = false) { await act(async () => root.render(createElement(DocumentChatPanel, { activeTab: tab, files: [tab.file, { ...tab.file, name: "curated.md", path: "notes/curated.md" }], tabs: [tab], quickPrompts: [{ identifier: "summarize", prompt: "Summarize $1 in bullets." }, { identifier: "review", prompt: "Review this text." }], collapsed, mathMarkers, onCollapsedChange: () => undefined, onCreateDraft: (snapshot) => { createdDraft = snapshot; } }))); await settle(); }
-  async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); }
+  async function click(label: string) { await act(async () => { const button = document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`); assert.ok(button); button.click(); }); await act(flushPendingState); }
   function stored() { assert.ok(savedHistory); return savedHistory; }
   try {
     await mount();
@@ -225,6 +226,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Select chat: Research notes");
     const deleteSelected = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((button) => button.textContent?.includes("Delete selected"))!;
     await act(async () => deleteSelected().click());
+    await act(flushPendingState);
     assert.equal(stored().chats.length, 1);
     assert.notEqual(stored().activeId, firstId);
     await click("Close dialog");
@@ -233,6 +235,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Chat settings");
     await act(async () => document.querySelector<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')!.click());
     await act(async () => deleteSelected().click());
+    await act(flushPendingState);
     assert.equal(stored().chats.length, 1);
     assert.ok(!oldIds.includes(stored().activeId));
     assert.equal(stored().chats[0].messages.length, 0);
@@ -273,6 +276,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Chat settings");
     await click("Select chat: My chat");
     await act(async () => deleteSelected().click());
+    await act(flushPendingState);
     await settle();
     assert.equal(aborted, true);
     assert.ok(!stored().chats.some((chat) => chat.id === deletedId));
@@ -381,6 +385,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
         streamController.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
         await new Promise((resolve) => setTimeout(resolve, 65));
       });
+      await act(flushPendingState);
     }
     const usageBeforeStream = stored().chats[0].usageRequests?.length ?? 0;
     await askStream();

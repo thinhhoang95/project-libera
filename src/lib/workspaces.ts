@@ -90,6 +90,15 @@ export type WorkspaceLibrary = {
 };
 export const emptyWorkspaceSession = (): WorkspaceSession => ({ tabs: [], activeTabId: "", selectedNotebookName: "", expandedPaths: [] });
 export const emptyWorkspaceLibrary = (): WorkspaceLibrary => ({ version: 1, updatedAt: 0, activeWorkspaceId: null, workspaces: [], librarySession: null });
+
+// Reading position, selection and unsaved typing are captured at close and in
+// the local recovery journal. They must not trigger synced workspace writes.
+export function workspaceStructureToken(session: WorkspaceSession) {
+  return JSON.stringify({
+    tabs: session.tabs.map((tab) => [tab.id, tab.file.path, tab.saved, tab.untitled, tab.standaloneSaveId]),
+    canvas: session.canvasLayout?.root,
+  });
+}
 export const withinPath = (path: string, parent: string) => path === parent || path.startsWith(`${parent}/`);
 
 export function workspaceIncludesPath(scope: WorkspaceScope, path: string) {

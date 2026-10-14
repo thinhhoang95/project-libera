@@ -17,6 +17,7 @@ import type {
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
   MarkdownImageSelection,
+  MarkdownScreenshotSnipMode,
   MarkdownScreenshotSnipSession,
   NotebookDialogState,
   NotebookFormValues,
@@ -26,6 +27,7 @@ import type {
   NoteFormValues,
   OpenTab,
   OpenTabViewState,
+  PendingVisualInsertion,
   SearchResult,
   WorkspaceConfirmDialogState,
   WorkspaceInputDialogState,
@@ -38,6 +40,7 @@ import {
 } from "@/lib/markdown-file-links";
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
+import { createDeferredSave, flushPendingState, registerStateFlusher } from "./deferred-save";
 import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { useGallery } from "./gallery-store";
@@ -49,6 +52,15 @@ import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import {
+  ensureDocumentOcrModel,
+  readImageAsMarkdown,
+  resolvePicturePlaceholders,
+} from "@/components/libera/document-ocr/document-ocr-client";
+import type { MathMarkerSettings } from "@/lib/math-markers";
+
+// Snips are read at the model's own page scale (up to four 512 px tiles across).
+const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
 import { latexDocumentTemplate } from "@/lib/latex/project";
 
@@ -284,9 +296,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [tree, setTree] = useState<LiberaTree>(emptyTree);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tabs, setTabs] = useState<OpenTab[]>([]);
+  // The latest tabs, for work that finishes after a render, like reading a snip.
+  const tabsRef = useRef<OpenTab[]>([]);
+  useLayoutEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
   const [activeTabId, setActiveTabId] = useState("");
   const [selectedNotebookName, setSelectedNotebookName] = useState("");
-  const notebookSelectionSaveRef = useRef<Promise<void>>(Promise.resolve());
+  const notebookSelectionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/preferences/last-notebook", {
+    method: "PUT", body, keepalive: !window.liberaPersistence,
+  }), (error) => setWorkspaceError(error instanceof Error ? error.message : "Could not remember the last notebook.")), []);
   const [query, setQuery] = useState("");
   const [fileInteractions, setFileInteractions] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -294,6 +313,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [imageMarkdownConverting, setImageMarkdownConverting] = useState(false);
   const [screenshotSnipSession, setScreenshotSnipSession] =
     useState<MarkdownScreenshotSnipSession | null>(null);
+  const [pendingVisualInsertions, setPendingVisualInsertions] = useState<Record<string, PendingVisualInsertion>>({});
+  const snipAbortRef = useRef<AbortController | null>(null);
+  const snipDraftAtStartRef = useRef<string | null>(null);
   const [notebookDialog, setNotebookDialog] = useState<NotebookDialogState | null>(null);
   const [notebookDialogSubmitting, setNotebookDialogSubmitting] = useState(false);
   const [notebookGroupDialog, setNotebookGroupDialog] =
@@ -330,8 +352,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const pendingOpenViewStateByPathRef = useRef<Record<string, OpenTabViewState | undefined>>({});
   const expandedRef = useRef<Set<string>>(new Set());
   const treeLoadedRef = useRef(false);
-  const expansionSaveInFlightRef = useRef(false);
-  const queuedExpansionSaveRef = useRef<string[] | null>(null);
+  const expansionWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/notebook-panel-expansion", {
+    method: "PATCH", body, keepalive: !window.liberaPersistence,
+  }), (error) => setWorkspaceError(error instanceof Error ? error.message : "Could not save notebook panel expansion state.")), []);
+  useEffect(() => {
+    const unregister = registerStateFlusher(() => Promise.all([notebookSelectionWriter.flush(), expansionWriter.flush()]));
+    return () => {
+      unregister();
+      void Promise.all([notebookSelectionWriter.flush(), expansionWriter.flush()]).catch(() => undefined);
+    };
+  }, [notebookSelectionWriter, expansionWriter]);
 
   const canvas = useCanvasLayout({ tabs, activeTabId, activateTab });
   const canvasLayout = canvas.layout;
@@ -416,36 +446,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return results.slice(0, 12);
   }, [query, visibleTree]);
 
-  async function flushNotebookPanelExpansionSave() {
-    if (expansionSaveInFlightRef.current || !queuedExpansionSaveRef.current) {
-      return;
-    }
-
-    const expandedPaths = queuedExpansionSaveRef.current;
-    queuedExpansionSaveRef.current = null;
-    expansionSaveInFlightRef.current = true;
-
-    try {
-      await apiRequest<LiberaTree>("/api/notebook-panel-expansion", {
-        method: "PATCH",
-        body: JSON.stringify({ expandedPaths }),
-      });
-    } catch (error) {
-      setWorkspaceError(
-        error instanceof Error
-          ? error.message
-          : "Could not save notebook panel expansion state.",
-      );
-    } finally {
-      expansionSaveInFlightRef.current = false;
-      void flushNotebookPanelExpansionSave();
-    }
-  }
-
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
     if (workspaceManager.activeWorkspace) return;
-    queuedExpansionSaveRef.current = [...nextExpanded];
-    void flushNotebookPanelExpansionSave();
+    expansionWriter.schedule({ expandedPaths: [...nextExpanded] }, 5000);
   }
 
   function applyExpanded(nextExpanded: Set<string>, options?: { persist?: boolean }) {
@@ -536,16 +539,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   useEffect(() => {
     if (!authenticated || !selectedNotebookName) return;
     // Covers notebook homes, file opens, tab switches, and notebook renames.
-    // Serialize saves so rapid interactions cannot leave an older choice on disk.
-    notebookSelectionSaveRef.current = notebookSelectionSaveRef.current
-      .then(async () => {
-        await apiRequest("/api/preferences/last-notebook", {
-          method: "PUT", keepalive: true,
-          body: JSON.stringify({ notebook: selectedNotebookName }),
-        });
-      })
-      .catch((error) => setWorkspaceError(error instanceof Error ? error.message : "Could not remember the last notebook."));
-  }, [authenticated, selectedNotebookName]);
+    notebookSelectionWriter.schedule({ notebook: selectedNotebookName }, 5000);
+  }, [authenticated, selectedNotebookName, notebookSelectionWriter]);
 
   type DirectoryActionResult = { changed?: boolean; filePath?: string; name?: string };
 
@@ -701,7 +696,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function handleLogout() {
-    try { await workspaceManager.checkpoint(); }
+    try { await workspaceManager.checkpoint(); await flushPendingState(); }
     catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
@@ -714,7 +709,6 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setSelectedNotebookName("");
     expandedRef.current = new Set();
     treeLoadedRef.current = false;
-    queuedExpansionSaveRef.current = null;
     setExpanded(new Set());
   }
 
@@ -1568,15 +1562,26 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       })[0]?.tab;
   }
 
-  function startScreenshotSnip() {
-    if (!activeTab || activeTab.file.fileType !== "markdown") {
+  /**
+   * Snip from the nearest image or PDF tab. "image" inserts a picture;
+   * "markdown" reads the snip with the local PDF reading model. The visual
+   * editor passes `editor: "visual"`: it keeps its own selection, so the
+   * result is queued for it to insert when it shows again.
+   */
+  async function startScreenshotSnip(
+    mode: MarkdownScreenshotSnipMode = "image",
+    editor: "source" | "visual" = "source",
+  ) {
+    const targetTab = activeTab;
+
+    if (!targetTab || targetTab.file.fileType !== "markdown" || screenshotSnipSession?.converting) {
       return;
     }
 
-    const sourceTab = findNearestScreenshotSourceTab(activeTab.id);
+    const sourceTab = findNearestScreenshotSourceTab(targetTab.id);
 
     if (!sourceTab) {
-      updateTab(activeTab.id, (tab) => ({
+      updateTab(targetTab.id, (tab) => ({
         ...tab,
         status: "error",
         error: "Open an image or PDF tab before using the snipping tool.",
@@ -1584,22 +1589,56 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const textarea = textareaRef.current;
-    const draft = getTabDraft(activeTab);
+    const textarea = editor === "source" ? textareaRef.current : null;
+    const draft = getTabDraft(targetTab);
     const selectionStart = textarea?.selectionStart ?? draft.length;
     const selectionEnd = textarea?.selectionEnd ?? draft.length;
+    const scrollLeft = textarea?.scrollLeft ?? 0;
+    const scrollTop = textarea?.scrollTop ?? 0;
 
+    // Set the model up before the user snips, not after.
+    if (mode === "markdown" && !(await ensureDocumentOcrModel())) {
+      return;
+    }
+
+    snipDraftAtStartRef.current = draft;
     setScreenshotSnipSession({
-      scrollLeft: textarea?.scrollLeft ?? 0,
-      scrollTop: textarea?.scrollTop ?? 0,
+      scrollLeft,
+      scrollTop,
       selectionEnd,
       selectionStart,
       sourceTabId: sourceTab.id,
-      targetTabId: activeTab.id,
+      targetTabId: targetTab.id,
+      mode,
+      editor,
     });
     setSelectedNotebookName(sourceTab.file.notebook);
     recordFileInteraction(sourceTab.file);
     setActiveTabId(sourceTab.id);
+  }
+
+  function returnToSnipTarget(session: MarkdownScreenshotSnipSession, selection?: { start: number; end: number }) {
+    const targetTab = tabsRef.current.find((tab) => tab.id === session.targetTabId);
+
+    setScreenshotSnipSession(null);
+    snipDraftAtStartRef.current = null;
+
+    if (!targetTab) {
+      return;
+    }
+
+    setSelectedNotebookName(targetTab.file.notebook);
+    recordFileInteraction(targetTab.file);
+    setActiveTabId(targetTab.id);
+
+    if (session.editor === "source") {
+      restoreMarkdownTextarea({
+        scrollLeft: session.scrollLeft,
+        scrollTop: session.scrollTop,
+        selectionStart: selection?.start ?? session.selectionStart,
+        selectionEnd: selection?.end ?? session.selectionEnd,
+      });
+    }
   }
 
   function cancelScreenshotSnip() {
@@ -1609,29 +1648,104 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const targetTab = tabs.find((tab) => tab.id === session.targetTabId);
+    snipAbortRef.current?.abort();
+    snipAbortRef.current = null;
+    returnToSnipTarget(session);
+  }
 
-    setScreenshotSnipSession(null);
+  function queueVisualInsertion(tabId: string, markdown: string) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setPendingVisualInsertions((current) => ({ ...current, [tabId]: { id, markdown } }));
+  }
 
-    if (!targetTab) {
-      return;
-    }
-
-    setSelectedNotebookName(targetTab.file.notebook);
-    recordFileInteraction(targetTab.file);
-    setActiveTabId(targetTab.id);
-    restoreMarkdownTextarea({
-      scrollLeft: session.scrollLeft,
-      scrollTop: session.scrollTop,
-      selectionStart: session.selectionStart,
-      selectionEnd: session.selectionEnd,
+  function finishVisualInsertion(tabId: string, id: string) {
+    setPendingVisualInsertions((current) => {
+      if (current[tabId]?.id !== id) return current;
+      const next = { ...current };
+      delete next[tabId];
+      return next;
     });
   }
 
-  async function completeScreenshotSnip(file: File) {
+  /** Insert Markdown where the snip started, or at the end if the note changed meanwhile. */
+  function insertSnipMarkdown(session: MarkdownScreenshotSnipSession, markdown: string) {
+    if (session.editor === "visual") {
+      queueVisualInsertion(session.targetTabId, markdown);
+      return undefined;
+    }
+
+    const targetTab = tabsRef.current.find((tab) => tab.id === session.targetTabId);
+    if (!targetTab) return undefined;
+
+    const draft = getTabDraft(targetTab);
+    const unchanged = snipDraftAtStartRef.current === null || snipDraftAtStartRef.current === draft;
+    const position = unchanged ? Math.min(session.selectionEnd, draft.length) : draft.length;
+    const insertion = insertMarkdownBlock(draft, position, markdown);
+
+    rememberTabDraft(targetTab.id, insertion.value);
+    updateTab(targetTab.id, (tab) => ({
+      ...tab,
+      draft: insertion.value,
+      status: insertion.value === tab.saved ? "clean" : "dirty",
+      error: undefined,
+    }));
+    return { start: insertion.start, end: insertion.end };
+  }
+
+  /** Read a snip with the local model. Runs after the snip layer closes, with a Cancel button meanwhile. */
+  async function readSnipAsMarkdown(session: MarkdownScreenshotSnipSession, file: File, mathMarkers?: MathMarkerSettings) {
+    const targetTab = tabsRef.current.find((tab) => tab.id === session.targetTabId);
+    if (!targetTab) {
+      returnToSnipTarget(session);
+      return;
+    }
+
+    const controller = new AbortController();
+    snipAbortRef.current = controller;
+    setScreenshotSnipSession({ ...session, converting: { startedAt: Date.now() } });
+
+    try {
+      const result = await readImageAsMarkdown(file, { mathMarkers, maxEdge: SNIP_MAX_EDGE, signal: controller.signal });
+      let markdown = result.markdown;
+
+      if (result.pictures.length) {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        markdown = await resolvePicturePlaceholders(markdown, result.pictures, canvas, async (image, index) => {
+          const payload = await imageMarkdownForTab(
+            targetTab,
+            new File([image], `${file.name.replace(/\.png$/i, "")}-figure-${index + 1}.png`, { type: "image/png" }),
+          );
+          return /\]\(([^)\s]+)\)/.exec(payload.markdown)?.[1] ?? "";
+        });
+      }
+
+      if (controller.signal.aborted) return;
+      if (!markdown.trim()) throw new Error("No text was found in the snip.");
+
+      const selection = insertSnipMarkdown(session, markdown);
+      returnToSnipTarget(session, selection);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      updateTab(session.targetTabId, (tab) => ({
+        ...tab,
+        status: "error",
+        error: error instanceof Error ? error.message : "Could not read the snip.",
+      }));
+      returnToSnipTarget(session);
+    } finally {
+      if (snipAbortRef.current === controller) snipAbortRef.current = null;
+    }
+  }
+
+  async function completeScreenshotSnip(file: File, mathMarkers?: MathMarkerSettings) {
     const session = screenshotSnipSession;
 
-    if (!session) {
+    if (!session || session.converting) {
       return;
     }
 
@@ -1644,8 +1758,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     updateTab(targetTab.id, (tab) => ({ ...tab, error: undefined }));
 
+    if (session.mode === "markdown") {
+      // Not awaited: the snip layer closes now and a progress card takes over.
+      void readSnipAsMarkdown(session, file, mathMarkers);
+      return;
+    }
+
     try {
       const payload = await imageMarkdownForTab(targetTab, file);
+
+      if (session.editor === "visual") {
+        queueVisualInsertion(targetTab.id, payload.markdown);
+        returnToSnipTarget(session);
+        return;
+      }
+
       const insertionState = insertMarkdownImageMarkupInTab(
         targetTab.id,
         payload.markdown,
@@ -1655,35 +1782,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         },
       );
 
-      setScreenshotSnipSession(null);
-      setSelectedNotebookName(targetTab.file.notebook);
-      recordFileInteraction(targetTab.file);
-      setActiveTabId(targetTab.id);
-
-      if (insertionState) {
-        restoreMarkdownTextarea({
-          scrollLeft: session.scrollLeft,
-          scrollTop: session.scrollTop,
-          selectionStart: insertionState.nextSelectionStart,
-          selectionEnd: insertionState.nextSelectionEnd,
-        });
-      }
+      returnToSnipTarget(
+        session,
+        insertionState
+          ? { start: insertionState.nextSelectionStart, end: insertionState.nextSelectionEnd }
+          : undefined,
+      );
     } catch (error) {
-      setScreenshotSnipSession(null);
       updateTab(targetTab.id, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "Could not insert screenshot.",
       }));
-      setSelectedNotebookName(targetTab.file.notebook);
-      recordFileInteraction(targetTab.file);
-      setActiveTabId(targetTab.id);
-      restoreMarkdownTextarea({
-        scrollLeft: session.scrollLeft,
-        scrollTop: session.scrollTop,
-        selectionStart: session.selectionStart,
-        selectionEnd: session.selectionEnd,
-      });
+      returnToSnipTarget(session);
     }
   }
 
@@ -1939,6 +2050,37 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function closeSaveDraftDialog() {
     if (!savingDraftRef.current) setSaveDraftTabId(null);
+  }
+
+  /** A new, empty Markdown file next to a PDF, named after it ("Paper.md", then "Paper (2).md", …). */
+  async function createMarkdownBesidePdf(pdfPath: string): Promise<LiberaFileNode> {
+    const parts = pdfPath.split("/");
+    const directory = parts.slice(0, -1).join("/");
+    const stem = (parts.at(-1) ?? "Document").replace(/\.pdf$/i, "") || "Document";
+
+    for (let copy = 1; copy <= 50; copy += 1) {
+      const name = copy === 1 ? `${stem}.md` : `${stem} (${copy}).md`;
+      try {
+        const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+          method: "POST",
+          body: JSON.stringify({ notebook: directory.split("/")[0], parentPath: directory, name, content: "" }),
+        }, (result) => ({ paths: [result.file.path] }));
+        await refreshTree(payload.file.notebook);
+        return payload.file;
+      } catch (error) {
+        if (!(error instanceof Error && /already exists/i.test(error.message))) throw error;
+      }
+    }
+
+    throw new Error(`Could not find a free name for ${stem}.md.`);
+  }
+
+  /** Save converted Markdown into a file that is not open for editing. */
+  async function writeConvertedMarkdown(path: string, content: string) {
+    await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+      method: "PATCH",
+      body: JSON.stringify({ path, content }),
+    }, () => ({ paths: [path] }));
   }
 
   async function saveChatToNotebook({ directory, fileName, content }: ChatNotebookExport) {
@@ -3346,6 +3488,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       files,
       recentFiles,
       screenshotSnipSession,
+      pendingVisualInsertions,
       searchResults,
       selectedNotebook,
       selectedNotebookName,
@@ -3378,6 +3521,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       archiveFolderNode,
       cancelScreenshotSnip,
       completeScreenshotSnip,
+      finishVisualInsertion,
+      createMarkdownBesidePdf,
+      writeConvertedMarkdown,
       copyFileFromPrompt,
       createFolderFromPrompt,
       createMarkdownFromPrompt,

@@ -670,6 +670,20 @@
               </div>
               <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; leave empty for text only.</p>
 
+              <h3>PDF reading model</h3>
+              <p class="field-help">
+                Snip as Markdown and Convert PDF to Markdown read pages with IBM’s granite-docling-258M (Apache-2.0), running
+                on this computer. Choose a folder for it outside Libera. The first time you use either feature, Libera can
+                download it there (about 600 MB). Or put the files from Hugging Face
+                (onnx-community/granite-docling-258M-ONNX) there yourself, laid out like the repository: the configs and
+                tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.
+              </p>
+              <label for="reading-model-directory">Model folder</label>
+              <div class="directory-row">
+                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="…/granite-docling-258M-ONNX" />
+                <button id="reading-model-directory-button" class="secondary" type="button">Choose</button>
+              </div>
+
               <h3>Index</h3>
               <label for="search-dimensions">Embedding size</label>
               <select id="search-dimensions">
@@ -953,6 +967,7 @@
       );
       const searchTextWeightsInput = document.querySelector("#search-text-weights");
       const searchVisionWeightsInput = document.querySelector("#search-vision-weights");
+      const readingModelDirectoryInput = document.querySelector("#reading-model-directory");
       const searchDimensionsInput = document.querySelector("#search-dimensions");
       const searchVisionTokensInput = document.querySelector("#search-vision-tokens");
       const searchIndexImagesInput = document.querySelector("#search-index-images");
@@ -1558,6 +1573,7 @@
         const search = state.search || {};
         searchTextWeightsInput.value = search.textWeights || "";
         searchVisionWeightsInput.value = search.visionWeights || "";
+        readingModelDirectoryInput.value = search.readingModelDirectory || "";
         searchDimensionsInput.value = String(search.dimensions || 768);
         searchVisionTokensInput.value = String(search.visionTokens || 140);
         searchIndexImagesInput.checked = search.indexImages !== false;
@@ -1731,6 +1747,12 @@
         if (file) searchVisionWeightsInput.value = file;
       });
 
+      document.querySelector("#reading-model-directory-button").addEventListener("click", async () => {
+        clearError();
+        const folder = await window.liberaSetup.selectSearchWeights("reading");
+        if (folder) readingModelDirectoryInput.value = folder;
+      });
+
       for (const [id, mode] of [["#search-index-existing-button", "existing"], ["#search-index-new-button", "new"]]) {
         document.querySelector(id).addEventListener("click", async () => {
           clearError();
@@ -1802,6 +1824,7 @@
               indexImages: searchIndexImagesInput.checked,
               backgroundIndexing: searchBackgroundIndexingInput.checked,
               indexFile: searchIndexFileInput.value,
+              readingModelDirectory: readingModelDirectoryInput.value,
             },
             quickPrompts: quickPromptCards().map((card) => ({
               identifier: card.querySelector(".quick-prompt-identifier").value,

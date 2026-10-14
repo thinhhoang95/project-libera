@@ -51,6 +51,8 @@ export type LiberaFileNode = {
   createdAt: string;
   size: number;
   updatedAt: string;
+  /** Files this saved Markdown file links to, resolved against the tree. */
+  linkedFilePaths?: string[];
 };
 
 export type LiberaFolderNode = {
