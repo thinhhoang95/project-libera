@@ -39,7 +39,7 @@ const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
-const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
+const APP_DISPLAY_NAME = "Libera for Vy Tran";
 const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark", "system"]);

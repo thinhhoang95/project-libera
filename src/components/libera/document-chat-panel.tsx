@@ -133,6 +133,9 @@ export type AgentWorkspaceBridge = {
 
 export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge }) {
   const review = useMarkdownReview();
+  // Agent runs finish after awaits; reach the review of whatever document is open then.
+  const reviewRef = useRef(review);
+  useEffect(() => { reviewRef.current = review; }, [review]);
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
   const [models, setModels] = useState<string[]>([]);
@@ -554,6 +557,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               if (synced?.keptDraft) { if (!keptDrafts.includes(changedPath)) keptDrafts.push(changedPath); }
               else if (synced) baselines.set(changedPath, synced.content);
             });
+          } else if (event.type === "comments_added") {
+            if (event.count) {
+              const existing = run.comments?.find((entry) => entry.path === event.path);
+              if (existing) existing.count += event.count; else run.comments = [...(run.comments ?? []), { path: event.path, count: event.count }];
+              schedule();
+            }
           } else if (event.type === "usage") {
             usage.inputTokens += event.usage.inputTokens;
             usage.outputTokens += event.usage.outputTokens;
@@ -564,6 +573,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           else if (event.type === "error") failure = event.message;
         });
         await syncQueue;
+        // The agent wrote threads into the document's review; show them if that document is open.
+        const currentReview = reviewRef.current;
+        if (currentReview?.doc && run.comments?.some((entry) => entry.path === currentReview.doc!.key)) {
+          await currentReview.reload();
+          currentReview.showComments();
+        }
         if (failure || (run.outcome === "error" && !run.steps.length && !run.changes.length)) {
           if (!run.steps.length && !run.changes.length) throw new Error(failure || doneMessage || "The agent run failed.");
           run.outcome = "error";

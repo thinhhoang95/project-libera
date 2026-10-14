@@ -61,6 +61,9 @@ function makeContext(permission: AgentPermission, overrides: Partial<ToolContext
   const events: AgentEvent[] = [];
   const context: ToolContext = {
     permission,
+    skills: [],
+    loadedSkills: new Set(),
+    skillState: new Map(),
     notebook: "Research",
     notebooks: ["Personal", "Research"],
     openFiles: new Set(["Research/plan.md"]),
@@ -228,7 +231,7 @@ test("Edit requires a fresh read, forgives common slips, preserves line endings,
     await call(open, "Read", { file_path: "Research/ideas/atlas.md" });
     assert.match((await call(open, "Edit", { file_path: "Research/ideas/atlas.md", old_string: "# Orion", new_string: "# A" })).text, /only modify files that are open in the editor: Research\/plan\.md/);
     assert.match((await call(open, "Write", { file_path: "Research/another.md", content: "x" })).text, /cannot create new files/);
-    assert.deepEqual(toolsForPermission("read-only").map((tool) => tool.name), ["Glob", "Grep", "Read", "TaskCreate", "TaskUpdate"]);
+    assert.deepEqual(toolsForPermission("read-only").map((tool) => tool.name), ["Glob", "Grep", "Read", "TaskCreate", "TaskUpdate", "Skill"]);
   });
 });
 

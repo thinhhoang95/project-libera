@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { Check, ChevronRight, Circle, CircleDot, FilePlus2, FileSearch, FileText, FolderSearch, ListChecks, LoaderCircle, Pencil, Search, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
+import { BookOpen, Check, ChevronRight, Circle, CircleDot, FilePlus2, FileSearch, FileText, FolderSearch, ListChecks, LoaderCircle, MessageSquarePlus, MessagesSquare, Pencil, Search, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { normalizeChatResponseMarkdown } from "@/lib/document-chat";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -9,6 +9,7 @@ import type { AgentRunRecord, AgentStep } from "@/lib/agent/types";
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
   Glob: FolderSearch, Grep: Search, Read: FileText, Edit: Pencil, Write: FilePlus2, TaskCreate: ListChecks, TaskUpdate: ListChecks,
+  Skill: BookOpen, LeaveComment: MessageSquarePlus, ReviewComments: MessagesSquare,
 };
 
 const OUTCOME_NOTES: Record<string, string> = {
@@ -104,6 +105,13 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
         {change.created && <span className="libera-agent-badge">new</span>}
         {change.reverted ? <span className="libera-agent-badge">undone</span>
           : !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} aria-label={`Undo changes to ${change.path}`} title={change.created ? "Delete this new file" : "Restore this file as it was before the agent changed it"} onClick={() => onUndo([change.path])}><Undo2 aria-hidden size={12} />Undo</button>}
+      </li>)}</ul>
+    </section>}
+    {!!run.comments?.some((entry) => entry.count) && <section className="libera-agent-changes" aria-label="Review comments">
+      <h3><MessagesSquare aria-hidden size={13} />Review comments <span>{run.comments.reduce((sum, entry) => sum + entry.count, 0)}</span></h3>
+      <ul>{run.comments.filter((entry) => entry.count).map((entry) => <li key={entry.path}>
+        <button type="button" className="libera-agent-file" title={`Open ${entry.path} to see its comments`} onClick={() => onOpenFile(entry.path)}>{entry.path}</button>
+        <span className="libera-agent-badge">{entry.count} {entry.count === 1 ? "comment" : "comments"}</span>
       </li>)}</ul>
     </section>}
     {run.outcome && OUTCOME_NOTES[run.outcome] && <p className="text-xs text-muted-foreground">{OUTCOME_NOTES[run.outcome]}</p>}

@@ -41,6 +41,8 @@ function assistantContent(message: ChatMessage) {
   const undone = changes.filter((change) => change.reverted).map((change) => change.path);
   if (kept.length) notes.push(`[Files changed in this turn: ${kept.join(", ")}]`);
   if (undone.length) notes.push(`[The user undid the changes to: ${undone.join(", ")}]`);
+  const comments = message.agent?.comments?.filter((entry) => entry.count > 0) ?? [];
+  if (comments.length) notes.push(`[Review comments added in this turn: ${comments.map((entry) => `${entry.path} (${entry.count})`).join(", ")}]`);
   if (message.agent?.outcome && message.agent.outcome !== "completed") notes.push(`[This turn ended early: ${message.agent.outcome}.]`);
   return [message.text.trim() || "(No answer.)", ...notes].join("\n\n");
 }

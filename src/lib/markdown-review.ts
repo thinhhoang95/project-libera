@@ -7,7 +7,9 @@ import type { ChatContext } from "./document-chat";
 export type ReviewRange = { start: number; end: number };
 export type ReviewBlock = ReviewRange & { id: string; type: string; text: string };
 export type ReviewAnchor = ReviewRange & { quote: string; prefix: string; suffix: string; state: "attached" | "orphaned" | "ambiguous" };
-export type ReviewThread = { id: string; anchor: ReviewAnchor; messages: { id: string; text: string; createdAt: string }[]; status: "open" | "addressed" | "resolved" };
+/** `author` is "agent" for comments Agent mode left; the user's own have none. */
+export type ReviewMessage = { id: string; text: string; createdAt: string; author?: "agent" };
+export type ReviewThread = { id: string; anchor: ReviewAnchor; messages: ReviewMessage[]; status: "open" | "addressed" | "resolved" };
 export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string }[]; blockingQuestions: string[]; revisionSummary: string };
 export type ReviewEdit = ReviewRange & { before: string; after: string };
 export type ReviewSuggestion = { id: string; version: number; title: string; reason: string; commentIds: string[]; edits: ReviewEdit[]; status: "pending" | "accepted" | "rejected" | "superseded" | "conflicted" };
@@ -202,12 +204,32 @@ export function applyReviewEdits(text: string, edits: ReviewEdit[]): string {
   });
   return sorted.reverse().reduce((result, e) => result.slice(0, e.start) + e.after + result.slice(e.end), text);
 }
-function coverage(threads: ReviewThread[], suggestions: ReviewSuggestion[]) {
+// Only threads linked to the decided changes are recomputed, so a comment the
+// user reopened is not re-completed by an unrelated decision.
+function coverage(threads: ReviewThread[], suggestions: ReviewSuggestion[], decided: string[]) {
+  const touched = new Set(suggestions.filter((s) => decided.includes(s.id)).flatMap((s) => s.commentIds));
   return threads.map((t) => {
-    if (t.status === "resolved") return t;
+    if (t.status === "resolved" || !touched.has(t.id)) return t;
     const related = suggestions.filter((s) => s.status !== "superseded" && s.commentIds.includes(t.id));
     if (!related.length) return t;
     return { ...t, status: related.length && related.every((s) => s.status === "accepted") ? "addressed" as const : "open" as const };
+  });
+}
+// An accepted change usually replaces the very passage its comment quoted.
+// Attach such comments to the replacement text instead of leaving them orphaned.
+function anchorToReplacements(threads: ReviewThread[], prior: ReviewThread[], accepted: ReviewSuggestion[], after: string) {
+  let shift = 0;
+  const placed = accepted.flatMap((s) => s.edits.map((edit) => ({ edit, commentIds: s.commentIds }))).sort((a, b) => a.edit.start - b.edit.start).map(({ edit, commentIds }) => {
+    const start = edit.start + shift;
+    shift += edit.after.length - (edit.end - edit.start);
+    return { edit, commentIds, start, end: start + edit.after.length };
+  });
+  return threads.map((t) => {
+    if (t.anchor.state === "attached") return t;
+    const own = placed.filter((p) => p.commentIds.includes(t.id) && p.end > p.start);
+    const was = prior.find((p) => p.id === t.id)?.anchor;
+    const target = own.find((p) => was && p.edit.start < was.end && p.edit.end > was.start) ?? own[0];
+    return target ? { ...t, anchor: anchorAt(after, target) } : t;
   });
 }
 export function decideSuggestions(doc: ReviewDocument, ids: string[], decision: "accept" | "reject" | "reopen", transactionId: string): ReviewDocument {
@@ -224,8 +246,9 @@ export function decideSuggestions(doc: ReviewDocument, ids: string[], decision: 
   if (decision === "accept") {
     for (const edit of [...edits].sort((a, b) => b.start - a.start)) mapped = syncReview(mapped, applyReviewEdits(mapped.snapshot, [edit]), false) as typeof mapped;
     suggestions = mapped.session.suggestions;
+    mapped.threads = anchorToReplacements(mapped.threads, doc.threads, chosen as ReviewSuggestion[], after);
   }
-  return { ...mapped, snapshot: after, redo: decision === "accept" ? [] : doc.redo, threads: coverage(mapped.threads, suggestions), session: { ...mapped.session, suggestions, phase: suggestions.some((s) => s.status === "pending" || s.status === "conflicted") ? "reviewing_changes" : "completed" }, undo: decision === "accept" ? [...doc.undo.slice(-19), { id: transactionId, acceptedIds: ids, planVersion: doc.session.plan.version, before: doc.snapshot, after, threads: doc.threads, suggestions: doc.session.suggestions }] : doc.undo };
+  return { ...mapped, snapshot: after, redo: decision === "accept" ? [] : doc.redo, threads: coverage(mapped.threads, suggestions, ids), session: { ...mapped.session, suggestions, phase: suggestions.some((s) => s.status === "pending" || s.status === "conflicted") ? "reviewing_changes" : "completed" }, undo: decision === "accept" ? [...doc.undo.slice(-19), { id: transactionId, acceptedIds: ids, planVersion: doc.session.plan.version, before: doc.snapshot, after, threads: doc.threads, suggestions: doc.session.suggestions }] : doc.undo };
 }
 export function undoReview(doc: ReviewDocument): ReviewDocument {
   const entry = doc.undo.at(-1);
@@ -238,7 +261,7 @@ export function undoReview(doc: ReviewDocument): ReviewDocument {
   const threads = coverage(doc.threads.map((thread) => {
     const prior = entry.threads.find((t) => t.id === thread.id);
     return { ...thread, anchor: prior?.anchor ?? mapAnchor(thread.anchor, entry.after, entry.before), status: thread.status === "resolved" ? "resolved" : prior?.status ?? thread.status };
-  }), suggestions);
+  }), suggestions, acceptedIds);
   return { ...doc, snapshot: entry.before, threads, session: { ...doc.session, suggestions, phase: doc.session.phase === "stale" ? "stale" : "reviewing_changes" }, undo: doc.undo.slice(0, -1), redo: [...(doc.redo ?? []), entry] };
 }
 

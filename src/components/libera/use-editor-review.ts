@@ -87,7 +87,7 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     if (!view) return;
     installCodeMirrorReview(view);
     const ranges = r?.enabled ? [
-      ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+      ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
       ...(r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
       ...(r.selection ? [r.selection.range] : []),
     ] : [];
@@ -141,7 +141,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     const ranges = r?.enabled ? [
-      ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => ({ ...t.anchor, kind: "comment" })) ?? []),
+      ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => ({ ...t.anchor, kind: "comment" })) ?? []),
       ...(r.selection ? [{ ...r.selection.range, kind: "selection" }] : []),
     ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, lastValue.current, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their

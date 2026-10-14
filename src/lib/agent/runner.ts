@@ -1,6 +1,6 @@
 import { StorageError } from "@/lib/storage/errors";
 import { callModel, type AgentMessage, type ModelProfile, type ToolCall } from "./model";
-import { hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
+import { activeTools, hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
 import type { AgentEvent, AgentOutcome } from "./types";
 
 // The agent loop: ask the model, run every tool it calls, append the results,
@@ -15,6 +15,8 @@ const MAX_CALLS_PER_REPLY = 40;
 const RECENT_TOOL_RESULTS_KEPT = 8;
 const SOFT_REPEAT_LIMIT = 3;
 const HARD_REPEAT_LIMIT = 5;
+/** Times a skill may send its pass back for fixes before it settles with what it has. */
+const SKILL_FEEDBACK_ROUNDS = 3;
 
 export type RunAgentOptions = {
   model: string;
@@ -48,10 +50,14 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function prepare(call: ToolCall, tools: AgentTool[]): PreparedCall {
+function prepare(call: ToolCall, tools: AgentTool[], context: ToolContext): PreparedCall {
   const name = call.function.name.trim();
   const tool = tools.find((candidate) => candidate.name === name) ?? tools.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
-  if (!tool) return { call, args: {}, error: `There is no tool named "${name}". Available tools: ${tools.map((candidate) => candidate.name).join(", ")}.` };
+  if (!tool) {
+    const skill = context.skills.find((candidate) => candidate.tools?.some((skillTool) => skillTool.name.toLowerCase() === name.toLowerCase()));
+    if (skill) return { call, args: {}, error: `${name} belongs to the ${skill.name} skill. ${context.loadedSkills.has(skill.name) ? "It is loaded now; call" : `Load it with Skill first, then call`} ${name} in your next reply.` };
+    return { call, args: {}, error: `There is no tool named "${name}". Available tools: ${tools.map((candidate) => candidate.name).join(", ")}.` };
+  }
   const raw = call.function.arguments.trim();
   let args: unknown = {};
   if (raw) {
@@ -99,18 +105,19 @@ async function runPrepared(prepared: PreparedCall, context: ToolContext, emit: (
 
 /** Run calls in the order given: consecutive reads together, each write alone. */
 async function executeToolCalls(calls: ToolCall[], tools: AgentTool[], context: ToolContext, emit: (event: AgentEvent) => void) {
-  const prepared = calls.map((call, index) => index < MAX_CALLS_PER_REPLY ? prepare(call, tools)
+  const prepared = calls.map((call, index) => index < MAX_CALLS_PER_REPLY ? prepare(call, tools, context)
     : { call, args: {}, error: `Too many tool calls in one reply; make at most ${MAX_CALLS_PER_REPLY}.` });
   const results: string[] = [];
   let index = 0;
   while (index < prepared.length) {
-    if (prepared[index].tool?.kind === "write" && !prepared[index].error) {
+    // Changes run alone, in order; consecutive reads run together.
+    if (prepared[index].tool && prepared[index].tool!.kind !== "read" && !prepared[index].error) {
       results.push(await runPrepared(prepared[index], context, emit));
       index++;
       continue;
     }
     const group: PreparedCall[] = [];
-    while (index < prepared.length && !(prepared[index].tool?.kind === "write" && !prepared[index].error)) group.push(prepared[index++]);
+    while (index < prepared.length && !(prepared[index].tool && prepared[index].tool!.kind !== "read" && !prepared[index].error)) group.push(prepared[index++]);
     results.push(...await Promise.all(group.map((item) => runPrepared(item, context, emit))));
   }
   return results;
@@ -130,16 +137,42 @@ function compactToolResults(messages: AgentMessage[], toolNames: Map<string, str
   return removed;
 }
 
+/** Let loaded skills check the work of this pass; returns their feedback for the model, if any. */
+async function finishSkillPass(context: ToolContext, final: boolean) {
+  const feedback: string[] = [];
+  for (const skill of context.skills) {
+    if (!context.loadedSkills.has(skill.name) || !skill.finishPass) continue;
+    const text = await skill.finishPass(context, { final });
+    if (text && !final) feedback.push(text);
+  }
+  return feedback.join("\n\n");
+}
+
 export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
+  try {
+    return await runLoop(options);
+  } finally {
+    // Whatever ended the run, skills keep the work that is ready, as edits are kept.
+    try { await finishSkillPass(options.context, true); }
+    catch (error) {
+      // Report as a step: an "error" event would end the client's stream before "done".
+      const id = `skills-${Date.now()}`;
+      options.emit({ type: "tool_started", id, name: "Skill", summary: "Finishing skills" });
+      options.emit({ type: "tool_finished", id, status: "error", result: error instanceof Error ? error.message.slice(0, 300) : "A skill could not finish." });
+    }
+  }
+}
+
+async function runLoop(options: RunAgentOptions): Promise<RunResult> {
   const limits = { ...DEFAULT_RUN_LIMITS, ...options.limits };
-  const { context, emit, signal, tools } = options;
-  const schemas = toolSchemas(tools);
+  const { context, emit, signal } = options;
   const messages: AgentMessage[] = [{ role: "system", content: options.system }, ...options.messages];
   const toolNames = new Map<string, string>();
   const started = Date.now();
   let inputTokens = 0;
   let lastPromptTokens = 0;
   let nudgedAboutTasks = false;
+  let skillFeedbackRounds = 0;
   let repeat = { signature: "", count: 0, nudged: false };
   let textOpen = false;
 
@@ -155,11 +188,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
         }
       }
 
+      // Loading a skill adds its tools from the next reply on.
+      const tools = activeTools(options.tools, context);
       let firstDelta = true;
       const reply = await callModel({
         model: options.model,
         messages,
-        tools: schemas,
+        tools: toolSchemas(tools),
         profile: options.profile,
         reasoningEffort: options.reasoningEffort,
         promptCaching: options.promptCaching,
@@ -196,6 +231,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
           nudgedAboutTasks = true;
           const open = context.tasks.filter((task) => task.status !== "completed").map((task) => `#${task.id} ${task.subject}`).join("; ");
           messages.push(nudge(`You still have open tasks (${open}). Continue with them, or mark them completed or deleted with TaskUpdate if they are done or no longer needed.`));
+          continue;
+        }
+        const feedback = await finishSkillPass(context, skillFeedbackRounds >= SKILL_FEEDBACK_ROUNDS);
+        if (feedback) {
+          skillFeedbackRounds++;
+          messages.push(nudge(feedback));
           continue;
         }
         return { outcome: "completed" };

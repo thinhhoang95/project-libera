@@ -113,6 +113,7 @@ async function main() {
     assert.equal(doc.snapshot, accepted);
     assert.equal(doc.session!.phase, "completed");
     assert.equal(doc.threads[0].status, "addressed");
+    assert.equal(doc.threads[0].anchor.state, "attached", "A completed comment follows its replacement text.");
     assert.equal(doc.threads[1].status, "open");
     await mutate("undo");
     assert.equal(doc.snapshot, original);

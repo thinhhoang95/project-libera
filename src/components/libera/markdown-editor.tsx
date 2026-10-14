@@ -708,7 +708,7 @@ export function MarkdownEditor({
   const reviewDocument = review?.doc;
   const reviewSelection = review?.selection;
   const reviewRanges = useMemo(() => reviewEnabled ? [
-    ...(reviewDocument?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+    ...(reviewDocument?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
     ...(reviewDocument?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);

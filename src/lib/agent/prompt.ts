@@ -10,10 +10,12 @@ const PERMISSION_RULES: Record<AgentPermission, string> = {
   notebook: `You may change and create files inside the current notebook, which the environment names. You can read and search the whole library, but change nothing outside that notebook. There is no delete tool; never remove content the user did not ask to remove.`,
 };
 
-export function buildAgentSystemPrompt({ permission, mathInstruction, customInstruction }: {
+export function buildAgentSystemPrompt({ permission, mathInstruction, customInstruction, skills = [] }: {
   permission: AgentPermission;
   mathInstruction: string;
   customInstruction?: string;
+  /** Only names and descriptions go here; the Skill tool returns the instructions. */
+  skills?: { name: string; description: string }[];
 }) {
   const canWrite = permission !== "read-only";
   return [
@@ -47,6 +49,9 @@ ${PERMISSION_RULES[permission]}${canWrite ? `
 - Reply in Markdown. Cite file paths, and PDF page numbers, for what you found.
 - ${canWrite ? "If you changed files, finish with a short summary that names each changed file and what changed in it. Do not recount every step." : "Be direct; do not recount every search you made."}
 - ${canWrite ? "In your answer itself (not in files), use the same equation markers." : mathInstruction}`,
+    skills.length ? `# Skills
+Skills hold instructions, and sometimes extra tools, for particular jobs. When a request is a skill's job, load the skill with the Skill tool before you start, then follow its instructions. Do not load skills a request does not need.
+${skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}` : "",
     customInstruction?.trim() ? `# User-configured custom instructions\n${customInstruction.trim()}` : "",
   ].filter(Boolean).join("\n\n");
 }

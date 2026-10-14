@@ -38,6 +38,9 @@ export type AgentStep =
 
 export type AgentFileChange = { path: string; created: boolean; reverted?: boolean };
 
+/** Review comments a run added to one file. */
+export type AgentCommentsAdded = { path: string; count: number };
+
 /** Persisted with an assistant message produced in Agent mode. */
 export type AgentRunRecord = {
   runId: string;
@@ -45,6 +48,7 @@ export type AgentRunRecord = {
   steps: AgentStep[];
   tasks: AgentTask[];
   changes: AgentFileChange[];
+  comments?: AgentCommentsAdded[];
   outcome?: AgentOutcome;
 };
 
@@ -64,6 +68,7 @@ export type AgentEvent =
   | { type: "tool_started"; id: string; name: string; summary: string; diff?: { removed: string; added: string } }
   | { type: "tool_finished"; id: string; status: "ok" | "error"; result: string; detail?: string }
   | { type: "file_changed"; path: string; created: boolean }
+  | { type: "comments_added"; path: string; count: number }
   | { type: "tasks_updated"; tasks: AgentTask[] }
   | { type: "usage"; usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } }
   | { type: "done"; outcome: AgentOutcome; message?: string }
@@ -91,7 +96,9 @@ export function validateAgentRunRecord(value: unknown): value is AgentRunRecord 
     Array.isArray(run.tasks) && run.tasks.length <= 100 && run.tasks.every((task) => task && isShortString(task.id, 32) && isShortString(task.subject, 500) &&
       (task.status === "pending" || task.status === "in_progress" || task.status === "completed")) &&
     Array.isArray(run.changes) && run.changes.length <= 500 && run.changes.every((change) => change && isShortString(change.path, 4_096) &&
-      typeof change.created === "boolean" && (change.reverted === undefined || typeof change.reverted === "boolean"));
+      typeof change.created === "boolean" && (change.reverted === undefined || typeof change.reverted === "boolean")) &&
+    (run.comments === undefined || (Array.isArray(run.comments) && run.comments.length <= 500 && run.comments.every((entry) => entry && isShortString(entry.path, 4_096) &&
+      Number.isInteger(entry.count) && entry.count >= 0)));
 }
 
 /** Keeps a stored run within the history limits, dropping the oldest tool steps first. */

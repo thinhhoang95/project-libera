@@ -4,7 +4,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
-import { newReview, type ReviewDocument } from "../markdown-review";
+import { anchorAt, newReview, syncReview, type ReviewDocument, type ReviewRange } from "../markdown-review";
 
 type ReviewDatabase = { schemaVersion: 1; documents: ReviewDocument[] };
 const databasePath = () => path.join(getStateRoot(), ".libera", "markdown-reviews.json");
@@ -58,6 +58,26 @@ export async function loadReview(key: string, snapshot: string) {
     let doc = db.documents.find((d) => d.key === key);
     if (doc) unchanged();
     if (!doc) { doc = newReview(key, snapshot, randomUUID()); db.documents.push(doc); }
+    return doc;
+  });
+}
+/**
+ * Add comment threads to a document's review, creating it if needed. `snapshot`
+ * is the text the ranges refer to; existing threads are mapped onto it first.
+ * Review mode is turned on so the new comments are highlighted.
+ */
+export async function addReviewThreads(key: string, snapshot: string, threads: { range: ReviewRange; text: string; author?: "agent" }[]) {
+  return transaction((db) => {
+    let index = db.documents.findIndex((d) => d.key === key);
+    if (index < 0) { db.documents.push(newReview(key, snapshot, randomUUID())); index = db.documents.length - 1; }
+    const doc = syncReview(db.documents[index], snapshot);
+    const createdAt = new Date().toISOString();
+    for (const thread of threads) {
+      doc.threads.push({ id: randomUUID(), anchor: anchorAt(snapshot, thread.range), messages: [{ id: randomUUID(), text: thread.text, createdAt, ...(thread.author ? { author: thread.author } : {}) }], status: "open" });
+    }
+    doc.enabled = true;
+    doc.revision++;
+    db.documents[index] = doc;
     return doc;
   });
 }

@@ -7,7 +7,7 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Set Up Libera by Thinh Hoang</title>
+    <title>Set Up Libera for Vy Tran</title>
     <script>
       document.documentElement.dataset.presentation =
         new URLSearchParams(window.location.search).get("presentation") || "window";
@@ -335,9 +335,9 @@
       <form id="setup-form" class="libera-dialog" aria-labelledby="form-title">
         <div class="dialog-header libera-dialog-header">
           <div>
-            <h1 id="form-title" class="libera-dialog-title">Set Up Libera by Thinh Hoang</h1>
+            <h1 id="form-title" class="libera-dialog-title">Set Up Libera for Vy Tran</h1>
             <p id="form-description" class="libera-dialog-description">
-              Choose the fixed Libera by Thinh Hoang Master directory, enter the required API key,
+              Choose the fixed Libera for Vy Tran Master directory, enter the required API key,
               and create the master password used by the app login screen.
             </p>
           </div>
@@ -401,7 +401,7 @@
                 When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.
               </p>
 
-              <label for="data-dir">Libera by Thinh Hoang Master directory</label>
+              <label for="data-dir">Libera for Vy Tran Master directory</label>
               <div class="directory-row">
                 <input id="data-dir" autocomplete="off" readonly />
                 <button id="browse-button" class="secondary" type="button">Choose</button>
@@ -423,7 +423,7 @@
               <div id="password-locked" class="password-locked-row hidden">
                 <div class="locked">
                   A master password is already configured. The login screen will ask for it every
-                  time Libera by Thinh Hoang starts.
+                  time Libera for Vy Tran starts.
                 </div>
                 <button id="change-password-button" class="secondary" type="button">
                   Change password
@@ -443,7 +443,7 @@
                   type="password"
                 />
                 <p class="field-help">
-                  Password changes are applied after restarting Libera by Thinh Hoang.
+                  Password changes are applied after restarting Libera for Vy Tran.
                 </p>
               </div>
             </section>
@@ -882,7 +882,7 @@
 
         <div class="libera-dialog-footer">
           <button id="close-button" class="secondary hidden" type="button">Close</button>
-          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera by Thinh Hoang</button>
+          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera for Vy Tran</button>
         </div>
       </form>
     </main>
@@ -988,10 +988,10 @@
       const configurationMode = setupMode === "configuration";
 
       if (configurationMode) {
-        document.title = "Libera by Thinh Hoang Preferences";
+        document.title = "Libera for Vy Tran Preferences";
         formTitle.textContent = "Preferences";
         formDescription.textContent =
-          "Change Libera by Thinh Hoang settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera by Thinh Hoang.";
+          "Change Libera for Vy Tran settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera for Vy Tran.";
         closeButton.classList.remove("hidden");
         headerCloseButton.classList.remove("hidden");
         document.querySelectorAll("[data-section-button].configuration-only").forEach((element) => {

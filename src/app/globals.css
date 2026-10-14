@@ -1690,6 +1690,7 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .libera-workspace-region[data-ai-active="true"] .libera-tab-strip,
 .libera-workspace-region[data-ai-active="true"] .libera-document-workspace,
 .libera-workspace-region[data-ai-active="true"] .libera-editor-toolbar,
+.libera-workspace-region[data-ai-active="true"] .libera-latex-toolbar,
 .libera-workspace-region[data-ai-active="true"] .libera-visual-editor { background: transparent; }
 .libera-workspace-region[data-ai-active="true"] :is(.libera-visual-page, .markdown-split-grid) { background: var(--card); }
 

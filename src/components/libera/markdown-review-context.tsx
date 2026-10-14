@@ -15,7 +15,7 @@ type ContextValue = {
   register: (bridge: EditorBridge) => () => void;
   select: (range: ReviewRange, x: number, y: number) => void;
   clearSelection: () => void; focus: (range: ReviewRange) => void;
-  selectThread: (id: string | null) => void; setChatReview: (value: boolean) => void;
+  selectThread: (id: string | null) => void; setChatReview: (value: boolean) => void; showComments: () => void;
   snapshot: () => string; reload: () => Promise<void>; restore: () => void;
   action: (action: string, fields?: Record<string, unknown>) => Promise<boolean>;
   generate: (action: "plan" | "generate" | "revise", prompt: string, ids?: string[], references?: ChatContext[], suggestionId?: string) => Promise<boolean>;
@@ -181,6 +181,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   }, [snapshot]);
   const value = useMemo<ContextValue>(() => ({ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection, selectedThread, chatReview, register, select, snapshot, reload, action, generate,
     selectThread: (id) => { selectThread(id); if (id) current.current.openComments(); },
+    showComments: () => current.current.openComments(),
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
     setChatReview: (value) => { setChatReviewState(value); if (value) current.current.openChat(); },
     restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error("Document changed. Retry recovery."); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : "Recovery failed."); } },

@@ -15,6 +15,12 @@ export type FileState = { hash: string; partial: boolean };
 
 export type ToolContext = {
   permission: AgentPermission;
+  /** Skills the agent may load with the Skill tool; see skills/index.ts. */
+  skills: AgentSkill[];
+  /** Names of the skills loaded in this run; their tools are offered from the next reply on. */
+  loadedSkills: Set<string>;
+  /** Per-run working state of loaded skills, by skill name. */
+  skillState: Map<string, unknown>;
   /** The notebook the user is working in: Glob and Grep search it by default, and "notebook" permission may write in it. */
   notebook: string | null;
   notebooks: string[];
@@ -41,12 +47,34 @@ export type ToolResult = {
 
 export type AgentTool = {
   name: string;
-  kind: "read" | "write";
+  /** "write" changes files; "comment" changes only Libera's review comments. Both run one at a time. */
+  kind: "read" | "write" | "comment";
   description: string;
   parameters: Record<string, unknown>;
   /** Plain-language activity line for the UI. */
   describe(args: Record<string, unknown>): string;
   run(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
+};
+
+/**
+ * Instructions, and optionally tools, for one kind of job. Only the name and
+ * description are in the system prompt; the rest loads when the model asks.
+ */
+export type AgentSkill = {
+  /** Kebab-case name the model passes to the Skill tool. */
+  name: string;
+  /** When to use the skill, listed in the system prompt. */
+  description: string;
+  /** Markdown returned by the Skill tool. */
+  instructions: string;
+  /** Tools offered once the skill is loaded. */
+  tools?: AgentTool[];
+  /**
+   * Runs when the model ends a reply without tool calls, and once more when the
+   * run ends. Returns feedback to send back to the model, or null when there is
+   * nothing to fix. With `final`, there is no further turn: settle and return null.
+   */
+  finishPass?: (context: ToolContext, options: { final: boolean }) => Promise<string | null>;
 };
 
 export class ToolError extends Error {}
@@ -59,14 +87,14 @@ const GREP_TIME_BUDGET_MS = 25_000;
 const PDF_EXTRACTION_BUDGET_MS = 12_000;
 const PDF_PAGES_PER_READ = 20;
 
-const ok = (text: string, result: string, detail?: string): ToolResult => ({ text, isError: false, result, ...(detail ? { detail } : {}) });
+export const ok = (text: string, result: string, detail?: string): ToolResult => ({ text, isError: false, result, ...(detail ? { detail } : {}) });
 
-function quoted(value: unknown) {
+export function quoted(value: unknown) {
   const text = String(value ?? "").replace(/\s+/g, " ");
   return `“${text.length > 60 ? `${text.slice(0, 57)}…` : text}”`;
 }
 
-function plural(count: number, singular: string, pluralForm = `${singular}s`) {
+export function plural(count: number, singular: string, pluralForm = `${singular}s`) {
   return `${count.toLocaleString("en")} ${count === 1 ? singular : pluralForm}`;
 }
 
@@ -76,11 +104,11 @@ function capText(text: string, limit: number, advice: string) {
   return `${text.slice(0, cut > limit / 2 ? cut : limit)}\n\n[Output truncated at ${limit.toLocaleString("en")} characters. ${advice}]`;
 }
 
-function preview(text: string, limit = 1_500) {
+export function preview(text: string, limit = 1_500) {
   return text.length > limit ? `${text.slice(0, limit)}\n…` : text;
 }
 
-function requireString(args: Record<string, unknown>, name: string, { allowEmpty = false } = {}) {
+export function requireString(args: Record<string, unknown>, name: string, { allowEmpty = false } = {}) {
   const value = args[name];
   if (typeof value !== "string") throw new ToolError(`${name} is required and must be a string.`);
   if (!allowEmpty && !value.trim()) throw new ToolError(`${name} must not be empty.`);
@@ -113,7 +141,7 @@ function optionalBoolean(args: Record<string, unknown>, name: string) {
   return value;
 }
 
-async function resolve(context: ToolContext, input: string) {
+export async function resolve(context: ToolContext, input: string) {
   try {
     return await resolveLibraryPath(input, { defaultNotebook: context.notebook ?? undefined, notebooks: context.notebooks });
   } catch (error) {
@@ -129,7 +157,7 @@ async function resolveSearchRoot(context: ToolContext, input: string | undefined
   return resolve(context, trimmed);
 }
 
-async function missingFileError(context: ToolContext, resolved: ResolvedPath): Promise<never> {
+export async function missingFileError(context: ToolContext, resolved: ResolvedPath): Promise<never> {
   const suggestion = await suggestSimilarPath(resolved, context.signal).catch(() => null);
   throw new ToolError(`No file at ${resolved.path}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Use Glob to list files.`);
 }
@@ -139,7 +167,7 @@ function hasNul(text: string) {
 }
 
 /** The text the agent should see: an open editor's unsaved draft, else the file on disk. */
-async function readCurrentText(context: ToolContext, resolved: ResolvedPath): Promise<{ content: string; fromDraft: boolean } | null> {
+export async function readCurrentText(context: ToolContext, resolved: ResolvedPath): Promise<{ content: string; fromDraft: boolean } | null> {
   const draft = context.drafts.get(resolved.path);
   if (draft !== undefined) return { content: draft, fromDraft: true };
   const stats = await statLibraryPath(resolved);
@@ -153,7 +181,7 @@ async function readCurrentText(context: ToolContext, resolved: ResolvedPath): Pr
   return { content, fromDraft: false };
 }
 
-function splitLines(content: string) {
+export function splitLines(content: string) {
   const lines = content.split(/\r?\n/);
   if (lines.length > 1 && lines.at(-1) === "") lines.pop();
   return lines;
@@ -552,7 +580,7 @@ Usage:
   },
 };
 
-function lineOfOffset(content: string, offset: number) {
+export function lineOfOffset(content: string, offset: number) {
   let line = 1;
   for (let index = content.indexOf("\n"); index !== -1 && index < offset; index = content.indexOf("\n", index + 1)) line++;
   return line;
@@ -583,7 +611,7 @@ function stripLineNumbers(text: string) {
   return lines.map((line) => line.replace(LINE_NUMBER_PREFIX, "")).join("\n");
 }
 
-function normalizeQuotes(text: string) {
+export function normalizeQuotes(text: string) {
   return text.replace(/[‘’‚‛]/g, "'").replace(/[“”„‟]/g, "\"");
 }
 
@@ -598,7 +626,7 @@ type Match = { index: number; length: number };
  * line numbers, LF versus CRLF, curly versus straight quotes, and trailing
  * whitespace. Returns the matches and the strings to use.
  */
-function findEditTarget(content: string, oldString: string, newString: string): { matches: Match[]; oldString: string; newString: string; note?: string } {
+export function findEditTarget(content: string, oldString: string, newString: string): { matches: Match[]; oldString: string; newString: string; note?: string } {
   const exact = countOccurrences(content, oldString);
   if (exact.length) return { matches: exact.map((index) => ({ index, length: oldString.length })), oldString, newString };
   const crlf = content.includes("\r\n");
@@ -635,7 +663,7 @@ function findEditTarget(content: string, oldString: string, newString: string): 
   return { matches: [], oldString, newString };
 }
 
-function closestLines(content: string, oldString: string) {
+export function closestLines(content: string, oldString: string) {
   const firstLine = oldString.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
   if (!firstLine) return "";
   const lines = splitLines(content);
@@ -869,10 +897,54 @@ Usage:
   },
 };
 
-export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, editTool, writeTool, taskCreateTool, taskUpdateTool];
+const skillTool: AgentTool = {
+  name: "Skill",
+  kind: "read",
+  description: `Loads a skill: instructions, and sometimes extra tools, for a particular kind of job. The skills you can load are listed in the system prompt under "Skills".
+
+Usage:
+- Load a skill when the user's request is that skill's job, before you start the job. Do not load skills the request does not need.
+- The skill's instructions come back as the result; follow them. Tools the skill provides are available from your next reply on.
+- A loaded skill stays loaded for the rest of this turn; do not load it twice.`,
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "The skill's name, e.g. \"leave-review-comments\"." },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  describe: (args) => `Loading the ${String(args.name ?? "requested")} skill`,
+  async run(args, context) {
+    const name = requireString(args, "name").trim().replace(/^\//, "");
+    const skill = context.skills.find((candidate) => candidate.name === name) ?? context.skills.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
+    if (!skill) {
+      throw new ToolError(context.skills.length ? `There is no skill named "${name}". Available skills: ${context.skills.map((candidate) => candidate.name).join(", ")}.` : "No skills are available.");
+    }
+    const tools = skill.tools?.map((tool) => tool.name) ?? [];
+    if (context.loadedSkills.has(skill.name)) {
+      return ok(`The ${skill.name} skill is already loaded; follow its instructions from earlier in this turn.${tools.length ? ` Its tools: ${tools.join(", ")}.` : ""}`, "Already loaded");
+    }
+    context.loadedSkills.add(skill.name);
+    const footer = tools.length ? `\n\n(Tools now available: ${tools.join(", ")}.)` : "";
+    return ok(`<skill name="${skill.name}">\n${skill.instructions.trim()}\n</skill>${footer}`, "Loaded", preview(skill.instructions));
+  },
+};
+
+export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, editTool, writeTool, taskCreateTool, taskUpdateTool, skillTool];
 
 export function toolsForPermission(permission: AgentPermission) {
   return ALL_TOOLS.filter((tool) => tool.kind === "read" || permission !== "read-only");
+}
+
+/** The base tools plus the tools of every skill loaded so far in this run. */
+export function activeTools(tools: AgentTool[], context: ToolContext): AgentTool[] {
+  const active = [...tools];
+  for (const skill of context.skills) {
+    if (!context.loadedSkills.has(skill.name)) continue;
+    for (const tool of skill.tools ?? []) if (!active.some((candidate) => candidate.name === tool.name)) active.push(tool);
+  }
+  return active;
 }
 
 export function toolSchemas(tools: AgentTool[]): ToolSchema[] {

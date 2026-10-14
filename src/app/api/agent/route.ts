@@ -12,6 +12,7 @@ import { getModelProfile } from "@/lib/agent/model";
 import { buildAgentEnvironment, buildAgentSystemPrompt } from "@/lib/agent/prompt";
 import { runAgent } from "@/lib/agent/runner";
 import { RunSnapshots } from "@/lib/agent/snapshots";
+import { AGENT_SKILLS } from "@/lib/agent/skills";
 import { toolsForPermission, type ToolContext } from "@/lib/agent/tools";
 import { isAgentPermission, type AgentEvent } from "@/lib/agent/types";
 
@@ -130,6 +131,7 @@ export async function POST(request: NextRequest) {
     permission,
     mathInstruction: mathMarkerSystemInstruction(getConfiguredMarkdownPreferences()),
     customInstruction: getAiChatCustomInstruction(),
+    skills: AGENT_SKILLS,
   });
   const conversation = agentConversation(body.messages, environment, (filePath) => fileExists.get(filePath) === true);
   const reasoningEffort = body.reasoningEffort ?? options.reasoning.effort;
@@ -154,6 +156,9 @@ export async function POST(request: NextRequest) {
         const tools = toolsForPermission(permission);
         const context: ToolContext = {
           permission,
+          skills: AGENT_SKILLS,
+          loadedSkills: new Set(),
+          skillState: new Map(),
           notebook,
           notebooks,
           openFiles: new Set(openFiles),
