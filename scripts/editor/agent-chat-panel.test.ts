@@ -151,13 +151,18 @@ test("Agent mode sends open drafts and scope, shows activity, syncs tabs, and un
     assert.ok(article.querySelector(".libera-agent-changes")?.textContent?.includes("undone"));
     assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="Regenerate response"]')!.disabled, false);
 
-    // Back in Chat mode, the agent's step log is not sent to the chat model.
+    // The mode is fixed once the conversation starts; the permission stays adjustable.
+    assert.equal(host.querySelector('[aria-label="Assistant mode"]'), null);
+    assert.ok(host.querySelector(".libera-agent-permission select"));
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="New chat"]')!.click(); });
+    assert.equal(modeButton("Agent").getAttribute("aria-pressed"), "true", "New chats start in the last used mode");
     await act(async () => { modeButton("Chat").click(); });
+    assert.equal(host.querySelector(".libera-agent-permission"), null);
     await type("Thanks");
     await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(); });
     await settle();
     assert.equal(chatRequests.length, 1);
-    assert.ok(chatRequests[0].messages.every((message) => !("agent" in message)));
+    assert.equal(host.querySelector(".libera-chat-modebar"), null, "Chat conversations hide the bar entirely");
     assert.equal(window.localStorage.getItem("libera.chatMode"), "chat");
   } finally {
     await act(async () => root.unmount());

@@ -167,7 +167,7 @@ button.libera-chat-model { appearance: none; cursor: pointer; text-align: left; 
 .libera-mode-switch button[aria-pressed="true"] { color: var(--surface-ink); background: linear-gradient(135deg, var(--surface-blue), var(--surface-lavender)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
 .libera-mode-switch button[aria-pressed="true"] svg { color: #8f74e3; }
 .libera-mode-switch button:disabled { cursor: default; }
-.libera-agent-permission { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; }
+.libera-agent-permission { position: relative; display: flex; align-items: center; min-width: 0; max-width: 260px; flex: 0 1 auto; }
 .libera-agent-permission select { width: 100%; min-width: 0; appearance: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 24px 5px 9px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--card) 70%, transparent); color: var(--surface-ink); font-size: 11.5px; outline: none; }
 .libera-agent-permission select:focus-visible { border-color: var(--ring); }
 .libera-agent-permission select:disabled { opacity: .6; cursor: default; }

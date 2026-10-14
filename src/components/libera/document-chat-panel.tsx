@@ -752,11 +752,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
-      <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center gap-2">
-        <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
+      {/* The mode is chosen before a conversation starts; Agent chats keep their permission picker. */}
+      {(!chat?.messages.length || agentMode) && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
+        {!chat?.messages.length && <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
           <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
           <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
-        </div>
+        </div>}
         {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${AGENT_PERMISSION_LABELS[permission]}`}>
           <span className="sr-only">Agent permission</span>
           <select value={permission} disabled={!chat || !!pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
@@ -764,7 +765,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </select>
           <ChevronDown aria-hidden size={13} />
         </label>}
-      </div>
+      </div>}
         <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
             const log = event.currentTarget;
