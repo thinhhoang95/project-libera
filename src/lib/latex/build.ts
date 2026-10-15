@@ -9,7 +9,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 import { parseBiberLog, parseBibtexLog, parseLatexLog, type LatexLogEntry, type LatexLogSeverity } from "./log-parser";
 import { isCompilableLatexPath, resolveLatexEngine, type LatexEngine, type LatexEngineSetting } from "./project";
-import { findTexToolchain, texEnvironment, texExecutable, texMissingMessage, type TexToolchain } from "./toolchain";
+import { findTexToolchain, texEnvironment, texExecutable, texLatexmkLineLengthRc, texLineLengthArguments, texMissingMessage, type TexToolchain } from "./toolchain";
 
 /* Builds run in a per-document folder under the OS temp directory, so aux
  * files survive between compiles (latexmk then only reruns what changed) and
@@ -160,8 +160,20 @@ async function latexmkRcArguments() {
 /** latexmk runs biber from the source folder, and when its `.fdb_latexmk`
  * record is missing it passes only the job name, so biber would read a stale
  * `.bcf` that another editor left next to the document (and write its `.bbl`
- * there). Always point it at the build folder instead. */
-const LATEXMK_BIBER_RC = 'sub libera_biber { my $base = pop @_; $base = "$aux_dir/$base" unless $base =~ m{^/}; return system("biber", "--output-directory=$aux_dir", @_, $base); } $biber = "internal libera_biber %O %B";';
+ * there). Always point it at the build folder instead.
+ *
+ * The code is passed on the command line, and on Windows MiKTeX's latexmk.exe
+ * launcher drops double quotes before Perl sees them, so it uses only single
+ * quotes. File::Spec recognises absolute paths on both platforms: `C:/...` on
+ * Windows is not matched by a leading-slash test, which prefixed the build
+ * folder twice. */
+const LATEXMK_BIBER_RC = "sub libera_biber { require File::Spec; my $base = pop @_; $base = $aux_dir . '/' . $base unless File::Spec->file_name_is_absolute($base); return system('biber', '--output-directory=' . $aux_dir, @_, $base); } $biber = 'internal libera_biber %O %B';";
+
+/** `-e` arguments for MiKTeX on Windows (none elsewhere, so other platforms run exactly as before). */
+function latexmkLineLengthArguments(toolchain: TexToolchain) {
+  const rc = texLatexmkLineLengthRc(toolchain);
+  return rc ? ["-e", rc] : [];
+}
 
 function withLock<T>(key: string, task: () => Promise<T>) {
   const previous = buildLocks.get(key) ?? Promise.resolve();
@@ -283,7 +295,7 @@ async function mirrorSourceFolders(source: string, target: string, depth = 0) {
 }
 
 async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, paths: BuildPaths, env: NodeJS.ProcessEnv, signal: AbortSignal) {
-  const engineArgs = ["-interaction=nonstopmode", "-file-line-error", "-synctex=1", optionWithValue("-output-directory", paths.workDirectory), rootTexFile(paths)];
+  const engineArgs = [...texLineLengthArguments(toolchain), "-interaction=nonstopmode", "-file-line-error", "-synctex=1", optionWithValue("-output-directory", paths.workDirectory), rootTexFile(paths)];
   const options = { cwd: paths.sourceDirectory, env, signal };
   let output = "";
   let result = await runProcess(texExecutable(toolchain, engine), engineArgs, options);
@@ -392,7 +404,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
         // or after a failed run, since latexmk tracks dependencies by path.
         const force = previousState?.signature !== signature || previousState?.status !== "success";
         result = await runProcess(texExecutable(toolchain, "latexmk"), [
-          ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
+          ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, ...latexmkLineLengthArguments(toolchain), engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
           optionWithValue("-outdir", paths.workDirectory), rootTexFile(paths),
         ], { cwd: paths.sourceDirectory, env, signal });
       } else {
