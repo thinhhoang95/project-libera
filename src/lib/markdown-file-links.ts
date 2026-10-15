@@ -25,7 +25,7 @@ export type MarkdownLinkViewState = {
     scrollLeft?: number;
     scrollTop?: number;
     selectedAnnotationId?: string;
-    tool?: "select" | "highlight" | "text";
+    tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
     zoom?: number;
   };
 };

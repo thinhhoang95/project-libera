@@ -1,5 +1,6 @@
 import type { FormEvent, RefObject } from "react";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -7,6 +8,8 @@ import type {
   LiberaNotebookViewOptions,
   LiberaNotebookNode,
   LiberaTree,
+  PdfMarkupStyle,
+  PdfShapeKind,
   PdfTextAnnotationFont,
 } from "@/lib/types";
 
@@ -51,11 +54,18 @@ export type PdfTabViewState = {
   fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
   highlightColor?: string;
+  /** Ink for pen strokes and shapes. */
+  inkColor?: string;
+  /** Ink for underline, strikethrough and squiggly markup. */
+  markupColor?: string;
+  markupStyle?: PdfMarkupStyle;
   scrollLeft?: number;
   scrollTop?: number;
   selectedAnnotationId?: string;
+  shapeKind?: PdfShapeKind;
+  strokeWidth?: number;
   textColor?: string;
-  tool?: "select" | "highlight" | "text";
+  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
   zoom?: number;
   /** One-shot request (Global Search) to show a page and find a passage on it. */
   reveal?: { page: number; text?: string; nonce: number };
@@ -326,6 +336,7 @@ export type LiberaWorkspace = {
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;
   deleteFolderFromPrompt: (folder: LiberaFolderNode) => Promise<void>;
+  downloadAnnotatedPdf: (tab: OpenTab, mathMarkers?: MathMarkerSettings) => Promise<void>;
   downloadFile: (file: LiberaFileNode, content?: string) => void;
   duplicateMarkdown: (file: LiberaFileNode) => void;
   downloadMarkdownPdf: (tab: OpenTab) => Promise<void>;

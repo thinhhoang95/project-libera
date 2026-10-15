@@ -377,3 +377,28 @@ test("read-only legacy annotation storage remains readable without migration", {
     assert.equal(existsSync(pdfAnnotationsPath("Notes", ["paper.pdf"])), false);
   } finally { await chmod(path.dirname(legacy), 0o755); }
 }));
+
+test("shapes, pen strokes and line markup round-trip, and malformed ones are dropped or repaired", async () => withLibrary(async () => {
+  await pdf("Notes/drawn.pdf");
+  const base = { pageNumber: 1, createdAt: "2026-10-15", updatedAt: "2026-10-15" };
+  const { annotations } = await writePdfAnnotations("Notes/drawn.pdf", [
+    { ...base, id: "u", type: "highlight", color: "#d92d20", markup: "underline", rects: [{ x: 0.1, y: 0.1, width: 0.2, height: 0.02 }] },
+    { ...base, id: "h", type: "highlight", color: "#ffe45c", markup: "glitter", rects: [{ x: 0.1, y: 0.2, width: 0.2, height: 0.02 }] },
+    { ...base, id: "a", type: "shape", shape: "arrow", color: "#1d4ed8", strokeWidth: 99, from: { x: -1, y: 0.2 }, to: { x: 0.5, y: 2 } },
+    { ...base, id: "bad-shape", type: "shape", shape: "star", color: "#1d4ed8", strokeWidth: 2, from: { x: 0, y: 0 }, to: { x: 1, y: 1 } },
+    { ...base, id: "i", type: "ink", color: "not a color", strokeWidth: 2, points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: "x" }] },
+    { ...base, id: "empty-ink", type: "ink", color: "#1d4ed8", strokeWidth: 2, points: [] },
+  ]);
+
+  assert.deepEqual(annotations.map((annotation) => annotation.id), ["u", "h", "a", "i"]);
+  const [underline, highlight, arrow, ink] = annotations;
+  assert.equal(underline.type === "highlight" && underline.markup, "underline");
+  assert.equal(highlight.type === "highlight" && "markup" in highlight, false, "unknown markup falls back to a highlight");
+  assert.deepEqual(arrow.type === "shape" && { from: arrow.from, to: arrow.to, strokeWidth: arrow.strokeWidth }, {
+    from: { x: 0, y: 0.2 }, to: { x: 0.5, y: 1 }, strokeWidth: 24,
+  });
+  assert.deepEqual(ink.type === "ink" && { color: ink.color, points: ink.points }, {
+    color: "#1d4ed8", points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0 }],
+  });
+  assert.deepEqual((await readPdfAnnotations("Notes/drawn.pdf")).annotations, annotations);
+}));

@@ -11,8 +11,10 @@ import type {
   LiberaNotebookViewOptions,
   LiberaTree,
   LiberaTreeNode,
+  PdfAnnotationsPayload,
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
+import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import type {
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
@@ -124,6 +126,10 @@ function markdownExportBaseName(name: string) {
 
 function markdownPdfFileName(name: string) {
   return `${markdownExportBaseName(name)}.pdf`;
+}
+
+function annotatedPdfFileName(name: string) {
+  return `${name.replace(/\.pdf$/i, "")} (annotated).pdf`;
 }
 
 function markdownTitleFromName(name: string) {
@@ -2601,6 +2607,47 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  /** Saves a copy of a PDF with its annotations drawn into the pages. */
+  async function downloadAnnotatedPdf(tab: OpenTab, mathMarkers?: MathMarkerSettings) {
+    setWorkspaceError("");
+
+    if (tab.file.fileType !== "pdf") {
+      return;
+    }
+
+    try {
+      const source = tab.rawUrl ?? `/api/files/raw/${encodeFilePath(tab.file.path)}`;
+      const [bytes, annotations, { burnPdfAnnotations }, { createPdfNoteRenderer }] = await Promise.all([
+        fetch(source).then(async (response) => {
+          if (!response.ok) {
+            throw new Error("Could not read the PDF.");
+          }
+
+          return response.arrayBuffer();
+        }),
+        latestPdfAnnotations(tab.file.path) ??
+          apiRequest<PdfAnnotationsPayload>(`/api/pdf-annotations?path=${encodeURIComponent(tab.file.path)}`)
+            .then((payload) => payload.annotations),
+        // The PDF writer is only needed here, so it loads on first use.
+        import("@/lib/pdf-annotation-export"),
+        import("@/components/libera/pdf-note-raster"),
+      ]);
+      const burned = await burnPdfAnnotations(bytes, annotations, {
+        renderNote: createPdfNoteRenderer(mathMarkers),
+      });
+      const link = document.createElement("a");
+
+      link.href = URL.createObjectURL(new Blob([burned as Uint8Array<ArrayBuffer>], { type: "application/pdf" }));
+      link.download = annotatedPdfFileName(tab.file.name);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "Could not export the annotated PDF.");
+    }
+  }
+
   async function createMarkdownFromPrompt(notebook: string, parentPath?: string) {
     createUntitledFile(notebook, parentPath);
   }
@@ -3532,6 +3579,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       deleteFileFromPrompt,
       deleteFolderFromPrompt,
       deleteNotebookGroup,
+      downloadAnnotatedPdf,
       downloadFile,
       downloadMarkdownPdf,
       duplicateMarkdown,

@@ -47,6 +47,7 @@ test("file actions use one native menu between comments and the AI panel", async
   let editorMode = "";
   let saved = 0;
   let addedToChat: OpenTab | null = null;
+  const pdfDownloads: string[] = [];
 
   window.liberaPlatform = { glass: false, isElectron: true, platform: "darwin" };
   window.liberaMenu = {
@@ -75,7 +76,7 @@ test("file actions use one native menu between comments and the AI panel", async
   );
   const { TabStrip } = await import("../../src/components/libera/tab-strip");
   const root = createRoot(document.getElementById("root")!);
-  const tabStrip = createElement(TabStrip, {
+  const tabStripProps: Parameters<typeof TabStrip>[0] = {
     activeTab: tab,
     activeTabId: tab.id,
     chatOpen: false,
@@ -88,7 +89,8 @@ test("file actions use one native menu between comments and the AI panel", async
     onCloseTab: () => undefined,
     onCreateUntitled: () => undefined,
     onDeleteFile: async () => undefined,
-    onDownloadFile: () => undefined,
+    onDownloadAnnotatedPdf: async (selectedTab) => { pdfDownloads.push(`annotated:${selectedTab.file.name}`); },
+    onDownloadFile: (file) => { pdfDownloads.push(`original:${file.name}`); },
     onDownloadMarkdownPdf: async () => undefined,
     onDuplicateMarkdown: () => undefined,
     onMarkdownEditorModeChange: (mode) => {
@@ -101,7 +103,8 @@ test("file actions use one native menu between comments and the AI panel", async
     },
     onSwapTabs: () => undefined,
     onToggleChat: () => undefined,
-  });
+  };
+  const tabStrip = createElement(TabStrip, tabStripProps);
 
   try {
     await act(async () => {
@@ -169,6 +172,27 @@ test("file actions use one native menu between comments and the AI panel", async
     menuAction = "save";
     await act(async () => menuButton.click());
     assert.equal(saved, 1);
+
+    const pdfTab = {
+      ...tab,
+      id: "paper",
+      file: { ...tab.file, name: "Paper.pdf", path: "Notes/Paper.pdf", fileType: "pdf" as const },
+      status: "clean" as const,
+    } satisfies OpenTab;
+    await act(async () => root.render(createElement(TabStrip, { ...tabStripProps, activeTab: pdfTab, activeTabId: pdfTab.id, tabs: [pdfTab] })));
+    const pdfMenuButton = document.querySelector<HTMLButtonElement>('[aria-label="File actions"]')!;
+    for (const action of ["download-pdf-annotated", "download-original"]) {
+      menuAction = action;
+      await act(async () => pdfMenuButton.click());
+    }
+    const pdfDownload = (capturedMenu as MenuInput | null)!.items.find(
+      (item): item is Exclude<MenuItem, { type: "separator" }> => item.type !== "separator" && item.id === "download",
+    );
+    assert.deepEqual(
+      pdfDownload?.submenu?.map((item) => (item.type === "separator" ? "separator" : [item.id, item.label])),
+      [["download-pdf-annotated", "PDF with Annotations"], ["download-original", "Original PDF"]],
+    );
+    assert.deepEqual(pdfDownloads, ["annotated:Paper.pdf", "original:Paper.pdf"]);
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

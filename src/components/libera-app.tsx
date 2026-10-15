@@ -527,6 +527,7 @@ export function LiberaApp({
             onCloseOtherTabs={workspace.closeOtherTabs}
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
+            onDownloadAnnotatedPdf={(tab) => workspace.downloadAnnotatedPdf(tab, markdownPreferences)}
             onDownloadFile={workspace.downloadFile}
             onDuplicateMarkdown={workspace.duplicateMarkdown}
             onDownloadMarkdownPdf={workspace.downloadMarkdownPdf}

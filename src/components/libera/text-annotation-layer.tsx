@@ -18,7 +18,7 @@ export const MIN_TEXT_ANNOTATION_FONT_SIZE = 4;
 export const MAX_TEXT_ANNOTATION_FONT_SIZE = 72;
 const MIN_TEXT_BOX_WIDTH = 0.03;
 const MIN_TEXT_BOX_HEIGHT = 0.02;
-const NOTE_LINE_HEIGHT = 1.35;
+export const NOTE_LINE_HEIGHT = 1.35;
 // Pointer travel (px) before a press on a note becomes a move instead of a click.
 const DRAG_THRESHOLD_PX = 3;
 /** Marks annotation chrome that must not count as "clicked outside". */

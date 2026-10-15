@@ -542,6 +542,89 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.equal(lastSelection(), "", "clicking the page lets go");
       await unmount();
     });
+    await t.test("pen, shapes, eraser and markup styles save, and undo/redo step through them", async () => {
+      normalLoad([{
+        id: "highlight", type: "highlight", pageNumber: 1, color: "#ffe45c",
+        rects: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.05 }], createdAt: "2026-10-15", updatedAt: "2026-10-15",
+      }]);
+      // Echo saves so the debounced PATCH response keeps what was drawn.
+      const loadFetch = globalThis.fetch;
+      const saved: PdfAnnotation[][] = [];
+      globalThis.fetch = async (input, init) => {
+        if (init?.method === "PATCH") {
+          const body = JSON.parse(String(init.body)) as { annotations: PdfAnnotation[] };
+          saved.push(body.annotations);
+          return Response.json({ annotations: body.annotations });
+        }
+        return loadFetch(input, init);
+      };
+      await mount();
+      const viewer = host.querySelector<HTMLElement>("[data-pdf-path]")!;
+      viewer.focus();
+      const key = (init: KeyboardEventInit) => act(async () => {
+        viewer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+      });
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const surface = () => {
+        const element = page.querySelector<HTMLElement>(".pdf-drawing-surface")!;
+        element.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: 792 } as DOMRect);
+        return element;
+      };
+      const drag = (points: [number, number][]) => act(async () => {
+        const target = surface();
+        const [[x, y], ...rest] = points;
+        target.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+        for (const [clientX, clientY] of rest) {
+          target.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX, clientY }));
+        }
+        target.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientX: rest.at(-1)![0], clientY: rest.at(-1)![1] }));
+      });
+      const drawings = (kind: string) => page.querySelectorAll(`[data-pdf-drawing="${kind}"]`).length;
+
+      await act(async () => host.querySelector<HTMLButtonElement>('[data-viewer-tool="shape"]')!.click());
+      assert.equal((page.querySelector(".pdf-text-layer") as HTMLElement).style.pointerEvents, "none", "drawing tools do not select text");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Arrow"]')!.click());
+      await drag([[100, 300], [200, 350], [300, 400]]);
+      assert.equal(drawings("shape"), 1);
+      assert.ok(page.querySelector('[data-pdf-drawing="shape"] polygon'), "arrows have a head");
+      await drag([[100, 300], [101, 301]]);
+      assert.equal(drawings("shape"), 1, "a click without a drag draws nothing");
+
+      await key({ key: "p" });
+      assert.equal(changes.at(-1)?.tool, "draw", "P picks the pen");
+      await drag([[50, 50], [60, 70], [80, 90]]);
+      assert.equal(drawings("ink"), 1);
+
+      await key({ key: "z", metaKey: true });
+      assert.equal(drawings("ink"), 0, "undo removes the stroke");
+      await key({ key: "z", metaKey: true, shiftKey: true });
+      assert.equal(drawings("ink"), 1, "redo brings it back");
+
+      await key({ key: "e" });
+      await drag([[40, 70], [70, 70], [100, 70]]);
+      assert.equal(drawings("ink"), 0, "the eraser removes strokes it crosses");
+      assert.equal(page.querySelectorAll(".pdf-highlight-mark").length, 1, "markup it never touched survives");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+      assert.equal(drawings("ink"), 1);
+
+      await key({ key: "Escape" });
+      assert.equal(changes.at(-1)?.tool, "select", "Esc puts the eraser down");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select highlight"]')!.click());
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Change to underline"]')!.click());
+      const mark = page.querySelector<HTMLElement>(".pdf-highlight-mark")!;
+      assert.equal(mark.dataset.markup, "underline");
+      assert.equal(mark.style.background, "", "line markup draws a stroke, not a band");
+      assert.ok(host.querySelector('[aria-label="Change to red"]')?.hasAttribute("data-active"), "pastel ink swaps for a pen ink");
+
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+      const last = saved.at(-1)!;
+      assert.deepEqual(last.map((annotation) => annotation.type).sort(), ["highlight", "ink", "shape"]);
+      const arrow = last.find((annotation) => annotation.type === "shape");
+      assert.equal(arrow?.type === "shape" && arrow.shape, "arrow");
+      assert.ok(arrow?.type === "shape" && Math.abs(arrow.to.x - 300 / 612) < 1e-9);
+      globalThis.fetch = loadFetch;
+      await unmount();
+    });
     await t.test("find searches unrendered pages, wraps, survives zoom, and clears on Escape", async () => {
       normalLoad();
       await mount();

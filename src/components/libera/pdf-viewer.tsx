@@ -3,14 +3,26 @@
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import {
+  Circle,
   Copy,
+  Eraser,
   Highlighter,
   Loader2,
+  type LucideIcon,
+  Minus,
   MousePointer2,
+  MoveUpRight,
+  PenLine,
+  Redo2,
   RotateCcw,
   Search,
+  Square,
+  Strikethrough,
   Trash2,
   Type,
+  Underline,
+  Undo2,
+  Waves,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -39,7 +51,7 @@ import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
-import { dispatchPdfAnnotationsUpdated } from "@/components/libera/pdf-annotation-events";
+import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -64,24 +76,41 @@ import {
   type AnnotationSurfaceSize,
 } from "@/components/libera/text-annotation-layer";
 import {
+  IconChoiceGroup,
+  StrokeWidthPicker,
   SwatchPicker,
   TextAnnotationStyleControls,
+  type IconChoice,
 } from "@/components/libera/annotation-style-controls";
 import {
+  PdfDrawingLayer,
+  type NewDrawingStyle,
+  type PdfDrawingDraft,
+  type PdfDrawingMode,
+} from "@/components/libera/pdf-drawing-layer";
+import {
   DEFAULT_PDF_HIGHLIGHT_COLOR,
+  DEFAULT_PDF_INK_COLOR,
+  DEFAULT_PDF_STROKE_WIDTH,
   DEFAULT_PDF_TEXT_COLOR,
   DEFAULT_PDF_TEXT_FONT,
   PDF_HIGHLIGHT_COLORS,
+  PDF_INK_COLORS,
+  PDF_STROKE_WIDTHS,
   isHexColor,
+  markupPalette,
   mergeHighlightRects,
   rangeTextClientRects,
 } from "@/lib/pdf-annotation-style";
+import { drawingBounds, isDrawingAnnotation, type PdfDrawingAnnotation } from "@/lib/pdf-drawing";
 import { pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   PdfAnnotation,
   PdfAnnotationRect,
   PdfHighlightAnnotation,
   PdfAnnotationsPayload,
+  PdfMarkupStyle,
+  PdfShapeKind,
   PdfTextAnnotation,
   PdfTextAnnotationFont,
 } from "@/lib/types";
@@ -103,8 +132,9 @@ const PDF_PAGE_RENDER_CONCURRENCY = 2;
 const PDF_SCROLL_STATE_INTERVAL_MS = 150;
 const EMPTY_ANNOTATIONS: PdfAnnotation[] = [];
 const EMPTY_SEARCH_MATCHES: PdfSearchMatch[] = [];
+const EMPTY_HISTORY: { undo: HistoryEntry[]; redo: HistoryEntry[] } = { undo: [], redo: [] };
 
-type PdfTool = "select" | "highlight" | "text";
+type PdfTool = NonNullable<PdfTabViewState["tool"]>;
 type PdfScrollPosition = {
   scrollLeft: number;
   scrollTop: number;
@@ -121,6 +151,106 @@ type PdfAnnotationScrollState = {
 type RequestRenderSlot = () => Promise<() => void>;
 type SelectionMenuPosition = { left: number; top: number };
 type AnnotationUpdater = (annotations: PdfAnnotation[]) => PdfAnnotation[];
+/**
+ * Consecutive commits with the same key (one note being typed, one eraser
+ * drag) collapse into a single undo step.
+ */
+type HistoryEntry = { annotations: PdfAnnotation[]; key?: string; time: number };
+
+const MAX_UNDO_STEPS = 100;
+const HISTORY_COALESCE_MS = 1500;
+
+const MARKUP_CHOICES: readonly (IconChoice<PdfMarkupStyle> & { tool: string })[] = [
+  { value: "highlight", label: "Highlight", icon: Highlighter, tool: "Highlight" },
+  { value: "underline", label: "Underline", icon: Underline, tool: "Underline" },
+  { value: "strikethrough", label: "Strikethrough", icon: Strikethrough, tool: "Strike" },
+  { value: "squiggly", label: "Squiggly underline", icon: Waves, tool: "Squiggly" },
+];
+
+const SHAPE_CHOICES: readonly IconChoice<PdfShapeKind>[] = [
+  { value: "rectangle", label: "Rectangle", icon: Square },
+  { value: "ellipse", label: "Ellipse", icon: Circle },
+  { value: "line", label: "Line", icon: Minus },
+  { value: "arrow", label: "Arrow", icon: MoveUpRight },
+];
+
+const MARKUP_STYLES = MARKUP_CHOICES.map((choice) => choice.value);
+const SHAPE_KINDS = SHAPE_CHOICES.map((choice) => choice.value);
+
+function markupStyleOf(annotation: PdfHighlightAnnotation): PdfMarkupStyle {
+  return annotation.markup ?? "highlight";
+}
+
+/** Keeps a markup's color when it suits the new style, else the style's own ink. */
+function convertMarkup(
+  annotation: PdfHighlightAnnotation,
+  style: PdfMarkupStyle,
+  fallbackColor: string,
+): Partial<PdfHighlightAnnotation> {
+  const palette = markupPalette(style);
+  const fits = palette.some((color) => color.value.toLowerCase() === annotation.color.toLowerCase());
+
+  return {
+    markup: style === "highlight" ? undefined : style,
+    color: fits ? annotation.color : fallbackColor,
+  };
+}
+
+/** Single-key tool shortcuts, active while the PDF (not a field) has focus. */
+const TOOL_SHORTCUTS: Record<string, PdfTool> = {
+  v: "select",
+  h: "highlight",
+  t: "text",
+  p: "draw",
+  s: "shape",
+  e: "eraser",
+};
+
+const TOOL_SHORTCUT_KEYS = Object.fromEntries(
+  Object.entries(TOOL_SHORTCUTS).map(([key, tool]) => [tool, key.toUpperCase()]),
+) as Record<PdfTool, string>;
+
+function PdfToolButton({
+  active,
+  className,
+  icon: Icon,
+  label,
+  markup,
+  title,
+  tool,
+  onSelect,
+}: {
+  active: boolean;
+  className?: string;
+  icon: LucideIcon;
+  label: string;
+  markup?: PdfMarkupStyle;
+  title: string;
+  tool: PdfTool;
+  onSelect: (tool: PdfTool) => void;
+}) {
+  return (
+    <button
+      className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
+        className ?? (active ? "border-foreground bg-primary text-primary-foreground" : "border-input hover:bg-muted")
+      }`}
+      type="button"
+      aria-label={label}
+      aria-pressed={active}
+      data-markup={markup}
+      data-viewer-tool={tool}
+      title={`${title} (${TOOL_SHORTCUT_KEYS[tool]})`}
+      onClick={() => onSelect(tool)}
+    >
+      <Icon aria-hidden className="h-4 w-4" />
+      <span className="pdf-tool-label">{label}</span>
+    </button>
+  );
+}
+
+function strokeWidthOrDefault(value: unknown) {
+  return PDF_STROKE_WIDTHS.some((width) => width.value === value) ? (value as number) : DEFAULT_PDF_STROKE_WIDTH;
+}
 
 type PdfViewerProps = {
   filePath: string;
@@ -391,6 +521,23 @@ export function PdfViewer({
       ? initialViewState.highlightColor
       : DEFAULT_PDF_HIGHLIGHT_COLOR,
   );
+  const [markupStyle, setMarkupStyle] = useState<PdfMarkupStyle>(
+    MARKUP_STYLES.includes(initialViewState?.markupStyle as PdfMarkupStyle)
+      ? initialViewState!.markupStyle!
+      : "highlight",
+  );
+  const [markupColor, setMarkupColor] = useState(
+    isHexColor(initialViewState?.markupColor) ? initialViewState.markupColor : DEFAULT_PDF_INK_COLOR,
+  );
+  const [inkColor, setInkColor] = useState(
+    isHexColor(initialViewState?.inkColor) ? initialViewState.inkColor : DEFAULT_PDF_INK_COLOR,
+  );
+  const [strokeWidth, setStrokeWidth] = useState(strokeWidthOrDefault(initialViewState?.strokeWidth));
+  const [shapeKind, setShapeKind] = useState<PdfShapeKind>(
+    SHAPE_KINDS.includes(initialViewState?.shapeKind as PdfShapeKind) ? initialViewState!.shapeKind! : "rectangle",
+  );
+  const [history, setHistory] = useState(EMPTY_HISTORY);
+  const historyRef = useRef(history);
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -428,6 +575,8 @@ export function PdfViewer({
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
   const selectedHighlight =
     selectedAnnotation?.type === "highlight" ? selectedAnnotation : null;
+  const selectedDrawing =
+    selectedAnnotation && isDrawingAnnotation(selectedAnnotation) ? selectedAnnotation : null;
 
   useEffect(() => {
     onViewStateChangeRef.current = onViewStateChange;
@@ -648,6 +797,8 @@ export function PdfViewer({
         setBasePageLayouts(loadedPageLayouts);
         latestAnnotationsRef.current = annotationsPayload.annotations;
         setAnnotations(annotationsPayload.annotations);
+        historyRef.current = EMPTY_HISTORY;
+        setHistory(EMPTY_HISTORY);
       } catch (loadError) {
         controller.abort();
         destroyLoadingTask();
@@ -667,6 +818,7 @@ export function PdfViewer({
       active = false;
       controller.abort();
       destroyLoadingTask();
+      forgetPdfAnnotations(filePath);
 
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -827,6 +979,9 @@ export function PdfViewer({
 
     latestAnnotationsRef.current = remoteAnnotations;
     setAnnotations(remoteAnnotations);
+    // Undoing past another window's save would silently revert its edits.
+    historyRef.current = EMPTY_HISTORY;
+    setHistory(EMPTY_HISTORY);
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: remoteAnnotations });
   });
 
@@ -982,14 +1137,32 @@ export function PdfViewer({
 
   // Updaters read the latest list from a ref, so these callbacks stay stable
   // and typing in one note does not re-render every page of the document.
-  const commitAnnotations = useCallback((updater: AnnotationUpdater) => {
+  const replaceHistory = useCallback((next: typeof EMPTY_HISTORY) => {
+    historyRef.current = next;
+    setHistory(next);
+  }, []);
+
+  const commitAnnotations = useCallback((updater: AnnotationUpdater, historyKey?: string) => {
     const current = latestAnnotationsRef.current;
     const next = updater(current);
 
-    if (next !== current) {
-      saveAnnotations(next);
+    if (next === current) {
+      return;
     }
-  }, [saveAnnotations]);
+
+    const { undo } = historyRef.current;
+    const last = undo.at(-1);
+    const time = Date.now();
+
+    replaceHistory({
+      undo:
+        historyKey && last?.key === historyKey && time - last.time < HISTORY_COALESCE_MS
+          ? [...undo.slice(0, -1), { ...last, time }]
+          : [...undo, { annotations: current, key: historyKey, time }].slice(-MAX_UNDO_STEPS),
+      redo: [],
+    });
+    saveAnnotations(next);
+  }, [replaceHistory, saveAnnotations]);
 
   const selectAnnotationId = useCallback((id: string) => {
     // Selections made on the page are already in view; only selections from
@@ -1018,6 +1191,15 @@ export function PdfViewer({
   }, [selectAnnotationId]);
 
   const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+    const keys = Object.keys(patch).sort();
+    // Typing coalesces with the note's creation; restyling with itself. Each
+    // drag stays its own step.
+    const historyKey = keys.join() === "text"
+      ? `note:${id}`
+      : keys.some((key) => ["rect", "from", "to", "points"].includes(key))
+        ? undefined
+        : `update:${id}:${keys.join()}`;
+
     commitAnnotations((current) => {
       let changed = false;
       const next = current.map((annotation) => {
@@ -1030,23 +1212,61 @@ export function PdfViewer({
       });
 
       return changed ? next : current;
-    });
+    }, historyKey);
   }, [commitAnnotations]);
 
-  const deleteAnnotation = useCallback((id: string) => {
-    commitAnnotations((current) => {
-      const next = current.filter((annotation) => annotation.id !== id);
+  const deleteAnnotations = useCallback((ids: string[], historyKey?: string) => {
+    const doomed = new Set(ids);
+    const current = latestAnnotationsRef.current;
+    const next = current.filter((annotation) => !doomed.has(annotation.id));
 
-      return next.length === current.length ? current : next;
-    });
+    if (next.length !== current.length) {
+      const [only] = ids;
+      const abandoned = ids.length === 1 ? current.find((annotation) => annotation.id === only) : undefined;
+      const { undo, redo } = historyRef.current;
 
-    if (activeSelectedAnnotationIdRef.current === id) {
+      if (abandoned?.type === "text" && !abandoned.text.trim() && undo.at(-1)?.key === `note:${only}`) {
+        // A note abandoned empty leaves no step behind to undo into.
+        replaceHistory({ undo: undo.slice(0, -1), redo });
+        saveAnnotations(next);
+      } else {
+        commitAnnotations(() => next, historyKey);
+      }
+    }
+
+    if (doomed.has(activeSelectedAnnotationIdRef.current)) {
       selectAnnotationId("");
     }
-  }, [commitAnnotations, selectAnnotationId]);
+  }, [commitAnnotations, replaceHistory, saveAnnotations, selectAnnotationId]);
 
-  /** Highlights the current text selection, split across every page it spans. */
-  const highlightSelection = useCallback((color: string) => {
+  const deleteAnnotation = useCallback((id: string) => deleteAnnotations([id]), [deleteAnnotations]);
+
+  const stepHistory = useCallback((direction: "undo" | "redo") => {
+    const { undo, redo } = historyRef.current;
+    const entry = (direction === "undo" ? undo : redo).at(-1);
+
+    if (!entry) {
+      return;
+    }
+
+    const counterpart: HistoryEntry = { annotations: latestAnnotationsRef.current, time: Date.now() };
+
+    replaceHistory(
+      direction === "undo"
+        ? { undo: undo.slice(0, -1), redo: [...redo, counterpart] }
+        : { undo: [...undo, counterpart], redo: redo.slice(0, -1) },
+    );
+    saveAnnotations(entry.annotations);
+
+    const selectedId = activeSelectedAnnotationIdRef.current;
+
+    if (selectedId && !entry.annotations.some((annotation) => annotation.id === selectedId)) {
+      selectAnnotationId("");
+    }
+  }, [replaceHistory, saveAnnotations, selectAnnotationId]);
+
+  /** Marks up the current text selection, split across every page it spans. */
+  const markSelection = useCallback((color: string, markup: PdfMarkupStyle) => {
     const selection = window.getSelection();
     const viewer = viewerRef.current;
 
@@ -1079,6 +1299,7 @@ export function PdfViewer({
           color,
           rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
           quote: textLayer ? pdfHighlightQuote(range, textLayer) : undefined,
+          ...(markup === "highlight" ? {} : { markup }),
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -1118,9 +1339,27 @@ export function PdfViewer({
     };
 
     selectAnnotationId(annotation.id);
-    commitAnnotations((current) => [...current, annotation]);
+    commitAnnotations((current) => [...current, annotation], `note:${annotation.id}`);
     return annotation.id;
   }, [commitAnnotations, selectAnnotationId]);
+
+  const addDrawing = useCallback((pageNumber: number, draft: PdfDrawingDraft) => {
+    const timestamp = nowIso();
+    const annotation = {
+      ...draft,
+      id: createAnnotationId(),
+      pageNumber,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } as PdfDrawingAnnotation;
+
+    commitAnnotations((current) => [...current, annotation]);
+  }, [commitAnnotations]);
+
+  const eraseAnnotations = useCallback(
+    (ids: string[], gestureKey: string) => deleteAnnotations(ids, gestureKey),
+    [deleteAnnotations],
+  );
 
   const updateTextAnnotation = useCallback(
     (id: string, patch: Partial<PdfTextAnnotation>) => updateAnnotation(id, patch),
@@ -1132,14 +1371,74 @@ export function PdfViewer({
     updateViewState({ tool: "select" });
   }, [updateViewState]);
 
+  const markupInk = markupStyle === "highlight" ? highlightColor : markupColor;
+  const selectToolRef = useRef(selectTool);
+  useLayoutEffect(() => {
+    selectToolRef.current = selectTool;
+  });
+
   function selectTool(nextTool: PdfTool) {
     setTool(nextTool);
     updateViewState({ tool: nextTool });
     setSelectionMenu(null);
 
-    // Choosing Highlight with text already selected highlights it right away.
+    // Choosing a markup tool with text already selected marks it right away.
     if (nextTool === "highlight") {
-      highlightSelection(highlightColor);
+      markSelection(markupInk, markupStyle);
+    }
+  }
+
+  function chooseMarkupStyle(nextStyle: PdfMarkupStyle) {
+    if (selectedHighlight) {
+      updateAnnotation(
+        selectedHighlight.id,
+        convertMarkup(selectedHighlight, nextStyle, nextStyle === "highlight" ? highlightColor : markupColor),
+      );
+      return;
+    }
+
+    setMarkupStyle(nextStyle);
+    updateViewState({ markupStyle: nextStyle });
+
+    if (tool !== "highlight") {
+      selectTool("highlight");
+    }
+  }
+
+  function updateMarkupColor(nextColor: string) {
+    setMarkupColor(nextColor);
+    updateViewState({ markupColor: nextColor });
+  }
+
+  function applyInkColor(nextColor: string) {
+    setInkColor(nextColor);
+    updateViewState({ inkColor: nextColor });
+
+    if (selectedDrawing) {
+      updateAnnotation(selectedDrawing.id, { color: nextColor });
+    }
+  }
+
+  function applyStrokeWidth(nextWidth: number) {
+    setStrokeWidth(nextWidth);
+    updateViewState({ strokeWidth: nextWidth });
+
+    if (selectedDrawing) {
+      updateAnnotation(selectedDrawing.id, { strokeWidth: nextWidth });
+    }
+  }
+
+  function chooseShapeKind(nextShape: PdfShapeKind) {
+    if (selectedDrawing?.type === "shape") {
+      updateAnnotation(selectedDrawing.id, { shape: nextShape });
+      return;
+    }
+
+    setShapeKind(nextShape);
+    updateViewState({ shapeKind: nextShape });
+
+    if (tool !== "shape") {
+      selectTool("shape");
     }
   }
 
@@ -1178,8 +1477,14 @@ export function PdfViewer({
     updateViewState({ highlightColor: nextColor });
   }, [updateViewState]);
 
-  function applyHighlightColor(nextColor: string) {
-    updateHighlightColor(nextColor);
+  function applyMarkupColor(nextColor: string) {
+    const style = selectedHighlight ? markupStyleOf(selectedHighlight) : markupStyle;
+
+    if (style === "highlight") {
+      updateHighlightColor(nextColor);
+    } else {
+      updateMarkupColor(nextColor);
+    }
 
     if (selectedHighlight) {
       updateAnnotation(selectedHighlight.id, { color: nextColor });
@@ -1214,6 +1519,31 @@ export function PdfViewer({
         return;
       }
 
+      const modifier = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+
+      if (modifier && !event.altKey && (key === "z" || (key === "y" && event.ctrlKey && !event.metaKey))) {
+        event.preventDefault();
+        stepHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+        return;
+      }
+
+      const shortcutTool = TOOL_SHORTCUTS[key];
+
+      if (shortcutTool && !modifier && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        selectToolRef.current(shortcutTool);
+        return;
+      }
+
+      if (event.key === "Escape" && (tool === "draw" || tool === "shape" || tool === "eraser")) {
+        // Put the pen down first; the next Esc clears the selection.
+        event.preventDefault();
+        setTool("select");
+        updateViewState({ tool: "select" });
+        return;
+      }
+
       if (event.key === "Escape") {
         const selection = window.getSelection();
         const hadTextSelection = Boolean(
@@ -1240,7 +1570,16 @@ export function PdfViewer({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeSelectedAnnotationId, clearSelection, deleteSelectedAnnotation, paneFocused, selectionMenu]);
+  }, [
+    activeSelectedAnnotationId,
+    clearSelection,
+    deleteSelectedAnnotation,
+    paneFocused,
+    selectionMenu,
+    stepHistory,
+    tool,
+    updateViewState,
+  ]);
 
   // Copy is synchronous, so measure the pages around a selection while it is made.
   useEffect(() => {
@@ -1305,7 +1644,7 @@ export function PdfViewer({
     }
 
     if (tool === "highlight") {
-      highlightSelection(highlightColor);
+      markSelection(markupInk, markupStyle);
       return;
     }
 
@@ -1346,7 +1685,7 @@ export function PdfViewer({
         left: clamp(
           first.left - bounds.left + scrollContainer.scrollLeft,
           8,
-          Math.max(8, scrollContainer.scrollWidth - 280),
+          Math.max(8, scrollContainer.scrollWidth - 360),
         ),
         top: top + scrollContainer.scrollTop,
       });
@@ -1376,7 +1715,8 @@ export function PdfViewer({
     setSelectionMenu(null);
   }
 
-  const showHighlightStyle = tool === "highlight" || Boolean(selectedHighlight);
+  const showMarkupStyle = tool === "highlight" || Boolean(selectedHighlight);
+  const shownMarkupStyle = selectedHighlight ? markupStyleOf(selectedHighlight) : markupStyle;
   const showTextStyle = tool === "text" || Boolean(selectedTextAnnotation);
   const textStyleValues = selectedTextAnnotation
     ? {
@@ -1384,10 +1724,26 @@ export function PdfViewer({
         fontFamily: selectedTextAnnotation.fontFamily ?? DEFAULT_PDF_TEXT_FONT,
       }
     : { color: textColor, fontFamily };
+  const showDrawingStyle = tool === "draw" || tool === "shape" || Boolean(selectedDrawing);
+  const drawingStyleValues = selectedDrawing
+    ? { color: selectedDrawing.color, strokeWidth: selectedDrawing.strokeWidth }
+    : { color: inkColor, strokeWidth };
+  const shownShapeKind = selectedDrawing?.type === "shape" ? selectedDrawing.shape : shapeKind;
+  const markupChoice = MARKUP_CHOICES.find((choice) => choice.value === markupStyle) ?? MARKUP_CHOICES[0];
+  const shapeChoice = SHAPE_CHOICES.find((choice) => choice.value === shapeKind) ?? SHAPE_CHOICES[0];
+  const drawingMode: PdfDrawingMode = screenshotSnipping
+    ? "idle"
+    : tool === "draw" || tool === "shape" || tool === "eraser" || tool === "select"
+      ? tool
+      : "idle";
+  const drawingStyle = useMemo(
+    () => ({ color: inkColor, shape: shapeKind, strokeWidth }),
+    [inkColor, shapeKind, strokeWidth],
+  );
 
   return (
-    <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
-      style={{ "--pdf-highlight-color": highlightColor } as React.CSSProperties}
+    <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} data-pdf-markup={markupStyle} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
+      style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor } as React.CSSProperties}
       onCopy={handleCopy}
       onPointerDown={(event) => {
         if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
@@ -1398,59 +1754,70 @@ export function PdfViewer({
         {/* Contextual style controls scroll sideways instead of wrapping, so
             selecting an annotation never shifts the page under the pointer. */}
         <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
-          <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
-              tool === "select"
-                ? "border-foreground bg-primary text-primary-foreground"
-                : "border-input hover:bg-muted"
-            }`}
-            type="button"
-            aria-pressed={tool === "select"}
-            data-viewer-tool="select"
-            title="Select (V)"
-            onClick={() => selectTool("select")}
-          >
-            <MousePointer2 aria-hidden className="h-4 w-4" />
-            Select
-          </button>
-          <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
-              tool === "highlight"
-                ? "pdf-highlight-tool-active"
-                : "border-input hover:bg-muted"
-            }`}
-            type="button"
-            aria-pressed={tool === "highlight"}
-            data-viewer-tool="highlight"
-            title="Highlight: select text to mark it"
-            onClick={() => selectTool("highlight")}
-          >
-            <Highlighter aria-hidden className="h-4 w-4" />
-            Highlight
-          </button>
-          <button
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
-              tool === "text"
-                ? "border-foreground bg-primary text-primary-foreground"
-                : "border-input hover:bg-muted"
-            }`}
-            type="button"
-            aria-pressed={tool === "text"}
-            data-viewer-tool="text"
+          <PdfToolButton
+            active={tool === "select"}
+            icon={MousePointer2}
+            label="Select"
+            title="Select"
+            tool="select"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "highlight"}
+            className={tool === "highlight" && markupStyle === "highlight" ? "pdf-highlight-tool-active" : undefined}
+            icon={markupChoice.icon}
+            label={markupChoice.tool}
+            markup={markupStyle}
+            title={`${markupChoice.label}: select text to mark it`}
+            tool="highlight"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "text"}
+            icon={Type}
+            label="Text"
             title="Text note: click to place, or drag to draw a box"
-            onClick={() => selectTool("text")}
-          >
-            <Type aria-hidden className="h-4 w-4" />
-            Text
-          </button>
+            tool="text"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "draw"}
+            icon={PenLine}
+            label="Pen"
+            title="Pen: draw freehand"
+            tool="draw"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "shape"}
+            icon={shapeChoice.icon}
+            label="Shape"
+            title={`${shapeChoice.label}: drag to draw, Shift to constrain`}
+            tool="shape"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "eraser"}
+            icon={Eraser}
+            label="Erase"
+            title="Eraser: drag across pen strokes, shapes and markup"
+            tool="eraser"
+            onSelect={selectTool}
+          />
 
-          {showHighlightStyle ? (
+          {showMarkupStyle ? (
             <div className="annotation-style-group">
+              <IconChoiceGroup
+                choices={MARKUP_CHOICES}
+                label="Markup style"
+                value={shownMarkupStyle}
+                onChange={chooseMarkupStyle}
+              />
               <SwatchPicker
-                colors={PDF_HIGHLIGHT_COLORS}
-                label="Highlight color"
-                value={selectedHighlight?.color ?? highlightColor}
-                onChange={applyHighlightColor}
+                colors={markupPalette(shownMarkupStyle)}
+                label={shownMarkupStyle === "highlight" ? "Highlight color" : "Markup color"}
+                value={selectedHighlight?.color ?? markupInk}
+                onChange={applyMarkupColor}
               />
             </div>
           ) : null}
@@ -1466,16 +1833,62 @@ export function PdfViewer({
             />
           ) : null}
 
-          <button
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
-            type="button"
-            aria-label="Delete selected annotation"
-            title="Delete selected annotation"
-            disabled={!activeSelectedAnnotationId}
-            onClick={deleteSelectedAnnotation}
-          >
-            <Trash2 aria-hidden className="h-4 w-4" />
-          </button>
+          {showDrawingStyle ? (
+            <div className="annotation-style-group">
+              {tool === "shape" || selectedDrawing?.type === "shape" ? (
+                <IconChoiceGroup
+                  choices={SHAPE_CHOICES}
+                  label="Shape"
+                  value={shownShapeKind}
+                  onChange={chooseShapeKind}
+                />
+              ) : null}
+              <SwatchPicker
+                colors={PDF_INK_COLORS}
+                label="Ink color"
+                value={drawingStyleValues.color}
+                onChange={applyInkColor}
+              />
+              <StrokeWidthPicker
+                color={drawingStyleValues.color}
+                value={drawingStyleValues.strokeWidth}
+                onChange={applyStrokeWidth}
+              />
+            </div>
+          ) : null}
+
+          <div className="annotation-style-group">
+            <button
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              aria-label="Undo"
+              title="Undo (Ctrl/Cmd+Z)"
+              disabled={!history.undo.length}
+              onClick={() => stepHistory("undo")}
+            >
+              <Undo2 aria-hidden className="h-4 w-4" />
+            </button>
+            <button
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              aria-label="Redo"
+              title="Redo (Ctrl/Cmd+Shift+Z)"
+              disabled={!history.redo.length}
+              onClick={() => stepHistory("redo")}
+            >
+              <Redo2 aria-hidden className="h-4 w-4" />
+            </button>
+            <button
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-destructive/40 text-destructive hover:bg-destructive-muted disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              aria-label="Delete selected annotation"
+              title="Delete selected annotation"
+              disabled={!activeSelectedAnnotationId}
+              onClick={deleteSelectedAnnotation}
+            >
+              <Trash2 aria-hidden className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
@@ -1583,9 +1996,23 @@ export function PdfViewer({
                 style={{ "--swatch": color.value } as React.CSSProperties}
                 onClick={() => {
                   updateHighlightColor(color.value);
-                  highlightSelection(color.value);
+                  markSelection(color.value, "highlight");
                 }}
               />
+            ))}
+            <span aria-hidden className="pdf-selection-menu-divider" />
+            {MARKUP_CHOICES.filter((choice) => choice.value !== "highlight").map(({ icon: Icon, label, value }) => (
+              <button
+                key={value}
+                type="button"
+                className="pdf-selection-menu-action"
+                aria-label={label}
+                title={label}
+                style={{ color: markupColor }}
+                onClick={() => markSelection(markupColor, value)}
+              >
+                <Icon aria-hidden className="h-3.5 w-3.5" />
+              </button>
             ))}
             <span aria-hidden className="pdf-selection-menu-divider" />
             <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
@@ -1608,6 +2035,8 @@ export function PdfViewer({
                 key={`${filePath}-${layout.pageNumber}`}
                 annotations={annotationsByPage.get(layout.pageNumber) ?? EMPTY_ANNOTATIONS}
                 documentPath={filePath}
+                drawingMode={drawingMode}
+                drawingStyle={drawingStyle}
                 newAnnotationFontSize={fontSize}
                 pageLayout={layout}
                 textContentCache={textContentCache}
@@ -1630,9 +2059,11 @@ export function PdfViewer({
                 screenshotSnipping={screenshotSnipping}
                 tool={tool}
                 zoom={zoom}
+                onAddDrawing={addDrawing}
                 onAddTextAnnotation={addTextAnnotation}
                 onCancelScreenshotSnip={cancelScreenshotSnip}
                 onDeleteAnnotation={deleteAnnotation}
+                onEraseAnnotations={eraseAnnotations}
                 onExitTextEditing={exitTextEditing}
                 onPageElement={setPageElement}
                 onScreenshotSnip={captureScreenshotSnip}
@@ -1650,6 +2081,8 @@ export function PdfViewer({
 type PdfPageContentProps = {
   annotations: PdfAnnotation[];
   documentPath: string;
+  drawingMode: PdfDrawingMode;
+  drawingStyle: NewDrawingStyle;
   newAnnotationFontSize: number;
   searchMatches: PdfSearchMatch[];
   activeSearchMatch?: PdfSearchMatch;
@@ -1662,9 +2095,11 @@ type PdfPageContentProps = {
   screenshotSnipping: boolean;
   tool: PdfTool;
   zoom: number;
+  onAddDrawing: (pageNumber: number, draft: PdfDrawingDraft) => void;
   onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => string;
   onCancelScreenshotSnip: () => void;
   onDeleteAnnotation: (id: string) => void;
+  onEraseAnnotations: (ids: string[], gestureKey: string) => void;
   onExitTextEditing: () => void;
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
@@ -1712,6 +2147,8 @@ const PdfPageView = memo(function PdfPageView({
 function PdfPageContent({
   annotations,
   documentPath,
+  drawingMode,
+  drawingStyle,
   newAnnotationFontSize,
   searchMatches,
   activeSearchMatch,
@@ -1724,9 +2161,11 @@ function PdfPageContent({
   screenshotSnipping,
   tool,
   zoom,
+  onAddDrawing,
   onAddTextAnnotation,
   onCancelScreenshotSnip,
   onDeleteAnnotation,
+  onEraseAnnotations,
   onExitTextEditing,
   onScreenshotSnip,
   onSelectAnnotation,
@@ -1869,20 +2308,27 @@ function PdfPageContent({
     };
   }, []);
 
-  const { highlights, textAnnotations } = useMemo(() => {
+  const { drawings, highlights, textAnnotations } = useMemo(() => {
+    const pageDrawings: PdfDrawingAnnotation[] = [];
     const pageHighlights: PdfHighlightAnnotation[] = [];
     const pageTextAnnotations: PdfTextAnnotation[] = [];
 
     for (const annotation of annotations) {
       if (annotation.type === "highlight") {
         pageHighlights.push(annotation);
-      } else {
+      } else if (annotation.type === "text") {
         pageTextAnnotations.push(annotation);
+      } else {
+        pageDrawings.push(annotation);
       }
     }
 
-    return { highlights: pageHighlights, textAnnotations: pageTextAnnotations };
+    return { drawings: pageDrawings, highlights: pageHighlights, textAnnotations: pageTextAnnotations };
   }, [annotations]);
+  const addDrawing = useCallback(
+    (draft: PdfDrawingDraft) => onAddDrawing(pageNumber, draft),
+    [onAddDrawing, pageNumber],
+  );
   const selectedHighlight = highlights.find((highlight) => highlight.id === selectedAnnotationId);
   const addTextAnnotation = useCallback(
     (rect: PdfAnnotationRect) => onAddTextAnnotation(pageNumber, rect),
@@ -1946,7 +2392,7 @@ function PdfPageContent({
       <div
         ref={textLayerRef}
         className="pdf-text-layer"
-        style={{ pointerEvents: tool !== "text" && !screenshotSnipping ? "auto" : "none" }}
+        style={{ pointerEvents: (tool === "select" || tool === "highlight") && !screenshotSnipping ? "auto" : "none" }}
       />
 
       <div className="pdf-highlight-ui-layer">
@@ -1970,11 +2416,25 @@ function PdfPageContent({
         ) : null}
       </div>
 
+      <PdfDrawingLayer
+        annotations={drawings}
+        markups={highlights}
+        mode={drawingMode}
+        pageSize={pageLayout}
+        selectedAnnotationId={selectedAnnotationId}
+        style={drawingStyle}
+        zoom={zoom}
+        onAdd={addDrawing}
+        onErase={onEraseAnnotations}
+        onSelect={onSelectAnnotation}
+        onUpdate={onUpdateAnnotation}
+      />
+
       <TextAnnotationLayer
         annotations={textAnnotations}
         documentPath={documentPath}
         drawing={tool === "text"}
-        interactive={tool !== "highlight" && !screenshotSnipping}
+        interactive={(tool === "select" || tool === "text") && !screenshotSnipping}
         newAnnotationFontSize={newAnnotationFontSize}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
@@ -2013,7 +2473,11 @@ function PdfAnnotationScrollAnchors({
   return (
     <div className="pointer-events-none absolute inset-0">
       {annotations.map((annotation) => {
-        const rect = annotation.type === "highlight" ? annotation.rects[0] : annotation.rect;
+        const rect = annotation.type === "highlight"
+          ? annotation.rects[0]
+          : annotation.type === "text"
+            ? annotation.rect
+            : drawingBounds(annotation);
 
         if (!rect) {
           return null;
@@ -2051,15 +2515,20 @@ const PdfHighlightMarks = memo(function PdfHighlightMarks({
   const bands = useHighlightBands(annotation, pageSize);
 
   // Opaque ink inside one multiply-blended layer: overlapping bands never
-  // stack into darker patches, and the page's black glyphs stay black.
+  // stack into darker patches, and the page's black glyphs stay black. Line
+  // markup draws its stroke in the band's currentColor instead.
   return (
     <>
       {bands.map((rect, index) => (
         <span
           key={index}
           className="pdf-highlight-mark"
+          data-markup={annotation.markup}
           data-pdf-highlight-id={annotation.id}
-          style={{ ...rectStyle(rect, pageSize), background: annotation.color }}
+          style={{
+            ...rectStyle(rect, pageSize),
+            ...(annotation.markup ? { color: annotation.color } : { background: annotation.color }),
+          }}
         />
       ))}
     </>
@@ -2092,7 +2561,7 @@ const PdfHighlightControl = memo(function PdfHighlightControl({
       <button
         className="pdf-highlight-hit"
         type="button"
-        aria-label="Select highlight"
+        aria-label={`Select ${MARKUP_CHOICES.find((choice) => choice.value === markupStyleOf(annotation))?.label.toLowerCase() ?? "highlight"}`}
         aria-pressed={selected}
         data-pdf-annotation-id={annotation.id}
         data-selected={selected || undefined}
@@ -2131,12 +2600,13 @@ function PdfHighlightChip({
   const bands = useHighlightBands(annotation, pageSize);
   const first = bands[0];
   const last = bands.at(-1);
+  const style = markupStyleOf(annotation);
 
   if (!first || !last) {
     return null;
   }
 
-  const chipWidth = 232;
+  const chipWidth = 344;
   const chipHeight = 36;
   const aboveTop = first.y * pageSize.height - chipHeight - 6;
   const top = aboveTop >= 4 ? aboveTop : (last.y + last.height) * pageSize.height + 6;
@@ -2152,7 +2622,7 @@ function PdfHighlightChip({
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
-      {PDF_HIGHLIGHT_COLORS.map((color) => (
+      {markupPalette(style).map((color) => (
         <button
           key={color.value}
           type="button"
@@ -2165,11 +2635,30 @@ function PdfHighlightChip({
         />
       ))}
       <span aria-hidden className="pdf-selection-menu-divider" />
+      {MARKUP_CHOICES.map(({ icon: Icon, label, value }) => (
+        <button
+          key={value}
+          type="button"
+          className="pdf-selection-menu-action"
+          aria-label={`Change to ${label.toLowerCase()}`}
+          aria-pressed={value === style}
+          title={label}
+          onClick={() =>
+            onUpdate(
+              annotation.id,
+              convertMarkup(annotation, value, markupPalette(value)[0].value),
+            )
+          }
+        >
+          <Icon aria-hidden className="h-3.5 w-3.5" />
+        </button>
+      ))}
+      <span aria-hidden className="pdf-selection-menu-divider" />
       <button
         type="button"
         className="pdf-selection-menu-action"
-        aria-label="Remove highlight"
-        title="Remove highlight"
+        aria-label={style === "highlight" ? "Remove highlight" : "Remove markup"}
+        title={style === "highlight" ? "Remove highlight" : "Remove markup"}
         onClick={() => onDelete(annotation.id)}
       >
         <Trash2 aria-hidden className="h-3.5 w-3.5" />

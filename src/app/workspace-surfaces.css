@@ -88,6 +88,11 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-viewer-toolbar button:not(:disabled):hover { background: var(--muted); color: var(--accent); }
 .libera-viewer-toolbar button[data-viewer-tool][aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); border-color: color-mix(in srgb, var(--accent) 20%, var(--card)); }
 .libera-viewer-toolbar button[data-viewer-tool="highlight"][aria-pressed="true"] { color: var(--foreground); background: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 55%, var(--card)); border-color: color-mix(in srgb, var(--pdf-highlight-color, #ffe45c) 80%, var(--foreground) 8%); }
+/* Line markup tools take the regular active style, not the highlighter wash. */
+.libera-viewer-toolbar button[data-viewer-tool="highlight"][data-markup]:not([data-markup="highlight"])[aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); border-color: color-mix(in srgb, var(--accent) 20%, var(--card)); }
+/* Tool names give way to icons when the toolbar is narrow (split panes). */
+.libera-viewer-toolbar > div.libera-annotation-toolbar { container-type: inline-size; }
+@container (max-width: 760px) { .libera-annotation-toolbar .pdf-tool-label { display: none; } }
 .libera-viewer-toolbar button[aria-label="Delete selected annotation"] { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 18%, var(--card)); }
 .libera-viewer-toolbar input { max-width: 42px; color: var(--surface-ink); }
 .libera-media-viewer .libera-pdf-sheet { box-shadow: 0 5px 25px #334b7812, 0 1px 3px #334b7812; outline: 1px solid #8095b81a; }

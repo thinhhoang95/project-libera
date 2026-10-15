@@ -4,11 +4,19 @@ import { LatexOutline } from "@/components/libera/latex/latex-outline";
 import {
   ChevronDown,
   ChevronRight,
+  Circle,
   GripVertical,
   Highlighter,
+  Minus,
+  MoveUpRight,
+  PenLine,
   Search,
+  Square,
   StickyNote,
+  Strikethrough,
   Trash2,
+  Underline,
+  Waves,
   X,
 } from "lucide-react";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
@@ -383,9 +391,30 @@ function useMarkdownOutline(activeTab?: OpenTab) {
     : { draft: "", headings: [], tabId: "" };
 }
 
+const MARKUP_LABELS = {
+  underline: "Underline",
+  strikethrough: "Strikethrough",
+  squiggly: "Squiggly underline",
+} as const;
+
+const SHAPE_LABELS = {
+  rectangle: "Rectangle",
+  ellipse: "Ellipse",
+  line: "Line",
+  arrow: "Arrow",
+} as const;
+
 function annotationLabel(annotation: PdfAnnotation) {
   if (annotation.type === "text") {
     return annotation.text.trim() || "Text annotation";
+  }
+
+  if (annotation.type === "shape") {
+    return SHAPE_LABELS[annotation.shape];
+  }
+
+  if (annotation.type === "ink") {
+    return "Pen drawing";
   }
 
   const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
@@ -394,15 +423,31 @@ function annotationLabel(annotation: PdfAnnotation) {
     return quote;
   }
 
-  return "Highlight";
+  return annotation.markup ? MARKUP_LABELS[annotation.markup] : "Highlight";
 }
 
 function annotationIcon(annotation: PdfAnnotation) {
+  const className = "h-4 w-4 shrink-0 text-muted-foreground";
+
   if (annotation.type === "text") {
-    return <StickyNote aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />;
+    return <StickyNote aria-hidden className={className} />;
   }
 
-  return <Highlighter aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  if (annotation.type === "ink") {
+    return <PenLine aria-hidden className={className} />;
+  }
+
+  if (annotation.type === "shape") {
+    const Icon = { rectangle: Square, ellipse: Circle, line: Minus, arrow: MoveUpRight }[annotation.shape];
+
+    return <Icon aria-hidden className={className} />;
+  }
+
+  const Icon = annotation.markup
+    ? { underline: Underline, strikethrough: Strikethrough, squiggly: Waves }[annotation.markup]
+    : Highlighter;
+
+  return <Icon aria-hidden className={className} />;
 }
 
 function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {

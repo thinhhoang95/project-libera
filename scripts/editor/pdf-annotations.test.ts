@@ -7,6 +7,12 @@ import { createRoot } from "react-dom/client";
 import { marked } from "marked";
 import type { PdfAnnotationRect, PdfTextAnnotation } from "../../src/lib/types";
 import { mergeHighlightRects } from "../../src/lib/pdf-annotation-style";
+import {
+  constrainShapeEnd,
+  hitTestDrawing,
+  smoothStrokePath,
+  translateDrawing,
+} from "../../src/lib/pdf-drawing";
 import { renderAnnotationMarkdown } from "../../src/lib/pdf-annotation-markdown";
 import { TextAnnotationLayer } from "../../src/components/libera/text-annotation-layer";
 
@@ -49,6 +55,43 @@ test("highlight rects collapse into one even band per line run", () => {
   ], 600, 800);
   assert.equal(columns.length, 2);
   assert.deepEqual(mergeHighlightRects([]), []);
+});
+
+test("drawings hit-test on their strokes only, constrain with Shift, and stay on the page when moved", () => {
+  const size = { width: 600, height: 800 };
+  const shape = (kind: "rectangle" | "ellipse" | "line" | "arrow") => ({
+    id: kind, type: "shape" as const, pageNumber: 1, shape: kind, color: "#d92d20", strokeWidth: 2,
+    from: { x: 0.1, y: 0.1 }, to: { x: 0.5, y: 0.4 }, createdAt: "", updatedAt: "",
+  });
+
+  // Rectangle (60,80)–(300,320): the edge counts, the inside does not.
+  assert.ok(hitTestDrawing(shape("rectangle"), { x: 62, y: 200 }, size, 1, 4));
+  assert.ok(!hitTestDrawing(shape("rectangle"), { x: 180, y: 200 }, size, 1, 4));
+  // Ellipse centred (180,200), radii 120×120.
+  assert.ok(hitTestDrawing(shape("ellipse"), { x: 300, y: 200 }, size, 1, 4));
+  assert.ok(!hitTestDrawing(shape("ellipse"), { x: 180, y: 200 }, size, 1, 4));
+  assert.ok(hitTestDrawing(shape("line"), { x: 180, y: 200 }, size, 1, 4));
+  assert.ok(!hitTestDrawing(shape("line"), { x: 180, y: 260 }, size, 1, 4));
+  // Thicker strokes at higher zoom reach further.
+  assert.ok(hitTestDrawing({ ...shape("line"), strokeWidth: 8 }, { x: 180, y: 212 }, size, 2, 4));
+
+  const ink = {
+    id: "ink", type: "ink" as const, pageNumber: 1, color: "#1d4ed8", strokeWidth: 2,
+    points: [{ x: 0.1, y: 0.1 }, { x: 0.2, y: 0.1 }], createdAt: "", updatedAt: "",
+  };
+  assert.ok(hitTestDrawing(ink, { x: 90, y: 82 }, size, 1, 4));
+  assert.ok(!hitTestDrawing(ink, { x: 90, y: 95 }, size, 1, 4));
+
+  assert.deepEqual(constrainShapeEnd("rectangle", { x: 0, y: 0 }, { x: 40, y: -10 }), { x: 40, y: -40 }, "square");
+  const snapped = constrainShapeEnd("line", { x: 0, y: 0 }, { x: 100, y: 10 });
+  assert.ok(Math.abs(snapped.y) < 1e-9 && Math.abs(snapped.x - Math.hypot(100, 10)) < 1e-9, "snaps to horizontal");
+
+  const moved = translateDrawing(shape("rectangle"), 0.9, -0.5);
+  assert.deepEqual(moved, { from: { x: 0.6, y: 0 }, to: { x: 1, y: 0.30000000000000004 } }, "clamped to the page");
+  assert.deepEqual(translateDrawing(ink, 0.1, 0), { points: [{ x: 0.2, y: 0.1 }, { x: 0.30000000000000004, y: 0.1 }] });
+
+  assert.equal(smoothStrokePath([{ x: 1, y: 2 }]), "M1 2L1 2", "a tap leaves a dot");
+  assert.equal(smoothStrokePath([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 10 }]), "M0 0Q10 0 15 5L20 10");
 });
 
 test("note Markdown renders through the TipTap schema, is cached, and leaves global marked alone", () => {

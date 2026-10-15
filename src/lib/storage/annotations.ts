@@ -24,8 +24,13 @@ import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
+  PdfAnnotationPoint,
   PdfAnnotationRect,
   PdfAnnotationsPayload,
+  PdfHighlightAnnotation,
+  PdfInkAnnotation,
+  PdfShapeAnnotation,
+  PdfShapeKind,
   PdfTextAnnotation,
   PdfTextAnnotationFont,
 } from "@/lib/types";
@@ -36,6 +41,9 @@ const pendingMigrations = migrationState[PENDING_PDF_MIGRATIONS] ??= new Map<str
 
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 const PDF_TEXT_ANNOTATION_FONTS: readonly PdfTextAnnotationFont[] = ["sans", "serif", "hand", "mono"];
+const PDF_MARKUP_STYLES: readonly NonNullable<PdfHighlightAnnotation["markup"]>[] = ["underline", "strikethrough", "squiggly"];
+const PDF_SHAPE_KINDS: readonly PdfShapeKind[] = ["rectangle", "ellipse", "line", "arrow"];
+const MAX_INK_POINTS = 5_000;
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -57,6 +65,16 @@ function normalizeAnnotationRect(input: Partial<PdfAnnotationRect>): PdfAnnotati
     width,
     height,
   };
+}
+
+function normalizeAnnotationPoint(input: unknown): PdfAnnotationPoint {
+  const point = (input && typeof input === "object" ? input : {}) as Partial<PdfAnnotationPoint>;
+
+  return { x: clampNumber(point.x, 0, 1, 0), y: clampNumber(point.y, 0, 1, 0) };
+}
+
+function inkColor(value: unknown) {
+  return typeof value === "string" && HEX_COLOR_PATTERN.test(value) ? value : "#1d4ed8";
 }
 
 function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
@@ -108,6 +126,9 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
           quote: typeof candidate.quote === "string"
             ? normalizePdfHighlightQuote(candidate.quote)
             : undefined,
+          ...(PDF_MARKUP_STYLES.includes(candidate.markup as never)
+            ? { markup: candidate.markup }
+            : {}),
           createdAt,
           updatedAt,
         });
@@ -137,6 +158,45 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
         createdAt,
         updatedAt,
       });
+    }
+
+    if (type === "shape") {
+      const shape = candidate as Partial<PdfShapeAnnotation>;
+
+      if (PDF_SHAPE_KINDS.includes(shape.shape as PdfShapeKind)) {
+        annotations.push({
+          id,
+          type,
+          pageNumber,
+          shape: shape.shape as PdfShapeKind,
+          color: inkColor(shape.color),
+          strokeWidth: clampNumber(shape.strokeWidth, 0.5, 24, 2),
+          from: normalizeAnnotationPoint(shape.from),
+          to: normalizeAnnotationPoint(shape.to),
+          createdAt,
+          updatedAt,
+        });
+      }
+    }
+
+    if (type === "ink") {
+      const ink = candidate as Partial<PdfInkAnnotation>;
+      const points = Array.isArray(ink.points)
+        ? ink.points.slice(0, MAX_INK_POINTS).map(normalizeAnnotationPoint)
+        : [];
+
+      if (points.length) {
+        annotations.push({
+          id,
+          type,
+          pageNumber,
+          color: inkColor(ink.color),
+          strokeWidth: clampNumber(ink.strokeWidth, 0.5, 24, 2),
+          points,
+          createdAt,
+          updatedAt,
+        });
+      }
     }
   }
 
