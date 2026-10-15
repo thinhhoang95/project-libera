@@ -18,13 +18,49 @@ const requiredPackages = new Map([
 ]);
 const electronRuntimePackages = ["electron-log", "electron-updater"];
 
+/**
+ * onnxruntime-node ships binaries for every platform (hundreds of MB). Skip the
+ * ones for other platforms while copying instead of copying and then deleting.
+ */
+function isForeignOnnxBinary(entryPath) {
+  const parts = entryPath.split(path.sep);
+  const index = parts.lastIndexOf("napi-v6");
+  if (index < 1 || parts[index - 1] !== "bin" || parts[index - 2] !== "onnxruntime-node") return false;
+
+  const [platform, arch] = parts.slice(index + 1);
+  if (platform && platform !== process.platform) return true;
+  return Boolean(platform && arch && arch !== process.arch);
+}
+
 async function copy(source, destination) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.cp(source, destination, {
-    filter: (entryPath) => !path.basename(entryPath).startsWith("._"),
+    filter: (entryPath) => !path.basename(entryPath).startsWith("._") && !isForeignOnnxBinary(entryPath),
     recursive: true,
     verbatimSymlinks: true,
   });
+}
+
+/**
+ * The Next standalone tree is tens of thousands of small files and is rebuilt
+ * from scratch on every build, so move it into the staged app instead of copying
+ * it. Fall back to a copy when the move is not possible (for example across
+ * volumes or when antivirus holds a file). Because the move consumes
+ * .next/standalone, re-run electron:build-next before preparing again.
+ */
+async function moveStandalone(source, destination) {
+  if (!existsSync(source)) {
+    throw new Error(`${source} was not found. Run npm run electron:build-next and electron:prepare-standalone first.`);
+  }
+
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  try {
+    await fs.rename(source, destination);
+  } catch (error) {
+    console.warn(`Could not move the standalone tree (${error.code ?? error.message}); copying instead.`);
+    await removeIfPresent(destination);
+    await copy(source, destination);
+  }
 }
 
 async function removeAppleDoubleFiles(directory) {
@@ -125,10 +161,6 @@ function sqliteVecPackageName() {
   return `sqlite-vec-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
 }
 
-function onnxruntimePlatform() {
-  return process.platform === "win32" ? "win32" : process.platform;
-}
-
 /**
  * Global Search runs Transformers.js in a worker process (electron/search-worker.mjs)
  * and keeps its index in SQLite with the sqlite-vec extension. Copy only what
@@ -160,16 +192,6 @@ async function copySearchRuntime(distNodeModulesRoot) {
   );
   delete transformersPackage.devDependencies;
   await fs.writeFile(path.join(transformersDestination, "package.json"), `${JSON.stringify(transformersPackage, null, 2)}\n`);
-
-  // onnxruntime-node ships binaries for every platform; keep this one.
-  const binaries = path.join(nested, "onnxruntime-node", "bin", "napi-v6");
-  for (const platform of await fs.readdir(binaries).catch(() => [])) {
-    for (const arch of await fs.readdir(path.join(binaries, platform)).catch(() => [])) {
-      if (platform !== onnxruntimePlatform() || arch !== process.arch) {
-        await removeIfPresent(path.join(binaries, platform, arch));
-      }
-    }
-  }
 
   await completeTopLevelDuplicates(nested, distNodeModulesRoot);
   await copyPackage(sqliteVecPackageName(), resolveSqliteVecDirectory(), distNodeModulesRoot);
@@ -284,7 +306,7 @@ async function main() {
 
   await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"));
   await copy(path.join(projectRoot, "assets"), path.join(distAppRoot, "assets"));
-  await copy(
+  await moveStandalone(
     path.join(projectRoot, ".next", "standalone"),
     path.join(distAppRoot, ".next", "standalone"),
   );
