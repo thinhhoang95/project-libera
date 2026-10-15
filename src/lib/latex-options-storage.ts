@@ -2,11 +2,12 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DEFAULT_LATEX_OPTIONS, parseLatexOptions, type LatexOptions } from "./latex-options";
+import { joinPath, resolvePath, workingDirectory } from "./runtime-path";
 
 function preferencesPath() {
   const directory = process.env.LIBERA_CONFIG_PATH
     ? path.dirname(process.env.LIBERA_CONFIG_PATH)
-    : path.resolve(process.env.LIBERA_DATA_DIR || path.join(process.cwd(), "data", "libera"), ".libera");
+    : resolvePath(process.env.LIBERA_DATA_DIR || joinPath(workingDirectory(), "data", "libera"), ".libera");
   return path.join(directory, "latex-options.json");
 }
 

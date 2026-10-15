@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { access, copyFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { homeDirectory, joinPath } from "@/lib/runtime-path";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
@@ -72,7 +73,12 @@ function realTemporaryDirectory() {
   }
 }
 
-const BUILD_ROOT = path.join(realTemporaryDirectory(), "libera-latex");
+const BUILD_ROOT = joinPath(realTemporaryDirectory(), "libera-latex");
+
+/* Built through functions so the Next.js file tracer cannot read these as paths
+ * and glob the project folder at build time (see runtime-path.ts). */
+const rootTexFile = (paths: { workDirectory: string; jobName: string }) => joinPath(paths.workDirectory, `${paths.jobName}.tex`);
+const optionWithValue = (option: string, value: string) => `${option}=${value}`;
 const COMPILE_TIMEOUT_MS = 4 * 60_000;
 const MAX_SNAPSHOTS = 3;
 const MAX_LOG_CHARACTERS = 400_000;
@@ -139,7 +145,7 @@ export function notebookPathForTexFile(file: string | undefined, meta: Pick<Late
  * anywhere (sync, uploads, shared archives), so only the user's own rc file
  * is read, never one next to the document. */
 async function latexmkRcArguments() {
-  const home = os.homedir();
+  const home = homeDirectory();
   const candidates = [
     process.env.XDG_CONFIG_HOME ? path.join(process.env.XDG_CONFIG_HOME, "latexmk", "latexmkrc") : null,
     path.join(home, ".config", "latexmk", "latexmkrc"),
@@ -243,7 +249,7 @@ async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
   const rootSource = typeof rootDraft === "string" ? rootDraft : await readFile(paths.rootAbsolute, "utf8").catch(() => {
     throw new StorageError("The main LaTeX file could not be read.", 404);
   });
-  await writeFile(path.join(paths.workDirectory, `${paths.jobName}.tex`), rootSource, "utf8");
+  await writeFile(rootTexFile(paths), rootSource, "utf8");
 
   const overrides: string[] = [];
   for (const [notebookPath, content] of Object.entries(drafts)) {
@@ -277,7 +283,7 @@ async function mirrorSourceFolders(source: string, target: string, depth = 0) {
 }
 
 async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, paths: BuildPaths, env: NodeJS.ProcessEnv, signal: AbortSignal) {
-  const engineArgs = ["-interaction=nonstopmode", "-file-line-error", "-synctex=1", `-output-directory=${paths.workDirectory}`, path.join(paths.workDirectory, `${paths.jobName}.tex`)];
+  const engineArgs = ["-interaction=nonstopmode", "-file-line-error", "-synctex=1", optionWithValue("-output-directory", paths.workDirectory), rootTexFile(paths)];
   const options = { cwd: paths.sourceDirectory, env, signal };
   let output = "";
   let result = await runProcess(texExecutable(toolchain, engine), engineArgs, options);
@@ -287,7 +293,7 @@ async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, p
   const aux = await readFile(path.join(paths.workDirectory, `${paths.jobName}.aux`), "utf8").catch(() => "");
   const usesBiber = await modifiedAt(path.join(paths.workDirectory, `${paths.jobName}.bcf`)) !== null;
   if (usesBiber) {
-    output += (await runProcess(texExecutable(toolchain, "biber"), [`--output-directory=${paths.workDirectory}`, path.join(paths.workDirectory, paths.jobName)], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
+    output += (await runProcess(texExecutable(toolchain, "biber"), [optionWithValue("--output-directory", paths.workDirectory), path.join(paths.workDirectory, paths.jobName)], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
   } else if (/\\bibdata\{/.test(aux)) {
     output += (await runProcess(texExecutable(toolchain, "bibtex"), [paths.jobName], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `bibtex: ${error.message}\n` }))).output;
   }
@@ -387,7 +393,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
         const force = previousState?.signature !== signature || previousState?.status !== "success";
         result = await runProcess(texExecutable(toolchain, "latexmk"), [
           ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
-          `-outdir=${paths.workDirectory}`, path.join(paths.workDirectory, `${paths.jobName}.tex`),
+          optionWithValue("-outdir", paths.workDirectory), rootTexFile(paths),
         ], { cwd: paths.sourceDirectory, env, signal });
       } else {
         result = await runEngineDirectly(toolchain, engine, paths, env, signal);
@@ -399,7 +405,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
     }
 
     const log = await readFile(path.join(paths.workDirectory, `${paths.jobName}.log`), "utf8").catch(() => "");
-    const entries = parseLatexLog(log, path.join(paths.workDirectory, `${paths.jobName}.tex`));
+    const entries = parseLatexLog(log, rootTexFile(paths));
     const blgPath = path.join(paths.workDirectory, `${paths.jobName}.blg`);
     const blgModified = await modifiedAt(blgPath);
     if (blgModified !== null && blgModified >= compileStartedAt) {

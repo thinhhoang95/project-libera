@@ -19,17 +19,18 @@ import {
   WORKSPACE_METADATA_FILE,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { joinPath, workingDirectory } from "@/lib/runtime-path";
 
 export function getDataRoot() {
   const configuredDataRoot = process.env.LIBERA_DATA_DIR;
 
   if (!configuredDataRoot) {
-    return path.join(process.cwd(), "data", "libera");
+    return joinPath(workingDirectory(), "data", "libera");
   }
 
   return path.isAbsolute(configuredDataRoot)
     ? configuredDataRoot
-    : path.join(/*turbopackIgnore: true*/ process.cwd(), configuredDataRoot);
+    : joinPath(workingDirectory(), configuredDataRoot);
 }
 
 export function getAdminRoot() {

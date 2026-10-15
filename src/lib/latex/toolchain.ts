@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { homeDirectory, joinPath } from "../runtime-path";
 
 /** Where the TeX binaries live. Desktop apps launched from the Finder or Start
  * menu do not inherit the shell's PATH, so common install locations are
@@ -41,12 +41,12 @@ async function candidateDirectories() {
   const pdflatexOverride = process.env.LIBERA_PDFLATEX_PATH ? [path.dirname(process.env.LIBERA_PDFLATEX_PATH)] : [];
 
   if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+    const localAppData = process.env.LOCALAPPDATA ?? joinPath(homeDirectory(), "AppData", "Local");
     const programFiles = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean) as string[];
     return [
       ...configured, ...pdflatexOverride, ...fromPath,
-      path.join(localAppData, "Programs", "MiKTeX", "miktex", "bin", "x64"),
-      ...programFiles.map((root) => path.join(root, "MiKTeX", "miktex", "bin", "x64")),
+      joinPath(localAppData, "Programs", "MiKTeX", "miktex", "bin", "x64"),
+      ...programFiles.map((root) => joinPath(root, "MiKTeX", "miktex", "bin", "x64")),
       ...(await globTexLiveBins("C:\\texlive")),
     ];
   }
@@ -55,7 +55,7 @@ async function candidateDirectories() {
     ...configured, ...pdflatexOverride, ...fromPath,
     "/Library/TeX/texbin",
     ...(await globTexLiveBins("/usr/local/texlive")),
-    ...(await globTexLiveBins(path.join(os.homedir(), "texlive"))),
+    ...(await globTexLiveBins(joinPath(homeDirectory(), "texlive"))),
     "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
   ];
 }
