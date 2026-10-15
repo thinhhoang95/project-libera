@@ -192,6 +192,60 @@ async function readPdfBasePageLayouts(pdfDocument: PDFDocumentProxy, signal: Abo
   return layouts;
 }
 
+// The document point under the viewport centre, as fractions of a page sheet.
+// Offsets keep the unscaled remainder when the centre is in padding or a gap.
+type PdfZoomAnchor = {
+  pageNumber: number;
+  pageX: number;
+  pageY: number;
+  offsetX: number;
+  offsetY: number;
+  viewportX: number;
+  viewportY: number;
+};
+
+function readPdfZoomAnchor(scroller: HTMLElement, pages: Map<number, HTMLElement>): PdfZoomAnchor | null {
+  const viewport = scroller.getBoundingClientRect();
+  const viewportX = scroller.clientWidth / 2;
+  const viewportY = scroller.clientHeight / 2;
+  const centerX = viewport.left + viewportX;
+  const centerY = viewport.top + viewportY;
+  let anchor: { pageNumber: number; bounds: DOMRect } | null = null;
+
+  // Map order is registration order, which a re-mounted page can change.
+  for (const pageNumber of [...pages.keys()].sort((a, b) => a - b)) {
+    const bounds = pages.get(pageNumber)!.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) continue;
+    anchor = { pageNumber, bounds };
+    if (bounds.bottom >= centerY) break;
+  }
+
+  if (!anchor) return null;
+  const { bounds, pageNumber } = anchor;
+  const pageX = clamp((centerX - bounds.left) / bounds.width, 0, 1);
+  const pageY = clamp((centerY - bounds.top) / bounds.height, 0, 1);
+
+  return {
+    pageNumber,
+    pageX,
+    pageY,
+    offsetX: centerX - bounds.left - bounds.width * pageX,
+    offsetY: centerY - bounds.top - bounds.height * pageY,
+    viewportX,
+    viewportY,
+  };
+}
+
+function restorePdfZoomAnchor(scroller: HTMLElement, page: HTMLElement, anchor: PdfZoomAnchor) {
+  const viewport = scroller.getBoundingClientRect();
+  const bounds = page.getBoundingClientRect();
+  const deltaX = bounds.left + bounds.width * anchor.pageX + anchor.offsetX - viewport.left - anchor.viewportX;
+  const deltaY = bounds.top + bounds.height * anchor.pageY + anchor.offsetY - viewport.top - anchor.viewportY;
+
+  scroller.scrollLeft = clamp(scroller.scrollLeft + deltaX, 0, Math.max(0, scroller.scrollWidth - scroller.clientWidth));
+  scroller.scrollTop = clamp(scroller.scrollTop + deltaY, 0, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+}
+
 function pageNumberFromObservedElement(element: Element) {
   const pageNumber = Number((element as HTMLElement).dataset.pdfPageNumber);
 
@@ -278,6 +332,7 @@ export function PdfViewer({
     scrollLeft: initialViewState?.scrollLeft ?? 0,
     scrollTop: initialViewState?.scrollTop ?? 0,
   });
+  const pendingZoomAnchorRef = useRef<PdfZoomAnchor | null>(null);
   const pageElementRefs = useRef<Map<number, HTMLElement>>(new Map());
   const pendingScrollViewStateRef = useRef<PdfScrollPosition | null>(null);
   const scrollViewStateTimeoutRef = useRef<number | null>(null);
@@ -656,6 +711,24 @@ export function PdfViewer({
     return () => window.cancelAnimationFrame(animationFrame);
   }, [loading, pageLayouts.length, pdfDocument, updateCurrentPage]);
 
+  useLayoutEffect(() => {
+    const anchor = pendingZoomAnchorRef.current;
+    pendingZoomAnchorRef.current = null;
+    const scroller = scrollContainerRef.current;
+    const page = anchor && pageElementRefs.current.get(anchor.pageNumber);
+    if (!anchor || !scroller || !page || pendingScrollRestoreRef.current) return;
+
+    // Page sizes have committed, but the browser has not painted yet. Keep the
+    // point being read at the viewport centre on both axes; anchoring only the
+    // top edge still slides the middle of the view by a fraction of a screen.
+    restorePdfZoomAnchor(scroller, page, anchor);
+
+    // Replace any pre-zoom debounced position and persist immediately, even if
+    // a tab switch captures/unmounts us before the browser emits a scroll event.
+    pendingScrollViewStateRef.current = { scrollLeft: scroller.scrollLeft, scrollTop: scroller.scrollTop };
+    flushPendingScrollViewState();
+  }, [zoom, flushPendingScrollViewState]);
+
   // A one-shot request (Global Search) to show a page and find a passage on it.
   const reveal = initialViewState?.reveal;
   const findTextRef = useRef(pdfFind.findText);
@@ -805,6 +878,10 @@ export function PdfViewer({
   function applyZoom(nextValue: number) {
     const nextZoom = clamp(nextValue, MIN_ZOOM, MAX_ZOOM);
     if (nextZoom === zoom) return;
+    const scroller = scrollContainerRef.current;
+    if (scroller && !pendingScrollRestoreRef.current) {
+      pendingZoomAnchorRef.current = readPdfZoomAnchor(scroller, pageElementRefs.current);
+    }
     setZoom(nextZoom);
     updateViewState({ zoom: nextZoom });
   }
@@ -1479,6 +1556,8 @@ export function PdfViewer({
       <div
         ref={scrollContainerRef}
         className="relative min-h-0 flex-1 overflow-auto px-4 py-6"
+        // Zoom anchoring is handled above; native anchoring would adjust twice.
+        style={{ overflowAnchor: "none" }}
         onScroll={handleScroll}
         onPointerDown={handleScrollPointerDown}
         onPointerUp={handleScrollPointerUp}
@@ -1660,11 +1739,19 @@ function PdfPageContent({
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
   const [searchLayer, setSearchLayer] = useState<{ textDivs: HTMLElement[]; page: PdfSearchPage } | null>(null);
+  const revealedSearchMatchRef = useRef<PdfSearchMatch | undefined>(undefined);
 
   useEffect(() => {
     if (!searchLayer) return;
     const activeElement = highlightPdfMatches(searchLayer.textDivs, searchLayer.page, searchMatches, activeSearchMatch);
-    activeElement?.scrollIntoView({ block: "center", inline: "nearest" });
+    // Zoom rebuilds the text layer, so repaint its highlights without navigating
+    // back to the same match after the viewer has restored its reading position.
+    if (activeElement?.isConnected && activeSearchMatch !== revealedSearchMatchRef.current) {
+      activeElement.scrollIntoView({ block: "center", inline: "nearest" });
+      revealedSearchMatchRef.current = activeSearchMatch;
+    } else if (!activeSearchMatch) {
+      revealedSearchMatchRef.current = undefined;
+    }
   }, [searchLayer, searchMatches, activeSearchMatch]);
 
   useEffect(() => {

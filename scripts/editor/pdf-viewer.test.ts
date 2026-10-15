@@ -6,6 +6,7 @@ import { JSDOM } from "jsdom";
 import type { PdfTabViewState } from "../../src/components/libera/types";
 import type { PdfAnnotation } from "../../src/lib/types";
 import { PDF_DETAIL_MARGIN, PDF_MAX_CANVAS_PIXELS } from "../../src/components/libera/pdf-rendering";
+import { captureCanvasViewState } from "../../src/components/libera/canvas-view-state";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -107,6 +108,31 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
     })));
   }
   async function unmount() { await act(async () => root.unmount()); root = createRoot(host); }
+  // JSDOM has no layout: model the viewer's fixed padding/gaps and each page's
+  // actual CSS size, including pages outside the PDF render window. Sheets
+  // stretch to the widest page, centred until they overflow the viewport.
+  function installPdfGeometry(viewportWidth = 700) {
+    const scroller = host.querySelector<HTMLElement>(".libera-pdf-viewer .overflow-auto")!;
+    const sheets = [...host.querySelectorAll<HTMLElement>("[data-pdf-page-number]")];
+    const size = (sheet: HTMLElement, axis: "width" | "height") => parseFloat((sheet.firstElementChild as HTMLElement).style[axis]);
+    const height = (sheet: HTMLElement) => size(sheet, "height");
+    const contentWidth = () => Math.max(...sheets.map((sheet) => size(sheet, "width")));
+    scroller.getBoundingClientRect = () => ({ top: 80, left: 40, width: viewportWidth, height: 600 } as DOMRect);
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, get: () => viewportWidth },
+      clientHeight: { configurable: true, get: () => 600 },
+      scrollWidth: { configurable: true, get: () => Math.max(viewportWidth, contentWidth() + 32) },
+      scrollHeight: { configurable: true, get: () => 48 + sheets.reduce((sum, sheet) => sum + height(sheet), 0) + (sheets.length - 1) * 20 },
+    });
+    for (const [index, sheet] of sheets.entries()) {
+      sheet.getBoundingClientRect = () => {
+        const top = 80 + 24 + sheets.slice(0, index).reduce((sum, previous) => sum + height(previous) + 20, 0) - scroller.scrollTop;
+        const left = 40 + 16 + Math.max(0, (viewportWidth - 32 - contentWidth()) / 2) - scroller.scrollLeft;
+        return { top, bottom: top + height(sheet), height: height(sheet), left, right: left + contentWidth(), width: contentWidth() } as DOMRect;
+      };
+    }
+    return { scroller, sheets };
+  }
   try {
     await t.test("zoom and page revisits reuse text, preserve CSS size, and skip page renders on parent updates", async () => {
       normalLoad();
@@ -289,6 +315,118 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
         Reflect.deleteProperty(proto, "scrollHeight");
       }
     });
+    await t.test("zoom preserves the visible point on mixed-size pages and saves it across immediate tab switches", async () => {
+      normalLoad();
+      const originalViewport = pages[1].getViewport;
+      pages[1].getViewport = ({ scale }) => ({ width: 612 * scale, height: 900 * scale, scale });
+      const proto = dom.window.HTMLElement.prototype;
+      Object.defineProperties(proto, {
+        scrollWidth: { configurable: true, get: () => 4000 },
+        scrollHeight: { configurable: true, get: () => 20000 },
+      });
+      try {
+        await mount();
+        await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+        // Narrow enough that every page scrolls horizontally.
+        const { scroller, sheets } = installPdfGeometry(400);
+        // The viewport centre (40 + 200, 80 + 300) sits partway down page 3; page 2
+        // has a different height and neither page is rendered. Padding and gaps
+        // do not scale, so scaling the whole scroll offset would drift.
+        const expectedTop = (zoom: number) => 24 + (792 + 900 + 127.5) * zoom + 2 * 20 - 300;
+        const expectedLeft = (zoom: number) => (184 + 180.25) * zoom - 184;
+        const near = (actual: number | undefined, expected: number, message?: string) =>
+          assert.ok(Math.abs((actual ?? NaN) - expected) < 1e-6, `${message ?? "position"}: ${actual} != ${expected}`);
+        await act(async () => {
+          scroller.scrollTop = expectedTop(1);
+          scroller.scrollLeft = 180.25;
+          scroller.dispatchEvent(new dom.window.Event("scroll"));
+        });
+        changes.length = 0;
+        for (const [button, zoom] of [["Zoom in", 1.25], ["Zoom out", 1], ["Zoom in", 1.25], ["Reset zoom", 1]] as const) {
+          await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${button}"]`)!.click());
+          near(scroller.scrollTop, expectedTop(zoom));
+          near(scroller.scrollLeft, expectedLeft(zoom));
+          const bounds = sheets[2].getBoundingClientRect();
+          near(bounds.top + bounds.height * (127.5 / 792), 380, "The same PDF point stays at the viewport centre");
+          near(bounds.left + bounds.width * (364.25 / 612), 240, "The same PDF point stays at the viewport centre");
+          near(changes.at(-1)?.scrollTop, expectedTop(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
+          near(changes.at(-1)?.scrollLeft, expectedLeft(zoom), "Persist zoom-adjusted coordinates without waiting for a scroll event");
+        }
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+        near(changes.at(-1)?.scrollTop, expectedTop(1), "The pre-zoom debounce must not save stale coordinates");
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+        await act(async () => captureCanvasViewState());
+        near(changes.at(-1)?.scrollTop, expectedTop(1.25));
+        near(changes.at(-1)?.scrollLeft, expectedLeft(1.25));
+        await unmount(); // No scroll event or debounce wait after zoom.
+        const saved = Object.assign({}, ...changes) as PdfTabViewState;
+        assert.equal(saved.zoom, 1.25);
+        near(saved.scrollTop, expectedTop(1.25));
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 175)); });
+        assert.deepEqual(Object.assign({}, ...changes), saved, "The old scroll debounce must not overwrite the zoomed position");
+        await mount(saved);
+        await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+        assert.equal(host.querySelector<HTMLElement>(".overflow-auto")!.scrollTop, saved.scrollTop);
+        assert.equal(host.querySelector<HTMLElement>(".overflow-auto")!.scrollLeft, saved.scrollLeft);
+        assert.equal(host.querySelector("canvas")!.style.height, "990px");
+      } finally {
+        await unmount();
+        pages[1].getViewport = originalViewport;
+        Reflect.deleteProperty(proto, "scrollWidth");
+        Reflect.deleteProperty(proto, "scrollHeight");
+      }
+    });
+    await t.test("zoom keeps the viewport centre across padding and page gaps, and clamps at both ends", async () => {
+      normalLoad();
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      const { scroller } = installPdfGeometry();
+      // At the top, the centre is 276px into page 1.
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+      assert.equal(scroller.scrollTop, 24 + 276 * 1.25 - 300);
+      assert.equal(scroller.scrollLeft, (612 * 1.25 + 32 - 700) / 2, "A centred page that starts to overflow stays centred");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reset zoom"]')!.click());
+      assert.equal(scroller.scrollTop, 0);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]')!.click());
+      assert.equal(scroller.scrollTop, 0, "Zooming out at the top clamps instead of going negative");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reset zoom"]')!.click());
+      scroller.scrollTop = 24 + 792 + 10 - 300; // Centre halfway through the gap after page 1.
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+      assert.equal(scroller.scrollTop, 24 + 792 * 1.25 + 10 - 300);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Reset zoom"]')!.click());
+      scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]')!.click());
+      assert.equal(scroller.scrollTop, scroller.scrollHeight - scroller.clientHeight);
+      assert.equal(scroller.style.overflowAnchor, "none", "Browser scroll anchoring must not apply a second adjustment");
+      await unmount();
+    });
+    await t.test("zoom during loading leaves the pending tab scroll restoration intact", async () => {
+      normalLoad();
+      const pendingPdf = deferred<typeof pdf>();
+      getDocumentImpl = () => ({ promise: pendingPdf.promise, destroy: async () => {} });
+      const proto = dom.window.HTMLElement.prototype;
+      Object.defineProperties(proto, {
+        scrollWidth: { configurable: true, get: () => 4000 },
+        scrollHeight: { configurable: true, get: () => 20000 },
+      });
+      try {
+        await mount({ zoom: 2, scrollTop: 1400.5, scrollLeft: 180.25 });
+        changes.length = 0;
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+        await act(async () => captureCanvasViewState());
+        assert.deepEqual(changes, [{ zoom: 2.25 }], "Do not save the collapsed loading area's zero scroll offset");
+        await act(async () => pendingPdf.resolve(pdf));
+        await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+        const scroller = host.querySelector<HTMLElement>(".overflow-auto")!;
+        assert.equal(scroller.scrollTop, 1400.5);
+        assert.equal(scroller.scrollLeft, 180.25);
+        assert.equal(host.querySelector("canvas")!.style.height, "1782px");
+      } finally {
+        await unmount();
+        Reflect.deleteProperty(proto, "scrollWidth");
+        Reflect.deleteProperty(proto, "scrollHeight");
+      }
+    });
     await t.test("LaTeX preview restores scroll and flushes switches before its debounce", async () => {
       normalLoad();
       const { LatexPdfPreview } = await import("../../src/components/libera/latex/latex-pdf-preview");
@@ -433,9 +571,20 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.equal(host.querySelector('[role="status"]')?.textContent, "1/1");
       assert.equal(host.querySelector(".pdf-find-match-active")?.textContent, "across lines");
       const beforeZoomReads = Array.from(reads);
+      const beforeZoomScrolls = scrolled.length;
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
       assert.equal(host.querySelector(".pdf-find-match-active")?.textContent, "across lines");
       assert.deepEqual(Array.from(reads), beforeZoomReads);
+      assert.equal(scrolled.length, beforeZoomScrolls, "Rebuilding a search highlight after zoom must not navigate back to it");
+      for (const button of ["Zoom out", "Reset zoom"]) {
+        await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${button}"]`)!.click());
+        assert.equal(scrolled.length, beforeZoomScrolls, `${button} must not navigate back to the active match`);
+      }
+      await query("selectable");
+      const beforeNextMatch = scrolled.length;
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Next match"]')!.click());
+      assert.equal(host.querySelector('[role="status"]')?.textContent, "2/5");
+      assert.ok(scrolled.length > beforeNextMatch, "Explicit search navigation must still reveal the new match after zoom");
       await query("missing");
       assert.equal(host.querySelector('[role="status"]')?.textContent, "0/0");
       assert.equal(host.querySelector(".pdf-find-match"), null);
