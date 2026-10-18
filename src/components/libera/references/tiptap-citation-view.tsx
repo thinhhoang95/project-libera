@@ -20,6 +20,7 @@ import {
 import { setTiptapDocumentStyle, tiptapDocumentStyle, tiptapDocumentStyleValue } from "@/lib/tiptap-front-matter";
 import { FormattedCitationHtml } from "./citation-chip";
 import { CitationHoverCard } from "./citation-hover-card";
+import { citationRetractionClass } from "./retraction-badge";
 import { CitationPopup, citationPopupPosition, openCitationAttachment, type CitationPopupHandle } from "./citation-popup";
 import {
   CitationDocumentContext,
@@ -238,6 +239,8 @@ function CitationNodeView({ node, getPos, editor, selected }: ReactNodeViewProps
   const index = document ? citationIndex(document, raw, undefined, pos) : -1;
   const html = document ? formattedCitation(document, index, raw) : null;
   const unresolved = Boolean(render?.library) && citation.items.some((item) => !entryForKey(render!.entriesByKey, item.key));
+  // Retracted, withdrawn or concerning works get the preview's warning style; corrected ones a softer one.
+  const retraction = render ? citationRetractionClass(citation.items.map((item) => entryForKey(render.entriesByKey, item.key))) : null;
   const editing = context?.popoverPos !== null && context?.popoverPos === pos;
   // An unresolved narrative `@word` is text, not a citation: no chip, no hover card.
   const plainText = Boolean(node.attrs.narrative) && unresolvedNarrative(node, referenceKeyResolver(render));
@@ -281,7 +284,7 @@ function CitationNodeView({ node, getPos, editor, selected }: ReactNodeViewProps
     <NodeViewWrapper
       as="span"
       ref={anchor}
-      className={`libera-citation${unresolved ? " libera-citation-unresolved" : ""}${selected ? " libera-citation-selected" : ""}`}
+      className={`libera-citation${unresolved ? " libera-citation-unresolved" : ""}${retraction ? ` ${retraction}` : ""}${selected ? " libera-citation-selected" : ""}`}
       data-libera-citation={raw}
       data-libera-narrative={node.attrs.narrative ? "" : undefined}
       data-formatted={html ? "true" : undefined}

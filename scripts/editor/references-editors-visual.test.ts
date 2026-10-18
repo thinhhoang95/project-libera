@@ -15,7 +15,7 @@ import { tiptapReviewBlocks } from "../../src/lib/tiptap-review";
 import { diffDocuments } from "../../src/lib/tiptap-changes";
 import { CITATION_NODE_NAME } from "../../src/lib/tiptap-citation";
 import type { ReferenceAttachment } from "../../src/lib/references/types";
-import { installReferenceFetch, makeLibrary, type MockServer } from "./references-editors-fixtures";
+import { LEE, SMITH, SMYTHE, installReferenceFetch, makeLibrary, type MockServer } from "./references-editors-fixtures";
 
 /* The Visual editor's citations, mounted in the real TiptapMarkdownEditor:
  * node views, the `@` popup, the popover, and coexistence with find, review
@@ -59,8 +59,8 @@ async function settle(ms = 0) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 }
 
-async function mountVisual(value: string, { provider = true } = {}) {
-  server = { libraries: { Notes: makeLibrary() }, requests: [], resolve: () => 500 };
+async function mountVisual(value: string, { provider = true, library = makeLibrary() }: { provider?: boolean; library?: ReturnType<typeof makeLibrary> } = {}) {
+  server = { libraries: { Notes: library }, requests: [], resolve: () => 500 };
   restoreFetch = installReferenceFetch(server);
   const host = document.createElement("div");
   document.body.append(host);
@@ -120,6 +120,21 @@ test("node views show the formatted citation, the raw token while pending, and u
     assert.match(chips[0].textContent!, /Smith, 2020, p\. 12/);
     assert.ok(chips[1].classList.contains("libera-citation-unresolved"));
     assert.equal(visual.editor.getMarkdown(), "See [@smith2020sparse, p. 12] and [@nobody].");
+  } finally {
+    await visual.dispose();
+  }
+});
+
+test("node views of retracted works get the preview's warning style", async () => {
+  const retracted = { ...LEE, retraction: { state: "retracted" as const, checkedAt: "2026-10-19T00:00:00.000Z" } };
+  const corrected = { ...SMITH, retraction: { state: "corrected" as const, checkedAt: "2026-10-19T00:00:00.000Z" } };
+  const visual = await mountVisual("See [@lee2019graphs], [@smith2020sparse] and [@smythe2021].", { library: makeLibrary([corrected, SMYTHE, retracted]) });
+  try {
+    for (let waited = 0; waited < 10_000 && !visual.chips()[0]?.classList.contains("libera-citation-retracted"); waited += 100) await settle(100);
+    const [lee, smith, smythe] = visual.chips();
+    assert.ok(lee.classList.contains("libera-citation-retracted"));
+    assert.ok(smith.classList.contains("libera-citation-corrected"));
+    assert.ok(!smythe.classList.contains("libera-citation-retracted") && !smythe.classList.contains("libera-citation-corrected"));
   } finally {
     await visual.dispose();
   }
