@@ -37,6 +37,7 @@ import { ImageViewer } from "@/components/libera/image-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import { MarkdownSourceEditor } from "@/components/libera/markdown-source/markdown-source-editor";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import {
@@ -1553,6 +1554,8 @@ function WorkspacePanelContent({
     scrollTextareaToOffset(textarea, clampedOffset);
   }
 
+  const SourceEditor = markdownPreferences.sourceEditor === "codemirror" ? MarkdownSourceEditor : MarkdownEditor;
+
   if (!activeTab) {
     if (selectedNotebook) {
       return (
@@ -1737,7 +1740,8 @@ function WorkspacePanelContent({
                 } as CSSProperties
               }
             >
-              <MarkdownEditor
+              {/* Preferences → Source editor: the textarea (default) or CodeMirror (beta, D8). */}
+              <SourceEditor
                 key={activeTab.id}
                 activeFilePath={activeTab.file.path}
                 files={files}

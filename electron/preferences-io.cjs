@@ -5,6 +5,7 @@ const PREFERENCE_KEYS = Object.freeze([
   "themePreference",
   "yourName",
   "smartPaste",
+  "sourceEditor",
   "dataDir",
   "markdownInlineMathMarkers",
   "markdownBlockMathMarkers",

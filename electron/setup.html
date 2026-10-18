@@ -401,6 +401,15 @@
                 When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.
               </p>
 
+              <label for="source-editor">Source editor</label>
+              <select id="source-editor" aria-describedby="source-editor-help">
+                <option value="classic">Classic</option>
+                <option value="codemirror">CodeMirror (beta)</option>
+              </select>
+              <p id="source-editor-help" class="field-help">
+                The editor used for Markdown Source mode and slide decks. CodeMirror (beta) adds syntax colours for Markdown and Libera’s highlights, boxes and math. Restart Libera after changing it.
+              </p>
+
               <label for="data-dir">Libera for Vy Tran Master directory</label>
               <div class="directory-row">
                 <input id="data-dir" autocomplete="off" readonly />
@@ -903,6 +912,7 @@
       systemAppearance.addEventListener("change", updateAppearance);
       const yourNameInput = document.querySelector("#your-name");
       const smartPasteInput = document.querySelector("#smart-paste");
+      const sourceEditorInput = document.querySelector("#source-editor");
       const wysiwygEditorFontFamilyInput = document.querySelector(
         "#wysiwyg-editor-font-family",
       );
@@ -1516,6 +1526,7 @@
         updateAppearance();
         yourNameInput.value = state.yourName || "";
         smartPasteInput.checked = state.smartPaste === true;
+        sourceEditorInput.value = state.sourceEditor === "codemirror" ? "codemirror" : "classic";
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
@@ -1794,6 +1805,7 @@
             themePreference: themePreferenceInput.value,
             yourName: yourNameInput.value,
             smartPaste: smartPasteInput.checked,
+            sourceEditor: sourceEditorInput.value,
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             wysiwygEditorFontFamily: wysiwygEditorFontFamilyInput.value,

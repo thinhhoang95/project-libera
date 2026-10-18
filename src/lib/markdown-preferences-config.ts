@@ -15,5 +15,6 @@ export function getConfiguredMarkdownPreferences(): MarkdownPreferences {
     pdfExportBaseFontSize: process.env.LIBERA_MARKDOWN_PDF_BASE_FONT_SIZE,
     pdfExportBaseLineHeight: process.env.LIBERA_MARKDOWN_PDF_BASE_LINE_HEIGHT,
     smartPaste: process.env.LIBERA_SMART_PASTE,
+    sourceEditor: process.env.LIBERA_SOURCE_EDITOR,
   });
 }
