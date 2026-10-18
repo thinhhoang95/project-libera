@@ -6,6 +6,8 @@ import { registerAccountRoutes } from "./routes-account";
 import { registerDiagnosticsRoutes } from "./routes-diagnostics";
 import { registerDocRoutes, type DocRouteOptions } from "./routes-docs";
 import { registerProjectRoutes } from "./routes-projects";
+import { registerRevisionRoutes } from "./routes-revisions";
+import { registerThreadRoutes } from "./routes-threads";
 import { CollabRuntime, type CollabRuntimeOptions } from "./runtime";
 import { ControlServer, type ControlAddress, type ControlServerOptions } from "./server";
 
@@ -29,6 +31,8 @@ export async function startControlApp(options: ControlAppOptions): Promise<Contr
   registerProjectRoutes(server.routes, runtime);
   registerDocRoutes(server.routes, runtime, options.docs);
   registerDiagnosticsRoutes(server.routes, runtime);
+  registerThreadRoutes(server.routes, runtime, { libraryRoot: options.libraryRoot });
+  registerRevisionRoutes(server.routes, runtime);
   // Core routes first; shared-notebook routes (share, join, files,
   // reconciliations) come from the current NotebookService.
   server.mount(runtime.notebookRoutes);

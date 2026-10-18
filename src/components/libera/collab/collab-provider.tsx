@@ -6,6 +6,7 @@ import type { LocalProject, NotificationInfo } from "@/lib/collab/local-api";
 import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabProjects, useCollabStatus } from "@/lib/collab/ui/hooks";
 import { CollabAccountDialog } from "./collab-account-dialog";
+import { useDesktopNotifications } from "./desktop-notifications";
 import { JoinNotebookDialog } from "./join-notebook-dialog";
 import { ShareNotebookDialog } from "./share-notebook-dialog";
 
@@ -68,6 +69,9 @@ export function CollabProvider({ children, onNotebookJoined, onOpenPath }: Colla
       // notification stays readable in the list either way.
       .catch(() => undefined);
   }, []);
+  // A notification that arrives while the window is in the background is
+  // also shown on the desktop; clicking it opens the document.
+  useDesktopNotifications(openNotificationTarget);
 
   const value = useMemo<CollabShellValue>(
     () => ({

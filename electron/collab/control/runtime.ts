@@ -216,6 +216,19 @@ export class CollabRuntime {
 
   private onHostEvent(event: CollabHostEvent): void {
     if (event.source === "commands") {
+      const command = event.event;
+      // Windows replace a comment's "pending" chip when its command settles.
+      if (command.type === "settled") {
+        this.options.emit({
+          t: "command-settled",
+          id: command.id,
+          kind: command.kind,
+          ok: command.ok,
+          status: command.status,
+          body: command.body,
+          ...(command.error ? { error: command.error } : {}),
+        });
+      }
       this.statusChanged();
       return;
     }

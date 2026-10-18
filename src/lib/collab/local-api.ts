@@ -11,7 +11,21 @@
 //
 // Types only plus route constants: imported by the renderer, Next and the host.
 
-import type { Invitation, MarkNotificationsReadRequest, Member, NotificationInfo } from "./protocol/api";
+import type {
+  Command,
+  CommandKind,
+  Invitation,
+  MarkNotificationsReadRequest,
+  Member,
+  NotificationInfo,
+  RestoreRequest,
+  RestoreResponse,
+  Revision,
+  RevisionContent,
+  Thread,
+  ThreadMessage,
+  UpdatesPage,
+} from "./protocol/api";
 import type { AiFeature, Provenance } from "./protocol/actor";
 import type { Role } from "./protocol/roles";
 import type { DocKind } from "./protocol/schema";
@@ -194,6 +208,57 @@ export interface ResolveReconciliationRequest {
   text: string;
 }
 
+/** An offline command (thread, message or checkpoint) waiting in the host's queue. */
+export interface QueuedCommand {
+  command: Command;
+  attempts: number;
+  lastError: string | null;
+}
+
+/** A queued command the server refused for good (it left the queue). */
+export interface FailedCommand {
+  command: Command;
+  status: number;
+  error: { code: string; message: string };
+  failedAt: number;
+}
+
+/** GET /commands: what is still queued and what failed, so a window can rebuild its pending chips. */
+export interface CommandsState {
+  pending: QueuedCommand[];
+  failed: FailedCommand[];
+}
+
+/** POST /commands answers with the queued id (a replayed id is not queued twice). */
+export interface EnqueueCommandResponse {
+  id: string;
+  queued: boolean;
+}
+
+/** GET /projects/:projectId/migrate-comments: local review comments that could move to the server. */
+export interface LocalCommentsSummary {
+  documents: number;
+  threads: number;
+}
+
+/** POST /projects/:projectId/migrate-comments. */
+export interface MigrateCommentsResponse {
+  documents: number;
+  threads: number;
+  /** Threads whose quote no longer matched; created detached so they can be reattached. */
+  detached: number;
+  /** Threads left alone because they were migrated before. */
+  skipped: number;
+}
+
+/** Query of GET /docs/:docId/updates (mirrors the server's updates feed). */
+export interface DocUpdatesQuery {
+  fromSeq?: number;
+  toSeq?: number;
+  subdoc?: string;
+  limit?: number;
+}
+
 /** Events the host pushes to every window (through main and the preload). */
 export type HostEvent =
   | { t: "status"; status: HostStatus }
@@ -208,7 +273,20 @@ export type HostEvent =
    * server at the same state vector. `recovered` says whether re-opening it
    * with the server's full state made it match again (nothing local is dropped).
    */
-  | { t: "divergence"; docId: string; recovered: boolean };
+  | { t: "divergence"; docId: string; recovered: boolean }
+  /**
+   * A queued command left the queue: delivered (ok) or refused for good.
+   * `body` is the server's result (the Thread or ThreadMessage on success).
+   */
+  | {
+      t: "command-settled";
+      id: string;
+      kind: CommandKind;
+      ok: boolean;
+      status: number;
+      body: unknown;
+      error?: { code: string; message: string };
+    };
 
 export const ControlRoutes = {
   status: "/status",
@@ -243,6 +321,37 @@ export const ControlRoutes = {
   diagnostics: "/diagnostics",
   /** POST → DivergenceRecord[]: runs the divergence check on every open or recent document now. */
   divergenceCheck: "/diagnostics/divergence-check",
+
+  // ---- comments (Phase 2): proxies to /v1/documents/:docId/threads, /v1/threads, /v1/messages
+  /** GET → Thread[]; POST CreateThreadRequest → Thread. */
+  threads: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads`,
+  /** GET → Thread; DELETE → 204. */
+  thread: (threadId: string) => `/threads/${encodeURIComponent(threadId)}`,
+  /** POST CreateMessageRequest → ThreadMessage. */
+  threadMessages: (threadId: string) => `/threads/${encodeURIComponent(threadId)}/messages`,
+  /** POST SetThreadStatusRequest → Thread. */
+  threadStatus: (threadId: string) => `/threads/${encodeURIComponent(threadId)}/status`,
+  /** POST ReattachThreadRequest → Thread. */
+  threadReattach: (threadId: string) => `/threads/${encodeURIComponent(threadId)}/reattach`,
+  /** PATCH EditMessageRequest → ThreadMessage; DELETE → 204. */
+  message: (messageId: string) => `/messages/${encodeURIComponent(messageId)}`,
+  /** GET → CommandsState; POST Command → EnqueueCommandResponse (202). */
+  commands: "/commands",
+  /** DELETE → 204: forgets a failed command (Discard). */
+  command: (commandId: string) => `/commands/${encodeURIComponent(commandId)}`,
+  /** GET → LocalCommentsSummary; POST → MigrateCommentsResponse (owner only). */
+  migrateComments: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/migrate-comments`,
+
+  // ---- version history (Phase 2): proxies to /v1/documents/:docId/revisions, /updates, /restore
+  /** GET → Revision[] newest first; POST CreateRevisionRequest → Revision (session-end is queued: 202). */
+  revisions: (docId: string) => `/docs/${encodeURIComponent(docId)}/revisions`,
+  /** GET → RevisionContent. */
+  revisionContent: (docId: string, revisionId: string) =>
+    `/docs/${encodeURIComponent(docId)}/revisions/${encodeURIComponent(revisionId)}/content`,
+  /** GET (DocUpdatesQuery as the query string) → UpdatesPage. */
+  docUpdates: (docId: string) => `/docs/${encodeURIComponent(docId)}/updates`,
+  /** POST RestoreRequest → RestoreResponse (editors and owners). */
+  restore: (docId: string) => `/docs/${encodeURIComponent(docId)}/restore`,
 } as const;
 
 /** Next routes are the control routes under this prefix. */
@@ -257,4 +366,17 @@ export interface LiberaCollabBridge {
   nudge(): void;
 }
 
-export type { Invitation, MarkNotificationsReadRequest, Member, NotificationInfo };
+export type {
+  Command,
+  Invitation,
+  MarkNotificationsReadRequest,
+  Member,
+  NotificationInfo,
+  RestoreRequest,
+  RestoreResponse,
+  Revision,
+  RevisionContent,
+  Thread,
+  ThreadMessage,
+  UpdatesPage,
+};

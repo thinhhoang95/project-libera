@@ -8,6 +8,7 @@ import type { NotificationInfo } from "@/lib/collab/local-api";
 import { collabClient, describeError } from "@/lib/collab/ui/client";
 import { useCollabProjects, useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { describeNotification, timeAgo } from "@/lib/collab/ui/wording";
+import { useDesktopNotificationsSetting } from "./desktop-notifications";
 import "./collab.css";
 
 const PAGE = 50;
@@ -74,6 +75,7 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
   const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null);
   // Ages are computed against the time the list was opened, not re-read on every render.
   const [now, setNow] = useState(0);
+  const [desktopAlerts, setDesktopAlerts] = useDesktopNotificationsSetting();
   const open = anchor !== null;
 
   const applyResult = useCallback((result: { items: NotificationInfo[] } | { error: string }) => {
@@ -209,6 +211,9 @@ function NotificationsBellInner({ onOpenDocument, onOpenInvitation }: Notificati
             >
               <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
                 <h2 className="text-sm font-semibold">Notifications</h2>
+                <label className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground" title="Also show notifications on the desktop while Libera is in the background">
+                  <input checked={desktopAlerts} type="checkbox" onChange={(event) => setDesktopAlerts(event.target.checked)} /> Desktop alerts
+                </label>
                 <button
                   className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
                   data-popover-focus

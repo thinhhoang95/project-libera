@@ -1,10 +1,19 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState } from "react";
-import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search } from "lucide-react";
+import { useMemo, useEffect, useRef, useState, type RefObject } from "react";
+import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle } from "lucide-react";
 import type { ReviewSuggestion } from "@/lib/markdown-review";
+import { isSharedThread, type PendingInfo, type SharedReviewMessage, type SharedReviewThread } from "@/lib/collab/review-store/types";
+import { commentAuthorLabel, initials } from "@/lib/collab/review-store/authors";
+import { localCommentsSummary, migrateLocalComments } from "@/lib/collab/review-store/api";
+import type { LocalCommentsSummary } from "@/lib/collab/local-api";
+import type { UserSummary } from "@/lib/collab/protocol/api";
+import { describeError } from "@/lib/collab/ui/client";
+import { timeAgo } from "@/lib/collab/ui/wording";
+import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { MentionTextarea } from "./collab/mentions/mention-textarea";
 import { reviewIntent } from "@/lib/markdown-review";
-import { useMarkdownReview } from "./markdown-review-context";
+import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
 import type { ChatContext } from "@/lib/document-chat";
@@ -20,12 +29,28 @@ export function ReviewToggle() {
 export function ReviewComments() {
   const r = useMarkdownReview();
   const [reply, setReply] = useState("");
+  const [mentions, setMentions] = useState<string[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const selectedCard = useRef<HTMLElement | null>(null);
+  const list = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     selectedCard.current?.scrollIntoView({ block: "nearest" });
   }, [r?.selectedThread]);
+  // Shared documents: the cards follow the editor's scroll position, so the
+  // comments beside the text are the ones about it. A selected card keeps
+  // the panel where it is.
+  const viewportStart = r?.shared ? r.viewport?.start : undefined;
+  const followScroll = !!r?.shared && !r.selectedThread && !query;
+  useEffect(() => {
+    const container = list.current;
+    if (!followScroll || viewportStart === undefined || !container) return;
+    const cards = [...container.querySelectorAll<HTMLElement>("[data-anchor-end]")];
+    const target = cards.find((card) => Number(card.dataset.anchorEnd) >= viewportStart);
+    if (!target) return;
+    const top = target.offsetTop - container.offsetTop - 8;
+    if (Math.abs(container.scrollTop - top) > 4) container.scrollTo?.({ top: Math.max(0, top) });
+  }, [followScroll, viewportStart]);
   if (!r) return null;
   const threads = r.doc?.threads ?? [];
   const active = threads.find((t) => t.id === r.selectedThread);
@@ -33,7 +58,7 @@ export function ReviewComments() {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
     if (!terms.length) return true;
-    const haystack = [`comment ${index + 1}`, thread.status, thread.messages[0]?.author ?? "", thread.anchor.quote, ...thread.messages.map((m) => m.text)].join("\n").toLowerCase();
+    const haystack = [`comment ${index + 1}`, thread.status, thread.messages[0]?.author ?? "", thread.anchor.quote, ...thread.messages.map((m) => m.text), ...(isSharedThread(thread) ? [thread.shared.detached ? "detached" : "", ...thread.messages.map((m) => m.shared.author.displayName)] : [])].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
@@ -53,12 +78,13 @@ export function ReviewComments() {
         </div>}
         <p className="px-1 text-xs leading-relaxed text-muted-foreground">{r.enabled ? "Select a passage in either editor to comment. ⌘/Ctrl+Alt+M" : "Enable Review Mode to highlight passages and add comments."}</p>
       </>}
+      {r.shared && <SharedCommentsNotices shared={r.shared} />}
     </header>
-    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
+    <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
       {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
-      {shown.map(({ thread, index }) => <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
+      {shown.map(({ thread, index }) => isSharedThread(thread) && r.shared ? <SharedThreadCard key={thread.id} thread={thread} index={index} shared={r.shared} selected={active?.id === thread.id} cardRef={active?.id === thread.id ? selectedCard : undefined} reply={reply} setReply={setReply} mentions={mentions} setMentions={setMentions} editing={editing} setEditing={setEditing} /> : <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
           <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><span className="text-[11px] capitalize text-muted-foreground">{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
           <span className="my-2 line-clamp-3 border-l-2 border-[#91a4c566] pl-2 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
@@ -99,6 +125,7 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
 export function ReviewPopover() {
   const r = useMarkdownReview();
   const [text, setText] = useState("");
+  const [mentions, setMentions] = useState<string[]>([]);
   const [composing, setComposing] = useState(false);
   if (!r?.enabled || !r.selection || !r.doc) return null;
   const { range, x, y } = r.selection;
@@ -111,7 +138,7 @@ export function ReviewPopover() {
     <blockquote className="my-2 max-h-20 overflow-auto whitespace-pre-wrap border-l-2 border-accent pl-2 text-xs text-muted-foreground">{r.doc.snapshot.slice(range.start, range.end)}</blockquote>
     {threads.map((t) => <button key={t.id} className="my-1 block w-full rounded bg-muted p-2 text-left text-sm" onClick={() => { r.selectThread(t.id); r.clearSelection(); }}>{t.messages[0]?.text} <span className="text-xs text-muted-foreground">· {t.messages.length} message(s)</span></button>)}
     {visible.map((s) => <ReviewSuggestionCard key={s.id} suggestion={s} number={suggestions.indexOf(s) + 1} />)}
-    {composing ? <form onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text })) { setText(""); setComposing(false); r.clearSelection(); } }}><textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} /><button className={button} disabled={!text.trim() || !!r.busy}>Add comment</button></form> : <button className={button} disabled={!!r.busy} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
+    {composing ? <form onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={button} disabled={!text.trim() || !!r.busy}>Add comment</button></form> : <button className={button} disabled={!!r.busy} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
   </div>;
 }
 export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs: OpenTab[] }) {
@@ -134,7 +161,9 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
   }, [doc]);
   const suggestions = session?.suggestions ?? [];
   const pending = suggestions.filter((s) => s.status === "pending");
-  const selectedIds = doc?.threads.filter((t) => t.status === "open" && !excluded.includes(t.id)).map((t) => t.id) ?? [];
+  // A shared document's comments live on the collab server; agentic review
+  // keeps its local session for now and plans from the prompt alone there.
+  const selectedIds = r.shared ? [] : doc?.threads.filter((t) => t.status === "open" && !excluded.includes(t.id)).map((t) => t.id) ?? [];
   const contextChanged = !!session && (JSON.stringify(references) !== JSON.stringify(session.references) || JSON.stringify([...selectedIds].sort()) !== JSON.stringify([...session.selectedIds].sort()));
   async function send() {
     setError("");
@@ -177,7 +206,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
 
       {!doc ? <>{recoverable.length > 0 && <section className="space-y-2"><strong className="text-sm">Recover unsaved reviews</strong>{recoverable.map((draft) => <button key={draft.id} className="review-button w-full flex-col items-start text-left" onClick={() => r.recoverDraft(draft.key, draft.snapshot)}><span className="line-clamp-2">{draft.snapshot.slice(0, 120) || "Untitled review"}</span><span>{draft.commentCount} comments · restore draft</span></button>)}</section>}</> : <>
       {session && <p className="break-all text-xs text-muted-foreground">Reviewing: {doc.key} · round {doc.round ?? 1} · full current draft</p>}
-      {(session || doc.threads.some((thread) => thread.status === "open")) && <details className="libera-review-comment-picker" open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>}
+      {!r.shared && (session || doc.threads.some((thread) => thread.status === "open")) && <details className="libera-review-comment-picker" open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>}
       {!!doc.previousRounds?.length && <details>
         <summary className="cursor-pointer text-xs text-muted-foreground">Previous rounds ({doc.previousRounds.length})</summary>
         {doc.previousRounds.map((round) => <details key={round.session.id} className="mt-2 rounded-lg border border-border p-2 text-xs">
@@ -234,4 +263,157 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       <p className="libera-chat-key-hint">Enter to send · Shift + Enter for a new line</p>
     </form>
   </aside>;
+}
+
+// ---- Shared documents (plan M2.1–M2.3, M2.6): authors, pending chips,
+// detached anchors and the one-time move of local comments.
+
+function useNow(intervalMs = 60_000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+function AuthorAvatar({ user, ai }: { user: UserSummary; ai?: boolean }) {
+  return <span aria-hidden className="review-comment-avatar inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white" style={{ background: user.color || "#64748b" }}>{ai ? <Sparkles size={10} /> : initials(user.displayName)}</span>;
+}
+
+function AuthorLine({ message, now }: { message: SharedReviewMessage; now: number }) {
+  const { author, actor, editedAt } = message.shared;
+  const label = commentAuthorLabel(actor, author);
+  const created = Date.parse(message.createdAt);
+  return <span className="review-comment-author flex min-w-0 items-center gap-1.5 text-[11px]" data-author-id={author.id}>
+    <AuthorAvatar user={author} ai={actor?.kind === "ai"} />
+    <span className="min-w-0 truncate font-semibold" style={{ color: author.color || undefined }} title={label}>{label}</span>
+    {Number.isFinite(created) && <span className="shrink-0 text-muted-foreground" title={new Date(created).toLocaleString()}>{timeAgo(Math.max(0, now - created))}</span>}
+    {editedAt && !message.shared.deleted && <span className="shrink-0 text-muted-foreground">· edited</span>}
+  </span>;
+}
+
+export function PendingChip({ pending, onRetry, onDiscard }: { pending: PendingInfo; onRetry: () => void; onDiscard: () => void }) {
+  if (pending.state === "failed") {
+    return <div role="alert" className="review-comment-failed mt-2 flex flex-wrap items-center gap-1.5 rounded-md bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+      <AlertTriangle aria-hidden size={12} /><span className="min-w-0 flex-1">Not sent: {pending.error ?? "the server refused it."}</span>
+      <button type="button" className={button} onClick={onRetry}>Retry</button>
+      <button type="button" className={button} onClick={onDiscard}>Discard</button>
+    </div>;
+  }
+  return <span className="review-comment-pending mt-1 inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" data-state={pending.state} title={pending.state === "queued" ? "Saved on this device. It is sent when you are back online." : "Sending to the shared notebook…"}>
+    <Clock aria-hidden size={10} /> {pending.state === "queued" ? "Pending" : "Sending…"}
+  </span>;
+}
+
+function SharedMessageView({ message, first, now, busy, onEdit, onDelete, onRetry, onDiscard }: { message: SharedReviewMessage; first: boolean; now: number; busy: boolean; onEdit: () => void; onDelete: () => void; onRetry: (commandId: string) => void; onDiscard: (commandId: string) => void }) {
+  const info = message.shared;
+  return <div className="review-comment-message space-y-1" data-message-id={message.id} data-pending={info.pending?.state ?? undefined}>
+    <div className="flex items-center gap-1">
+      <AuthorLine message={message} now={now} />
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        {info.canEdit && <button type="button" className="review-comment-icon" data-tone="blue" aria-label={first ? "Edit comment" : "Edit reply"} title={first ? "Edit comment" : "Edit reply"} disabled={busy} onClick={onEdit}><PencilLine aria-hidden size={14} /></button>}
+        {info.canDelete && !first && <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete reply" title="Delete reply" disabled={busy} onClick={onDelete}><Trash2 aria-hidden size={14} /></button>}
+      </span>
+    </div>
+    {info.deleted ? <p className="text-xs italic text-muted-foreground">This message was deleted.</p> : <MarkdownRenderer content={message.text} className="review-comment-body min-w-0 break-words text-[13px]" renderImages={false} />}
+    {info.pending && <PendingChip pending={info.pending} onRetry={() => onRetry(info.pending!.commandId)} onDiscard={() => onDiscard(info.pending!.commandId)} />}
+  </div>;
+}
+
+function SharedThreadCard({ thread, index, shared, selected, cardRef, reply, setReply, mentions, setMentions, editing, setEditing }: {
+  thread: SharedReviewThread; index: number; shared: SharedReviewState; selected: boolean; cardRef?: RefObject<HTMLElement | null>;
+  reply: string; setReply: (value: string) => void; mentions: string[]; setMentions: (ids: string[]) => void; editing: string | null; setEditing: (id: string | null) => void;
+}) {
+  const r = useMarkdownReview()!;
+  const now = useNow();
+  const info = thread.shared;
+  const first = thread.messages[0];
+  const me = shared.projection.me;
+  const canComment = !!me && shared.projection.role !== "viewer";
+  const deletedText = info.detached && info.detachReason === "deleted";
+  const candidates = selected && info.detached && info.canManage ? shared.reattachCandidates(thread.id) : [];
+  const retry = (commandId: string) => void r.action("retry", { commandId });
+  const discard = (commandId: string) => void r.action("discard", { commandId });
+  const status = info.status === "resolved" ? "resolved" : info.detached ? "detached" : "open";
+  return <article ref={cardRef} data-anchor-end={thread.anchor.state === "attached" ? thread.anchor.end : undefined} data-selected={selected} data-detached={info.detached} data-thread-id={thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
+    <button className="w-full text-left" aria-expanded={selected} onClick={() => { r.selectThread(selected ? null : thread.id); setReply(""); setMentions([]); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
+      <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} />}</span><span className="text-[11px] capitalize text-muted-foreground">{status}</span></span>
+      <span className="my-2 line-clamp-3 border-l-2 border-[#91a4c566] pl-2 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
+      {!selected && <span className="block line-clamp-4 whitespace-pre-wrap">{first?.shared.deleted ? "This comment was deleted." : first?.text}</span>}
+      {!selected && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
+    </button>
+    {info.pending && <PendingChip pending={info.pending} onRetry={() => retry(info.pending!.commandId)} onDiscard={() => discard(info.pending!.commandId)} />}
+    {!selected && !info.pending && first?.shared.pending && <PendingChip pending={first.shared.pending} onRetry={() => retry(first.shared.pending!.commandId)} onDiscard={() => discard(first.shared.pending!.commandId)} />}
+    {info.detached && <div className="review-comment-detached mt-2 space-y-1.5 rounded-md border border-dashed border-input p-2 text-xs" role="note">
+      <p>{deletedText ? "The text this comment was attached to was deleted." : info.detachReason === "missing" ? "This comment's place in the text has not synced yet." : "This comment's place in the text could not be found."}</p>
+      {info.canManage && <button type="button" className={button} disabled={!r.selection} title={r.selection ? "Attach this comment to the selected passage" : "Select a passage in the editor first"} onClick={() => void r.action("reattach", { threadId: thread.id, range: r.selection?.range })}><Link2 aria-hidden size={14} /> Reattach to selection</button>}
+      {candidates.length > 0 && <div className="space-y-1">
+        <p className="text-muted-foreground">Found similar text:</p>
+        {candidates.map((candidate) => <button key={`${candidate.start}:${candidate.end}`} type="button" className="review-button w-full flex-col items-start text-left" onClick={() => void r.action("reattach", { threadId: thread.id, range: { start: candidate.start, end: candidate.end } })}>
+          <span className="line-clamp-2 italic">{shared.projection.text.slice(candidate.start, candidate.end)}</span><span>Attach here</span>
+        </button>)}
+      </div>}
+    </div>}
+    {selected && <div className="mt-2 space-y-3">
+      {thread.messages.map((m, i) => <SharedMessageView key={m.id} message={m} first={i === 0} now={now} busy={!!r.busy} onEdit={() => { setEditing(m.id); setReply(m.text); }} onDelete={() => void r.action("delete-message", { messageId: m.id })} onRetry={retry} onDiscard={discard} />)}
+      {canComment && <>
+        <MentionTextarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply… Type @ to mention someone"} rows={2} projectId={shared.projectId} selfId={me?.id} value={reply} onChange={setReply} onMentionsChange={setMentions} />
+        <div className="review-comment-actions">
+          <button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!reply.trim() || !!r.busy} onClick={async () => { if (await r.action(editing ? "edit" : "reply", { threadId: thread.id, messageId: editing, text: reply, mentions })) { setReply(""); setMentions([]); setEditing(null); } }}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
+          {info.canManage && <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={!!r.busy} onClick={() => void r.action("resolve", { threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>}
+          {info.canManage && !info.detached && <button type="button" className="review-comment-icon" data-tone="violet" aria-label="Reattach to selection" title="Reattach to selection" disabled={!!r.busy || !r.selection} onClick={() => void r.action("reattach", { threadId: thread.id, range: r.selection?.range })}><Link2 aria-hidden size={16} /></button>}
+          {info.canManage && <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete comment" title="Delete comment" disabled={!!r.busy} onClick={() => void r.action("delete", { threadId: thread.id })}><Trash2 aria-hidden size={16} /></button>}
+        </div>
+      </>}
+    </div>}
+  </article>;
+}
+
+const migrationSummaries = new Map<string, Promise<LocalCommentsSummary>>();
+
+/** Load errors, and for the owner the one-time move of comments made before sharing. */
+function SharedCommentsNotices({ shared }: { shared: SharedReviewState }) {
+  const r = useMarkdownReview()!;
+  const { projection, projectId } = shared;
+  const owner = projection.role === "owner";
+  const [summary, setSummary] = useState<{ projectId: string; value: LocalCommentsSummary } | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    if (!owner) return;
+    let live = true;
+    let request = migrationSummaries.get(projectId);
+    if (!request) {
+      request = localCommentsSummary(projectId);
+      migrationSummaries.set(projectId, request);
+      request.catch(() => migrationSummaries.delete(projectId));
+    }
+    request.then((value) => { if (live) setSummary({ projectId, value }); }, () => undefined);
+    return () => { live = false; };
+  }, [owner, projectId]);
+  const local = summary?.projectId === projectId ? summary.value : null;
+  async function move() {
+    setMoving(true);
+    setMessage("");
+    try {
+      const result = await migrateLocalComments(projectId);
+      migrationSummaries.delete(projectId);
+      setSummary({ projectId, value: { documents: 0, threads: 0 } });
+      setMessage(`Moved ${result.threads} ${result.threads === 1 ? "comment" : "comments"} to the shared notebook${result.detached ? ` (${result.detached} need reattaching: their text changed)` : ""}.`);
+      await r.reload();
+    } catch (cause) {
+      setMessage(describeError(cause));
+    } finally {
+      setMoving(false);
+    }
+  }
+  return <>
+    {projection.error && !projection.loaded && <p role="alert" className="px-1 text-xs text-destructive">Shared comments could not be loaded: {projection.error} <button className={button} onClick={() => void r.reload()}>Retry</button></p>}
+    {owner && local && local.threads > 0 && <div className="libera-panel-card space-y-2 p-3 text-xs">
+      <p>{local.threads} {local.threads === 1 ? "comment" : "comments"} from before this notebook was shared {local.threads === 1 ? "is" : "are"} still only on this device.</p>
+      <button type="button" className={button} disabled={moving} onClick={() => void move()}><CloudUpload aria-hidden size={14} /> {moving ? "Moving…" : "Move existing comments to the shared notebook"}</button>
+    </div>}
+    {message && <p role="status" className="px-1 text-xs text-muted-foreground">{message}</p>}
+  </>;
 }
