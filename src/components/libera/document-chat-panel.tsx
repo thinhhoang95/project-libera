@@ -23,6 +23,7 @@ import { apiRequest } from "./api-client";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 import { AGENT_PERMISSION_LABELS, AGENT_PERMISSIONS, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -85,6 +86,13 @@ const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
 const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
 const AGENT_WEB_SEARCH_STORAGE_KEY = "libera.agentWebSearch";
 const isStoredFlag = (value: unknown): value is "true" | "false" => value === "true" || value === "false";
+/** The agent skill a Fact-check citations request preloads (src/lib/agent/skills/fact-check-citations.ts). */
+const FACT_CHECK_SKILL = "fact-check-citations";
+
+/** The first message of a run started by a Fact-check citations button. */
+export function factCheckPrompt(path: string) {
+  return `Fact-check the citations in ${path}.`;
+}
 
 function readStoredPreference<T>(key: string, accept: (value: unknown) => value is T): T | undefined {
   try {
@@ -438,7 +446,45 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
-  async function send(retryMessageId?: string, edit?: { id: string; text: string }) {
+  // A Fact-check citations button (References panel, Markdown toolbars) asks
+  // for an Agent run: open the panel, start a new Agent chat with the request
+  // as its prompt, and send it with the fact-check skill preloaded.
+  const factCheckRequestRef = useRef<{ chatId: string; prompt: string } | null>(null);
+  const sendRef = useRef<typeof send | null>(null);
+  // Before the effect below, so it sends with this render's chat and settings.
+  useEffect(() => { sendRef.current = send; });
+  useEffect(() => {
+    function requestFactCheck(event: Event) {
+      const detail = (event as CustomEvent<FactCheckRequestDetail>).detail;
+      if (!detail?.path || !store) return;
+      onCollapsedChange(false);
+      review?.setChatReview(false);
+      if (requestRef.current) { setError("Wait for the current reply to finish, or stop it, before starting a fact-check."); return; }
+      if (typeof detail.webSearch === "boolean") setAllowWebSearch(detail.webSearch);
+      const prompt = factCheckPrompt(detail.path);
+      const active = store.chats.find((item) => item.id === store.activeId);
+      // An untouched chat is reused rather than left behind empty.
+      const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length ? active : null;
+      const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt };
+      factCheckRequestRef.current = { chatId: next.id, prompt };
+      setStore((current) => current && (reuse
+        ? { ...current, chats: current.chats.map((item) => item.id === next.id ? next : item) }
+        : { chats: [next, ...current.chats], activeId: next.id }));
+      setError("");
+      setNotice("");
+    }
+    window.addEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
+    return () => window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
+  }, [store, defaultPermission, onCollapsedChange, review]);
+
+  useEffect(() => {
+    const request = factCheckRequestRef.current;
+    if (!request || !chat || pending || chat.id !== request.chatId || chat.mode !== "agent" || chat.prompt !== request.prompt) return;
+    factCheckRequestRef.current = null;
+    void sendRef.current?.(undefined, undefined, { skill: FACT_CHECK_SKILL });
+  }, [chat, pending]);
+
+  async function send(retryMessageId?: string, edit?: { id: string; text: string }, options: { skill?: string } = {}) {
     const replay = Boolean(retryMessageId || edit);
     if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length && !pendingPhoto) || requestRef.current || loadingPhotos || loadingFiles) return;
     if (!replay && pendingPhoto && (chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) { setError(`Attach up to ${MAX_CHAT_PHOTOS} photos per message, including the one you are viewing.`); return; }
@@ -535,6 +581,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             messages: requestMessages(messages, true),
             activeFile: activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path : undefined,
             openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch,
+            ...(options.skill ? { skill: options.skill } : {}),
           }),
           signal: controller.signal,
         });

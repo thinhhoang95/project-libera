@@ -26,6 +26,7 @@ import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
+import { FactCheckButton } from "@/components/libera/markdown-toolbar";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
@@ -751,6 +752,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
+        <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
