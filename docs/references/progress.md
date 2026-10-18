@@ -28,9 +28,9 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| core | `references/core` | BibTeX/BibLaTeX, RIS, CSL-JSON parse and serialize; names; normalization; identifiers; dedupe scoring | ☐ |
-| syntax | `references/syntax` | Citation grammar, scanner, serializer, trigger detection, key rewrite; micromark/mdast extension | ☐ |
-| storage | `references/storage` | Library storage and transactions; library API; attachments follow renames, moves, copies, archive, delete; re-attach by hash; client store | ☐ |
+| core | `references/core` | BibTeX/BibLaTeX, RIS, CSL-JSON parse and serialize; names; normalization; identifiers; dedupe scoring | ◐ |
+| syntax | `references/syntax` | Citation grammar, scanner, serializer, trigger detection, key rewrite; micromark/mdast extension | ◐ |
+| storage | `references/storage` | Library storage and transactions; library API; attachments follow renames, moves, copies, archive, delete; re-attach by hash; client store | ☑ merged 1678274; suite 585 tests, only the baseline 4 fail + 2 cancelled |
 
 ## Wave 2: Markdown integration and panel
 
@@ -55,7 +55,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 |---|---|---|---|
 | factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☐ |
 | pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☐ |
-| scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ☐ |
+| scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ◐ |
 | syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☐ |
 
 ## Deferred
