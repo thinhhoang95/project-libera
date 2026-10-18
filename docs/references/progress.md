@@ -79,9 +79,9 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ◐ |
-| resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ◐ resolution-ui |
+| resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ☑ resolution-ui merged f1b5afd |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
-| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ☐ moves-ui (move toast + draft map, rename-key rewrite dialog, formatted bibliography menu; after resolution-ui) |
+| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ◐ moves-ui (move toast + draft map, rename-key rewrite dialog, formatted bibliography menu, preference defaults endpoint, identifier provenance, untitled fact-check guard) |
 
 ## Wave 4: fact-check and later items
 
