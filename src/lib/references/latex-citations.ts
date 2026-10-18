@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import type { ElementContent } from "hast";
 import { bibliographyItems, isLabelledBibliography, loadNotebookStyle } from "@/lib/references/bibliography-export";
+import { biblatexBibliography, biblatexCitation, biblatexStyleFor, genericBiblatexStyle } from "@/lib/references/biblatex-export";
 import { citedKeys, scanCitations } from "@/lib/references/citation-syntax";
 import { citationEntriesForDocument, formatCitationDocument, loadCitationFormatter, sanitizeCitationHtml } from "@/lib/references/format";
 import { encodeLatex } from "@/lib/references/latex-text";
@@ -35,7 +36,20 @@ export type LatexCitationPlan = {
   pattern: RegExp;
   /** The random letters every placeholder of this export contains. */
   nonce: string;
+  /**
+   * Set for the biblatex mode: placeholders become biblatex commands, the
+   * bibliography `\printbibliography`, and the export writes `bib` to
+   * `bibFileName` and loads biblatex with `style` (or `fallbackStyle` when
+   * the TeX installation lacks it).
+   */
+  biblatex?: { style: string; fallbackStyle: string; bibFileName: string; bib: string };
 };
+
+/** How the LaTeX export writes citations: formatted text (the default) or biblatex commands with a `.bib` file. */
+export type LatexCitationMode = "formatted" | "biblatex";
+
+/** The `.bib` file name of the biblatex mode, next to the generated `document.tex`. */
+export const LATEX_EXPORT_BIB_FILE = "document.bib";
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const INDEX_LETTERS = 4;
@@ -131,20 +145,43 @@ async function libraryFor(notebook: string | null): Promise<ReferenceLibrary> {
  * when the document has no citations: the export then runs exactly as
  * before. Without a notebook, citations are kept as their source text.
  */
-export async function prepareLatexCitations(markdown: string, notebook: string | null): Promise<LatexCitationPlan | null> {
+export async function prepareLatexCitations(markdown: string, notebook: string | null, { mode = "formatted" }: { mode?: LatexCitationMode } = {}): Promise<LatexCitationPlan | null> {
   const occurrences = scanCitations(markdown);
   if (!occurrences.length) return null;
   if (occurrences.length > MAX_CITATIONS) throw new Error(`The document has more than ${MAX_CITATIONS.toLocaleString("en-US")} citations.`);
 
   const library = await libraryFor(notebook);
-  const [style] = await Promise.all([loadNotebookStyle(notebook ?? "", library.style), loadCitationFormatter()]);
-  const formatted = formatCitationDocument({
-    citations: occurrences.map((occurrence) => occurrence.citation),
-    entries: citationEntriesForDocument(library, citedKeys(markdown)),
-    style,
-    format: "html",
-  });
+  const entries = citationEntriesForDocument(library, citedKeys(markdown));
+  const citationList = occurrences.map((occurrence) => occurrence.citation);
+  // biblatex needs at least one resolved work; otherwise citations stay as their source text, as without a library.
+  if (mode === "biblatex" && Object.keys(entries).length) {
+    const styleXml = await loadNotebookStyle(notebook ?? "", library.style);
+    const bib = biblatexBibliography(citationList, entries);
+    return placeholderPlan(markdown, occurrences, (index) => biblatexCitation(citationList[index], entries), "\\printbibliography", {
+      style: biblatexStyleFor(library.style, styleXml),
+      fallbackStyle: genericBiblatexStyle(styleXml),
+      bibFileName: LATEX_EXPORT_BIB_FILE,
+      bib: bib.text,
+    });
+  }
 
+  const [style] = await Promise.all([loadNotebookStyle(notebook ?? "", library.style), loadCitationFormatter()]);
+  const formatted = formatCitationDocument({ citations: citationList, entries, style, format: "html" });
+  return placeholderPlan(markdown, occurrences, (index) => {
+    const latex = citationHtmlToLatex(formatted.citations[index]);
+    // "[1]" right after \item or \\ would be read as an optional argument.
+    return latex.startsWith("[") ? `{${latex}}` : latex;
+  }, bibliographyHtmlToLatex(formatted.bibliography));
+}
+
+/** Replace each citation (and the bibliography marker) with a placeholder; `latexFor` gives the LaTeX each one restores to. */
+function placeholderPlan(
+  markdown: string,
+  occurrences: ReturnType<typeof scanCitations>,
+  latexFor: (index: number) => string,
+  bibliography: string,
+  biblatex?: LatexCitationPlan["biblatex"],
+): LatexCitationPlan {
   // A nonce the document does not contain keeps placeholders apart from its own text.
   let nonce = randomLetters(6);
   while (markdown.includes(nonce)) nonce = randomLetters(6);
@@ -153,9 +190,7 @@ export async function prepareLatexCitations(markdown: string, notebook: string |
   let last = 0;
   occurrences.forEach((occurrence, index) => {
     const placeholder = `ZCITE${nonce}${indexLetters(index)}Z`;
-    const latex = citationHtmlToLatex(formatted.citations[index]);
-    // "[1]" right after \item or \\ would be read as an optional argument.
-    citations.set(placeholder, latex.startsWith("[") ? `{${latex}}` : latex);
+    citations.set(placeholder, latexFor(index));
     output += markdown.slice(last, occurrence.start) + placeholder;
     last = occurrence.end;
   });
@@ -170,9 +205,10 @@ export async function prepareLatexCitations(markdown: string, notebook: string |
     markdown: output,
     citations,
     bibliographyPlaceholder,
-    bibliography: bibliographyHtmlToLatex(formatted.bibliography),
+    bibliography,
     pattern: new RegExp(`Z(?:CITE${nonce}[A-Z]{${INDEX_LETTERS}}|REFS${nonce})Z`, "g"),
     nonce,
+    ...(biblatex ? { biblatex } : {}),
   };
 }
 
