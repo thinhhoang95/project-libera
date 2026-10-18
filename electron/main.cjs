@@ -225,6 +225,11 @@ function normalizeSmartPaste(value) {
   return value === true;
 }
 
+// The Markdown Source editor: the textarea ("classic", default) or CodeMirror (beta).
+function normalizeSourceEditor(value) {
+  return value === "codemirror" ? "codemirror" : "classic";
+}
+
 function normalizeThemePreference(themePreference) {
   return THEME_PREFERENCES.has(themePreference) ? themePreference : "system";
 }
@@ -356,6 +361,7 @@ function normalizedImportedPreferences(input) {
     themePreference: normalizeThemePreference(input.themePreference),
     yourName: normalizeYourName(input.yourName),
     smartPaste: normalizeSmartPaste(input.smartPaste),
+    sourceEditor: normalizeSourceEditor(input.sourceEditor),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -464,6 +470,7 @@ function getConfigStatus(config = readConfig()) {
     themePreference: normalizeThemePreference(config.themePreference),
     yourName: normalizeYourName(config.yourName),
     smartPaste: normalizeSmartPaste(config.smartPaste),
+    sourceEditor: normalizeSourceEditor(config.sourceEditor),
     dataDir: typeof config.dataDir === "string" ? config.dataDir : "",
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
@@ -691,6 +698,7 @@ function validateSetupInput(input, existingConfig) {
     themePreference: normalizeThemePreference(input?.themePreference),
     yourName: normalizeYourName(input?.yourName),
     smartPaste: normalizeSmartPaste(input?.smartPaste),
+    sourceEditor: normalizeSourceEditor(input?.sourceEditor),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -801,6 +809,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         themePreference: validated.themePreference,
         yourName: validated.yourName,
         smartPaste: validated.smartPaste,
+        sourceEditor: validated.sourceEditor,
         dataDir: validated.dataDir,
         markdownInlineMathMarkers: validated.markdownInlineMathMarkers,
         markdownBlockMathMarkers: validated.markdownBlockMathMarkers,
@@ -1085,6 +1094,8 @@ async function openConfigurationWindow(section = "") {
           ? JSON.stringify(updatedConfig.latexSnippets) !== JSON.stringify(previousConfig.latexSnippets)
         : key === "smartPaste"
           ? updatedConfig.smartPaste !== normalizeSmartPaste(previousConfig.smartPaste)
+        : key === "sourceEditor"
+          ? updatedConfig.sourceEditor !== normalizeSourceEditor(previousConfig.sourceEditor)
         : updatedConfig[key] !== previousConfig[key]),
     );
     if (!requiresRestart) return;
@@ -1700,6 +1711,7 @@ async function startNextServer(config) {
     LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
+    LIBERA_SOURCE_EDITOR: normalizeSourceEditor(config.sourceEditor),
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
     LIBERA_MARKDOWN_BLOCK_MATH_MARKERS: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(

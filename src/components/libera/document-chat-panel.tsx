@@ -281,7 +281,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       let text = "";
       if (activeTab?.file.fileType === "markdown" && target instanceof HTMLTextAreaElement && target.classList.contains("markdown-editor-input")) {
         text = target.value.slice(target.selectionStart, target.selectionEnd);
-      } else if ((activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text") && target.closest("[data-libera-code-editor]")) {
+      } else if ((activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text" || activeTab?.file.fileType === "markdown") && target.closest("[data-libera-code-editor]")) {
+        // CodeMirror editors, including the CodeMirror Markdown Source editor.
         text = readRegisteredEditorSelection(target) ?? "";
       } else if (activeTab?.file.fileType === "markdown" && target.closest(".libera-tiptap")) {
         const selection = window.getSelection();

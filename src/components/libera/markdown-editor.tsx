@@ -138,7 +138,7 @@ const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
 
 /** The smallest range of `current` that must be replaced to produce `next`,
  * so whole-document edits land in the textarea as one compact undo step. */
-function getChangedTextRange(current: string, next: string) {
+export function getChangedTextRange(current: string, next: string) {
   let prefixLength = 0;
   while (
     prefixLength < current.length &&
@@ -162,7 +162,7 @@ function getChangedTextRange(current: string, next: string) {
   };
 }
 
-type HeadingLevelChangeDirection = "indent" | "unindent";
+export type HeadingLevelChangeDirection = "indent" | "unindent";
 
 type HighlightChunk = {
   className?: string;
@@ -183,19 +183,19 @@ type HeadingLevelChangeResult = {
   nextValue: string;
 };
 
-type MarkdownFormat = {
+export type MarkdownFormat = {
   after: string;
   before: string;
   placeholder?: string;
 };
 
-const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
+export const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
   b: { before: "**", after: "**" },
   i: { before: "_", after: "_" },
   u: { before: "<u>", after: "</u>" },
 };
 
-function findMarkdownImageInText(
+export function findMarkdownImageInText(
   value: string,
   start: number,
   end: number,
@@ -240,7 +240,7 @@ function isImageFile(file: File) {
   return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION_REGEX.test(file.name);
 }
 
-function hasImageDragItem(dataTransfer: DataTransfer) {
+export function hasImageDragItem(dataTransfer: DataTransfer) {
   if (dataTransfer.files.length) {
     return Array.from(dataTransfer.files).some(isImageFile);
   }
@@ -252,7 +252,7 @@ function hasImageDragItem(dataTransfer: DataTransfer) {
   );
 }
 
-function getDroppedImageFiles(dataTransfer: DataTransfer) {
+export function getDroppedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files).filter(isImageFile);
 }
 
@@ -277,7 +277,7 @@ function normalizeClipboardImageFile(file: File) {
   });
 }
 
-function getClipboardImageFiles(dataTransfer: DataTransfer) {
+export function getClipboardImageFiles(dataTransfer: DataTransfer) {
   const files = Array.from(dataTransfer.files)
     .filter(isImageFile)
     .map(normalizeClipboardImageFile)
@@ -336,7 +336,7 @@ function transformSelectionOffset(
   return offset + delta;
 }
 
-function changeSelectedHeadingLevels(
+export function changeSelectedHeadingLevels(
   value: string,
   start: number,
   end: number,

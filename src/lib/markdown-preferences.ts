@@ -10,7 +10,15 @@ export type MarkdownPreferences = {
   pdfExportBaseFontSize: number;
   pdfExportBaseLineHeight: number;
   smartPaste: boolean;
+  /** Which Markdown Source editor to mount; CodeMirror is in beta (D8). */
+  sourceEditor: MarkdownSourceEditorKind;
 };
+
+export type MarkdownSourceEditorKind = "classic" | "codemirror";
+
+export function normalizeMarkdownSourceEditor(value: unknown): MarkdownSourceEditorKind {
+  return value === "codemirror" ? "codemirror" : "classic";
+}
 
 export const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
 export const MAX_MARKDOWN_EDITOR_FONT_FAMILY_LENGTH = 256;
@@ -128,6 +136,7 @@ export function normalizeMarkdownPreferences(
     pdfExportBaseFontSize?: unknown;
     pdfExportBaseLineHeight?: unknown;
     smartPaste?: unknown;
+    sourceEditor?: unknown;
   } = {},
 ): MarkdownPreferences {
   return {
@@ -149,5 +158,6 @@ export function normalizeMarkdownPreferences(
       input.pdfExportBaseLineHeight,
     ),
     smartPaste: input.smartPaste === true || input.smartPaste === "1" || input.smartPaste === "true",
+    sourceEditor: normalizeMarkdownSourceEditor(input.sourceEditor),
   };
 }
