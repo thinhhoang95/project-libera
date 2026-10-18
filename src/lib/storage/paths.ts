@@ -190,6 +190,11 @@ export function notebookSystemDirectoryPath(name: string) {
   return notebookSystemPath(assertSafeSegment(name, "Notebook name"));
 }
 
+/** The notebook's reference library (docs/references/plan.md §2). */
+export function referenceLibraryPath(name: string) {
+  return notebookSystemPath(assertSafeSegment(name, "Notebook name"), "references", "library.json");
+}
+
 export function notebookPath(name: string) {
   return notebookRootPath(assertSafeSegment(name, "Notebook name"));
 }

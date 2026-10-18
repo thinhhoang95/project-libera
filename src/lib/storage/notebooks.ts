@@ -1,4 +1,5 @@
 import { moveReviewPath, deleteReviewPath } from "./markdown-reviews";
+import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { randomInt } from "node:crypto";
 import { NOTEBOOK_ILLUSTRATION_IDS } from "@/lib/notebook-illustrations";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
@@ -118,6 +119,8 @@ export async function renameNotebook(
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
+  // The notebook's own library moves with its folder; pointers into it are renamed here.
+  await moveReferenceAttachments(currentName, nextName);
   await renameFileMetadataPathPrefix(currentName, nextName);
   if (currentName !== nextName) notifySearchChanges();
 
@@ -140,6 +143,8 @@ export async function deleteNotebook(name: string) {
   await removeNotebookViewOption(name);
   await removeNotebookPanelExpandedPathPrefix(name);
   await deleteReviewPath(name);
+  // The notebook's own library was deleted with its folder; other libraries lose pointers into it.
+  await detachReferenceAttachments(assertSafeSegment(name, "Notebook name"));
   await removeFileMetadataPathPrefix(name);
   notifySearchChanges();
 
