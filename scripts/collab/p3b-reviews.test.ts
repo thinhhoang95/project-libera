@@ -47,7 +47,9 @@ function Probe({ selection }: { selection: { start: number; end: number } }) {
   return null;
 }
 const flush = async (rounds = 3) => { for (let index = 0; index < rounds; index++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); }); };
-const button = (root: ParentNode, text: string) => [...root.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === text);
+// Matches the visible text, or the accessible label of an icon-only button.
+const button = (root: ParentNode, text: string) =>
+  [...root.querySelectorAll<HTMLButtonElement>("button")].find((element) => element.textContent?.trim() === text || element.getAttribute("aria-label") === text);
 
 /**
  * The real UI in a window of its own on `client`'s host (its own registry
@@ -115,8 +117,8 @@ test("review requests: selection scope, approvals bound to revisions, outdated, 
 
     await t.test("Request review… with the selection: an anchored range scope", async () => {
       mounted = await mount(alice, doc, (window) => [createElement(Probe, { key: "probe", selection: { start, end: start + SCOPE.length } }), createElement(RequestReviewButton, { key: "request", tabId: window.tabId })]);
-      await until(async () => { await flush(1); return !!button(mounted!.container, "Request review…"); }, "the tab bar button for an owner");
-      await act(async () => { button(mounted!.container, "Request review…")!.click(); });
+      await until(async () => { await flush(1); return !!button(mounted!.container, "Request review"); }, "the tab bar button for an owner");
+      await act(async () => { button(mounted!.container, "Request review")!.click(); });
       await until(async () => { await flush(1); return [...document.querySelectorAll("form[aria-label=\"Review request\"] label")].some((label) => label.textContent?.includes("Bob")); }, "the dialog with the members");
       const form = document.querySelector<HTMLFormElement>('form[aria-label="Review request"]')!;
       const radios = form.querySelectorAll<HTMLInputElement>('input[type="radio"]');

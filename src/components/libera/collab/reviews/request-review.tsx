@@ -29,12 +29,13 @@ export function RequestReviewButton({ tabId }: { tabId?: string }) {
   return <>
     <button
       type="button"
-      className="inline-flex h-9 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
-      title="Ask collaborators to review this document"
+      className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+      title="Request review…"
+      aria-label="Request review"
       // The editor's selection is read before focus moves to the dialog.
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => setOpen({ selection: review?.editorSelection() ?? null })}
-    ><ClipboardCheck aria-hidden size={15} />Request review…</button>
+    ><ClipboardCheck aria-hidden size={16} /></button>
     {open ? <RequestReviewDialog key={tabId} session={session} selection={open.selection} onClose={() => setOpen(null)} /> : null}
   </>;
 }
