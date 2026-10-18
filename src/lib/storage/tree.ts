@@ -1,5 +1,6 @@
 import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
 import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
+import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -360,6 +361,8 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
   }
 
   await populateRelatedNotebooks(notebooks);
+  // Re-attach reference files moved outside Libera, in the background.
+  void scheduleReferenceReattach();
 
   return {
     archiveIncluded: showArchive,

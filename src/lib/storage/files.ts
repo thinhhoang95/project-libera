@@ -1,5 +1,6 @@
 import { deletePdfAnnotationDirectory, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
+import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -186,6 +187,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
@@ -259,6 +261,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
     ]),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
@@ -323,6 +326,7 @@ export async function archiveFolder(relativePath: string) {
     markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
   notifySearchChanges();
@@ -350,6 +354,7 @@ export async function deleteFolder(relativePath: string) {
     recursive: true,
   });
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
+  await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
   await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
@@ -405,6 +410,7 @@ export async function moveFileToDirectory(
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
@@ -445,6 +451,7 @@ export async function archiveFile(relativePath: string) {
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
@@ -487,6 +494,7 @@ export async function copyFileToDirectory(
   );
 
   await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
+  // A copy is a new file: no reference is attached to it, and the original keeps its references.
   notifySearchChanges([relativeFilePath(destination.notebook, nextParts)]);
   return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
 }
@@ -521,6 +529,7 @@ export async function deleteFile(relativePath: string) {
     });
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
+  await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
