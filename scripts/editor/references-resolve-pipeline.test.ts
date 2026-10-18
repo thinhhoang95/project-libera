@@ -354,3 +354,25 @@ test("other notes get a proposed entry from front matter, heading and first sect
   assert.equal(plain.candidates[0].csl.type, "manuscript");
   assert.equal(plain.candidates[0].status, "needs-review");
 });
+
+test("an arXiv preprint without a published version stays a preprint, whatever DOI OpenAlex lists", async () => {
+  const feed = `<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom"><entry><id>http://arxiv.org/abs/1706.03762v7</id><title>Attention Is All You Need</title><published>2017-06-12T17:57:34Z</published><summary>The dominant sequence transduction models.</summary><author><name>Ashish Vaswani</name></author><author><name>Noam Shazeer</name></author></entry></feed>`;
+  const routes: Route[] = [
+    { match: (url) => url.host === "export.arxiv.org", respond: () => new Response(feed, { headers: { "content-type": "application/atom+xml" } }) },
+    { match: (url) => url.host === "api.openalex.org" && decodeURIComponent(url.pathname) === "/works/doi:10.48550/arxiv.1706.03762", respond: () => Response.json({
+      id: "https://openalex.org/W2626778328", doi: "https://doi.org/10.65215/2q58a426", title: "Attention Is All You Need", type: "preprint", publication_year: 2017,
+      locations: [
+        { id: "doi:10.65215/2q58a426", doi: "https://doi.org/10.65215/2q58a426", version: "acceptedVersion", is_published: false, source: null },
+        { id: "pmh:oai:arXiv.org:1706.03762", doi: null, landing_page_url: "http://arxiv.org/abs/1706.03762", version: "submittedVersion", is_published: false, source: { display_name: "arXiv (Cornell University)", type: "repository" } },
+      ],
+    }) },
+  ];
+  const log: FetchLog = [];
+  const [candidate] = (await resolveInput("1706.03762", testOptions({ routes, log }))).candidates;
+  assert.ok(!log.some((request) => request.url.includes("10.65215")), "a repost DOI is not looked up as the published version");
+  assert.equal(candidate.csl.type, "article");
+  assert.equal(candidate.csl.DOI, "10.48550/arxiv.1706.03762");
+  assert.equal(candidate.identifiers?.openalex, "W2626778328");
+  assert.equal(candidate.versions, undefined, "a preprint does not link to itself");
+  assert.equal(candidate.provenance?.title?.source, "arxiv");
+});

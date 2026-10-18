@@ -158,7 +158,8 @@ export function combineInputs(primary: ReferenceEntryInput, others: ReferenceEnt
   if (identifiers.isbn && !identifiers.isbn.length) delete identifiers.isbn;
   // A link to the work's own DOI says nothing. (A published entry keeps its
   // arXiv ID in `identifiers` and also links it as `preprint-of`.)
-  const ownVersions = versions.filter((link) => link.identifier !== identifiers.doi);
+  const isPreprintItself = !!identifiers.arxiv && (!identifiers.doi || identifiers.doi.startsWith("10.48550/arxiv."));
+  const ownVersions = versions.filter((link) => link.identifier !== identifiers.doi && !(isPreprintItself && link.identifier === `arXiv:${identifiers.arxiv}`));
   return compactInput(normalizeEntryInput({
     ...primary,
     csl,

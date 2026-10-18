@@ -167,7 +167,8 @@ export function titleAppearsInText(title: string | undefined, text: string) {
 export function scoreReferenceText(text: string, candidate: CslItem) {
   const title = titleSimilarityInText(candidate.title, text, 400);
   const normalized = ` ${normalizeTitleForMatch(text)} `;
-  const families = (candidate.author ?? candidate.editor ?? []).slice(0, 3).map(familyKey).filter(Boolean);
+  // "Smith et al." names only the first author; otherwise up to three are compared.
+  const families = (candidate.author ?? candidate.editor ?? []).slice(0, /\bet\s+al\b/i.test(text) ? 1 : 3).map(familyKey).filter(Boolean);
   const authors = families.length ? families.filter((family) => normalized.includes(` ${family} `) || normalized.replace(/ /g, "").includes(family)).length / families.length : undefined;
   const year = cslYear(candidate);
   const years = [...text.matchAll(/\b(1[5-9]\d{2}|20\d{2})\b/g)].map((match) => Number(match[1]));

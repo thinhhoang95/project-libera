@@ -79,8 +79,9 @@ export async function lookupArxiv(idText: string, env: ResolveEnvironment): Prom
   if (!publishedDoi) {
     openalex = await attempt(env, "OpenAlex", () => fetchOpenAlexWork({ arxiv }, env.ctx));
     const link = openalex?.versions?.find((version) => version.relation === "published-as");
+    // Only a location OpenAlex marks as published counts: the work's own DOI
+    // can be a repost of the preprint under another prefix.
     publishedDoi = link ? normalizeDoi(link.identifier) : undefined;
-    if (!publishedDoi && openalex?.identifiers.doi && !openalex.identifiers.doi.startsWith("10.48550/arxiv.")) publishedDoi = openalex.identifiers.doi;
   }
   const published = publishedDoi ? await lookupDoi(publishedDoi, env) : null;
   if (published) {

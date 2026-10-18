@@ -342,3 +342,9 @@ test("reference preferences come from the config file, else the environment; the
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("reference strings with “et al.” are matched on their first author", () => {
+  const work = { type: "paper-conference" as const, title: "Attention is all you need", author: [{ family: "Vaswani" }, { family: "Shazeer" }, { family: "Parmar" }], issued: { "date-parts": [[2017]] as [[number]] } };
+  assert.ok(scoreReferenceText("Vaswani et al. Attention is all you need. NeurIPS 2017.", work) >= MATCH_THRESHOLD);
+  assert.ok(scoreReferenceText("Vaswani, A. Attention is all you need. NeurIPS 2017.", work) < MATCH_THRESHOLD, "without “et al.” the other authors are expected too");
+});
