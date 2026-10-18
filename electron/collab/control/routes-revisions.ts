@@ -7,7 +7,9 @@
 // of being posted: it is sent when a window closes a tab, often while the
 // network is gone or the window itself is going away, and the queue keeps it
 // until the server has it. The server shares one checkpoint per state, so
-// several windows ending their sessions at once create one revision.
+// several windows ending their sessions at once create one revision. The
+// server checkpoints the state it has, so the command waits (briefly) for
+// the document's last local edits to be acknowledged first.
 
 import { randomBytes } from "node:crypto";
 
@@ -55,7 +57,31 @@ export function restoreBody(value: unknown): RestoreRequest {
   return { revisionId, range: { start: start as number, end: end as number } };
 }
 
-export function registerRevisionRoutes(router: Router, runtime: CollabRuntime): void {
+/** How long a session-end checkpoint waits for the document's unacknowledged edits. */
+const SESSION_END_WAIT_MS = 15_000;
+
+function whenAcknowledged(runtime: CollabRuntime, docId: string, timeoutMs: number): Promise<void> {
+  const hub = runtime.host.registry.get(docId);
+  if (!hub || hub.pendingCount === 0 || !hub.getStatus().connected) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, timeoutMs);
+    const off = hub.onStatus((status) => {
+      if (status.pending === 0 || !status.connected) done();
+    });
+    function done() {
+      clearTimeout(timer);
+      off();
+      resolve();
+    }
+  });
+}
+
+export interface RevisionRouteOptions {
+  sessionEndWaitMs?: number;
+}
+
+export function registerRevisionRoutes(router: Router, runtime: CollabRuntime, options: RevisionRouteOptions = {}): void {
+  const sessionEndWaitMs = options.sessionEndWaitMs ?? SESSION_END_WAIT_MS;
   router.add("GET", pattern.revisions, async (request) => ({ body: await requireApi(runtime).listRevisions(request.params.docId) }));
 
   router.add("POST", pattern.revisions, async (request): Promise<{ status: number; body: unknown }> => {
@@ -63,8 +89,13 @@ export function registerRevisionRoutes(router: Router, runtime: CollabRuntime): 
     if (body.kind === "session-end") {
       if (!runtime.accounts.account) throw new ControlError(409, "signed-out", "Sign in to a collaboration account first.");
       const id = `cmd_${randomBytes(12).toString("base64url")}`;
-      const queued = runtime.host.commands.enqueue({ id, kind: "revision.create", docId: request.params.docId, body });
-      const response: EnqueueCommandResponse = { id, queued };
+      const host = runtime.host;
+      const docId = request.params.docId;
+      // Answered at once: the window that sent it is usually closing.
+      void whenAcknowledged(runtime, docId, sessionEndWaitMs).then(() => {
+        if (runtime.host === host) host.commands.enqueue({ id, kind: "revision.create", docId, body });
+      });
+      const response: EnqueueCommandResponse = { id, queued: true };
       return { status: 202, body: response };
     }
     return { status: 201, body: await requireApi(runtime).createRevision(request.params.docId, body) };

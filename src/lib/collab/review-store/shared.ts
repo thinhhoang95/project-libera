@@ -431,6 +431,8 @@ export class SharedReviewStore implements ReviewStore {
     if (op.wroteAnchor && (op.command.kind === "thread.create" || op.command.kind === "thread.reattach") && this.mayRemoveAnchor(op.wroteAnchor)) {
       removeAnchor(this.options.replica.annotations, op.wroteAnchor, SHARED_REVIEW_ORIGIN);
     }
+    // The card goes at once; listeners hear about it on the next tick.
+    this.projection = this.build();
     this.changed();
     return this.document();
   }
