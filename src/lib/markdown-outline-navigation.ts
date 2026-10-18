@@ -1,6 +1,7 @@
 import type { Editor, JSONContent } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { markdownHeadingOffsets } from "./markdown-review";
+import { scanCitations } from "./references/citation-syntax";
 
 export const MARKDOWN_OUTLINE_NAVIGATE_EVENT = "libera:markdown-outline-navigate";
 
@@ -73,9 +74,21 @@ export function navigateTiptapToMarkdownHeading(editor: Editor, markdown: string
   }
 }
 
-/** The plain words a Markdown passage shows once rendered, lower-cased with single spaces. */
+/** A citation token becomes its keys, separated by spaces. */
+function citationsAsKeys(source: string) {
+  if (!source.includes("@")) return source;
+  let text = "";
+  let last = 0;
+  for (const { citation, start, end } of scanCitations(source)) {
+    text += `${source.slice(last, start)} ${citation.items.map((item) => item.key).join(" ")} `;
+    last = end;
+  }
+  return last ? text + source.slice(last) : source;
+}
+
+/** The plain words a Markdown passage shows once rendered, lower-cased with single spaces. Citations count as their keys. */
 export function markdownPassageWords(source: string) {
-  return source
+  return citationsAsKeys(source)
     .replace(/^[ \t]*(#{1,6}[ \t]+|[-*+][ \t]+(\[[ xX]\][ \t]+)?|\d+[.)][ \t]+|[a-z]?>[ \t]?)/gm, "")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")

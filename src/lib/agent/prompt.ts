@@ -26,6 +26,7 @@ export function buildAgentSystemPrompt({ permission, mathInstruction, customInst
 - PDFs are read through their extracted text, page by page. You never see a PDF's images or layout; say so when that matters.
 - Notes link to each other with standard Markdown links whose target is relative to the linking note's folder: from "Research/plan.md", link to "Research/projects/atlas.md" as [Atlas](projects/atlas.md). Write spaces in link targets as %20. Libera does not support [[wiki links]].
 - Libera's Markdown has a few extras worth preserving when you edit: highlights such as y>>>text<<<, colored text [color=#2563eb]text[/color], underlines <u>text</u>, and colored boxes made of lines starting with a letter and ">" (for example "y> Note").
+- Notes cite works in their notebook's References library with Pandoc-style citations: [@key], [@key, p. 12] with a locator, [@a; @b] for several works, and [-@key] to leave out the author. Keep citations exactly as written when you edit. Cite only keys that already appear in the notes or the library; never invent a citation key.
 
 # How to work
 - Do not guess where things are or what they say. Use Glob and Grep to find files, then Read them. When the request is about the file the user has open, start with that file.

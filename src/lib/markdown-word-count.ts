@@ -1,3 +1,5 @@
+import { scanCitations } from "./references/citation-syntax";
+
 export type MarkdownWordCountStats = {
   characters: number;
   charactersNoSpaces: number;
@@ -7,8 +9,26 @@ export type MarkdownWordCountStats = {
   words: number;
 };
 
+/**
+ * Each citation counts as one word per cited item: `[@a; @b, p. 3]` is two
+ * words, whatever its formatted text. The generated bibliography is not in
+ * the source, so it is never counted; the `:::bibliography` marker that
+ * places it is not counted either.
+ */
+function citationsAsWords(content: string) {
+  const withoutMarker = content.replace(/^:::bibliography[ \t]*\r?\n:::[ \t]*$/gm, " ");
+  if (!withoutMarker.includes("@")) return withoutMarker;
+  let text = "";
+  let last = 0;
+  for (const { citation, start, end } of scanCitations(withoutMarker)) {
+    text += `${withoutMarker.slice(last, start)} ${citation.items.map(() => "cite").join(" ")} `;
+    last = end;
+  }
+  return last ? text + withoutMarker.slice(last) : withoutMarker;
+}
+
 function countMarkdownWords(content: string) {
-  const visibleText = content
+  const visibleText = citationsAsWords(content)
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`\n]*`/g, " ")
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")

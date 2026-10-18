@@ -35,9 +35,24 @@ export function convertClipboardHtmlToMarkdown(
   return serializerFor(mathMarkers).serialize(generateJSON(html, configured));
 }
 
+/** Rendered citations, copied back as their source tokens. The Markdown
+ * serializer would escape a token's brackets, so the clone carries a
+ * placeholder of letters and digits that `restoreCitations` swaps back. */
+type CitationTokens = { marker: string; raw: string[] };
+
+function citationTokens(): CitationTokens {
+  return { marker: `liberacite${Math.random().toString(36).slice(2, 10)}n`, raw: [] };
+}
+
+function restoreCitations(markdown: string, tokens: CitationTokens) {
+  if (!tokens.raw.length) return markdown;
+  return markdown.replace(new RegExp(`${tokens.marker}(\\d+)x`, "g"), (_, index: string) => tokens.raw[Number(index)] ?? "");
+}
+
 /** Clone only selected content, retaining its formatting ancestors. Math is an
- * atomic selection: copying any part copies the underlying LaTeX expression. */
-function cloneSelected(node: Node, range: Range): Node | null {
+ * atomic selection: copying any part copies the underlying LaTeX expression.
+ * Citations are atomic too, and the generated bibliography is not source. */
+function cloneSelected(node: Node, range: Range, citations: CitationTokens): Node | null {
   if (!range.intersectsNode(node)) return null;
   if (node.nodeType === Node.TEXT_NODE) {
     const start = range.startContainer === node ? range.startOffset : 0;
@@ -48,6 +63,12 @@ function cloneSelected(node: Node, range: Range): Node | null {
     return end > start ? node.ownerDocument!.createTextNode(node.textContent!.slice(start, end)) : null;
   }
   if (!(node instanceof HTMLElement)) return null;
+  if (node.matches("[data-libera-bibliography]")) return null;
+  if (node.matches("[data-libera-citation]")) {
+    // getAttribute returns the token with the attribute's HTML escaping undone.
+    citations.raw.push(node.getAttribute("data-libera-citation") ?? "");
+    return node.ownerDocument.createTextNode(`${citations.marker}${citations.raw.length - 1}x`);
+  }
   if (node.matches(".katex-display, .katex")) {
     const latex = node.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
     if (latex == null) return null;
@@ -58,7 +79,7 @@ function cloneSelected(node: Node, range: Range): Node | null {
   }
   const clone = node.cloneNode(false) as HTMLElement;
   for (const child of node.childNodes) {
-    const selected = cloneSelected(child, range);
+    const selected = cloneSelected(child, range, citations);
     if (selected) clone.append(selected);
   }
   if (!clone.hasChildNodes() && !node.matches("br, hr, img, input")) return null;
@@ -71,7 +92,7 @@ function cloneSelected(node: Node, range: Range): Node | null {
   if (node.matches("ul.contains-task-list")) clone.dataset.type = "taskList";
   // Preserve numbering when a selection starts midway through an ordered list.
   if (node.matches("ol")) {
-    const first = Array.from(node.children).findIndex((child) => range.intersectsNode(child) && cloneSelected(child, range));
+    const first = Array.from(node.children).findIndex((child) => range.intersectsNode(child) && cloneSelected(child, range, citationTokens()));
     clone.setAttribute("start", String(Number(node.getAttribute("start") ?? 1) + Math.max(0, first)));
   }
   if (node.matches("mark[data-markdown-highlight-color]")) clone.dataset.color = node.getAttribute("data-markdown-highlight-color")!;
@@ -83,9 +104,10 @@ export function getRenderedSelectionMarkdown(
   range: Range,
   mathMarkers: MathMarkerSettings = {},
 ): string {
-  const clone = cloneSelected(container, range) as HTMLElement | null;
+  const citations = citationTokens();
+  const clone = cloneSelected(container, range, citations) as HTMLElement | null;
   if (!clone) return "";
-  return convertClipboardHtmlToMarkdown(clone.innerHTML, mathMarkers);
+  return restoreCitations(convertClipboardHtmlToMarkdown(clone.innerHTML, mathMarkers), citations);
 }
 
 type CopyEvent = Pick<ClipboardEvent, "clipboardData" | "preventDefault">;
