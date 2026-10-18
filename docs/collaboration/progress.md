@@ -9,13 +9,33 @@ prepare them, but only a person can finish them.
 
 Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 needs a person
 
-## Status at pause (18 Oct 2026)
+## Status (18 Oct 2026)
 
-Merged on `collaboration` and green: server (110 tests), desktop-side collaboration (250 tests), editor suite at baseline. Merged branches: protocol and server skeleton, server sync, server REST API, server revisions/decisions/reviews, host core, CodeMirror Markdown editor, Visual bridge, editor library, collaboration UI, shared notebooks, Electron host integration, test harness. Three host recovery bugs found by the harness are fixed.
+Phases 1–4 are implemented and merged on `collaboration` (local only, not pushed). Test results on the final tree:
 
-Server Phase 4 (`collab/srv4`) is merged: admin CLI, verify, load generator, backups and restore drill, monitoring, digest and telemetry endpoints, error reporting; 140 server tests pass. 👤 Real Postgres, Docker, systemd and rclone are untested. Still missing from it: `SETUP.md` §8–§10, `docs/collaboration/testing-load.md` (numbers are in the agent's report: 200×20 awareness-only fine; typing saturates PGlite above ~150 updates/s, so the full target needs real Postgres), and the `"load": "node --import tsx test/load/run.ts"` script in server/package.json.
+- `npm run test:collab`: 378/378
+- `cd server && npm test`: 141/141
+- `npm run test:editor`: baseline only (4 fail + 2 cancelled, the same as before collaboration)
+- `npm run test:collab-e2e`: every step passes. That is two real app instances against a real server; after the last fixes it passed twice on a fresh build.
 
-Not merged: editor wiring (`collab/wire`, clone `scratchpad/clones/wire`, commits 4a4f4ca and e4f807a). The code for replica, tab registry, editor bindings, shared-tab save states, presence and banners is written and type-checks, and the editor suite is at baseline, but none of its `scripts/collab/wire-*.test.ts` tests exist, and `npm run test:collab` and eslint were not run on it. Write those tests, then merge. Still to do after those: Phase 1 AI rerouting (M1.11), Phase 2 client (shared ReviewStore, history viewer, restore UI, offline comments UI), Phase 3 client (suggestions panel, suggest mode in the editors, decisions UI, AI as suggester, review requests UI, audit viewer), Phase 4 desktop (sandbox, sanitizing, diagnostics, divergence check), and every 👤 item.
+What is left needs a person or a production environment (👤 items below):
+- IME matrix (Vietnamese Telex, Japanese, Chinese) in all three editors
+- typing speed on a 1 MB note
+- the watcher on macOS and ExFAT
+- the first real deploy (DNS, Docker and `.env` on the VPS)
+- backups and the restore drill on real Postgres
+- a load test against Postgres at the target scale
+- the private beta
+
+Known limitations still open:
+- Free-typing suggest mode in Visual (Visual has "Suggest edit" on a selection instead)
+- Follow mode only in CodeMirror editors
+- The agent cannot create new files in shared notebooks
+- Deleting or pruning images in shared notebooks still returns 409
+- Blobs through the host are capped at 11 MB
+- A local-only deletion the server never received is not recovered by the divergence re-open
+- AI chat http-image exfiltration path (see `security.md`)
+- Dependency audit not done
 
 ## Checks from the end-to-end run and review (18 Oct 2026)
 
