@@ -48,6 +48,18 @@ export const SyncLimits = {
   awarenessTimeoutMs: 30_000,
   awarenessHeartbeatMs: 15_000,
   backoffBaseMs: 500,
+  /** Ceiling for retrying queued commands. */
   backoffMaxMs: 30_000,
+  /**
+   * Ceiling for sync reconnects. Lower than backoffMaxMs so a restarted
+   * server is picked up within seconds; full jitter still spreads clients.
+   */
+  reconnectMaxMs: 10_000,
+  /**
+   * While the server refuses connections, the host checks GET /healthz every
+   * 1-2x this long (jittered) and reconnects, after a further jitter of up to
+   * this long, once it answers.
+   */
+  reachabilityProbeMs: 1_000,
   pingIntervalMs: 20_000,
 } as const;

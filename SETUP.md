@@ -203,7 +203,7 @@ Each deploy also installs `ops/collab/backup/` to `<remote root>/backup/` and `o
 
 ### 6.3 Restarts
 
-Clients reconnect on their own, with jittered backoff, and keep editing offline in the meantime. A restart closes sockets with code 4050. Nothing acknowledged is lost, because every update is in Postgres before it is acknowledged.
+Clients reconnect on their own and keep editing offline in the meantime. Reconnects use jittered backoff capped at 10 s. While the server refuses connections, each client also checks `GET /healthz` every 1–2 s and reconnects within about a second after it answers. A restart closes sockets with code 4050. Nothing acknowledged is lost, because every update is in Postgres before it is acknowledged.
 
 ---
 

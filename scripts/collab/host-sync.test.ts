@@ -34,6 +34,7 @@ function setup(
     pingIntervalMs?: number;
     docId?: string;
     start?: boolean;
+    probe?: () => Promise<boolean>;
   } = {},
 ): Setup {
   const server = options.server ?? new FakeSyncServer();
@@ -49,6 +50,7 @@ function setup(
     clock: options.clock,
     random: options.random ?? (() => 0),
     limits: { pingIntervalMs: options.pingIntervalMs ?? 60_000 },
+    probe: options.probe,
   });
   const hub = new DocHub({
     docId: options.docId ?? "d1",
@@ -330,7 +332,8 @@ test("reconnect uses exponential backoff with full jitter, and nudge reconnects 
       s.client.lastBackoffMs = null;
       clock.advance(delay);
     }
-    assert.deepEqual(delays, [250, 500, 1000, 2000, 4000, 8000, 15000, 15000, 15000]);
+    // Full jitter under a ceiling that doubles from 500 ms up to the 10 s reconnect cap.
+    assert.deepEqual(delays, [250, 500, 1000, 2000, 4000, 5000, 5000, 5000, 5000]);
     await waitFor(() => s.client.connectionState === "backoff" && s.client.lastBackoffMs !== null);
     server.refuseConnections = false;
     s.client.nudge();
@@ -340,6 +343,66 @@ test("reconnect uses exponential backoff with full jitter, and nudge reconnects 
     server.disconnectAll();
     await waitFor(() => s.client.connectionState === "backoff");
     assert.ok((s.client.lastBackoffMs ?? Infinity) <= 250);
+  } finally {
+    s.close();
+  }
+});
+
+test("an unreachable server is probed every 1-2 s and reconnected as soon as it answers", async () => {
+  const clock = new ManualClock();
+  const server = new FakeSyncServer();
+  server.refuseConnections = true;
+  let reachable = false;
+  let probes = 0;
+  const s = setup({ server, clock, random: () => 0.5, probe: async () => { probes += 1; return reachable; } });
+  try {
+    // Let the backoff grow to its cap (5 s with random 0.5), as during a long outage.
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      await waitFor(() => s.client.connectionState === "backoff" && s.client.lastBackoffMs !== null);
+      const delay = s.client.lastBackoffMs as number;
+      s.client.lastBackoffMs = null;
+      clock.advance(delay);
+    }
+    await waitFor(() => s.client.connectionState === "backoff" && s.client.lastBackoffMs !== null);
+    assert.equal(s.client.lastBackoffMs, 5000);
+    s.client.lastBackoffMs = null;
+    const probesBefore = probes;
+    // Still down: a probe every 1.5 s (1 s + jitter), none reconnects.
+    clock.advance(1500);
+    await waitFor(() => probes === probesBefore + 1);
+    // Let the probe's answer be handled (it schedules the next probe).
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(s.client.connectionState, "backoff");
+    // The server comes back: the next probe sees it and reconnects after a
+    // jittered delay (500 ms), long before the 5 s backoff tick.
+    server.refuseConnections = false;
+    reachable = true;
+    clock.advance(1500);
+    await waitFor(() => probes === probesBefore + 2);
+    await waitFor(() => s.client.lastBackoffMs === 500, 2000, "reconnect scheduled after the probe");
+    clock.advance(500);
+    await waitFor(() => s.client.connected, 2000, "connected after the probe");
+    // Connected: no more probes.
+    const settled = probes;
+    clock.advance(10_000);
+    assert.equal(probes, settled);
+  } finally {
+    s.close();
+  }
+});
+
+test("a socket that opened and then dropped backs off without probing", async () => {
+  const clock = new ManualClock();
+  const server = new FakeSyncServer();
+  let probes = 0;
+  const s = setup({ server, clock, random: () => 0.5, probe: async () => { probes += 1; return true; } });
+  try {
+    await waitFor(() => s.client.connected);
+    server.disconnectAll();
+    await waitFor(() => s.client.connectionState === "backoff");
+    clock.advance(3000);
+    await waitFor(() => s.client.connected, 2000, "reconnected by the backoff timer");
+    assert.equal(probes, 0, "a reachable server is not probed");
   } finally {
     s.close();
   }

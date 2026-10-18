@@ -7,7 +7,13 @@
 //
 // Recovery:
 // - Network loss, 4029, 4050, missing pong: exponential backoff with full
-//   jitter; nudge() (resume, online) reconnects at once and resets it.
+//   jitter (capped at SyncLimits.reconnectMaxMs); nudge() (resume, online)
+//   reconnects at once and resets it.
+// - Server unreachable (the socket never opened, e.g. ECONNREFUSED while the
+//   server restarts): besides the backoff timer, a cheap reachability probe
+//   (GET /healthz, injected as `probe`) runs every 1-2 s, jittered; when it
+//   answers, the client reconnects after a further random delay instead of
+//   waiting out a long backoff.
 // - 4001: refresh the token and reconnect; a failed refresh means "needs
 //   sign-in" while local editing continues.
 // - 4002: signed out. 4026: update required. Neither reconnects by itself.
@@ -132,7 +138,13 @@ export interface SyncClientOptions {
   /** Returns [0, 1); injected for deterministic backoff tests. */
   random?: () => number;
   logger?: Logger;
-  limits?: Partial<Record<"backoffBaseMs" | "backoffMaxMs" | "pingIntervalMs" | "maxFrameBytes", number>>;
+  limits?: Partial<Record<"backoffBaseMs" | "backoffMaxMs" | "pingIntervalMs" | "maxFrameBytes" | "reachabilityProbeMs", number>>;
+  /**
+   * Cheap check that the server answers again (the host does GET /healthz).
+   * Resolves true when it does; false or a rejection means not yet. Without
+   * it, only the backoff timer reconnects.
+   */
+  probe?: () => Promise<boolean>;
   /** No welcome within this long drops the socket. */
   connectTimeoutMs?: number;
   /** How long a nudge() waits for a pong on an existing socket. */
@@ -171,6 +183,7 @@ export class SyncClient {
   private readonly backoffMaxMs: number;
   private readonly pingIntervalMs: number;
   private readonly maxFrameBytes: number;
+  private readonly probeMs: number;
   private readonly targets = new Map<string, SyncTarget>();
   private readonly events = new Emitter<SyncClientEvent>();
   private socket: WebSocketLike | null = null;
@@ -186,6 +199,11 @@ export class SyncClient {
   private connectTimer: TimerHandle | null = null;
   private nudgeTimer: TimerHandle | null = null;
   private refreshTimer: TimerHandle | null = null;
+  private probeTimer: TimerHandle | null = null;
+  /** Whether the current socket reached `open` (a refused connection never does). */
+  private socketOpened = false;
+  /** Reachability probes run so far (diagnostics, tests). */
+  probeCount = 0;
   private transports = new Map<string, HubTransport>();
   /** The delay chosen for the last scheduled reconnect (diagnostics, tests). */
   lastBackoffMs: number | null = null;
@@ -199,7 +217,8 @@ export class SyncClient {
     this.random = options.random ?? Math.random;
     this.logger = options.logger ?? consoleLogger;
     this.backoffBaseMs = options.limits?.backoffBaseMs ?? SyncLimits.backoffBaseMs;
-    this.backoffMaxMs = options.limits?.backoffMaxMs ?? SyncLimits.backoffMaxMs;
+    this.backoffMaxMs = options.limits?.backoffMaxMs ?? SyncLimits.reconnectMaxMs;
+    this.probeMs = options.limits?.reachabilityProbeMs ?? SyncLimits.reachabilityProbeMs;
     this.pingIntervalMs = options.limits?.pingIntervalMs ?? SyncLimits.pingIntervalMs;
     this.maxFrameBytes = options.limits?.maxFrameBytes ?? SyncLimits.maxFrameBytes;
   }
@@ -324,6 +343,8 @@ export class SyncClient {
     if (this.state === "stopped") return;
     if (this.reconnectTimer) this.clock.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.probeTimer) this.clock.clearTimeout(this.probeTimer);
+    this.probeTimer = null;
     const generation = ++this.generation;
     this.setState("connecting");
     let token: string | null;
@@ -352,12 +373,14 @@ export class SyncClient {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.welcomed = false;
+    this.socketOpened = false;
     this.connectTimer = this.clock.setTimeout(() => {
       this.connectTimer = null;
       if (this.socket === socket && !this.welcomed) this.drop("connect timeout");
     }, this.options.connectTimeoutMs ?? 15_000);
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      this.socketOpened = true;
       this.sendRaw(socket, {
         type: MessageType.Hello,
         protocolVersion: PROTOCOL_VERSION,
@@ -399,10 +422,11 @@ export class SyncClient {
   }
 
   private clearTimers(): void {
-    for (const timer of [this.reconnectTimer, this.pingTimer, this.connectTimer, this.nudgeTimer, this.refreshTimer]) {
+    for (const timer of [this.reconnectTimer, this.pingTimer, this.connectTimer, this.nudgeTimer, this.refreshTimer, this.probeTimer]) {
       if (timer) this.clock.clearTimeout(timer);
     }
     this.reconnectTimer = null;
+    this.probeTimer = null;
     this.pingTimer = null;
     this.connectTimer = null;
     this.nudgeTimer = null;
@@ -417,6 +441,7 @@ export class SyncClient {
 
   private handleClose(socket: WebSocketLike, code: number, reason: string): void {
     if (this.socket !== socket) return;
+    const unreachable = !this.socketOpened;
     this.detachSocket(socket);
     this.socket = null;
     this.welcomed = false;
@@ -437,7 +462,7 @@ export class SyncClient {
         return;
       default:
         if (reason) this.logger.warn(`Sync socket closed (${code}): ${reason}`);
-        this.scheduleReconnect();
+        this.scheduleReconnect(unreachable);
     }
   }
 
@@ -469,7 +494,7 @@ export class SyncClient {
     void this.connect();
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(unreachable = false): void {
     if (this.state === "stopped") return;
     const ceiling = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** this.attempt);
     const delay = Math.floor(this.random() * ceiling);
@@ -481,6 +506,41 @@ export class SyncClient {
       this.reconnectTimer = null;
       void this.connect();
     }, delay);
+    if (unreachable) this.scheduleProbe();
+  }
+
+  /**
+   * While backing off from an unreachable server, checks every 1-2 probe
+   * intervals whether it answers again; when it does, reconnects after a
+   * random delay of up to one interval (full jitter, so clients that all
+   * noticed the restart at once do not reconnect at once). `attempt` is kept,
+   * so a socket that still fails keeps backing off.
+   */
+  private scheduleProbe(): void {
+    const probe = this.options.probe;
+    if (!probe || this.probeTimer || this.state !== "backoff") return;
+    const generation = this.generation;
+    this.probeTimer = this.clock.setTimeout(() => {
+      this.probeTimer = null;
+      if (this.state !== "backoff" || generation !== this.generation) return;
+      this.probeCount += 1;
+      void probe()
+        .catch(() => false)
+        .then((reachable) => {
+          if (this.state !== "backoff" || generation !== this.generation) return;
+          if (!reachable) {
+            this.scheduleProbe();
+            return;
+          }
+          const delay = Math.floor(this.random() * this.probeMs);
+          this.lastBackoffMs = delay;
+          if (this.reconnectTimer) this.clock.clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = this.clock.setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.connect();
+          }, delay);
+        });
+    }, this.probeMs + Math.floor(this.random() * this.probeMs));
   }
 
   private schedulePing(): void {

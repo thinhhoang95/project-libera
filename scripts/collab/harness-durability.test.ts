@@ -265,6 +265,39 @@ test(
   },
 );
 
+test(
+  "§3.2 server restart after a long outage: the /healthz probe reconnects within ~3 s, without a nudge",
+  {
+    timeout: 90_000,
+  },
+  async () => {
+    try {
+      const { docId, hosts } = await scene([users[0], users[1]]);
+      const [alice, bob] = hosts;
+      const hubA = alice.hub(docId);
+      await cluster.stopServer("kill");
+      // Long enough for the jittered backoff to reach its 10 s ceiling.
+      await sleep(12_000);
+      const typist = new MarkerTypist(() => hubA, "outage");
+      typist.type();
+      await cluster.startServer();
+      const started = performance.now();
+      await waitUntil(
+        () => alice.connectionState === "connected" && bob.connectionState === "connected" && hubA.pendingCount === 0,
+        "both hosts to reconnect and Alice to resync",
+        20_000,
+      );
+      const elapsed = performance.now() - started;
+      report("long outage: server back to both connected and synced (no nudge)", ms(elapsed));
+      assert.ok(elapsed < 3500, `resynced ${elapsed} ms after the server came back (budget ~3 s: probe every 1-2 s, then up to 1 s jitter)`);
+      const { text } = await cluster.awaitConvergence(docId, hosts);
+      assertMarkersOnce(text, typist.markers, "after the outage");
+    } finally {
+      await teardown();
+    }
+  },
+);
+
 // ---------------------------------------------------------------- long offline
 
 test("§3.2 reconnect after long offline: 2,000 offline edits resync with only the missing diff", { timeout: 120_000 }, async () => {

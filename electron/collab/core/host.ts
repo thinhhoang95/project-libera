@@ -102,6 +102,17 @@ function syncUrlFor(account: CollabAccount): string {
   return url.toString();
 }
 
+/** True when the server answers GET /healthz (any 2xx); used while it refuses sync connections. */
+async function probeServer(serverUrl: string, fetchImpl?: FetchLike): Promise<boolean> {
+  const doFetch = fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init));
+  try {
+    const response = await doFetch(new URL(ApiRoutes.health, serverUrl).toString(), { method: "GET", signal: AbortSignal.timeout(2_000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export class CollabHost {
   private readonly options: CollabHostOptions;
   private readonly clock: Clock;
@@ -355,6 +366,7 @@ export class CollabHost {
       limits: this.options.limits,
       connectTimeoutMs: this.options.connectTimeoutMs,
       nudgePongTimeoutMs: this.options.nudgePongTimeoutMs,
+      probe: () => probeServer(account.serverUrl, this.options.fetch),
     });
     this.syncClient = client;
     client.on((event) => {
