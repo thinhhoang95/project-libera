@@ -17,6 +17,38 @@ Review history is stored locally under `.libera/markdown-reviews.json` in the Li
 
 AI review uses the configured Chat model and OpenRouter connection from AI preferences. It checks context capacity before sending the complete review. Large targets or attachments may require a model with a larger context or fewer references. Cancelled, malformed, or invalid generation does not partially apply changes.
 
+## Shared documents
+
+In a shared notebook, Review Mode works the same way, but comments, suggestions and reviews are shared with everyone in the notebook.
+
+### Comments
+
+- Comments are threads on the collaboration server. Their anchors live in the document itself (as Yjs positions in its annotations), so they follow everyone's edits without remapping. Each card shows its author with their colour; comments left by AI show **AI · requested by** the person it acted for.
+- Type **@** in a comment to mention a member; they are notified. Comments made offline wait in a queue with a **pending** chip and are sent when the connection returns; a refused one offers Retry and Discard.
+- When the commented text is deleted the thread is **detached**. Reattach it to a selection, or to the similar text Libera finds.
+- The **Suggestions** and **Reviews** tabs sit beside **Comments** in the rail.
+
+### Suggestions
+
+- Collaborators' proposed changes show inline in every editor and in the **Suggestions** tab: what they replace, by whom (AI marked), and whether the text changed since (**stale**). Editors and owners **Accept** or **Reject**, one group at a time or all at once (a checkpoint is saved first). Accepting is a server decision, so two people deciding at once cannot apply a change twice; offline decisions are queued.
+- Commenters always suggest; editors switch **Suggesting** on in Source and LaTeX, or use **Suggest edit** on a selection in Visual. Authors can edit or withdraw their own pending suggestions.
+- **Reply** on a suggestion opens a box on its card; the reply is a comment thread on the suggestion's text (its paragraph, for a pure insertion), linked to the suggestion so the server lists the thread as one it addresses.
+
+### Agentic review on a shared document
+
+- The plan addresses the document's shared comments. The plan conversation stays private: it is kept in your local review history and nobody else sees it.
+- **Confirm plan & generate changes** turns each proposal into a suggestion group that collaborators see as **AI · on behalf of** you, with the proposal's title and reason and the comments it addresses. Linked edits in one proposal are one group. A proposal whose passage someone changed while it was being generated is created **stale**, showing what the AI saw.
+- **Accept** and **Reject** in the review chat and on the cards are server decisions on those groups, the same as in the Suggestions tab, so you must be an editor or owner (a commenter's proposals wait for an editor). The cards show each group's status as decided by anyone. A decided proposal cannot be reopened; ask for a revision.
+- **Request revision** withdraws the proposal's group and creates the revised one.
+
+### Reviews
+
+- **Request review…** in the tab bar (editors and owners) asks members to review the whole document or the passage selected in the editor. The passage is anchored like a comment, so it follows edits. Add an optional note, and optionally **Run AI review first**, which starts agentic review as you on the open comments.
+- The **Reviews** tab lists the document's reviews: who asked, the scope and note, each reviewer's decision, how many changes in scope since the review started, and **Close review** for the requester and editors.
+- Reviewers **Approve** or **Request changes**. A decision is bound to the revision the reviewer read; when the reviewed text changes afterwards it is marked **outdated** ("changed since you approved"), while edits outside the passage leave it current. Decisions made offline are queued and sent on reconnect.
+- **Open review** (also from a review notification) shows the review in checkpoint mode: the document frozen as it was when the review was requested, a banner with **N changes since this revision**, and **Show changes since** for a diff to the live text, while everyone keeps editing. Decisions made there are bound to that revision.
+- Owners see every decision, review and restore in **Activity log** in the notebook's sharing dialog, filterable by kind.
+
 ## Validation
 
 The implementation passes 94 editor/API tests, TypeScript checking through the production build, and the Next.js production build. ESLint reports no errors and one pre-existing `refreshTree` hook-dependency warning in the workspace controller. Browser checks exercised manual comments in both editors, individual acceptance/rejection, mode switching, and undo using isolated local fixtures. The automated test suite mocks model requests for deterministic plan/revision/validation checks, including starting new rounds without losing accepted text or earlier comment outcomes.

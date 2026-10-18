@@ -151,7 +151,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☑ M2.1 `ReviewStore` interface; local store (unchanged behaviour) and shared store; RelativePosition anchors; authors (AI shown as "AI · requested by X"); panel follows scroll (best effort)
 - ☑ M2.2 Detached state with stored quote, reattach to selection, "found similar text"; anchor fuzz in the library
-- ◐ M2.3 Bell, @ member picker, desktop notifications (with a switch), server mentions and digest. Remaining: AI-authored review comments on shared docs (the leave-review-comments skill is still disabled there)
+- ☑ M2.3 Bell, @ member picker, desktop notifications (with a switch), server mentions and digest; AI-authored review comments on shared docs (the leave-review-comments skill creates threads through the host with an AI actor; `scripts/collab/ai-shared-writes.test.ts`, `p3b-agent.test.ts`)
 - ☑ M2.4 Automatic and named revisions, session-end revisions; History panel with a revision viewer and diffs coloured by author (AI provenance labelled)
 - ☑ M2.5 Restore whole document or a selection as forward edits, with a checkpoint
 - ☑ M2.6 Offline comments through pending commands, with pending/failed chips, retry and discard; plus a one-time migration of local comments into a shared notebook
@@ -163,10 +163,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ M3.1 Overlay model; Tiptap preview rendering with authors; CodeMirror preview extension; Suggestions panel
 - ☐ M3.2 Suggest mode in CodeMirror; "Suggest edit" in Visual; editing your own suggestion
 - ☐ M3.3 Decision commands with stale check and exactly-once apply; accept-all checkpoint; revert; offline decisions
-- ☐ M3.4 AI as suggester: rewrite/write/format/image; agentic review groups; agent suggest modes; `ai-cannot-decide`
-- ☐ M3.5 Review requests, revision-bound approvals, outdated detection, checkpoint mode
-- ☐ M3.6 Audit log and viewer
+- ☑ M3.4 AI as suggester: rewrite/write/format/image (3a); agentic review proposals as AI groups with stale mapping, revision withdraw and server decisions (`p3b-agentic-review.test.ts`); agent Edit/Write as suggestions, undo withdraws, Read Only / Suggest in opened files / Suggest in notebook, commenters suggest (`p3b-agent.test.ts`, `ai-shared-writes.test.ts`, `ai-host-e2e.test.ts`); `ai-cannot-decide` (server)
+- ☑ M3.5 Review requests (whole doc or anchored selection, AI review first), Reviews tab, revision-bound approvals, outdated detection, offline decisions, checkpoint mode, notifications open the review (`p3b-reviews.test.ts`)
+- ☑ M3.6 Audit log and owner-only Activity log viewer with action filter and paging (`p3b-audit.test.ts`)
 - ☐ Hard cases 1–7 automated
+
+Phase 3 part B also fixed the shared Comments panel staying empty in Electron (the store called `queueMicrotask` as its own method, which browsers refuse), the passage popover closing when a collaborator typed mid-click, and authors not being able to withdraw a stale suggestion on the server (`p3b-comments.test.ts`). Replies to suggestions are linked comment threads (`p3b-reply.test.ts`).
 
 ## Phase 4: hardening and beta
 - ☐ Load generator and results against §10 budgets
