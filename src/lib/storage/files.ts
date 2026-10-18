@@ -1,6 +1,7 @@
 import { deletePdfAnnotationDirectory, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
+import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -189,9 +190,28 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   await moveReviewPath(currentRelativePath, nextRelativePath);
   await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  // After the attachment wiring, so copied entries see this file's new path.
+  const references = await copyCitedReferences(current.notebook, safeNextNotebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return readLiberaFile(nextRelativePath);
+  return withReferences(await readLiberaFile(nextRelativePath), references);
+}
+
+/**
+ * Markdown moved to another notebook takes the references it cites along
+ * (src/lib/references/moves.ts). Never fails the move.
+ */
+async function copyCitedReferences(fromNotebook: string, toNotebook: string, from: string, to: string) {
+  if (fromNotebook === toNotebook || assertSupportedFileName(to.split("/").at(-1) ?? "") !== "markdown") return null;
+  return copyReferencesOnMove(fromNotebook, toNotebook, [{ from, to }]);
+}
+
+/**
+ * A cross-notebook Markdown move adds `references` to the file payload: what
+ * was copied, reused and rewritten, and the key map to apply to an open draft.
+ */
+function withReferences<T extends object>(payload: T, references: ReferenceMoveResult | null): T & { references?: ReferenceMoveResult } {
+  return references ? { ...payload, references } : payload;
 }
 
 function suggestedCopyName(name: string) {
@@ -412,9 +432,11 @@ export async function moveFileToDirectory(
   await moveReviewPath(currentRelativePath, nextRelativePath);
   await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  // After the attachment wiring, so copied entries see this file's new path.
+  const references = await copyCitedReferences(current.notebook, destination.notebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return readLiberaFile(nextRelativePath);
+  return withReferences(await readLiberaFile(nextRelativePath), references);
 }
 
 export async function archiveFile(relativePath: string) {
