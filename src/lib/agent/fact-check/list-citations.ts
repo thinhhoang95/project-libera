@@ -7,6 +7,8 @@ import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
 import { resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
 import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
+import { loadDocumentStyle } from "@/lib/references/bibliography-export";
+import { documentStyleOverride } from "@/lib/references/document-style";
 import type { CitationItem, ReferenceEntry, ReferenceLibrary } from "@/lib/references/types";
 import type { PdfTextPage } from "@/lib/types";
 import { lineOfOffset, missingFileError, ok, readCurrentText, requireString, resolve, ToolError, type AgentTool, type ToolContext } from "../tools";
@@ -250,8 +252,8 @@ async function sourceFile(context: ToolContext, kind: "pdf" | "markdown", filePa
   return { path: resolved.path, kind, exists: true, pageCount: pages.length, ...(pages.length && !pages.some((page) => page.text.trim()) ? { noText: true } : {}) };
 }
 
-export async function summarizeSources(context: ToolContext, library: ReferenceLibrary, entries: ReferenceEntry[]): Promise<Map<string, SourceSummary>> {
-  const references = await formatReferences(library, entries);
+export async function summarizeSources(context: ToolContext, library: ReferenceLibrary, entries: ReferenceEntry[], { styleXml }: { styleXml?: string | null } = {}): Promise<Map<string, SourceSummary>> {
+  const references = await formatReferences(library, entries, { styleXml });
   const summaries = new Map<string, SourceSummary>();
   for (const entry of entries) {
     const files: SourceFile[] = [];
@@ -326,7 +328,9 @@ export async function listCitations(context: ToolContext, inputPath: string): Pr
       if (entry) cited.set(entry.id, entry);
     }
   }
-  const sources = await summarizeSources(context, library, [...cited.values()]);
+  // References are shown in the document's own style (`citation-style` in its front matter) when it has one.
+  const styleXml = documentStyleOverride(text) && cited.size ? (await loadDocumentStyle(resolved.notebook, text, library.style)).xml : null;
+  const sources = await summarizeSources(context, library, [...cited.values()], { styleXml });
   const blocks = leafBlocks(text);
   const ranges = found.map((occurrence) => ({ start: occurrence.start, end: occurrence.end }));
   const occurrences = found.map((occurrence, index): CitationOccurrenceInfo => {
