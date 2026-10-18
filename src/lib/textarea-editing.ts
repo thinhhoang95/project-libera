@@ -1,3 +1,5 @@
+import { getCodeMirrorTextareaAdapter } from "./markdown-codemirror/textarea-adapter";
+
 type UndoableTextareaEdit = {
   nextSelectionEnd: number;
   nextSelectionStart: number;
@@ -20,6 +22,13 @@ export function replaceTextareaSelectionWithUndo(
     selectionStart,
   }: UndoableTextareaEdit,
 ) {
+  // The CodeMirror Source editor stands behind the same ref; it applies the
+  // edit as one CodeMirror undo step instead of a native textarea insertion.
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) {
+    return codeMirror.replaceSelectionWithUndo({ nextSelectionEnd, nextSelectionStart, replacement, scrollLeft, scrollTop, selectionEnd, selectionStart });
+  }
+
   if (typeof document.execCommand !== "function") {
     return false;
   }
