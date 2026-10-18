@@ -1,3 +1,4 @@
+import { abbreviateJournal } from "./journal-abbreviations";
 import { isValidCitationKey } from "./keys";
 import { decodeLatex, decodeLatexVerbatim, encodeLatex, protectTitleCase, type LatexDialect } from "./latex-text";
 import { formatBibtexName, parseBibtexNameList } from "./names";
@@ -25,7 +26,11 @@ export type BibtexParseOptions = {
 
 export type BibtexSerializeOptions = {
   dialect: LatexDialect;
-  /** Write the abbreviated journal title (`container-title-short`) as the journal. */
+  /**
+   * Write the abbreviated journal title as the journal: the entry's
+   * `container-title-short`, else its ISO 4 abbreviation (journal-abbreviations.ts;
+   * call loadJournalAbbreviations() first to use the full-title table).
+   */
   abbreviateJournals?: boolean;
   /** Write each entry's aliases as `@comment{alias: old -> key}` lines before it. */
   includeAliases?: boolean;
@@ -643,7 +648,7 @@ function serializeEntry(entry: BibtexSerializableEntry, options: BibtexSerialize
   const container = str(csl["container-title"]);
   const shortContainer = str(csl["container-title-short"]);
   if (article) {
-    const journal = options.abbreviateJournals && shortContainer ? shortContainer : container;
+    const journal = options.abbreviateJournals ? shortContainer ?? (container ? abbreviateJournal(container) : undefined) : container;
     set(biblatex ? "journaltitle" : "journal", encode(journal));
   } else if (container) {
     set("booktitle", protectTitleCase(container, dialect));
@@ -730,9 +735,9 @@ function serializeEntry(entry: BibtexSerializableEntry, options: BibtexSerialize
  * compared case-insensitively, as BibTeX does), fields in a stable order,
  * values escaped for LaTeX, titles with case protection, `--` page ranges,
  * month macros (bibtex) or ISO `date` (biblatex), `journal` or
- * `journaltitle`, and `container-title-short` as the journal when
- * abbreviating. Aliases are written as `@comment{alias: old -> key}` lines
- * only with `includeAliases`.
+ * `journaltitle`, and `container-title-short` (else the ISO 4
+ * abbreviation) as the journal when abbreviating. Aliases are written as
+ * `@comment{alias: old -> key}` lines only with `includeAliases`.
  */
 export function serializeBibtex(entries: BibtexSerializableEntry[], options: BibtexSerializeOptions) {
   const seen = new Set<string>();

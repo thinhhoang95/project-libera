@@ -24,6 +24,7 @@
 // APA engine alone takes ~300 ms to build.
 
 import type { Element, ElementContent, Root } from "hast";
+import { abbreviateJournal, loadJournalAbbreviations } from "./journal-abbreviations";
 import {
   BUNDLED_CSL_STYLES,
   DEFAULT_CSL_STYLE,
@@ -77,7 +78,8 @@ export function registerCitationFormatter(module: CiteprocModule, locales: Recor
 /** Import citeproc and the bundled locale; resolves once formatCitations() can run. */
 export function loadCitationFormatter(): Promise<void> {
   if (citeproc) return Promise.resolve();
-  loading ??= Promise.all([import("citeproc"), import("./csl/locales.generated")]).then(([module, locales]) => {
+  // The journal table is optional: styles that print short journal titles fall back to rule-based ISO 4 without it.
+  loading ??= Promise.all([import("citeproc"), import("./csl/locales.generated"), loadJournalAbbreviations().catch(() => undefined)]).then(([module, locales]) => {
     const loaded = (module as { default?: CiteprocModule }).default ?? (module as unknown as CiteprocModule);
     registerCitationFormatter(loaded, locales.CSL_LOCALE_XML);
   }).catch((error) => {
@@ -180,8 +182,27 @@ function entryJson(entry: ReferenceEntry) {
   return json;
 }
 
-function citeprocItemFor(entry: ReferenceEntry): CiteprocItem {
-  return { ...entry.csl, id: entry.id };
+/** Whether a style prints `container-title` in its short form (IEEE, Nature, Vancouver, Chicago in places). */
+export function styleUsesShortContainerTitle(style: string) {
+  for (const match of style.matchAll(/<text\b[^>]*>/g)) {
+    if (/\bvariable\s*=\s*["']container-title["']/.test(match[0]) && /\bform\s*=\s*["']short["']/.test(match[0])) return true;
+  }
+  return false;
+}
+
+/**
+ * The item citeproc formats. For a style that asks for short container
+ * titles, an entry without `container-title-short` gets its ISO 4
+ * abbreviation (citeproc would otherwise print the full title).
+ */
+function citeprocItemFor(entry: ReferenceEntry, shortContainers: boolean): CiteprocItem {
+  const item: CiteprocItem = { ...entry.csl, id: entry.id };
+  const container = typeof item["container-title"] === "string" ? item["container-title"].trim() : "";
+  if (shortContainers && container && !(typeof item["container-title-short"] === "string" && item["container-title-short"].trim())) {
+    const short = abbreviateJournal(container);
+    if (short && short !== container) item["container-title-short"] = short;
+  }
+  return item;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,9 +356,10 @@ export function formatCitationDocument(input: CitationFormatInput): FormattedCit
   } else {
     const items = new Map<string, CiteprocItem>();
     const json = new Map<string, string>();
+    const shortContainers = styleUsesShortContainerTitle(input.style);
     for (const entry of resolved.values()) {
       if (items.has(entry.id)) continue;
-      items.set(entry.id, citeprocItemFor(entry));
+      items.set(entry.id, citeprocItemFor(entry, shortContainers));
       json.set(entry.id, entryJson(entry));
     }
     const state = engineFor(input.style, locale, items, json);

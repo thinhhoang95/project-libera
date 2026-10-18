@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { contentDisposition } from "@/lib/content-disposition";
 import { serializeBibtex } from "@/lib/references/bibtex";
+import { loadJournalAbbreviations } from "@/lib/references/journal-abbreviations";
 import { citedKeys } from "@/lib/references/citation-syntax";
 import { serializeCslJson } from "@/lib/references/csl-json";
 import { serializeRis } from "@/lib/references/ris";
@@ -119,6 +120,8 @@ export async function POST(request: NextRequest) {
     }
 
     const exportFormat = format as ExportFormat;
+    // Abbreviated journals use the ISO 4 full-title table when it loads.
+    if (abbreviateJournals === true) await loadJournalAbbreviations().catch(() => undefined);
     const content = unresolvedComment(exportFormat, unresolved) + serialize(exportFormat, entries, {
       abbreviateJournals: abbreviateJournals === true,
       includeAliases: includeAliases === true,

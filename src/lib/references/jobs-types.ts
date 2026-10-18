@@ -1,7 +1,13 @@
 // Background reference jobs (docs/references/lanes.md "Background jobs"):
 // the status the jobs API returns and the panel shows. Pure types only.
 
-export type ReferenceJobKind = "resolve-pdfs" | "resolve-paths";
+/**
+ * `check-retractions` checks every entry with a DOI against Crossref for
+ * retractions, corrections and expressions of concern (retraction.ts). Its
+ * `total`/`done`/`failed` count entries, `current` and error `path`s are
+ * citation keys, and `updatedEntryIds` lists the entries whose status changed.
+ */
+export type ReferenceJobKind = "resolve-pdfs" | "resolve-paths" | "check-retractions";
 export type ReferenceJobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export type ReferenceJobStatus = {
@@ -40,6 +46,19 @@ export type ReferenceJobRequest = {
   /** Let the model search the web; defaults to the preference. */
   webSearch?: boolean;
 };
+
+/** Body of POST /api/references/retractions. */
+export type RetractionCheckRequest = {
+  notebook: string;
+  /** Check now even when the last check is less than RETRACTION_CHECK_INTERVAL_MS old. */
+  force?: boolean;
+};
+
+/** Reply of POST /api/references/retractions: the job, or null when no check was due (or nothing has a DOI). */
+export type RetractionCheckResponse = { job: ReferenceJobStatus | null; lastCheckedAt?: string };
+
+/** A notebook's library is checked at most this often unless forced: 7 days. */
+export const RETRACTION_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function isActiveReferenceJob(job: Pick<ReferenceJobStatus, "state">) {
   return job.state === "queued" || job.state === "running";
