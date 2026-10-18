@@ -292,12 +292,12 @@ describe("commands", () => {
     assert.equal(sameIdOtherUser.status, 201);
   });
 
-  test("kinds from later milestones answer 404 without being stored", async () => {
+  test("results that failed for the attempt are not stored, so a replay can succeed", async () => {
     const { docId, editor } = await setup();
     const cmd = { id: id("cmd"), kind: "revision.create", docId, body: { label: "v1" } };
-    const first = await command(editor, cmd);
-    assert.equal(first.status, 404);
-    assert.equal((first.body as any).error.code, "not-found");
+    // The harness's stub sync service cannot answer, so the real handler fails with a 500.
+    const first = await request(h, "POST", "/v1/commands", editor, cmd);
+    assert.equal(first.status, 500);
     const stored = await h.context.db.selectFrom("commands").select("id").where("id", "=", cmd.id).execute();
     assert.equal(stored.length, 0);
 

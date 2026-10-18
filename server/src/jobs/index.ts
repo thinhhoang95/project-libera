@@ -2,6 +2,7 @@
 // module exports a function registered here with its interval.
 
 import type { ServerContext } from "../context.js";
+import { checkpointJob } from "./checkpoints.js";
 import { compactionJob } from "./compaction.js";
 import { digestJob } from "./digest.js";
 
@@ -17,7 +18,7 @@ export interface JobRunner {
   stop(): void;
 }
 
-export const jobs: Job[] = [compactionJob, digestJob];
+export const jobs: Job[] = [compactionJob, checkpointJob, digestJob];
 
 export function startJobs(context: ServerContext, options: { enabled: boolean }): JobRunner {
   const timers: NodeJS.Timeout[] = [];
