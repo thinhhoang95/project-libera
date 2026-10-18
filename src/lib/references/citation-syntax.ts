@@ -985,10 +985,13 @@ class Analyzer {
         let backslashes = 0;
         while (close - backslashes > index && source.charCodeAt(close - backslashes - 1) === 92) backslashes += 1;
         if (backslashes % 2 === 1) { search = close + 1; continue; }
-        if ((!content && !source.slice(index, close).trim()) || source.slice(close + pair.close.length, end).trim()) {
+        // Text after the closer fails every opener up to this line too (they
+        // all meet this closer first); an empty body fails only this opener.
+        if (source.slice(close + pair.close.length, end).trim()) {
           this.mathFailsBefore.set(pair, current);
           return { last: -1, failed: current };
         }
+        if (!content && !source.slice(index, close).trim()) return { last: -1, failed: current };
         return { last: current, failed: -1 };
       }
       content ||= source.slice(index, end).trim() !== "";
