@@ -504,7 +504,12 @@ export class SyncClient {
     this.refreshTimer = null;
     const expiresAt = this.options.tokenProvider.accessTokenExpiresAt?.() ?? null;
     if (expiresAt === null) return;
-    const delay = Math.max(0, expiresAt - this.clock.now() - (this.options.refreshLeadMs ?? 60_000));
+    // Refresh a minute early, but never more than half the token's remaining
+    // life: with a short-lived token (or a skewed clock) a fixed lead would
+    // schedule every refresh immediately and loop.
+    const remaining = expiresAt - this.clock.now();
+    const lead = Math.min(this.options.refreshLeadMs ?? 60_000, Math.max(0, remaining / 2));
+    const delay = Math.max(1_000, remaining - lead);
     this.refreshTimer = this.clock.setTimeout(() => {
       this.refreshTimer = null;
       void this.refreshLiveToken();
