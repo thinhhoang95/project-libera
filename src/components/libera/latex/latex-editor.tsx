@@ -6,6 +6,7 @@ import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemir
 import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { EditorState, Prec, Transaction } from "@codemirror/state";
+import { ySyncAnnotation } from "y-codemirror.next";
 import {
   EditorView, crosshairCursor, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter,
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
@@ -26,6 +27,7 @@ import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state
 import type { LatexTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
 import { useCodeMirrorReview } from "@/components/libera/use-editor-review";
+import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 import { LatexAiMenu, type LatexAiMenuState } from "./latex-ai-menu";
 import { LatexChangeBar } from "./latex-change-bar";
 import { getLatexSnippets } from "./latex-snippets-store";
@@ -61,6 +63,13 @@ type LatexEditorProps = {
   onAiError: (message: string) => void;
   /** Offers the selected code, without its shared indentation, to save as a snippet. */
   onAddSnippet: (body: string) => void;
+  /**
+   * Shared tab: the document is the shared Y.Text. `value` is ignored, edits
+   * go through the binding (with a Y.UndoManager instead of history()), and
+   * `onChange` only reports the text for analysis; it is not a draft.
+   * Fixed for the editor's lifetime; key the editor on its generation.
+   */
+  collab?: SharedCodeMirrorSource;
 };
 
 const DRAFT_DELAY_MS = 250;
@@ -96,7 +105,7 @@ function toEditorDiagnostics(state: EditorState, diagnostics: LatexDiagnostic[])
 
 export function LatexEditor({
   documentPath, fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, diagnostics, project, editorRef,
-  onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet,
+  onChange, onEdit, onRegisterDraft, onViewStateChange, onCompile, onForwardSync, onAiError, onAddSnippet, collab,
 }: LatexEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -110,7 +119,8 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName });
+  const initialRef = useRef({ value, initialViewState, fileName, collab });
+  const shared = !!collab;
 
   const publishDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
@@ -145,8 +155,11 @@ export function LatexEditor({
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const { value: initialValue, initialViewState: restore, fileName: name } = initialRef.current;
+    const { initialViewState: restore, fileName: name } = initialRef.current;
     const isTex = !/\.(bib|sty|cls)$/i.test(name);
+    // Created with the view so the two live and die together (Strict Mode, tab switches).
+    const binding = initialRef.current.collab?.create() ?? null;
+    const initialValue = binding ? binding.initialText : initialRef.current.value;
 
     const appKeymap = Prec.highest(keymap.of([
       { key: "Mod-Enter", run: () => { callbacks.current.onCompile(); return true; } },
@@ -165,7 +178,9 @@ export function LatexEditor({
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightSpecialChars(),
-        history(),
+        // Shared tabs undo through the binding's Y.UndoManager, which never
+        // reverts a collaborator's edit.
+        ...(binding ? [binding.extension] : [history()]),
         foldGutter({ openText: "▾", closedText: "▸" }),
         drawSelection(),
         dropCursor(),
@@ -189,10 +204,16 @@ export function LatexEditor({
         latexReviewExtension(),
         latexSyncExtension(),
         ...(isTex ? [latexMathPreview()] : []),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": "LaTeX source editor", spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          if (update.docChanged && binding) {
+            // Local and remote edits both change what the outline and the
+            // compile target analysis see; only local ones count as editing.
+            if (!update.transactions.some((transaction) => transaction.annotation(ySyncAnnotation) !== undefined)) callbacks.current.onEdit();
+            if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+            draftTimerRef.current = setTimeout(() => startTransition(() => { publishDraft(); }), DRAFT_DELAY_MS);
+          } else if (update.docChanged) {
             const remote = update.transactions.some((transaction) => transaction.annotation(Transaction.remote));
             if (!remote) {
               callbacks.current.onEdit();
@@ -228,6 +249,7 @@ export function LatexEditor({
     });
 
     const created = new EditorView({ state, parent: host });
+    binding?.attach(created);
     viewRef.current = created;
     setView(created);
     let restoreFrame: number | undefined;
@@ -257,6 +279,7 @@ export function LatexEditor({
       if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
+      binding?.destroy();
       created.destroy();
       viewRef.current = null;
     };
@@ -287,16 +310,20 @@ export function LatexEditor({
   }, [editorRef, view]);
 
   useLayoutEffect(() => {
+    // A shared tab's draft is read from the Y.Text, never from the editor.
+    if (shared) return;
     const unregister = onRegisterDraft?.(publishDraft);
     window.addEventListener("pagehide", publishDraft);
     return () => { unregister?.(); window.removeEventListener("pagehide", publishDraft); };
-  }, [onRegisterDraft, publishDraft]);
+  }, [onRegisterDraft, publishDraft, shared]);
 
   // Adopt outside changes to the draft (for example a reload), ignoring the
   // echoes of drafts this editor published itself.
   useLayoutEffect(() => {
     const current = viewRef.current;
-    if (!current) return;
+    // On a shared tab remote edits arrive through the binding as minimal
+    // changes; a whole-document replacement would reset every caret.
+    if (!current || shared) return;
     const echo = publishedRef.current.indexOf(value);
     if (echo >= 0) {
       publishedRef.current.splice(0, echo + 1);
@@ -305,16 +332,18 @@ export function LatexEditor({
     if (value === current.state.doc.toString()) return;
     lastPublishedRef.current = value;
     current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: value }, annotations: Transaction.remote.of(true) });
-  }, [value]);
+  }, [value, shared]);
 
   // Review comments: accepted/undone review results replace the whole text.
   // The tab draft is already updated, so this mirrors it without republishing.
   const applyReviewText = useCallback((text: string) => {
     const current = viewRef.current;
-    if (!current || text === current.state.doc.toString()) return;
+    // Shared tabs: the workspace applied the review result to the Y.Text as
+    // minimal edits, and the binding already brought it here.
+    if (!current || shared || text === current.state.doc.toString()) return;
     lastPublishedRef.current = text;
     current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: text }, annotations: Transaction.remote.of(true) });
-  }, []);
+  }, [shared]);
   useCodeMirrorReview(view, applyReviewText);
 
   useEffect(() => {

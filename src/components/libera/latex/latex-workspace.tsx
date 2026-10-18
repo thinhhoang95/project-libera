@@ -14,6 +14,8 @@ import { usesPackage } from "@/lib/latex/snippets";
 import type { SynctexPdfLocation, SynctexSourceLocation } from "@/lib/latex/synctex";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
+import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
+import { getSharedDocRegistry } from "@/lib/collab/client/registry";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu";
@@ -36,6 +38,8 @@ type LatexWorkspaceProps = {
   onSave: () => Promise<void>;
   onSetViewState: (patch: LatexTabViewState) => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  /** Shared tab: the editor binds the shared Y.Text and never publishes drafts. */
+  collab?: SharedCodeMirrorSource;
 };
 
 const AUTO_COMPILE_DELAY_MS = 1200;
@@ -70,12 +74,19 @@ const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();
 /** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
 
-export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile }: LatexWorkspaceProps) {
+/** The live text of another open tab for compile staging: shared tabs always (the disk copy may lag), others when edited. */
+function stagedDraft(other: OpenTab): string | null {
+  const shared = getSharedDocRegistry().readTabText(other.id);
+  if (shared !== null) return shared;
+  return other.draft === other.saved ? null : other.draft;
+}
+
+export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const viewState = tab.viewState?.latex;
   const isTex = isCompilableLatexPath(filePath);
   const editorRef = useRef<LatexEditorHandle | null>(null);
-  const [draftForAnalysis, setDraftForAnalysis] = useState(tab.draft);
+  const [draftForAnalysis, setDraftForAnalysis] = useState(() => (collab ? getSharedDocRegistry().readTabText(tab.id) : null) ?? tab.draft);
   const knownLatexPaths = useMemo(() => new Set(files.filter((file) => file.fileType === "latex").map((file) => file.path)), [files]);
   // The file to typeset: a "% !TEX root" comment, the file itself when it is
   // a complete document, or else the main file that includes this chapter.
@@ -125,10 +136,14 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   useEffect(() => registerLatexEditor(tab.id, editorRef), [tab.id]);
 
+  const shared = !!collab;
   const handleChange = useCallback((value: string) => {
-    onSetDraft(value);
+    // A shared editor reports its text for analysis only; its edits are
+    // already in the Y.Text, and re-applying a snapshot could undo a
+    // collaborator's newer edit.
+    if (!shared) onSetDraft(value);
     setDraftForAnalysis(value);
-  }, [onSetDraft]);
+  }, [onSetDraft, shared]);
 
   /* ---- Compiling ------------------------------------------------------------ */
 
@@ -140,8 +155,9 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       read: () => {
         const drafts: Record<string, string> = { [filePath]: editorRef.current?.text() ?? tab.draft };
         for (const other of latest.current.readOpenTabs()) {
-          if (other.id === tab.id || other.untitled || other.file.fileType !== "latex" || other.draft === other.saved) continue;
-          drafts[other.file.path] = other.draft;
+          if (other.id === tab.id || other.untitled || other.file.fileType !== "latex") continue;
+          const staged = stagedDraft(other);
+          if (staged !== null) drafts[other.file.path] = staged;
         }
         return { engine: latest.current.engineSetting, drafts };
       },
@@ -389,6 +405,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       onChange={handleChange}
       onEdit={scheduleAutoCompile}
       onRegisterDraft={onRegisterDraft}
+      collab={collab}
       onViewStateChange={onSetViewState}
       onCompile={compile}
       onForwardSync={(location) => void forwardSync(location)}

@@ -40,6 +40,7 @@ import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } fro
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
+import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -124,12 +125,12 @@ export function LiberaApp({
   }, []);
 
   useEffect(() => {
-    const unsavedDocumentCount = workspace.tabs.filter(
-      (tab) => isTextFileType(tab.file.fileType) && tab.draft !== tab.saved,
-    ).length;
+    // Shared tabs count as 0: their edits are already in the host's SQLite.
+    const sharedTabIds = workspace.sharedTabIds;
+    const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId));
 
     void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
-  }, [workspace.tabs]);
+  }, [workspace.tabs, workspace.sharedTabIds]);
 
   useEffect(() => {
     const animationFrame = window.requestAnimationFrame(() => {
@@ -383,8 +384,8 @@ export function LiberaApp({
         onSaveEditedImageCopy={workspace.saveEditedImageCopy}
         onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
         onSave={workspace.saveActiveTab}
-        onSetDraft={(value) => {
-          if (tab) workspace.setTabDraft(tab.id, value);
+        onSetDraft={(value, options) => {
+          if (tab) workspace.setTabDraft(tab.id, value, options);
         }}
         onRegisterEditorDraft={workspace.registerEditorDraft}
         onSetViewState={workspace.setActiveTabViewState}

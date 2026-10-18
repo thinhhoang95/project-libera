@@ -36,6 +36,8 @@ import { MarkdownLinkInput } from "./markdown-link-input";
 import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
 import { NoteLinksButton } from "./note-links-dialog";
+import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
+import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 
 type Props = {
   files?: LiberaFileNode[];
@@ -61,6 +63,13 @@ type Props = {
   /** Markdown to insert at the saved selection once, e.g. a finished snip. */
   pendingInsertion?: PendingVisualInsertion;
   onPendingInsertionHandled?: (id: string) => void;
+  /**
+   * Shared tab: the editor starts empty and the Visual bridge builds and
+   * syncs it from the shared Y.Text (decision D1). `value` and `onChange`
+   * are unused; undo goes through the bridge. Fixed for the editor's
+   * lifetime; key the editor on its generation.
+   */
+  collab?: SharedVisualSource;
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -115,7 +124,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -153,10 +162,17 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     }
   }, [onViewStateChange]);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
+  // The bound bridge on a shared tab (set once the editor exists).
+  const sharedRef = useRef<SharedVisualHandle | null>(null);
+  const shared = !!collab;
+  const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
     ...createMarkdownExtensions(documentPath),
+    // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
+    // from recording remote edits (shared tabs only).
+    ...(shared ? [TiptapCollabHistory] : []),
     HighlightTool,
     TiptapFind,
     TiptapReview,
@@ -171,11 +187,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers]);
+  ]; }, [documentPath, mathMarkers, shared]);
 
   const editor = useEditor({
     extensions,
-    content: value,
+    // A shared note starts empty: the bridge builds the document block by
+    // block, which is linear where a whole-note parse is not.
+    content: shared ? "" : value,
     contentType: "markdown",
     immediatelyRender: false,
     shouldRerenderOnTransaction: false,
@@ -207,6 +225,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           return true;
         }
         if (!editor || editor.isActive("codeBlock") || editor.isActive("code")) return false;
+        // Libera's own paste handlers dispatch ordinary transactions; tag
+        // them so the shared history records a paste.
+        markPaste();
         const markdown = event.clipboardData?.getData("text/markdown");
         if (smartPaste && smartPasteClipboard(editor, view.state.selection, event.clipboardData, markdown, mathMarkers)) {
           event.preventDefault();
@@ -263,7 +284,17 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     },
   });
 
-  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft);
+  useLayoutEffect(() => {
+    if (!editor || !collab) return;
+    const handle = collab.attach(editor);
+    sharedRef.current = handle;
+    return () => {
+      if (sharedRef.current === handle) sharedRef.current = null;
+      handle.destroy();
+    };
+  }, [editor, collab]);
+  const sharedDraft = useMemo(() => (collab ? { text: () => sharedRef.current?.text() ?? lastValue.current } : null), [collab]);
+  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft, sharedDraft);
   useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
   useMarkdownHeadingIndex(value, (markdown, offsets) => {
@@ -322,10 +353,11 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
     handledInsertionRef.current = pendingInsertion.id;
     const range = getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+    markPaste();
     replaceTiptapRangeWithMarkdown(editor, range, pendingInsertion.markdown);
     editor.commands.focus();
     onPendingInsertionHandled?.(pendingInsertion.id);
-  }, [editor, pendingInsertion, onPendingInsertionHandled]);
+  }, [editor, pendingInsertion, onPendingInsertionHandled, markPaste]);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -472,6 +504,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           : await apiRequest<MarkdownImageAssetPayload>("/api/markdown-assets", { method: "POST", body: formData, signal: upload.controller.signal });
         if (editor.isDestroyed || upload.controller.signal.aborted) return;
         // The position is mapped through edits made while the upload is pending.
+        markPaste();
         editor.chain().insertContentAt(upload.pos, { type: "image", attrs: { src: payload.assetPath, alt: file.name.replace(/\.[^.]+$/, "") } }).run();
       }
     } catch (cause) {
