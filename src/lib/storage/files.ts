@@ -57,6 +57,7 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
 /** Reads a file for a tab. Text files come with their content, except plain
  * text files that are too large or turn out to be binary: those throw when
@@ -109,6 +110,8 @@ export async function createMarkdownFile(
   const targetParts = [...parent.pathParts, safeName];
   const targetPath = filePathFromParts(safeNotebook, targetParts);
   const parentDirectoryPath = itemPath(safeNotebook, parent.pathParts);
+  // Files in a shared notebook are created through the collab host (manifest).
+  assertNotSharedItem(safeNotebook, targetParts);
 
   if (!(await pathExists(parentDirectoryPath))) {
     throw new StorageError("Notebook does not exist.", 404);
@@ -135,6 +138,8 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
     throw new StorageError("Only text files can be edited.");
   }
 
+  // A shared file is a working copy of a CRDT document; edits go through the host.
+  assertNotSharedItem(notebook, pathParts);
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
   if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content);
   notifySearchChanges([relativePath]);
@@ -161,6 +166,8 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   const nextPath = filePathFromParts(safeNextNotebook, nextParts);
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(safeNextNotebook, nextParts);
+  assertNotSharedItem(current.notebook, current.pathParts);
+  assertNotSharedItem(safeNextNotebook, nextParts);
 
   if (await pathExists(nextPath)) {
     throw new StorageError("Destination file already exists.", 409);
@@ -200,6 +207,7 @@ export async function createFolder(parentPath: string, name: string) {
   await assertDirectoryExists(parentTargetPath, "Parent folder was not found.");
 
   const targetPath = itemPath(parent.notebook, [...parent.pathParts, safeName]);
+  assertNotSharedItem(parent.notebook, [...parent.pathParts, safeName]);
 
   if (await pathExists(targetPath)) {
     throw new StorageError("Folder already exists.", 409);
@@ -223,6 +231,8 @@ export async function renameFolder(relativePath: string, nextName: string) {
   const currentPath = itemPath(current.notebook, current.pathParts);
   const nextParts = [...parentParts, safeNextName];
   const nextPath = itemPath(current.notebook, nextParts);
+  assertNotSharedItem(current.notebook, current.pathParts);
+  assertNotSharedItem(current.notebook, nextParts);
 
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
@@ -292,6 +302,7 @@ export async function archiveFolder(relativePath: string) {
   }
 
   const currentPath = itemPath(current.notebook, current.pathParts);
+  assertNotSharedItem(current.notebook, current.pathParts);
   await assertDirectoryExists(currentPath, "Folder was not found.");
 
   const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
@@ -328,6 +339,7 @@ export async function deleteFolder(relativePath: string) {
   }
 
   const targetPath = itemPath(current.notebook, current.pathParts);
+  assertNotSharedItem(current.notebook, current.pathParts);
   await assertDirectoryExists(targetPath, "Folder was not found.");
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rm(targetPath, { recursive: true });
@@ -369,6 +381,8 @@ export async function moveFileToDirectory(
   const nextPath = filePathFromParts(destination.notebook, nextParts);
   const currentRelativePath = relativeFilePath(current.notebook, current.pathParts);
   const nextRelativePath = relativeFilePath(destination.notebook, nextParts);
+  assertNotSharedItem(current.notebook, current.pathParts);
+  assertNotSharedItem(destination.notebook, nextParts);
 
   if (currentPath === nextPath) {
     return readLiberaFile(nextRelativePath);
@@ -405,6 +419,7 @@ export async function archiveFile(relativePath: string) {
     throw new StorageError("File is already archived.");
   }
 
+  assertNotSharedItem(current.notebook, current.pathParts);
   const archiveDirectoryPath = itemPath(current.notebook, [ARCHIVE_DIR]);
   await mkdir(archiveDirectoryPath, { recursive: true });
 
@@ -450,6 +465,8 @@ export async function copyFileToDirectory(
   const currentFileType = assertSupportedFileName(current.name);
   assertSupportedFileName(requestedName);
   const destinationPath = itemPath(destination.notebook, destination.pathParts);
+  // Copying out of a shared notebook is a read; copying into one is a write.
+  assertNotSharedItem(destination.notebook, [...destination.pathParts, requestedName]);
 
   await assertDirectoryExists(destinationPath, "Destination folder was not found.");
 
@@ -478,6 +495,7 @@ export async function deleteFile(relativePath: string) {
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   const fileType = assertSupportedFileName(name);
+  assertNotSharedItem(notebook, pathParts);
 
   if (fileType === "pdf") await migratePdfAnnotations(notebook, pathParts);
   await rm(filePathFromParts(notebook, pathParts));
@@ -528,6 +546,8 @@ export async function writeUploadedFile(
 
   const targetParts = [...destination.pathParts, safeName];
   const targetPath = filePathFromParts(safeNotebook, targetParts);
+  // Uploads, generated images and gallery saves into notebooks land here.
+  assertNotSharedItem(safeNotebook, targetParts);
 
   if (await pathExists(targetPath)) {
     throw new StorageError(`File already exists: ${safeName}`, 409);
@@ -554,6 +574,8 @@ export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdit
   if (!hasEdits(edits)) {
     throw new StorageError("There are no changes to save.");
   }
+
+  assertNotSharedItem(notebook, pathParts);
 
   const { format, extension } = editedPhotoFormat(name);
   const body = await renderEditedPhoto(filePathFromParts(notebook, pathParts), edits, format);

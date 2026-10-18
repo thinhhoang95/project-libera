@@ -1,4 +1,5 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -686,6 +687,9 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
     throw new ToolError(`${resolved.path} cannot be written: only Markdown (.md), LaTeX (.tex, .bib) and plain-text files can be edited.`);
   }
   if (resolved.pathParts[0] === ARCHIVE_DIR) throw new ToolError("Files in the _archive folder cannot be changed.");
+  if (isSharedNotebookPath(resolved.path)) {
+    throw new ToolError(`${resolved.path} is in a shared notebook, which the agent cannot change yet. Describe the change to the user instead.`);
+  }
   if (context.permission === "open-files") {
     if (creating) throw new ToolError("You can only modify files that are open in the editor, so you cannot create new files. Tell the user what file you would create, or ask them to switch the permission to \"Modify all files in Notebook/Folder\".");
     if (!context.openFiles.has(resolved.path)) {
@@ -699,6 +703,9 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
 }
 
 async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean }) {
+  // Shared files are CRDT working copies: writing them here would bypass the
+  // host and lose attribution (SharedDocumentError, 409 shared-document).
+  assertNotSharedItem(resolved.notebook, resolved.pathParts);
   if (!context.snapshots.has(resolved.path)) {
     // Keep what was on disk (and any unsaved draft the agent built on) for undo.
     let disk: string | null = previous.fromDraft ? null : previous.content;
