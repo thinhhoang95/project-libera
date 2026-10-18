@@ -22,7 +22,13 @@ export type TrackedChange = {
   mode: "applied" | "preview"; block: boolean;
   from: number; to: number; other: Fragment;
   showActions: boolean;
+  /** Who proposed the change (shared documents); rendered as a coloured label. */
+  author?: ChangeAuthor;
+  /** When the change was proposed, in milliseconds since the epoch. */
+  createdAt?: number;
 };
+/** `kind: "ai"` marks AI acting for `name` ("AI · on behalf of name"). */
+export type ChangeAuthor = { name: string; color?: string; kind?: "user" | "ai" };
 export type ChangeDecider = (groups: string[], decision: ChangeDecision) => void;
 export type TiptapChangesState = { changes: TrackedChange[]; decide?: ChangeDecider; decorations: DecorationSet };
 export type TiptapChangesMeta =
@@ -229,11 +235,11 @@ function mapChanges(changes: TrackedChange[], tr: Transaction) {
 
 /** Decision units: applied hunks individually, previews per suggestion. */
 export function tiptapChangeUnits(changes: readonly TrackedChange[]) {
-  const units = new Map<string, { group: string; ids: string[]; from: number; source: ChangeSource; label?: string }>();
+  const units = new Map<string, { group: string; ids: string[]; from: number; source: ChangeSource; label?: string; author?: ChangeAuthor }>();
   for (const change of changes) {
     const unit = units.get(change.group);
     if (unit) { unit.ids.push(change.id); unit.from = Math.min(unit.from, change.from); }
-    else units.set(change.group, { group: change.group, ids: [change.id], from: change.from, source: change.source, label: change.label });
+    else units.set(change.group, { group: change.group, ids: [change.id], from: change.from, source: change.source, label: change.label, ...(change.author ? { author: change.author } : {}) });
   }
   return [...units.values()].sort((a, b) => a.from - b.from);
 }
@@ -299,6 +305,13 @@ function contentWidget(pos: number, side: number, key: string, className: string
   }, { side, key, marks: [], ignoreSelection: true, stopEvent: () => true });
 }
 
+// Author colours come from collaborators, so only plain colour values reach a style attribute.
+const SAFE_COLOR = /^(#[0-9a-f]{3,8}|(rgb|hsl)a?\([\d\s.,%]+\)|[a-z]{3,20})$/i;
+const authorColor = (author?: ChangeAuthor) => (author?.color && SAFE_COLOR.test(author.color) ? author.color : undefined);
+export function changeAuthorLabel(author: ChangeAuthor) {
+  return author.kind === "ai" ? `AI · on behalf of ${author.name}` : author.name;
+}
+
 function actionsWidget(change: TrackedChange, ids: string[]) {
   return Decoration.widget(change.to, (view) => {
     const root = document.createElement(change.block ? "div" : "span");
@@ -306,6 +319,20 @@ function actionsWidget(change: TrackedChange, ids: string[]) {
     root.contentEditable = "false";
     root.setAttribute("role", "group");
     root.setAttribute("aria-label", change.label ? `${change.label} actions` : "Proposed change actions");
+    if (change.author) {
+      const author = document.createElement("span");
+      author.className = "libera-change-author";
+      const color = authorColor(change.author);
+      if (color) author.style.setProperty("--libera-change-author", color);
+      const dot = document.createElement("span");
+      dot.className = "libera-change-author-dot";
+      dot.setAttribute("aria-hidden", "true");
+      // Inline styles: the shared stylesheet has no rules for author labels yet.
+      Object.assign(dot.style, { display: "inline-block", width: "0.55em", height: "0.55em", borderRadius: "50%", marginInlineEnd: "4px", backgroundColor: color ?? "currentColor" });
+      author.style.paddingInline = "6px 2px";
+      author.append(dot, changeAuthorLabel(change.author));
+      root.append(author);
+    }
     if (change.label) {
       const label = document.createElement("span");
       label.className = "libera-change-actions-label";
@@ -326,7 +353,7 @@ function actionsWidget(change: TrackedChange, ids: string[]) {
       root.append(button);
     }
     return root;
-  }, { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}`, marks: [], ignoreSelection: true, stopEvent: () => true });
+  }, { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}:${change.author ? `${change.author.kind ?? ""}:${change.author.name}:${change.author.color ?? ""}` : ""}`, marks: [], ignoreSelection: true, stopEvent: () => true });
 }
 
 function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], documentPath: string) {
@@ -335,15 +362,18 @@ function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], docum
   for (const change of changes) {
     const inDocument = change.mode === "applied" ? "inserted" : "deleted";
     const shown = change.mode === "applied" ? "deleted" : "inserted";
+    const color = authorColor(change.author);
+    // Authored changes expose their author's colour to CSS as --libera-change-author.
+    const authored = color ? { style: `--libera-change-author: ${color}` } : {};
     if (change.from < change.to) {
       if (change.block) {
         for (let pos = change.from; pos < change.to;) {
           const node = doc.nodeAt(pos);
           if (!node) break;
-          decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: `libera-change libera-change-${inDocument}-block` }));
+          decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: `libera-change libera-change-${inDocument}-block`, ...authored }));
           pos += node.nodeSize;
         }
-      } else decorations.push(Decoration.inline(change.from, change.to, { class: `libera-change libera-change-${inDocument}` }));
+      } else decorations.push(Decoration.inline(change.from, change.to, { class: `libera-change libera-change-${inDocument}`, ...authored }));
     }
     if (change.other.size) {
       // Originals precede the proposal they were replaced by; previewed
