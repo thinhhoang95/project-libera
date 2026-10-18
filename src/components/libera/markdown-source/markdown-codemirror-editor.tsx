@@ -13,8 +13,9 @@ import {
 } from "@/lib/markdown-codemirror/commands";
 import { setFindMatches } from "@/lib/markdown-codemirror/find";
 import { citationEditorHandlers, setCitationLibrary } from "@/lib/markdown-codemirror/citations";
+import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import { citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
-import { citationInsertion, mayTriggerCitation } from "@/lib/references/reference-suggestions";
+import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
 import type { Citation } from "@/lib/references/types";
 import { liberaMathMarkers } from "@/lib/markdown-codemirror/libera-syntax";
 import { markdownSourceSetup } from "@/lib/markdown-codemirror/setup";
@@ -38,7 +39,7 @@ import {
   CitationPopup, citationPopupPosition, openCitationAttachment, useSingleCitationDocument, type CitationPopupHandle,
 } from "../references/citation-popup";
 import { CitationCardItems } from "../references/citation-hover-card";
-import { useReferenceRender } from "../references/reference-render-context";
+import { referenceKeyResolver, useReferenceRender } from "../references/reference-render-context";
 import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "../references/pdf-quote-cite";
 import { quoteBlockInsertion } from "@/lib/references/pdf-quote";
 import type { MarkdownSourceEditorProps } from "./types";
@@ -61,7 +62,7 @@ type FileLinkPopupContext = {
   y: number;
 };
 
-type CitationPopupContext = { from: number; to: number; query: string; insideCitation: boolean; citedKeys: string[]; x: number; y: number };
+type CitationPopupContext = { from: number; to: number; query: string; insideCitation: boolean; citedKeys: string[]; x: number; y: number; before: string };
 type CitationTooltip = { id: number; dom: HTMLElement; citation: Citation };
 
 /** The shared citation card's contents, inside a CodeMirror hover tooltip. */
@@ -130,6 +131,9 @@ export function MarkdownCodeMirrorEditor({
   // The `@` citation popup and citation hover tooltips (references/citation-popup.tsx).
   const [citationPopup, setCitationPopup] = useState<CitationPopupContext | null>(null);
   const citationPopupRef = useRef<CitationPopupContext | null>(null);
+  /** The `@key` the popup just inserted (it must not reopen the popup), and the library's key check for cited keys. */
+  const citationInsertedRef = useRef<{ from: number; query: string } | null>(null);
+  const citationResolverRef = useRef<((key: string) => boolean) | null>(null);
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const [citationTooltips, setCitationTooltips] = useState<CitationTooltip[]>([]);
   const referenceRender = useReferenceRender();
@@ -237,18 +241,24 @@ export function MarkdownCodeMirrorEditor({
         const text = current.state.doc.toString();
         const mathMarkers = latest.current.mathMarkers;
         const trigger = citationTriggerAt(text, cursor, { mathMarkers });
-        if (trigger) {
-          const same = previous?.from === trigger.from;
-          next = {
-            from: trigger.from,
-            to: cursor,
-            query: trigger.query,
-            insideCitation: trigger.insideCitation,
-            citedKeys: same ? previous.citedKeys : documentCitedKeys(text, { mathMarkers }),
-            ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(adapter.clientPointForOffset(trigger.from))),
-          };
+        const dismissed = citationInsertedRef.current;
+        // The `@key` a choice just inserted is not a new query: stay closed until the caret leaves it.
+        if (!(trigger && dismissed && dismissed.from === trigger.from && dismissed.query === trigger.query)) {
+          citationInsertedRef.current = null;
+          if (trigger) {
+            const same = previous?.from === trigger.from;
+            next = {
+              from: trigger.from,
+              to: cursor,
+              query: trigger.query,
+              insideCitation: trigger.insideCitation,
+              citedKeys: same ? previous.citedKeys : documentCitedKeys(text, { mathMarkers, resolves: citationResolverRef.current }),
+              ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(adapter.clientPointForOffset(trigger.from))),
+              before: trigger.from > 0 ? text[trigger.from - 1] : "",
+            };
+          }
         }
-      }
+      } else citationInsertedRef.current = null;
     }
     if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
     if (!previous && !next) return;
@@ -357,13 +367,16 @@ export function MarkdownCodeMirrorEditor({
       return true;
     };
     const popupOpen = () => fileLinkPopupRef.current !== null;
-    const citationKey = (key: string) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key }) ?? false);
+    const citationKey = (key: string, shiftKey = false) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key, shiftKey }) ?? false);
 
     const state = EditorState.create({
       doc: initial.value,
       extensions: [
-        // The citation popup takes the arrows, Enter, Tab and Escape while open.
-        Prec.highest(keymap.of(["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })))),
+        // The citation popup takes the arrows, Enter (Shift+Enter: narrative), Tab and Escape while open.
+        Prec.highest(keymap.of([
+          ...["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })),
+          { key: "Shift-Enter", run: citationKey("Enter", true) },
+        ])),
         // The file-link picker takes the arrows, Enter and Escape while open.
         Prec.highest(keymap.of([
           { key: "Escape", run: () => { if (!popupOpen()) return false; closeFileLinkPopup(); return true; } },
@@ -590,8 +603,28 @@ export function MarkdownCodeMirrorEditor({
     if (view) view.dispatch({ effects: mathCompartment.reconfigure(liberaMathMarkers.of(mathMarkers ?? {})) });
   }, [view, mathMarkers, mathCompartment]);
 
+  // The Document style control's request (references/document-style.ts): one undoable edit of the front matter.
+  useEffect(() => {
+    if (!view || !activeFilePath) return;
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<DocumentStyleRequestDetail>).detail;
+      if (detail.path !== activeFilePath || detail.handled) return;
+      detail.handled = true;
+      const text = view.state.doc.toString();
+      const next = writeDocumentStyleForPath(activeFilePath, text, detail.style);
+      if (next === text) return;
+      view.dispatch({ changes: textChange(text, next), annotations: isolateHistory.of("full"), userEvent: "input" });
+      readDraft();
+    };
+    window.addEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+  }, [view, activeFilePath, readDraft]);
+
   // Citation chips mark keys the notebook's library does not know.
   const citationLibraryKeys = referenceRender?.library ? referenceRender.entriesByKey : null;
+  useLayoutEffect(() => {
+    citationResolverRef.current = referenceKeyResolver(referenceRender);
+  }, [referenceRender]);
   useEffect(() => {
     if (view) view.dispatch({ effects: setCitationLibrary.of(citationLibraryKeys ? { has: (key) => Object.hasOwn(citationLibraryKeys, key) } : null) });
   }, [view, citationLibraryKeys]);
@@ -741,12 +774,14 @@ export function MarkdownCodeMirrorEditor({
 
   // Citation popup -------------------------------------------------------------
 
-  function insertCitation(key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) {
+  function insertCitation(key: string, { locator, narrative, pageLocator }: { locator: boolean; narrative?: boolean; pageLocator?: string }) {
     const current = viewRef.current;
     const popup = citationPopupRef.current;
     if (!current || !popup) return;
-    // `[@key]` replaces `@query`; inside a citation `@key` replaces it. One undo step.
-    const insertion = citationInsertion(key, popup.insideCitation, locator, pageLocator);
+    // `[@key]` replaces `@query`; inside a citation, or narrative (Shift+Enter), `@key` does. One undo step.
+    const insertion = citationInsertion(key, popup.insideCitation, locator, { narrative, before: popup.before, pageLocator });
+    // An inserted `@key` (inside brackets or narrative) must not reopen the popup.
+    citationInsertedRef.current = insertion.text.startsWith("@") ? { from: popup.from, query: key } : null;
     closeCitationPopup();
     current.dispatch({
       changes: { from: popup.from, to: popup.to, insert: insertion.text },
@@ -835,6 +870,7 @@ export function MarkdownCodeMirrorEditor({
           citedKeys={citationPopup.citedKeys}
           x={citationPopup.x}
           y={citationPopup.y}
+          narrativeAllowed={narrativeInsertionAllowed(citationPopup.insideCitation, citationPopup.before)}
           onInsert={insertCitation}
           onClose={closeCitationPopup}
         />

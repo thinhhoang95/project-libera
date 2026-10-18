@@ -3,7 +3,9 @@ import { Fragment, Slice, type Node as ProseMirrorNode, type ResolvedPos, type S
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import Suggestion, { exitSuggestion, type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
 import { escapedAt } from "./math-markers";
-import { CITATION_MAX_LENGTH, citationTriggerAt, parseCitationToken, serializeCitation } from "./references/citation-syntax";
+import {
+  CITATION_MAX_LENGTH, citationTriggerAt, narrativeCitationAt, narrativeMayFollow, parseAnyCitation, parseCitationToken, serializeCitation,
+} from "./references/citation-syntax";
 import type { Citation } from "./references/types";
 
 /* Citations in the Visual (TipTap) editor (plan.md §1.3, §4.2, §4.3).
@@ -19,6 +21,18 @@ import type { Citation } from "./references/types";
  *
  * Pasting HTML from the preview reads `span.libera-citation[data-libera-citation]`;
  * typing or pasting a complete `[@key]` in text turns it into a node.
+ *
+ * A narrative citation (`@key`, `@key [p. 3]`) is the same node with
+ * `narrative: true` and the narrative token as `raw`. Markdown parses into it
+ * where the shared grammar allows (`narrativeCitationAt`: the `@` starts the
+ * text or follows whitespace, `[` or `(`); the node view shows an unresolved
+ * one as plain text. Typed or pasted plain text never becomes a narrative
+ * node (`@someone` in prose usually is not a citation): the `@` popup's
+ * Shift+Enter inserts one, and pasting the preview's HTML keeps one.
+ * Marked lexes emphasis and link text separately, so a narrative `@key` that
+ * starts such a run cannot see the `*` or `[` before it: inside link text it
+ * is rejected (`state.inLink`); at the start of emphasis it is accepted, where
+ * the preview would read text.
  *
  * The `@` popup uses @tiptap/suggestion, but whether it opens is decided by
  * the shared `citationTriggerAt` on a Markdown rendering of the caret's
@@ -66,7 +80,27 @@ export function findTextCitations(text: string) {
 /** The parsed citation of a node's `raw` (items empty when it no longer parses). */
 export function citationOfNode(node: ProseMirrorNode): Citation {
   const raw = String(node.attrs.raw ?? "");
-  return parseCitationToken(raw) ?? { items: [], raw };
+  return parseAnyCitation(raw) ?? { items: [], raw, ...(node.attrs.narrative ? { narrative: true } : {}) };
+}
+
+/**
+ * The narrative citation token starting at `text[index]` (an `@`), or null.
+ * `before` is the character before it when that is not in `text`.
+ */
+export function narrativeTokenAt(text: string, index = 0, before?: string) {
+  if (text[index] !== "@") return null;
+  const match = narrativeCitationAt(text, index, index > 0 ? text[index - 1] : before);
+  return match ? text.slice(index, match.end) : null;
+}
+
+/** Where Marked should stop its text run for a citation: the first `[`, or an `@` that may start a narrative citation. */
+export function citationTokenStart(src: string) {
+  const bracket = src.indexOf("[");
+  for (let at = src.indexOf("@"); at >= 0 && (bracket < 0 || at < bracket); at = src.indexOf("@", at + 1)) {
+    // At 0 the character before is not in `src`; the tokenizer checks it.
+    if (at === 0 || narrativeMayFollow(src[at - 1])) return at;
+  }
+  return bracket;
 }
 
 /** Turns complete citation tokens in pasted text (outside code and links) into citation nodes. */
@@ -115,6 +149,8 @@ export type TiptapCitationTrigger = {
   insideCitation: boolean;
   /** For `insideCitation`: the document text from the `[` to the `@`, e.g. `[see `. */
   open?: string;
+  /** The character before the `@` ("" at the start of the block; U+FFFC for an atom). */
+  before?: string;
 };
 
 /**
@@ -157,12 +193,22 @@ export function tiptapCitationTriggerAt($position: ResolvedPos): TiptapCitationT
       }
     }
   }
-  return { range: { from: start + at, to: start + caret }, query: trigger.query, insideCitation: false };
+  return { range: { from: start + at, to: start + caret }, query: trigger.query, insideCitation: false, before: at > 0 ? text[at - 1] : "" };
 }
 
-/** The `raw` of the node a popup choice inserts at a trigger. */
-export function citationRawForTrigger(trigger: Pick<TiptapCitationTrigger, "insideCitation" | "open">, key: string, pageLocator?: string) {
-  // `pageLocator` cites that page: `[@key, p. 12]`.
+/**
+ * The `raw` of the node a popup choice inserts at a trigger: `narrative`
+ * (Shift+Enter) gives `@key` where allowed, and `pageLocator` cites that page
+ * (`[@key, p. 12]`, or `@key [p. 12]` when narrative).
+ */
+export function citationRawForTrigger(
+  trigger: Pick<TiptapCitationTrigger, "insideCitation" | "open" | "before">,
+  key: string,
+  { narrative = false, pageLocator }: { narrative?: boolean; pageLocator?: string } = {},
+) {
+  if (narrative && !trigger.insideCitation && narrativeMayFollow(trigger.before)) {
+    return pageLocator ? serializeCitation({ narrative: true, items: [{ key, locator: pageLocator, label: "page" }] }) : `@${key}`;
+  }
   const item = pageLocator ? serializeCitation({ items: [{ key, locator: pageLocator, label: "page" }] }).slice(1, -1) : `@${key}`;
   if (trigger.insideCitation && trigger.open !== undefined) {
     const raw = `${trigger.open}${item}]`;
@@ -199,6 +245,12 @@ export const CitationNode = Node.create<CitationNodeOptions>({
         parseHTML: (element) => element.getAttribute("data-libera-citation") ?? element.textContent ?? "",
         renderHTML: () => ({}),
       },
+      /** A narrative citation (`@key`); `raw` is then the narrative token. */
+      narrative: {
+        default: false,
+        parseHTML: (element) => element.hasAttribute("data-libera-narrative") || (element.getAttribute("data-libera-citation") ?? "").startsWith("@"),
+        renderHTML: () => ({}),
+      },
     };
   },
 
@@ -215,13 +267,13 @@ export const CitationNode = Node.create<CitationNodeOptions>({
     return [{
       tag: "span[data-libera-citation]",
       priority: 100,
-      getAttrs: (element) => parseCitationToken((element as HTMLElement).getAttribute("data-libera-citation") ?? "") ? null : false,
+      getAttrs: (element) => parseAnyCitation((element as HTMLElement).getAttribute("data-libera-citation") ?? "") ? null : false,
     }];
   },
 
   renderHTML({ node }) {
     const raw = String(node.attrs.raw ?? "");
-    return ["span", { class: "libera-citation", "data-libera-citation": raw }, raw];
+    return ["span", { class: "libera-citation", "data-libera-citation": raw, ...(node.attrs.narrative ? { "data-libera-narrative": "" } : {}) }, raw];
   },
 
   addNodeView() {
@@ -232,17 +284,21 @@ export const CitationNode = Node.create<CitationNodeOptions>({
   markdownTokenizer: {
     name: CITATION_NODE_NAME,
     level: "inline",
-    // Marked's text rule already stops before every `[`; this keeps runs short.
-    start: (src: string) => src.indexOf("["),
-    tokenize(src: string, tokens: Array<{ raw?: string }>) {
+    // Marked's text rule already stops before every `[`; this keeps runs short
+    // and stops them before an `@` that may start a narrative citation.
+    start: citationTokenStart,
+    tokenize(this: { lexer?: { state?: { inLink?: boolean } } } | void, src: string, tokens: Array<{ raw?: string }>) {
       // Marked hands extensions each position before its own rules, so a
       // citation is claimed before the link rule can read `[` as a link.
-      const raw = citationTokenAt(src, 0, tokens.at(-1)?.raw?.slice(-1));
-      return raw ? { type: CITATION_NODE_NAME, raw, tokens: [] } : undefined;
+      const before = tokens.at(-1)?.raw?.slice(-1);
+      const raw = citationTokenAt(src, 0, before);
+      if (raw) return { type: CITATION_NODE_NAME, raw, tokens: [] };
+      const narrative = narrativeTokenAt(src, 0, before);
+      return narrative ? { type: CITATION_NODE_NAME, raw: narrative, narrative: true, tokens: [] } : undefined;
     },
   },
   parseMarkdown(token) {
-    return { type: CITATION_NODE_NAME, attrs: { raw: token.raw } };
+    return { type: CITATION_NODE_NAME, attrs: { raw: token.raw, ...(String(token.raw ?? "").startsWith("@") ? { narrative: true } : {}) } };
   },
   renderMarkdown(node) {
     return String(node.attrs?.raw ?? "");
@@ -283,16 +339,21 @@ export const CitationNode = Node.create<CitationNodeOptions>({
   },
 });
 
-/** Replace a citation node's citation (an edit from the popover): `raw` becomes the canonical token. */
-export function updateCitationNode(editor: Editor, pos: number, citation: Pick<Citation, "items">) {
+/**
+ * Replace a citation node's citation (an edit from the popover): `raw` becomes
+ * the canonical token. `narrative` switches the form; it is kept when absent.
+ * A citation the narrative form cannot hold is written bracketed.
+ */
+export function updateCitationNode(editor: Editor, pos: number, citation: Pick<Citation, "items" | "narrative">) {
   const node = editor.state.doc.nodeAt(pos);
   if (!node || node.type.name !== CITATION_NODE_NAME) return false;
   const tr = editor.state.tr;
   if (!citation.items.length) tr.delete(pos, pos + node.nodeSize);
   else {
-    const raw = serializeCitation(citation);
-    if (raw === node.attrs.raw) return false;
-    tr.setNodeMarkup(pos, undefined, { ...node.attrs, raw });
+    const raw = serializeCitation({ items: citation.items, narrative: citation.narrative ?? Boolean(node.attrs.narrative) });
+    const narrative = raw.startsWith("@");
+    if (raw === node.attrs.raw && narrative === Boolean(node.attrs.narrative)) return false;
+    tr.setNodeMarkup(pos, undefined, { ...node.attrs, raw, narrative });
   }
   editor.view.dispatch(tr);
   return true;

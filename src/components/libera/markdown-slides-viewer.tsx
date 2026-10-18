@@ -14,6 +14,7 @@ import {
   renderMarkdownSlideTemplate,
 } from "@/components/libera/markdown-slide-templates";
 import type { MarkdownSlide, MarkdownSlideDeck } from "@/lib/markdown-slides";
+import { DOCUMENT_STYLE_FIELD, isDocumentStyleSetting } from "@/lib/references/document-style";
 
 type MarkdownSlidesViewerProps = {
   baseLineHeight?: number;
@@ -49,7 +50,10 @@ function slideKey(slide: MarkdownSlide, index: number) {
 function SlideDeckReferences({ children, deck, documentPath }: { children: ReactNode; deck: MarkdownSlideDeck; documentPath?: string }) {
   const outer = useReferenceRender();
   const sources = useMemo(() => deck.slides.map((slide) => slide.content), [deck]);
-  const scoped = <CitationScope sources={sources}>{children}</CitationScope>;
+  // The deck's front matter may name its own style (`citation-style: ieee`).
+  const style = deck.metadata[DOCUMENT_STYLE_FIELD];
+  const documentStyle = typeof style === "string" && isDocumentStyleSetting(style.trim()) ? style.trim() : null;
+  const scoped = <CitationScope sources={sources} documentStyle={documentStyle}>{children}</CitationScope>;
   if (outer || !documentPath) return scoped;
   return <ReferenceRenderProvider notebook={referenceNotebookForPath(documentPath)}>{scoped}</ReferenceRenderProvider>;
 }

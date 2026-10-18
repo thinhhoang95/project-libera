@@ -28,12 +28,14 @@ import {
   REFERENCES_PENDING_ATTRIBUTE,
   documentCitationsFromPreview,
   documentCitationsFromSource,
+  referenceKeyResolver,
   useCitationScope,
   useFormattedCitations,
   useReferenceRender,
   type CitationDocumentValue,
 } from "@/components/libera/references/reference-render-context";
 import { CitationChip } from "@/components/libera/references/citation-chip";
+import { documentStyleOverride } from "@/lib/references/document-style";
 import { BibliographyBlock } from "@/components/libera/references/bibliography-block";
 
 type MarkdownRendererProps = {
@@ -597,13 +599,19 @@ function useCitationDocumentValue({ content, mathMarkers, preparedTree, prepared
   const active = references !== null;
   const prepared = preparedTree ? preparedCitations ?? NO_PREVIEW_CITATIONS : null;
   const preparedKey = useMemo(() => prepared ? JSON.stringify(prepared) : null, [prepared]);
+  // Narrative candidates count once the library resolves their keys.
+  const library = references?.library ?? null;
+  const entriesByKey = references?.entriesByKey;
   const list = useMemo(() => {
     if (!active) return null;
-    if (preparedKey !== null) return documentCitationsFromPreview(JSON.parse(preparedKey) as PreviewCitation[]);
-    return documentCitationsFromSource(normalizeMarkdownHighlightDelimiters(content), mathMarkers);
-  }, [active, preparedKey, content, mathMarkers]);
+    const resolves = referenceKeyResolver(entriesByKey ? { library, entriesByKey } : null);
+    if (preparedKey !== null) return documentCitationsFromPreview(JSON.parse(preparedKey) as PreviewCitation[], resolves);
+    return documentCitationsFromSource(normalizeMarkdownHighlightDelimiters(content), mathMarkers, resolves);
+  }, [active, preparedKey, content, mathMarkers, library, entriesByKey]);
   const scoped = scope !== null && citationScopeIndex !== undefined;
-  const own = useFormattedCitations(scoped ? null : list?.citations ?? null);
+  // `citation-style` in the document's front matter overrides the notebook's style.
+  const documentStyle = useMemo(() => documentStyleOverride(content), [content]);
+  const own = useFormattedCitations(scoped ? null : list?.citations ?? null, documentStyle);
   return useMemo(() => {
     if (!list) return null;
     if (scoped) return { list, offset: scope.offsets[citationScopeIndex] ?? 0, formatting: scope.formatting, appendedBibliography: false };

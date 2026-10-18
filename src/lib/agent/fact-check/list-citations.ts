@@ -5,8 +5,10 @@ import remarkMath from "remark-math";
 import { getFileType } from "@/lib/storage/file-types";
 import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
-import { scanCitations } from "@/lib/references/citation-syntax";
-import { libraryEntriesByKey } from "@/lib/references/format";
+import { resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
+import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
+import { loadDocumentStyle } from "@/lib/references/bibliography-export";
+import { documentStyleOverride } from "@/lib/references/document-style";
 import type { CitationItem, ReferenceEntry, ReferenceLibrary } from "@/lib/references/types";
 import { locatorPages, pdfPageForPrinted, printedRange, type PrintedRange } from "@/lib/references/pages";
 import type { PdfTextPage } from "@/lib/types";
@@ -18,7 +20,9 @@ import { entryAuthors, entryYear, formatReferences, readNotebookLibrary } from "
 // supports, the works it cites and what is wrong with it before anything is
 // read. Deterministic: no model is involved, and the occurrence ids (c1, c2, …)
 // are stable for an unchanged document, so a later CheckCitations call (or a
-// "Continue" in the next turn) can name them.
+// "Continue" in the next turn) can name them. Narrative citations (`@key`
+// in prose) are listed when the library knows the key; an unknown `@word` is
+// prose, not a citation (see citation-syntax.ts).
 //
 // Locators and page numbers (helpers shared in src/lib/references/pages.ts).
 // A citation's page locator is a printed page number (CSL locators are), while a PDF attachment is read by page index
@@ -215,8 +219,8 @@ async function sourceFile(context: ToolContext, kind: "pdf" | "markdown", filePa
   return { path: resolved.path, kind, exists: true, pageCount: pages.length, ...(pages.length && !pages.some((page) => page.text.trim()) ? { noText: true } : {}) };
 }
 
-export async function summarizeSources(context: ToolContext, library: ReferenceLibrary, entries: ReferenceEntry[]): Promise<Map<string, SourceSummary>> {
-  const references = await formatReferences(library, entries);
+export async function summarizeSources(context: ToolContext, library: ReferenceLibrary, entries: ReferenceEntry[], { styleXml }: { styleXml?: string | null } = {}): Promise<Map<string, SourceSummary>> {
+  const references = await formatReferences(library, entries, { styleXml });
   const summaries = new Map<string, SourceSummary>();
   for (const entry of entries) {
     const files: SourceFile[] = [];
@@ -283,7 +287,7 @@ export async function listCitations(context: ToolContext, inputPath: string): Pr
   const library = await readNotebookLibrary(context, resolved.notebook);
   const byKey = libraryEntriesByKey(library);
   const { inlineMathMarkers, blockMathMarkers } = getConfiguredMarkdownPreferences();
-  const found = scanCitations(text, { mathMarkers: { inlineMathMarkers, blockMathMarkers } });
+  const found = resolvedCitationOccurrences(scanCitations(text, { mathMarkers: { inlineMathMarkers, blockMathMarkers } }), (key) => Boolean(entryForKey(byKey, key)));
   const cited = new Map<string, ReferenceEntry>();
   for (const occurrence of found) {
     for (const item of occurrence.citation.items) {
@@ -291,7 +295,9 @@ export async function listCitations(context: ToolContext, inputPath: string): Pr
       if (entry) cited.set(entry.id, entry);
     }
   }
-  const sources = await summarizeSources(context, library, [...cited.values()]);
+  // References are shown in the document's own style (`citation-style` in its front matter) when it has one.
+  const styleXml = documentStyleOverride(text) && cited.size ? (await loadDocumentStyle(resolved.notebook, text, library.style)).xml : null;
+  const sources = await summarizeSources(context, library, [...cited.values()], { styleXml });
   const blocks = leafBlocks(text);
   const ranges = found.map((occurrence) => ({ start: occurrence.start, end: occurrence.end }));
   const occurrences = found.map((occurrence, index): CitationOccurrenceInfo => {
@@ -354,6 +360,7 @@ export const listCitationsTool: AgentTool = {
 
 Usage:
 - path is the document's library path. Its unsaved draft is used when it is open with changes.
+- Bracketed citations ([@key, p. 3]) are listed, and narrative ones (@key or @key [p. 3] in the text) when the key is in the library.
 - Each occurrence gets an id (c1, c2, …), stable while the document is unchanged; pass these ids to CheckCitations.
 - For each: the line, the claim (the sentence holding the citation), the cited works with their formatted reference, status and attached files (page counts for PDFs), and static problems: unknown-key, entry-without-attachment, locator-out-of-range, entry-unresolved, entry-retracted.`,
   parameters: {

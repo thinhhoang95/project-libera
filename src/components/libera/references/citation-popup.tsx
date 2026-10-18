@@ -41,6 +41,8 @@ import { useReferenceLibrary } from "./use-reference-library";
 // entries and their attachments, citation-semantic.ts) for longer queries,
 // then footer rows: Add reference from an identifier (resolve, preview, Add &
 // cite, or an unresolved stub when the lookup fails) and Open References.
+// Enter cites in brackets (`[@key]`); Shift+Enter cites in the text, the
+// narrative form (`@key`), where the editor allows it (`narrativeAllowed`).
 //
 // The editors also share the hover card for citations in their text
 // (`EditorCitationHover`) and Ctrl/Cmd+click to open a cited attachment.
@@ -73,8 +75,13 @@ export type CitationPopupProps = {
   citedKeys?: readonly string[];
   /** Show a search field (adding or swapping an item from the Visual editor's citation popover). */
   searchInput?: boolean;
-  /** `pageLocator`: cite that page (`[@key, p. 12]`), for a match on a PDF page or highlight. */
-  onInsert: (key: string, options: { locator: boolean; pageLocator?: string }) => void;
+  /** Shift+Enter inserts a narrative citation (`@key`); the footer says so. False inside brackets. */
+  narrativeAllowed?: boolean;
+  /**
+   * `narrative`: Shift+Enter chose the narrative form. `pageLocator`: cite that
+   * page (`[@key, p. 12]`), for a match on a PDF page or highlight.
+   */
+  onInsert: (key: string, options: { locator: boolean; narrative?: boolean; pageLocator?: string }) => void;
   onClose: () => void;
   ref?: Ref<CitationPopupHandle>;
 };
@@ -208,7 +215,7 @@ type Row =
   | { kind: "confirm"; id: "confirm" }
   | { kind: "open"; id: "open" };
 
-export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput = false, onInsert, onClose, ref }: CitationPopupProps) {
+export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput = false, narrativeAllowed = false, onInsert, onClose, ref }: CitationPopupProps) {
   const render = useReferenceRender();
   const notebook = render?.notebook ?? null;
   const library = render?.library ?? null;
@@ -260,12 +267,12 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
   }, [searchInput]);
   useEffect(() => () => { request.current += 1; }, []);
 
-  const insert = useCallback((key: string, locator: boolean, pageLocator?: string) => {
+  const insert = useCallback((key: string, locator: boolean, narrative = false, pageLocator?: string) => {
     noteRecentCitation(key);
-    onInsert(key, pageLocator ? { locator, pageLocator } : { locator });
+    onInsert(key, { locator, ...(narrative ? { narrative } : {}), ...(pageLocator ? { pageLocator } : {}) });
   }, [onInsert]);
 
-  const addAndCite = useCallback(async (entry: ReferenceEntryInput, locator: boolean) => {
+  const addAndCite = useCallback(async (entry: ReferenceEntryInput, locator: boolean, narrative = false) => {
     const before = library;
     const id = ++request.current;
     setAdd({ phase: "adding", input: identifier?.value ?? query });
@@ -274,7 +281,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
       if (id !== request.current) return;
       const added = addedEntry(before, after);
       if (!added) throw new Error("The reference was not added.");
-      insert(added.key, locator);
+      insert(added.key, locator, narrative);
     } catch (error) {
       if (id === request.current) setAdd({ phase: "error", input: identifier?.value ?? query, message: error instanceof Error ? error.message : "Could not add the reference." });
     }
@@ -307,14 +314,14 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
     setAdd({ phase: "preview", input: identifier.value, candidate, existing });
   }, [addAndCite, identifier, library, notebook]);
 
-  const choose = useCallback((row: Row | undefined, locator: boolean) => {
+  const choose = useCallback((row: Row | undefined, locator: boolean, narrative = false) => {
     if (!row) return;
-    if (row.kind === "entry") insert(row.suggestion.key, locator);
-    else if (row.kind === "semantic") insert(row.match.entry.key, locator, row.match.pageLocator);
+    if (row.kind === "entry") insert(row.suggestion.key, locator, narrative);
+    else if (row.kind === "semantic") insert(row.match.entry.key, locator, narrative, row.match.pageLocator);
     else if (row.kind === "add") void resolve();
     else if (row.kind === "confirm" && add.phase === "preview") {
-      if (add.existing) insert(add.existing.key, locator);
-      else void addAndCite(add.candidate, locator);
+      if (add.existing) insert(add.existing.key, locator, narrative);
+      else void addAndCite(add.candidate, locator, narrative);
     } else if (row.kind === "open" && notebook) {
       window.dispatchEvent(new CustomEvent<ReferencesAddRequestDetail>(REFERENCES_ADD_REQUEST_EVENT, { detail: { notebook, query } }));
       onClose();
@@ -335,7 +342,8 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
         return true;
       case "Enter":
         if (!rows.length) return false;
-        choose(rows[selected], false);
+        // Shift+Enter: the narrative form, `@key`.
+        choose(rows[selected], false, narrativeAllowed && Boolean(event.shiftKey));
         return true;
       case "Tab":
         if (!rows.length || event.shiftKey) return false;
@@ -344,7 +352,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
       default:
         return false;
     }
-  }, [choose, onClose, rows, selected]);
+  }, [choose, narrativeAllowed, onClose, rows, selected]);
   useImperativeHandle(ref, () => ({ handleKey }), [handleKey]);
 
   const busy = add.phase === "resolving" || add.phase === "adding";
@@ -396,7 +404,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
             className: rowClass,
             type: "button" as const,
             onMouseEnter: () => setActive(index),
-            onClick: () => choose(row, false),
+            onClick: (event: { shiftKey: boolean }) => choose(row, false, narrativeAllowed && event.shiftKey),
           };
           if (row.kind === "entry") {
             const { suggestion } = row;
@@ -489,6 +497,11 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
           );
         })}
       </div>
+      {narrativeAllowed && suggestions.length ? (
+        <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[11px] text-muted-foreground" data-citation-popup-hint="">
+          <kbd className="font-sans">Enter</kbd> cites [@key] · <kbd className="font-sans">Shift+Enter</kbd> cites in the text, @key
+        </div>
+      ) : null}
     </div>
   );
 }

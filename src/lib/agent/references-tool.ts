@@ -44,12 +44,13 @@ export function plainReference(entry: ReferenceEntry) {
 }
 
 /** Plain-text bibliography entries in the library's style, by entry id; plainReference for any it cannot format. */
-export async function formatReferences(library: ReferenceLibrary, entries: ReferenceEntry[]): Promise<Map<string, string>> {
+export async function formatReferences(library: ReferenceLibrary, entries: ReferenceEntry[], { styleXml }: { styleXml?: string | null } = {}): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   if (!entries.length) return result;
   try {
     await loadCitationFormatter();
-    const style = await loadCslStyle(isBundledCslStyle(library.style) || library.style?.trim().startsWith("<") ? library.style : DEFAULT_CSL_STYLE);
+    // A document's own style (fact-check passes it) wins over the notebook's.
+    const style = styleXml ?? await loadCslStyle(isBundledCslStyle(library.style) || library.style?.trim().startsWith("<") ? library.style : DEFAULT_CSL_STYLE);
     const byKey = Object.fromEntries(entries.map((entry) => [entry.key, entry]));
     const formatted = formatCitationDocument({
       citations: [{ items: entries.map((entry) => ({ key: entry.key })), raw: "" }],

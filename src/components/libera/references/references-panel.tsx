@@ -1,5 +1,6 @@
 "use client";
 
+import { DocumentStylePicker } from "@/components/libera/references/document-style-picker";
 import { retractionTone } from "@/components/libera/references/retraction-badge";
 import {
   AlertCircle,
@@ -324,7 +325,8 @@ function ReferencesPanelBody({
   const undo = useReferenceUndo(notebook, library);
   const refreshToken = useMemo(() => savedMarkdownToken(tree, notebook), [tree, notebook]);
   const citations = useReferenceCitations(notebook, openDrafts, refreshToken);
-  const activeKeys = useDocumentCitedKeys(activeMarkdownDraft);
+  // With the library, resolved narrative citations (`@key`) count too.
+  const activeKeys = useDocumentCitedKeys(activeMarkdownDraft, undefined, library);
 
   const [view, setViewState] = useState<PanelViewState>(() => viewStates.get(notebook) ?? DEFAULT_VIEW);
   const setView = useCallback((patch: Partial<PanelViewState>) => setViewState((current) => {
@@ -895,6 +897,7 @@ function ReferencesPanelBody({
           ) : null}
         </div>
       </PanelHeading>
+      <DocumentStylePicker notebook={notebook} documentPath={activeDocumentPath ?? null} draft={activeMarkdownDraft} styleFiles={styleFiles} />
 
       {notice ? (
         <div role={notice.tone === "error" ? "alert" : "status"} className={`mx-3 mb-2 flex items-start gap-2 rounded-lg p-2 text-[11px] leading-relaxed ${notice.tone === "error" ? "bg-destructive-muted text-destructive" : "libera-panel-card"}`}>

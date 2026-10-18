@@ -106,7 +106,7 @@ formatCitations(input: {
 
 ### Rendered citation DOM (preview lane renders; interop and editors lanes read)
 
-- A citation renders as `<span class="libera-citation" data-libera-citation="RAW">FORMATTED</span>`. `RAW` is the exact source token, such as `[@a, p. 3]`, HTML-escaped. An unresolved key adds the class `libera-citation-unresolved`.
+- A citation renders as `<span class="libera-citation" data-libera-citation="RAW">FORMATTED</span>`. `RAW` is the exact source token, such as `[@a, p. 3]`, HTML-escaped. An unresolved key adds the class `libera-citation-unresolved`. A resolved narrative citation (`@key`) also carries `data-libera-narrative=""`; an unresolved narrative candidate renders as plain text.
 - The bibliography renders as `<section class="libera-bibliography" data-libera-bibliography="">…</section>`. Copying it to the clipboard drops it; it is generated, not source.
 - A `:::bibliography` line followed by a `:::` line (a paragraph whose text is exactly that) marks where the bibliography goes. Without one, the bibliography is appended at the end when the document has at least one citation.
 

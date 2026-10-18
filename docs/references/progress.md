@@ -10,7 +10,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Each lane works on `references/<lane>` in `.claude/worktrees/refs-<lane>`, branched from the integration tip at the start of its wave, and is merged with `--no-ff`.
 - The collaboration work continues on `collaboration` in the main checkout. A single merge of `references/integration` into `collaboration` happens later (see “Big merge” below). No reference lane touches collab code.
 
-## Resume here (resumed: editors merged; moves-ui finishing; pdfcite and syntax2 running)
+## Resume here (all lanes merged; final verification in progress)
 
 **Latest state (supersedes the older notes below):**
 
@@ -117,7 +117,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☑ merged 7208feb |
 | pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☑ merged 9821326; suite 981 tests, baseline failures only |
 | scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ☑ merged 03fc2dd |
-| syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ◐ |
+| syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☑ merged (narrative + pageLocator conflicts unified; panel placements applied) |
 
 ## Deferred
 

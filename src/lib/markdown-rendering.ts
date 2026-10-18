@@ -10,6 +10,7 @@ import { remarkMarkdownUnderlines } from "./markdown-underlines";
 import { remarkMarkdownTextStyles } from "./markdown-text-styles";
 import { remarkMarkdownBoxes } from "./remark-markdown-boxes";
 import { remarkCitations } from "./remark-citations";
+import { remarkHideFrontMatter } from "./remark-front-matter";
 import { citationRehypeHandlers, remarkBibliography } from "./remark-bibliography";
 
 // Share the exact grammar between the synchronous renderer and preview worker.
@@ -17,12 +18,13 @@ import { citationRehypeHandlers, remarkBibliography } from "./remark-bibliograph
 // claims its text first either way: the constructs start on different
 // characters), and must follow remark-parse, which every user of this list
 // adds first. remarkBibliography runs after the source map, whose positions
-// the citation and bibliography elements keep.
+// the citation and bibliography elements keep. YAML front matter (a
+// document's `citation-style`) is metadata and is not rendered.
 export function markdownRemarkPlugins(mathMarkers?: MathMarkerSettings): PluggableList {
   return [remarkGfm, remarkMarkdownBoxes, remarkMarkdownHighlights, remarkMarkdownTextColors,
     remarkMarkdownUnderlines, remarkMarkdownTextStyles, remarkMarkdownSourceMap,
     ...(mathMarkers ? [[remarkMathMarkers, mathMarkers] as [typeof remarkMathMarkers, MathMarkerSettings]] : [remarkMath]),
-    remarkCitations, remarkBibliography];
+    remarkCitations, remarkHideFrontMatter, remarkBibliography];
 }
 
 /** remark-rehype options for markdownRemarkPlugins: raw HTML kept for the sanitizer, citation and bibliography elements. */

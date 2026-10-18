@@ -1,5 +1,6 @@
 "use client";
 
+import { ReferenceImageImport } from "./reference-image-import";
 import { ArrowLeft, FileUp, Globe, Loader2, Merge, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -395,6 +396,7 @@ export function AddReferenceBox({
               </span>
             ) : null}
           </label>
+          <ReferenceImageImport notebook={notebook} library={library} webSearch={webSearch} busy={busy} onCommit={commit} onEdit={(candidate, extraOps) => { onEditNew(candidate, extraOps); onClose(); }} onReveal={onReveal} onLookup={onLookup} />
           {lookup ? (
             <div className="flex items-center gap-2 text-[11px]" role="status" aria-label="Lookup progress">
               <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />

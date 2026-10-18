@@ -7,7 +7,7 @@
 // every word in some field. Entries already cited in the document come
 // first, then entries cited recently in this session.
 
-import { serializeCitation } from "./citation-syntax";
+import { narrativeMayFollow, serializeCitation } from "./citation-syntax";
 import type { CslItem, CslName, ReferenceEntry, ReferenceLibrary } from "./types";
 
 export type ReferenceSuggestionField = "key" | "author" | "year" | "title" | "container" | "tags" | "notes";
@@ -314,11 +314,28 @@ export function mayTriggerCitation(before: string) {
   return false;
 }
 
+/** Whether a popup choice at a trigger can insert a narrative citation: outside brackets, where `@key` reads as one. */
+export function narrativeInsertionAllowed(insideCitation: boolean, before: string | undefined) {
+  return !insideCitation && narrativeMayFollow(before);
+}
+
 /**
  * The text a citation popup inserts for `key` at a trigger (see
- * `citationTriggerAt`). `pageLocator` cites that page (`[@key, p. 12]`).
+ * `citationTriggerAt`). With `narrative` (Shift+Enter) it is `@key`, the
+ * narrative form, where that is allowed (`before` is the character before the
+ * trigger's `@`); otherwise the bracketed form. `pageLocator` cites that page:
+ * `[@key, p. 12]`, or `@key [p. 12]` when narrative.
  */
-export function citationInsertion(key: string, insideCitation: boolean, locator: boolean, pageLocator?: string) {
+export function citationInsertion(
+  key: string,
+  insideCitation: boolean,
+  locator: boolean,
+  { narrative = false, before, pageLocator }: { narrative?: boolean; before?: string; pageLocator?: string } = {},
+) {
+  if (narrative && narrativeInsertionAllowed(insideCitation, before)) {
+    const text = pageLocator ? serializeCitation({ narrative: true, items: [{ key, locator: pageLocator, label: "page" }] }) : `@${key}`;
+    return { text, caret: text.length };
+  }
   const item = pageLocator ? serializeCitation({ items: [{ key, locator: pageLocator, label: "page" }] }).slice(1, -1) : `@${key}`;
   const text = insideCitation ? `${item}${locator ? ", " : ""}` : `[${item}${locator ? ", " : ""}]`;
   // The caret goes after the key, or at the locator position: `[@key, |]`.

@@ -127,10 +127,13 @@ test("a quote goes in as its own block after the paragraph at the caret", () => 
 });
 
 test("popup insertions cite a page when the match was on one", () => {
-  assert.deepEqual(citationInsertion("k", false, false, "12"), { text: "[@k, p. 12]", caret: 11 });
-  assert.deepEqual(citationInsertion("k", true, false, "12–13"), { text: "@k, pp. 12–13", caret: 13 });
-  assert.equal(citationRawForTrigger({ insideCitation: false }, "k", "7"), "[@k, p. 7]");
-  assert.equal(citationRawForTrigger({ insideCitation: true, open: "[@a; " }, "k", "7"), "[@a; @k, p. 7]");
+  assert.deepEqual(citationInsertion("k", false, false, { pageLocator: "12" }), { text: "[@k, p. 12]", caret: 11 });
+  assert.deepEqual(citationInsertion("k", true, false, { pageLocator: "12–13" }), { text: "@k, pp. 12–13", caret: 13 });
+  assert.equal(citationRawForTrigger({ insideCitation: false }, "k", { pageLocator: "7" }), "[@k, p. 7]");
+  // A narrative choice with a page: `@key [p. 7]`.
+  assert.equal(citationRawForTrigger({ insideCitation: false, before: " " }, "k", { narrative: true, pageLocator: "7" }), "@k [p. 7]");
+  assert.deepEqual(citationInsertion("k", false, false, { narrative: true, before: " ", pageLocator: "12" }), { text: "@k [p. 12]", caret: 10 });
+  assert.equal(citationRawForTrigger({ insideCitation: true, open: "[@a; " }, "k", { pageLocator: "7" }), "[@a; @k, p. 7]");
   assert.equal(citationRawForTrigger({ insideCitation: false }, "k"), "[@k]");
 });
 
