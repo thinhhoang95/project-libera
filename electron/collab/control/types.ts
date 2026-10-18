@@ -5,7 +5,7 @@
 // documents) in control/, shared-notebook routes (share, join, files,
 // reconciliations) in notebooks/. Both receive ControlDeps.
 
-import type { HostEvent, ResolvedDoc } from "../../../src/lib/collab/local-api";
+import type { HostEvent, LocalProject, ResolvedDoc } from "../../../src/lib/collab/local-api";
 import type { CollabHost } from "../core/host";
 
 export interface ControlRequest {
@@ -50,6 +50,11 @@ export interface ControlDeps {
   /** Pushes an event to every window (through main and the preload). */
   emit(event: HostEvent): void;
   notebooks: NotebookService;
+  /**
+   * Asks the control server to recompute HostStatus and push it as a
+   * `status` event if it changed (after a share, join or revocation).
+   */
+  statusChanged?(): void;
 }
 
 /**
@@ -64,4 +69,10 @@ export interface NotebookService {
   /** Called after sign-in/sign-out so the service can (re)attach projects. */
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;
+  /**
+   * What the service knows about a local project for HostStatus (folder
+   * name, revoked, pending reconciliations). Optional: without it the
+   * status uses the projects table only.
+   */
+  projectState?(projectId: string): Partial<Pick<LocalProject, "notebook" | "revoked" | "reconcilePending">> | null;
 }
