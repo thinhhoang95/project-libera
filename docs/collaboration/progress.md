@@ -143,7 +143,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 
 - ☑ Libera's own writers for shared files go through the host: shared tabs have no Save; the agent, OCR convert, uploads, markdown images, edited images and image generation into notebooks (blobs). Remaining: deleting/pruning images in shared notebooks still returns 409; blobs through the host are capped at 11 MB.
 - ☐ Host `ApiClient.listDocuments` has no server route; the notebooks code works around it. Add `GET /v1/projects/:id/documents` or remove the client method.
-- ☐ Divergence check: server digest endpoint (Phase 4 agent) plus an hourly host comparison.
+- ☑ Divergence check: server digest endpoint plus an hourly host comparison with recovery. Edge left: a local-only deletion the server never received cannot be recovered by the re-open.
 
 ## Phase 2: comments and history
 - ☑ Server: revisions (named, auto checkpoints job, reconstruction at any seq), restore of a whole doc or a section as minimal forward edits (M2.4/M2.5 server sides)
@@ -172,9 +172,9 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Load generator and results against §10 budgets
 - ☐ Admin recovery CLI (inspect, rebuild, export, quarantine, snapshot)
 - ☐ Backup scripts (pg_dump + WAL archiving) and restore drill script; 👤 drill on the real VPS
-- ☐ Metrics, dashboards, alerts
-- ☐ Crash reporting without content
-- ☐ Main-window sandbox; content sanitizing; rate limits; dependency audit; prompt-injection review
-- ☐ "Report sync problem" diagnostics
+- ☑ Metrics, dashboards, alerts (server); client telemetry with counts only, incl. reconnect time and host restarts
+- ☑ Crash reporting without content (server reporter); desktop diagnostics bundle with scrubbing
+- ◐ Main, setup and export windows sandboxed; allowlist sanitizer for collaborator Markdown; API rate limits; threat model in `security.md`. Remaining: dependency audit; AI chat http-image exfiltration path (documented in security.md)
+- ☑ "Report sync problem" diagnostics (copy or save, scrubbed)
 - ☐ 👤 Manual matrix (IME, sleep/resume, ExFAT, screen reader)
 - ☐ 👤 Private beta with 3–5 teams
