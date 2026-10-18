@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Loader2, Plus } from "lucide-react";
+import { BookOpen, FileText, Highlighter, Loader2, Plus, Sparkles } from "lucide-react";
 import {
   useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState,
   type ReactNode, type Ref, type RefObject,
@@ -22,6 +22,7 @@ import {
   type ReferencesAddRequestDetail,
 } from "@/lib/references/types";
 import { CitationHoverCard } from "./citation-hover-card";
+import { useSemanticCitationSearch, wantsSemanticCitationSearch, type SemanticCitationRow, type SemanticMatchReason } from "./citation-semantic";
 import {
   attachmentLocator,
   useFormattedCitations,
@@ -36,6 +37,8 @@ import { useReferenceLibrary } from "./use-reference-library";
 // popup (markdown-file-link-popup.tsx): a fixed card at the caret that keeps
 // the editor focused, driven by the editor's own keydown handler through
 // `handleKey`. Rows are library entries ranked by reference-suggestions.ts,
+// then "From your library's meaning" (Global Search over the notebook's
+// entries and their attachments, citation-semantic.ts) for longer queries,
 // then footer rows: Add reference from an identifier (resolve, preview, Add &
 // cite, or an unresolved stub when the lookup fails) and Open References.
 //
@@ -70,7 +73,8 @@ export type CitationPopupProps = {
   citedKeys?: readonly string[];
   /** Show a search field (adding or swapping an item from the Visual editor's citation popover). */
   searchInput?: boolean;
-  onInsert: (key: string, options: { locator: boolean }) => void;
+  /** `pageLocator`: cite that page (`[@key, p. 12]`), for a match on a PDF page or highlight. */
+  onInsert: (key: string, options: { locator: boolean; pageLocator?: string }) => void;
   onClose: () => void;
   ref?: Ref<CitationPopupHandle>;
 };
@@ -182,8 +186,24 @@ function addedEntry(before: ReferenceLibrary | null, after: ReferenceLibrary) {
 // Popup
 // ---------------------------------------------------------------------------
 
+function ReasonIcon({ reason }: { reason: SemanticMatchReason }) {
+  const className = "mt-px h-3 w-3 shrink-0";
+  if (reason.kind === "highlight") return <Highlighter aria-hidden className={className} />;
+  if (reason.kind === "page" || reason.kind === "passage") return <FileText aria-hidden className={className} />;
+  return <BookOpen aria-hidden className={className} />;
+}
+
+/** Why a semantic row matched: "p. 12 · Highlight", "Abstract", "notes.md · Methods". */
+function reasonLabel(reason: SemanticMatchReason, pageLocator?: string) {
+  if (reason.kind === "highlight") return `${pageLocator ? `p. ${pageLocator} · ` : ""}Highlight`;
+  if (reason.kind === "page") return pageLocator ? `p. ${pageLocator}` : `Page ${reason.page}`;
+  if (reason.kind === "passage") return [reason.path.split("/").at(-1), reason.section].filter(Boolean).join(" · ");
+  return reason.section ?? "Reference";
+}
+
 type Row =
   | { kind: "entry"; id: string; suggestion: ReferenceSuggestion }
+  | { kind: "semantic"; id: string; match: SemanticCitationRow; first: boolean }
   | { kind: "add"; id: "add"; input: string }
   | { kind: "confirm"; id: "confirm" }
   | { kind: "open"; id: "open" };
@@ -213,16 +233,23 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
     return buildReferenceSuggestionIndex(library).search(query.trim(), { citedKeys: citedKeys ? [...citedKeys] : [], recentKeys: recentCitationKeys() });
   }, [library, query, citedKeys]);
   const identifier = useMemo(() => citationQueryIdentifier(query), [query]);
+  const semantic = useSemanticCitationSearch({
+    notebook,
+    library,
+    query: query.trim(),
+    enabled: !identifier && wantsSemanticCitationSearch(query.trim(), suggestions.length),
+  });
 
   const rows = useMemo<Row[]>(() => {
     const list: Row[] = suggestions.map((suggestion) => ({ kind: "entry", id: `entry:${suggestion.entry.id}`, suggestion }));
+    semantic?.rows.forEach((match, index) => list.push({ kind: "semantic", id: `semantic:${match.entry.id}`, match, first: index === 0 }));
     if (notebook && identifier) {
       if (add.phase === "preview") list.push({ kind: "confirm", id: "confirm" });
       else list.push({ kind: "add", id: "add", input: identifier.value });
     }
     if (notebook) list.push({ kind: "open", id: "open" });
     return list;
-  }, [suggestions, notebook, identifier, add.phase]);
+  }, [suggestions, semantic, notebook, identifier, add.phase]);
   const selected = rows.length ? Math.min(active, rows.length - 1) : 0;
 
   useLayoutEffect(() => {
@@ -233,9 +260,9 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
   }, [searchInput]);
   useEffect(() => () => { request.current += 1; }, []);
 
-  const insert = useCallback((key: string, locator: boolean) => {
+  const insert = useCallback((key: string, locator: boolean, pageLocator?: string) => {
     noteRecentCitation(key);
-    onInsert(key, { locator });
+    onInsert(key, pageLocator ? { locator, pageLocator } : { locator });
   }, [onInsert]);
 
   const addAndCite = useCallback(async (entry: ReferenceEntryInput, locator: boolean) => {
@@ -283,6 +310,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
   const choose = useCallback((row: Row | undefined, locator: boolean) => {
     if (!row) return;
     if (row.kind === "entry") insert(row.suggestion.key, locator);
+    else if (row.kind === "semantic") insert(row.match.entry.key, locator, row.match.pageLocator);
     else if (row.kind === "add") void resolve();
     else if (row.kind === "confirm" && add.phase === "preview") {
       if (add.existing) insert(add.existing.key, locator);
@@ -311,7 +339,7 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
         return true;
       case "Tab":
         if (!rows.length || event.shiftKey) return false;
-        choose(rows[selected], rows[selected].kind === "entry" || rows[selected].kind === "confirm");
+        choose(rows[selected], rows[selected].kind === "entry" || rows[selected].kind === "semantic" || rows[selected].kind === "confirm");
         return true;
       default:
         return false;
@@ -323,7 +351,8 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
   let empty: string | null = null;
   if (!notebook || (!library && !loading)) empty = "No library for this notebook";
   else if (!library) empty = "Loading references…";
-  else if (!suggestions.length) empty = query.trim() ? "No matches" : "No references yet";
+  else if (!suggestions.length && !semantic?.rows.length && !semantic?.loading) empty = query.trim() ? "No matches" : "No references yet";
+  const semanticTitle = semantic?.mode === "keyword" ? "From your library (keyword matches)" : "From your library's meaning";
 
   return (
     <div
@@ -352,6 +381,11 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
       ) : null}
       <div ref={listRef} className="min-h-0 flex-1 overflow-auto p-1">
         {empty ? <div className="px-2.5 py-2 text-sm text-muted-foreground">{empty}</div> : null}
+        {semantic?.loading ? (
+          <div role="status" data-citation-semantic="loading" className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+            <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> Searching your library…
+          </div>
+        ) : null}
         {rows.map((row, index) => {
           const isActive = index === selected;
           const rowClass = `flex w-full min-w-0 items-start gap-2 rounded px-2.5 py-2 text-left ${isActive ? "bg-muted" : "hover:bg-muted"}`;
@@ -390,6 +424,33 @@ export function CitationPopup({ query: typedQuery, x, y, citedKeys, searchInput 
                   ) : null}
                 </span>
               </button>
+            );
+          }
+          if (row.kind === "semantic") {
+            const { entry, reason } = row.match;
+            return (
+              <div key={row.id} role="presentation">
+                {row.first ? (
+                  <div className={`flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ${suggestions.length ? "border-t border-border" : ""}`} data-citation-semantic="header">
+                    <Sparkles aria-hidden className="h-3 w-3" /> {semanticTitle}
+                  </div>
+                ) : null}
+                <button {...common} data-citation-key={entry.key} data-citation-semantic="row" data-page-locator={row.match.pageLocator}>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 truncate text-sm font-medium text-foreground">{entryAuthorsYear(entry)}</span>
+                      <StatusBadge status={entry.status} />
+                      <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">@{entry.key}</span>
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">{entryTitle(entry)}</span>
+                    <span className="mt-0.5 flex min-w-0 items-start gap-1 text-[11px] text-muted-foreground" data-match-reason={reason.kind}>
+                      <ReasonIcon reason={reason} />
+                      <span className="shrink-0 font-medium text-accent">{reasonLabel(reason, row.match.pageLocator)}</span>
+                      <span className="min-w-0 truncate">{reason.text}</span>
+                    </span>
+                  </span>
+                </button>
+              </div>
             );
           }
           if (row.kind === "add") {

@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { SEARCH_HIGHLIGHT_SECTION } from "@/lib/global-search";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type { NewChunk } from "@/lib/search/database";
 import { readFileSignature } from "@/lib/storage/file-signature";
@@ -10,8 +11,6 @@ import { pdfAnnotationsPath, splitFilePath } from "@/lib/storage/paths";
 // hit says it matched something the user marked. They are read from the PDF's
 // annotations sidecar without migrating older sidecars: the viewer does that
 // when the PDF opens, and saving annotations notifies the index.
-
-export const PDF_HIGHLIGHT_TITLE = "Highlight";
 
 function sidecarPath(relativePath: string) {
   const { notebook, pathParts } = splitFilePath(relativePath);
@@ -43,7 +42,7 @@ export async function pdfHighlightChunks(relativePath: string): Promise<NewChunk
     const { type, quote, pageNumber } = annotation as { type?: unknown; quote?: unknown; pageNumber?: unknown };
     if (type !== "highlight" || typeof quote !== "string" || !Number.isInteger(pageNumber) || (pageNumber as number) < 1) continue;
     const text = normalizePdfHighlightQuote(quote);
-    if (text) chunks.push({ title: PDF_HIGHLIGHT_TITLE, text, context: "", page: pageNumber as number });
+    if (text) chunks.push({ title: SEARCH_HIGHLIGHT_SECTION, text, context: "", page: pageNumber as number });
   }
   return chunks.sort((left, right) => (left.page ?? 0) - (right.page ?? 0));
 }

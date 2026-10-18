@@ -1156,12 +1156,12 @@ export function MarkdownEditor({
   const refreshCitationPopupRef = useRef(refreshCitationPopup);
   useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
 
-  function insertCitation(key: string, { locator }: { locator: boolean }) {
+  function insertCitation(key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) {
     const textarea = textareaRef.current;
     const popup = citationPopupRef.current;
     if (!textarea || !popup) return;
     // `[@key]` replaces `@query`; inside a citation `@key` replaces it.
-    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    const insertion = citationInsertion(key, popup.insideCitation, locator, pageLocator);
     const currentValue = editorValueRef.current;
     const nextValue = `${currentValue.slice(0, popup.from)}${insertion.text}${currentValue.slice(popup.to)}`;
     const caret = popup.from + insertion.caret;

@@ -741,12 +741,12 @@ export function MarkdownCodeMirrorEditor({
 
   // Citation popup -------------------------------------------------------------
 
-  function insertCitation(key: string, { locator }: { locator: boolean }) {
+  function insertCitation(key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) {
     const current = viewRef.current;
     const popup = citationPopupRef.current;
     if (!current || !popup) return;
     // `[@key]` replaces `@query`; inside a citation `@key` replaces it. One undo step.
-    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    const insertion = citationInsertion(key, popup.insideCitation, locator, pageLocator);
     closeCitationPopup();
     current.dispatch({
       changes: { from: popup.from, to: popup.to, insert: insertion.text },

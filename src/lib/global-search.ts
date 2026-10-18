@@ -138,6 +138,9 @@ export type SearchIndexStatus = {
   error?: string;
 };
 
+/** The section title of a PDF passage that is one of the PDF's highlight quotes. */
+export const SEARCH_HIGHLIGHT_SECTION = "Highlight";
+
 export const SEARCH_QUERY_PREFIX = "task: search result | query: ";
 export const SEARCH_IMAGE_PLACEHOLDER = "<|image|>";
 export const MAX_SEARCH_QUERY_IMAGES = 4;
