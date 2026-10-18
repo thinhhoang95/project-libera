@@ -162,6 +162,8 @@ export type ReferenceEntry = {
 export type ReferenceLibrarySettings = {
   /** Create entries automatically for PDFs added to this notebook. */
   autoCreateForPdfs?: boolean;
+  /** Keep a generated `references.bib` (BibLaTeX) in the notebook folder for LaTeX projects (bib-mirror.ts). */
+  bibMirror?: boolean;
 };
 
 export type ReferenceLibrary = {

@@ -3,6 +3,7 @@ import { createReadStream, type Dirent } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { scheduleBibMirror } from "@/lib/references/bib-mirror";
 import { applyLibraryOps, attachmentIdentity, emptyReferenceLibrary, LibraryOpError } from "@/lib/references/library-ops";
 import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibrary, type ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
@@ -162,6 +163,8 @@ export async function updateReferenceLibrary(notebook: string, expectedRevision:
     if (!changed) return current;
     const next = { ...library, revision: current.revision + 1 };
     await writeJsonAtomically(target, next);
+    // The notebook's generated references.bib follows the library when it is turned on.
+    scheduleBibMirror(notebook, next);
     return next;
   });
 }

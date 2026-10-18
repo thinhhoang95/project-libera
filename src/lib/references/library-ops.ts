@@ -250,8 +250,8 @@ function validateStyle(value: unknown) {
 function validateSettings(value: unknown): ReferenceLibrarySettings {
   if (!isRecord(value)) fail("Library settings are invalid.");
   for (const [field, setting] of Object.entries(value)) {
-    if (field !== "autoCreateForPdfs") fail(`Unknown library setting “${field}”.`);
-    if (setting !== undefined && typeof setting !== "boolean") fail("“autoCreateForPdfs” must be true or false.");
+    if (field !== "autoCreateForPdfs" && field !== "bibMirror") fail(`Unknown library setting “${field}”.`);
+    if (setting !== undefined && typeof setting !== "boolean") fail(`“${field}” must be true or false.`);
   }
   return value as ReferenceLibrarySettings;
 }
