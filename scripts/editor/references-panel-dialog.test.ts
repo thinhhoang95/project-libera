@@ -261,7 +261,7 @@ test("undo records invert adds, updates, deletes, merges, key renames and style 
 
   const styled = apply(before, [{ op: "set-style", style: "ieee" }, { op: "set-settings", settings: { autoCreateForPdfs: true } }]);
   const styleRecord = buildUndoRecord(before, styled, "Style", [])!;
-  assert.deepEqual(styleRecord.inverse, [{ op: "set-style", style: "apa" }, { op: "set-settings", settings: { autoCreateForPdfs: false } }]);
+  assert.deepEqual(styleRecord.inverse, [{ op: "set-style", style: "apa" }, { op: "set-settings", settings: { autoCreateForPdfs: null } }]);
   assert.equal(isUndoStale(styleRecord, styled), false);
   assert.equal(isUndoStale(styleRecord, apply(styled, [{ op: "set-style", style: "nature" }])), true);
 

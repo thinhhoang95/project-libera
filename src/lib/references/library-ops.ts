@@ -15,6 +15,7 @@ import {
   type ReferenceLibrary,
   type ReferenceLibraryOp,
   type ReferenceLibrarySettings,
+  type ReferenceLibrarySettingsPatch,
   type ReferenceStatus,
   type ReferenceVersionLink,
   type RetractionStatus,
@@ -247,13 +248,23 @@ function validateStyle(value: unknown) {
   fail(`Citation style “${style}” is neither a bundled style nor a .csl file in the library.`);
 }
 
-function validateSettings(value: unknown): ReferenceLibrarySettings {
+function validateSettings(value: unknown): ReferenceLibrarySettingsPatch {
   if (!isRecord(value)) fail("Library settings are invalid.");
   for (const [field, setting] of Object.entries(value)) {
     if (field !== "autoCreateForPdfs") fail(`Unknown library setting “${field}”.`);
-    if (setting !== undefined && typeof setting !== "boolean") fail("“autoCreateForPdfs” must be true or false.");
+    if (setting !== undefined && setting !== null && typeof setting !== "boolean") fail("“autoCreateForPdfs” must be true or false, or null to follow the preference.");
   }
-  return value as ReferenceLibrarySettings;
+  return value as ReferenceLibrarySettingsPatch;
+}
+
+/** Merge a settings change: values set, null clears (the notebook follows the preference again). */
+function mergeSettings(current: ReferenceLibrarySettings | undefined, patch: ReferenceLibrarySettingsPatch): ReferenceLibrarySettings {
+  const settings: Record<string, unknown> = { ...current };
+  for (const [field, setting] of Object.entries(structuredClone(patch))) {
+    if (setting === null) delete settings[field];
+    else if (setting !== undefined) settings[field] = setting;
+  }
+  return settings as ReferenceLibrarySettings;
 }
 
 /** Same attachment: same file for pdf/markdown, same address for URLs. */
@@ -516,7 +527,11 @@ function applyOp(library: Library, op: ReferenceLibraryOp, now: string) {
     case "detach": return detach(library, op.id, op.attachment, now);
     case "put": return putEntry(library, op.entry);
     case "set-style": library.style = validateStyle(op.style); return;
-    case "set-settings": library.settings = { ...library.settings, ...structuredClone(validateSettings(op.settings)) }; return;
+    case "set-settings": {
+      const settings = mergeSettings(library.settings, validateSettings(op.settings));
+      if (library.settings || Object.keys(settings).length) library.settings = settings;
+      return;
+    }
     default: fail(`Unknown library change “${String((op as { op?: unknown }).op)}”.`);
   }
 }
