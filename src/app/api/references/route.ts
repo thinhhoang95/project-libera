@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
+import { getReferenceJobRunner } from "@/lib/references/jobs";
 import { LibraryOpError } from "@/lib/references/library-ops";
 import type { ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError, toStorageError } from "@/lib/storage/errors";
@@ -28,7 +29,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const notebook = assertSafeSegment(request.nextUrl.searchParams.get("notebook") ?? "", "Notebook name");
-    return NextResponse.json({ library: await readReferenceLibrary(notebook) });
+    const library = await readReferenceLibrary(notebook);
+    // Opening a library starts its weekly retraction check when one is due; never waited for.
+    void getReferenceJobRunner().requestRetractionCheck(notebook);
+    return NextResponse.json({ library });
   } catch (error) {
     return handleError(error, "Could not read the reference library.");
   }

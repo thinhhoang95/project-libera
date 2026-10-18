@@ -6,12 +6,13 @@ import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import { getAdminRoot, getLinkedFolders, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
 import { readReferenceLibrary, updateReferenceLibrary } from "@/lib/storage/references";
 import { LibraryOpError } from "./library-ops";
-import { isActiveReferenceJob, type ReferenceJobKind, type ReferenceJobStatus } from "./jobs-types";
-import { isAbortError } from "./resolve/http";
+import { isActiveReferenceJob, RETRACTION_CHECK_INTERVAL_MS, type ReferenceJobKind, type ReferenceJobStatus, type RetractionCheckResponse } from "./jobs-types";
+import { checkRetraction, entryDoi, retractionChanged, type RetractionCheckContext } from "./retraction";
+import { getReferenceHttpClient, isAbortError } from "./resolve/http";
 import { createLimiter, mapWithConcurrency, type Limiter } from "./resolve/limit";
 import { findCandidateDuplicates, resolveMarkdown, resolvePdf, type ResolveOptions, type ResolveResult } from "./resolve/pipeline";
 import { getReferenceResolveSettings, type ReferenceResolveSettings } from "./resolve/settings";
-import type { ReferenceEntryInput, ReferenceLibrary, ReferenceLibraryOp } from "./types";
+import type { ReferenceEntryInput, ReferenceLibrary, ReferenceLibraryOp, RetractionStatus } from "./types";
 
 // Background reference jobs (docs/references/plan.md §4.4 "Background
 // jobs"): resolve every PDF without an entry, or given paths, on the server.
@@ -23,6 +24,14 @@ import type { ReferenceEntryInput, ReferenceLibrary, ReferenceLibraryOp } from "
 // commits its own library transaction, so a cancelled job keeps what it
 // finished. Entries are created `needs-review` or `unresolved`, never
 // `confirmed`.
+//
+// A `check-retractions` job checks every entry with a DOI against Crossref
+// (retraction.ts) and writes changed statuses in transactions of
+// RETRACTION_BATCH_SIZE `update` ops. It runs at most once per
+// RETRACTION_CHECK_INTERVAL_MS per notebook unless forced; the time of the
+// last completed check is kept in `<system dir>/references/retractions.json`.
+// Opening a notebook's library asks for a check (requestRetractionCheck),
+// debounced in memory, without waiting for it.
 
 /** Finished jobs kept per notebook. */
 export const FINISHED_JOBS_KEPT = 20;
@@ -35,6 +44,13 @@ const FILE_CONCURRENCY = 2;
 const MAX_JOB_PATHS = 10_000;
 const MAX_ERRORS_KEPT = 200;
 const JOBS_FILE_VERSION = 1;
+/** `update` ops per library transaction of a retraction check. */
+export const RETRACTION_BATCH_SIZE = 20;
+/** Library reads ask for a retraction check at most this often per notebook (the 7-day rule decides whether one runs). */
+export const RETRACTION_REQUEST_DEBOUNCE_MS = 10 * 60 * 1000;
+const RETRACTION_STATE_VERSION = 1;
+
+type RetractionStateFile = { version: number; lastCheckedAt?: string };
 
 type StoredJob = ReferenceJobStatus & {
   /** Paths still to process. */
@@ -55,6 +71,10 @@ export type ReferenceJobRunnerDeps = {
   /** Notebooks that may have a jobs file, for resuming after a restart. */
   listNotebooks: () => Promise<string[]>;
   jobsFile: (notebook: string) => string;
+  /** Where the time of the notebook's last completed retraction check is kept. */
+  retractionStateFile: (notebook: string) => string;
+  /** One DOI's retraction status, or null when Crossref does not know it. */
+  checkRetraction: (doi: string, ctx: RetractionCheckContext) => Promise<RetractionStatus | null>;
   settings: () => ReferenceResolveSettings;
   now: () => Date;
   /** Extra resolve options (tests inject fetch and model doubles here). */
@@ -99,6 +119,10 @@ export function referenceJobsFilePath(notebook: string) {
   return path.join(notebookSystemDirectoryPath(notebook), "references", "jobs.json");
 }
 
+export function retractionStateFilePath(notebook: string) {
+  return path.join(notebookSystemDirectoryPath(notebook), "references", "retractions.json");
+}
+
 function defaultDeps(): ReferenceJobRunnerDeps {
   return {
     resolvePdf,
@@ -108,6 +132,8 @@ function defaultDeps(): ReferenceJobRunnerDeps {
     listPdfs: listNotebookPdfs,
     listNotebooks: listLibraryNotebooks,
     jobsFile: referenceJobsFilePath,
+    retractionStateFile: retractionStateFilePath,
+    checkRetraction,
     settings: getReferenceResolveSettings,
     now: () => new Date(),
   };
@@ -234,6 +260,10 @@ export class ReferenceJobRunner {
       const existing = jobs.find((job) => job.kind === "resolve-pdfs" && isActiveReferenceJob(job) && job.webSearch === webSearch);
       if (existing) return publicStatus(existing);
     }
+    if (kind === "check-retractions") {
+      const existing = jobs.find((job) => job.kind === "check-retractions" && isActiveReferenceJob(job));
+      if (existing) return publicStatus(existing);
+    }
     const paths = kind === "resolve-paths" ? [...new Set(options.paths ?? [])].slice(0, MAX_JOB_PATHS) : [];
     const job: StoredJob = {
       id: `job_${randomUUID()}`,
@@ -246,7 +276,7 @@ export class ReferenceJobRunner {
       createdEntryIds: [],
       updatedEntryIds: [],
       errors: [],
-      webSearch,
+      webSearch: kind === "check-retractions" ? false : webSearch,
       createdAt: this.deps.now().toISOString(),
       pending: paths,
       prepared: kind === "resolve-paths",
@@ -308,6 +338,146 @@ export class ReferenceJobRunner {
     this.autoPaths.clear();
   }
 
+  // -------------------------------------------------------------------------
+  // Retraction checks
+  // -------------------------------------------------------------------------
+
+  private retractionRequests = new Map<string, number>();
+
+  /** When the notebook's last retraction check completed, or undefined. */
+  async lastRetractionCheck(notebook: string): Promise<string | undefined> {
+    try {
+      const file = JSON.parse(await readFile(this.deps.retractionStateFile(notebook), "utf8")) as RetractionStateFile;
+      return file?.version === RETRACTION_STATE_VERSION && typeof file.lastCheckedAt === "string" ? file.lastCheckedAt : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Start a retraction check of the notebook when one is due: online
+   * lookups are on, some entry has a DOI, and the last completed check is
+   * older than RETRACTION_CHECK_INTERVAL_MS (`force` skips that rule). An
+   * active check is returned instead of starting another. `job` is null when
+   * nothing was started.
+   */
+  async scheduleRetractionCheck(notebook: string, { force = false }: { force?: boolean } = {}): Promise<RetractionCheckResponse> {
+    await this.load(notebook);
+    const lastCheckedAt = await this.lastRetractionCheck(notebook);
+    const result = (job: ReferenceJobStatus | null, skipped?: RetractionCheckResponse["skipped"]): RetractionCheckResponse => ({
+      job, ...(lastCheckedAt ? { lastCheckedAt } : {}), ...(skipped ? { skipped } : {}),
+    });
+    const active = this.jobs.get(notebook)?.find((job) => job.kind === "check-retractions" && isActiveReferenceJob(job));
+    if (active) return result(publicStatus(active));
+    if (!this.deps.settings().lookupOnline) return result(null, "lookups-off");
+    if (!force && lastCheckedAt && this.deps.now().getTime() - Date.parse(lastCheckedAt) < RETRACTION_CHECK_INTERVAL_MS) return result(null, "not-due");
+    const library = await this.deps.readLibrary(notebook);
+    if (!Object.values(library.entries).some((entry) => entryDoi(entry))) return result(null, "no-dois");
+    return result(await this.enqueue(notebook, "check-retractions"));
+  }
+
+  /**
+   * The notebook's library was opened: start a check when one is due,
+   * without waiting. Repeated requests within RETRACTION_REQUEST_DEBOUNCE_MS
+   * do nothing. Never throws.
+   */
+  requestRetractionCheck(notebook: string) {
+    const now = this.deps.now().getTime();
+    const last = this.retractionRequests.get(notebook);
+    if (last !== undefined && now - last < RETRACTION_REQUEST_DEBOUNCE_MS) return null;
+    this.retractionRequests.set(notebook, now);
+    return this.scheduleRetractionCheck(notebook).catch((error) => {
+      console.warn(`[references] Could not start the retraction check of ${notebook}:`, error);
+      return null;
+    });
+  }
+
+  private async recordRetractionCheck(notebook: string) {
+    const file: RetractionStateFile = { version: RETRACTION_STATE_VERSION, lastCheckedAt: this.deps.now().toISOString() };
+    try {
+      await writeJsonAtomically(this.deps.retractionStateFile(notebook), file);
+    } catch (error) {
+      console.warn(`[references] Could not record the retraction check of ${notebook}:`, error);
+    }
+  }
+
+  /** Write retraction statuses in one transaction, skipping entries deleted meanwhile. Returns the ids written. */
+  private commitRetractions(notebook: string, ops: Extract<ReferenceLibraryOp, { op: "update" }>[]) {
+    return this.commit(notebook, async () => {
+      const latest = await this.deps.readLibrary(notebook);
+      const present = ops.filter((op) => latest.entries[op.id]);
+      if (!present.length) return [] as string[];
+      await this.deps.updateLibrary(notebook, present);
+      return present.map((op) => op.id);
+    });
+  }
+
+  private async runRetractionCheck(job: StoredJob, signal: AbortSignal) {
+    const notebook = job.notebook;
+    const settings = this.deps.settings();
+    if (!settings.lookupOnline) throw new Error("Online lookups are turned off in Preferences (AI → References).");
+    if (!job.prepared) {
+      const library = await this.deps.readLibrary(notebook);
+      job.pending = Object.values(library.entries).filter((entry) => entryDoi(entry)).map((entry) => entry.id);
+      job.total = job.pending.length;
+      job.prepared = true;
+      await this.persist(notebook);
+    }
+    const library = await this.deps.readLibrary(notebook);
+    const ctx: RetractionCheckContext = {
+      http: this.deps.resolveOptions?.http ?? getReferenceHttpClient(),
+      signal,
+      ...(settings.contactEmail ? { contactEmail: settings.contactEmail } : {}),
+      now: this.deps.now,
+      network: this.network,
+    };
+    let batch: Extract<ReferenceLibraryOp, { op: "update" }>[] = [];
+    const flush = async () => {
+      if (!batch.length) return;
+      const ops = batch;
+      batch = [];
+      const written = await this.commitRetractions(notebook, ops);
+      for (const id of written) if (!job.updatedEntryIds.includes(id)) job.updatedEntryIds.push(id);
+      // Entries are finished once their status is in the library.
+      const done = new Set(ops.map((op) => op.id));
+      job.pending = job.pending.filter((id) => !done.has(id));
+      await this.persist(notebook);
+    };
+    const settled = new Set<string>();
+    await mapWithConcurrency([...job.pending], FILE_CONCURRENCY, async (id) => {
+      if (signal.aborted) return;
+      const entry = library.entries[id];
+      const doi = entry ? entryDoi(entry) : undefined;
+      if (!entry || !doi) {
+        job.done += 1;
+        settled.add(id);
+        return;
+      }
+      job.current = entry.key;
+      try {
+        const status = await this.deps.checkRetraction(doi, ctx);
+        if (status && retractionChanged(entry.retraction, status)) {
+          batch.push({ op: "update", id, retraction: status });
+          if (batch.length >= RETRACTION_BATCH_SIZE) await flush();
+        } else settled.add(id);
+        job.done += 1;
+      } catch (error) {
+        if (signal.aborted && isAbortError(error)) return;
+        job.failed += 1;
+        settled.add(id);
+        if (job.errors.length < MAX_ERRORS_KEPT) job.errors.push({ path: entry.key, message: error instanceof Error ? error.message : String(error) });
+      }
+      if (job.current === entry.key) delete job.current;
+    });
+    // A cancelled check keeps the statuses it found.
+    await flush();
+    job.pending = job.pending.filter((id) => !settled.has(id));
+    if (!signal.aborted) {
+      job.pending = [];
+      await this.recordRetractionCheck(notebook);
+    }
+  }
+
   /** Enqueue the pending automatic paths of a notebook now. Returns the job, or null when nothing was enqueued. */
   async flushAutoCreate(notebook: string) {
     clearTimeout(this.autoTimers.get(notebook));
@@ -364,6 +534,11 @@ export class ReferenceJobRunner {
     job.startedAt ??= this.deps.now().toISOString();
     await this.persist(notebook);
     try {
+      if (job.kind === "check-retractions") {
+        await this.runRetractionCheck(job, controller.signal);
+        job.state = controller.signal.aborted ? "cancelled" : "done";
+        return;
+      }
       if (!job.prepared) {
         const library = await this.deps.readLibrary(notebook);
         job.pending = (await this.deps.listPdfs(notebook)).filter((pdf) => !isFileAttached(library, "pdf", pdf));

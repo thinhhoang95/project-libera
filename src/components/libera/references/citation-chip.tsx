@@ -7,6 +7,7 @@ import { parseCitationToken } from "@/lib/references/citation-syntax";
 import type { Citation } from "@/lib/references/types";
 import { citationIndex, formattedCitation, useCitationDocument, useReferenceRender } from "./reference-render-context";
 import { CitationHoverCard } from "./citation-hover-card";
+import { citationRetractionClass } from "./retraction-badge";
 
 // A citation in rendered Markdown: `<span class="libera-citation"
 // data-libera-citation="RAW">` (lanes.md, "Rendered citation DOM"). With a
@@ -102,6 +103,9 @@ export function CitationChip(props: { className?: string; children?: ReactNode; 
   }
 
   const unresolved = render.library !== null && citation.items.some((item) => !entryForKey(render.entriesByKey, item.key));
+  // Retracted, withdrawn or concerning works get a warning style; corrected ones a softer one.
+  const retraction = citationRetractionClass(citation.items.map((item) => entryForKey(render.entriesByKey, item.key)));
+  const chipClass = ["libera-citation", unresolved ? "libera-citation-unresolved" : "", retraction ?? ""].filter(Boolean).join(" ");
   const index = document ? citationIndex(document, raw, previewSourceId, sourceStart === undefined ? undefined : Number(sourceStart)) : -1;
   const html = document ? formattedCitation(document, index, raw) : null;
 
@@ -132,7 +136,7 @@ export function CitationChip(props: { className?: string; children?: ReactNode; 
     <>
       <span
         ref={chipRef}
-        className={unresolved ? "libera-citation libera-citation-unresolved" : "libera-citation"}
+        className={chipClass}
         data-libera-citation={raw}
         {...sourceAttributes}
         data-formatted={html ? "true" : undefined}

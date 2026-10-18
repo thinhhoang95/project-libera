@@ -9,7 +9,15 @@ export type LatexOptions = {
   footer: string;
   showAppName: boolean;
   customInstructions: string;
+  /**
+   * How citations are written: "formatted" text in the notebook's CSL style
+   * (the default), or "biblatex" commands with a `.bib` file, built with biber.
+   */
+  citations: LatexCitationOption;
 };
+
+export const LATEX_CITATION_OPTIONS = ["formatted", "biblatex"] as const;
+export type LatexCitationOption = typeof LATEX_CITATION_OPTIONS[number];
 
 export const MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH = 10_000;
 
@@ -23,6 +31,7 @@ export const DEFAULT_LATEX_OPTIONS: LatexOptions = {
   margins: { left: 1, right: 1, top: 1, bottom: 1 },
   header: "", footer: "", showAppName: false,
   customInstructions: "",
+  citations: "formatted",
 };
 
 export function latexToday(now = new Date()) {
@@ -56,7 +65,10 @@ export function parseLatexOptions(input: unknown = DEFAULT_LATEX_OPTIONS): Latex
   }
   if (typeof value.header !== "string" || typeof value.footer !== "string" || value.header.length > 500 || value.footer.length > 500) throw new Error("Header and footer text must each be at most 500 characters.");
   if (typeof value.showAppName !== "boolean") throw new Error("Invalid app name option.");
-  return { author, date, paperSize: value.paperSize, fontSize, imageWidth, margins: { ...value.margins }, header: value.header, footer: value.footer, showAppName: value.showAppName, customInstructions };
+  // Saved options from before the citations option read as the default.
+  const citations = value.citations === undefined ? DEFAULT_LATEX_OPTIONS.citations : value.citations;
+  if (!LATEX_CITATION_OPTIONS.includes(citations)) throw new Error("Choose formatted text or biblatex for citations.");
+  return { author, date, paperSize: value.paperSize, fontSize, imageWidth, margins: { ...value.margins }, header: value.header, footer: value.footer, showAppName: value.showAppName, customInstructions, citations };
 }
 
 function escapeLatexText(text: string) {

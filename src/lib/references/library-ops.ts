@@ -251,8 +251,11 @@ function validateStyle(value: unknown) {
 function validateSettings(value: unknown): ReferenceLibrarySettingsPatch {
   if (!isRecord(value)) fail("Library settings are invalid.");
   for (const [field, setting] of Object.entries(value)) {
-    if (field !== "autoCreateForPdfs") fail(`Unknown library setting “${field}”.`);
-    if (setting !== undefined && setting !== null && typeof setting !== "boolean") fail("“autoCreateForPdfs” must be true or false, or null to follow the preference.");
+    if (field !== "autoCreateForPdfs" && field !== "bibMirror") fail(`Unknown library setting “${field}”.`);
+    // null clears a setting: the notebook follows the preference again (autoCreateForPdfs) or turns it off (bibMirror).
+    if (setting !== undefined && setting !== null && typeof setting !== "boolean") {
+      fail(field === "autoCreateForPdfs" ? "“autoCreateForPdfs” must be true or false, or null to follow the preference." : `“${field}” must be true or false.`);
+    }
   }
   return value as ReferenceLibrarySettingsPatch;
 }

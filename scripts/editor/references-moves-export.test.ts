@@ -103,9 +103,9 @@ test("formatted bibliographies come as text, Markdown or sanitized HTML", async 
     // A style override: numeric styles label their entries, in order of first citation.
     const ieee = await all("markdown", { style: "ieee", documentText: "[@zeta2020] then [@alpha2019]" });
     assert.match(ieee.text, /^\\\[1\\\] A\. Zeta, “Under\\_score/);
-    assert.match(ieee.text.split("\n\n")[1], /^\\\[2\\\] A\. Alpha, “First steps,” \*Journal of Tests\*/);
+    assert.match(ieee.text.split("\n\n")[1], /^\\\[2\\\] A\. Alpha, “First steps,” \*J\. Tests\*/, "IEEE prints the ISO 4 journal abbreviation");
     const ieeeText = await all("text", { style: "ieee", ids: ["r-mid"] });
-    assert.match(ieeeText.text, /^\[1\] A\. Mid, “Middle ground,” Journal of Tests, vol\. 3/);
+    assert.match(ieeeText.text, /^\[1\] A\. Mid, “Middle ground,” J\. Tests, vol\. 3/);
     await assert.rejects(all("text", { style: "<style/>" }), /bundled style or a \.csl file/);
 
     // A custom .csl in the notebook is read from disk; a missing one falls back to the default.
@@ -311,9 +311,9 @@ test("numeric styles produce thebibliography, and the bibliography marker places
     assert.equal(plan.citations.get([...plan.citations.keys()][0]), "{[1]}");
     assert.equal(plan.bibliography, [
       "\\begin{thebibliography}{9}",
-      "\\bibitem{libera-ref-1} A. Mid, ``Middle ground,'' \\emph{Journal of Tests}, vol. 3, pp. 1--10, 2021.",
+      "\\bibitem{libera-ref-1} A. Mid, ``Middle ground,'' \\emph{J. Tests}, vol. 3, pp. 1--10, 2021.",
       "",
-      "\\bibitem{libera-ref-2} A. Zeta, ``Under\\_score *star* [x] \\& 50\\% \\$5 \\textless{}script\\textgreater{}alert(1)\\textless{}/script\\textgreater{},'' \\emph{Journal of Tests}, vol. 3, pp. 1--10, 2020.",
+      "\\bibitem{libera-ref-2} A. Zeta, ``Under\\_score *star* [x] \\& 50\\% \\$5 \\textless{}script\\textgreater{}alert(1)\\textless{}/script\\textgreater{},'' \\emph{J. Tests}, vol. 3, pp. 1--10, 2020.",
       "\\end{thebibliography}",
     ].join("\n"));
     const result = await convertMarkdownToLatex(plan.markdown, signal, () => {}, { compile: async () => Buffer.from("%PDF-"), complete: mockModel().complete, citations: plan });
