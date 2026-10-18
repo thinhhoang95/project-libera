@@ -190,13 +190,15 @@ async function localLogin(instance: LiberaInstance) {
 }
 
 /**
- * Opens Collaboration from the rail. Records (and works around with the
- * dialog's own "Try again") a status that is stuck in an error.
+ * Opens Collaboration from the rail. The status must recover by itself
+ * after the local login (bug 1 regression check: no "Try again").
  */
 async function openCollabDialog(instance: LiberaInstance) {
   const page = instance.page!;
-  await sleep(1000);
-  const rail = await page.evaluate<string | null>(js.rail);
+  const rail = await waitFor(() => page.evaluate<string | null>(js.rail).then((label) => (label && !/Unavailable/.test(label) ? label : null)), {
+    timeoutMs: 15_000,
+    message: `${instance.name}: the rail still says "Collaboration: Unavailable" 15 s after logging in (stale status from the login screen)`,
+  });
   note(`${instance.name}: rail button says ${JSON.stringify(rail)}`);
   await page.click(`document.querySelector("button[aria-label^='Collaboration']")`, "Collaboration rail button");
   await waitFor(() => page.evaluate<string | null>(js.dialogText).then((t) => t?.startsWith("Collaboration") && !t.includes("Checking the collaboration service")), {
@@ -206,14 +208,7 @@ async function openCollabDialog(instance: LiberaInstance) {
   const text = (await page.evaluate<string>(js.dialogText)) ?? "";
   if (text.includes("Try again")) {
     const live = await page.evaluate<{ http: number; body: { connection?: string } | null }>(js.status);
-    observe(
-      `${instance.name}: after logging in, the Collaboration dialog shows ${JSON.stringify(text.split("\n").filter(Boolean)[2] ?? "")} with "Try again" (rail: ${JSON.stringify(rail)}), while GET /api/collab/status now answers ${live.http} ${live.body?.connection ?? ""}`,
-    );
-    await page.click(DOM.byText(`[role="dialog"] button`, "Try again"), "Try again");
-    await waitFor(() => page.evaluate<string | null>(js.dialogText).then((t) => !!t && !t.includes("Try again")), {
-      timeoutMs: 15_000,
-      message: `${instance.name}: "Try again" did not recover the collaboration status`,
-    });
+    throw new Error(`${instance.name}: the Collaboration dialog shows an error with "Try again" (${JSON.stringify(text.split(String.fromCharCode(10)).filter(Boolean)[2] ?? "")}) while GET /api/collab/status answers ${live.http} ${live.body?.connection ?? ""}`);
   }
 }
 
@@ -230,50 +225,11 @@ async function registerCollab(instance: LiberaInstance, account: { email: string
   await page.click(DOM.byText(`[role="dialog"] form button[type=submit]`, "Create account"), "Create account submit");
   const started = Date.now();
   const connected = () => page.evaluate<string | null>(js.dialogText).then((t) => (t && /\nConnected\n/.test(t) ? t : null));
-  let text = await waitFor(connected, { timeoutMs: 10_000, message: "Connected" }).catch(() => null);
-  if (!text) {
+  const text = await waitFor(connected, { timeoutMs: 15_000, message: `${instance.name}: the dialog did not show "Connected" within 15 s of "Create account"` }).catch(async (error) => {
     const live = await page.evaluate<{ body: { connection?: string } | null }>(js.status).catch(() => null);
-    const shown = await page.evaluate<string | null>(`document.querySelector('[role="dialog"] [data-tone] p.font-medium')?.textContent ?? null`);
-    if (live?.body?.connection !== "connected") {
-      text = await waitFor(connected, { timeoutMs: 50_000, message: `${instance.name}: the dialog did not show "Connected" after creating the account` }).catch(async (error) => {
-        throw new Error(`${(error as Error).message} Host status: ${JSON.stringify(await page.evaluate(js.status).catch(() => null))}`);
-      });
-    } else {
-      // The host is connected but the dialog kept an older status. "Reconnect
-      // now" does not help (no new status event while connected); a window
-      // reload refetches the status.
-      observe(
-        `${instance.name}: 10 s after "Create account" the dialog still shows ${JSON.stringify(shown)} although GET /api/collab/status says "connected" (stale UI status); "Reconnect now" does not clear it, reloading the window does`,
-      );
-      await shot(page, `collab-stale-connecting-${instance.name.toLowerCase()}`);
-      await page.click(DOM.byText(`[role="dialog"] button`, "Reconnect now"), "Reconnect now");
-      const recovered = await waitFor(connected, { timeoutMs: 5_000, message: "Connected after Reconnect now" }).catch(() => null);
-      note(`${instance.name}: after "Reconnect now" the dialog shows Connected: ${!!recovered}`);
-      if (!recovered) {
-        await page.send("Page.reload");
-        await waitFor(() => page.evaluate<boolean>(`!!document.querySelector("button[aria-label^='Collaboration']")`), { timeoutMs: 30_000, message: `${instance.name}: the app did not come back after reloading` });
-        const rail = await waitFor(() => page.evaluate<string | null>(js.rail).then((label) => (label?.startsWith("Collaboration: Connected") ? label : null)), {
-          timeoutMs: 20_000,
-          message: `${instance.name}: the rail did not say Connected after reloading`,
-        });
-        note(`${instance.name}: after reloading the rail says ${JSON.stringify(rail)}`);
-        // Right after a reload the first click can land before React is ready; retry.
-        await page.evaluate(`new Promise((resolve) => document.readyState === "complete" ? resolve(true) : addEventListener("load", () => resolve(true), { once: true }))`);
-        await sleep(2000);
-        let attempt = 0;
-        await waitFor(async () => {
-          if (await page.evaluate<string | null>(js.dialogText)) return true;
-          attempt++;
-          if (attempt % 2) await page.click(`document.querySelector("button[aria-label^='Collaboration']")`, "Collaboration rail button");
-          else await page.evaluate(`document.querySelector("button[aria-label^='Collaboration']").click()`);
-          await sleep(1500);
-          return !!(await page.evaluate<string | null>(js.dialogText));
-        }, { timeoutMs: 40_000, message: `${instance.name}: the Collaboration dialog did not open after reloading`, intervalMs: 500 });
-        if (attempt > 1) note(`${instance.name}: the rail button needed ${attempt} clicks after the reload`);
-      }
-      text = await waitFor(connected, { timeoutMs: 20_000, message: `${instance.name}: the dialog did not show "Connected" even after reloading` });
-    }
-  }
+    const shown = await page.evaluate<string | null>(`document.querySelector('[role="dialog"] [data-tone] p.font-medium')?.textContent ?? null`).catch(() => null);
+    throw new Error(`${(error as Error).message}; the dialog shows ${JSON.stringify(shown)} and GET /api/collab/status says ${JSON.stringify(live?.body?.connection)}`);
+  });
   timings[`${instance.name}: create account → dialog shows Connected`] = Date.now() - started;
   note(`${instance.name}: ${text.split("\n").filter(Boolean).slice(2, 6).join(" | ")}`);
   await shot(page, `collab-connected-${instance.name.toLowerCase()}`);
@@ -422,10 +378,7 @@ async function main() {
     await page.fill(DOM.byLabel("Invite by email", DOM.dialog("Share")), accounts.bob.email, "Invite by email field");
     await sleep(300);
     const kept = await page.evaluate<string | null>(`(${DOM.byLabel("Invite by email", DOM.dialog("Share"))})?.value ?? null`);
-    if (kept !== accounts.bob.email) {
-      observe(`the "Invite by email" field lost the typed address within 300 ms (now ${JSON.stringify(kept)}); typing it again`);
-      await page.fill(DOM.byLabel("Invite by email", DOM.dialog("Share")), accounts.bob.email, "Invite by email field");
-    }
+    assert(kept === accounts.bob.email, `the "Invite by email" field lost the typed address within 300 ms (now ${JSON.stringify(kept)})`);
     const role = await page.evaluate<string | null>(`document.querySelector('[role="dialog"] input[type=radio]:checked')?.value ?? null`);
     assert(role === "editor", `the default invitation role is ${role}, expected editor`);
     await page.click(DOM.byText(`[role="dialog"] button[type=submit]`, "Invite"), "Invite button");
@@ -590,18 +543,26 @@ async function main() {
     const addButton = DOM.byText(".review-popover button.review-button", "Add comment");
     const composer = `!!document.querySelector('[aria-label="New review comment"]')`;
     /** Mouse click; when it has no effect, records what the mouse hit and falls back to a DOM click(). */
+    /** A real mouse click must have its effect (bug 5 regression check: no DOM click() fallback). */
     const clickWithFallback = async (finder: string, what: string, effect: string) => {
       const hit = await page.evaluate<string>(`(() => { const el = (${finder}); const r = el.getBoundingClientRect(); const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return top === el || el.contains(top) ? "the button itself" : (top ? top.outerHTML.slice(0, 120) : "nothing"); })()`);
+      // Record what the mouse events hit, and whether the button was replaced meanwhile.
+      await page.evaluate(`(() => {
+        const button = (${finder});
+        const log = window.__e2eClick = { events: [], removed: 0, button };
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+          document.addEventListener(type, (e) => log.events.push(type + ":" + (e.target === button ? "button" : (e.target && e.target.nodeName)) + (button.isConnected ? "" : "(button detached)") + (e.defaultPrevented ? "(prevented)" : "")), { capture: true, once: true });
+        }
+        const pop = document.querySelector(".review-popover");
+        if (pop) new MutationObserver((records) => { for (const r of records) log.removed += r.removedNodes.length; }).observe(pop, { childList: true, subtree: true });
+      })()`);
       await page.click(finder, what);
-      if (await waitFor(() => page.evaluate<boolean>(effect), { timeoutMs: 2_000, message: what }).catch(() => false)) return;
-      await shot(page, `comment-click-ignored-${what.replace(/\W+/g, "-")}`);
-      if (!(await page.evaluate<boolean>(`!!(${finder})`))) {
-        note(`after the mouse click on ${what} the button is gone and ${effect.slice(0, 60)}… is not true yet`);
-        return;
-      }
-      await page.evaluate(`(${finder}).click()`);
-      const viaDom = await waitFor(() => page.evaluate<boolean>(effect), { timeoutMs: 5_000, message: what }).catch(() => false);
-      observe(`a real mouse click on ${what} had no effect (the point under the mouse is ${hit}); a DOM click() ${viaDom ? "worked" : "did not work either"}`);
+      if (await waitFor(() => page.evaluate<boolean>(effect), { timeoutMs: 5_000, message: what }).catch(() => false)) return;
+      // The submit button disappears when the popover closes; the card may still be on its way.
+      if (!(await page.evaluate<boolean>(`!!(${finder})`))) return;
+      await shot(page, `comment-click-ignored-${what.replace(/[^A-Za-z0-9]+/g, "-")}`);
+      const trace = await page.evaluate(`(() => { const l = window.__e2eClick; return { events: l.events, nodesRemovedFromPopover: l.removed, buttonStillConnected: l.button.isConnected, buttonDisabled: l.button.disabled }; })()`).catch(() => null);
+      throw new Error(`a real mouse click on ${what} had no effect within 5 s (the point under the mouse is ${hit}; events ${JSON.stringify(trace)})`);
     };
     await clickWithFallback(addButton, `the popover's "Add comment" button`, composer);
     await page.fill(`document.querySelector('[aria-label="New review comment"]')`, comment, "New review comment field");
@@ -665,6 +626,50 @@ async function main() {
       await instance.page?.key("Escape", { code: "Escape", keyCode: 27 }).catch(() => undefined);
       await instance.page?.click(`document.querySelector("#left-panel-tab-notebook")`, "Notebook tab", 5_000).catch(() => undefined);
     }
+  });
+
+  await step("9c", "Alice types with Suggesting on; Bob accepts the suggestion; both converge", async () => {
+    const page = alice.page!;
+    const bobPage = bob.page!;
+    const mark = marker("sugg");
+    const toggle = `document.querySelector(".libera-collab-suggesting-toggle")`;
+    await page.click(toggle, "Suggesting toggle");
+    await waitFor(() => page.evaluate<boolean>(`(${toggle})?.getAttribute("aria-pressed") === "true"`), { timeoutMs: 10_000, message: "Suggesting did not turn on" });
+    await focusEditor(page, "cm", "end");
+    const started = Date.now();
+    await page.insertText(` Suggested ${mark}.`);
+    await shot(page, "suggesting-alice");
+    const bobSource = await bobPage.evaluate<string | null>(js.cmText);
+    note(`before accepting, Bob's source contains the suggested text: ${!!bobSource?.includes(mark)} (expected false)`);
+    if (bobSource?.includes(mark)) observe("text typed with Suggesting on went straight into Bob's source before anyone accepted it");
+    await bobPage.click(`document.querySelector("#left-panel-tab-comments")`, "Comments tab");
+    await bobPage.click(DOM.byText(`button[role="tab"]`, /^Suggestions/), "Suggestions tab");
+    const card = `[...document.querySelectorAll("li.libera-suggestion-card")].find((c) => c.textContent.includes(${JSON.stringify(mark)})) || null`;
+    const seen = await waitFor(() => bobPage.evaluate<{ author: string; state: string } | null>(`(() => { const c = (${card}); return c ? { author: (c.querySelector('[data-testid="suggestion-author"]')?.textContent || "").trim(), state: c.dataset.state } : null; })()`), {
+      timeoutMs: 20_000,
+      message: "Alice's suggestion did not appear in Bob's Suggestions panel",
+    });
+    timings["suggestion typed → visible in Bob's Suggestions panel"] = Date.now() - started;
+    note(`Bob sees the suggestion by ${JSON.stringify(seen.author)} (${seen.state})`);
+    assert(seen.author.includes("Alice"), `the suggestion's author is ${JSON.stringify(seen.author)}, expected Alice`);
+    await shot(bobPage, "suggestion-bob");
+    const accepted = Date.now();
+    await bobPage.click(`(${card})?.querySelector('[data-action="accept"]')`, "Accept button");
+    const converged = await waitFor(async () => {
+      const [left, right] = await Promise.all([cmText(page), cmText(bobPage)]);
+      return left !== null && left === right && left.includes(mark) ? left : null;
+    }, { timeoutMs: 20_000, message: "after Accept the two sources did not converge on the accepted text" });
+    timings["Accept → both sources contain the accepted text"] = Date.now() - accepted;
+    await waitDisk(aliceNotes, [mark], "the accepted suggestion did not reach Alice's disk");
+    await waitDisk(bobNotes(), [mark], "the accepted suggestion did not reach Bob's disk");
+    note(`converged on ${JSON.stringify(converged.slice(-80))}`);
+    await shot(page, "suggestion-accepted-alice");
+    await shot(bobPage, "suggestion-accepted-bob");
+  }, { soft: true }).then(async () => {
+    // Leave Suggesting off and the tree visible for the next steps.
+    const toggle = `document.querySelector(".libera-collab-suggesting-toggle")`;
+    if (await alice.page!.evaluate<boolean>(`(${toggle})?.getAttribute("aria-pressed") === "true"`).catch(() => false)) await alice.page!.click(toggle, "Suggesting toggle", 5_000).catch(() => undefined);
+    for (const instance of [alice, bob]) await instance.page?.click(`document.querySelector("#left-panel-tab-notebook")`, "Notebook tab", 5_000).catch(() => undefined);
   });
 
   await step("10", "Typing in paper/main.tex (LaTeX editor)", async () => {
@@ -787,8 +792,14 @@ async function main() {
       return current.body?.connection === "connected" && current.body.account?.email === accounts.alice.email ? current.body : null;
     }, { timeoutMs: 30_000, message: "after relaunch Alice is not connected as herself without signing in" });
     note(`after relaunch: ${restored.connection} as ${restored.account?.email}, no sign-in`);
-    const rail = await alice.page!.evaluate<string | null>(js.rail);
-    note(`after relaunch the rail says ${JSON.stringify(rail)}`);
+    const railStarted = Date.now();
+    const firstRail = await alice.page!.evaluate<string | null>(js.rail);
+    const rail = await waitFor(() => alice.page!.evaluate<string | null>(js.rail).then((label) => (label && !/Unavailable/.test(label) ? label : null)), {
+      timeoutMs: 15_000,
+      message: `after relaunch the rail still says ${JSON.stringify(firstRail)} 15 s after logging in, although the host is connected`,
+    });
+    timings["relaunch: login → rail recovers from the login-screen status"] = Date.now() - railStarted;
+    note(`after relaunch the rail said ${JSON.stringify(firstRail)} right after login, then ${JSON.stringify(rail)} after ${Date.now() - railStarted} ms`);
     await alice.page!.click(DOM.byText("button", "notes.md"), "notes.md in the tree");
     await waitFor(() => alice.page!.evaluate<string | null>(js.sharedDoc), { timeoutMs: 15_000, message: "after relaunch notes.md opened as a plain local file (no shared-tab chrome)" });
     const reopened = await waitFor(async () => (await cmText(alice.page!)) ?? (await alice.page!.evaluate<string | null>(js.pmText)), { timeoutMs: 15_000, message: "no editor text after reopening" });

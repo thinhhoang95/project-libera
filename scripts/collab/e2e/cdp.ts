@@ -218,15 +218,23 @@ export class CdpPage {
   async click(finder: string, what: string, timeoutMs = 20_000, react = true): Promise<void> {
     const rect = await waitFor(
       () =>
-        this.evaluate<Rect | null>(`(() => {
+        this.evaluate<Rect | null>(`(async () => {
           const el = (${finder});
           if (!el) return null;
-          el.scrollIntoView({ block: "center", inline: "center" });
+          const before = el.getBoundingClientRect();
+          // Scroll only when needed: scrolling can move floating UI (popovers) after we measure.
+          if (before.top < 0 || before.left < 0 || before.bottom > innerHeight || before.right > innerWidth) el.scrollIntoView({ block: "center", inline: "center" });
+          // Let layout settle, then measure.
+          // (Not requestAnimationFrame: it does not run while the window is hidden or occluded.)
+          await new Promise((resolve) => setTimeout(resolve, 60));
           const r = el.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) return null;
           if (el.disabled) return null;
           // Server-rendered markup exists before React hydrates it; wait for its props.
           if (${react} && !Object.keys(el).some((key) => key.startsWith("__reactProps"))) return null;
+          // Something else on top (an overlay, a moving popover): wait, as a user would.
+          const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          if (!top || (top !== el && !el.contains(top))) return null;
           return { x: r.x, y: r.y, width: r.width, height: r.height };
         })()`),
       { timeoutMs, message: `${this.label}: could not find ${what} to click` },

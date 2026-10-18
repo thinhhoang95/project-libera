@@ -42,6 +42,15 @@ The exit code is 0 when every step passes. The work folder contains:
 - Drives each window over the Chrome DevTools Protocol (`cdp.ts`, using Node's global `WebSocket`): real mouse clicks, `Input.insertText`, key events and screenshots.
 - **Native menus.** The notebook menu (Share notebook…) and the file menu (Editor Mode) are OS popup menus, and CDP cannot click them. Through the main process's inspector, the run replaces `Menu.prototype.popup`. The renderer still builds the items and main still builds the real `Menu`. The stub then clicks the requested item and records what was offered. Everything else goes through the real UI.
 
-Steps: 0 server and profiles · 1 launch and local login through the form · 2 create both collab accounts in the Collaboration dialog · 3 Alice shares and invites Bob as editor · 4 Bob joins with the link · 5 same bytes on both disks · 6 Alice types in Source and Bob sees it in Visual and on disk · 6b Bob types at the end in Visual and Alice sees it · 7 concurrent typing converges · 8 "Saved to workspace" · 9 presence avatars · 9b Alice comments (Review mode, Ctrl+Alt+M) and Bob sees it in Comments with Alice as author · 10 LaTeX typing both ways · 11 server stopped: offline pill with a pending count, and the editor stays responsive · 12 server restarted on the same port and data: both converge · 13 both apps quit, "[collab-host] Flushed and stopped." appears, and the text is still there after Alice relaunches.
+Steps: 0 server and profiles · 1 launch and local login through the form · 2 create both collab accounts in the Collaboration dialog · 3 Alice shares and invites Bob as editor · 4 Bob joins with the link · 5 same bytes on both disks · 6 Alice types in Source and Bob sees it in Visual and on disk · 6b Bob types at the end in Visual and Alice sees it · 7 concurrent typing converges · 8 "Saved to workspace" · 9 presence avatars · 9b Alice comments (Review mode, Ctrl+Alt+M) and Bob sees it in Comments with Alice as author · 9c Alice types with Suggesting on, Bob accepts the suggestion and both converge · 10 LaTeX typing both ways · 11 server stopped: offline pill with a pending count, and the editor stays responsive · 12 server restarted on the same port and data: both converge · 13 both apps quit, "[collab-host] Flushed and stopped." appears, and the text is still there after Alice relaunches.
 
-Steps 6b, 9, 9b and 10 are soft: a failure is recorded and the run continues. Every other failure stops the run.
+Steps 6b, 9, 9b, 9c and 10 are soft: a failure is recorded and the run continues. Every other failure stops the run.
+
+## Regression checks with no fallbacks
+
+These steps fail outright instead of working around the bug:
+
+- **Collab status after login.** The rail must leave "Unavailable" within 15 s of the local login, without "Try again". This applies on first launch and after a relaunch.
+- **"Connected" after Create account.** The dialog must show it within 15 s, without "Reconnect now" or a reload.
+- **Comment buttons.** Real mouse clicks on "Add comment" and on its submit button must work, with no DOM `click()` fallback.
+- **Clicks in general.** `cdp.ts` clicks an element only when it is the topmost element at its centre. It scrolls only when the element is off screen, because scrolling can move floating UI such as popovers between measuring and clicking.
