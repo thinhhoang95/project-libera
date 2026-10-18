@@ -1,0 +1,66 @@
+/* Collaboration status colours. Each tone has a foreground and a quiet fill,
+   tuned separately for light and dark so the pill stays readable on both.
+   "local" (on this device) and "ok" (in the workspace) are deliberately far
+   apart: grey-blue with a dashed edge versus green with a solid edge. */
+:root {
+  --collab-neutral: #52525b;
+  --collab-neutral-bg: #f4f4f5;
+  --collab-local: #475569;
+  --collab-local-bg: #f1f5f9;
+  --collab-busy: #0369a1;
+  --collab-busy-bg: #f0f9ff;
+  --collab-ok: #047857;
+  --collab-ok-bg: #ecfdf5;
+  --collab-warn: #b45309;
+  --collab-warn-bg: #fffbeb;
+  --collab-danger: #b91c1c;
+  --collab-danger-bg: #fef2f2;
+}
+
+.dark {
+  --collab-neutral: #d4d4d8;
+  --collab-neutral-bg: #27272a;
+  --collab-local: #cbd5e1;
+  --collab-local-bg: #1e293b;
+  --collab-busy: #7dd3fc;
+  --collab-busy-bg: #0c2a3d;
+  --collab-ok: #6ee7b7;
+  --collab-ok-bg: #052e22;
+  --collab-warn: #fcd34d;
+  --collab-warn-bg: #3a2a06;
+  --collab-danger: #fca5a5;
+  --collab-danger-bg: #3f1010;
+}
+
+.libera-collab-tone { --tone: var(--collab-neutral); --tone-bg: var(--collab-neutral-bg); color: var(--tone); background: var(--tone-bg); border: 1px solid color-mix(in srgb, var(--tone) 28%, transparent); }
+.libera-collab-tone[data-tone="local"] { --tone: var(--collab-local); --tone-bg: var(--collab-local-bg); border-style: dashed; }
+.libera-collab-tone[data-tone="busy"] { --tone: var(--collab-busy); --tone-bg: var(--collab-busy-bg); }
+.libera-collab-tone[data-tone="ok"] { --tone: var(--collab-ok); --tone-bg: var(--collab-ok-bg); }
+.libera-collab-tone[data-tone="warn"] { --tone: var(--collab-warn); --tone-bg: var(--collab-warn-bg); }
+.libera-collab-tone[data-tone="danger"] { --tone: var(--collab-danger); --tone-bg: var(--collab-danger-bg); }
+
+/* Text-only tone for icons and labels outside a pill. */
+.libera-collab-ink[data-tone="neutral"] { color: var(--collab-neutral); }
+.libera-collab-ink[data-tone="local"] { color: var(--collab-local); }
+.libera-collab-ink[data-tone="busy"] { color: var(--collab-busy); }
+.libera-collab-ink[data-tone="ok"] { color: var(--collab-ok); }
+.libera-collab-ink[data-tone="warn"] { color: var(--collab-warn); }
+.libera-collab-ink[data-tone="danger"] { color: var(--collab-danger); }
+
+/* The small dot on the rail button. */
+.libera-collab-dot { background: var(--collab-neutral); box-shadow: 0 0 0 2px var(--card); }
+.libera-collab-dot[data-tone="local"] { background: var(--collab-local); }
+.libera-collab-dot[data-tone="busy"] { background: var(--collab-busy); }
+.libera-collab-dot[data-tone="ok"] { background: var(--collab-ok); }
+.libera-collab-dot[data-tone="warn"] { background: var(--collab-warn); }
+.libera-collab-dot[data-tone="danger"] { background: var(--collab-danger); }
+
+.libera-collab-avatar { box-shadow: 0 0 0 2px var(--card); }
+.libera-collab-avatar[data-following="true"] { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--ring); }
+
+.libera-collab-popover { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); box-shadow: 0 16px 40px #161c3c26, 0 2px 6px #161c3c12; }
+.dark .libera-collab-popover { box-shadow: 0 16px 40px #00000066; }
+
+@media (prefers-reduced-motion: reduce) {
+  .libera-collab-spin { animation: none; }
+}
