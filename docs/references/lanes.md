@@ -132,3 +132,9 @@ Components that render citations call `useReferenceRender()`. Without a provider
 - `POST /api/references/export` with `{ notebook, format: "bibtex" | "biblatex" | "csl-json" | "ris", ids?: string[], documentText?: string, abbreviateJournals?: boolean }` → a file download (`Content-Disposition`).
   - With `documentText`, only the keys it cites are exported, aliases resolved.
   - Formatted reference lists are added in Wave 3.
+
+### Background jobs (resolution lane)
+
+- `src/lib/references/jobs-types.ts` exports `ReferenceJobStatus`:
+  `{ id, notebook, kind: "resolve-pdfs" | "resolve-paths", state: "queued" | "running" | "done" | "failed" | "cancelled", total, done, failed, current?: string, createdEntryIds: string[], updatedEntryIds: string[], errors: { path: string; message: string }[], webSearch: boolean, createdAt, startedAt?, finishedAt? }`.
+- Candidates returned by `/api/references/resolve` and created by jobs carry full provenance and `conflicts` where sources disagree.
