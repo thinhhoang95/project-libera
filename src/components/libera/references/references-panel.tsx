@@ -358,15 +358,18 @@ function ReferencesPanelBody({
     }
   }, [undo]);
 
-  const reveal = useCallback((entryId: string) => {
-    const entry = library?.entries[entryId];
-    if (!entry) return;
+  // Revealing waits for the entry to be in the library (it may have just been added).
+  const [revealTarget, setRevealTarget] = useState<string | null>(null);
+  const reveal = useCallback((entryId: string) => setRevealTarget(entryId), []);
+  useEffect(() => {
+    if (!revealTarget || !library?.entries[revealTarget]) return;
     // Show it even when the search or filter would hide it.
-    const visible = listed.some((item) => item.id === entryId);
-    if (!visible) setView({ query: "", filter: "all" });
-    setSelectedId(entryId);
-    setOpenId(entryId);
-  }, [library, listed, setView]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!listed.some((item) => item.id === revealTarget)) setView({ query: "", filter: "all" });
+    setSelectedId(revealTarget);
+    setOpenId(revealTarget);
+    setRevealTarget(null);
+  }, [revealTarget, library, listed, setView]);
 
   // Requests from REFERENCES_REVEAL_EVENT / REFERENCES_ADD_REQUEST_EVENT, once the library is here.
   useEffect(() => {
