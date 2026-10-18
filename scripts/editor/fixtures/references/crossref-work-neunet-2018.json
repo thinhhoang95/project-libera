@@ -1,0 +1,309 @@
+{
+ "status": "ok",
+ "message-type": "work",
+ "message-version": "1.0.0",
+ "message": {
+  "indexed": {
+   "date-parts": [
+    [
+     2026,
+     10,
+     10
+    ]
+   ],
+   "date-time": "2026-10-10T07:05:52Z",
+   "timestamp": 1791615952086,
+   "version": "4.3.4"
+  },
+  "reference-count": 34,
+  "publisher": "Elsevier BV",
+  "license": [
+   {
+    "start": {
+     "date-parts": [
+      [
+       2018,
+       10,
+       1
+      ]
+     ],
+     "date-time": "2018-10-01T00:00:00Z",
+     "timestamp": 1538352000000
+    },
+    "content-version": "tdm",
+    "delay-in-days": 0,
+    "URL": "https://www.elsevier.com/tdm/userlicense/1.0/"
+   },
+   {
+    "start": {
+     "date-parts": [
+      [
+       2018,
+       10,
+       1
+      ]
+     ],
+     "date-time": "2018-10-01T00:00:00Z",
+     "timestamp": 1538352000000
+    },
+    "content-version": "tdm",
+    "delay-in-days": 0,
+    "URL": "https://www.elsevier.com/legal/tdmrep-license"
+   },
+   {
+    "start": {
+     "date-parts": [
+      [
+       2018,
+       6,
+       13
+      ]
+     ],
+     "date-time": "2018-06-13T00:00:00Z",
+     "timestamp": 1528848000000
+    },
+    "content-version": "vor",
+    "delay-in-days": 0,
+    "URL": "http://creativecommons.org/licenses/by/4.0/"
+   }
+  ],
+  "funder": [
+   {
+    "DOI": "10.13039/100003187",
+    "name": "National Sleep Foundation",
+    "doi-asserted-by": "publisher",
+    "award": [
+     "1553798"
+    ],
+    "award-info": [
+     {
+      "award-number": [
+       "1553798"
+      ]
+     }
+    ],
+    "id": [
+     {
+      "id": "10.13039/100003187",
+      "id-type": "DOI",
+      "asserted-by": "publisher"
+     }
+    ]
+   },
+   {
+    "DOI": "10.13039/100006785",
+    "name": "Google",
+    "doi-asserted-by": "publisher",
+    "id": [
+     {
+      "id": "10.13039/100006785",
+      "id-type": "DOI",
+      "asserted-by": "publisher"
+     }
+    ]
+   },
+   {
+    "DOI": "10.13039/100007631",
+    "name": "Canadian Institute for Advanced Research",
+    "doi-asserted-by": "publisher",
+    "id": [
+     {
+      "id": "10.13039/100007631",
+      "id-type": "DOI",
+      "asserted-by": "publisher"
+     }
+    ]
+   },
+   {
+    "DOI": "10.13039/100007631",
+    "name": "Canadian Institute for Advanced Research",
+    "doi-asserted-by": "publisher",
+    "id": [
+     {
+      "id": "10.13039/100007631",
+      "id-type": "DOI",
+      "asserted-by": "publisher"
+     }
+    ]
+   }
+  ],
+  "content-domain": {
+   "domain": [
+    "elsevier.com",
+    "sciencedirect.com"
+   ],
+   "crossmark-restriction": true
+  },
+  "short-container-title": [
+   "Neural Networks"
+  ],
+  "published-print": {
+   "date-parts": [
+    [
+     2018,
+     10
+    ]
+   ]
+  },
+  "DOI": "10.1016/j.neunet.2018.06.008",
+  "type": "journal-article",
+  "created": {
+   "date-parts": [
+    [
+     2018,
+     6,
+     20
+    ]
+   ],
+   "date-time": "2018-06-20T22:53:33Z",
+   "timestamp": 1529535213000
+  },
+  "page": "30-41",
+  "update-policy": "https://doi.org/10.1016/elsevier_cm_policy",
+  "source": "Crossref",
+  "is-referenced-by-count": 5,
+  "special_numbering": "C",
+  "title": [
+   "A self-organizing short-term dynamical memory network"
+  ],
+  "prefix": "10.1016",
+  "volume": "106",
+  "author": [
+   {
+    "given": "Callie",
+    "family": "Federer",
+    "sequence": "first",
+    "affiliation": [],
+    "role": [
+     {
+      "vocabulary": "crossref",
+      "role": "author"
+     }
+    ]
+   },
+   {
+    "given": "Joel",
+    "family": "Zylberberg",
+    "sequence": "additional",
+    "affiliation": [],
+    "role": [
+     {
+      "vocabulary": "crossref",
+      "role": "author"
+     }
+    ]
+   }
+  ],
+  "member": "78",
+  "container-title": [
+   "Neural Networks"
+  ],
+  "original-title": [],
+  "language": "en",
+  "link": [
+   {
+    "URL": "https://api.elsevier.com/content/article/PII:S0893608018301904?httpAccept=text/xml",
+    "content-type": "text/xml",
+    "content-version": "vor",
+    "intended-application": "text-mining"
+   },
+   {
+    "URL": "https://api.elsevier.com/content/article/PII:S0893608018301904?httpAccept=text/plain",
+    "content-type": "text/plain",
+    "content-version": "vor",
+    "intended-application": "text-mining"
+   }
+  ],
+  "deposited": {
+   "date-parts": [
+    [
+     2025,
+     10,
+     12
+    ]
+   ],
+   "date-time": "2025-10-12T01:29:37Z",
+   "timestamp": 1760232577000
+  },
+  "score": 1,
+  "resource": {
+   "primary": {
+    "URL": "https://linkinghub.elsevier.com/retrieve/pii/S0893608018301904"
+   }
+  },
+  "subtitle": [],
+  "short-title": [],
+  "issued": {
+   "date-parts": [
+    [
+     2018,
+     10
+    ]
+   ]
+  },
+  "references-count": 34,
+  "alternative-id": [
+   "S0893608018301904"
+  ],
+  "URL": "https://doi.org/10.1016/j.neunet.2018.06.008",
+  "relation": {
+   "has-preprint": [
+    {
+     "id-type": "doi",
+     "id": "10.1101/144683",
+     "asserted-by": "object"
+    }
+   ]
+  },
+  "ISSN": [
+   "0893-6080"
+  ],
+  "issn-type": [
+   {
+    "value": "0893-6080",
+    "type": "print"
+   }
+  ],
+  "subject": [],
+  "published": {
+   "date-parts": [
+    [
+     2018,
+     10
+    ]
+   ]
+  },
+  "assertion": [
+   {
+    "value": "Elsevier",
+    "name": "publisher",
+    "label": "This article is maintained by"
+   },
+   {
+    "value": "A self-organizing short-term dynamical memory network",
+    "name": "articletitle",
+    "label": "Article Title"
+   },
+   {
+    "value": "Neural Networks",
+    "name": "journaltitle",
+    "label": "Journal Title"
+   },
+   {
+    "value": "https://doi.org/10.1016/j.neunet.2018.06.008",
+    "name": "articlelink",
+    "label": "CrossRef DOI link to publisher maintained version"
+   },
+   {
+    "value": "article",
+    "name": "content_type",
+    "label": "Content Type"
+   },
+   {
+    "value": "© 2018 The Author(s). Published by Elsevier Ltd.",
+    "name": "copyright",
+    "label": "Copyright"
+   }
+  ]
+ }
+}

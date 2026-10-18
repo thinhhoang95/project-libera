@@ -1,0 +1,25 @@
+{
+ "birth_date": "1. Januar 1942",
+ "name": "Brian W. Kernighan",
+ "alternate_names": [
+  "Brian Wilson Kernighan",
+  "Brian Kernighan",
+  "B. W. Kernighan",
+  "Kernighan"
+ ],
+ "key": "/authors/OL946967A",
+ "type": {
+  "key": "/type/author"
+ },
+ "personal_name": "Brian W. Kernighan",
+ "latest_revision": 24,
+ "revision": 24,
+ "created": {
+  "type": "/type/datetime",
+  "value": "2008-04-01T03:28:50.625462"
+ },
+ "last_modified": {
+  "type": "/type/datetime",
+  "value": "2025-11-17T11:25:14.802264"
+ }
+}

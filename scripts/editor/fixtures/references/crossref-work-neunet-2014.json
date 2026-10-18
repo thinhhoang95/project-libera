@@ -1,0 +1,217 @@
+{
+ "status": "ok",
+ "message-type": "work",
+ "message-version": "1.0.0",
+ "message": {
+  "indexed": {
+   "date-parts": [
+    [
+     2026,
+     10,
+     18
+    ]
+   ],
+   "date-time": "2026-10-18T03:30:14Z",
+   "timestamp": 1792294214846,
+   "version": "4.4.0"
+  },
+  "reference-count": 888,
+  "publisher": "Elsevier BV",
+  "license": [
+   {
+    "start": {
+     "date-parts": [
+      [
+       2015,
+       1,
+       1
+      ]
+     ],
+     "date-time": "2015-01-01T00:00:00Z",
+     "timestamp": 1420070400000
+    },
+    "content-version": "tdm",
+    "delay-in-days": 0,
+    "URL": "https://www.elsevier.com/tdm/userlicense/1.0/"
+   }
+  ],
+  "funder": [
+   {
+    "name": "SNF"
+   },
+   {
+    "name": "DFG"
+   },
+   {
+    "DOI": "10.13039/501100000780",
+    "name": "European Commission",
+    "doi-asserted-by": "crossref",
+    "id": [
+     {
+      "id": "10.13039/501100000780",
+      "id-type": "DOI",
+      "asserted-by": "crossref"
+     }
+    ]
+   }
+  ],
+  "content-domain": {
+   "domain": [
+    "elsevier.com",
+    "sciencedirect.com"
+   ],
+   "crossmark-restriction": true
+  },
+  "short-container-title": [
+   "Neural Networks"
+  ],
+  "published-print": {
+   "date-parts": [
+    [
+     2015,
+     1
+    ]
+   ]
+  },
+  "DOI": "10.1016/j.neunet.2014.09.003",
+  "type": "journal-article",
+  "created": {
+   "date-parts": [
+    [
+     2014,
+     10,
+     13
+    ]
+   ],
+   "date-time": "2014-10-13T13:04:15Z",
+   "timestamp": 1413205455000
+  },
+  "page": "85-117",
+  "update-policy": "https://doi.org/10.1016/elsevier_cm_policy",
+  "source": "Crossref",
+  "is-referenced-by-count": 14995,
+  "special_numbering": "C",
+  "title": [
+   "Deep learning in neural networks: An overview"
+  ],
+  "prefix": "10.1016",
+  "volume": "61",
+  "author": [
+   {
+    "given": "Jürgen",
+    "family": "Schmidhuber",
+    "sequence": "first",
+    "affiliation": [],
+    "role": [
+     {
+      "vocabulary": "crossref",
+      "role": "author"
+     }
+    ]
+   }
+  ],
+  "member": "78",
+  "container-title": [
+   "Neural Networks"
+  ],
+  "original-title": [],
+  "language": "en",
+  "link": [
+   {
+    "URL": "https://api.elsevier.com/content/article/PII:S0893608014002135?httpAccept=text/xml",
+    "content-type": "text/xml",
+    "content-version": "vor",
+    "intended-application": "text-mining"
+   },
+   {
+    "URL": "https://api.elsevier.com/content/article/PII:S0893608014002135?httpAccept=text/plain",
+    "content-type": "text/plain",
+    "content-version": "vor",
+    "intended-application": "text-mining"
+   }
+  ],
+  "deposited": {
+   "date-parts": [
+    [
+     2024,
+     6,
+     3
+    ]
+   ],
+   "date-time": "2024-06-03T17:32:48Z",
+   "timestamp": 1717435968000
+  },
+  "score": 1,
+  "resource": {
+   "primary": {
+    "URL": "https://linkinghub.elsevier.com/retrieve/pii/S0893608014002135"
+   }
+  },
+  "subtitle": [],
+  "short-title": [],
+  "issued": {
+   "date-parts": [
+    [
+     2015,
+     1
+    ]
+   ]
+  },
+  "references-count": 888,
+  "alternative-id": [
+   "S0893608014002135"
+  ],
+  "URL": "https://doi.org/10.1016/j.neunet.2014.09.003",
+  "relation": {},
+  "ISSN": [
+   "0893-6080"
+  ],
+  "issn-type": [
+   {
+    "value": "0893-6080",
+    "type": "print"
+   }
+  ],
+  "subject": [],
+  "published": {
+   "date-parts": [
+    [
+     2015,
+     1
+    ]
+   ]
+  },
+  "assertion": [
+   {
+    "value": "Elsevier",
+    "name": "publisher",
+    "label": "This article is maintained by"
+   },
+   {
+    "value": "Deep learning in neural networks: An overview",
+    "name": "articletitle",
+    "label": "Article Title"
+   },
+   {
+    "value": "Neural Networks",
+    "name": "journaltitle",
+    "label": "Journal Title"
+   },
+   {
+    "value": "https://doi.org/10.1016/j.neunet.2014.09.003",
+    "name": "articlelink",
+    "label": "CrossRef DOI link to publisher maintained version"
+   },
+   {
+    "value": "article",
+    "name": "content_type",
+    "label": "Content Type"
+   },
+   {
+    "value": "Copyright © 2014 Published by Elsevier Ltd.",
+    "name": "copyright",
+    "label": "Copyright"
+   }
+  ]
+ }
+}
