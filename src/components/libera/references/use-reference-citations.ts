@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { citedKeys } from "@/lib/references/citation-syntax";
+import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
+import type { ReferenceLibrary } from "@/lib/references/types";
 
 // Which documents cite which keys: the server's citation index
 // (GET /api/references/citations, saved files only) merged with the open
@@ -61,7 +63,8 @@ const draftScans = new Map<string, { text: string; keys: string[] }>();
 function scanDraft(draft: OpenReferenceDraft) {
   const cached = draftScans.get(draft.path);
   if (cached && cached.text === draft.text) return cached.keys;
-  const keys = citedKeys(draft.text);
+  // Every narrative candidate: the merged index is only ever looked up by library keys.
+  const keys = citedKeys(draft.text, { allNarrative: true });
   draftScans.set(draft.path, { text: draft.text, keys });
   if (draftScans.size > 200) draftScans.delete(draftScans.keys().next().value!);
   return keys;
@@ -78,10 +81,18 @@ function useDebounced<T>(value: T, delay: number) {
   return debounced;
 }
 
-/** Keys the active document cites, in document order, rescanned ~300 ms after typing stops. */
-export function useDocumentCitedKeys(draft: string | null, delay = CITATION_SCAN_DELAY_MS) {
+/**
+ * Keys the active document cites, in document order, rescanned ~300 ms after
+ * typing stops. Narrative `@key`s count when `library` knows them (without a
+ * library, only bracketed citations count).
+ */
+export function useDocumentCitedKeys(draft: string | null, delay = CITATION_SCAN_DELAY_MS, library?: ReferenceLibrary | null) {
   const debounced = useDebounced(draft, delay);
-  return useMemo(() => debounced ? citedKeys(debounced) : [], [debounced]);
+  const known = useMemo(() => library ? libraryEntriesByKey(library) : null, [library]);
+  return useMemo(() => {
+    if (!debounced) return [];
+    return citedKeys(debounced, { resolves: known ? (key) => Boolean(entryForKey(known, key)) : null });
+  }, [debounced, known]);
 }
 
 /**

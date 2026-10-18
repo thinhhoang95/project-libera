@@ -5,8 +5,8 @@ import remarkMath from "remark-math";
 import { getFileType } from "@/lib/storage/file-types";
 import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
-import { scanCitations } from "@/lib/references/citation-syntax";
-import { libraryEntriesByKey } from "@/lib/references/format";
+import { resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
+import { entryForKey, libraryEntriesByKey } from "@/lib/references/format";
 import type { CitationItem, ReferenceEntry, ReferenceLibrary } from "@/lib/references/types";
 import type { PdfTextPage } from "@/lib/types";
 import { lineOfOffset, missingFileError, ok, readCurrentText, requireString, resolve, ToolError, type AgentTool, type ToolContext } from "../tools";
@@ -17,7 +17,9 @@ import { entryAuthors, entryYear, formatReferences, readNotebookLibrary } from "
 // supports, the works it cites and what is wrong with it before anything is
 // read. Deterministic: no model is involved, and the occurrence ids (c1, c2, …)
 // are stable for an unchanged document, so a later CheckCitations call (or a
-// "Continue" in the next turn) can name them.
+// "Continue" in the next turn) can name them. Narrative citations (`@key`
+// in prose) are listed when the library knows the key; an unknown `@word` is
+// prose, not a citation (see citation-syntax.ts).
 //
 // Locators and page numbers. A citation's page locator is a printed page
 // number (CSL locators are), while a PDF attachment is read by page index
@@ -316,7 +318,7 @@ export async function listCitations(context: ToolContext, inputPath: string): Pr
   const library = await readNotebookLibrary(context, resolved.notebook);
   const byKey = libraryEntriesByKey(library);
   const { inlineMathMarkers, blockMathMarkers } = getConfiguredMarkdownPreferences();
-  const found = scanCitations(text, { mathMarkers: { inlineMathMarkers, blockMathMarkers } });
+  const found = resolvedCitationOccurrences(scanCitations(text, { mathMarkers: { inlineMathMarkers, blockMathMarkers } }), (key) => Boolean(entryForKey(byKey, key)));
   const cited = new Map<string, ReferenceEntry>();
   for (const occurrence of found) {
     for (const item of occurrence.citation.items) {
@@ -387,6 +389,7 @@ export const listCitationsTool: AgentTool = {
 
 Usage:
 - path is the document's library path. Its unsaved draft is used when it is open with changes.
+- Bracketed citations ([@key, p. 3]) are listed, and narrative ones (@key or @key [p. 3] in the text) when the key is in the library.
 - Each occurrence gets an id (c1, c2, …), stable while the document is unchanged; pass these ids to CheckCitations.
 - For each: the line, the claim (the sentence holding the citation), the cited works with their formatted reference, status and attached files (page counts for PDFs), and static problems: unknown-key, entry-without-attachment, locator-out-of-range, entry-unresolved, entry-retracted.`,
   parameters: {

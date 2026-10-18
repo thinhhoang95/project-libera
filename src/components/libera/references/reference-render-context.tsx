@@ -1,10 +1,10 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useReferenceLibrary } from "./use-reference-library";
-import { citationEntriesForDocument, isBundledCslStyle, libraryEntriesByKey, loadCslStyle, type FormattedCitationDocument } from "@/lib/references/format";
+import { citationEntriesForDocument, entryForKey, isBundledCslStyle, libraryEntriesByKey, loadCslStyle, type FormattedCitationDocument } from "@/lib/references/format";
 import { formatCitationDocumentAsync } from "@/lib/references/format-client";
-import { scanCitations } from "@/lib/references/citation-syntax";
+import { resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { normalizeMarkdownHighlightDelimiters } from "@/lib/markdown-highlights";
 import type { PreviewCitation } from "@/lib/markdown-preview-patch";
@@ -30,6 +30,11 @@ import {
 // once (format-client.ts, off the main thread, cached by signature) and
 // hands each chip its text through CitationDocumentContext. Slides share one
 // CitationScope so a deck numbers its citations once.
+//
+// A document can name its own style in its front matter (`citation-style:`,
+// references/document-style.ts). useFormattedCitations takes that setting;
+// the provider loads and caches each style a document asks for, and falls
+// back to the notebook's style when one cannot be loaded.
 
 export type ReferenceAttachmentLocator = {
   label: CitationLocatorLabel;
@@ -54,6 +59,9 @@ type ReferenceRenderStatus = {
   stylePending: boolean;
   styleHash: string | null;
   requestStyle: () => void;
+  /** Styles documents asked for (`citation-style`), by setting, once loaded. */
+  documentStyles: Record<string, LoadedStyle>;
+  requestDocumentStyle: (setting: string) => void;
 };
 
 const ReferenceRenderContext = createContext<ReferenceRenderValue | null>(null);
@@ -110,6 +118,7 @@ export async function readCustomStyle(notebook: string | null, path: string) {
 
 /** The loaded style for a library setting; `xml` is null when it could not be loaded. */
 type LoadedStyle = { setting: string; xml: string | null; hash: string | null };
+const NO_STYLES: Record<string, LoadedStyle> = {};
 
 export function ReferenceRenderProvider({
   notebook,
@@ -144,6 +153,29 @@ export function ReferenceRenderProvider({
 
   const requestStyle = useCallback(() => setStyleWanted(true), []);
   const current = style && style.setting === setting ? style : null;
+
+  // Per-document styles, loaded once per notebook and setting.
+  const [documentStyles, setDocumentStyles] = useState<{ notebook: string | null; styles: Record<string, LoadedStyle> }>({ notebook, styles: {} });
+  const requested = useRef<{ notebook: string | null; settings: Set<string> }>({ notebook, settings: new Set() });
+  const requestDocumentStyle = useCallback((wanted: string) => {
+    if (requested.current.notebook !== notebook) requested.current = { notebook, settings: new Set() };
+    if (requested.current.settings.has(wanted)) return;
+    requested.current.settings.add(wanted);
+    void (async () => {
+      let xml: string | null = null;
+      try {
+        if (isBundledCslStyle(wanted)) xml = await loadCslStyle(wanted);
+        else if (/\.csl$/i.test(wanted)) xml = await readCustomStyle(notebook, wanted);
+      } catch {
+        xml = null;
+      }
+      const loaded: LoadedStyle = { setting: wanted, xml, hash: xml ? hashText(xml) : null };
+      setDocumentStyles((state) => state.notebook === notebook
+        ? { notebook, styles: { ...state.styles, [wanted]: loaded } }
+        : { notebook, styles: { [wanted]: loaded } });
+    })();
+  }, [notebook]);
+  const loadedDocumentStyles = documentStyles.notebook === notebook ? documentStyles.styles : NO_STYLES;
   const entriesByKey = useMemo(() => libraryEntriesByKey(library), [library]);
   const value = useMemo<ReferenceRenderValue>(() => ({
     notebook,
@@ -158,7 +190,9 @@ export function ReferenceRenderProvider({
     stylePending: styleWanted && setting !== null && !current,
     styleHash: current?.hash ?? null,
     requestStyle,
-  }), [notebook, library, loading, error, styleWanted, setting, current, requestStyle]);
+    documentStyles: loadedDocumentStyles,
+    requestDocumentStyle,
+  }), [notebook, library, loading, error, styleWanted, setting, current, requestStyle, loadedDocumentStyles, requestDocumentStyle]);
 
   return (
     <ReferenceRenderContext.Provider value={value}>
@@ -183,23 +217,35 @@ const NO_FORMATTING: CitationFormatting = { result: null, raws: [], pending: fal
 
 /**
  * Format a document's citations (in document order) with the surrounding
- * provider's library and style. Typing that leaves the citations alone keeps
- * the signature, so nothing is formatted or posted again.
+ * provider's library and style. `documentStyle` is the document's own style
+ * setting (`citation-style` in its front matter), if any. Typing that leaves
+ * the citations alone keeps the signature, so nothing is formatted or posted
+ * again.
  */
-export function useFormattedCitations(citations: readonly Citation[] | null): CitationFormatting {
+export function useFormattedCitations(citations: readonly Citation[] | null, documentStyle?: string | null): CitationFormatting {
   const render = useReferenceRender();
   const status = useContext(ReferenceRenderStatusContext);
   const active = Boolean(render && status && citations?.length);
   const requestStyle = status?.requestStyle;
+  const notebookSetting = render?.library ? render.library.style || DEFAULT_CSL_STYLE : null;
+  const override = documentStyle && notebookSetting !== null && documentStyle !== notebookSetting ? documentStyle : null;
+  const requestDocumentStyle = status?.requestDocumentStyle;
   useEffect(() => {
-    if (active) requestStyle?.();
-  }, [active, requestStyle]);
+    if (!active) return;
+    requestStyle?.();
+    if (override) requestDocumentStyle?.(override);
+  }, [active, requestStyle, override, requestDocumentStyle]);
 
   const raws = useMemo(() => citations?.map((citation) => citation.raw) ?? [], [citations]);
   const library = render?.library ?? null;
-  const styleXml = render?.styleXml ?? null;
-  const signature = active && library && styleXml && status?.styleHash
-    ? [render!.notebook ?? "", library.revision, status.styleHash, render!.locale, raws.join("\u0001")].join("\u0000")
+  // A document style that could not be loaded falls back to the notebook's.
+  const loadedOverride = override ? status?.documentStyles[override] : undefined;
+  const useOverride = Boolean(loadedOverride?.xml);
+  const styleXml = useOverride ? loadedOverride!.xml : render?.styleXml ?? null;
+  const styleHash = useOverride ? loadedOverride!.hash : status?.styleHash ?? null;
+  const overridePending = Boolean(override && !loadedOverride);
+  const signature = active && library && styleXml && styleHash && !overridePending
+    ? [render!.notebook ?? "", library.revision, styleHash, render!.locale, raws.join("\u0001")].join("\u0000")
     : null;
   const notebook = render?.notebook ?? null;
   const [state, setState] = useState<{ signature: string; notebook: string | null; result: FormattedCitationDocument | null; raws: string[] } | null>(null);
@@ -225,7 +271,7 @@ export function useFormattedCitations(citations: readonly Citation[] | null): Ci
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature]);
 
-  const pending = active && Boolean(status?.libraryPending || status?.stylePending || (signature && state?.signature !== signature));
+  const pending = active && Boolean(status?.libraryPending || status?.stylePending || overridePending || (signature && state?.signature !== signature));
   // While a new result is on its way the previous one stays (chips check that
   // their token still matches); without a library or style there is none.
   const current = active && (signature || pending) && state?.notebook === notebook ? state : null;
@@ -249,10 +295,21 @@ export type DocumentCitationList = {
 
 const EMPTY_LIST: DocumentCitationList = { citations: [], bySourceId: new Map(), byStart: new Map() };
 
-/** The citations of a Markdown source, in order, as the preview renders them. */
-export function documentCitationsFromSource(source: string, mathMarkers?: MathMarkerSettings): DocumentCitationList {
+/** Whether a key resolves in a render context's library (null while there is no library: nothing resolves). */
+export function referenceKeyResolver(render: Pick<ReferenceRenderValue, "library" | "entriesByKey"> | null) {
+  if (!render?.library) return null;
+  const { entriesByKey } = render;
+  return (key: string) => Boolean(entryForKey(entriesByKey, key));
+}
+
+/**
+ * The citations of a Markdown source, in order, as the preview renders them.
+ * Narrative candidates count only when `resolves` knows their key (see
+ * citation-syntax.ts): an unresolved `@word` renders as text.
+ */
+export function documentCitationsFromSource(source: string, mathMarkers?: MathMarkerSettings, resolves?: ((key: string) => boolean) | null): DocumentCitationList {
   if (!source.includes("@")) return EMPTY_LIST;
-  const occurrences = scanCitations(source, { mathMarkers });
+  const occurrences = resolvedCitationOccurrences(scanCitations(source, { mathMarkers }), resolves);
   if (!occurrences.length) return EMPTY_LIST;
   return {
     citations: occurrences.map((occurrence) => occurrence.citation),
@@ -261,8 +318,9 @@ export function documentCitationsFromSource(source: string, mathMarkers?: MathMa
   };
 }
 
-/** The citations the preview worker found, in order. */
-export function documentCitationsFromPreview(citations: readonly PreviewCitation[]): DocumentCitationList {
+/** The citations the preview worker found, in order (narrative ones only when they resolve). */
+export function documentCitationsFromPreview(found: readonly PreviewCitation[], resolves?: ((key: string) => boolean) | null): DocumentCitationList {
+  const citations = resolvedCitationOccurrences(found, resolves);
   if (!citations.length) return EMPTY_LIST;
   return {
     citations: citations.map((entry) => entry.citation),
@@ -319,11 +377,21 @@ export function useCitationScope() {
  * numbering and disambiguation run across all of them. A MarkdownRenderer
  * inside names its source with `citationScopeIndex`.
  */
-export function CitationScope({ sources, mathMarkers, children }: { sources: string[]; mathMarkers?: MathMarkerSettings; children?: ReactNode }) {
+export function CitationScope({ sources, mathMarkers, documentStyle, children }: {
+  sources: string[];
+  mathMarkers?: MathMarkerSettings;
+  /** The deck's own style setting (`citation-style`), if any. */
+  documentStyle?: string | null;
+  children?: ReactNode;
+}) {
   const render = useReferenceRender();
-  const lists = useMemo(() => render ? sources.map((source) => documentCitationsFromSource(normalizeMarkdownHighlightDelimiters(source), mathMarkers)) : [], [render, sources, mathMarkers]);
+  const lists = useMemo(() => {
+    if (!render) return [];
+    const resolves = referenceKeyResolver(render);
+    return sources.map((source) => documentCitationsFromSource(normalizeMarkdownHighlightDelimiters(source), mathMarkers, resolves));
+  }, [render, sources, mathMarkers]);
   const citations = useMemo(() => lists.flatMap((list) => list.citations), [lists]);
-  const formatting = useFormattedCitations(render ? citations : null);
+  const formatting = useFormattedCitations(render ? citations : null, documentStyle);
   const value = useMemo<CitationScopeValue>(() => {
     const offsets: number[] = [];
     let offset = 0;

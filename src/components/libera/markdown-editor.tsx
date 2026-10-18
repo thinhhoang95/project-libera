@@ -68,7 +68,7 @@ import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
 import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { citationAt, citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
-import { citationInsertion, mayTriggerCitation } from "@/lib/references/reference-suggestions";
+import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
 import {
   CitationPopup,
   citationPopupPosition,
@@ -76,7 +76,7 @@ import {
   useEditorCitationHover,
   type CitationPopupHandle,
 } from "@/components/libera/references/citation-popup";
-import { useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { referenceKeyResolver, useReferenceRender } from "@/components/libera/references/reference-render-context";
 
 type EditorContextMenuState = {
   hasText: boolean;
@@ -103,6 +103,8 @@ type CitationPopupContext = {
   citedKeys: string[];
   x: number;
   y: number;
+  /** The character before the `@` (narrative insertion needs whitespace, `[` or `(` there). */
+  before: string;
 };
 
 type MarkdownEditorProps = {
@@ -684,6 +686,8 @@ export function MarkdownEditor({
   // The `@` citation popup, refreshed in the file-link popup's frame.
   const [citationPopup, setCitationPopup] = useState<CitationPopupContext | null>(null);
   const citationPopupRef = useRef<CitationPopupContext | null>(null);
+  /** The `@key` the popup just inserted: it must not reopen the popup. */
+  const citationInsertedRef = useRef<{ from: number; query: string } | null>(null);
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const referenceRender = useReferenceRender();
   const citationHover = useEditorCitationHover();
@@ -1133,19 +1137,25 @@ export function MarkdownEditor({
       mayTriggerCitation(nextValue.slice(Math.max(0, cursor - 260), cursor))
     ) {
       const trigger = citationTriggerAt(nextValue, cursor, { mathMarkers });
-      if (trigger) {
-        const same = previous?.from === trigger.from;
-        next = {
-          from: trigger.from,
-          to: cursor,
-          query: trigger.query,
-          insideCitation: trigger.insideCitation,
-          // The trigger just analysed this text, so listing its keys reuses that analysis.
-          citedKeys: same ? previous.citedKeys : documentCitedKeys(nextValue, { mathMarkers }),
-          ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(getTextareaClientPointForOffset(textarea, trigger.from))),
-        };
+      const dismissed = citationInsertedRef.current;
+      // The `@key` a choice just inserted is not a new query: stay closed until the caret leaves it.
+      if (!(trigger && dismissed && dismissed.from === trigger.from && dismissed.query === trigger.query)) {
+        citationInsertedRef.current = null;
+        if (trigger) {
+          const same = previous?.from === trigger.from;
+          next = {
+            from: trigger.from,
+            to: cursor,
+            query: trigger.query,
+            insideCitation: trigger.insideCitation,
+            // The trigger just analysed this text, so listing its keys reuses that analysis.
+            citedKeys: same ? previous.citedKeys : documentCitedKeys(nextValue, { mathMarkers, resolves: referenceKeyResolver(referenceRender) }),
+            ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(getTextareaClientPointForOffset(textarea, trigger.from))),
+            before: trigger.from > 0 ? nextValue[trigger.from - 1] : "",
+          };
+        }
       }
-    }
+    } else citationInsertedRef.current = null;
     if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
     if (!previous && !next) return;
     citationPopupRef.current = next;
@@ -1154,12 +1164,13 @@ export function MarkdownEditor({
   const refreshCitationPopupRef = useRef(refreshCitationPopup);
   useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
 
-  function insertCitation(key: string, { locator }: { locator: boolean }) {
+  function insertCitation(key: string, { locator, narrative }: { locator: boolean; narrative?: boolean }) {
     const textarea = textareaRef.current;
     const popup = citationPopupRef.current;
     if (!textarea || !popup) return;
-    // `[@key]` replaces `@query`; inside a citation `@key` replaces it.
-    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    // `[@key]` replaces `@query`; inside a citation, or narrative (Shift+Enter), `@key` does.
+    const insertion = citationInsertion(key, popup.insideCitation, locator, { narrative, before: popup.before });
+    citationInsertedRef.current = insertion.text.startsWith("@") ? { from: popup.from, query: insertion.text.slice(1).replace(/, $/, "") } : null;
     const currentValue = editorValueRef.current;
     const nextValue = `${currentValue.slice(0, popup.from)}${insertion.text}${currentValue.slice(popup.to)}`;
     const caret = popup.from + insertion.caret;
@@ -1192,7 +1203,8 @@ export function MarkdownEditor({
     if (!text.includes("@")) return null;
     const offset = getTextareaOffsetAtPoint(textarea, clientX, clientY);
     const found = citationAt(text, offset, { mathMarkers });
-    if (!found) return null;
+    // A narrative `@word` is a citation only when the library knows its key.
+    if (!found || (found.citation.narrative && !referenceKeyResolver(referenceRender)?.(found.citation.items[0].key))) return null;
     // The offset is the nearest caret position: check the pointer is over the token on its line.
     const start = getTextareaClientPointForOffset(textarea, found.start);
     const end = getTextareaClientPointForOffset(textarea, found.end);
@@ -2026,6 +2038,7 @@ export function MarkdownEditor({
           citedKeys={citationPopup.citedKeys}
           x={citationPopup.x}
           y={citationPopup.y}
+          narrativeAllowed={narrativeInsertionAllowed(citationPopup.insideCitation, citationPopup.before)}
           onInsert={insertCitation}
           onClose={closeCitationPopup}
         />

@@ -16,9 +16,12 @@ import type { LiberaCitationNode } from "./remark-citations";
 // into the contract's elements:
 //
 // - a `liberaCitation` → `<span class="libera-citation"
-//   data-libera-citation="RAW">RAW</span>` with its data-source-start/-end.
+//   data-libera-citation="RAW">RAW</span>` with its data-source-start/-end,
+//   plus `data-libera-narrative=""` for a narrative citation (`@key`).
 //   `data-citation` (the parsed citation, JSON) is for the renderer and the
-//   preview worker; the chip does not put it in the DOM;
+//   preview worker; the chip does not put it in the DOM. Whether a narrative
+//   candidate is a citation at all depends on the library, so the chip
+//   decides (an unresolved one renders as plain text);
 // - a `liberaBibliography` → `<section class="libera-bibliography"
 //   data-libera-bibliography="">`, filled by the renderer, with
 //   `data-bibliography-placement` ("marker" or "end").
@@ -106,6 +109,7 @@ const liberaCitation: Handler = (state, node: LiberaCitationNode) => {
     properties: {
       className: ["libera-citation"],
       "data-libera-citation": raw,
+      ...(node.citation?.narrative ? { "data-libera-narrative": "" } : {}),
       "data-citation": JSON.stringify(node.citation),
       ...sourceProperties(node as unknown as TreeNode, ["data-source-start", "data-source-end"]),
     },

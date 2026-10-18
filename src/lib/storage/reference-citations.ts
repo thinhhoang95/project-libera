@@ -19,7 +19,8 @@ import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 // Keys are stored as written (aliases and unknown keys included); the client
 // resolves them against the library and merges in its open drafts.
 
-export const CITATION_INDEX_VERSION = 1;
+// Version 2: narrative `@key` candidates are indexed too (consumers look keys up in the library).
+export const CITATION_INDEX_VERSION = 2;
 
 type CitationIndexFile = { mtimeMs: number; size: number; keys: string[] };
 type CitationIndex = { version: typeof CITATION_INDEX_VERSION; files: Record<string, CitationIndexFile> };
@@ -122,7 +123,7 @@ async function rebuild(notebook: string, includeArchive: boolean) {
     let content: string;
     try { content = await readFile(absolutePath, "utf8"); } catch { return; }
     read += 1;
-    next.files[relativePath] = { mtimeMs: stats.mtimeMs, size: stats.size, keys: citedKeys(content) };
+    next.files[relativePath] = { mtimeMs: stats.mtimeMs, size: stats.size, keys: citedKeys(content, { allNarrative: true }) };
   });
   // Stable order keeps the comparison and the file independent of stat timing.
   next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));

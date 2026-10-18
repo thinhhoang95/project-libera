@@ -8,7 +8,9 @@ import { CITATION_SYNC_SCAN_LIMIT, liberaCitationAt, liberaCitations, liberaMath
  * Every `[@key …]` token found by the shared scanner (libera-syntax.ts →
  * citation-syntax.ts) is drawn as a subtle chip with its keys emphasized;
  * keys the notebook's library does not know are underlined red. The library
- * comes from the React component through `setCitationLibrary`. Hovering a
+ * comes from the React component through `setCitationLibrary`. A narrative
+ * citation (`@key` in prose) is drawn, hovered and clicked only when the
+ * library knows its key: an unknown `@word` is plain text, never red. Hovering a
  * citation opens a tooltip whose content the component renders (the shared
  * citation card), and Ctrl/Cmd+click opens the cited attachment.
  *
@@ -63,11 +65,17 @@ const unresolvedChip = Decoration.mark({ class: "cm-libera-citation cm-libera-ci
 const keyMark = Decoration.mark({ class: "cm-libera-citation-key" });
 const unresolvedKeyMark = Decoration.mark({ class: "cm-libera-citation-key cm-libera-citation-key-unresolved", attributes: { title: "Not in this notebook's references" } });
 
+/** Whether an occurrence is a citation given the library: narrative ones only when their key resolves. */
+export function citationShown(occurrence: CitationOccurrence, library: CitationLibraryKeys) {
+  return !occurrence.citation.narrative || Boolean(library && occurrence.citation.items.every((item) => library.has(item.key)));
+}
+
 /** Chip and key decorations for every citation in the document. */
 export function buildCitationDecorations(state: EditorState, citations: readonly CitationOccurrence[]): DecorationSet {
   const library = state.field(citationLibraryField, false) ?? null;
   const ranges: Range<Decoration>[] = [];
   for (const occurrence of citations) {
+    if (!citationShown(occurrence, library)) continue;
     const keys = citationKeyRanges(occurrence);
     const unresolved = library ? keys.filter((range) => !library.has(range.key)) : [];
     ranges.push((unresolved.length ? unresolvedChip : chip).range(occurrence.start, occurrence.end));
@@ -124,7 +132,12 @@ const citationDecorationPlugin = ViewPlugin.fromClass(CitationDecorationPlugin, 
 /** The citation at a pointer position: `pos` is the nearest caret position, so the
  * character before it counts too (the pointer on a token's last character). */
 function citationNear(state: EditorState, pos: number, side: number) {
-  return liberaCitationAt(state, side < 0 && pos > 0 ? pos - 1 : pos) ?? (pos > 0 ? liberaCitationAt(state, pos - 1) : null);
+  const library = state.field(citationLibraryField, false) ?? null;
+  const at = (offset: number) => {
+    const found = liberaCitationAt(state, offset);
+    return found && citationShown(found, library) ? found : null;
+  };
+  return at(side < 0 && pos > 0 ? pos - 1 : pos) ?? (pos > 0 ? at(pos - 1) : null);
 }
 
 /** The hover tooltip for the citation at `pos`, or null (exported for tests). */

@@ -1,14 +1,17 @@
 import { readFile } from "node:fs/promises";
 import type { Element, ElementContent } from "hast";
-import { citedKeys, scanCitations } from "@/lib/references/citation-syntax";
+import { citedKeys, resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
 import {
   citationEntriesForDocument,
+  entryForKey,
   formatCitationDocument,
+  libraryEntriesByKey,
   isBundledCslStyle,
   loadCitationFormatter,
   loadCslStyle,
   sanitizeCitationHtml,
 } from "@/lib/references/format";
+import { documentStyleOverride } from "@/lib/references/document-style";
 import { DEFAULT_CSL_STYLE, type Citation, type ReferenceEntry, type ReferenceLibrary } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
 import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
@@ -144,11 +147,26 @@ export async function loadNotebookStyle(notebook: string, setting: string | null
   return xml ?? loadCslStyle(value);
 }
 
+/**
+ * The style a document is formatted with: its own `citation-style` (see
+ * document-style.ts) when that names a bundled style or a `.csl` file that
+ * loads, otherwise the notebook's. Returns the setting used and its XML.
+ */
+export async function loadDocumentStyle(notebook: string, documentText: string | null | undefined, notebookSetting: string | null | undefined) {
+  const own = documentStyleOverride(documentText);
+  if (own) {
+    const xml = isBundledCslStyle(own) ? await loadCslStyle(own) : await readCustomStyle(notebook, own);
+    if (xml) return { setting: own, xml };
+  }
+  const setting = notebookSetting || DEFAULT_CSL_STYLE;
+  return { setting, xml: await loadNotebookStyle(notebook, setting) };
+}
+
 export type BibliographyRequest = {
   notebook: string;
   library: ReferenceLibrary;
   format: BibliographyFormat;
-  /** The cited entries of this Markdown, in the style's order. */
+  /** The cited entries of this Markdown, in the style's order (and its `citation-style`, unless `style` is given). */
   documentText?: string;
   /** Without documentText: these entries; otherwise the whole library. */
   ids?: string[];
@@ -177,8 +195,11 @@ export async function formatNotebookBibliography(request: BibliographyRequest): 
   let citations: Citation[];
   let entries: Record<string, ReferenceEntry>;
   if (request.documentText !== undefined) {
-    citations = scanCitations(request.documentText).map((occurrence) => occurrence.citation);
-    entries = citationEntriesForDocument(request.library, citedKeys(request.documentText));
+    // Narrative `@key`s count when the library knows them (citation-syntax.ts).
+    const known = libraryEntriesByKey(request.library);
+    const resolves = (key: string) => Boolean(entryForKey(known, key));
+    citations = resolvedCitationOccurrences(scanCitations(request.documentText), resolves).map((occurrence) => occurrence.citation);
+    entries = citationEntriesForDocument(request.library, citedKeys(request.documentText, { resolves }));
   } else {
     let selected = Object.values(request.library.entries);
     if (request.ids) {
@@ -189,7 +210,11 @@ export async function formatNotebookBibliography(request: BibliographyRequest): 
   }
   if (!citations.length) return { text: "", count: 0, unresolvedKeys: [] };
 
-  const [style] = await Promise.all([loadNotebookStyle(request.notebook, request.style ?? request.library.style), loadCitationFormatter()]);
+  // An explicit style wins; then the document's own `citation-style`; then the notebook's.
+  const loadStyle = request.style !== undefined || request.documentText === undefined
+    ? loadNotebookStyle(request.notebook, request.style ?? request.library.style)
+    : loadDocumentStyle(request.notebook, request.documentText, request.library.style).then((loaded) => loaded.xml);
+  const [style] = await Promise.all([loadStyle, loadCitationFormatter()]);
   const formatted = formatCitationDocument({ citations, entries, style, format: "html" });
   return {
     text: renderBibliography(formatted.bibliography, request.format),

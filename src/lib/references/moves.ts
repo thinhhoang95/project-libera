@@ -164,7 +164,8 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
   const keys = new Set<string>();
   for (const { to } of files) {
     const text = await readFile(absoluteNotebookFile(to).absolutePath, "utf8");
-    const cited = citedKeys(text);
+    // Narrative `@key`s count when the source library knows them (planReferenceCopy skips the others).
+    const cited = citedKeys(text, { allNarrative: true });
     if (!cited.length) continue;
     texts.set(to, text);
     for (const key of cited) keys.add(key);
@@ -195,7 +196,7 @@ async function copyReferences(sourceNotebook: string, destinationNotebook: strin
   const renamed = new Map<string, { from: string; to: string; files: string[] }>();
   const rewritten: string[] = [];
   for (const [file, text] of texts) {
-    const cited = new Set(citedKeys(text));
+    const cited = new Set(citedKeys(text, { allNarrative: true }));
     const map = new Map([...plan.keyMap].filter(([from]) => cited.has(from)));
     if (!map.size) continue;
     const next = rewriteCitationKeys(text, map);

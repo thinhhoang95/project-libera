@@ -136,7 +136,7 @@ function tokenizeNarrative(this: TokenizeContext, effects: Parameters<Construct[
         return done(code);
       };
       const take = (code: Code) => {
-        text += code === -2 ? "	" : code === -1 ? "" : String.fromCharCode(code as number);
+        text += code === -2 ? "\t" : code === -1 ? "" : String.fromCharCode(code as number);
         length += 1;
         effects.consume(code);
       };

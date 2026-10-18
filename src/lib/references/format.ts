@@ -10,6 +10,13 @@
 // token, and both are listed in `unresolvedKeys`. The bibliography lists the
 // cited, resolved entries only.
 //
+// A narrative citation (`@key`, `citation.narrative`) reads "Smith (2020)":
+// citeproc formats an author-only cluster ("Smith et al.") and then the item
+// with its author suppressed ("(2020, p. 33)"), and the two are joined.
+// Numeric styles have no printed author form, so the author comes from the
+// entry's names instead: "Smith [3]". An unresolved narrative key shows its
+// raw token, like any unresolved citation (renderers do not format those).
+//
 // Entry fields come from imports, the web and models, so the HTML citeproc
 // returns is put through a small allowlist (sanitizeCitationHtml) before it
 // leaves this module, and components render it through hast, never through
@@ -48,6 +55,7 @@ type CiteprocCitationItem = {
   prefix?: string;
   suffix?: string;
   "suppress-author"?: boolean;
+  "author-only"?: boolean;
 };
 type CiteprocCitation = { citationID: string; citationItems: CiteprocCitationItem[]; properties: { noteIndex: number } };
 type CiteprocBibliographyMeta = {
@@ -290,6 +298,30 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"]/g, (char) => HTML_ESCAPES[char]);
 }
 
+/** The family name (or literal name) of a CSL name. */
+function nameText(name: NonNullable<CslItem["author"]>[number]) {
+  return [name["non-dropping-particle"], name.family ?? name.literal ?? name.given].filter(Boolean).join(" ");
+}
+
+/**
+ * A narrative author for styles without a printed author form (numeric
+ * styles): "Smith", "Smith and Lee", "Smith et al.", else the short title.
+ */
+export function narrativeAuthorText(csl: CslItem) {
+  const people = (csl.author?.length ? csl.author : csl.editor ?? []).map(nameText).filter(Boolean);
+  if (people.length > 2) return `${people[0]} et al.`;
+  if (people.length) return people.join(" and ");
+  const title = typeof csl["title-short"] === "string" && csl["title-short"].trim() ? csl["title-short"] : csl.title;
+  return typeof title === "string" && title.trim() ? title.trim() : "Anonymous";
+}
+
+/** Whether citeproc's author-only output printed an author (numeric styles print `[NO_PRINTED_FORM]`). */
+function printedAuthor(text: string | undefined, format: "html" | "text") {
+  if (text === undefined || /NO_PRINTED_FORM/.test(text)) return null;
+  const plain = format === "html" ? citationHtmlToText(text) : text;
+  return plain.trim() ? text : null;
+}
+
 /** Put `@key?` marks for unresolved keys inside the formatted citation, before the layout's closing affix. */
 function withUnresolvedKeys(formatted: string, keys: string[], layout: LayoutAffixes, format: "html" | "text") {
   const html = format === "html";
@@ -321,7 +353,7 @@ function styleId(style: string) {
 }
 
 function resultCacheKey(input: CitationFormatInput, resolved: Map<string, ReferenceEntry>, locale: string, format: string) {
-  const parts = [format, locale, styleId(input.style), JSON.stringify(input.citations.map((citation) => [citation.raw, citation.items]))];
+  const parts = [format, locale, styleId(input.style), JSON.stringify(input.citations.map((citation) => [citation.raw, citation.items, citation.narrative ?? false]))];
   for (const [key, entry] of resolved) parts.push(key, entry.id, entryJson(entry));
   return parts.join("\u0000");
 }
@@ -365,7 +397,19 @@ export function formatCitationDocument(input: CitationFormatInput): FormattedCit
     const state = engineFor(input.style, locale, items, json);
     const clusters: CiteprocCitation[] = [];
     const missing: string[][] = [];
+    // Narrative citations: the entry whose author-only cluster precedes the citation's own.
+    const narrativeEntries = new Map<number, ReferenceEntry>();
     input.citations.forEach((citation, index) => {
+      const narrativeEntry = citation.narrative && citation.items.length === 1 ? resolved.get(citation.items[0].key) : undefined;
+      if (narrativeEntry) {
+        narrativeEntries.set(index, narrativeEntry);
+        clusters.push({ citationID: `c${index}a`, citationItems: [{ id: narrativeEntry.id, "author-only": true }], properties: { noteIndex: 0 } });
+        const item = citeprocCitationItem({ ...citation.items[0], prefix: undefined }, narrativeEntry.id);
+        item["suppress-author"] = true;
+        clusters.push({ citationID: `c${index}`, citationItems: [item], properties: { noteIndex: 0 } });
+        missing[index] = [];
+        return;
+      }
       const seen = new Set<string>();
       const citationItems: CiteprocCitationItem[] = [];
       const unresolved: string[] = [];
@@ -384,11 +428,19 @@ export function formatCitationDocument(input: CitationFormatInput): FormattedCit
 
     const formatted = new Map<string, string>();
     for (const [id, , text] of state.engine.rebuildProcessorState(clusters, format)) formatted.set(id, text);
+    const clean = (text: string) => format === "html" ? sanitizeCitationHtmlString(text) : text;
     const citations = input.citations.map((citation, index) => {
       const text = formatted.get(`c${index}`);
       if (text === undefined) return raw(citation);
-      const clean = format === "html" ? sanitizeCitationHtmlString(text) : text;
-      return missing[index].length ? withUnresolvedKeys(clean, missing[index], state.layout, format) : clean;
+      const narrativeEntry = narrativeEntries.get(index);
+      if (narrativeEntry) {
+        // "Smith et al." + " " + "(2020, p. 33)"; numeric styles: "Smith" + " " + "[3]".
+        const printed = printedAuthor(formatted.get(`c${index}a`), format);
+        const fallback = narrativeAuthorText(narrativeEntry.csl);
+        const author = printed !== null ? clean(printed) : format === "html" ? escapeHtml(fallback) : fallback;
+        return `${author} ${clean(text)}`;
+      }
+      return missing[index].length ? withUnresolvedKeys(clean(text), missing[index], state.layout, format) : clean(text);
     });
 
     state.engine.setOutputFormat(format);

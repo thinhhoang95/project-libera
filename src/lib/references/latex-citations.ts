@@ -1,9 +1,9 @@
 import { randomInt } from "node:crypto";
 import type { ElementContent } from "hast";
-import { bibliographyItems, isLabelledBibliography, loadNotebookStyle } from "@/lib/references/bibliography-export";
+import { bibliographyItems, isLabelledBibliography, loadDocumentStyle } from "@/lib/references/bibliography-export";
 import { biblatexBibliography, biblatexCitation, biblatexStyleFor, genericBiblatexStyle } from "@/lib/references/biblatex-export";
-import { citedKeys, scanCitations } from "@/lib/references/citation-syntax";
-import { citationEntriesForDocument, formatCitationDocument, loadCitationFormatter, sanitizeCitationHtml } from "@/lib/references/format";
+import { citedKeys, resolvedCitationOccurrences, scanCitations } from "@/lib/references/citation-syntax";
+import { citationEntriesForDocument, formatCitationDocument, libraryEntriesByKey, loadCitationFormatter, sanitizeCitationHtml } from "@/lib/references/format";
 import { encodeLatex } from "@/lib/references/latex-text";
 import { emptyReferenceLibrary } from "@/lib/references/library-ops";
 import type { ReferenceLibrary } from "@/lib/references/types";
@@ -21,7 +21,9 @@ import { readReferenceLibrary } from "@/lib/storage/references";
 // inserted at the end of the block it was in, so no citation is ever lost.
 // The bibliography is appended after the last chunk (or put at the marker):
 // `thebibliography` for numeric styles, otherwise a starred References
-// section with one paragraph per entry.
+// section with one paragraph per entry. A narrative citation (`@key`) is
+// formatted "Smith (2020)" (biblatex: 	extcite) when the library knows its
+// key; an unknown `@word` is prose and stays in the text.
 
 export type LatexCitationPlan = {
   /** The Markdown with placeholders in place of citations (and of the bibliography marker). */
@@ -146,26 +148,32 @@ async function libraryFor(notebook: string | null): Promise<ReferenceLibrary> {
  * before. Without a notebook, citations are kept as their source text.
  */
 export async function prepareLatexCitations(markdown: string, notebook: string | null, { mode = "formatted" }: { mode?: LatexCitationMode } = {}): Promise<LatexCitationPlan | null> {
-  const occurrences = scanCitations(markdown);
+  const scanned = scanCitations(markdown);
+  if (!scanned.length) return null;
+  const library = await libraryFor(notebook);
+  const known = libraryEntriesByKey(library);
+  const resolves = (key: string) => Object.prototype.hasOwnProperty.call(known, key);
+  const occurrences = resolvedCitationOccurrences(scanned, resolves);
   if (!occurrences.length) return null;
   if (occurrences.length > MAX_CITATIONS) throw new Error(`The document has more than ${MAX_CITATIONS.toLocaleString("en-US")} citations.`);
 
-  const library = await libraryFor(notebook);
-  const entries = citationEntriesForDocument(library, citedKeys(markdown));
+  const entries = citationEntriesForDocument(library, citedKeys(markdown, { resolves }));
   const citationList = occurrences.map((occurrence) => occurrence.citation);
+  // The document's own `citation-style` (front matter) overrides the notebook's style.
+  const documentStyle = await loadDocumentStyle(notebook ?? "", markdown, library.style);
   // biblatex needs at least one resolved work; otherwise citations stay as their source text, as without a library.
   if (mode === "biblatex" && Object.keys(entries).length) {
-    const styleXml = await loadNotebookStyle(notebook ?? "", library.style);
     const bib = biblatexBibliography(citationList, entries);
     return placeholderPlan(markdown, occurrences, (index) => biblatexCitation(citationList[index], entries), "\\printbibliography", {
-      style: biblatexStyleFor(library.style, styleXml),
-      fallbackStyle: genericBiblatexStyle(styleXml),
+      style: biblatexStyleFor(documentStyle.setting, documentStyle.xml),
+      fallbackStyle: genericBiblatexStyle(documentStyle.xml),
       bibFileName: LATEX_EXPORT_BIB_FILE,
       bib: bib.text,
     });
   }
 
-  const [style] = await Promise.all([loadNotebookStyle(notebook ?? "", library.style), loadCitationFormatter()]);
+  const style = documentStyle.xml;
+  await loadCitationFormatter();
   const formatted = formatCitationDocument({ citations: citationList, entries, style, format: "html" });
   return placeholderPlan(markdown, occurrences, (index) => {
     const latex = citationHtmlToLatex(formatted.citations[index]);

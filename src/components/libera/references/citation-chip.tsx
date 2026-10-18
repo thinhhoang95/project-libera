@@ -3,7 +3,7 @@
 import { createElement, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { ElementContent } from "hast";
 import { entryForKey, sanitizeCitationHtml } from "@/lib/references/format";
-import { parseCitationToken } from "@/lib/references/citation-syntax";
+import { parseAnyCitation } from "@/lib/references/citation-syntax";
 import type { Citation } from "@/lib/references/types";
 import { citationIndex, formattedCitation, useCitationDocument, useReferenceRender } from "./reference-render-context";
 import { CitationHoverCard } from "./citation-hover-card";
@@ -13,6 +13,11 @@ import { citationRetractionClass } from "./retraction-badge";
 // data-libera-citation="RAW">` (lanes.md, "Rendered citation DOM"). With a
 // reference render provider it shows the document's formatted citation and
 // opens a hover card; without one it shows the raw token as a chip.
+//
+// A narrative citation (`@key`, `data-libera-narrative`) is a citation only
+// when the library resolves its key: without a provider, while the library
+// loads, or when the key is unknown it renders as the plain text it is
+// (`@someone` in prose is usually not a citation), never as a red chip.
 
 function hastToReact(nodes: ElementContent[], keyPrefix = ""): ReactNode[] {
   return nodes.map((node, index) => {
@@ -60,7 +65,7 @@ function chipCitation(raw: string, json: string | undefined): Citation {
       // Fall back to the token.
     }
   }
-  return parseCitationToken(raw) ?? { items: [], raw };
+  return parseAnyCitation(raw) ?? { items: [], raw };
 }
 
 /** How the card is open; "pinned-focus" was pinned from the keyboard and moves focus into the card. */
@@ -98,6 +103,11 @@ export function CitationChip(props: { className?: string; children?: ReactNode; 
     "data-source-end": sourceEnd,
     "data-preview-source-id": previewSourceId,
   };
+  const narrative = Boolean(citation.narrative) || props["data-libera-narrative"] !== undefined;
+  if (narrative && !(render?.library && citation.items.length && citation.items.every((item) => entryForKey(render.entriesByKey, item.key)))) {
+    return <>{raw}</>;
+  }
+  const narrativeAttribute = narrative ? { "data-libera-narrative": "" } : {};
   if (!render) {
     return <span className="libera-citation" data-libera-citation={raw} {...sourceAttributes}>{raw}</span>;
   }
@@ -138,6 +148,7 @@ export function CitationChip(props: { className?: string; children?: ReactNode; 
         ref={chipRef}
         className={chipClass}
         data-libera-citation={raw}
+        {...narrativeAttribute}
         {...sourceAttributes}
         data-formatted={html ? "true" : undefined}
         role="button"

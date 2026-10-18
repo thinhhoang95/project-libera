@@ -12,6 +12,7 @@ import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
 import { markdownTextStyleAttributes } from "./markdown-text-styles";
 import { LiberaBlockquote } from "./tiptap-boxes";
 import { CitationNode, CITATION_NODE_NAME } from "./tiptap-citation";
+import { FrontMatterNode } from "./tiptap-front-matter";
 
 const LiberaHighlight = Highlight.extend({
   renderHTML({ HTMLAttributes }) {
@@ -126,6 +127,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false }),
     LiberaLink.configure({ openOnClick: false }),
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
+    FrontMatterNode,
     LiberaBlockquote,
     Underline.extend({
       renderMarkdown: (node, h) => `<u>${h.renderChildren(node)}</u>`,

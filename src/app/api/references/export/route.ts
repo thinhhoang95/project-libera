@@ -4,6 +4,7 @@ import { contentDisposition } from "@/lib/content-disposition";
 import { serializeBibtex } from "@/lib/references/bibtex";
 import { loadJournalAbbreviations } from "@/lib/references/journal-abbreviations";
 import { citedKeys } from "@/lib/references/citation-syntax";
+import { libraryEntriesByKey } from "@/lib/references/format";
 import { serializeCslJson } from "@/lib/references/csl-json";
 import { serializeRis } from "@/lib/references/ris";
 import type { ReferenceEntry } from "@/lib/references/types";
@@ -112,7 +113,8 @@ export async function POST(request: NextRequest) {
     let entries = Object.values(library.entries);
     let unresolved: string[] = [];
     if (typeof documentText === "string") {
-      ({ selected: entries, unresolved } = entriesForKeys(entries, citedKeys(documentText)));
+      const known = libraryEntriesByKey(library);
+      ({ selected: entries, unresolved } = entriesForKeys(entries, citedKeys(documentText, { resolves: (key) => Object.prototype.hasOwnProperty.call(known, key) })));
     }
     if (ids) {
       const wanted = new Set(ids as string[]);

@@ -7,6 +7,7 @@
 // every word in some field. Entries already cited in the document come
 // first, then entries cited recently in this session.
 
+import { narrativeMayFollow } from "./citation-syntax";
 import type { CslItem, CslName, ReferenceEntry, ReferenceLibrary } from "./types";
 
 export type ReferenceSuggestionField = "key" | "author" | "year" | "title" | "container" | "tags" | "notes";
@@ -313,8 +314,19 @@ export function mayTriggerCitation(before: string) {
   return false;
 }
 
-/** The text a citation popup inserts for `key` at a trigger (see `citationTriggerAt`). */
-export function citationInsertion(key: string, insideCitation: boolean, locator: boolean) {
+/** Whether a popup choice at a trigger can insert a narrative citation: outside brackets, where `@key` reads as one. */
+export function narrativeInsertionAllowed(insideCitation: boolean, before: string | undefined) {
+  return !insideCitation && narrativeMayFollow(before);
+}
+
+/**
+ * The text a citation popup inserts for `key` at a trigger (see
+ * `citationTriggerAt`). With `narrative` (Shift+Enter) it is `@key`, the
+ * narrative form, where that is allowed (`before` is the character before the
+ * trigger's `@`); otherwise the bracketed form.
+ */
+export function citationInsertion(key: string, insideCitation: boolean, locator: boolean, { narrative = false, before }: { narrative?: boolean; before?: string } = {}) {
+  if (narrative && narrativeInsertionAllowed(insideCitation, before)) return { text: `@${key}`, caret: key.length + 1 };
   const text = insideCitation ? `@${key}${locator ? ", " : ""}` : `[@${key}${locator ? ", " : ""}]`;
   // The caret goes after the key, or at the locator position: `[@key, |]`.
   const caret = text.length - (insideCitation ? 0 : 1);
