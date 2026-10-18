@@ -9,6 +9,7 @@ import { can, type Role } from "@/lib/collab/protocol/roles";
 import { collabClient, describeError } from "@/lib/collab/ui/client";
 import { useCollabProjects, useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { initials, INVITABLE_ROLES, readableTextColor, ROLE_DESCRIPTION, ROLE_LABEL, shareProgressLabel } from "@/lib/collab/ui/wording";
+import { ActivityLogSection } from "./activity-log";
 import { useCopyFeedback } from "./collab-banners";
 import "./collab.css";
 
@@ -279,6 +280,8 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
           </ul>
         )}
       </section>
+
+      {!project.revoked && can(project.role, "view-audit") ? <ActivityLogSection projectId={project.projectId} members={members} /> : null}
 
       {project.role !== "owner" ? (
         <LeaveSection
