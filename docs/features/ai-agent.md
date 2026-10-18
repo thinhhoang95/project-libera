@@ -17,13 +17,15 @@ In Agent mode, the picker next to the switch sets what the agent may change:
 | Modify opened files only | The whole library | Text files open in editor tabs. It cannot create files. |
 | Modify all files in Notebook/Folder | The whole library | Any text file in the current notebook or linked folder, including new ones. |
 
+Next to the picker, **Allow web search** lets the agent look things up on the web (see WebSearch below). It is off by default, remembered like the mode, and sent with each request; the line above the composer says "Web search on" while it is.
+
 The current notebook is the one holding the file you are viewing, or the notebook selected in the sidebar. The system prompt and the tools the model receives match the permission: in Read Only the agent has no editing tools at all, and every write is checked again on the server.
 
 Only Markdown, LaTeX and plain-text files can be written. Hidden folders, `_assets` and `_archive` are never written, and paths are resolved through symlinks so nothing outside the notebook can be reached.
 
 ## What the agent knows
 
-Each request tells the agent today's date, the current notebook, the notebooks in the library, the file you are viewing, the files open in the editor (and which have unsaved changes), and what it may modify. It receives paths, not contents, and reads what it needs. Selections added with ⌘/Ctrl+Shift+L are sent as text; files attached with `@` are sent by path.
+Each request tells the agent today's date, whether web search is allowed, the current notebook, the notebooks in the library, the file you are viewing, the files open in the editor (and which have unsaved changes), and what it may modify. It receives paths, not contents, and reads what it needs. Selections added with ⌘/Ctrl+Shift+L are sent as text; files attached with `@` are sent by path.
 
 If a notebook has an `AGENT_NOTES.md` file at its root, its contents (up to 16,000 characters) are included as that notebook's conventions, for example tag rules or folder meanings.
 
@@ -40,6 +42,7 @@ The agent uses a small tool set modeled on Claude Code's:
 - **Write** creates a file or replaces one it has fully read.
 - **TaskCreate** and **TaskUpdate** keep a task list for multi-step jobs, shown in the reply.
 - **Skill** loads a skill (see below).
+- **WebSearch** (only when **Allow web search** is on) asks the model, in a separate OpenRouter request with the web plugin, to answer one question briefly and list its sources. The agent gets the answer and each cited page's title, URL and a snippet, labelled as web data. It uses the run's model; if that model's providers do not take the plugin, the chat default model searches instead, and if neither works the tool says so. Its tokens count toward the run.
 
 ### PDFs
 
@@ -69,6 +72,29 @@ When the agent finishes its reply, Libera compiles each review copy. Every comme
 
 Saved comments become ordinary review comments in the Comments panel, marked **Agent**, so you can reply, resolve, or have Agentic Review address them. Review mode is turned on for that document so they are highlighted, and if it is the document you are viewing, the Comments panel opens. The reply lists the files that got comments.
 
+### Suggested edits
+
+Skills can propose concrete rewrites without changing a file. **SuggestEdit** (path, before, after, reason, and an optional comment) records a suggested edit: `before` must occur exactly once in the current text (with Edit's forgiving matching) and lie within one paragraph or block, or cover whole blocks. Like LeaveComment it never writes the file, so it works in every permission mode, including Read Only, and it is not available in shared notebooks yet.
+
+When the agent finishes its reply, each suggestion is saved in the document's review as a pending **agent suggestion** (with the optional comment as a linked Agent comment), review mode is turned on, and the reply lists the files that got suggestions. If the document is open, its review reloads and the Comments panel opens.
+
+- Both editors preview pending suggestions as proposed changes, the way Agentic Review shows its changes; the source editor highlights the passage.
+- The Comments panel lists them as **Edit 1, 2…** marked **Agent**, with the count next to the comment count, and **Accept**, **Reject** and **Request revision** (plus **Accept all** and **Reject all** when several are pending).
+- **Accept** applies the change to the editor as one undoable step; undo takes back the text and the decision together. **Reject** records the decision.
+- **Request revision** adds a comment thread on the passage that quotes the suggestion and your request, so the agent (or Agentic Review) can follow up. The suggestion stays open.
+- A suggestion follows its passage as you edit. If the passage itself changes, it is marked "text changed" and can only be rejected; it becomes pending again if the passage comes back.
+
+The leave-review-comments skill offers SuggestEdit for clear, local fixes. Other skills reuse it: `suggestEditTool` and `finishSuggestedEdits` are exported from `src/lib/agent/suggest-edit.ts`; a skill lists the tool and calls the helper from its `finishPass`.
+
+## Child runs
+
+A tool can hand self-contained jobs to child runs of the agent loop (`runSubagents` in `src/lib/agent/subagents.ts`), for example to check several sources at once. Each child has its own system prompt, prompt, tools and limits (by default 15 turns, 5 minutes and 1 million input tokens), and up to four run at a time.
+
+- **Isolation.** A child starts with a fresh context: no reads, tasks or skills of the parent, Read Only permission and no undo snapshots. It shares the library, the user's open drafts, the stop signal and the run's token budget.
+- **Results.** A task can name a submit tool the child must finish by calling. Its arguments are checked against the tool's JSON schema (and by the tool itself); an invalid result goes back to the child for one repair round, and a child that ends without submitting is reminded once. Otherwise the result is the child's final text.
+- **Activity.** Each child appears in the run as one line, such as "Checking smith2020, lee2021 · 6 steps · done", which expands to its steps and shows progress while it runs. Its text is not shown, and its tokens are added to the run's total.
+- **Budget.** The run and its children share one input-token budget (5 million). Once it is used up, nothing new starts: children not yet started report that the budget ran out, and running ones stop at their next turn. **Stop** ends every child at once.
+
 ## Seeing and undoing changes
 
 Each tool call appears as one line, such as "Searching for “budget”" with its result. Lines for edits expand to a diff. Changed files are listed at the end of the reply.
@@ -95,7 +121,7 @@ The same rules cover Libera's other writers: "Convert PDF to Markdown" creates t
 
 ## Limits
 
-A run stops after 50 model turns, 20 minutes or 5 million input tokens, and when the agent repeats the same tool call five times in a row. **Stop** ends a run at once; changes made so far are kept and can be undone. Older tool results are shortened when the conversation nears the model's context window.
+A run stops after 50 model turns, 20 minutes or 5 million input tokens (child runs and web searches included), and when the agent repeats the same tool call five times in a row. **Stop** ends a run at once; changes made so far are kept and can be undone. Older tool results are shortened when the conversation nears the model's context window.
 
 ## Models
 
@@ -105,11 +131,12 @@ Agent mode uses the chat model picker and reasoning effort. The model must suppo
 
 - `src/lib/agent/`: loop (`runner.ts`), tools (`tools.ts`), path sandbox (`library.ts`), OpenRouter streaming with tool calls (`model.ts`), prompts (`prompt.ts`), history (`conversation.ts`) and undo snapshots (`snapshots.ts`).
 - `src/lib/agent/skills/`: the skill registry and each skill. `src/lib/agent/review-comments.ts` parses, maps and places `:::comment` blocks; `addReviewThreads` in `src/lib/storage/markdown-reviews.ts` saves them.
+- `src/lib/agent/subagents.ts` (child runs), `web-search.ts` (WebSearch) and `suggest-edit.ts` (SuggestEdit and its finish pass). Agent suggestions live in `ReviewDocument.agentSuggestions` (`src/lib/markdown-review.ts`, which also documents how they map onto the collaboration `SuggestionRecord`); `addAgentSuggestions` saves them, and the review route's `agent-decision` and `agent-revision` actions decide them.
 - `src/app/api/agent/route.ts` streams the run as NDJSON events; `src/app/api/agent/undo/route.ts` restores files.
 - `src/components/libera/agent-activity.tsx` renders a run; `document-chat-panel.tsx` holds the mode switch.
 
 ## Checks
 
-`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts scripts/editor/references-agent-*.test.ts`
 
-These cover skills (loading on demand, comment syntax and placement, feedback to the model, saving review threads), the path sandbox, every tool and its error messages, PDF reading and search, permissions, undo with drafts and conflicts, the loop's handling of malformed and cut-off tool calls, repeated calls, open tasks and stopping, parameter routing, and the panel's requests, activity view, tab syncing and undo.
+These cover skills (loading on demand, comment syntax and placement, feedback to the model, saving review threads), the path sandbox, every tool and its error messages, PDF reading and search, permissions, undo with drafts and conflicts, the loop's handling of malformed and cut-off tool calls, repeated calls, open tasks and stopping, parameter routing, and the panel's requests, activity view, tab syncing and undo. The `references-agent-*` tests cover child runs (isolation, concurrency, structured results, budget, stop, events and usage), WebSearch (mocked completions, fallback, when it is offered, the route and the panel toggle), and suggested edits (matching, the finish pass, remapping, decisions, the review route, and both editors and the Comments panel).

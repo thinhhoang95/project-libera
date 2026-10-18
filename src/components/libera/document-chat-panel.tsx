@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, Search, SpellCheck, FilePlus2 } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, Search, SpellCheck, FilePlus2, Globe } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
@@ -22,7 +22,7 @@ import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
-import { AGENT_PERMISSION_LABELS, AGENT_PERMISSIONS, compactAgentRunRecord, isAgentPermission, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { AGENT_PERMISSION_LABELS, AGENT_PERMISSIONS, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -83,6 +83,8 @@ function createChat(mode: ChatMode = "chat", agentPermission?: AgentPermission):
 const CHAT_MODE_STORAGE_KEY = "libera.chatMode";
 const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
 const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
+const AGENT_WEB_SEARCH_STORAGE_KEY = "libera.agentWebSearch";
+const isStoredFlag = (value: unknown): value is "true" | "false" => value === "true" || value === "false";
 
 function readStoredPreference<T>(key: string, accept: (value: unknown) => value is T): T | undefined {
   try {
@@ -159,6 +161,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [undoingRunId, setUndoingRunId] = useState<string | null>(null);
   const [defaultMode, setDefaultMode] = useState<ChatMode>("chat");
   const [defaultPermission, setDefaultPermission] = useState<AgentPermission>(DEFAULT_AGENT_PERMISSION);
+  const [allowWebSearch, setAllowWebSearch] = useState(false);
   // Agent runs call back into the workspace after awaits; always use the latest bridge.
   const agentWorkspaceRef = useRef(agentWorkspace);
   // Replies link files by workspace path; open them in the editor rather than navigating the window.
@@ -226,6 +229,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       const storedPermission = readStoredPreference(AGENT_PERMISSION_STORAGE_KEY, isAgentPermission) ?? DEFAULT_AGENT_PERMISSION;
       setDefaultMode(storedMode);
       setDefaultPermission(storedPermission);
+      setAllowWebSearch(readStoredPreference(AGENT_WEB_SEARCH_STORAGE_KEY, isStoredFlag) === "true");
       const first = createChat(storedMode, storedPermission);
       const restored = history ?? { chats: [first], activeId: first.id };
       if (history) historyWriter.markSaved({ kind: "history", value: history });
@@ -530,7 +534,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             sessionId: id, model, reasoningEffort: chat.reasoningEffort, permission: run.permission,
             messages: requestMessages(messages, true),
             activeFile: activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path : undefined,
-            openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook,
+            openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch,
           }),
           signal: controller.signal,
         });
@@ -566,6 +570,29 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               if (existing) existing.count += event.count; else run.comments = [...(run.comments ?? []), { path: event.path, count: event.count }];
               schedule();
             }
+          } else if (event.type === "suggestions_added") {
+            if (event.count) {
+              const existing = run.suggestions?.find((entry) => entry.path === event.path);
+              if (existing) existing.count += event.count; else run.suggestions = [...(run.suggestions ?? []), { path: event.path, count: event.count }];
+              schedule();
+            }
+          } else if (event.type === "subagent_started") {
+            run.steps.push({ kind: "subagent", id: event.id, label: event.label, status: "running", steps: [], stepCount: 0 });
+            publish("streaming");
+          } else if (event.type === "subagent_step" || event.type === "subagent_finished") {
+            const step = run.steps.find((item) => item.kind === "subagent" && item.id === event.id);
+            if (step?.kind !== "subagent") return;
+            if (event.type === "subagent_finished") Object.assign(step, { status: "finished", outcome: event.outcome, usage: event.usage });
+            else {
+              const index = step.steps.findIndex((item) => item.id === event.step.id);
+              if (index >= 0) step.steps[index] = event.step;
+              else {
+                step.stepCount++;
+                step.steps.push(event.step);
+                if (step.steps.length > MAX_SUBAGENT_STEPS) step.steps.shift();
+              }
+            }
+            schedule();
           } else if (event.type === "usage") {
             usage.inputTokens += event.usage.inputTokens;
             usage.outputTokens += event.usage.outputTokens;
@@ -576,9 +603,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           else if (event.type === "error") failure = event.message;
         });
         await syncQueue;
-        // The agent wrote threads into the document's review; show them if that document is open.
+        // The agent wrote threads or suggested edits into the document's review; show them if that document is open.
         const currentReview = reviewRef.current;
-        if (currentReview?.doc && run.comments?.some((entry) => entry.path === currentReview.doc!.key)) {
+        if (currentReview?.doc && [...(run.comments ?? []), ...(run.suggestions ?? [])].some((entry) => entry.path === currentReview.doc!.key)) {
           await currentReview.reload();
           currentReview.showComments();
         }
@@ -663,6 +690,11 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     setError("");
     setNotice("");
     requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function changeWebSearch(next: boolean) {
+    setAllowWebSearch(next);
+    storePreference(AGENT_WEB_SEARCH_STORAGE_KEY, String(next));
   }
 
   function changePermission(next: AgentPermission) {
@@ -788,6 +820,10 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </select>
           <ChevronDown aria-hidden size={13} />
         </label>}
+        {agentMode && <label className="libera-agent-web-search inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11.5px] text-muted-foreground" title="Let the agent search the web (through OpenRouter's web plugin) for facts that are not in your library">
+          <input type="checkbox" checked={allowWebSearch} disabled={!!pending} onChange={(event) => changeWebSearch(event.target.checked)} />
+          <Globe aria-hidden size={13} />Allow web search
+        </label>}
       </div>}
         <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
@@ -872,7 +908,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
               : permission === "open-files" ? `Can modify ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}`
-              : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}`}</p>
+              : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}${allowWebSearch ? " · Web search on" : ""}`}</p>
           </div>}
           {!agentMode && includedDocument && <div className="libera-chat-context flex items-center gap-1"><BookOpen aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? (activeTab?.file.fileType === "pdf" ? " (PDF text)" : " (current draft)") : " (already included)"}`}</p>

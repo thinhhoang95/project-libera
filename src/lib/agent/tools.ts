@@ -12,9 +12,26 @@ import { globToRegExp } from "./glob";
 import { resolveLibraryPath, statLibraryPath, suggestSimilarPath, walkLibraryFiles, type LibraryEntry, type ResolvedPath } from "./library";
 import { hashContent, type RunSnapshots } from "./snapshots";
 import type { AgentEvent, AgentPermission, AgentTask, AgentTaskStatus } from "./types";
-import type { ToolSchema } from "./model";
+import type { ModelProfile, ToolSchema } from "./model";
+import type { TokenUsage } from "@/lib/chat-token-usage";
+import { webSearchTool, WEB_SEARCH_TOOL } from "./web-search";
 
 export type FileState = { hash: string; partial: boolean };
+
+/**
+ * Input tokens shared by a run and every child run it starts. Each model turn
+ * (and each web search) adds to `inputTokens`; nothing new starts once it
+ * passes `maxInputTokens`.
+ */
+export type RunBudget = { maxInputTokens: number; inputTokens: number };
+
+/** How the run calls its model, so tools can start child runs and side requests with the same settings. */
+export type AgentRunConfig = {
+  model: string;
+  profile: ModelProfile;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  promptCaching?: boolean;
+};
 
 export type ToolContext = {
   permission: AgentPermission;
@@ -42,7 +59,37 @@ export type ToolContext = {
   model?: string;
   /** Shared documents resolved in this run, by library path. */
   sharedDocs?: Map<string, ResolvedDoc>;
+  /** The user turned on "Allow web search": WebSearch is offered. */
+  allowWebSearch?: boolean;
+  /** The run's model settings, for child runs and web searches. */
+  runConfig?: AgentRunConfig;
+  /** Shared by the run and its child runs. */
+  budget?: RunBudget;
+  /** Tokens this run used, its own turns included; runAgent sets it, tools add theirs with recordUsage. */
+  usage?: TokenUsage;
+  /** Set by a tool whose call ends the run (a child's submit tool); the loop stops after the current calls. */
+  finishRequested?: boolean;
 };
+
+export function addUsage(total: TokenUsage, usage: TokenUsage) {
+  total.inputTokens += usage.inputTokens;
+  total.outputTokens += usage.outputTokens;
+  if (usage.cachedTokens !== undefined) total.cachedTokens = (total.cachedTokens ?? 0) + usage.cachedTokens;
+}
+
+export function budgetExhausted(context: Pick<ToolContext, "budget">) {
+  return !!context.budget && context.budget.inputTokens >= context.budget.maxInputTokens;
+}
+
+/**
+ * Usage of a request a tool made (a web search, a child run): it counts
+ * toward the run's total and budget, and the panel's token count.
+ */
+export function recordUsage(context: ToolContext, usage: TokenUsage) {
+  if (context.usage) addUsage(context.usage, usage);
+  if (context.budget) context.budget.inputTokens += usage.inputTokens;
+  context.emit({ type: "usage", usage });
+}
 
 export type ToolResult = {
   text: string;
@@ -128,7 +175,7 @@ export function requireString(args: Record<string, unknown>, name: string, { all
   return value;
 }
 
-function optionalString(args: Record<string, unknown>, name: string) {
+export function optionalString(args: Record<string, unknown>, name: string) {
   const value = args[name];
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw new ToolError(`${name} must be a string.`);
@@ -136,7 +183,7 @@ function optionalString(args: Record<string, unknown>, name: string) {
 }
 
 /** Accepts numbers and numeric strings ("10"), a common slip in weaker models. */
-function optionalInteger(args: Record<string, unknown>, name: string, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+export function optionalInteger(args: Record<string, unknown>, name: string, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const value = args[name];
   if (value === undefined || value === null || value === "") return undefined;
   const number = typeof value === "string" && /^\s*-?\d+\s*$/.test(value) ? Number(value) : value;
@@ -1052,12 +1099,19 @@ export function toolsForPermission(permission: AgentPermission) {
   return ALL_TOOLS.filter((tool) => tool.kind === "read" || permission !== "read-only");
 }
 
-/** The base tools plus the tools of every skill loaded so far in this run. */
+/**
+ * The base tools plus the tools of every skill loaded so far in this run.
+ * WebSearch is offered exactly when the user allowed web search.
+ */
 export function activeTools(tools: AgentTool[], context: ToolContext): AgentTool[] {
-  const active = [...tools];
+  const active = tools.filter((tool) => tool.name !== WEB_SEARCH_TOOL || context.allowWebSearch);
+  if (context.allowWebSearch && !active.some((tool) => tool.name === WEB_SEARCH_TOOL)) active.push(webSearchTool);
   for (const skill of context.skills) {
     if (!context.loadedSkills.has(skill.name)) continue;
-    for (const tool of skill.tools ?? []) if (!active.some((candidate) => candidate.name === tool.name)) active.push(tool);
+    for (const tool of skill.tools ?? []) {
+      if (tool.name === WEB_SEARCH_TOOL && !context.allowWebSearch) continue;
+      if (!active.some((candidate) => candidate.name === tool.name)) active.push(tool);
+    }
   }
   return active;
 }

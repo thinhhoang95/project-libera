@@ -220,7 +220,7 @@ test("the loop answers malformed calls with errors, never runs cut-off calls, nu
     const context = loopContext(root, events);
     const profile = { contextLength: 200_000, supportsTools: true, known: true };
     const result = await runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Go" }], tools: toolsForPermission("read-only"), context, emit: (event) => events.push(event), signal: new AbortController().signal });
-    assert.deepEqual(result, { outcome: "completed" });
+    assert.equal(result.outcome, "completed");
     const toolResults = sent[1].messages.filter((message) => message.role === "tool");
     assert.match(toolResults[0].content, /^Error: There is no tool named "Bash"\. Available tools: Glob, Grep, Read, TaskCreate, TaskUpdate, Skill\./);
     assert.match(toolResults[1].content, /^Error: Could not parse the Read arguments as JSON/);
@@ -247,7 +247,7 @@ test("the loop answers malformed calls with errors, never runs cut-off calls, nu
     globalThis.fetch = async (_input, init) => new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)));
     const stopping = runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Go" }], tools: toolsForPermission("read-only"), context: loopContext(root, []), emit: () => undefined, signal: controller.signal });
     controller.abort();
-    assert.deepEqual(await stopping, { outcome: "stopped" });
+    assert.equal((await stopping).outcome, "stopped");
   });
 });
 

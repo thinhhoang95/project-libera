@@ -72,6 +72,8 @@ export type AgentEnvironment = {
   conventions?: { path: string; text: string; truncated: boolean; shared?: boolean };
   /** Shared notebooks among the listed ones, with the user's role when the collab host knows it. */
   sharedNotebooks?: { notebook: string; role?: string }[];
+  /** The user allowed web search for this run (the WebSearch tool). */
+  webSearch?: boolean;
 };
 
 const MAX_LISTED_NOTEBOOKS = 60;
@@ -91,6 +93,7 @@ export function buildAgentEnvironment(environment: AgentEnvironment) {
     `Open in the editor: ${environment.openFiles.slice(0, MAX_LISTED_OPEN_FILES).map(describeOpen).join(", ") || "none"}${environment.openFiles.length > MAX_LISTED_OPEN_FILES ? ` and ${environment.openFiles.length - MAX_LISTED_OPEN_FILES} more` : ""}`,
     `You may modify: ${writable}`,
   ];
+  if (environment.webSearch) lines.push("Web search: allowed. WebSearch looks things up on the web; cite the URLs you use and label them as web sources.");
   const shared = environment.sharedNotebooks ?? [];
   if (shared.length) {
     lines.push(`Shared notebooks (collaborators work in them too): ${shared.map((item) => `${item.notebook}${item.role ? ` (the user's role: ${item.role})` : ""}`).join(", ")}`);

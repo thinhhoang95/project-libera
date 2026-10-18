@@ -1,6 +1,7 @@
 import { StorageError } from "@/lib/storage/errors";
+import type { TokenUsage } from "@/lib/chat-token-usage";
 import { callModel, type AgentMessage, type ModelProfile, type ToolCall } from "./model";
-import { activeTools, hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
+import { activeTools, addUsage, budgetExhausted, hasOpenTasks, toolSchemas, ToolError, type AgentTool, type ToolContext } from "./tools";
 import type { AgentEvent, AgentOutcome } from "./types";
 
 // The agent loop: ask the model, run every tool it calls, append the results,
@@ -32,9 +33,23 @@ export type RunAgentOptions = {
   limits?: Partial<RunLimits>;
   emit: (event: AgentEvent) => void;
   signal: AbortSignal;
+  /**
+   * A tool the run must finish by calling (a child run's submit tool). If the
+   * model answers without having called it, it is reminded once.
+   */
+  finishTool?: string;
 };
 
-export type RunResult = { outcome: AgentOutcome; message?: string };
+export type RunResult = {
+  outcome: AgentOutcome;
+  message?: string;
+  /** Text of the last assistant message that had any. */
+  finalText: string;
+  /** Tokens of every turn, plus what tools spent for the run (web searches, child runs). */
+  usage: TokenUsage;
+};
+
+type LoopState = { finalText: string };
 
 type PreparedCall = { call: ToolCall; tool?: AgentTool; args: Record<string, unknown>; error?: string };
 
@@ -149,8 +164,12 @@ async function finishSkillPass(context: ToolContext, final: boolean) {
 }
 
 export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
+  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  options.context.usage = usage;
+  const state: LoopState = { finalText: "" };
+  let result: { outcome: AgentOutcome; message?: string };
   try {
-    return await runLoop(options);
+    result = await runLoop(options, state);
   } finally {
     // Whatever ended the run, skills keep the work that is ready, as edits are kept.
     try { await finishSkillPass(options.context, true); }
@@ -161,9 +180,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunResult> {
       options.emit({ type: "tool_finished", id, status: "error", result: error instanceof Error ? error.message.slice(0, 300) : "A skill could not finish." });
     }
   }
+  return { ...result, finalText: state.finalText, usage: { ...usage } };
 }
 
-async function runLoop(options: RunAgentOptions): Promise<RunResult> {
+async function runLoop(options: RunAgentOptions, state: LoopState): Promise<{ outcome: AgentOutcome; message?: string }> {
   const limits = { ...DEFAULT_RUN_LIMITS, ...options.limits };
   const { context, emit, signal } = options;
   const messages: AgentMessage[] = [{ role: "system", content: options.system }, ...options.messages];
@@ -172,6 +192,7 @@ async function runLoop(options: RunAgentOptions): Promise<RunResult> {
   let inputTokens = 0;
   let lastPromptTokens = 0;
   let nudgedAboutTasks = false;
+  let nudgedAboutFinish = false;
   let skillFeedbackRounds = 0;
   let repeat = { signature: "", count: 0, nudged: false };
   let textOpen = false;
@@ -181,6 +202,7 @@ async function runLoop(options: RunAgentOptions): Promise<RunResult> {
       if (signal.aborted) return { outcome: "stopped" };
       if (Date.now() - started > limits.maxMillis) return { outcome: "limit", message: `Stopped after ${Math.round(limits.maxMillis / 60_000)} minutes, the time limit for one run.` };
       if (inputTokens > limits.maxInputTokens) return { outcome: "limit", message: `Stopped after using ${inputTokens.toLocaleString("en")} input tokens, the limit for one run.` };
+      if (budgetExhausted(context)) return { outcome: "limit", message: `Stopped because the run's token budget (${context.budget!.maxInputTokens.toLocaleString("en")} input tokens, child runs included) is used up.` };
       if (lastPromptTokens > options.profile.contextLength * 0.7) {
         const removed = compactToolResults(messages, toolNames);
         if (!removed && lastPromptTokens > options.profile.contextLength * 0.92) {
@@ -209,9 +231,12 @@ async function runLoop(options: RunAgentOptions): Promise<RunResult> {
         },
       });
       messages.push(reply.message);
+      if (reply.message.content.trim()) state.finalText = reply.message.content;
       if (reply.usage) {
         inputTokens += reply.usage.inputTokens;
         lastPromptTokens = reply.usage.inputTokens;
+        addUsage(context.usage!, reply.usage);
+        if (context.budget) context.budget.inputTokens += reply.usage.inputTokens;
         emit({ type: "usage", usage: reply.usage });
       }
       for (const call of reply.toolCalls) toolNames.set(call.id, call.function.name);
@@ -233,6 +258,11 @@ async function runLoop(options: RunAgentOptions): Promise<RunResult> {
           messages.push(nudge(`You still have open tasks (${open}). Continue with them, or mark them completed or deleted with TaskUpdate if they are done or no longer needed.`));
           continue;
         }
+        if (options.finishTool && !context.finishRequested && !nudgedAboutFinish) {
+          nudgedAboutFinish = true;
+          messages.push(nudge(`You have not called ${options.finishTool} yet. Your work only counts once you call ${options.finishTool} with your result. Call it now.`));
+          continue;
+        }
         const feedback = await finishSkillPass(context, skillFeedbackRounds >= SKILL_FEEDBACK_ROUNDS);
         if (feedback) {
           skillFeedbackRounds++;
@@ -245,6 +275,7 @@ async function runLoop(options: RunAgentOptions): Promise<RunResult> {
       textOpen = false;
       const results = await executeToolCalls(reply.toolCalls, tools, context, emit);
       reply.toolCalls.forEach((call, index) => messages.push({ role: "tool", tool_call_id: call.id, content: results[index] }));
+      if (context.finishRequested) return { outcome: "completed" };
 
       for (const call of reply.toolCalls) {
         const signature = `${call.function.name}:${(() => { try { return canonical(JSON.parse(call.function.arguments || "{}")); } catch { return call.function.arguments; } })()}`;
