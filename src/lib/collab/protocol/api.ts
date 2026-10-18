@@ -12,7 +12,8 @@
 // with `ai-cannot-decide`, so owner actions accept the hint only to reject it.
 
 import type { Actor, AiActorHint } from "./actor";
-import type { Role } from "./roles";
+import type { RejectReason } from "./messages";
+import type { Role, Subdoc } from "./roles";
 import type { DocKind, SuggestionStatus } from "./schema";
 
 export type ApiErrorCode =
@@ -507,6 +508,78 @@ export interface CommandResult {
   body: unknown;
 }
 
+// ---------------------------------------------------------------- operations (Phase 4)
+
+/**
+ * GET /v1/documents/:docId/digest (any member). The host's hourly divergence
+ * check: it compares the digest with its own replica of the document.
+ *
+ * - `stateVectors[subdoc]` is base64 of `Y.encodeStateVector(doc)` for each
+ *   sub-document of the document's kind (yjs sorts clients, so equal states
+ *   give equal bytes).
+ * - `contentSha256` is the sha256 (lowercase hex) of the UTF-8 bytes of:
+ *   - text documents: the content sub-document's `source` text;
+ *   - the manifest: canonicalJson(files.toJSON()), the `files` map as an
+ *     object keyed by fileId with keys sorted at every level.
+ *
+ * The check is conclusive only when the host's state vector for `content`
+ * (`manifest` for a manifest) equals the server's: then the hashes must
+ * match, and a mismatch is a divergence to count in TelemetryReport. When
+ * the vectors differ, edits are in flight; check again later.
+ */
+export interface DocumentDigest {
+  docId: string;
+  kind: DocKind | "manifest";
+  serverSeq: number;
+  contentSha256: string;
+  stateVectors: Partial<Record<Subdoc, string>>;
+}
+
+/**
+ * POST /v1/telemetry (authenticated). The host reports counts about its sync
+ * state about once a minute; the server exports them as Prometheus metrics
+ * for the "unacked updates older than 5 minutes" and divergence alerts.
+ * Counts and versions only: never content, paths, titles or document ids.
+ * Counters (`reconnects`, `rejects`, `divergence*`) are increments since the
+ * previous accepted report, so a lost report loses counts but never doubles
+ * them. Limited to 6 reports per minute per account (429 with retry-after).
+ */
+export interface TelemetryReport {
+  /** The installation's sync clientId (as in hello). */
+  clientId: string;
+  appVersion: string;
+  protocolVersion: number;
+  /** Updates waiting for an ack, over all documents. */
+  pendingUpdates: number;
+  /** Age in seconds of the oldest update waiting for an ack (0 when none). */
+  oldestUnackedSeconds: number;
+  /** Offline commands waiting to be replayed. */
+  pendingCommands: number;
+  /** Documents open on the socket now. */
+  openDocuments: number;
+  reconnects: number;
+  rejects: Partial<Record<RejectReason, number>>;
+  divergenceChecks: number;
+  divergenceFailures: number;
+}
+
+export interface TelemetryResponse {
+  /** When to send the next report. */
+  nextReportSeconds: number;
+}
+
+/** Stable JSON with object keys sorted at every level (DocumentDigest of a manifest). */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item ?? null)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 // ---------------------------------------------------------------- routes
 
 export const ApiRoutes = {
@@ -551,6 +624,8 @@ export const ApiRoutes = {
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
   commands: "/v1/commands",
+  documentDigest: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/digest`,
+  telemetry: "/v1/telemetry",
   sync: "/sync",
   health: "/healthz",
   metrics: "/metrics",
