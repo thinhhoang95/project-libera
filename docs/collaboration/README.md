@@ -344,7 +344,7 @@ Proposed defaults. The implementation plan records each one's spike and fallback
 | D7 | Host process | Electron `utilityProcess`, not the main process |
 | D8 | Markdown Source editor | Port the textarea editor to CodeMirror 6 (`@codemirror/lang-markdown` is installed) |
 | D9 | Server stack | Node 22 + TypeScript, Fastify, `ws`, Postgres via Kysely, S3-compatible blobs (MinIO in development) |
-| D10 | Hosting | Self-hosted on the existing Libera VPS behind nginx (`collab.libera.intuelle.com`) |
+| D10 | Hosting | Self-hosted on the existing Libera VPS behind nginx (`libera-collab.intuelle.com`) |
 | D11 | Sharing unit | Shared notebook |
 | D12 | AI in shared notebooks | Runs locally with the user's key. AI is an attributed actor that may comment and suggest, never decide. |
 

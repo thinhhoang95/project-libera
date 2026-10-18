@@ -5,7 +5,7 @@ const STORAGE_KEY = "libera.collab.serverUrl";
 
 /** Inlined at build time; set NEXT_PUBLIC_LIBERA_COLLAB_SERVER_URL to point builds elsewhere. */
 export const DEFAULT_COLLAB_SERVER_URL =
-  process.env.NEXT_PUBLIC_LIBERA_COLLAB_SERVER_URL || "https://collab.libera.intuelle.com";
+  process.env.NEXT_PUBLIC_LIBERA_COLLAB_SERVER_URL || "https://libera-collab.intuelle.com";
 
 export function lastServerUrl(): string {
   try {

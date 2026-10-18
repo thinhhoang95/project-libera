@@ -12,7 +12,7 @@ const schema = z.object({
   NODE_ENV: z.string().default("development"),
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(0).max(65535).default(4400),
-  /** Public base URL used in invitation links, e.g. https://collab.libera.intuelle.com */
+  /** Public base URL used in invitation links, e.g. https://libera-collab.intuelle.com */
   PUBLIC_URL: z.string().default("http://127.0.0.1:4400"),
   /**
    * postgres://user:pass@host/db for Postgres, pglite://<directory> for an

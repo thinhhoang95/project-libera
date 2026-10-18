@@ -12,7 +12,7 @@ This guide covers the collaboration server in `server/` and how the desktop app 
 | Database | Postgres 16 in production; embedded PGlite in development and tests | `server/data/pglite` |
 | Blob storage (images, PDFs) | Local disk, or any S3-compatible service | `server/data/blobs` |
 | Collab host (on each desktop) | `electron/collab/`, bundled to `electron/collab/dist/host.cjs`, runs in an Electron utilityProcess | Local SQLite in Electron `userData/collab/` |
-| Production deployment | `ops/collab/` (Docker Compose, nginx), `scripts/setup-collab-server.cjs` | `https://collab.libera.intuelle.com` |
+| Production deployment | `ops/collab/` (Docker Compose, nginx), `scripts/setup-collab-server.cjs` | `https://libera-collab.intuelle.com` |
 
 **You do not need Docker for development.** The server runs on PGlite (Postgres compiled to WebAssembly) with blobs on disk, and writes emails to its log.
 
@@ -163,45 +163,54 @@ The collab server runs in Docker on the same VPS as the update feed, behind the 
 
 ### 6.1 One-time server preparation
 
-1. **DNS.** Add an `A` (and `AAAA`) record for `collab.libera.intuelle.com` that points to the VPS.
-2. **Docker.** Install Docker Engine and the Compose plugin on the VPS:
+1. **DNS.** Add an `A` (and `AAAA`) record for `libera-collab.intuelle.com` that points to the VPS.
+2. **SSH host key.** The deploy uses `StrictHostKeyChecking=yes`. Verify the server's fingerprint out of band (the VPS provider's web console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`) before you accept it into `known_hosts`.
+3. **Docker.** The first deploy can install Docker Engine and the Compose plugin from Docker's signed apt repository: add `-- --install-docker` (§6.2). Without it, the deploy stops if Docker is missing.
 
-```bash
-ssh root@185.214.135.181 "curl -fsSL https://get.docker.com | sh"
-```
-
-3. **Environment file.** Create `/srv/libera-collab/.env` from `ops/collab/.env.example`, fill in strong random values, and run `chmod 600`. Never commit it.
+You do not write the production `.env` by hand. On the first deploy the script generates `/srv/libera-collab/.env` **on the server** from `ops/collab/.env.example`, with random `POSTGRES_PASSWORD` (hex, because it is part of `DATABASE_URL`), `JWT_SECRET` and `METRICS_TOKEN`, `PUBLIC_URL=https://<domain>` and `ALLOW_OPEN_SIGNUP=0`. The file is mode 0600, and later deploys keep it. The secrets never pass through the deploying machine. Edit the file on the server to add `SMTP_URL` or `ERROR_REPORT_DSN`.
 
 ### 6.2 Deploy
 
 From a machine that holds the server's SSH key, on a clean commit:
 
 ```bash
-npm run collab:deploy
+npm run collab:deploy -- --install-docker
 ```
 
-The script (`scripts/setup-collab-server.cjs`) does the following:
+Leave out `--install-docker` once Docker is there. The script (`scripts/setup-collab-server.cjs`) does the following:
 
 1. Packs `server/`, the shared protocol and `ops/collab/` from `HEAD` with `git archive`, so uncommitted changes are never deployed.
 2. Builds the image `libera-collab:<commit>` on the VPS.
-3. Installs the compose file and the nginx site (WebSocket upgrade on `/sync`).
-4. On first run, obtains the Let's Encrypt certificate.
-5. Starts the stack and waits for `https://collab.libera.intuelle.com/healthz`.
+3. Generates the `.env` on the first run (above).
+4. Installs the compose file. Both containers have memory limits, capped logs and `no-new-privileges`; the collab container is also read-only with every capability dropped. Postgres is not published, and the collab port is bound to 127.0.0.1.
+5. Renders the nginx site from `ops/collab/nginx/collab-site*.conf`: WebSocket upgrade on `/sync`, `/internal/` blocked, `/metrics` for localhost only, HSTS, and `X-Forwarded-For` overwritten with the address nginx saw, so per-IP rate limits cannot be dodged with a forged header. `nginx -t` runs before every reload, so a bad site never takes down the other sites on the host.
+6. On the first run, obtains the Let's Encrypt certificate (webroot; renewal by the host's certbot timer).
+7. Starts the stack and waits for `https://<domain>/healthz`.
 
 Migrations run automatically when the container starts.
 
 Overrides:
 
-- `LIBERA_COLLAB_SSH_TARGET`
-- `LIBERA_COLLAB_SSH_KEY`
+- `LIBERA_COLLAB_SSH_TARGET` (default `root@intuelle.com`)
+- `LIBERA_COLLAB_SSH_KEY` (default `~/.ssh/id_ed25519`)
 - `LIBERA_COLLAB_REMOTE_ROOT` (default `/srv/libera-collab`)
-- `LIBERA_COLLAB_DOMAIN`
+- `LIBERA_COLLAB_DOMAIN` (default `libera-collab.intuelle.com`)
 
 Add `-- --dry-run` to print the remote commands without running them.
 
 Each deploy also installs `ops/collab/backup/` to `<remote root>/backup/` and `ops/collab/monitoring/` to `<remote root>/monitoring/`. Local files there (`metrics_token`, `alertmanager.yml`) are kept; `backup.env` lives one level up. See §8 and §10.
 
-### 6.3 Restarts
+### 6.3 The first account
+
+Open sign-up is off in production, so create the first (owner) account on the server. It prints a one-time password; sign in with it from Libera, then change it in the Collaboration dialog:
+
+```bash
+ssh root@intuelle.com "cd /srv/libera-collab && docker compose -f docker-compose.prod.yml exec collab node dist/admin/cli.js account create you@example.com --name 'Your Name'"
+```
+
+Everyone else joins through invitations from a shared notebook.
+
+### 6.4 Restarts
 
 Clients reconnect on their own and keep editing offline in the meantime. Reconnects use jittered backoff capped at 10 s. While the server refuses connections, each client also checks `GET /healthz` every 1–2 s and reconnects within about a second after it answers. A restart closes sockets with code 4050. Nothing acknowledged is lost, because every update is in Postgres before it is acknowledged.
 

@@ -518,7 +518,7 @@ Planned contents:
    - `cd server && npm test`
    - Fuzz, chaos and kill-test commands, with their run times
 6. **Production deployment on the Libera VPS.**
-   - DNS for `collab.libera.intuelle.com`.
+   - DNS for `libera-collab.intuelle.com`.
    - nginx site with WebSocket upgrade (`ops/collab/nginx/`), and certificates through the existing Let's Encrypt setup.
    - `docker compose -f ops/collab/docker-compose.prod.yml up -d`.
    - Migrations on deploy.

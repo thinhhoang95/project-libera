@@ -5,10 +5,22 @@
 
 name: libera-collab
 
+# The VPS also serves other sites: cap memory and log size, and give the
+# containers no more privilege than they need.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-bookworm
     restart: unless-stopped
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
     environment:
       POSTGRES_DB: libera
       POSTGRES_USER: libera
@@ -35,6 +47,15 @@ services:
   collab:
     image: ${COLLAB_IMAGE:-libera-collab:latest}
     restart: unless-stopped
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
