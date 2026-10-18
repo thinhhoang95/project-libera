@@ -10,7 +10,24 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Each lane works on `references/<lane>` in `.claude/worktrees/refs-<lane>`, branched from the integration tip at the start of its wave, and is merged with `--no-ff`.
 - The collaboration work continues on `collaboration` in the main checkout. A single merge of `references/integration` into `collaboration` happens later (see “Big merge” below). No reference lane touches collab code.
 
-## Resume here (paused 18 Oct 2026; resumed — Wave 2 lanes plus agent-runtime and resolution server running)
+## Resume here (paused again on 18 Oct 2026 at the usage limit)
+
+**Latest state (supersedes the older notes below):**
+
+- **Merged on integration (`03fc2dd`):** core, syntax, storage, preview, interop, panel, agent-runtime, resolution (server + UI), moves (server), factcheck, scholarly. The reference + LaTeX tests pass, 370 in all. tsc shows the baseline errors only.
+- **In progress, told to commit a WIP checkpoint and stop:**
+  - editors (`refs-editors`, `references/editors`)
+  - moves-ui (`refs-moves-ui`, `references/moves-ui`)
+
+  Resume each agent with SendMessage, or start a fresh agent with its brief and the WIP commit.
+- **Not started:**
+  - pdfcite: quote and cite from the PDF viewer, drag into editors, semantic `@` search. Waits for editors.
+  - syntax2: narrative citations, per-document style, reference-list screenshot OCR. Waits for editors.
+- **Small follow-ups:**
+  - Place the scholarly lane's `RetractionBadge` on panel rows and cards.
+  - Have the jobs UI show the `check-retractions` job kind.
+  - Investigate the intermittent "PDF export waits for the library…" test in `references-preview.test.ts`. It fails only when many files run in parallel. The suspect is the main-thread citeproc fallback under CPU contention, plus the new abbreviation-table load.
+- **Final step:** full suite, `npm run test:editor-worker-bundle`, browser checks with `next dev --webpack` in refs-integration (chips, hover cards, panel, `@` popup, fact-check, LaTeX hint, export dialog), and the feature doc `docs/features/references.md`.
 
 - Wave 0 and Wave 1 are merged and verified on `references/integration`.
 - Wave 2 worktrees exist, branched from the integration tip, but no agent has started:
@@ -89,7 +106,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 |---|---|---|---|
 | factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☑ merged 7208feb |
 | pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☐ |
-| scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ◐ |
+| scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ☑ merged 03fc2dd |
 | syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☐ |
 
 ## Deferred
