@@ -301,6 +301,13 @@ export class ReferenceJobRunner {
     }
   }
 
+  /** Drop pending automatic additions and their timers, e.g. before the data directory changes. Running jobs are not affected. */
+  dispose() {
+    for (const timer of this.autoTimers.values()) clearTimeout(timer);
+    this.autoTimers.clear();
+    this.autoPaths.clear();
+  }
+
   /** Enqueue the pending automatic paths of a notebook now. Returns the job, or null when nothing was enqueued. */
   async flushAutoCreate(notebook: string) {
     clearTimeout(this.autoTimers.get(notebook));
@@ -467,6 +474,11 @@ export function getReferenceJobRunner() {
 }
 
 /** Replace the process-wide runner (tests). */
+/** The runner, if one exists, without creating it. */
+export function currentReferenceJobRunner() {
+  return (globalThis as { [RUNNER_KEY]?: ReferenceJobRunner })[RUNNER_KEY];
+}
+
 export function setReferenceJobRunner(runner: ReferenceJobRunner | undefined) {
   const store = globalThis as { [RUNNER_KEY]?: ReferenceJobRunner };
   store[RUNNER_KEY] = runner;

@@ -35,6 +35,10 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Preview: Turbopack can't start from the shared `node_modules`, so lanes use `next dev --webpack`. Check `npm run test:editor-worker-bundle` at final integration: the preview worker check reported `structuredClone is not defined` in its VM scope, possibly pre-existing.
 - The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
 
+### Other test baselines
+
+- `node --test scripts/lib/*.test.cjs`: 44 tests, 4 fail at the base commit `0ae5bce` (`session-shutdown.test.cjs`, "collabHost is not defined"). This is collaboration code. Reference lanes add none.
+
 ## Baseline
 
 `npm run test:editor` on `references/integration` before any lane: 559 tests, 552 pass, 4 fail, 2 cancelled, 1 skipped. The failures and cancellations are pre-existing (global search index tests 132, 158, 159, 180; PDF worker resolution 415; atomic-write cleanup 455), the same set `docs/collaboration/progress.md` records. Lanes must not add to this list.
@@ -63,14 +67,14 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 |---|---|---|---|
 | preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ☑ merged d0bc068 (formatting runs in its own worker) |
 | interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ☑ merged 084ba5c |
-| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ◐ |
+| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ☑ merged 6f6414a |
 
 ## Wave 3: editors, capture, agent runtime, moves
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ◐ |
-| resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ◐ server |
+| resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ◐ resolution-ui |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
 | moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ◐ server half (copy-on-move, rewrite API, formatted bibliography export, LaTeX export); UI goes to resolution-ui |
 
@@ -78,7 +82,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☐ |
+| factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ◐ |
 | pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☐ |
 | scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ◐ |
 | syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☐ |

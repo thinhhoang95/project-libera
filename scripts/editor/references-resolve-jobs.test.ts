@@ -7,7 +7,7 @@ import { NextRequest } from "next/server";
 import { GET as getJobs, POST as postJobs } from "../../src/app/api/references/jobs/route";
 import { POST as postResolve } from "../../src/app/api/references/resolve/route";
 import { SESSION_COOKIE_NAME, createSessionToken } from "../../src/lib/auth";
-import { ReferenceJobRunner, referenceJobsFilePath, setReferenceJobRunner, type ReferenceJobRunnerDeps } from "../../src/lib/references/jobs";
+import { ReferenceJobRunner, currentReferenceJobRunner, referenceJobsFilePath, setReferenceJobRunner, type ReferenceJobRunnerDeps } from "../../src/lib/references/jobs";
 import type { ReferenceJobStatus } from "../../src/lib/references/jobs-types";
 import type { ResolveOptions, ResolveResult } from "../../src/lib/references/resolve/pipeline";
 import type { ReferenceEntryInput } from "../../src/lib/references/types";
@@ -25,6 +25,12 @@ async function withLibrary(run: (directory: string) => Promise<void>) {
     await createNotebook("Notes");
     await run(directory);
   } finally {
+    // A runner created along the way (uploads create one) may still hold
+    // debounced automatic additions; their timers must not fire after the
+    // data directory changes, or they write into the next test's library.
+    const active = currentReferenceJobRunner();
+    active?.dispose();
+    await active?.idle("Notes");
     setReferenceJobRunner(undefined);
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
     else process.env.LIBERA_DATA_DIR = previous;
