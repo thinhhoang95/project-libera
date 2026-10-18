@@ -218,17 +218,17 @@ test("every writer refuses a shared notebook and leaves it untouched", async () 
       assert.equal(outcomes[writer.name], expected, writer.name);
     }
 
-    // Routes answer 409 { error: "shared-document" }.
+    // Direct-write routes retain the guard; creation routes require the host.
     const patch = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/a.md", content: "x" } }));
     assert.equal(patch.status, 409);
     assert.deepEqual(await patch.json(), { error: "shared-document" });
     const post = await FILES_POST(authed("/api/files", { method: "POST", json: { notebook: "Shared", name: "x.md", content: "" } }));
-    assert.equal(post.status, 409);
-    assert.deepEqual(await post.json(), { error: "shared-document" });
+    assert.equal(post.status, 503);
+    assert.match(((await post.json()) as { error: string }).error, /shared notebook.*collaboration is not running/);
     const remove = await FILES_DELETE(authed("/api/files?path=Shared%2Fa.md", { method: "DELETE" }));
-    assert.equal(remove.status, 409);
+    assert.equal(remove.status, 503);
     const folder = await FOLDERS_POST(authed("/api/folders", { method: "POST", json: { parentPath: "Shared", name: "f" } }));
-    assert.equal(folder.status, 409);
+    assert.equal(folder.status, 503);
     const form = new FormData();
     form.set("notebook", "Shared");
     form.append("files", upload("u.png"));

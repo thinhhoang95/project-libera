@@ -52,6 +52,7 @@ test("every control route goes through /api/collab with the expected method and 
   await client.resolveReconciliation("r1", { text: "merged" });
   await client.notifications({ unread: true, limit: 20 });
   await client.markNotificationsRead({ all: true });
+  await client.deleteProject("p /1");
 
   assert.deepEqual(
     calls.map((call) => `${call.method} ${call.url}`),
@@ -82,6 +83,7 @@ test("every control route goes through /api/collab with the expected method and 
       "POST /api/collab/reconciliations/r1",
       "GET /api/collab/notifications?unread=true&limit=20",
       "POST /api/collab/notifications/read",
+      "DELETE /api/collab/projects/p%20%2F1",
     ],
   );
   assert.deepEqual(calls[2].body, { serverUrl: "https://s", email: "a@b.c", password: "pw", displayName: "A", invitationToken: "tok" });

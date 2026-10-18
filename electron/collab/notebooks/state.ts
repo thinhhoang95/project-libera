@@ -74,6 +74,10 @@ export async function writeMarker(root: string, marker: SharedMarker): Promise<v
   await writeJson(path.join(root, SHARED_MARKER_FILE), marker);
 }
 
+export async function deleteMarker(root: string): Promise<void> {
+  await fs.rm(path.join(root, SHARED_MARKER_FILE), { force: true });
+}
+
 export function emptyState(): ProjectState {
   return { version: 1, layout: {}, reconciliations: [] };
 }

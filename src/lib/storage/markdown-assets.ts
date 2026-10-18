@@ -29,7 +29,7 @@ import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
-function markdownImageSources(markdown: string) {
+export function markdownImageSources(markdown: string) {
   const sources = new Set<string>();
   const markdownImagePattern = /!\[[^\]]*]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/g;
   const htmlImagePattern = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/gi;

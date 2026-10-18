@@ -189,6 +189,7 @@ export function createCollabClient(options: CollabClientOptions = {}) {
 
     // ---------------------------------------------------------------- projects
     projects: () => request<LocalProject[]>("GET", ControlRoutes.projects),
+    deleteProject: (projectId: string) => request<void>("DELETE", ControlRoutes.project(projectId)),
     share: (body: ShareNotebookRequest) => request<LocalProject | undefined>("POST", ControlRoutes.share, body),
     join: (body: JoinProjectRequest) => request<LocalProject | undefined>("POST", ControlRoutes.join, body),
     members: (projectId: string) => request<Member[]>("GET", ControlRoutes.members(projectId)),

@@ -53,15 +53,45 @@ describe("projects", () => {
     assert.equal(renamed.body.name, "Renamed");
   });
 
-  test("delete is owner only, soft, and closes every document", async () => {
-    const { project, owner, editor } = await team(h);
+  test("delete is owner only, erases server records, and closes every document", async () => {
+    const { project, owner, editor, commenter, viewer, outsider } = await team(h);
     const doc = await request(h, "POST", `/v1/projects/${project.id}/documents`, editor, {
       docId: "doc_for_delete_1",
       fileId: "file_for_delete_1",
       kind: "markdown",
     });
     assert.equal(doc.status, 201);
-    assert.equal((await request(h, "DELETE", `/v1/projects/${project.id}`, editor)).status, 403);
+    for (const member of [editor, commenter, viewer]) {
+      assert.equal((await request(h, "DELETE", `/v1/projects/${project.id}`, member)).status, 403);
+    }
+    assert.equal((await request(h, "DELETE", `/v1/projects/${project.id}`, outsider)).status, 404);
+    assert.equal((await request(h, "DELETE", `/v1/projects/${project.id}`)).status, 401);
+    const invitation = await request(h, "POST", `/v1/projects/${project.id}/invitations`, owner, { email: outsider.email, role: "viewer" });
+    const db = h.context.db;
+    await db.insertInto("revisions").values({ id: "rev_delete", doc_id: doc.body.id, server_seq: 0, kind: "review-base" }).execute();
+    await db.insertInto("reviews").values({
+      id: "revw_delete", doc_id: doc.body.id, project_id: project.id, requested_by: owner.id,
+      base_revision_id: "rev_delete", scope: { kind: "document" }, status: "open",
+    }).execute();
+    await db.insertInto("review_assignments").values({ review_id: "revw_delete", account_id: editor.id, decided_revision_id: "rev_delete" }).execute();
+    await db.insertInto("threads").values({
+      id: "thr_delete", doc_id: doc.body.id, project_id: project.id, anchor_id: "anchor_delete", quote_text: "text",
+      status: "open", actor: { kind: "user", userId: owner.id }, account_id: owner.id,
+    }).execute();
+    await db.insertInto("messages").values({
+      id: "msg_delete", thread_id: "thr_delete", actor: { kind: "user", userId: owner.id }, account_id: owner.id, body: "comment", mentions: [],
+    }).execute();
+    await db.insertInto("suggestions").values({
+      id: "sug_delete", doc_id: doc.body.id, project_id: project.id, actor: { kind: "user", userId: owner.id },
+      account_id: owner.id, base_quote: "text", replacement: "new", status: "pending", thread_ids: [],
+    }).execute();
+    await db.insertInto("blobs").values({ project_id: project.id, hash: "a".repeat(64), size: 1, mime: "image/png" }).execute();
+    await db.insertInto("doc_updates").values({
+      doc_id: doc.body.id, subdoc: "content", server_seq: 1, client_id: "client_delete", client_seq: 1, update: new Uint8Array([0, 0]), size: 2,
+    }).execute();
+    await db.insertInto("doc_snapshots").values({
+      doc_id: doc.body.id, subdoc: "content", upto_server_seq: 1, state: new Uint8Array([0, 0]), state_vector: new Uint8Array([0]),
+    }).execute();
     h.rooms.calls.length = 0;
     h.events.length = 0;
     assert.equal((await request(h, "DELETE", `/v1/projects/${project.id}`, owner)).status, 204);
@@ -69,8 +99,21 @@ describe("projects", () => {
     assert.deepEqual(closed.sort(), [project.manifestDocId, "doc_for_delete_1"].sort());
     assert.ok(h.events.some((event) => event.kind === EventKind.ProjectDeleted && event.id === project.id));
     assert.equal((await request(h, "GET", `/v1/projects/${project.id}`, owner)).status, 404);
-    const row = await h.context.db.selectFrom("projects").select("deleted_at").where("id", "=", project.id).executeTakeFirstOrThrow();
-    assert.ok(row.deleted_at, "soft deleted");
+    for (const member of [owner, editor, commenter, viewer]) {
+      assert.ok(h.events.some((event) => event.scope === "user" && event.id === member.id && event.kind === EventKind.ProjectDeleted));
+      assert.deepEqual((await request(h, "GET", "/v1/projects", member)).body, []);
+    }
+    assert.equal(await db.selectFrom("projects").select("id").where("id", "=", project.id).executeTakeFirst(), undefined);
+    for (const table of ["memberships", "invitations", "documents", "blobs", "threads", "suggestions", "reviews", "notifications", "audit_log"] as const) {
+      assert.equal((await db.selectFrom(table).selectAll().where("project_id", "=", project.id).execute()).length, 0, `${table} erased`);
+    }
+    for (const table of ["doc_updates", "doc_snapshots", "revisions"] as const) {
+      assert.equal((await db.selectFrom(table).selectAll().where("doc_id", "=", doc.body.id).execute()).length, 0, `${table} erased`);
+    }
+    assert.equal((await db.selectFrom("review_assignments").selectAll().where("review_id", "=", "revw_delete").execute()).length, 0);
+    assert.equal((await db.selectFrom("messages").selectAll().where("thread_id", "=", "thr_delete").execute()).length, 0);
+    assert.equal((await request(h, "GET", `/v1/documents/${doc.body.id}`, editor)).status, 404);
+    assert.equal((await json(h.url, `/v1/invitations/token/${invitation.body.token}`)).status, 404);
   });
 });
 

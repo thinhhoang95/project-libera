@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { createSharedFolder, deleteSharedFolder, renameSharedFolder } from "@/lib/collab/shared-writes";
+import { StorageError } from "@/lib/storage/errors";
 import {
   archiveFolder,
   createFolder,
@@ -28,7 +31,8 @@ export async function POST(request: NextRequest) {
       name?: string;
     };
 
-    return NextResponse.json(await createFolder(body.parentPath ?? "", body.name ?? ""));
+    const create = isSharedNotebookPath(body.parentPath ?? "") ? createSharedFolder : createFolder;
+    return NextResponse.json(await create(body.parentPath ?? "", body.name ?? ""));
   } catch (error) {
     return handleError(error);
   }
@@ -49,10 +53,12 @@ export async function PATCH(request: NextRequest) {
     };
 
     if (body.archive) {
+      if (isSharedNotebookPath(body.path ?? "")) throw new StorageError("The archive is local-only. To remove a folder from a shared notebook, use Delete; collaboration keeps local recovery copies of its files.", 409);
       return NextResponse.json(await archiveFolder(body.path ?? ""));
     }
 
-    return NextResponse.json(await renameFolder(body.path ?? "", body.name ?? ""));
+    const rename = isSharedNotebookPath(body.path ?? "") ? renameSharedFolder : renameFolder;
+    return NextResponse.json(await rename(body.path ?? "", body.name ?? ""));
   } catch (error) {
     return handleError(error);
   }
@@ -67,7 +73,8 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const folderPath = request.nextUrl.searchParams.get("path") ?? "";
-    return NextResponse.json(await deleteFolder(folderPath));
+    const remove = isSharedNotebookPath(folderPath) ? deleteSharedFolder : deleteFolder;
+    return NextResponse.json(await remove(folderPath));
   } catch (error) {
     return handleError(error);
   }

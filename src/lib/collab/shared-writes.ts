@@ -15,13 +15,13 @@
 // and the agent's tool loop report the message as it is.
 
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { diffText } from "../../../electron/collab/notebooks/text-diff";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
-import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, normalizeAssetFileName } from "@/lib/storage/file-types";
+import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, normalizeAssetFileName } from "@/lib/storage/file-types";
 import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
@@ -36,12 +36,15 @@ import {
 } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { getFileNode, getTree } from "@/lib/storage/tree";
-import type { LiberaFileNode, LiberaTree, MarkdownImageAssetPayload } from "@/lib/types";
+import { readLiberaFile } from "@/lib/storage/files";
+import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
+import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
+import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
 import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
-import { sharedManifestPath } from "./shared-notebook";
+import { isSharedNotebookPath, sharedManifestPath } from "./shared-notebook";
 
 /** A refused or failed shared write. `code` is the host's error code (or one of ours). */
 export class SharedWriteError extends StorageError {
@@ -285,7 +288,7 @@ export async function createSharedFile(liberaPath: string, content: string, opti
  * existing one, as a manifest blob. A new text file (.md, .tex, …) becomes a
  * document instead. Returns the Libera paths written.
  */
-export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions = {}): Promise<{ paths: string[] }> {
+export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean } = {}): Promise<{ paths: string[] }> {
   const target = manifestTarget(liberaPath);
   if (bytes.byteLength > MAX_SHARED_BLOB_BYTES) {
     throw new SharedWriteError(
@@ -296,7 +299,7 @@ export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, opt
   }
   const config = hostConfig(liberaPath, options);
   const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-  return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64 }, config));
+  return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...(options.createOnly ? { createOnly: true } : {}) }, config));
 }
 
 // ------------------------------------------------------------ Libera's file writers, for shared targets
@@ -306,6 +309,158 @@ export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, opt
 // is in a shared notebook (isSharedNotebookPath). They validate like the
 // storage writers, then add the file through the host, which writes the
 // working copy before answering, so the result can be read back from disk.
+
+/** The user-facing new note/LaTeX/text action, with the same validation as the local writer. */
+export async function createSharedMarkdownFile(notebook: string, name: string, content = "", parentPath?: string, options: SharedWriteOptions = {}) {
+  await ensureAdminRoot();
+  const parent = parentPath
+    ? splitDirectoryPath(parentPath)
+    : { notebook: assertSafeSegment(notebook, "Notebook name"), pathParts: [] };
+  const safeName = ensureMarkdownName(name);
+  const targetParts = [...parent.pathParts, safeName];
+  const parentDirectory = itemPath(parent.notebook, parent.pathParts);
+  if (!(await pathExists(parentDirectory))) throw new StorageError("Notebook does not exist.", 404);
+  await assertDirectoryExists(parentDirectory, "Destination folder is not a folder.");
+  if (await pathExists(filePathFromParts(parent.notebook, targetParts))) throw new StorageError("File already exists.", 409);
+  const liberaPath = relativeFilePath(parent.notebook, targetParts);
+  await createSharedFile(liberaPath, content, options);
+  notifySearchChanges([liberaPath]);
+  return readLiberaFile(liberaPath);
+}
+
+/** Creates a folder through the manifest so collaborators receive it too. */
+export async function createSharedFolder(parentPath: string, name: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
+  await ensureAdminRoot();
+  const parent = splitDirectoryPath(parentPath);
+  const safeName = assertSafeSegment(name, "Folder name");
+  await assertDirectoryExists(itemPath(parent.notebook, parent.pathParts), "Parent folder was not found.");
+  const targetParts = [...parent.pathParts, safeName];
+  if (await pathExists(itemPath(parent.notebook, targetParts))) throw new StorageError("Folder already exists.", 409);
+  const liberaPath = relativeFilePath(parent.notebook, targetParts);
+  const target = manifestTarget(liberaPath);
+  const config = hostConfig(liberaPath, options);
+  await host(liberaPath, () => fileOp(target.projectId, { op: "create-folder", path: target.path }, config));
+  return getTree();
+}
+
+/** Rename or move within a shared notebook, preserving the manifest entry and document identity. */
+export async function moveSharedFile(relativePath: string, destinationDirectory: string, destinationName?: string, options: SharedWriteOptions = {}) {
+  await ensureAdminRoot();
+  const current = splitFilePath(relativePath);
+  const destination = splitDirectoryPath(destinationDirectory);
+  const safeName = destinationName?.trim() ? assertSafeSegment(destinationName, "File name") : current.name;
+  assertSupportedFileName(safeName);
+  const sourcePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextParts = [...destination.pathParts, safeName];
+  const nextPath = relativeFilePath(destination.notebook, nextParts);
+  const source = manifestTarget(sourcePath);
+  if (destination.notebook !== current.notebook || !sharedManifestPath(nextPath)) {
+    throw new StorageError("Files in a shared notebook can only be moved within that notebook.");
+  }
+  await getFileNode(current.notebook, current.pathParts);
+  await assertDirectoryExists(itemPath(destination.notebook, destination.pathParts), "Destination folder was not found.");
+  if (sourcePath !== nextPath && await pathExists(filePathFromParts(destination.notebook, nextParts))) {
+    throw new StorageError("Destination file already exists.", 409);
+  }
+  const config = hostConfig(sourcePath, options);
+  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/") }, config));
+  await renameFileMetadataPath(sourcePath, nextPath);
+  notifySearchChanges([sourcePath, nextPath]);
+  return readLiberaFile(nextPath);
+}
+
+/** Delete via the manifest; the host removes the working copy and syncs the deletion. */
+export async function deleteSharedFile(relativePath: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
+  await ensureAdminRoot();
+  const current = splitFilePath(relativePath);
+  const liberaPath = relativeFilePath(current.notebook, current.pathParts);
+  await getFileNode(current.notebook, current.pathParts);
+  const target = manifestTarget(liberaPath);
+  const config = hostConfig(liberaPath, options);
+  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  await removeFileMetadataPath(liberaPath);
+  notifySearchChanges([liberaPath]);
+  return getTree();
+}
+
+/** Folder operations apply to all descendant manifest entries, preserving their document IDs. */
+export async function renameSharedFolder(relativePath: string, name: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
+  await ensureAdminRoot();
+  const current = splitDirectoryPath(relativePath);
+  if (!current.pathParts.length) throw new StorageError("Use notebook edit to rename a notebook.");
+  const safeName = assertSafeSegment(name, "Folder name");
+  const parts = [...current.pathParts.slice(0, -1), safeName];
+  const sourcePath = relativeFilePath(current.notebook, current.pathParts);
+  const nextPath = relativeFilePath(current.notebook, parts);
+  const source = manifestTarget(sourcePath);
+  if (!sharedManifestPath(nextPath)) throw new StorageError("A shared folder cannot be moved into the local archive.");
+  await assertDirectoryExists(itemPath(current.notebook, current.pathParts), "Folder was not found.");
+  if (sourcePath !== nextPath && await pathExists(itemPath(current.notebook, parts))) throw new StorageError("Destination folder already exists.", 409);
+  const config = hostConfig(sourcePath, options);
+  await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/") }, config));
+  await renameFileMetadataPathPrefix(sourcePath, nextPath);
+  await renameNotebookPanelExpandedPathPrefix(sourcePath, nextPath);
+  notifySearchChanges();
+  return getTree();
+}
+
+export async function deleteSharedFolder(relativePath: string, options: SharedWriteOptions = {}): Promise<LiberaTree> {
+  await ensureAdminRoot();
+  const current = splitDirectoryPath(relativePath);
+  if (!current.pathParts.length) throw new StorageError("Use notebook delete to remove a notebook.");
+  const liberaPath = relativeFilePath(current.notebook, current.pathParts);
+  const target = manifestTarget(liberaPath);
+  await assertDirectoryExists(itemPath(current.notebook, current.pathParts), "Folder was not found.");
+  const config = hostConfig(liberaPath, options);
+  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  await removeFileMetadataPathPrefix(liberaPath);
+  await removeNotebookPanelExpandedPathPrefix(liberaPath);
+  notifySearchChanges();
+  return getTree();
+}
+
+/** Copy into a shared notebook as a new manifest entry, using live text for shared sources. */
+export async function copyFileIntoSharedDirectory(relativePath: string, destinationDirectory: string, destinationName?: string, options: SharedWriteOptions = {}) {
+  await ensureAdminRoot();
+  const current = splitFilePath(relativePath);
+  const destination = splitDirectoryPath(destinationDirectory);
+  const extension = path.extname(current.name);
+  const requestedName = destinationName?.trim()
+    ? assertSafeSegment(destinationName, "File name")
+    : `${path.basename(current.name, extension)} copy${extension}`;
+  assertSupportedFileName(requestedName);
+  const node = await getFileNode(current.notebook, current.pathParts);
+  const directory = itemPath(destination.notebook, destination.pathParts);
+  await assertDirectoryExists(directory, "Destination folder was not found.");
+  const available = await findAvailableFilePath(directory, requestedName);
+  const parts = [...destination.pathParts, available.name];
+  const liberaPath = relativeFilePath(destination.notebook, parts);
+  // Validate the destination and service before creating any copied attachments.
+  manifestTarget(liberaPath);
+  hostConfig(liberaPath, options);
+  if (isTextFileType(node.fileType)) {
+    let content = isSharedNotebookPath(relativePath)
+      ? (await readSharedText(relativePath, options)).text
+      : (await readLiberaFile(relativePath, { requireContent: true })).content ?? "";
+    if (node.fileType === "markdown") {
+      // Give the copy its own assets; deleting or editing an original must not
+      // break a copy, including copies made into a different notebook.
+      for (const source of markdownImageSources(content)) {
+        if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
+        if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
+        const asset = await getMarkdownImageAssetBySource(relativePath, source);
+        const assetPath = `${markdownAssetsPathPrefix(parts)}/${randomUUID()}/${assertSafeSegment(asset.fileName, "Image name")}`;
+        await writeSharedBlob(`${destination.notebook}/${assetPath}`, new Uint8Array(asset.body), { ...options, createOnly: true });
+        content = content.split(source).join(assetPath);
+      }
+    }
+    await createSharedFile(liberaPath, content, options);
+  } else {
+    await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true });
+  }
+  notifySearchChanges([liberaPath]);
+  return readLiberaFile(liberaPath);
+}
 
 /** writeUploadedFile for a shared notebook: the upload becomes a manifest blob (or a document, for text files). */
 export async function writeSharedUpload(notebook: string, upload: File, destinationPath?: string, options: SharedWriteOptions = {}): Promise<LiberaFileNode> {

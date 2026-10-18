@@ -244,6 +244,8 @@ export interface FileOpRequest {
   content?: string;
   /** For write-blob: the file's bytes, base64. */
   contentBase64?: string;
+  /** For write-blob: refuse an existing entry instead of replacing its bytes. */
+  createOnly?: boolean;
 }
 
 export interface Reconciliation {
@@ -429,6 +431,7 @@ export const ControlRoutes = {
   signOut: "/account/sign-out",
   account: "/account",
   projects: "/projects",
+  project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
   share: "/projects/share",
   join: "/projects/join",
   members: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/members`,

@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,6 +24,9 @@ import { PATCH as OCR_PATCH, POST as OCR_POST } from "../../src/app/api/document
 import { POST as EDIT_IMAGE_POST } from "../../src/app/api/files/edit-image/route";
 import { POST as ASSETS_POST } from "../../src/app/api/markdown-assets/route";
 import { POST as UPLOADS_POST } from "../../src/app/api/uploads/route";
+import { POST as FILES_POST, PATCH as FILES_PATCH, DELETE as FILES_DELETE } from "../../src/app/api/files/route";
+import { POST as FOLDERS_POST, PATCH as FOLDERS_PATCH, DELETE as FOLDERS_DELETE } from "../../src/app/api/folders/route";
+import { PATCH as NOTEBOOKS_PATCH, DELETE as NOTEBOOKS_DELETE } from "../../src/app/api/notebooks/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 import { readAgentEvents } from "../../src/components/libera/chat-stream-client";
 import { buildAgentEnvironment } from "../../src/lib/agent/prompt";
@@ -53,6 +56,8 @@ class FakeHost {
   readonly docs = new Map<string, FakeDoc>();
   readonly fileOps: FileOpRequest[] = [];
   readonly blobs = new Map<string, Buffer>();
+  canModifyFiles = true;
+  beforeFileOp: ((op: FileOpRequest) => void) | null = null;
   /** Requests seen, as "METHOD /path". */
   readonly requests: string[] = [];
   /** Runs before an edits request is applied: a collaborator's edit landing first. */
@@ -173,10 +178,41 @@ class FakeHost {
       }
     }
     if (request.method === "POST" && segments[0] === "projects" && segments[2] === "files") {
+      if (!this.canModifyFiles) return this.send(response, 403, { error: { code: "forbidden", message: "Your role cannot add, rename or delete files." } });
       const op = body as FileOpRequest;
+      this.beforeFileOp?.(op);
       this.fileOps.push(op);
       const liberaPath = `Shared/${op.path}`;
       const target = path.join(this.library, "Shared", ...op.path.split("/"));
+      if (op.op === "rename") {
+        if (!existsSync(target)) return this.send(response, 404, { error: { code: "not-found", message: "File not found." } });
+        const nextPath = `Shared/${op.to}`;
+        const nextTarget = path.join(this.library, "Shared", ...(op.to ?? "").split("/"));
+        if (nextTarget !== target && existsSync(nextTarget)) return this.send(response, 409, { error: { code: "conflict", message: "Destination already exists." } });
+        renameSync(target, nextTarget);
+        for (const [oldPath, doc] of [...this.docs]) {
+          if (oldPath !== liberaPath && !oldPath.startsWith(`${liberaPath}/`)) continue;
+          this.docs.delete(oldPath);
+          doc.path = `${nextPath}${oldPath.slice(liberaPath.length)}`;
+          this.docs.set(doc.path, doc);
+        }
+        return this.send(response, 200, { paths: [liberaPath, nextPath] });
+      }
+      if (op.op === "delete") {
+        if (!existsSync(target)) return this.send(response, 404, { error: { code: "not-found", message: "File not found." } });
+        const archiveTarget = path.join(this.library, "Shared", "_archive", ...op.path.split("/"));
+        mkdirSync(path.dirname(archiveTarget), { recursive: true });
+        renameSync(target, archiveTarget);
+        for (const docPath of this.docs.keys()) {
+          if (docPath === liberaPath || docPath.startsWith(`${liberaPath}/`)) this.docs.delete(docPath);
+        }
+        return this.send(response, 200, { paths: [liberaPath] });
+      }
+      if (op.op === "create-folder") {
+        if (existsSync(target)) return this.send(response, 409, { error: { code: "conflict", message: `${op.path} already exists.` } });
+        mkdirSync(target, { recursive: true });
+        return this.send(response, 200, { paths: [liberaPath] });
+      }
       if (op.op === "create-file") {
         if (this.docs.has(liberaPath) || existsSync(target)) return this.send(response, 409, { error: { code: "conflict", message: `${op.path} already exists.` } });
         this.addDoc(liberaPath, op.content ?? "");
@@ -185,6 +221,7 @@ class FakeHost {
         return this.send(response, 200, { paths: [liberaPath] });
       }
       if (op.op === "write-blob") {
+        if (op.createOnly && existsSync(target)) return this.send(response, 409, { error: { code: "conflict", message: "Destination already exists." } });
         const bytes = Buffer.from(op.contentBase64 ?? "", "base64");
         this.blobs.set(op.path, bytes);
         // Like the host: the working copy is written before answering.
@@ -611,6 +648,215 @@ test("Convert PDF to Markdown into a shared notebook creates the file and append
   });
 });
 
+test("new notes, LaTeX, text and folders use the shared manifest and preserve local creation", async () => {
+  await withFixture(async ({ host, root, disk }) => {
+    const folder = await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "new" } }));
+    assert.equal(folder.status, 200);
+    assert.deepEqual(host.fileOps[0], { op: "create-folder", path: "new" });
+    for (const [name, expected, content] of [
+      ["Untitled", "Untitled.md", ""],
+      ["slides.slides.md", "slides.slides.md", "# Slides\n"],
+      ["paper.tex", "paper.tex", "\\section{New}\n"],
+      ["refs.bib", "refs.bib", "@book{new}\n"],
+      ["data.txt", "data.txt", "text\n"],
+    ]) {
+      // parentPath is authoritative, even if a different notebook is supplied.
+      const response = await FILES_POST(authed("/api/files", { json: { notebook: "Local", parentPath: "Shared/new", name, content } }));
+      assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+      const payload = await response.json();
+      assert.equal(payload.file.path, `Shared/new/${expected}`);
+      assert.equal(payload.content, content);
+      assert.equal(disk(`Shared/new/${expected}`), content);
+      assert.deepEqual(host.fileOps.at(-1), { op: "create-file", path: `new/${expected}`, content });
+    }
+    const rootNote = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "root" } }));
+    assert.equal(rootNote.status, 200);
+    assert.equal((await rootNote.json()).file.path, "Shared/root.md");
+    const count = host.fileOps.length;
+    for (const name of ["root", "../escape", "image.png"]) {
+      const refused = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name } }));
+      assert.equal(refused.status, name === "root" ? 409 : 400);
+    }
+    assert.equal(host.fileOps.length, count, "invalid and duplicate names never reach the host");
+    const local = await FILES_POST(authed("/api/files", { json: { notebook: "Local", name: "local", content: "local" } }));
+    assert.equal(local.status, 200);
+    assert.equal(disk("Local/local.md"), "local");
+    assert.equal(host.fileOps.length, count);
+    host.canModifyFiles = false;
+    const denied = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "denied" } }));
+    assert.equal(denied.status, 403);
+    assert.match((await denied.json()).error, /Your role cannot add/);
+    const deniedFolder = await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "denied" } }));
+    assert.equal(deniedFolder.status, 403);
+    assert.ok(!existsSync(path.join(root, "Shared", "denied.md")));
+    assert.ok(!existsSync(path.join(root, "Shared", "denied")));
+  });
+});
+
+test("shared file rename, folder moves and deletion use the manifest and keep document identity", async () => {
+  await withFixture(async ({ host, root, disk }) => {
+    const docId = host.doc("Shared/notes.md").docId;
+    const rename = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", destinationNotebook: "Shared", destinationName: "renamed.md" } }));
+    assert.equal(rename.status, 200);
+    assert.equal((await rename.json()).file.path, "Shared/renamed.md");
+    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "notes.md", to: "renamed.md" });
+    assert.equal(host.doc("Shared/renamed.md").docId, docId);
+    assert.ok(!existsSync(path.join(root, "Shared", "notes.md")));
+    await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "sub" } }));
+    const moved = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/renamed.md", destinationDirectory: "Shared/sub" } }));
+    assert.equal(moved.status, 200);
+    assert.equal((await moved.json()).file.path, "Shared/sub/renamed.md");
+    const nestedRename = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/sub/renamed.md", destinationName: "final.md" } }));
+    assert.equal(nestedRename.status, 200);
+    assert.equal((await nestedRename.json()).file.path, "Shared/sub/final.md");
+    assert.equal(host.doc("Shared/sub/final.md").docId, docId);
+    const removed = await FILES_DELETE(authed("/api/files?path=Shared%2Fsub%2Ffinal.md", { method: "DELETE" }));
+    assert.equal(removed.status, 200);
+    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "sub/final.md" });
+    assert.ok(!existsSync(path.join(root, "Shared", "sub", "final.md")));
+    assert.ok(!host.docs.has("Shared/sub/final.md"));
+    assert.equal(disk("Shared/_archive/sub/final.md"), "Hello world (disk copy)\n");
+    assert.equal((await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "paper.tex", content: "\\section{Test}\n" } }))).status, 200);
+    for (const name of ["paper.tex", "paper.pdf", "pic.png"]) {
+      const response = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: `Shared/${name}`, destinationName: `new-${name}` } }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).file.path, `Shared/new-${name}`);
+      assert.equal((await FILES_DELETE(authed(`/api/files?path=Shared/new-${name}`, { method: "DELETE" }))).status, 200);
+    }
+    const count = host.fileOps.length;
+    const local = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Local/plan.md", destinationNotebook: "Local", destinationName: "renamed.md" } }));
+    assert.equal(local.status, 200);
+    assert.equal((await FILES_DELETE(authed("/api/files?path=Local/renamed.md", { method: "DELETE" }))).status, 200);
+    assert.equal(host.fileOps.length, count, "local operations do not call the host");
+  });
+});
+
+test("shared rename and deletion reject invalid destinations, permissions and unavailable collaboration", async () => {
+  await withFixture(async ({ host, root, disk }) => {
+    const rename = (destinationName: string, destinationNotebook = "Shared") => FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", destinationNotebook, destinationName } }));
+    const remove = () => FILES_DELETE(authed("/api/files?path=Shared/notes.md", { method: "DELETE" }));
+    assert.equal((await rename("viewed.md")).status, 409);
+    assert.equal((await rename("../escape.md")).status, 400);
+    assert.equal((await rename("renamed.md", "Local")).status, 400);
+    const archive = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", destinationDirectory: "Shared/_archive" } }));
+    assert.equal(archive.status, 400);
+    assert.equal(host.fileOps.length, 0);
+    host.canModifyFiles = false;
+    assert.equal((await rename("denied.md")).status, 403);
+    assert.equal((await remove()).status, 403);
+    delete process.env.LIBERA_COLLAB_HOST_URL;
+    delete process.env.LIBERA_COLLAB_HOST_TOKEN;
+    assert.equal((await rename("offline.md")).status, 503);
+    assert.equal((await remove()).status, 503);
+    await host.stop();
+    process.env.LIBERA_COLLAB_HOST_URL = host.url;
+    process.env.LIBERA_COLLAB_HOST_TOKEN = host.token;
+    assert.equal((await rename("down.md")).status, 503);
+    assert.equal((await remove()).status, 503);
+    assert.equal(disk("Shared/notes.md"), "Hello world (disk copy)\n");
+    assert.ok(!existsSync(path.join(root, "Shared", "denied.md")));
+    await host.start();
+  });
+});
+
+test("folder rename and deletion operate on shared descendants, with validation and permissions", async () => {
+  await withFixture(async ({ host, root, disk }) => {
+    await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "folder" } }));
+    await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared/folder", name: "nested" } }));
+    await FILES_POST(authed("/api/files", { json: { parentPath: "Shared/folder/nested", name: "note", content: "nested" } }));
+    const docId = host.doc("Shared/folder/nested/note.md").docId;
+    const rename = (name: string) => FOLDERS_PATCH(authed("/api/folders", { method: "PATCH", json: { path: "Shared/folder", name } }));
+    const remove = (folder: string) => FOLDERS_DELETE(authed(`/api/folders?path=${encodeURIComponent(folder)}`, { method: "DELETE" }));
+    assert.equal((await rename("../invalid")).status, 400);
+    assert.equal((await rename("_archive")).status, 400);
+    await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "occupied" } }));
+    assert.equal((await rename("occupied")).status, 409);
+    host.canModifyFiles = false;
+    assert.equal((await rename("renamed")).status, 403);
+    assert.equal((await remove("Shared/folder")).status, 403);
+    host.canModifyFiles = true;
+    const renamed = await rename("renamed");
+    assert.equal(renamed.status, 200);
+    assert.deepEqual(host.fileOps.at(-1), { op: "rename", path: "folder", to: "renamed" });
+    assert.equal(host.doc("Shared/renamed/nested/note.md").docId, docId);
+    assert.equal(disk("Shared/renamed/nested/note.md"), "nested");
+    assert.ok(!existsSync(path.join(root, "Shared", "folder")));
+    assert.equal((await remove("Shared/renamed")).status, 200);
+    assert.deepEqual(host.fileOps.at(-1), { op: "delete", path: "renamed" });
+    assert.ok(!host.docs.has("Shared/renamed/nested/note.md"));
+    assert.ok(!existsSync(path.join(root, "Shared", "renamed")));
+    assert.equal((await remove("Shared")).status, 400, "root deletion must not become a manifest operation");
+    delete process.env.LIBERA_COLLAB_HOST_URL;
+    delete process.env.LIBERA_COLLAB_HOST_TOKEN;
+    const offline = await FOLDERS_PATCH(authed("/api/folders", { method: "PATCH", json: { path: "Shared/occupied", name: "offline" } }));
+    assert.equal(offline.status, 503);
+    assert.equal((await remove("Shared/occupied")).status, 503);
+    assert.ok(existsSync(path.join(root, "Shared", "occupied")));
+  });
+});
+
+test("copies into shared notebooks use live text, unique names, binaries and independent Markdown assets", async () => {
+  await withFixture(async ({ host, root, disk }) => {
+    const copy = (filePath: string, destinationName?: string) => FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: filePath, destinationDirectory: "Shared", destinationName, copy: true } }));
+    const live = await copy("Shared/notes.md");
+    assert.equal(live.status, 200);
+    assert.equal((await live.json()).content, "Hello world\n", "copy reads the host, not its stale working copy");
+    assert.deepEqual(host.fileOps.at(-1), { op: "create-file", path: "notes copy.md", content: "Hello world\n" });
+    const again = await copy("Shared/notes.md");
+    assert.equal(again.status, 200);
+    assert.equal((await again.json()).file.path, "Shared/notes copy-1.md");
+    assert.equal((await copy("Local/plan.md", "plan.md")).status, 200);
+    assert.equal(disk("Shared/plan.md"), disk("Local/plan.md"));
+    assert.equal((await copy("Shared/pic.png")).status, 200);
+    assert.deepEqual(readFileSync(path.join(root, "Shared", "pic copy.png")), PNG);
+    host.beforeFileOp = (op) => {
+      if (op.path === "concurrent.png") writeFileSync(path.join(root, "Shared", "concurrent.png"), "collaborator's image");
+    };
+    assert.equal((await copy("Shared/pic.png", "concurrent.png")).status, 409);
+    assert.equal(disk("Shared/concurrent.png"), "collaborator's image", "a file created during the copy is never overwritten");
+    host.beforeFileOp = null;
+    const localAsset = path.join(root, "Local", "_assets", "images", "pic.png");
+    mkdirSync(path.dirname(localAsset), { recursive: true });
+    writeFileSync(localAsset, PNG);
+    writeFileSync(path.join(root, "Local", "images.md"), "![picture](_assets/images/pic.png)\n");
+    const images = await copy("Local/images.md");
+    assert.equal(images.status, 200);
+    const markdown = (await images.json()).content as string;
+    assert.match(markdown, /!\[picture\]\(_assets\/images-copy\/[^/]+\/pic.png\)/);
+    const assetPath = markdown.match(/\(([^)]+)\)/)?.[1] ?? "";
+    assert.deepEqual(host.blobs.get(assetPath), PNG);
+    host.canModifyFiles = false;
+    assert.equal((await copy("Local/plan.md", "denied.md")).status, 403);
+    assert.ok(!existsSync(path.join(root, "Shared", "denied.md")));
+    delete process.env.LIBERA_COLLAB_HOST_URL;
+    delete process.env.LIBERA_COLLAB_HOST_TOKEN;
+    assert.equal((await copy("Local/plan.md", "offline.md")).status, 503);
+    assert.ok(!existsSync(path.join(root, "Shared", "offline.md")));
+  });
+});
+
+test("unsupported shared actions explain archive, root notebook and cross-notebook limitations", async () => {
+  await withFixture(async ({ host, root }) => {
+    const requests = [
+      FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/notes.md", archive: true } })),
+      FOLDERS_PATCH(authed("/api/folders", { method: "PATCH", json: { path: "Shared", archive: true } })),
+      NOTEBOOKS_PATCH(authed("/api/notebooks", { method: "PATCH", json: { path: "Shared", name: "Renamed" } })),
+      NOTEBOOKS_DELETE(authed("/api/notebooks?path=Shared", { method: "DELETE" })),
+      FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Local/plan.md", destinationNotebook: "Shared", destinationName: "moved.md" } })),
+    ];
+    for (const request of requests) {
+      const response = await request;
+      assert.equal(response.status, 409);
+      const message = (await response.json()).error as string;
+      assert.notEqual(message, "shared-document");
+      assert.match(message, /archive|Renaming a shared notebook|Leave or take down this shared notebook|Moving files between/);
+    }
+    assert.equal(host.fileOps.length, 0);
+    assert.ok(existsSync(path.join(root, "Shared", "notes.md")));
+    assert.ok(existsSync(path.join(root, "Local", "plan.md")));
+  });
+});
+
 test("uploads, Markdown images and edited images into a shared notebook become manifest blobs", async () => {
   await withFixture(async ({ host, root }) => {
     const form = new FormData();
@@ -660,6 +906,13 @@ test("with the host unavailable, shared writes fail with a clear 503 and nothing
     // Collaboration disabled for this launch.
     delete process.env.LIBERA_COLLAB_HOST_URL;
     delete process.env.LIBERA_COLLAB_HOST_TOKEN;
+    const note = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "offline" } }));
+    assert.equal(note.status, 503);
+    assert.match((await note.json()).error, /collaboration is not running/);
+    assert.ok(!existsSync(path.join(root, "Shared", "offline.md")));
+    const folder = await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "offline" } }));
+    assert.equal(folder.status, 503);
+    assert.ok(!existsSync(path.join(root, "Shared", "offline")));
     const { context } = makeContext();
     const read = await tool("Read").run({ file_path: "Shared/notes.md" }, context);
     assert.match(read.text, /disk copy/, "reading falls back to the working copy");
@@ -682,6 +935,10 @@ test("with the host unavailable, shared writes fail with a clear 503 and nothing
     await host.stop();
     process.env.LIBERA_COLLAB_HOST_URL = url;
     process.env.LIBERA_COLLAB_HOST_TOKEN = host.token;
+    const downNote = await FILES_POST(authed("/api/files", { json: { notebook: "Shared", name: "down" } }));
+    assert.equal(downNote.status, 503);
+    assert.match((await downNote.json()).error, /collaboration service is not running/);
+    assert.ok(!existsSync(path.join(root, "Shared", "down.md")));
     const fresh = makeContext().context;
     await tool("Read").run({ file_path: "Shared/notes.md" }, fresh);
     await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "x" }, fresh), /collaboration service is not running/);

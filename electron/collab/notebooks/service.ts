@@ -32,6 +32,7 @@ import { PathRefusedError, randomId, readIfExists, sha256, statIfExists, walkNot
 import { entryRecord } from "./layout";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
+  deleteMarker,
   deleteSharePlan,
   readMarker,
   readSharePlan,
@@ -277,7 +278,7 @@ export class NotebookServiceImpl implements NotebookService {
     return account.id;
   }
 
-  /** Runs one share or join per key at a time; a concurrent request waits and then sees the result. */
+  /** Serializes operations on the same notebook or project. */
   private async locked<T>(key: string, task: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(key) ?? Promise.resolve();
     const run = previous.catch(() => undefined).then(task);
@@ -381,6 +382,10 @@ export class NotebookServiceImpl implements NotebookService {
    * stays so resolvePath answers readOnly and the app can offer export.
    */
   private async revoke(projectId: string): Promise<void> {
+    return this.locked(`project:${projectId}`, () => this.doRevoke(projectId));
+  }
+
+  private async doRevoke(projectId: string): Promise<void> {
     const handle = this.projects.get(projectId);
     if (!handle || handle.revoked) return;
     handle.revoked = true;
@@ -403,6 +408,40 @@ export class NotebookServiceImpl implements NotebookService {
     if (handle.runtime) handle.runtime.role = role;
     this.deps.host.store.upsertProject({ projectId, name: handle.name, localRoot: handle.root, role });
     this.deps.emit({ t: "project-changed", projectId });
+  }
+
+  /** Deletes the server copy and returns the owner's folder to a local notebook. */
+  takeDown(projectId: string): Promise<void> {
+    return this.locked(`project:${projectId}`, async () => {
+      const api = this.requireApi();
+      const handle = this.projects.get(projectId);
+      if (!handle) throw new ControlError(404, "not-found", "Shared notebook not found on this device.");
+      if (handle.role !== "owner") throw new ControlError(403, "forbidden", "Only the owner can take down this notebook.");
+      // Finish pending materialization before the server closes the documents.
+      await handle.runtime?.whenIdle();
+      try {
+        await api.deleteProject(projectId);
+      } catch (error) {
+        // A lost response or a local cleanup failure can be retried safely.
+        if (!(error instanceof ApiClientError)) throw error;
+        if (error.status !== 404) {
+          if (!error.transient) throw error;
+          const gone = await api.getProject(projectId).then(
+            () => false,
+            (checkError: unknown) => checkError instanceof ApiClientError && checkError.status === 404,
+          );
+          if (!gone) throw error;
+        }
+      }
+      await handle.runtime?.stop();
+      handle.runtime = null;
+      await deleteSharePlan(handle.root);
+      await deleteMarker(handle.root);
+      this.deps.host.store.deleteProject(projectId);
+      this.projects.delete(projectId);
+      this.deps.emit({ t: "project-changed", projectId });
+      this.deps.statusChanged?.();
+    });
   }
 
   // ------------------------------------------------------------ share
@@ -780,6 +819,10 @@ export class NotebookServiceImpl implements NotebookService {
       };
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("POST", ControlRoutes.join, wrap(async (request) => ({ body: await this.join(request.body as JoinProjectRequest) })));
+    router.add("DELETE", decodeURIComponent(ControlRoutes.project(":projectId")), wrap(async (request) => {
+      await this.takeDown(request.params.projectId);
+      return { status: 204 };
+    }));
     router.add(
       "POST",
       ControlRoutes.files(":projectId").replace(encodeURIComponent(":projectId"), ":projectId"),

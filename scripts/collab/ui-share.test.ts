@@ -81,6 +81,10 @@ function fakeProjectServer(myRole: Role, startShared: boolean) {
       state.projects = [];
       return undefined;
     },
+    "DELETE /projects/p1": () => {
+      state.projects = [];
+      return undefined;
+    },
   });
   return { state, ...fetch };
 }
@@ -222,6 +226,7 @@ test("an editor sees members read-only, no invitations, and can leave", async ()
   assert.ok(!dialog().querySelector('form[aria-label="Invite people"]'));
   assert.ok(!dialog().querySelector("select"), "no role changes");
   assert.ok(!button("Remove Vera"));
+  assert.ok(!button("Take down notebook"));
   assert.ok(!server.calls.some((call) => call.path.endsWith("/invitations")), "invitations are not requested");
   assert.match(dialog().textContent!, /Bea Owner.*Owner/);
 
@@ -240,6 +245,7 @@ test("viewers and commenters cannot manage either; server errors are shown", asy
   const { view } = await openDialog();
   assert.ok(!document.querySelector('form[aria-label="Invite people"]'));
   assert.ok(button("Leave this notebook"));
+  assert.ok(!button("Take down notebook"));
   await view.unmount();
 
   setCollabStatusStore(null);
@@ -262,6 +268,72 @@ test("a revoked notebook explains that the local copy stays", async () => {
   assert.match(dialog.textContent!, /no longer shared with you/);
   assert.match(dialog.textContent!, /stays on this device as a read-only copy/);
   assert.ok(!dialog.querySelector("form"));
+  assert.ok(!button("Take down notebook"));
+  await view.unmount();
+});
+
+test("an owner confirms takedown, can cancel, and closes after the project list refreshes", async () => {
+  installFakeBridge();
+  const server = fakeProjectServer("owner", true);
+  const { view, closed } = await openDialog();
+  await click(button("Take down notebook"));
+  const section = document.querySelector('[aria-label="Take down notebook"]')!;
+  assert.match(section.textContent!, /Take down “Thesis”\?/);
+  assert.match(section.textContent!, /permanently deletes.*server/);
+  assert.match(section.textContent!, /local notebook stays/);
+  assert.match(section.textContent!, /invitation links stop working/);
+  assert.ok(!server.calls.some((call) => call.method === "DELETE"));
+  await click(button(/^Cancel$/, section));
+  assert.ok(!server.calls.some((call) => call.method === "DELETE"));
+  await click(button("Take down notebook"));
+  await click(button(/^Take down notebook$/));
+  assert.ok(server.calls.some((call) => call.method === "DELETE" && call.path === "/projects/p1"));
+  assert.deepEqual(server.state.projects, []);
+  assert.equal(closed(), 1);
+  await view.unmount();
+});
+
+test("takedown disables repeat submissions and shows a server failure without closing", async () => {
+  installFakeBridge();
+  const server = fakeProjectServer("owner", true);
+  const originalFetch = globalThis.fetch;
+  let finish: () => void = () => {};
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/projects/p1") && init?.method === "DELETE") {
+        await new Promise<void>((resolve) => (finish = resolve));
+        return new Response(JSON.stringify({ error: { code: "internal", message: "failed" } }), { status: 500 });
+      }
+      return originalFetch(input, init);
+    },
+  });
+  const { view, closed } = await openDialog();
+  await click(button("Take down notebook"));
+  await click(button(/^Take down notebook$/));
+  assert.equal(button("Taking down")?.disabled, true);
+  assert.equal(button(/^Cancel$/)?.disabled, true);
+  const { act } = await import("react");
+  await act(async () => finish());
+  await flush();
+  assert.match(document.querySelector('[role="alert"]')!.textContent!, /Something went wrong/);
+  assert.equal(closed(), 0);
+  assert.equal(server.state.projects.length, 1);
+  assert.equal(button(/^Take down notebook$/)?.disabled, false);
+  await view.unmount();
+});
+
+test("an owner can finish takedown after the server copy has already disappeared", async () => {
+  installFakeBridge();
+  const server = fakeProjectServer("owner", true);
+  server.state.projects[0] = project({ role: "owner", revoked: true });
+  const { view, closed } = await openDialog();
+  assert.match(document.querySelector('[role="dialog"]')!.textContent!, /editable local notebook/);
+  await click(button("Take down notebook"));
+  await click(button(/^Take down notebook$/));
+  assert.equal(closed(), 1);
+  assert.deepEqual(server.state.projects, []);
   await view.unmount();
 });
 

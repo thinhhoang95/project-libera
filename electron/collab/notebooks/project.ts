@@ -1027,6 +1027,7 @@ export class SharedProject {
           const bytes = base64Bytes(request.contentBase64);
           const key = manifestPathKey(relative);
           const existing = [...this.entries.values()].find((entry) => manifestPathKey(entry.path) === key);
+          if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
           if (!existing) {
             // A new file: the same as create-file, from bytes.
             this.assertFree(relative, []);

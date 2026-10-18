@@ -47,7 +47,7 @@ export function ShareNotebookDialog({ notebook, onClose }: ShareNotebookDialogPr
       description={
         project
           ? project.revoked
-            ? "This notebook is no longer shared with you."
+            ? project.role === "owner" ? "This notebook is no longer shared." : "This notebook is no longer shared with you."
             : `${ROLE_LABEL[project.role]} · ${project.notebook}`
           : "Invite people to edit this notebook with you in real time."
       }
@@ -205,14 +205,32 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
     }
   }
 
+  async function takeDown() {
+    setActionError("");
+    try {
+      await collabClient.deleteProject(project.projectId);
+      await refreshProjects();
+      onLeft();
+    } catch (caught) {
+      setActionError(describeError(caught));
+    }
+  }
+
   if (project.revoked) {
     return (
-      <div className="libera-collab-tone flex items-start gap-2 rounded-lg px-3 py-2 text-sm" data-tone="danger" role="status">
-        <ShieldAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
-        <p>
-          Your access was removed. The folder “{project.notebook}” stays on this device as a read-only copy; nothing was deleted. Export
-          anything you need from it.
-        </p>
+      <div className="space-y-4">
+        <div className="libera-collab-tone flex items-start gap-2 rounded-lg px-3 py-2 text-sm" data-tone="danger" role="status">
+          <ShieldAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            {project.role === "owner" ? (
+              <>The shared version is no longer available. Take down this notebook to finish returning “{project.notebook}” to an editable local notebook.</>
+            ) : (
+              <>Your access was removed. The folder “{project.notebook}” stays on this device as a read-only copy; nothing was deleted. Export anything you need from it.</>
+            )}
+          </p>
+        </div>
+        {actionError ? <p className="text-sm text-destructive" role="alert">{actionError}</p> : null}
+        {project.role === "owner" ? <TakeDownSection name={project.name} onTakeDown={takeDown} /> : null}
       </div>
     );
   }
@@ -283,7 +301,9 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
 
       {!project.revoked && can(project.role, "view-audit") ? <ActivityLogSection projectId={project.projectId} members={members} /> : null}
 
-      {project.role !== "owner" ? (
+      {project.role === "owner" ? (
+        <TakeDownSection name={project.name} onTakeDown={takeDown} />
+      ) : (
         <LeaveSection
           name={project.name}
           onLeave={async () => {
@@ -297,7 +317,7 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
             }
           }}
         />
-      ) : null}
+      )}
     </div>
   );
 }
@@ -542,6 +562,45 @@ function MemberRow({
         </span>
       )}
     </li>
+  );
+}
+
+function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <section aria-label="Take down notebook" className="libera-dialog-section space-y-2">
+      {confirming ? (
+        <>
+          <p className="text-sm">
+            Take down “{name}”? This permanently deletes the shared notebook and its collaboration history from the server.
+            Everyone loses access and invitation links stop working. Your local notebook stays on this device and can be edited
+            or shared again; collaborators keep their local copies as read-only.
+          </p>
+          <div className="flex gap-2">
+            <button
+              className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              disabled={busy}
+              type="button"
+              onClick={() => {
+                setBusy(true);
+                void onTakeDown().finally(() => setBusy(false));
+              }}
+            >
+              {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Trash2 aria-hidden className="h-3.5 w-3.5" />}
+              {busy ? "Taking down…" : "Take down notebook"}
+            </button>
+            <button className={SECONDARY_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        </>
+      ) : (
+        <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
+          <Trash2 aria-hidden className="h-3.5 w-3.5" /> Take down notebook…
+        </button>
+      )}
+    </section>
   );
 }
 

@@ -177,16 +177,20 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const { projectId } = projectParams.parse(request.params);
     const actor = bindActor(accountId, undefined);
     await requireProjectAction(db, projectId, accountId, "delete-project", actor);
-    const docs = await db
-      .selectFrom("documents")
-      .select("id")
-      .where("project_id", "=", projectId)
-      .where("deleted_at", "is", null)
-      .execute();
-    await db.updateTable("projects").set({ deleted_at: new Date() }).where("id", "=", projectId).execute();
-    await writeAudit(db, { projectId, actor, accountId, action: "project.delete", target: projectId });
-    for (const doc of docs) notifyRooms(context, "documentDeleted", (rooms) => rooms.documentDeleted(doc.id));
+    const { docs, members } = await db.transaction().execute(async (trx) => {
+      const docs = await trx.selectFrom("documents").select("id").where("project_id", "=", projectId).execute();
+      const members = await trx.selectFrom("memberships").select("account_id").where("project_id", "=", projectId).execute();
+      // Reviews reference revisions without ON DELETE CASCADE. Remove them
+      // first, then let the project's foreign keys erase all dependent rows.
+      await trx.deleteFrom("reviews").where("project_id", "=", projectId).execute();
+      await trx.deleteFrom("projects").where("id", "=", projectId).execute();
+      return { docs, members };
+    });
+    // Project subscriptions disappear when the last document is closed.
+    // User events also reach members who do not currently have a document open.
+    for (const member of members) publish(context, "user", member.account_id, EventKind.ProjectDeleted, { projectId });
     publish(context, "project", projectId, EventKind.ProjectDeleted, { projectId });
+    for (const doc of docs) notifyRooms(context, "documentDeleted", (rooms) => rooms.documentDeleted(doc.id));
     return reply.status(204).send();
   });
 

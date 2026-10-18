@@ -8,7 +8,7 @@
 // an upload becomes a manifest blob the server holds.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,8 @@ import type { SecretCodec } from "../../electron/collab/control/account";
 import { readManifest } from "../../electron/collab/notebooks/layout";
 import { PATCH as OCR_PATCH, POST as OCR_POST } from "../../src/app/api/document-ocr/output/route";
 import { POST as UPLOADS_POST } from "../../src/app/api/uploads/route";
+import { POST as FILES_POST, PATCH as FILES_PATCH, DELETE as FILES_DELETE } from "../../src/app/api/files/route";
+import { POST as FOLDERS_POST, PATCH as FOLDERS_PATCH, DELETE as FOLDERS_DELETE } from "../../src/app/api/folders/route";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 import { RunSnapshots, undoRun } from "../../src/lib/agent/snapshots";
 import { ALL_TOOLS, type ToolContext } from "../../src/lib/agent/tools";
@@ -131,6 +133,25 @@ test("agent, undo, OCR and uploads on a shared notebook through the real host an
     const login = await fetch(`${server.url}/v1/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "ai-e2e@example.test", password: "correct horse battery" }) });
     const token = ((await login.json()) as AuthResponse).accessToken;
 
+    // User file operations must use the host, just like OCR and uploads.
+    assert.equal((await FOLDERS_POST(authed("/api/folders", { json: { parentPath: "Shared", name: "created" } }))).status, 200);
+    const userCreated = await FILES_POST(authed("/api/files", { json: { parentPath: "Shared/created", name: "paper.tex", content: "\\section{Created}\n" } }));
+    assert.equal(userCreated.status, 200);
+    const createdDoc = (await control<ResolvedDoc>("GET", `${ControlRoutes.resolve}?path=Shared/created/paper.tex`)).body;
+    assert.ok(createdDoc.docId);
+    assert.equal((await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/created/paper.tex", destinationName: "renamed.tex" } }))).status, 200);
+    assert.equal((await FOLDERS_PATCH(authed("/api/folders", { method: "PATCH", json: { path: "Shared/created", name: "renamed-folder" } }))).status, 200);
+    const renamedDoc = (await control<ResolvedDoc>("GET", `${ControlRoutes.resolve}?path=Shared/renamed-folder/renamed.tex`)).body;
+    assert.equal(renamedDoc.docId, createdDoc.docId, "both renames preserve the CRDT document");
+    const copied = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Shared/renamed-folder/renamed.tex", destinationDirectory: "Shared", copy: true } }));
+    assert.equal(copied.status, 200);
+    const copiedPath = (await copied.json()).file.path as string;
+    assert.equal(readFileSync(path.join(library, ...copiedPath.split("/")), "utf8"), "\\section{Created}\n");
+    assert.equal((await FILES_DELETE(authed(`/api/files?path=${encodeURIComponent(copiedPath)}`, { method: "DELETE" }))).status, 200);
+    assert.equal((await FOLDERS_DELETE(authed("/api/folders?path=Shared/renamed-folder", { method: "DELETE" }))).status, 200);
+    assert.equal(existsSync(path.join(library, "Shared", "renamed-folder")), false);
+    assert.equal((await control<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}?path=Shared/renamed-folder/renamed.tex`)).body, null);
+
     const resolved = (await control<ResolvedDoc>("GET", `${ControlRoutes.resolve}?path=${encodeURIComponent("Shared/notes.md")}`)).body;
     const docText = async (docId: string) => (await control<DocText>("GET", ControlRoutes.docText(docId))).body;
     const serverLog = async (docId: string) => {
@@ -232,6 +253,8 @@ test("agent, undo, OCR and uploads on a shared notebook through the real host an
     const blob = await fetch(`${server.url}${ApiRoutes.blob(projectId, entry.blobHash)}`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(blob.status, 200);
     assert.ok(Buffer.from(await blob.arrayBuffer()).equals(PNG));
+    await assert.rejects(writeSharedBlob("Shared/figure.png", new Uint8Array(Buffer.from("conflicting copy")), { createOnly: true }), /already exists/);
+    assert.ok(readFileSync(path.join(library, "Shared", "figure.png")).equals(PNG), "copy creation never replaces an existing blob");
 
     // Replacing the bytes of an existing blob (an image save) updates its entry.
     const replacement = Buffer.concat([PNG, Buffer.from("edited")]);

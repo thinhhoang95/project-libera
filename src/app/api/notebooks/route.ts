@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { createNotebook, deleteNotebook, renameNotebook, toStorageError } from "@/lib/storage";
 import type { LiberaNotebookMetadata } from "@/lib/types";
+import { sharedNotebookMarker } from "@/lib/collab/shared-notebook";
+import { StorageError } from "@/lib/storage/errors";
 
 export const runtime = "nodejs";
 
@@ -45,6 +47,9 @@ export async function PATCH(request: NextRequest) {
       path?: string;
       name?: string;
     };
+    if (body.path !== body.name && sharedNotebookMarker(body.path ?? "")) {
+      throw new StorageError("Renaming a shared notebook is not supported yet. Its current name is required to keep collaboration connected; color, emoji and group can still be changed.", 409);
+    }
     return NextResponse.json(
       await renameNotebook(body.path ?? "", body.name ?? "", {
         color: body.color,
@@ -66,6 +71,8 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const notebook = request.nextUrl.searchParams.get("path") ?? "";
+    const marker = sharedNotebookMarker(notebook);
+    if (marker && !marker.revoked) throw new StorageError("Leave or take down this shared notebook using its sharing settings before deleting the local notebook.", 409);
     return NextResponse.json(await deleteNotebook(notebook));
   } catch (error) {
     return handleError(error);
