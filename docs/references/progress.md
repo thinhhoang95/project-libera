@@ -12,7 +12,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 ## Baseline
 
-`npm run test:editor` on `references/integration` before any lane: _recorded in Wave 0_.
+`npm run test:editor` on `references/integration` before any lane: 559 tests, 552 pass, 4 fail, 2 cancelled, 1 skipped. The failures and cancellations are pre-existing (global search index tests 132, 158, 159, 180; PDF worker resolution 415; atomic-write cleanup 455), the same set `docs/collaboration/progress.md` records. Lanes must not add to this list.
 
 `npx tsc --noEmit -p .` before any lane: 4 errors, all pre-existing, in `scripts/editor/document-ocr-loop.test.ts` (1) and `scripts/editor/pdf-text-layer-styles.test.ts` (3). Lanes add none.
 
