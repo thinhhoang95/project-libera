@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpRight, ImageIcon, ScanSearch } from "lucide-react";
+import { ArrowUpRight, BookOpen, ImageIcon, ScanSearch } from "lucide-react";
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import { FileTypeIcon } from "@/components/libera/file-type";
 import { SEARCH_IMAGE_DRAG_MIME, searchImageThumbnail } from "@/components/libera/global-search/search-query-input";
@@ -68,6 +68,21 @@ function matchLabel(result: SearchResultFile) {
 function folderOf(path: string) {
   const parts = path.split("/");
   return parts.slice(0, -1).join(" / ");
+}
+
+/** The kind icon of a result: a file type, or a book for a References entry. */
+export function ResultKindIcon({ result }: { result: SearchResultFile }) {
+  if (result.kind === "reference") return <BookOpen aria-hidden className="h-4 w-4" />;
+  return <FileTypeIcon fileType={result.kind} name={result.name} />;
+}
+
+/** Where a result is: its folder, or for a References entry its authors, year and notebook. */
+export function resultWhere(result: SearchResultFile) {
+  if (result.reference) {
+    const byline = [result.reference.authors, result.reference.year ? `(${result.reference.year})` : ""].filter(Boolean).join(" ");
+    return [byline, `References · ${result.reference.notebook}`].filter(Boolean).join(" · ");
+  }
+  return result.source === "gallery" ? "Image Gallery" : folderOf(result.path);
 }
 
 export function SearchResults({
@@ -155,10 +170,10 @@ export function SearchResults({
           {documents.map((result) => (
             <article key={result.key} className="rounded-xl border border-border bg-card">
               <header className="flex items-start gap-2 px-3 pt-2.5">
-                <span className="mt-0.5 text-muted-foreground"><FileTypeIcon fileType={result.kind} name={result.name} /></span>
+                <span className="mt-0.5 text-muted-foreground"><ResultKindIcon result={result} /></span>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold"><Highlighted text={result.name} terms={terms} /></div>
-                  <div className="truncate text-xs text-muted-foreground">{folderOf(result.path) || searchKindLabel(result.kind)}</div>
+                  <div className="truncate text-xs text-muted-foreground">{resultWhere(result) || searchKindLabel(result.kind)}</div>
                 </div>
                 <span
                   className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground"

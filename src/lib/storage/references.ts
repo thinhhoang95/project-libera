@@ -8,6 +8,7 @@ import { applyLibraryOps, attachmentIdentity, emptyReferenceLibrary, LibraryOpEr
 import { REFERENCE_LIBRARY_VERSION, type ReferenceAttachment, type ReferenceLibrary, type ReferenceLibraryOp } from "@/lib/references/types";
 import { StorageError } from "@/lib/storage/errors";
 import { pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { notifySearchReferenceChanges } from "@/lib/storage/search-updates";
 import {
   filePathFromParts,
   getAdminRoot,
@@ -165,6 +166,8 @@ export async function updateReferenceLibrary(notebook: string, expectedRevision:
     await writeJsonAtomically(target, next);
     // The notebook's generated references.bib follows the library when it is turned on.
     scheduleBibMirror(notebook, next);
+    // Global Search indexes the entries as their own source.
+    notifySearchReferenceChanges([notebook]);
     return next;
   });
 }
@@ -234,6 +237,11 @@ async function libraryNotebookNames() {
     ...entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !linkedNames.has(entry.name)).map((entry) => entry.name),
     ...linkedFolders.filter((folder) => !folder.unresolved).map((folder) => folder.name),
   ];
+}
+
+/** The notebooks (and linked folders) that have a References library file. */
+export async function referenceLibraryNotebooks() {
+  return (await existingLibraries()).map(({ notebook }) => notebook);
 }
 
 async function existingLibraries(notebooks?: string[]) {

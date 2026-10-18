@@ -18,6 +18,7 @@ import type { SearchEntry } from "@/components/libera/global-search/search-resul
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
+import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -252,6 +253,15 @@ export function LiberaApp({
     setActiveLeftPanel(lastCanvasPanelRef.current);
     if (result.source === "gallery") {
       if (result.photo) workspace.openGalleryPhoto(galleryPhotoFromSearch(result.photo), placement);
+      return;
+    }
+    if (result.source === "references") {
+      // A References entry opens in the References panel.
+      if (result.reference) {
+        window.dispatchEvent(new CustomEvent<ReferencesRevealDetail>(REFERENCES_REVEAL_EVENT, {
+          detail: { notebook: result.reference.notebook, entryId: result.reference.entryId },
+        }));
+      }
       return;
     }
     const file = workspace.files.find((candidate) => candidate.path === result.path) ?? result.file;
