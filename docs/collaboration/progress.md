@@ -13,7 +13,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 need
 
 | Wave | Content | Branches | Status |
 |---|---|---|---|
-| 0 | Scaffolding (M1.0): dependencies, protocol, schema, server skeleton | `collaboration` | ◐ |
+| 0 | Scaffolding (M1.0): dependencies, protocol, schema, server skeleton | `collaboration` | ☑ |
 | 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge`, `collab/edlib` | ◐ |
 | 2 | Electron host integration · replica · bindings in editors · shared notebooks · status UI · Phase 1 AI | — | ☐ |
 | 3 | Phase 2: comments, mentions, notifications, history, restore, offline commands | — | ☐ |
@@ -28,7 +28,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ S2 CodeMirror Markdown inventory and parity list (M1.4)
 - ☐ S3 Host SQLite kill test (M1.3)
 - ☐ S4 MessagePort to main and child windows (M1.4/M2 wave 2)
-- ☐ S5 Server persist-before-ack kill test (M1.1)
+- ☑ S5 Server persist-before-ack kill test (M1.1)
 - ☐ S6 Overlay suggestions: hard cases scripted (M3.1)
 - ☐ S7 Watcher and materializer self-write and external-edit tests (M1.5); 👤 ExFAT check
 - ☐ Decision records D1–D14 in `decisions/`
@@ -46,22 +46,22 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Feature flag `LIBERA_COLLAB` and Preferences → Collaboration
 
 ### M1.1 Server sync core
-- ☐ hello/welcome, version check (4026), auth (4001)
-- ☐ open/opened with state-vector diff per sub-document
-- ☐ Persist-before-ack, dedupe on (doc, client, clientSeq), serverSeq ordering
-- ☐ Fan-out `remote`; awareness relay with TTL
-- ☐ Role check per sub-document, reject reasons, annotation ownership for commenters
-- ☐ RoomService: transact, withDocs, membershipChanged, documentDeleted, accountRevoked
-- ☐ Event forwarding from the bus to subscribers
-- ☐ Admission control (per-IP rate, per-account sockets)
-- ☐ Server kill test: no acknowledged update lost
+- ☑ hello/welcome, version check (4026), auth (4001/4002), token refresh on the socket, ping/pong, frame limits
+- ☑ open/opened with state-vector diff per sub-document; rooms loaded from snapshot + tail, unloaded when idle
+- ☑ Persist-before-ack, dedupe on (doc, client, clientSeq), serverSeq ordering
+- ☑ Fan-out `remote`; awareness relay, removal on disconnect, 90 s silent-socket drop
+- ☑ Role check per sub-document, reject reasons, annotation ownership, suggestion status rules, manifest path validation
+- ☑ RoomService: transact, withDocs, membershipChanged, documentDeleted, accountRevoked
+- ☑ Event forwarding from the bus to subscribers (doc, project, user scopes)
+- ☑ Admission control (per-IP rate, per-account sockets, 4029; 4050 on shutdown)
+- ☑ Server kill test: no acknowledged update lost (`server/test/sync-kill.test.ts`, PGlite on disk)
 
 ### M1.2 Accounts, auth and projects
-- ☐ Register (invitation or open sign-up), login, refresh rotation with reuse detection, logout, /me
-- ☐ Projects CRUD, members, roles, invitations (email + link), accept
-- ☐ Documents create (one-time import), updates feed
-- ☐ Blobs PUT/GET/HEAD with hash check (disk driver; S3 driver)
-- ☐ Mail (SMTP or log)
+- ☑ Register (invitation or open sign-up), login, refresh rotation with reuse detection, logout, /me, password change, rate limits
+- ☑ Projects CRUD, members, roles, invitations (email + link), accept; audit entries
+- ☑ Documents create (one-time import), updates feed with baseSnapshot, delete
+- ☑ Blobs PUT/GET/HEAD with hash check (disk driver; S3 driver with SigV4 checked against AWS vectors; 👤 not yet tried against a real S3 service)
+- ☑ Mail (SMTP or log)
 - ☐ Desktop sign-in dialog and `safeStorage` refresh token (wave 2)
 
 ### M1.3 DocHub host
@@ -109,7 +109,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 
 ### M1.10 Snapshots and compaction
 - ☐ Client snapshots (500 updates or 1 MB)
-- ☐ Server compaction job (2,000 updates), retention
+- ☑ Server compaction job (2,000 updates), retention that keeps revision snapshots
 - ☐ Cold open from snapshot plus tail
 
 ### M1.11 AI at Phase 1 level
@@ -127,6 +127,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Soak runner (24 h nightly; 👤 schedule on CI)
 
 ## Phase 2: comments and history
+- ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☐ M2.1 `ReviewStore` interface; local and shared stores; RelativePosition anchors; authors on messages; sidebar alignment
 - ☐ M2.2 Detached state and reattach; split, move and paste rules; 1,000-operation anchor fuzz
 - ☐ M2.3 Mentions; in-app, desktop and email-digest notifications; AI-authored review comments
