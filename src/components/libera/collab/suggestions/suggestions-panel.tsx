@@ -4,13 +4,15 @@
 // stale and decided suggestions, filterable by author (AI included), with
 // linked suggestions grouped and decided together. Editors accept and
 // reject (one at a time, or all with a checkpoint); authors withdraw or edit
-// their own; anyone who can comment replies. Arrow keys (or j and k) step
+// their own; anyone who can comment replies (a comment thread on the
+// suggestion's range, linked to it). Arrow keys (or j and k) step
 // through the list and show each suggestion in the editor.
 
 import { Bot, Check, ChevronDown, ChevronUp, Loader2, MessageSquare, Pencil, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { SharedDocSession } from "@/lib/collab/client/registry";
 import type { SuggestionGroupView, SuggestionsController } from "@/lib/collab/client/suggestions";
+import { MentionTextarea } from "../mentions/mention-textarea";
 import { useSuggestions } from "./use-suggestions";
 
 export type SuggestionAuthorFilter = "all" | "ai" | `user:${string}`;
@@ -51,7 +53,38 @@ function quote(text: string): string {
   return flat.length > 160 ? `${flat.slice(0, 157)}…` : flat;
 }
 
-function SuggestionCard({ group, controller, selected, onSelect }: { group: SuggestionGroupView; controller: SuggestionsController; selected: boolean; onSelect: () => void }) {
+/** The Reply box of a suggestion: a comment thread on its range, linked to it. */
+function ReplyBox({ group, controller, projectId, selfId }: { group: SuggestionGroupView; controller: SuggestionsController; projectId: string; selfId: string | null }) {
+  const [text, setText] = useState("");
+  const [mentions, setMentions] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <form
+      className="mt-1.5 space-y-1"
+      aria-label="Reply to this suggestion"
+      onClick={(event) => event.stopPropagation()}
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setSending(true);
+        setError("");
+        const result = await controller.sendReply(group.id, text, mentions);
+        setSending(false);
+        if (result.ok) setText("");
+        else setError(result.message);
+      }}
+    >
+      <MentionTextarea autoFocus aria-label="Reply to this suggestion" rows={2} className="w-full rounded-md border border-border bg-card px-1.5 py-1 text-xs" projectId={projectId} selfId={selfId} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Reply… Type @ to mention someone" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); controller.cancelReply(); } }} />
+      {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
+      <div className="flex gap-1">
+        <button type="submit" className={buttonClass} disabled={!text.trim() || sending}>{sending ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}Send reply</button>
+        <button type="button" className={buttonClass} onClick={() => controller.cancelReply()}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function SuggestionCard({ group, controller, selected, onSelect, replying, projectId, selfId }: { group: SuggestionGroupView; controller: SuggestionsController; selected: boolean; onSelect: () => void; replying: boolean; projectId: string; selfId: string | null }) {
   const [editing, setEditing] = useState<string | null>(null);
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
@@ -109,8 +142,9 @@ function SuggestionCard({ group, controller, selected, onSelect }: { group: Sugg
         {group.canEdit && single && editing === null ? <button type="button" className={buttonClass} data-action="edit" onClick={() => setEditing(single.record.replacement)}><Pencil aria-hidden className="h-3.5 w-3.5" />Edit</button> : null}
         {group.canWithdraw ? <button type="button" className={buttonClass} data-action="withdraw" onClick={() => controller.withdraw(group.id)}>Withdraw</button> : null}
         {group.canRevert ? <button type="button" className={buttonClass} data-action="revert" onClick={() => { void controller.revert(group.id); }}><Undo2 aria-hidden className="h-3.5 w-3.5" />Undo acceptance</button> : null}
-        {group.state !== "decided" ? <button type="button" className={buttonClass} data-action="reply" onClick={() => controller.reply(group.id)}><MessageSquare aria-hidden className="h-3.5 w-3.5" />Reply</button> : null}
+        {group.state !== "decided" && !replying ? <button type="button" className={buttonClass} data-action="reply" onClick={() => controller.reply(group.id)}><MessageSquare aria-hidden className="h-3.5 w-3.5" />Reply</button> : null}
       </div>
+      {replying ? <ReplyBox group={group} controller={controller} projectId={projectId} selfId={selfId} /> : null}
     </li>
   );
 }
@@ -188,7 +222,7 @@ export function SuggestionsPanel({ session, initialFilter = "all" }: Suggestions
         {visible.length === 0 ? (
           <li className="px-1 py-6 text-center text-sm text-muted-foreground">{groups.length ? "No suggestions match this filter." : snapshot.canSuggest ? "No suggestions yet. Turn on Suggesting, or use Suggest edit on a selection." : "No suggestions yet."}</li>
         ) : visible.map((group) => (
-          <SuggestionCard key={group.id} group={group} controller={controller} selected={group.id === selectedId} onSelect={() => { setSelectedId(group.id); if (group.state !== "decided") controller.reveal(group.id); }} />
+          <SuggestionCard key={group.id} group={group} controller={controller} selected={group.id === selectedId} replying={snapshot.replyingTo === group.id} projectId={session.resolved.projectId} selfId={snapshot.localUserId} onSelect={() => { setSelectedId(group.id); if (group.state !== "decided") controller.reveal(group.id); }} />
         ))}
       </ul>
       <p className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground" aria-live="polite">

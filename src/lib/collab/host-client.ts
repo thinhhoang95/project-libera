@@ -10,7 +10,7 @@
 // Never import this from client components: the token must stay on the
 // server.
 
-import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc } from "./local-api";
+import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -127,6 +127,16 @@ export function applyEdits(docId: string, request: ApplyEditsRequest, config?: H
 
 export function createSuggestions(docId: string, request: CreateSuggestionsRequest, config?: HostClientConfig | null): Promise<CreateSuggestionsResponse> {
   return hostJson(ControlRoutes.docSuggestions(docId), { method: "POST", body: request, config });
+}
+
+/** Withdraws the account's own pending suggestions (an agent run's, on undo). */
+export function withdrawSuggestions(docId: string, request: WithdrawSuggestionsRequest, config?: HostClientConfig | null): Promise<WithdrawSuggestionsResponse> {
+  return hostJson(ControlRoutes.docSuggestionsWithdraw(docId), { method: "POST", body: request, config });
+}
+
+/** A comment thread on a range of text; the host writes its anchor (queued offline). */
+export function createThreadAtRange(docId: string, request: CreateThreadAtRangeRequest, config?: HostClientConfig | null): Promise<CreateThreadAtRangeResponse> {
+  return hostJson(ControlRoutes.threadsAtRange(docId), { method: "POST", body: request, config });
 }
 
 /** The projects joined on this machine, refreshed from the server when it can be reached. */

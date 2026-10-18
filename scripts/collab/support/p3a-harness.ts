@@ -34,6 +34,8 @@ export function recordingApi(outcome: DecisionOutcome = "applied"): SuggestionsA
     async command() { return { state: "unknown" }; },
     async revert() { return { outcome: "reverted", serverSeq: 2 }; },
     async history() { return []; },
+    async create() { return { suggestionIds: [], staleIndexes: [] }; },
+    async withdraw() { return { withdrawn: [], skipped: [] }; },
   };
 }
 

@@ -8,7 +8,7 @@ import { useSyncExternalStore } from "react";
 import { getSharedDocRegistry, type SharedDocRegistry } from "@/lib/collab/client/registry";
 import { DocumentHistoryPanel, type HistoryTarget } from "./history-panel";
 
-export { DocumentHistoryPanel, revisionTitle, type HistoryTarget } from "./history-panel";
+export { DiffView, DocumentHistoryPanel, RevisionView, revisionTitle, type HistoryTarget } from "./history-panel";
 export { attributeUpdates, updateAuthor, type Attribution, type AttributedRange, type AttributionAuthor } from "./attribution";
 export { contentUpdates, createHistoryApi, historyApi, type HistoryApi } from "./history-api";
 export { startSessionEndRevisions, useSessionEndRevisions } from "./session-end";

@@ -52,9 +52,10 @@ export interface P2Peer {
   close(): Promise<void>;
 }
 
-export async function startPeer(root: string, name: string, server: ServerProcess): Promise<P2Peer> {
+export async function startPeer(root: string, name: string, server: ServerProcess, options: { library?: string } = {}): Promise<P2Peer> {
   const dir = path.join(root, name);
-  const library = path.join(dir, "library");
+  // A test running Libera's Next code on this peer passes `<LIBERA_DATA_DIR>/users/admin`.
+  const library = options.library ?? path.join(dir, "library");
   mkdirSync(library, { recursive: true });
   const listeners = new Set<(event: HostEvent) => void>();
   const events: HostEvent[] = [];

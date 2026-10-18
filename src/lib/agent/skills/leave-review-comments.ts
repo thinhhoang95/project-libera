@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { canSuggestShared, commentOnSharedText, SharedWriteError } from "@/lib/collab/shared-writes";
 import { getFileType } from "@/lib/storage/file-types";
 import { addReviewThreads } from "@/lib/storage/markdown-reviews";
 import {
@@ -7,7 +8,7 @@ import {
   type CommentPlacement, type DraftComment,
 } from "../review-comments";
 import {
-  closestLines, findEditTarget, lineOfOffset, missingFileError, ok, plural, readCurrentText, requireString, resolve, ToolError,
+  closestLines, findEditTarget, lineOfOffset, missingFileError, ok, plural, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
   type AgentSkill, type AgentTool, type ToolContext,
 } from "../tools";
 
@@ -19,14 +20,22 @@ import {
 
 const NAME = "leave-review-comments";
 
-// Review comments live in Libera's local review store, which collaborators
-// never see. On a shared document they would be private notes posing as
-// review comments, so the skill is off there until shared comment threads
-// (Phase 2, M2.3) can carry them with an AI actor.
-const SHARED_UNAVAILABLE = "Review comments are not available for documents in shared notebooks yet: Libera's review comments are stored only on this computer, so collaborators would never see them. Shared comments arrive in a later update. Give your review in your reply instead (quote the passages you comment on), and tell the user why.";
+// On a local document the comments go to Libera's local review store. On a
+// shared document they become shared comment threads (plan M2.3): created
+// through the collab host, which writes each anchor into the document's
+// annotations, with an AI actor acting for the user, so collaborators see
+// "AI · requested by <user>".
 
-function sharedNotice(filePath: string) {
-  return `${filePath} is in a shared notebook. ${SHARED_UNAVAILABLE}`;
+/** Refuses comments on a shared document the user's role cannot comment on. */
+async function assertSharedCommentable(context: ToolContext, resolved: Awaited<ReturnType<typeof resolve>>) {
+  let doc;
+  try { doc = await sharedDocFor(context, resolved); }
+  catch (error) { throw error instanceof ToolError ? error : new ToolError(error instanceof Error ? error.message : String(error)); }
+  if (doc && !canSuggestShared(doc)) {
+    throw new ToolError(doc.revoked || doc.role !== "viewer"
+      ? `${resolved.path} is read-only: access to its shared notebook was revoked. Give your feedback in your reply instead.`
+      : `Your role in this shared notebook (${doc.role}) cannot comment on ${resolved.path}. Give your feedback in your reply instead.`);
+  }
 }
 
 type ReviewCopy = { path: string; fileType: "markdown" | "latex"; original: string; comments: DraftComment[] };
@@ -75,7 +84,7 @@ Usage:
   describe: (args) => `Commenting on ${String(args.file_path ?? "a file")}`,
   async run(args, context) {
     const resolved = await resolve(context, requireString(args, "file_path"));
-    if (isSharedNotebookPath(resolved.path)) throw new ToolError(sharedNotice(resolved.path));
+    if (isSharedNotebookPath(resolved.path)) await assertSharedCommentable(context, resolved);
     const oldString = requireString(args, "old_string", { allowEmpty: true });
     const newString = requireString(args, "new_string", { allowEmpty: true });
     const fileType = getFileType(resolved.path);
@@ -152,14 +161,6 @@ async function finishPass(context: ToolContext, { final }: { final: boolean }): 
   const compiled: { copy: ReviewCopy; placements: CommentPlacement[] }[] = [];
   for (const copy of [...copies.values()]) {
     if (!copy.comments.length) { copies.delete(copy.path); continue; }
-    if (isSharedNotebookPath(copy.path)) {
-      // Shared since the comments were drafted: never save them locally.
-      copies.delete(copy.path);
-      const id = `comments-${randomUUID()}`;
-      context.emit({ type: "tool_started", id, name: "ReviewComments", summary: `Adding review comments to ${copy.path}` });
-      context.emit({ type: "tool_finished", id, status: "error", result: "Not available in shared notebooks", detail: copy.comments.map((comment) => comment.text).join("\n\n—\n\n") });
-      continue;
-    }
     let current: { content: string } | null = null;
     try { current = await readCurrentText(context, await resolve(context, copy.path)); } catch { current = null; }
     if (!current) {
@@ -194,6 +195,18 @@ async function finishPass(context: ToolContext, { final }: { final: boolean }): 
     const id = `comments-${randomUUID()}`;
     context.emit({ type: "tool_started", id, name: "ReviewComments", summary: `Adding review comments to ${copy.path}` });
     try {
+      // A notebook shared since the comments were drafted gets shared threads
+      // too: never local notes posing as review comments.
+      if (isSharedNotebookPath(copy.path)) {
+        const failures = await addSharedThreads(context, copy, placed);
+        context.emit({ type: "comments_added", path: copy.path, count: placed.length - failures.length });
+        context.emit({
+          type: "tool_finished", id, status: dropped.length || failures.length ? "error" : "ok",
+          result: `${plural(placed.length - failures.length, "shared comment")} added${failures.length ? `; ${failures.length} could not be added` : ""}${dropped.length ? `; ${dropped.length} could not be placed` : ""}`,
+          ...(dropped.length || failures.length ? { detail: [...failures, ...dropped.map((placement) => `${describePlacement(copy.original, placement)}\n\n${placement.text}`)].join("\n\n—\n\n") } : {}),
+        });
+        continue;
+      }
       if (placed.length) await addReviewThreads(copy.path, copy.original, placed.map((placement) => ({ range: placement.anchor!, text: placement.text, author: "agent" as const })));
       context.emit({ type: "comments_added", path: copy.path, count: placed.length });
       context.emit({
@@ -206,6 +219,25 @@ async function finishPass(context: ToolContext, { final }: { final: boolean }): 
     }
   }
   return null;
+}
+
+/** Creates one shared thread per placed comment; returns what could not be added, as report lines. */
+async function addSharedThreads(context: ToolContext, copy: ReviewCopy, placed: CommentPlacement[]): Promise<string[]> {
+  const failures: string[] = [];
+  for (const placement of placed) {
+    try {
+      await commentOnSharedText(copy.path, {
+        range: placement.anchor!,
+        snapshot: copy.original,
+        body: placement.text,
+        ai: { feature: "review-comments", ...(context.model ? { model: context.model } : {}), runId: context.snapshots.runId },
+      });
+    } catch (error) {
+      const message = error instanceof SharedWriteError || error instanceof Error ? error.message : String(error);
+      failures.push(`${describePlacement(copy.original, placement)}: ${message}\n\n${placement.text}`);
+    }
+  }
+  return failures;
 }
 
 const instructions = `
@@ -260,5 +292,4 @@ export const leaveReviewCommentsSkill: AgentSkill = {
   instructions,
   tools: [leaveCommentTool],
   finishPass,
-  unavailable: (context) => context.notebook && isSharedNotebookPath(context.notebook) ? `The current notebook "${context.notebook}" is shared. ${SHARED_UNAVAILABLE}` : null,
 };

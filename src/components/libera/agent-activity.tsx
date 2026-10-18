@@ -103,8 +103,9 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
       <ul>{run.changes.map((change) => <li key={change.path} data-reverted={change.reverted || undefined}>
         <button type="button" className="libera-agent-file" title={`Open ${change.path}`} disabled={change.reverted && change.created} onClick={() => onOpenFile(change.path)}>{change.path}</button>
         {change.created && <span className="libera-agent-badge">new</span>}
-        {change.reverted ? <span className="libera-agent-badge">undone</span>
-          : !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} aria-label={`Undo changes to ${change.path}`} title={change.created ? "Delete this new file" : "Restore this file as it was before the agent changed it"} onClick={() => onUndo([change.path])}><Undo2 aria-hidden size={12} />Undo</button>}
+        {change.suggested && <span className="libera-agent-badge" title="A shared file: the change is a suggestion collaborators review; the text changes when one is accepted">suggested</span>}
+        {change.reverted ? <span className="libera-agent-badge">{change.suggested ? "withdrawn" : "undone"}</span>
+          : !streaming && <button type="button" className="libera-agent-undo" disabled={undoing} aria-label={`Undo changes to ${change.path}`} title={change.suggested ? "Withdraw the agent's pending suggestions in this file" : change.created ? "Delete this new file" : "Restore this file as it was before the agent changed it"} onClick={() => onUndo([change.path])}><Undo2 aria-hidden size={12} />Undo</button>}
       </li>)}</ul>
     </section>}
     {!!run.comments?.some((entry) => entry.count) && <section className="libera-agent-changes" aria-label="Review comments">

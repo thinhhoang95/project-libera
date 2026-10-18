@@ -67,7 +67,7 @@ It does this with **LeaveComment**, which works like Edit but only on the review
 
 When the agent finishes its reply, Libera compiles each review copy. Every comment is attached to the block directly above it: a paragraph, heading, list item, table, code or math block. A comment inside a paragraph, table, code or math block, or with nothing above it, is sent back to the agent with what is wrong and where, and the agent fixes it with LeaveComment. After three rounds, or when a run ends early, comments that are placed are saved and the rest are listed in the run's activity with their text.
 
-Saved comments become ordinary review comments in the Comments panel, marked **Agent**, so you can reply, resolve, or have Agentic Review address them. Review mode is turned on for that document so they are highlighted, and if it is the document you are viewing, the Comments panel opens. The reply lists the files that got comments.
+Saved comments become ordinary review comments in the Comments panel, marked **Agent** (on a shared document, shared threads marked **AI · requested by** you; see Shared notebooks), so you can reply, resolve, or have Agentic Review address them. Review mode is turned on for that document so they are highlighted, and if it is the document you are viewing, the Comments panel opens. The reply lists the files that got comments.
 
 ## Seeing and undoing changes
 
@@ -81,17 +81,26 @@ Before the agent first changes a file in a run, Libera keeps the original in `us
 
 ## Shared notebooks
 
-In a shared notebook every file is a working copy of a shared document, so the agent never writes it directly. Its changes go through Libera's collaboration service, as the user's edits, attributed to **AI on behalf of you** with the run and model (provenance `ai:agent`), and collaborators see them at once.
+In a shared notebook every file is a working copy of a shared document, and the agent never edits it, directly or on disk. **Its Edit and Write become suggestions**: overlay suggestions on the shared document with an AI actor acting for you (`{kind: "ai", feature: "agent", onBehalfOf: you, model, runId}`), created through Libera's collaboration service. Collaborators see them at once as **AI · on behalf of you**, inline in their editors and in the Suggestions panel, and the text changes only when someone who may decide (an editor or owner) accepts them. Edits from one tool call are one group, accepted or rejected together.
 
-- **Permissions.** "Modify opened files only" works: the agent changes the shared files you have open and cannot create files there. "Modify all files in Notebook/Folder" is refused for a shared notebook until agent edits become suggestions; the run does not start, and asks you to switch to "Modify opened files only" or Read Only. Read Only is unchanged.
-- **Roles.** Viewers and commenters cannot edit a shared document, so neither can the agent: Edit and Write answer that your role cannot edit the file, and the agent describes the change instead.
-- **Reading.** Read and Edit work on the shared document's live text from the collaboration service, not the working copy on disk or the tab's copy, which may lag. If a collaborator changed the file since the agent read it, the edit is refused and the agent reads it again.
-- **Tabs and undo.** Open tabs get the agent's edits from the shared document itself, so the panel does not reload them from disk. **Undo** sends the inverse edits through the collaboration service while the document still holds exactly what the agent wrote; after anyone else's edit it is reported as a conflict and left alone.
+- **Permissions.** The picker reads differently for a shared notebook:
+
+  | Permission | Changes |
+  | --- | --- |
+  | Read Only | Nothing, as everywhere. |
+  | Suggest in opened files | Suggestions in shared files open in editor tabs. |
+  | Suggest in notebook | Suggestions in any shared file of the current notebook, open or not. |
+
+  The modes are the same three ("Suggest in opened files" is "Modify opened files only" elsewhere); the environment tells the agent that its changes in shared notebooks are suggestions. The agent cannot create files in a shared notebook: a new file would need a manifest suggestion, which does not exist yet, so Write of a new path is refused and the agent gives the content in its reply.
+- **Tool results.** Edit and Write answer "Suggested a change to … : suggested, pending review" with the suggestion ids, and say that the file's text stays as it was until a suggestion is accepted, so the agent keeps working from the current text and does not repeat the change. The run's activity marks the file **suggested**.
+- **Roles.** Suggestions are what commenters may make, so **commenters can use the agent** in shared notebooks. Viewers cannot suggest, so neither can their agent: Edit and Write answer that the role cannot change or suggest changes to the file. A notebook whose access was revoked is read-only for everyone.
+- **Reading and conflicts.** Read and Edit work on the shared document's live text from the collaboration service, not the working copy on disk or the tab's copy. Each suggestion is made on the text the agent read and mapped onto the live text, so a collaborator's edit elsewhere only moves it. If a collaborator changed the passage itself since the read, the suggestion is created **stale** (it shows what the agent saw next to what is there now), the tool result says so, and the agent must Read the file again before suggesting more there. A change seen before the write is refused as "changed since you read it", as for any file.
+- **Undo** withdraws the run's suggestions that are still pending. A suggestion someone already accepted changed the text through a server decision; undo reports it, and **Undo acceptance** in the Suggestions panel reverts it. Runs from before suggestions recorded direct edits; their undo still sends inverse edits through the collaboration service while the document holds exactly what the agent wrote (this is the only use left of the direct-edit path, `writeSharedText` in `shared-writes.ts`).
+- **Review comments.** The leave-review-comments skill works on shared documents: when the reply ends, each placed comment becomes a shared comment thread created through the collaboration service, which writes its anchor into the document's annotations. Its author is AI acting for you (`feature: "review-comments"`), shown to everyone as **AI · requested by you**. Viewers cannot comment.
 - **AGENT_NOTES.md** in a shared notebook may have been written by collaborators. It is given to the agent as untrusted guidance for style and conventions only; it cannot widen what the agent may change.
-- **Review comments** (the leave-review-comments skill) are not available for shared documents yet: they are stored only on this computer, so collaborators would not see them. The skill says so, and its tool is not offered.
 - **Collaboration off or not running.** Changes to shared files fail with a clear message, and nothing is written to disk.
 
-The same rules cover Libera's other writers: "Convert PDF to Markdown" creates the Markdown file through the collaboration service and adds each page as an edit (provenance `ai:image-to-markdown`); uploads, pasted Markdown images, edited image copies and generated images saved to a notebook folder become shared files of the notebook. Document chat reads a shared document's attached text from the collaboration service. The helpers are in `src/lib/collab/shared-writes.ts`; the tests are `scripts/collab/ai-shared-writes.test.ts` (against a fake control API) and `scripts/collab/ai-host-e2e.test.ts` (the real host and server).
+The same service carries Libera's other writers: "Convert PDF to Markdown" creates the Markdown file through the collaboration service and adds each page as an edit (provenance `ai:image-to-markdown`); uploads, pasted Markdown images, edited image copies and generated images saved to a notebook folder become shared files of the notebook. Document chat reads a shared document's attached text from the collaboration service. The helpers are in `src/lib/collab/shared-writes.ts` (`suggestSharedText`, `withdrawSharedRun`, `commentOnSharedText`); the tests are `scripts/collab/ai-shared-writes.test.ts` (against a fake control API), `scripts/collab/ai-host-e2e.test.ts` and `scripts/collab/p3b-agent.test.ts` (the real host and server).
 
 ## Limits
 

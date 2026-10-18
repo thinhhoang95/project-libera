@@ -1,6 +1,6 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { readSharedText, writeSharedText } from "@/lib/collab/shared-writes";
+import { readSharedText, withdrawSharedRun, writeSharedText } from "@/lib/collab/shared-writes";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -13,9 +13,12 @@ import type { UndoResult } from "./types";
 // so the run, or any single file in it, can be undone. Manifests live in the
 // app's state folder, never inside a notebook.
 //
-// Files in a shared notebook are recorded with `shared`: their "original" is
-// the document's text from the collab host, and undo sends inverse edits
-// through the host (provenance "undo") instead of writing the working copy.
+// Files in a shared notebook are recorded with `shared`. Since Phase 3 the
+// agent's changes there are suggestions (`mode: "suggest"`): undo withdraws
+// the run's pending suggestions on the document. Runs from before recorded
+// direct edits (no mode); their undo still sends inverse edits through the
+// host (provenance "undo") instead of writing the working copy. That is the
+// only use left of the direct-edit path.
 
 type SnapshotFile = {
   /** False when the run created the file. */
@@ -27,8 +30,12 @@ type SnapshotFile = {
   /** Hash of the content the agent last wrote, to detect later edits. */
   written: string;
   reverted?: boolean;
-  /** Set when the file is a shared document: undo goes through the collab host. */
-  shared?: { docId: string };
+  /**
+   * Set when the file is a shared document: undo goes through the collab
+   * host. "suggest": the run made suggestions (`suggestions` lists them);
+   * without a mode, an older run's direct edits.
+   */
+  shared?: { docId: string; mode?: "suggest"; suggestions?: string[] };
 };
 
 type Manifest = { version: 1; runId: string; createdAt: string; files: Record<string, SnapshotFile> };
@@ -100,17 +107,25 @@ export class RunSnapshots {
   }
 
   /** Call before the first write to a file in this run. */
-  async recordOriginal(filePath: string, original: string | null, draft?: string, shared?: { docId: string }) {
+  async recordOriginal(filePath: string, original: string | null, draft?: string, shared?: { docId: string; mode?: "suggest" }) {
     if (this.has(filePath)) return;
     this.manifest.files[filePath] = {
       existed: original !== null,
       original,
       ...(draft !== undefined && draft !== original ? { draft } : {}),
       written: "",
-      ...(shared ? { shared: { docId: shared.docId } } : {}),
+      ...(shared ? { shared: { docId: shared.docId, ...(shared.mode ? { mode: shared.mode, suggestions: [] } : {}) } } : {}),
     };
     await this.flush();
     if (Object.keys(this.manifest.files).length === 1) void pruneManifests(this.runId).catch(() => undefined);
+  }
+
+  /** The suggestions a write to a shared file created, so the run's summary and undo know them. */
+  async recordSuggestions(filePath: string, suggestionIds: string[]) {
+    const shared = this.manifest.files[filePath]?.shared;
+    if (!shared || shared.mode !== "suggest") return;
+    shared.suggestions = [...new Set([...(shared.suggestions ?? []), ...suggestionIds])];
+    await this.flush();
   }
 
   async recordWritten(filePath: string, content: string) {
@@ -135,7 +150,33 @@ async function readCurrent(absolutePath: string) {
   }
 }
 
-/** Undo of one shared document: inverse edits through the host, only while it still holds exactly what the agent wrote. */
+/**
+ * Undo of the run's suggestions on one shared document: the pending ones are
+ * withdrawn. One already accepted changed the text through a decision, which
+ * only "Undo acceptance" in the Suggestions panel reverts; it is reported.
+ */
+async function withdrawSharedSuggestions(runId: string, filePath: string, file: SnapshotFile): Promise<UndoResult> {
+  const docId = file.shared!.docId;
+  try {
+    const result = await withdrawSharedRun(filePath, docId, runId);
+    const decided = result.skipped.filter((item) => item.status === "accepted" || item.status === "rejected");
+    const accepted = decided.filter((item) => item.status === "accepted").length;
+    if (accepted) {
+      return {
+        path: filePath,
+        status: "conflict",
+        shared: true,
+        withdrawn: result.withdrawn.length,
+        message: `${accepted === 1 ? "A suggestion" : `${accepted} suggestions`} the agent made in ${filePath} ${accepted === 1 ? "was" : "were"} already accepted, so ${accepted === 1 ? "it was" : "they were"} not undone; use Undo acceptance in the Suggestions panel.${result.withdrawn.length ? ` ${result.withdrawn.length} pending ${result.withdrawn.length === 1 ? "suggestion was" : "suggestions were"} withdrawn.` : ""}`,
+      };
+    }
+    return { path: filePath, status: "restored", shared: true, withdrawn: result.withdrawn.length };
+  } catch (error) {
+    return { path: filePath, status: "conflict", shared: true, message: error instanceof Error ? error.message : `The agent's suggestions in ${filePath} could not be withdrawn.` };
+  }
+}
+
+/** Undo of an older run's direct edits to one shared document: inverse edits through the host, only while it still holds exactly what the agent wrote. */
 async function undoSharedFile(runId: string, filePath: string, file: SnapshotFile): Promise<UndoResult> {
   if (!isSharedNotebookPath(filePath)) {
     return { path: filePath, status: "conflict", message: `${filePath} is no longer in a shared notebook on this computer, so it was not undone.` };
@@ -167,7 +208,7 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
     const file = manifest.files[filePath];
     if (file.reverted) { results.push({ path: filePath, status: "already-reverted" }); continue; }
     if (file.shared) {
-      const result = await undoSharedFile(runId, filePath, file);
+      const result = file.shared.mode === "suggest" ? await withdrawSharedSuggestions(runId, filePath, file) : await undoSharedFile(runId, filePath, file);
       results.push(result);
       if (result.status === "restored") file.reverted = true;
       continue;

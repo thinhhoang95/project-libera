@@ -14,6 +14,7 @@
 // Errors are StorageErrors, so routes that answer `toStorageError(error)`
 // and the agent's tool loop report the message as it is.
 
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -36,9 +37,9 @@ import {
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { getFileNode, getTree } from "@/lib/storage/tree";
 import type { LiberaFileNode, LiberaTree, MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, applyEdits, collabHostConfig, fileOp, getDocText, resolveSharedPath, type HostClientConfig } from "./host-client";
-import type { DocText, ResolvedDoc, TextEdit } from "./local-api";
-import type { Provenance } from "./protocol/actor";
+import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import type { CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
+import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
 import { sharedManifestPath } from "./shared-notebook";
 
@@ -174,6 +175,96 @@ export async function writeSharedText(
   const edits = sharedTextEdits(current.text, nextText);
   const response = await host(liberaPath, () => applyEdits(doc.docId, { edits, provenance }, config));
   return { applied: response.applied, text: response.text, conflict: !response.applied, doc };
+}
+
+/** Access to the document's notebook was revoked. Hosts before `revoked` existed said so only through readOnly on an editor role. */
+function isRevoked(doc: Pick<ResolvedDoc, "role" | "readOnly" | "revoked">): boolean {
+  return doc.revoked === true || (doc.revoked === undefined && doc.readOnly && canWriteSubdoc(doc.role, "content"));
+}
+
+/**
+ * Whether the role on a shared document may suggest (and comment):
+ * commenters, editors and owners. `readOnly` alone does not say no: it is
+ * set for commenters, whose text is read-only but whose suggestions are not.
+ */
+export function canSuggestShared(doc: Pick<ResolvedDoc, "role" | "readOnly" | "revoked">): boolean {
+  return !isRevoked(doc) && canWriteSubdoc(doc.role, "annotations");
+}
+
+export interface SharedSuggestResult {
+  doc: ResolvedDoc;
+  suggestionIds: string[];
+  /** Suggestions created stale: their passage changed after `before` was read. */
+  staleCount: number;
+  /** The document's text now (unchanged by suggesting). */
+  text: string;
+}
+
+/**
+ * Proposes changing a shared document from `before` (the text the caller
+ * read) to `nextText` as overlay suggestions acting for the user (plan
+ * M3.4): `content` is untouched until someone who may decide accepts them.
+ * Edits are made on `before` and mapped onto the live text by the host, so
+ * a collaborator's edit elsewhere only shifts them; a passage that changed
+ * meanwhile becomes a stale suggestion. Several edits are one group.
+ */
+export async function suggestSharedText(
+  liberaPath: string,
+  before: string,
+  nextText: string,
+  ai: AiActorHint & { title?: string; reason?: string },
+  options: SharedWriteOptions & { doc?: ResolvedDoc } = {},
+): Promise<SharedSuggestResult> {
+  const config = hostConfig(liberaPath, options);
+  const doc = options.doc ?? (await requireSharedDoc(liberaPath, { config }));
+  if (!canSuggestShared(doc)) {
+    throw new SharedWriteError(
+      403,
+      "forbidden",
+      isRevoked(doc) ? `${liberaPath} is read-only: access to its shared notebook was revoked.` : `Your role in this shared notebook (${doc.role}) cannot suggest changes to ${liberaPath}.`,
+    );
+  }
+  const edits = sharedTextEdits(before, nextText);
+  if (!edits.length) {
+    const current = await host(liberaPath, () => getDocText(doc.docId, config));
+    return { doc, suggestionIds: [], staleCount: 0, text: current.text };
+  }
+  const { title, reason, ...hint } = ai;
+  const response = await host(liberaPath, () => createSuggestions(doc.docId, {
+    edits,
+    snapshot: before,
+    ai: hint,
+    // One tool call's edits are one change: accepted or rejected together.
+    ...(edits.length > 1 ? { groupId: `ai-${randomUUID()}` } : {}),
+    ...(title ? { title } : {}),
+    ...(reason ? { reason } : {}),
+  }, config));
+  const current = await host(liberaPath, () => getDocText(doc.docId, config));
+  return { doc, suggestionIds: response.suggestionIds, staleCount: response.staleIndexes.length, text: current.text };
+}
+
+/** Withdraws the user's pending suggestions on a shared document made by one AI run (agent undo). */
+export async function withdrawSharedRun(liberaPath: string, docId: string, runId: string, options: SharedWriteOptions = {}): Promise<WithdrawSuggestionsResponse> {
+  const config = hostConfig(liberaPath, options);
+  return host(liberaPath, () => withdrawSuggestions(docId, { runId }, config));
+}
+
+/**
+ * A comment thread on a passage of a shared document, written through the
+ * host (the anchor goes into the document's annotations): `range` is in
+ * offsets of `snapshot`, the text the caller read.
+ */
+export async function commentOnSharedText(
+  liberaPath: string,
+  input: { range: { start: number; end: number }; snapshot: string; body: string; ai?: AiActorHint; doc?: ResolvedDoc },
+  options: SharedWriteOptions = {},
+): Promise<CreateThreadAtRangeResponse> {
+  const config = hostConfig(liberaPath, options);
+  const doc = input.doc ?? (await requireSharedDoc(liberaPath, { config }));
+  if (!canSuggestShared(doc)) {
+    throw new SharedWriteError(403, "forbidden", isRevoked(doc) ? `${liberaPath} is read-only: access to its shared notebook was revoked.` : `Your role in this shared notebook (${doc.role}) cannot comment on ${liberaPath}.`);
+  }
+  return host(liberaPath, () => createThreadAtRange(doc.docId, { range: input.range, snapshot: input.snapshot, body: input.body, ...(input.ai ? { ai: input.ai } : {}) }, config));
 }
 
 function manifestTarget(liberaPath: string): { projectId: string; path: string } {

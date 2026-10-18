@@ -139,7 +139,7 @@ function authorshipViolation(
 /**
  * accepted, rejected and stale are decisions the server makes through
  * RoomService.transact; clients may only create suggestions and withdraw
- * their own. A new suggestion may be created stale: agentic review turns
+ * their own (pending or stale). A new suggestion may be created stale: agentic review turns
  * edits computed on an old snapshot whose text has since changed into stale
  * suggestions (hard case 7), so the panel shows what the AI saw.
  */
@@ -153,8 +153,11 @@ function suggestionTransitionViolation(
     return next.status === "pending" || next.status === "stale" ? null : "New suggestions must be pending or stale.";
   }
   if (previous.status === next.status) return null;
+  // An author may withdraw a stale suggestion too: one created stale (an AI
+  // edit on an old snapshot) or made stale by the server is exactly what its
+  // author replaces with a revised one.
   if (
-    previous.status === "pending" &&
+    (previous.status === "pending" || previous.status === "stale") &&
     next.status === "withdrawn" &&
     previous.createdBy === accountId &&
     next.createdBy === previous.createdBy

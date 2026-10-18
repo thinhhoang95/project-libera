@@ -23,7 +23,7 @@ Not merged: editor wiring (`collab/wire`, clone `scratchpad/clones/wire`, commit
   - ☑ Collaboration status stuck after the local login (401 never retried) → retries with backoff and on focus
   - ☑ "Connecting…" stuck after Create account (stale response over a newer event) → responses are confirmed with a fresh request
   - ☑ Visual typing swallowed when a collaborator's caret was at the end of the document → caret widget has no text nodes
-  - ◐ Shared comments not listed in the Comments panel; first click on "Add comment" sometimes ignored → assigned to Phase 3b (running)
+  - ☑ Shared comments not listed in the Comments panel (the store called `queueMicrotask` unbound, which Electron refuses); first click on "Add comment" ignored when a collaborator typed mid-click → fixed in Phase 3b (`p3b-comments.test.ts`)
 - ☑ A collaborator's new, renamed or deleted file reaches the disk and the Notebooks tree at once (`tree-changed`; open tabs follow moves) (`scripts/collab/notebooks-tree-events.test.ts`)
 - ☑ Remote edits no longer write the working copy per keystroke: write after 2 s of quiet, at most every 15 s; the CRDT in SQLite stays the real copy
 - ☑ Global Search sees collaborators' edits (host `files-changed` → `POST /api/search/changes`)
@@ -164,7 +164,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☑ M2.1 `ReviewStore` interface; local store (unchanged behaviour) and shared store; RelativePosition anchors; authors (AI shown as "AI · requested by X"); panel follows scroll (best effort)
 - ☑ M2.2 Detached state with stored quote, reattach to selection, "found similar text"; anchor fuzz in the library
-- ◐ M2.3 Bell, @ member picker, desktop notifications (with a switch), server mentions and digest. Remaining: AI-authored review comments on shared docs (the leave-review-comments skill is still disabled there)
+- ☑ M2.3 Bell, @ member picker, desktop notifications (with a switch), server mentions and digest; AI-authored review comments on shared docs (the leave-review-comments skill creates threads through the host with an AI actor; `scripts/collab/ai-shared-writes.test.ts`, `p3b-agent.test.ts`)
 - ☑ M2.4 Automatic and named revisions, session-end revisions; History panel with a revision viewer and diffs coloured by author (AI provenance labelled)
 - ☑ M2.5 Restore whole document or a selection as forward edits, with a checkpoint
 - ☑ M2.6 Offline comments through pending commands, with pending/failed chips, retry and discard; plus a one-time migration of local comments into a shared notebook
@@ -176,10 +176,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ M3.1 Overlay suggestions rendered in every shared editor with author colours and AI labels; Suggestions panel (filters, groups, stepping, accept/reject all, withdraw/edit own, undo acceptance)
 - ◐ M3.2 Suggest mode in CodeMirror (toggle; forced for commenters; IME held until compositionend); "Suggest edit" in Visual; editing your own suggestion. Not done: free typing in suggest mode in Visual
 - ☑ M3.3 Decisions through the server (exactly once), accept-all with checkpoint, revert, offline decisions queued and replayed
-- ◐ M3.4 AI Rewrite/Write/Format/Image create AI-actor suggestions on shared tabs; `ai-cannot-decide` on the server. Agentic review groups and agent suggest modes in Phase 3b (running)
-- ◐ M3.5 Server done; desktop UI in Phase 3b (running)
-- ◐ M3.6 Server audit log done; viewer in Phase 3b (running)
-- ☐ Hard cases 1–7 automated
+- ☑ M3.4 AI as suggester: rewrite/write/format/image (3a); agentic review proposals as AI groups with stale mapping, revision withdraw and server decisions (`p3b-agentic-review.test.ts`); agent Edit/Write as suggestions, undo withdraws, Read Only / Suggest in opened files / Suggest in notebook, commenters suggest (`p3b-agent.test.ts`, `ai-shared-writes.test.ts`, `ai-host-e2e.test.ts`); `ai-cannot-decide` (server)
+- ☑ M3.5 Review requests (whole doc or anchored selection, AI review first), Reviews tab, revision-bound approvals, outdated detection, offline decisions, checkpoint mode, notifications open the review (`p3b-reviews.test.ts`)
+- ☑ M3.6 Audit log and owner-only Activity log viewer with action filter and paging (`p3b-audit.test.ts`)
+- ☑ Hard cases 1–7 automated (server end to end in `server/test/hard-cases.test.ts`; 1, 2, 4, 7 also at model level)
+
+Phase 3 part B also fixed the shared Comments panel staying empty in Electron (the store called `queueMicrotask` as its own method, which browsers refuse), the passage popover closing when a collaborator typed mid-click, and authors not being able to withdraw a stale suggestion on the server (`p3b-comments.test.ts`). Replies to suggestions are linked comment threads (`p3b-reply.test.ts`).
 
 ## Phase 4: hardening and beta
 - ☐ Load generator and results against §10 budgets

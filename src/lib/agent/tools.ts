@@ -1,6 +1,6 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
-import { canEditSharedContent, readSharedText, requireSharedDoc, SharedWriteError, writeSharedText } from "@/lib/collab/shared-writes";
+import { canSuggestShared, readSharedText, requireSharedDoc, SharedWriteError, suggestSharedText } from "@/lib/collab/shared-writes";
 import type { ResolvedDoc } from "@/lib/collab/local-api";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -179,8 +179,12 @@ function hasNul(text: string) {
   return text.includes("\u0000");
 }
 
-/** Attribution line for tool results on shared files. */
-export const SHARED_EDIT_NOTE = "This file is in a shared notebook: the change went through Libera's collaboration service, collaborators see it at once, and it is attributed to “AI on behalf of you”.";
+/**
+ * What a change to a shared file is (plan M3.4): a suggestion collaborators
+ * see at once, attributed to "AI on behalf of" the user, that changes the
+ * text only once someone who may decide accepts it.
+ */
+export const SHARED_SUGGEST_NOTE = "This file is in a shared notebook, so the change is a suggestion, pending review: collaborators see it at once as “AI on behalf of you”, and the file's text stays as it was until someone who can decide accepts it. Keep working from the current text; do not repeat the change.";
 
 function sharedToolError(error: unknown): never {
   if (error instanceof SharedWriteError) throw new ToolError(error.message);
@@ -373,7 +377,7 @@ Usage:
     const notes = [
       partial ? `(Showing lines ${offset}-${shownEnd} of ${lines.length}. Use offset and limit to read more.)` : "",
       current.fromDraft ? "(This file is open in the editor with unsaved changes; you are reading the unsaved version.)" : "",
-      current.shared ? `(This file is in a shared notebook; you are reading the live shared document. Collaborators may change it while you work.${canEditSharedContent(current.shared) ? " Your edits are attributed to “AI on behalf of” the user." : ` The user's role (${current.shared.role}) cannot edit it.`})` : "",
+      current.shared ? `(This file is in a shared notebook; you are reading the live shared document. Collaborators may change it while you work.${canSuggestShared(current.shared) ? " Your Edit and Write become suggestions, attributed to “AI on behalf of” the user, that others accept or reject; the text changes only when one is accepted." : ` The user's role (${current.shared.role}) cannot change or suggest changes to it.`})` : "",
     ].filter(Boolean).join("\n");
     return ok(notes ? `${body}\n\n${notes}` : body, partial ? `Lines ${offset}-${shownEnd} of ${lines.length}` : plural(lines.length, "line"));
   },
@@ -747,10 +751,10 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
     throw new ToolError(`${resolved.path} cannot be written: only Markdown (.md), LaTeX (.tex, .bib) and plain-text files can be edited.`);
   }
   if (resolved.pathParts[0] === ARCHIVE_DIR) throw new ToolError("Files in the _archive folder cannot be changed.");
-  if (isSharedNotebookPath(resolved.path) && context.permission === "notebook") {
-    // Until agent edits become suggestions (Phase 3), the agent may change a
-    // shared file only when the user has it open and is watching.
-    throw new ToolError(`${resolved.path} is in a shared notebook, where "Modify all files in Notebook/Folder" is not available yet. Ask the user to open the file and switch Agent permission to "Modify opened files only", or describe the change instead.`);
+  if (isSharedNotebookPath(resolved.path) && creating) {
+    // Changes to shared files are suggestions on existing documents; a new
+    // file would need a manifest suggestion, which does not exist yet.
+    throw new ToolError(`${resolved.path} would be a new file in a shared notebook, and the agent cannot create files there: its changes to shared files are suggestions others review. Suggest the content in an existing file, or give it to the user in your reply.`);
   }
   if (context.permission === "open-files") {
     if (creating) throw new ToolError("You can only modify files that are open in the editor, so you cannot create new files. Tell the user what file you would create, or ask them to switch the permission to \"Modify all files in Notebook/Folder\".");
@@ -764,46 +768,61 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
   }
 }
 
-/** Refuses a write the user's role in a shared notebook does not allow; returns the document. */
+/**
+ * Refuses a change the user's role in a shared notebook does not allow;
+ * returns the document. Changes there are suggestions, so commenters may
+ * use the agent too; viewers and revoked notebooks may not.
+ */
 async function assertSharedWritable(context: ToolContext, resolved: ResolvedPath): Promise<ResolvedDoc | null> {
   const doc = await sharedDocFor(context, resolved);
   if (!doc) return null;
-  if (!canEditSharedContent(doc)) {
-    throw new ToolError(doc.readOnly
+  if (!canSuggestShared(doc)) {
+    throw new ToolError(doc.revoked || doc.role !== "viewer"
       ? `${resolved.path} is read-only: access to its shared notebook was revoked. Describe the change to the user instead.`
-      : `Your role in this shared notebook (${doc.role}) cannot edit ${resolved.path}, so the agent cannot either. Describe the change to the user instead.`);
+      : `Your role in this shared notebook (${doc.role}) cannot change or suggest changes to ${resolved.path}, so the agent cannot either. Describe the change to the user instead.`);
   }
   return doc;
 }
 
-/** A write to a shared document: minimal edits through the host, attributed to AI on behalf of the user. */
-async function writeSharedAgentFile(context: ToolContext, resolved: ResolvedPath, doc: ResolvedDoc, content: string, previous: { content: string | null }) {
-  // The agent built `content` from `previous`, which it read from the host.
-  // expectedBefore turns any collaborator edit since then into a conflict.
+/** What suggesting a change to a shared file produced, for the tool's result text. */
+export type SharedSuggestion = { suggestionIds: string[]; staleCount: number };
+
+/**
+ * A change to a shared document: overlay suggestions through the host,
+ * acting for the user (plan M3.4). The edits are made on `previous`, the text
+ * the agent read, so a collaborator's edit elsewhere only moves them, and a
+ * passage changed meanwhile is suggested as stale (what the agent saw next
+ * to what is there now). The document's text does not change.
+ */
+async function suggestSharedAgentFile(context: ToolContext, resolved: ResolvedPath, doc: ResolvedDoc, content: string, previous: { content: string | null }): Promise<SharedSuggestion> {
   const before = previous.content ?? "";
-  const result = await writeSharedText(resolved.path, content, {
-    source: "ai",
+  const result = await suggestSharedText(resolved.path, before, content, {
     feature: "agent",
     ...(context.model ? { model: context.model } : {}),
     runId: context.snapshots.runId,
-  }, { expectedBefore: before, doc }).catch(sharedToolError);
-  if (result.conflict) {
-    // Make the model read again before its next edit.
-    context.fileState.delete(resolved.path);
-    throw new ToolError(`${resolved.path} changed in the shared notebook since you read it (a collaborator may be editing it), so nothing was written. Read it again, then redo the change.`);
-  }
-  // Recorded only once the edit applied: a snapshot of a refused write would
-  // let undo "restore" the original over a collaborator's newer text.
-  if (!context.snapshots.has(resolved.path)) await context.snapshots.recordOriginal(resolved.path, before, undefined, { docId: doc.docId });
-  await context.snapshots.recordWritten(resolved.path, result.text);
-  context.fileState.set(resolved.path, { hash: hashContent(result.text), partial: false });
-  context.changed.set(resolved.path, { created: context.changed.get(resolved.path)?.created ?? false });
-  context.emit({ type: "file_changed", path: resolved.path, created: false, shared: true });
+    title: "AI Agent",
+  }, { doc }).catch(sharedToolError);
+  if (!context.snapshots.has(resolved.path)) await context.snapshots.recordOriginal(resolved.path, before, undefined, { docId: doc.docId, mode: "suggest" });
+  await context.snapshots.recordSuggestions(resolved.path, result.suggestionIds);
+  // The text is what it was: the next Edit works on it without a new Read,
+  // unless a collaborator's edit made part of this one stale.
+  if (result.staleCount) context.fileState.delete(resolved.path);
+  else context.fileState.set(resolved.path, { hash: hashContent(result.text), partial: false });
+  context.changed.set(resolved.path, { created: false });
+  context.emit({ type: "file_changed", path: resolved.path, created: false, shared: true, suggested: true });
+  return { suggestionIds: result.suggestionIds, staleCount: result.staleCount };
 }
 
-async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }) {
+/** The tool result's lines about a suggestion on a shared file. */
+function suggestionNote(resolved: ResolvedPath, suggestion: SharedSuggestion): string {
+  const ids = suggestion.suggestionIds;
+  const stale = suggestion.staleCount ? ` ${plural(suggestion.staleCount, "part")} of it ${suggestion.staleCount === 1 ? "is" : "are"} stale because a collaborator changed that text since you read it; Read the file again before suggesting more there.` : "";
+  return `Suggested a change to ${resolved.path}: suggested, pending review (${plural(ids.length, "suggestion")}: ${ids.join(", ")}).${stale}\n${SHARED_SUGGEST_NOTE}`;
+}
+
+async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }): Promise<SharedSuggestion | null> {
   const shared = previous.shared ?? await assertSharedWritable(context, resolved);
-  if (shared) return writeSharedAgentFile(context, resolved, shared, content, previous);
+  if (shared) return suggestSharedAgentFile(context, resolved, shared, content, previous);
   // A notebook shared since the check: writing here would bypass the host
   // and lose attribution (SharedDocumentError, 409 shared-document).
   assertNotSharedItem(resolved.notebook, resolved.pathParts);
@@ -825,6 +844,7 @@ async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, cont
   const created = context.changed.get(resolved.path)?.created ?? previous.content === null;
   context.changed.set(resolved.path, { created });
   context.emit({ type: "file_changed", path: resolved.path, created });
+  return null;
 }
 
 const editTool: AgentTool = {
@@ -883,11 +903,15 @@ Usage:
       cursor = match.index + match.length;
     }
     next += current.content.slice(cursor);
-    await writeAgentFile(context, resolved, next, current);
+    const suggested = await writeAgentFile(context, resolved, next, current);
     const firstStart = target.matches[0].index;
     const count = replaceAll ? target.matches.length : 1;
     const snippet = snippetAround(next, firstStart, firstStart + replacement.length);
-    const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, sharedDoc ? SHARED_EDIT_NOTE : "", target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
+    if (suggested) {
+      const text = [suggestionNote(resolved, suggested), target.note, `Proposed region (the file still reads as before):\n${snippet}`].filter(Boolean).join("\n");
+      return ok(text, "Suggested, pending review", snippet);
+    }
+    const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
     return ok(text, count > 1 ? `${count} replacements` : "Edited", snippet);
   },
 };
@@ -932,9 +956,10 @@ Usage:
       if (current.content === content) return ok(`${resolved.path} already has this content; nothing changed.`, "Unchanged");
       previous = current;
     }
-    await writeAgentFile(context, resolved, content, previous);
+    const suggested = await writeAgentFile(context, resolved, content, previous);
     const lineCount = splitLines(content).length;
-    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).${sharedDoc ? `\n${SHARED_EDIT_NOTE}` : ""}`, `${exists ? "Overwrote" : "Created"}, ${plural(lineCount, "line")}`, preview(content));
+    if (suggested) return ok(suggestionNote(resolved, suggested), "Suggested, pending review", preview(content));
+    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).`, `${exists ? "Overwrote" : "Created"}, ${plural(lineCount, "line")}`, preview(content));
   },
 };
 

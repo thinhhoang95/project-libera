@@ -29,21 +29,24 @@ import { readAgentEvents } from "../../src/components/libera/chat-stream-client"
 import { buildAgentEnvironment } from "../../src/lib/agent/prompt";
 import { AGENT_SKILLS } from "../../src/lib/agent/skills";
 import { RunSnapshots, undoRun } from "../../src/lib/agent/snapshots";
-import { ALL_TOOLS, activeTools, toolsForPermission, type ToolContext } from "../../src/lib/agent/tools";
+import { ALL_TOOLS, toolsForPermission, type ToolContext } from "../../src/lib/agent/tools";
 import type { AgentEvent, AgentPermission, UndoResult } from "../../src/lib/agent/types";
-import { ControlRoutes, type FileOpRequest, type ResolvedDoc, type TextEdit } from "../../src/lib/collab/local-api";
+import { ControlRoutes, type CreateSuggestionsRequest, type CreateThreadAtRangeRequest, type FileOpRequest, type ResolvedDoc, type TextEdit } from "../../src/lib/collab/local-api";
+import { mapSnapshotEdits } from "../../src/lib/collab/suggestions/model";
 import type { Provenance } from "../../src/lib/collab/protocol/actor";
 import type { Role } from "../../src/lib/collab/protocol/roles";
 import { invalidateSharedNotebookCache } from "../../src/lib/collab/shared-notebook";
 import { NO_EDITS } from "../../src/lib/photo-edits";
-import { sharedTextEdits, writeSharedText } from "../../src/lib/collab/shared-writes";
+import { sharedTextEdits } from "../../src/lib/collab/shared-writes";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 const PROJECT = "prj_fake";
 
 // ------------------------------------------------------------ the fake control API
 
-type FakeDoc = ResolvedDoc & { text: string; log: Array<{ edits: TextEdit[]; provenance: Provenance }> };
+type FakeSuggestion = { id: string; request: CreateSuggestionsRequest; status: "pending" | "stale" | "accepted" | "withdrawn" };
+type FakeThread = { id: string; request: CreateThreadAtRangeRequest; quote: string };
+type FakeDoc = ResolvedDoc & { text: string; log: Array<{ edits: TextEdit[]; provenance: Provenance }>; suggestions: FakeSuggestion[]; threads: FakeThread[] };
 
 class FakeHost {
   readonly token = "fake-control-token";
@@ -54,6 +57,8 @@ class FakeHost {
   readonly requests: string[] = [];
   /** Runs before an edits request is applied: a collaborator's edit landing first. */
   beforeEdits: ((doc: FakeDoc) => void) | null = null;
+  /** Runs before suggestions are created, likewise. */
+  beforeSuggest: ((doc: FakeDoc) => void) | null = null;
   url = "";
   private server: Server | null = null;
   private next = 1;
@@ -62,7 +67,7 @@ class FakeHost {
 
   addDoc(liberaPath: string, text: string, role: Role = "editor", readOnly = false): FakeDoc {
     const docId = `doc_${this.next++}`;
-    const doc: FakeDoc = { docId, projectId: PROJECT, fileId: `fil_${docId}`, path: liberaPath, kind: "markdown", role, readOnly, text, log: [] };
+    const doc: FakeDoc = { docId, projectId: PROJECT, fileId: `fil_${docId}`, path: liberaPath, kind: "markdown", role, readOnly, text, log: [], suggestions: [], threads: [] };
     this.docs.set(liberaPath, doc);
     return doc;
   }
@@ -106,6 +111,47 @@ class FakeHost {
     }
     if (request.method === "GET" && url.pathname === ControlRoutes.projects) {
       return this.send(response, 200, [{ projectId: PROJECT, name: "Shared", role: "editor", notebook: "Shared", revoked: false, reconcilePending: 0 }]);
+    }
+    if (segments[0] === "docs" && segments.length === 4 && request.method === "POST") {
+      const doc = byId(segments[1]);
+      if (!doc) return this.send(response, 404, { error: { code: "unknown-doc", message: "Unknown document." } });
+      const commenter = doc.role !== "viewer" && !doc.readOnly;
+      if (segments[2] === "suggestions" && segments[3] === "withdraw") {
+        const { runId } = body as { runId?: string };
+        const withdrawn: string[] = [];
+        const skipped: { suggestionId: string; status: string; reason: string }[] = [];
+        for (const suggestion of doc.suggestions.filter((item) => item.request.ai?.runId === runId)) {
+          if (suggestion.status === "pending" || suggestion.status === "stale") { suggestion.status = "withdrawn"; withdrawn.push(suggestion.id); }
+          else skipped.push({ suggestionId: suggestion.id, status: suggestion.status, reason: "decided" });
+        }
+        return this.send(response, 200, { withdrawn, skipped });
+      }
+      if (segments[2] === "threads" && segments[3] === "at-range") {
+        if (!commenter) return this.send(response, 403, { error: { code: "forbidden", message: `A ${doc.role} cannot comment in this document.` } });
+        const thread = body as CreateThreadAtRangeRequest;
+        const [mapped] = mapSnapshotEdits(doc.text, thread.snapshot ?? doc.text, [{ start: thread.range.start, end: thread.range.end, before: (thread.snapshot ?? doc.text).slice(thread.range.start, thread.range.end), after: "" }]);
+        if (!mapped.matched) return this.send(response, 409, { error: { code: "passage-changed", message: "The passage changed since it was read; read the document again." } });
+        const id = `thr_fake_${doc.threads.length + 1}`;
+        doc.threads.push({ id, request: thread, quote: doc.text.slice(mapped.start, mapped.end) });
+        return this.send(response, 201, { queued: false, thread: { id, docId: doc.docId, quote: doc.text.slice(mapped.start, mapped.end) } });
+      }
+    }
+    if (request.method === "POST" && segments[0] === "docs" && segments.length === 3 && segments[2] === "suggestions") {
+      const doc = byId(segments[1]);
+      if (!doc) return this.send(response, 404, { error: { code: "unknown-doc", message: "Unknown document." } });
+      if (doc.role === "viewer" || doc.readOnly) return this.send(response, 403, { error: { code: "forbidden", message: `A ${doc.role} cannot suggest in this document.` } });
+      this.beforeSuggest?.(doc);
+      const suggestion = body as CreateSuggestionsRequest;
+      const mapped = mapSnapshotEdits(doc.text, suggestion.snapshot ?? doc.text, suggestion.edits.map((edit) => ({ start: edit.start, end: edit.end, before: edit.before ?? "", after: edit.text })));
+      const suggestionIds: string[] = [];
+      const staleIndexes: number[] = [];
+      mapped.forEach((item, index) => {
+        const id = `sg_fake_${doc.suggestions.length + 1}`;
+        doc.suggestions.push({ id, request: suggestion, status: item.matched ? "pending" : "stale" });
+        suggestionIds.push(id);
+        if (!item.matched) staleIndexes.push(index);
+      });
+      return this.send(response, 201, { suggestionIds, staleIndexes });
     }
     if (segments[0] === "docs" && segments.length === 3) {
       const doc = byId(segments[1]);
@@ -288,33 +334,39 @@ test("sharedTextEdits makes minimal edits that carry what they replace", () => {
   assert.ok(edits.every((edit) => !edit.before?.includes("one")), "unchanged lines are not replaced");
 });
 
-test("agent Read, Edit and Write on a shared file go through the host as AI on behalf of the user", async () => {
+test("agent Edit and Write on a shared file become AI suggestions; the text stays until accepted", async () => {
   await withFixture(async ({ host, disk }) => {
     const { context, events } = makeContext("open-files", { drafts: new Map([["Shared/notes.md", "An editor mirror that lags"]]) });
     const read = await tool("Read").run({ file_path: "Shared/notes.md" }, context);
     assert.match(read.text, /Hello world$/m, "the host's text, not the disk copy or the tab mirror");
     assert.ok(!read.text.includes("disk copy") && !read.text.includes("mirror"));
     assert.match(read.text, /shared notebook; you are reading the live shared document/);
+    assert.match(read.text, /become suggestions/);
 
     const edited = await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "there" }, context);
     assert.equal(edited.isError, false);
+    assert.match(edited.text, /suggested, pending review \(1 suggestion: sg_fake_1\)/);
     assert.match(edited.text, /AI on behalf of you/);
-    assert.equal(host.doc("Shared/notes.md").text, "Hello there\n");
-    const [first] = host.doc("Shared/notes.md").log;
-    assert.deepEqual(first.provenance, { source: "ai", feature: "agent", model: "test/agent-model", runId: context.snapshots.runId });
-    assert.ok(first.edits.every((edit) => typeof edit.before === "string"), "every edit is checked against the live text");
+    assert.equal(edited.result, "Suggested, pending review");
+    const notes = host.doc("Shared/notes.md");
+    assert.equal(notes.text, "Hello world\n", "the document's text is unchanged");
+    assert.equal(notes.log.length, 0, "no edits reached content");
+    const [first] = notes.suggestions;
+    assert.deepEqual(first.request.ai, { feature: "agent", model: "test/agent-model", runId: context.snapshots.runId });
+    assert.equal(first.request.snapshot, "Hello world\n", "edits are made on the text the agent read");
+    assert.ok(first.request.edits.every((edit) => typeof edit.before === "string"));
     assert.equal(disk("Shared/notes.md"), "Hello world (disk copy)\n", "the agent never writes the working copy");
-    assert.deepEqual(events.filter((event) => event.type === "file_changed"), [{ type: "file_changed", path: "Shared/notes.md", created: false, shared: true }]);
+    assert.deepEqual(events.filter((event) => event.type === "file_changed"), [{ type: "file_changed", path: "Shared/notes.md", created: false, shared: true, suggested: true }]);
 
-    const written = await tool("Write").run({ file_path: "Shared/notes.md", content: "# Rewritten\n\nHello there\n" }, context);
+    // The next change works on the current text without a new Read.
+    const written = await tool("Write").run({ file_path: "Shared/notes.md", content: "# Rewritten\n\nHello world\n" }, context);
     assert.equal(written.isError, false);
-    assert.match(written.text, /AI on behalf of you/);
-    assert.equal(host.doc("Shared/notes.md").text, "# Rewritten\n\nHello there\n");
-    assert.equal(host.doc("Shared/notes.md").log.length, 2);
-    assert.equal(host.doc("Shared/notes.md").log[1].provenance.feature, "agent");
+    assert.match(written.text, /suggested, pending review/);
+    assert.equal(notes.text, "Hello world\n");
+    assert.equal(notes.suggestions.length, 2);
 
-    // The agent cannot create files in a shared notebook ("Modify opened files only" never creates).
-    await assert.rejects(tool("Write").run({ file_path: "Shared/new.md", content: "x" }, context), /cannot create new files/);
+    // The agent cannot create files in a shared notebook.
+    await assert.rejects(tool("Write").run({ file_path: "Shared/new.md", content: "x" }, context), /cannot create files there/);
     assert.ok(!host.fileOps.length);
 
     // Ordinary notebooks behave as before: the file on disk, no host calls.
@@ -327,7 +379,7 @@ test("agent Read, Edit and Write on a shared file go through the host as AI on b
   });
 });
 
-test("a collaborator's edit since the read is a tool error that makes the model read again", async () => {
+test("a collaborator's edit since the read: refused before the write, stale when it lands meanwhile", async () => {
   await withFixture(async ({ host }) => {
     const { context } = makeContext();
     await tool("Read").run({ file_path: "Shared/notes.md" }, context);
@@ -335,90 +387,106 @@ test("a collaborator's edit since the read is a tool error that makes the model 
     host.doc("Shared/notes.md").text = "Hello world, says Bob\n";
     await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Hello", new_string: "Hi" }, context), /changed since you read it/);
 
-    // Landing between the agent's check and its edits: the host's before-check refuses them.
+    // Landing between the agent's check and its suggestion: the suggestion is stale, and the model is told.
     await tool("Read").run({ file_path: "Shared/notes.md" }, context);
-    host.beforeEdits = (doc) => { doc.text = "Bob got here first\n"; };
-    await assert.rejects(
-      tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Hello", new_string: "Hi" }, context),
-      /changed in the shared notebook since you read it .*Read it again/,
-    );
-    host.beforeEdits = null;
-    assert.equal(host.doc("Shared/notes.md").text, "Bob got here first\n");
-    assert.equal(context.fileState.has("Shared/notes.md"), false, "the next edit needs a fresh Read");
-    // A refused write leaves nothing to undo, so undo can never revert Bob's text.
-    await assert.rejects(undoRun(context.snapshots.runId), /no longer available/);
-    await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Bob", new_string: "Rob" }, context), /Read Shared\/notes\.md before editing it/);
-
-    // writeSharedText with expectedBefore never applies to a newer text.
-    const stale = await writeSharedText("Shared/notes.md", "x", { source: "ai", feature: "agent" }, { expectedBefore: "Hello world\n" });
-    assert.deepEqual([stale.applied, stale.conflict, stale.text], [false, true, "Bob got here first\n"]);
+    host.beforeSuggest = (doc) => { doc.text = "Bob got here first\n"; };
+    const result = await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Hello", new_string: "Hi" }, context);
+    host.beforeSuggest = null;
+    assert.match(result.text, /stale because a collaborator changed that text/);
+    assert.equal(host.doc("Shared/notes.md").suggestions.at(-1)?.status, "stale");
+    assert.equal(host.doc("Shared/notes.md").text, "Bob got here first\n", "never overwritten");
+    await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Bob", new_string: "Rob" }, context), /Read Shared\/notes\.md before editing it/, "the next change needs a fresh Read");
   });
 });
 
-test("undo sends inverse edits through the host, and reports a conflict after a concurrent edit", async () => {
+test("undo withdraws the run's pending suggestions and reports accepted ones", async () => {
   await withFixture(async ({ host, disk }) => {
     const { context } = makeContext();
     await tool("Read").run({ file_path: "Shared/notes.md" }, context);
     await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "agent" }, context);
-    assert.equal(host.doc("Shared/notes.md").text, "Hello agent\n");
     const response = await UNDO_POST(authed("/api/agent/undo", { json: { runId: context.snapshots.runId } }));
     const { results } = (await response.json()) as { results: UndoResult[] };
-    assert.deepEqual(results, [{ path: "Shared/notes.md", status: "restored", content: "Hello world\n", shared: true }]);
+    assert.deepEqual(results, [{ path: "Shared/notes.md", status: "restored", shared: true, withdrawn: 1 }]);
+    assert.equal(host.doc("Shared/notes.md").suggestions[0].status, "withdrawn");
     assert.equal(host.doc("Shared/notes.md").text, "Hello world\n");
-    assert.deepEqual(host.doc("Shared/notes.md").log.at(-1)?.provenance, { source: "undo", feature: "agent", runId: context.snapshots.runId });
     assert.equal(disk("Shared/notes.md"), "Hello world (disk copy)\n");
     assert.equal((await undoRun(context.snapshots.runId))[0].status, "already-reverted");
 
-    // A collaborator edits after the agent: undo leaves their text alone.
+    // One a collaborator accepted meanwhile is not undone by withdrawing.
     const second = makeContext().context;
     await tool("Read").run({ file_path: "Shared/notes.md" }, second);
     await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "agent" }, second);
-    host.doc("Shared/notes.md").text = "Hello agent, and Bob\n";
+    host.doc("Shared/notes.md").suggestions.at(-1)!.status = "accepted";
     const [conflict] = await undoRun(second.snapshots.runId);
     assert.equal(conflict.status, "conflict");
-    assert.match(conflict.message ?? "", /changed after the agent edited it/);
-    assert.equal(host.doc("Shared/notes.md").text, "Hello agent, and Bob\n");
-
-    // Or between undo's check and its edits.
-    const third = makeContext().context;
-    await tool("Read").run({ file_path: "Shared/notes.md" }, third);
-    await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Bob", new_string: "Rob" }, third);
-    host.beforeEdits = (doc) => { doc.text = "Bob rewrote it\n"; };
-    assert.equal((await undoRun(third.snapshots.runId))[0].status, "conflict");
-    host.beforeEdits = null;
-    assert.equal(host.doc("Shared/notes.md").text, "Bob rewrote it\n");
+    assert.match(conflict.message ?? "", /already accepted.*Undo acceptance/);
   });
 });
 
-test("\"Modify all files in Notebook/Folder\" is refused in shared notebooks", async () => {
+test("an older run's direct edits to a shared file still undo as inverse edits, with the conflict check", async () => {
   await withFixture(async ({ host }) => {
-    const { context } = makeContext("notebook");
+    const legacy = new RunSnapshots("run-legacy-direct");
+    await legacy.recordOriginal("Shared/notes.md", "Hello world\n", undefined, { docId: host.doc("Shared/notes.md").docId });
+    host.doc("Shared/notes.md").text = "Hello agent\n";
+    await legacy.recordWritten("Shared/notes.md", "Hello agent\n");
+    const [restored] = await undoRun("run-legacy-direct");
+    assert.deepEqual(restored, { path: "Shared/notes.md", status: "restored", content: "Hello world\n", shared: true });
+    assert.deepEqual(host.doc("Shared/notes.md").log.at(-1)?.provenance, { source: "undo", feature: "agent", runId: "run-legacy-direct" });
+
+    const conflicted = new RunSnapshots("run-legacy-conflict");
+    await conflicted.recordOriginal("Shared/notes.md", "Hello world\n", undefined, { docId: host.doc("Shared/notes.md").docId });
+    host.doc("Shared/notes.md").text = "Hello agent\n";
+    await conflicted.recordWritten("Shared/notes.md", "Hello agent\n");
+    host.doc("Shared/notes.md").text = "Hello agent, and Bob\n";
+    assert.equal((await undoRun("run-legacy-conflict"))[0].status, "conflict");
+    assert.equal(host.doc("Shared/notes.md").text, "Hello agent, and Bob\n");
+  });
+});
+
+test("\"Suggest in notebook\" works in shared notebooks; Read Only is unchanged", async () => {
+  await withFixture(async ({ host }) => {
+    const { context } = makeContext("notebook", { openFiles: new Set() });
     await tool("Read").run({ file_path: "Shared/notes.md" }, context);
-    await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "x" }, context), /"Modify all files in Notebook\/Folder" is not available yet/);
-    await assert.rejects(tool("Write").run({ file_path: "Shared/new.md", content: "x" }, context), /shared notebook/);
+    const edited = await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "x" }, context);
+    assert.match(edited.text, /suggested, pending review/, "a file that is not open, in notebook mode");
+    await assert.rejects(tool("Write").run({ file_path: "Shared/new.md", content: "x" }, context), /cannot create files there/);
     assert.equal(host.doc("Shared/notes.md").text, "Hello world\n");
 
+    const readOnly = makeContext("read-only").context;
+    assert.ok(!toolsForPermission("read-only").some((candidate) => candidate.name === "Edit" || candidate.name === "Write"));
+    await tool("Read").run({ file_path: "Shared/notes.md" }, readOnly);
+    await assert.rejects(tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "x" }, readOnly), /Read Only mode/);
+
     let modelCalls = 0;
-    routeFetch(host, () => { modelCalls++; return textReply("unused"); });
+    routeFetch(host, (url) => {
+      if (url.endsWith("/endpoints")) return endpoints();
+      modelCalls++;
+      return textReply("Done.");
+    });
     const response = await AGENT_POST(authed("/api/agent", { json: { permission: "notebook", notebook: "Shared", messages: [{ id: "1", role: "user", text: "Tidy every note." }] } }));
-    assert.equal(response.status, 409);
-    assert.match(((await response.json()) as { error: string }).error, /"Shared" is a shared notebook, where "Modify all files in Notebook\/Folder" is not available yet\. Switch Agent permission to "Modify opened files only"/);
-    const viaFile = await AGENT_POST(authed("/api/agent", { json: { permission: "notebook", activeFile: "Shared/notes.md", openFiles: ["Shared/notes.md"], messages: [{ id: "1", role: "user", text: "Tidy." }] } }));
-    assert.equal(viaFile.status, 409);
-    assert.equal(modelCalls, 0);
+    assert.equal(response.status, 200, "notebook-wide mode is no longer refused in a shared notebook");
+    const events: AgentEvent[] = [];
+    await readAgentEvents(response, new AbortController().signal, (event) => events.push(event));
+    assert.deepEqual(events.at(-1), { type: "done", outcome: "completed" });
+    assert.equal(modelCalls, 1);
   });
 });
 
-test("viewers and commenters cannot write through the agent", async () => {
+test("commenters can use the agent to suggest; viewers cannot", async () => {
   await withFixture(async ({ host }) => {
     const { context } = makeContext();
-    for (const [file, role] of [["Shared/viewed.md", "viewer"], ["Shared/commented.md", "commenter"]] as const) {
-      const read = await tool("Read").run({ file_path: file }, context);
-      assert.match(read.text, new RegExp(`role \\(${role}\\) cannot edit it`));
-      await assert.rejects(tool("Edit").run({ file_path: file, old_string: "only", new_string: "x" }, context), new RegExp(`Your role in this shared notebook \\(${role}\\) cannot edit ${file}`));
-      await assert.rejects(tool("Write").run({ file_path: file, content: "x" }, context), /cannot edit/);
-      assert.equal(host.doc(file).log.length, 0);
-    }
+    const commented = await tool("Read").run({ file_path: "Shared/commented.md" }, context);
+    assert.match(commented.text, /become suggestions/);
+    const suggested = await tool("Edit").run({ file_path: "Shared/commented.md", old_string: "only", new_string: "please" }, context);
+    assert.match(suggested.text, /suggested, pending review/);
+    assert.equal(host.doc("Shared/commented.md").suggestions.length, 1);
+    assert.equal(host.doc("Shared/commented.md").text, "Comment only\n");
+
+    const read = await tool("Read").run({ file_path: "Shared/viewed.md" }, context);
+    assert.match(read.text, /role \(viewer\) cannot change or suggest changes to it/);
+    await assert.rejects(tool("Edit").run({ file_path: "Shared/viewed.md", old_string: "only", new_string: "x" }, context), /Your role in this shared notebook \(viewer\) cannot change or suggest changes to Shared\/viewed\.md/);
+    await assert.rejects(tool("Write").run({ file_path: "Shared/viewed.md", content: "x" }, context), /cannot change or suggest/);
+    assert.equal(host.doc("Shared/viewed.md").suggestions.length, 0);
   });
 });
 
@@ -459,20 +527,29 @@ test("AGENT_NOTES.md in a shared notebook is labelled as collaborators' untruste
   });
 });
 
-test("leave-review-comments is not offered for shared documents, and says why", async () => {
-  await withFixture(async () => {
-    const { context } = makeContext("read-only");
+test("leave-review-comments on a shared document creates AI-authored shared threads", async () => {
+  await withFixture(async ({ host }) => {
+    host.doc("Shared/notes.md").text = "# Notes\n\nHello world.\n\nSecond paragraph.\n";
+    const { context, events } = makeContext("read-only");
     const loaded = await tool("Skill").run({ name: "leave-review-comments" }, context);
-    assert.equal(loaded.isError, false);
-    assert.match(loaded.text, /not available for documents in shared notebooks yet/);
-    assert.equal(context.loadedSkills.size, 0);
-    assert.ok(!activeTools(toolsForPermission("read-only"), context).some((candidate) => candidate.name === "LeaveComment"), "LeaveComment is never offered");
+    assert.match(loaded.text, /<skill name="leave-review-comments">/, "the skill is offered in shared notebooks");
+    await tool("Read").run({ file_path: "Shared/notes.md" }, context);
+    const placed = await tool("LeaveComment").run({ file_path: "Shared/notes.md", old_string: "Hello world.", new_string: "Hello world.\n\n:::comment\nSay who is greeted.\n:::" }, context);
+    assert.equal(placed.isError, false, placed.text);
+    const skill = AGENT_SKILLS.find((candidate) => candidate.name === "leave-review-comments")!;
+    // A collaborator types above the paragraph before the reply ends: the thread still lands on it.
+    host.doc("Shared/notes.md").text = "Intro.\n\n# Notes\n\nHello world.\n\nSecond paragraph.\n";
+    assert.equal(await skill.finishPass!(context, { final: true }), null);
+    const [thread] = host.doc("Shared/notes.md").threads;
+    assert.ok(thread, "a shared thread was created through the host");
+    assert.equal(thread.quote, "Hello world.");
+    assert.equal(thread.request.body, "Say who is greeted.");
+    assert.deepEqual(thread.request.ai, { feature: "review-comments", model: "test/agent-model", runId: context.snapshots.runId });
+    assert.deepEqual(events.filter((event) => event.type === "comments_added"), [{ type: "comments_added", path: "Shared/notes.md", count: 1 }]);
 
-    // Loaded from an ordinary notebook, it still refuses shared files.
-    const local = makeContext("read-only", { notebook: "Local" }).context;
-    const loadedLocally = await tool("Skill").run({ name: "leave-review-comments" }, local);
-    assert.match(loadedLocally.text, /<skill name="leave-review-comments">/);
-    await assert.rejects(tool("LeaveComment").run({ file_path: "Shared/notes.md", old_string: "Hello world", new_string: "Hello world\n\n:::comment\nx\n:::" }, local), /in a shared notebook\. Review comments are not available/);
+    // Viewers cannot comment.
+    await tool("Read").run({ file_path: "Shared/viewed.md" }, context);
+    await assert.rejects(tool("LeaveComment").run({ file_path: "Shared/viewed.md", old_string: "Read only", new_string: "Read only\n\n:::comment\nx\n:::" }, context), /role in this shared notebook \(viewer\) cannot comment/);
   });
 });
 

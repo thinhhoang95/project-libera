@@ -1,5 +1,6 @@
 "use client";
 
+import { requestOpenReview } from "@/lib/collab/client/reviews";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { LocalProject, NotificationInfo } from "@/lib/collab/local-api";
@@ -64,9 +65,15 @@ export function CollabProvider({ children, onNotebookJoined, onOpenPath }: Colla
   });
 
   const openNotificationTarget = useCallback((notification: NotificationInfo & { docId: string }) => {
+    const reviewId = notification.kind === "review-requested" || notification.kind === "review-decided" ? notification.payload?.reviewId : undefined;
     void collabClient
       .doc(notification.docId)
-      .then((doc) => callbacks.current.onOpenPath(doc.path))
+      .then((doc) => {
+        callbacks.current.onOpenPath(doc.path);
+        // A review notification opens the review itself: the Reviews tab, and
+        // checkpoint mode for an assignee.
+        if (typeof reviewId === "string") requestOpenReview(notification.docId, reviewId);
+      })
       // The document may have been deleted, or the notebook left; the
       // notification stays readable in the list either way.
       .catch(() => undefined);

@@ -94,7 +94,7 @@ export function buildAgentEnvironment(environment: AgentEnvironment) {
   const shared = environment.sharedNotebooks ?? [];
   if (shared.length) {
     lines.push(`Shared notebooks (collaborators work in them too): ${shared.map((item) => `${item.notebook}${item.role ? ` (the user's role: ${item.role})` : ""}`).join(", ")}`);
-    lines.push(`In shared notebooks: you may change only files open in the editor, and only where the user's role is owner or editor; your edits reach collaborators at once and are attributed to "AI on behalf of" the user; review comments are not available.`);
+    lines.push(`In shared notebooks your Edit and Write create suggestions, pending review, instead of changing the text: collaborators see them at once, attributed to "AI on behalf of" the user, and someone who may decide accepts or rejects them. A file's text changes only when a suggestion is accepted, so keep working from the current text and do not repeat a change you suggested. The permission still decides which files you may suggest in ("Suggest in opened files" or "Suggest in notebook"). You cannot create files there, and where the user's role is viewer you cannot suggest. Review comments you leave on shared documents are shared with collaborators.`);
   }
   // Collaborators wrote a shared notebook's notes: label them, and escape the
   // closing tag so their text cannot end the block and pose as Libera's words.

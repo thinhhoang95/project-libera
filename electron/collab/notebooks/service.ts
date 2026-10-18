@@ -307,6 +307,7 @@ export class NotebookServiceImpl implements NotebookService {
       kind: doc.docKind,
       role: handle.role,
       readOnly: handle.revoked || !roleAtLeast(handle.role, "editor"),
+      ...(handle.revoked ? { revoked: true } : {}),
     };
   }
 
@@ -324,6 +325,7 @@ export class NotebookServiceImpl implements NotebookService {
           kind: doc.docKind,
           role: handle.role,
           readOnly: handle.revoked || !roleAtLeast(handle.role, "editor"),
+          ...(handle.revoked ? { revoked: true } : {}),
         };
       }
     }

@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
+import type { Transaction } from "@tiptap/pm/state";
+import { TIPTAP_BRIDGE_META } from "@/lib/collab/bindings/tiptap-ytext";
 import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
 import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
 import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
@@ -46,7 +48,8 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
     const input = textareaRef.current;
     if (!input || !register) return;
     let composing = false;
-    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
+    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text),
+      selection: () => (input.selectionEnd > input.selectionStart ? { start: input.selectionStart, end: input.selectionEnd } : null), focus: (range) => {
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
     const start = () => { composing = true; }, end = () => { composing = false; };
@@ -81,7 +84,8 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const root = view.contentDOM;
     const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
-    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text), focus: (target) => {
+    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
+      selection: () => { const { from, to } = view.state.selection.main; return to > from ? { start: from, end: to } : null; }, focus: (target) => {
       const length = view.state.doc.length;
       const anchor = Math.min(target.start, length), head = Math.min(target.end, length);
       view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
@@ -125,11 +129,12 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
-      ...(r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+      // A shared document shows proposals as overlay suggestions instead.
+      ...(r.shared ? [] : r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
       ...(r.selection ? [r.selection.range] : []),
     ] : [];
     view.dispatch({ effects: setReviewHighlights.of(ranges) });
-  }, [view, r?.doc, r?.enabled, r?.selection]);
+  }, [view, r?.doc, r?.enabled, r?.selection, r?.shared]);
   return r;
 }
 export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>, read: () => string, replace: (markdown: string) => void) {
@@ -144,6 +149,9 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       editor.view.dispatch(closeHistory(editor.state.tr));
       replace(text);
       editor.view.dispatch(closeHistory(editor.state.tr));
+    }, selection: () => {
+      const { from, to } = editor.state.selection;
+      return to > from ? sourceRangeForTiptapSelection(editor, read(), from, to) : null;
     }, focus: (range) => {
       const target = tiptapRangeForSource(editor, read(), range);
       if (!target) return;
@@ -169,7 +177,14 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
       if (event.key === "Escape") review.clearSelection();
     }
-    const changed = () => latest.current?.clearSelection();
+    // Only the user's own edits invalidate the selection. The shared Visual
+    // bridge also dispatches document changes (a collaborator's typing, the
+    // rebuild after a blur sync); clearing on those closed the comment
+    // popover between a real mousedown and its click.
+    const changed = ({ transaction }: { transaction: Transaction }) => {
+      if (transaction.getMeta(TIPTAP_BRIDGE_META)) return;
+      latest.current?.clearSelection();
+    };
     editor.on("update", changed);
     root.addEventListener("mouseup", mouse); root.addEventListener("keydown", key, true);
     return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); };
@@ -204,7 +219,8 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, source, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their
     // decisions still go through the review so its undo/CAS state stays exact.
-    const suggestions = r?.doc?.session?.suggestions ?? [];
+    // On a shared document they are overlay suggestions, drawn on their own channel.
+    const suggestions = sharedDoc ? [] : r?.doc?.session?.suggestions ?? [];
     const changes = tiptapReviewChanges(editor, source, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
     const decide: ChangeDecider = (ids, decision) => {
       const review = latest.current;

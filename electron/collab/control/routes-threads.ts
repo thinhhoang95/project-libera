@@ -11,7 +11,12 @@
 // The anchor itself is not sent here: the renderer writes it into the
 // document's annotations, which sync through the CRDT like text.
 
+import { randomBytes } from "node:crypto";
+
 import { createAnchor, readAnchor, writeAnchor } from "../../../src/lib/collab/anchors";
+import { mapSnapshotEdits } from "../../../src/lib/collab/suggestions/model";
+import { canWriteSubdoc } from "../../../src/lib/collab/protocol/roles";
+import { ApiClientError } from "../core/api-client";
 import type { AiActorHint } from "../../../src/lib/collab/protocol/actor";
 import type {
   Command,
@@ -26,6 +31,7 @@ import { ContentKeys } from "../../../src/lib/collab/protocol/schema";
 import {
   ControlRoutes,
   type CommandsState,
+  type CreateThreadAtRangeResponse,
   type EnqueueCommandResponse,
   type LocalCommentsSummary,
   type MigrateCommentsResponse,
@@ -47,6 +53,7 @@ import { aiFeature, bad, objectBody, optionalString, requiredString, stringList 
 
 const pattern = {
   threads: decodeURIComponent(ControlRoutes.threads(":docId")),
+  threadsAtRange: decodeURIComponent(ControlRoutes.threadsAtRange(":docId")),
   thread: decodeURIComponent(ControlRoutes.thread(":threadId")),
   threadMessages: decodeURIComponent(ControlRoutes.threadMessages(":threadId")),
   threadStatus: decodeURIComponent(ControlRoutes.threadStatus(":threadId")),
@@ -215,6 +222,71 @@ export function registerThreadRoutes(router: Router, runtime: CollabRuntime, opt
   router.add("POST", pattern.threads, async (request) => {
     const body = createThreadBody(request.body);
     return { status: 201, body: await requireApi(runtime).createThread(request.params.docId, body) };
+  });
+
+  // A thread on a range the caller only knows by offsets (the agent's review
+  // comments): the anchor is written here, in the host's copy of the
+  // document, and syncs like any annotation.
+  router.add("POST", pattern.threadsAtRange, async (request): Promise<{ status: number; body: CreateThreadAtRangeResponse }> => {
+    const raw = objectBody(request.body);
+    const range = raw.range as { start?: unknown; end?: unknown } | undefined;
+    const start = Number(range?.start), end = Number(range?.end);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) throw bad("range needs integer offsets with 0 <= start < end.");
+    const snapshot = raw.snapshot === undefined || raw.snapshot === null ? undefined : optionalString(raw.snapshot, "snapshot", 2_000_000);
+    if (snapshot !== undefined && end > snapshot.length) throw bad("range is outside the snapshot.");
+    const threadId = raw.id === undefined ? `thr_${randomBytes(15).toString("hex")}` : clientId(raw.id, "id");
+    const body = messageText(raw.body);
+    const mentions = mentionList(raw.mentions);
+    const ai = aiHint(raw.ai);
+    const account = runtime.accounts.account;
+    if (!account) throw new ControlError(409, "signed-out", "Sign in to a collaboration account first.");
+    const host = runtime.host;
+    const docId = request.params.docId;
+    const record = host.store.getDoc(docId);
+    const meta = host.store.getDocMeta(docId);
+    if (!record && !meta) throw new ControlError(404, "unknown-doc", `Document ${docId} is not shared with this machine.`);
+    const projectId = record?.projectId ?? meta?.projectId ?? undefined;
+    const hub = host.acquire(docId, projectId ? { projectId } : {});
+    let anchor: { anchorId: string; quote: string };
+    try {
+      await whenLoaded(hub, loadTimeoutMs);
+      const state = hub.getMeta();
+      if (state.readOnlyReason === "access-revoked") throw new ControlError(403, "access-changed", "Access to this document was revoked.");
+      if (!canWriteSubdoc(state.role, "annotations")) throw new ControlError(403, "forbidden", `A ${state.role} cannot comment in this document.`);
+      const text = hub.getText("content");
+      let target = { start, end };
+      if (snapshot !== undefined) {
+        const [mapped] = mapSnapshotEdits(text, snapshot, [{ start, end, before: snapshot.slice(start, end), after: "" }]);
+        if (!mapped.matched) throw new ControlError(409, "passage-changed", "The passage changed since it was read; read the document again.");
+        target = { start: mapped.start, end: mapped.end };
+      } else if (end > text.length) throw bad("range is outside the document.");
+      const anchorId = `anc_${randomBytes(15).toString("hex")}`;
+      hub.applyLocalChange(
+        "annotations",
+        (annotations) => {
+          const ytext = hub.getDoc("content").getText(ContentKeys.source);
+          writeAnchor(annotations, createAnchor(ytext, target.start, target.end, { id: anchorId, kind: "comment", createdBy: account.id }));
+        },
+        ai ? { source: "ai", feature: ai.feature, ...(ai.runId ? { runId: ai.runId } : {}) } : undefined,
+      );
+      anchor = { anchorId, quote: text.slice(target.start, target.end) };
+    } finally {
+      host.release(docId);
+    }
+    const thread = { id: threadId, anchorId: anchor.anchorId, quote: anchor.quote, body, ...optionalFields({ mentions, ai }) };
+    const queue = () => {
+      const commandId = `cmd_${randomBytes(12).toString("base64url")}`;
+      host.commands.enqueue({ id: commandId, kind: "thread.create", docId, body: thread });
+      return { status: 202, body: { queued: true as const, threadId, commandId } };
+    };
+    const api = host.api;
+    if (!api || !runtime.accounts.session || host.connectionState !== "connected") return queue();
+    try {
+      return { status: 201, body: { queued: false, thread: await api.createThread(docId, thread) } };
+    } catch (error) {
+      if (error instanceof ApiClientError && (error.transient || error.code === "network" || error.code === "needs-sign-in")) return queue();
+      throw error;
+    }
   });
 
   router.add("GET", pattern.thread, async (request) => ({ body: await requireApi(runtime).getThread(request.params.threadId) }));

@@ -1,10 +1,11 @@
-// M1.11 end to end: Libera's Next-side writers (the agent's Edit/Write and
-// undo, OCR "Convert PDF to Markdown", uploads) against the real collab host
-// (control API + NotebookService) and the real collab server in a child
-// process. Checks that agent and OCR edits reach the server's update log as
-// AI on behalf of the user with their feature and run, that undo goes back
-// through the host and refuses after a collaborator's edit, and that an
-// upload becomes a manifest blob the server holds.
+// Libera's Next-side writers end to end (M1.11, M3.4): the agent's Edit/Write
+// and undo, OCR "Convert PDF to Markdown", uploads, against the real collab
+// host (control API + NotebookService) and the real collab server in a child
+// process. The agent's changes to shared files are AI suggestions that leave
+// the text alone and that undo withdraws; an older run's direct edits still
+// undo as inverse edits through the host (and refuse after a collaborator's
+// edit); OCR edits reach the server's update log as AI on behalf of the user;
+// an upload becomes a manifest blob the server holds.
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,10 +26,10 @@ import { RunSnapshots, undoRun } from "../../src/lib/agent/snapshots";
 import { ALL_TOOLS, type ToolContext } from "../../src/lib/agent/tools";
 import type { AgentEvent } from "../../src/lib/agent/types";
 import { ControlRoutes, type DocText, type HostStatus, type ResolvedDoc } from "../../src/lib/collab/local-api";
-import { ApiRoutes, type AuthResponse, type UpdatesPage } from "../../src/lib/collab/protocol/api";
+import { ApiRoutes, type AuthResponse, type SuggestionInfo, type UpdatesPage } from "../../src/lib/collab/protocol/api";
 import { ContentKeys } from "../../src/lib/collab/protocol/schema";
 import { invalidateSharedNotebookCache, type SharedNotebookMarker } from "../../src/lib/collab/shared-notebook";
-import { writeSharedBlob } from "../../src/lib/collab/shared-writes";
+import { writeSharedBlob, writeSharedText } from "../../src/lib/collab/shared-writes";
 import { removeDataDir, startServerProcess, type ServerProcess } from "./support/server-process";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -141,45 +142,56 @@ test("agent, undo, OCR and uploads on a shared notebook through the real host an
       return { updates: page.updates, text: doc.getText(ContentKeys.source).toString() };
     };
 
-    // --- the agent's Edit and Write land in the shared document as AI on behalf of the user
+    // --- the agent's Edit and Write become AI suggestions; the text stays until one is accepted
     const { context, events } = agentContext();
     await tool("Read").run({ file_path: "Shared/notes.md" }, context);
     const edited = await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "world", new_string: "shared world" }, context);
+    assert.match(edited.text, /suggested, pending review/);
     assert.match(edited.text, /AI on behalf of you/);
-    await tool("Write").run({ file_path: "Shared/notes.md", content: "# Notes\n\nHello shared world\n" }, context);
-    assert.equal((await docText(resolved.docId)).text, "# Notes\n\nHello shared world\n");
-    assert.ok(events.every((event) => event.type !== "file_changed" || event.shared === true));
-    const afterAgent = await serverLog(resolved.docId);
-    assert.equal(afterAgent.text, "# Notes\n\nHello shared world\n");
-    const aiUpdates = afterAgent.updates.filter((update) => update.actor?.kind === "ai");
-    // The host may batch consecutive updates with the same provenance into one.
-    assert.ok(aiUpdates.length >= 1, JSON.stringify(afterAgent.updates.map((update) => update.actor)));
-    assert.ok(afterAgent.updates.slice(1).every((update) => update.actor?.kind === "ai"), "every edit after the import is the agent's");
-    for (const update of aiUpdates) {
-      const actor = update.actor as { feature?: string; runId?: string; model?: string; onBehalfOf?: string };
-      assert.deepEqual([actor.feature, actor.runId, actor.model, actor.onBehalfOf], ["agent", context.snapshots.runId, "test/e2e-model", accountId]);
+    const written = await tool("Write").run({ file_path: "Shared/notes.md", content: "# Notes\n\nHello world\n" }, context);
+    assert.match(written.text, /suggested, pending review/);
+    assert.equal((await docText(resolved.docId)).text, "Hello world\n", "content is untouched");
+    assert.ok(events.every((event) => event.type !== "file_changed" || (event.shared === true && event.suggested === true)));
+    const overlay = async () => (await control<SuggestionInfo[]>("GET", ControlRoutes.docSuggestions(resolved.docId))).body;
+    await until(async () => (await overlay()).filter((info) => info.status === "pending").length === 2, "the server to mirror both suggestions");
+    for (const info of await overlay()) {
+      const actor = info.actor as { kind: string; feature?: string; runId?: string; model?: string; onBehalfOf?: string };
+      assert.deepEqual([actor.kind, actor.feature, actor.runId, actor.model, actor.onBehalfOf], ["ai", "agent", context.snapshots.runId, "test/e2e-model", accountId]);
     }
-    // The host materializes the working copy; the agent never wrote it.
-    await until(() => readFileSync(path.join(library, "Shared", "notes.md"), "utf8") === "# Notes\n\nHello shared world\n", "the working copy to follow");
+    const afterAgent = await serverLog(resolved.docId);
+    assert.equal(afterAgent.text, "Hello world\n");
+    assert.ok(afterAgent.updates.every((update) => update.actor?.kind !== "ai"), "no AI write reached content");
 
-    // --- undo through the host
+    // --- undo withdraws the run's pending suggestions
     const [undone] = await undoRun(context.snapshots.runId);
-    assert.deepEqual([undone.status, undone.shared], ["restored", true]);
-    const afterUndo = await serverLog(resolved.docId);
-    assert.equal(afterUndo.text, "Hello world\n");
-    const undoUpdate = afterUndo.updates.at(-1);
-    assert.equal(undoUpdate?.actor?.kind, "user", "undo is the user's action");
-    assert.equal((undoUpdate?.provenance as { source?: string } | null)?.source, "undo");
+    assert.deepEqual([undone.status, undone.shared, undone.withdrawn], ["restored", true, 2]);
+    await until(async () => (await overlay()).every((info) => info.status === "withdrawn"), "the server to see them withdrawn");
+    assert.equal((await docText(resolved.docId)).text, "Hello world\n");
 
-    // --- undo after a collaborator's edit is a conflict
-    const second = agentContext().context;
-    await tool("Read").run({ file_path: "Shared/notes.md" }, second);
-    await tool("Edit").run({ file_path: "Shared/notes.md", old_string: "Hello", new_string: "Hi" }, second);
-    const typed = await control<{ applied: boolean }>("POST", ControlRoutes.docEdits(resolved.docId), { edits: [{ start: 0, end: 0, text: "Typed: " }], provenance: { source: "typing" } });
-    assert.equal(typed.body.applied, true);
-    const [conflict] = await undoRun(second.snapshots.runId);
-    assert.equal(conflict.status, "conflict");
-    assert.equal((await docText(resolved.docId)).text, "Typed: Hi world\n");
+    // --- an older run's direct edits (M1.11) still undo as inverse edits, and refuse after a collaborator's edit
+    for (const collaboratorTypes of [false, true]) {
+      const runId = `run-legacy-${collaboratorTypes ? "conflict" : "clean"}`;
+      const legacy = new RunSnapshots(runId);
+      const original = (await docText(resolved.docId)).text;
+      await legacy.recordOriginal("Shared/notes.md", original, undefined, { docId: resolved.docId });
+      const direct = await writeSharedText("Shared/notes.md", `${original}Legacy line.\n`, { source: "ai", feature: "agent", runId }, { expectedBefore: original });
+      assert.equal(direct.applied, true);
+      await legacy.recordWritten("Shared/notes.md", direct.text);
+      if (collaboratorTypes) {
+        const typed = await control<{ applied: boolean }>("POST", ControlRoutes.docEdits(resolved.docId), { edits: [{ start: 0, end: 0, text: "Typed: " }], provenance: { source: "typing" } });
+        assert.equal(typed.body.applied, true);
+      }
+      const [result] = await undoRun(runId);
+      if (collaboratorTypes) {
+        assert.equal(result.status, "conflict");
+        assert.equal((await docText(resolved.docId)).text, `Typed: ${original}Legacy line.\n`);
+      } else {
+        assert.deepEqual([result.status, result.shared], ["restored", true]);
+        const afterUndo = await serverLog(resolved.docId);
+        assert.equal(afterUndo.text, original);
+        assert.equal((afterUndo.updates.at(-1)?.provenance as { source?: string } | null)?.source, "undo");
+      }
+    }
 
     // --- OCR "Convert PDF to Markdown" into the shared notebook
     const created = await OCR_POST(authed("/api/document-ocr/output", { json: { pdfPath: "Shared/paper.pdf" } }));
