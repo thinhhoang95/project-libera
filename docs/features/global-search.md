@@ -30,6 +30,7 @@ Opening a result goes to the passage: Markdown selects it (in both the visual an
 - **Other settings.** Vectors made with another text model, vision encoder or embedding size are never thrown away silently, since embedding again can take hours. Search reports the mismatch, keeps keyword search working, and waits: switch back to those settings, or click **Re-embed with current settings**. **Rebuild** (in the Search panel) starts over from scratch.
 - **PDF text** is extracted in the worker and shared with Deep Search and AI chat through a content-verified cache that survives app moves, copies, and folder sync. See [PDF storage and sync](pdf-storage.md) for annotation migration and linked-folder portability.
 - **Older indexes.** The next scan revisits their files to repair earlier fingerprints and keyword fields. Model fingerprints now cover the weights, external tensor data, processor configs and image detail setting. An older model fingerprint may require **Re-embed with current settings** before semantic search resumes; keyword search continues working.
+- **Citations.** Markdown citation tokens such as `[@smith2020, p. 3]` are indexed as their keys (`smith2020`), so searching a key finds the notes that cite it. Files indexed before this change keep their earlier text and embeddings until they are next edited: there is no embedding-text version that would force them to be embedded again. **Rebuild** updates them all at once.
 
 ## Setting up the model
 

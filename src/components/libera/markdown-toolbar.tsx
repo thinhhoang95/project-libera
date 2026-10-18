@@ -1,4 +1,5 @@
 import {
+  BookCheck,
   Bold,
   ChevronDown,
   ChevronUp,
@@ -22,7 +23,7 @@ import {
   Sparkles,
   Underline,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
@@ -39,6 +40,7 @@ import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import { NoteLinksButton } from "./note-links-dialog";
 import type { LiberaFileNode } from "@/lib/types";
+import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 
 type MarkdownToolbarProps = {
   files: LiberaFileNode[];
@@ -69,7 +71,35 @@ const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 21;
+const FULL_TOOLBAR_BUTTON_COUNT = 22;
+
+/**
+ * Whether Markdown may contain a citation ([@key], [-@key], @key): a cheap
+ * scan that runs on every edit, unlike the full citation parser. It can say
+ * yes for an "@" in code; the fact-check then reports no citations.
+ */
+export function mayHaveCitations(markdown: string) {
+  return /(?:^|[\s[(;])-?@[\p{L}\p{N}_]/u.test(markdown);
+}
+
+/** Starts an Agent fact-check of the document's citations (the AI panel listens for the event). */
+export function FactCheckButton({ documentPath, markdown, className = "toolbar-button", disabled = false }: { documentPath: string; markdown: string; className?: string; disabled?: boolean }) {
+  const hasCitations = useMemo(() => mayHaveCitations(markdown), [markdown]);
+  const unavailable = disabled || !hasCitations;
+  return (
+    <button
+      aria-label="Fact-check citations"
+      className={`${className} disabled:cursor-not-allowed disabled:opacity-40`}
+      title={disabled ? "Save the document to fact-check its citations" : hasCitations ? "Fact-check citations: the agent checks each citation against its source" : "Fact-check citations: this document has no citations"}
+      type="button"
+      disabled={unavailable}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => window.dispatchEvent(new CustomEvent<FactCheckRequestDetail>(FACT_CHECK_REQUEST_EVENT, { detail: { path: documentPath } }))}
+    >
+      <BookCheck aria-hidden className="h-4 w-4" />
+    </button>
+  );
+}
 
 function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
   if (!button) {
@@ -718,6 +748,7 @@ export function MarkdownToolbar({
           renderSecondaryControls()
         )}
         {renderFullscreenButton()}
+        <FactCheckButton documentPath={documentPath} markdown={markdownContent} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => markdownContent} />
       </div>
       {toolbarCollapsed && toolbarExpanded ? (

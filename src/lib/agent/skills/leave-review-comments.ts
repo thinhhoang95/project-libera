@@ -53,7 +53,7 @@ function region(text: string, start: number, end: number) {
   return lines.slice(first, last).join("\n");
 }
 
-const leaveCommentTool: AgentTool = {
+export const leaveCommentTool: AgentTool = {
   name: "LeaveComment",
   kind: "comment",
   description: `Adds, changes or removes review comments in a Markdown or LaTeX file. Follow the ${NAME} skill's instructions.
@@ -142,12 +142,36 @@ Usage:
   },
 };
 
+/**
+ * Adds a comment to the run's review copy of `filePath` at `offset` in
+ * `original` (the end of the block it is about), as a LeaveComment call
+ * would. For skills that write comments from their own results; the copy is
+ * compiled by finishComments like any other. Throws a ToolError when the file
+ * cannot take review comments.
+ */
+export function addReviewComment(context: ToolContext, filePath: string, original: string, offset: number, text: string) {
+  if (isSharedNotebookPath(filePath)) throw new ToolError(sharedNotice(filePath));
+  const fileType = getFileType(filePath);
+  if (fileType !== "markdown" && fileType !== "latex") throw new ToolError(`${filePath} is not a Markdown or LaTeX file.`);
+  const copies = reviewCopies(context);
+  let copy = copies.get(filePath);
+  if (!copy) {
+    let existing = 0;
+    try { existing = parseReviewCopy(original).comments.length; } catch { existing = 1; }
+    if (existing) throw new ToolError(`${filePath} itself contains ":::comment" lines, so review comments cannot be written into it.`);
+    copy = { path: filePath, fileType, original, comments: [] };
+  } else if (copy.original !== original) {
+    copy = { ...copy, original, comments: rebaseComments(copy.comments, copy.original, original) };
+  }
+  copies.set(filePath, { ...copy, comments: [...copy.comments, { offset, text }] });
+}
+
 function listProblems(placements: CommentPlacement[], original: string) {
   return placements.filter((placement) => placement.problem).map((placement) => `- ${describePlacement(original, placement)}`);
 }
 
 /** Compile every review copy: send problems back to the model, or save the comments to the review. */
-async function finishComments(context: ToolContext, { final }: { final: boolean }): Promise<string | null> {
+export async function finishComments(context: ToolContext, { final }: { final: boolean }): Promise<string | null> {
   const copies = context.skillState.get(NAME) as Map<string, ReviewCopy> | undefined;
   if (!copies?.size) return null;
   const compiled: { copy: ReviewCopy; placements: CommentPlacement[] }[] = [];

@@ -37,6 +37,8 @@ type AgentRequestBody = {
   drafts?: unknown;
   notebook?: unknown;
   webSearch?: unknown;
+  /** A skill to load before the run starts, e.g. "fact-check-citations" from a Fact-check button. */
+  skill?: unknown;
 };
 
 function isPathList(value: unknown): value is string[] {
@@ -109,6 +111,8 @@ export async function POST(request: NextRequest) {
   if (!isDraftMap(body.drafts ?? {})) return jsonError("Unsaved drafts are invalid or too large.", 413);
   if (body.webSearch !== undefined && typeof body.webSearch !== "boolean") return jsonError("Invalid web search setting.", 400);
   const allowWebSearch = body.webSearch === true;
+  if (body.skill !== undefined && (typeof body.skill !== "string" || !AGENT_SKILLS.some((skill) => skill.name === body.skill))) return jsonError("Invalid skill.", 400);
+  const preloadedSkill = AGENT_SKILLS.find((skill) => skill.name === body.skill);
 
   const options = getAiFunctionOptions("chat");
   const model = body.model === undefined ? options.model : body.model;
@@ -165,7 +169,29 @@ export async function POST(request: NextRequest) {
     customInstruction: getAiChatCustomInstruction(),
     skills: AGENT_SKILLS,
   });
-  const conversation = agentConversation(body.messages, environment, (filePath) => fileExists.get(filePath) === true);
+  const loadedSkills = new Set<string>();
+  let newest = environment;
+  if (preloadedSkill) {
+    // Preloaded as if the model had called Skill: its instructions go with
+    // the request (the system prompt stays the same), its tools are offered.
+    const unavailable = preloadedSkill.unavailable?.({ notebook } as ToolContext);
+    if (unavailable) newest = `${environment}
+
+<skill name="${preloadedSkill.name}" available="false">
+${unavailable}
+</skill>`;
+    else {
+      loadedSkills.add(preloadedSkill.name);
+      newest = `${environment}
+
+<skill name="${preloadedSkill.name}" loaded="true">
+The user started this request from a button that loaded this skill. Follow it; its tools are available.
+
+${preloadedSkill.instructions.trim()}
+</skill>`;
+    }
+  }
+  const conversation = agentConversation(body.messages, newest, (filePath) => fileExists.get(filePath) === true);
   const reasoningEffort = body.reasoningEffort ?? options.reasoning.effort;
   const sessionId = body.sessionId as string | undefined;
   const runId = randomUUID();
@@ -189,7 +215,7 @@ export async function POST(request: NextRequest) {
         const context: ToolContext = {
           permission,
           skills: AGENT_SKILLS,
-          loadedSkills: new Set(),
+          loadedSkills,
           skillState: new Map(),
           notebook,
           notebooks,

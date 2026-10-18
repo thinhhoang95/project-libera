@@ -15,6 +15,7 @@ import type { AgentEvent, AgentPermission, AgentTask, AgentTaskStatus } from "./
 import type { ModelProfile, ToolSchema } from "./model";
 import type { TokenUsage } from "@/lib/chat-token-usage";
 import { webSearchTool, WEB_SEARCH_TOOL } from "./web-search";
+import { referencesTool } from "./references-tool";
 
 export type FileState = { hash: string; partial: boolean };
 
@@ -1093,7 +1094,8 @@ Usage:
   },
 };
 
-export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, editTool, writeTool, taskCreateTool, taskUpdateTool, skillTool];
+// References is read-only, so every permission gets it (see references-tool.ts).
+export const ALL_TOOLS: AgentTool[] = [globTool, grepTool, readTool, editTool, writeTool, taskCreateTool, taskUpdateTool, skillTool, referencesTool];
 
 export function toolsForPermission(permission: AgentPermission) {
   return ALL_TOOLS.filter((tool) => tool.kind === "read" || permission !== "read-only");
