@@ -9,6 +9,10 @@ prepare them, but only a person can finish them.
 
 Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 needs a person
 
+## Known pre-existing test failures
+
+`npm run test:editor` on this Windows checkout fails 4 tests and cancels 2: global-search-cache, global-search-triggers, global-search, pdf-chat-route and pdf-storage-lifecycle. They fail identically on the base commit 7008487, before any collaboration work. The likely cause is the mixed `node_modules`: the macOS dependency set is active here (`npm run deps:status` reports the win32 cache as stale). Every collaboration merge is checked against this baseline (547 of 554 passing after D8).
+
 ## Waves
 
 | Wave | Content | Branches | Status |
@@ -25,7 +29,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 need
 The spikes are carried out as the first, tested slice of the matching milestone, not as throwaway branches. Their pass criteria become tests.
 
 - ☐ S1 Visual bridge: convergence, untouched blocks preserved, IME hold (tests in M1.4); 👤 real IME check
-- ☐ S2 CodeMirror Markdown inventory and parity list (M1.4)
+- ☑ S2 CodeMirror Markdown inventory and parity list (`decisions/D8-codemirror-markdown.md`)
 - ☐ S3 Host SQLite kill test (M1.3)
 - ☐ S4 MessagePort to main and child windows (M1.4/M2 wave 2)
 - ☑ S5 Server persist-before-ack kill test (M1.1)
@@ -76,7 +80,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 ### M1.4 Replica and bindings
 - ☐ Renderer replica client over MessagePort, tab-level registry outliving editor mounts
 - ☐ LaTeX and code editors: y-codemirror.next, local-origin UndoManager
-- ☐ Markdown Source on CodeMirror 6 with feature parity (behind a preference)
+- ☑ Markdown Source on CodeMirror 6 with feature parity, behind Preferences → Source editor (Classic default); external-document seam for the binding; parity table in `decisions/D8-codemirror-markdown.md`. 👤 Before the default flips: try it in the running app, run the IME matrix, and check typing on a 1 MB note
 - ☐ Visual block bridge (S1)
 - ☐ `getTabDraft` reads the replica for shared tabs
 - ☐ Presence: cursors, selections, avatars, quiet mode
