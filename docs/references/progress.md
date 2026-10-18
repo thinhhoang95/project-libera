@@ -56,6 +56,12 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - In the visual editor, bold or italic that wraps a citation is split around it on save (`**a [@c]**` becomes `**a** [@c]`), because `@tiptap/markdown` marks only text nodes.
 - The textarea editor has no inline chip styling, which would need a whole-document scan per keystroke. Hover and Ctrl/Cmd+click work.
 
+### Build environment notes
+
+- `next build` cannot run from the `D:` drive at all, at the base commit `0ae5bce` too: webpack's `readlink` gets EISDIR on exFAT. Build verification therefore runs from a detached worktree on `C:` (the scratchpad `refs-build`) with its own copy of `node_modules`.
+- `npm ci` in the shared install skipped three Windows native packages, because the lockfile was generated on macOS and has no entries for them: `lightningcss-win32-x64-msvc` 1.32.0, `@tailwindcss/oxide-win32-x64-msvc` 4.3.0 and `@unrs/resolver-binding-win32-x64-msvc` 1.12.2. Matching versions were copied from the main checkout's `node_modules` into the shared install and the build copy. Without them Tailwind CSS fails to compile, so lane dev-server checks before this point may have run without styles.
+- The production webpack build of the integration tip at pdfcite (`8c37892`) succeeds, including every `/api/references/*` route.
+
 ### Watch list
 
 - `workspace-panel-performance.test.ts` ("pane bodies skip unrelated drafts…") failed once under full-suite load with a render count 1 too high. It passes alone. The suspect is the reference render provider's async library load landing mid-test. Re-check at final integration.
