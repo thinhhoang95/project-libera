@@ -25,6 +25,7 @@ import {
   runCollabNotebookMenuItem,
 } from "@/components/libera/collab/collab-shell";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
+import { importReferenceFile, isReferenceImportPath, referenceImportSummary } from "@/lib/references/import";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -556,6 +557,7 @@ export function NotebookPanel({
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
+  const [referenceImportNotice, setReferenceImportNotice] = useState<{ tone: "status" | "alert"; message: string; details: string[] } | null>(null);
   const workspaceView = useWorkspaceView();
   const librarySortToken = useSyncExternalStore(
     subscribeSidebarSortPreference,
@@ -658,6 +660,23 @@ export function NotebookPanel({
     });
   }
 
+  async function importIntoReferences(file: LiberaFileNode) {
+    setReferenceImportNotice({ tone: "status", message: `Importing ${file.name} into References…`, details: [] });
+    try {
+      const result = await importReferenceFile(file.notebook, file.path);
+      setReferenceImportNotice({
+        tone: "status",
+        message: referenceImportSummary(result),
+        details: [
+          ...result.renamedKeys.map(({ sourceKey, key }) => `Key ${sourceKey} is now ${key}`),
+          ...result.errors.map(({ line, message }) => `Line ${line}: ${message}`),
+        ].slice(0, 8),
+      });
+    } catch (error) {
+      setReferenceImportNotice({ tone: "alert", message: error instanceof Error ? error.message : "Could not import the references.", details: [] });
+    }
+  }
+
   async function openSidebarNativeMenu(
     target: SidebarMenuTarget,
     point: NativeMenuPoint,
@@ -682,6 +701,7 @@ export function NotebookPanel({
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
             { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
+            ...(isReferenceImportPath(target.file.path) ? [{ id: "import-references", label: "Import into References" }] : []),
             { type: "separator" },
             {
               id: "copy-relative-path",
@@ -737,6 +757,8 @@ export function NotebookPanel({
         onDownloadFile(target.file);
       } else if (selectedItemId === "copy") {
         await onCopyFile(target.file);
+      } else if (selectedItemId === "import-references") {
+        await importIntoReferences(target.file);
       } else if (selectedItemId === "copy-relative-path") {
         await copyItemPath(target.file.path, "relative");
       } else if (selectedItemId === "copy-absolute-path") {
@@ -991,6 +1013,22 @@ export function NotebookPanel({
           onClose={() => setDeepSearchOpen(false)}
           onOpenFile={onOpenFile}
         />
+      ) : null}
+      {referenceImportNotice ? (
+        <div
+          role={referenceImportNotice.tone}
+          className={`fixed bottom-4 left-1/2 z-50 max-w-md -translate-x-1/2 rounded-2xl border bg-card px-5 py-2 text-sm shadow-lg ${referenceImportNotice.tone === "alert" ? "border-destructive/30 text-destructive" : "border-border"}`}
+        >
+          <div className="flex items-start gap-3">
+            <span className="min-w-0 flex-1">{referenceImportNotice.message}</span>
+            <button className="text-muted-foreground underline" type="button" onClick={() => setReferenceImportNotice(null)}>Dismiss</button>
+          </div>
+          {referenceImportNotice.details.length ? (
+            <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+              {referenceImportNotice.details.map((detail) => <li key={detail}>{detail}</li>)}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {viewOptionsOpen ? (
         <NotebookViewOptionsDialog
