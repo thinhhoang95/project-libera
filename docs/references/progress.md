@@ -30,6 +30,8 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 - `ToolContext` has no read scope. To restrict child Read, Grep and Glob to a batch's attachments plus the document, either wrap those tools or add a read-scope field.
 - A child given SuggestEdit keeps its suggestions in its own `skillState`, which is never saved. The parent records suggestions from the children's structured results instead.
+- The agent prompt (interop) says to cite only keys that are in the library, but the library is a hidden file the agent's tools cannot read. Fact-check adds a read-only `References` tool (search and look up the notebook library by key, author, title or year) for every agent run, not just inside the skill.
+- Search index: unchanged files keep their pre-citation embeddings until edited, because there is no embedding-text version. This is acceptable; record it in the feature doc.
 - The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
 
 ## Baseline
@@ -59,7 +61,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ◐ |
-| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ◐ |
+| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ☑ merged 084ba5c |
 | panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ◐ |
 
 ## Wave 3: editors, capture, agent runtime, moves
