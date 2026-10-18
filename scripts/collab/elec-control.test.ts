@@ -6,7 +6,7 @@
 // overlay records the server accepts.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,7 +17,6 @@ import * as Y from "yjs";
 import { startControlApp, type ControlApp } from "../../electron/collab/control";
 import type { SecretCodec } from "../../electron/collab/control/account";
 import { Router } from "../../electron/collab/control/router";
-import { ControlError, type ControlDeps, type NotebookService } from "../../electron/collab/control/types";
 import {
   ControlRoutes,
   type ApplyEditsResponse,
@@ -29,7 +28,7 @@ import {
   type NotificationInfo,
   type ResolvedDoc,
 } from "../../src/lib/collab/local-api";
-import type { AuthResponse, Invitation, Member, ProjectSummary, UpdatesPage } from "../../src/lib/collab/protocol/api";
+import type { AuthResponse, Invitation, Member, UpdatesPage } from "../../src/lib/collab/protocol/api";
 import { AnnotationKeys, ContentKeys, type SuggestionRecord } from "../../src/lib/collab/protocol/schema";
 import { isSuggestionRecord, resolveSuggestion } from "../../src/lib/collab/suggestions/model";
 import { removeDataDir, startServerProcess, type ServerProcess } from "./support/server-process";
@@ -73,33 +72,7 @@ interface Client {
   call<T>(method: string, route: string, body?: unknown, token?: string | null): Promise<{ status: number; body: T }>;
 }
 
-/** A recording notebook service: resolves one path and registers one route. */
-function fakeNotebooks(resolved: () => ResolvedDoc | null) {
-  const calls: string[] = [];
-  const factory = (deps: Omit<ControlDeps, "notebooks">): NotebookService => ({
-    async start() {
-      calls.push("start");
-    },
-    async stop() {
-      calls.push("stop");
-    },
-    resolvePath: (liberaPath) => (liberaPath === "Shared/notes.md" ? resolved() : null),
-    resolveDoc: (docId) => (resolved()?.docId === docId ? resolved() : null),
-    async accountChanged() {
-      calls.push(`accountChanged:${deps.host.api ? "api" : "none"}`);
-    },
-    registerRoutes(router) {
-      router.add("POST", ControlRoutes.share, (request) => {
-        if (!request.body) throw new ControlError(400, "bad-request", "notebook required");
-        return { status: 202, body: { shared: (request.body as { notebook: string }).notebook } };
-      });
-    },
-    projectState: () => ({ notebook: "Shared", revoked: false, reconcilePending: 0 }),
-  });
-  return { calls, factory };
-}
-
-async function startClient(dir: string, options: { notebooks?: ReturnType<typeof fakeNotebooks> } = {}): Promise<Client> {
+async function startClient(dir: string): Promise<Client> {
   const events: HostEvent[] = [];
   const app = await startControlApp({
     collabDir: dir,
@@ -110,7 +83,6 @@ async function startClient(dir: string, options: { notebooks?: ReturnType<typeof
     emit: (event) => events.push(event),
     logger: quietLogger,
     host: { compaction: false, hubIdleMs: 50 },
-    ...(options.notebooks ? { createNotebookService: options.notebooks.factory } : {}),
   });
   const call = async <T>(method: string, route: string, body?: unknown, token: string | null = app.address.token) => {
     const response = await fetch(`${app.address.url}${route}`, {
@@ -169,10 +141,9 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
   const root = mkdtempSync(path.join(tmpdir(), "libera-elec-control-"));
   const server = await startServerProcess();
   const clients: Client[] = [];
-  let resolved: ResolvedDoc | null = null;
-  const notebooks = fakeNotebooks(() => resolved);
   try {
-    const alice = await startClient(path.join(root, "alice"), { notebooks });
+    // The real NotebookService: Alice shares a notebook from her library.
+    const alice = await startClient(path.join(root, "alice"));
     clients.push(alice);
 
     // --- auth on the control token and the Host header
@@ -207,7 +178,6 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     await until(() => lastStatus(alice)?.connection === "connected", "alice to connect");
     const connectionsSeen = alice.events.filter((event) => event.t === "status").map((event) => (event as { status: HostStatus }).status.connection);
     assert.ok(connectionsSeen.includes("signed-out") && connectionsSeen.includes("connected"), connectionsSeen.join(","));
-    assert.ok(notebooks.calls.includes("accountChanged:api"));
     assert.ok(existsSync(path.join(alice.dir, `${aliceId}.sqlite`)), "the account's own database is open");
 
     // Account file: public fields only. Session file: ciphertext only.
@@ -226,27 +196,25 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     await until(() => lastStatus(alice)?.account?.displayName === "Alice A.", "status to carry the new name");
     assert.equal((await alice.call("PATCH", ControlRoutes.account, { color: "blue" })).status, 400);
 
-    // --- projects, invitations, members (the project is created directly on the server)
+    // --- share a notebook (the real NotebookService's route, mounted after the core routes)
     const aliceDirect = await serverApi<AuthResponse>(server, "/v1/auth/login", { body: { email: "alice@example.test", password: "correct horse battery" } });
     assert.equal(aliceDirect.status, 200);
     const token = aliceDirect.body.accessToken;
-    const project = await serverApi<ProjectSummary>(server, "/v1/projects", { body: { name: "Shared" }, token });
-    assert.equal(project.status, 201);
-    const projectId = project.body.id;
-    alice.app.runtime.host.store.upsertProject({ projectId, name: "Shared", localRoot: path.join(alice.dir, "library", "Shared"), role: "owner" });
+    mkdirSync(path.join(alice.dir, "library", "Shared"), { recursive: true });
+    writeFileSync(path.join(alice.dir, "library", "Shared", "notes.md"), "Hello world\n");
+    const shared = await alice.call<{ projectId: string; notebook: string; documents: number }>("POST", ControlRoutes.share, { notebook: "Shared" });
+    assert.equal(shared.status, 200, JSON.stringify(shared.body));
+    assert.equal(shared.body.notebook, "Shared");
+    const projectId = shared.body.projectId;
+    assert.ok(projectId);
+    await until(() => (lastStatus(alice)?.projects ?? []).some((item) => item.projectId === projectId), "the shared notebook in HostStatus");
 
-    alice.app.runtime.host.store.upsertProject({ projectId: "prj_gone", name: "Gone", localRoot: path.join(alice.dir, "library", "Gone"), role: "editor" });
     const listing = await alice.call<LocalProject[]>("GET", ControlRoutes.projects);
     assert.equal(listing.status, 200);
     assert.deepEqual(
       listing.body.map((item) => [item.projectId, item.name, item.role, item.notebook, item.revoked]),
-      [
-        ["prj_gone", "Gone", "editor", "Shared", true],
-        [projectId, "Shared", "owner", "Shared", false],
-      ],
-      "joined projects only; one the server no longer lists is revoked",
+      [[projectId, "Shared", "owner", "Shared", false]],
     );
-    alice.app.runtime.host.store.deleteProject("prj_gone");
 
     const invite = await alice.call<Invitation>("POST", ControlRoutes.invitations(projectId), { email: "bob@example.test", role: "editor" });
     assert.equal(invite.status, 201, JSON.stringify(invite.body));
@@ -290,25 +258,23 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     const refused = await bob.call<{ error: { code: string } }>("PATCH", ControlRoutes.member(projectId, aliceId), { role: "viewer" });
     assert.equal(refused.status, 403);
 
-    // --- documents
-    const docId = "doc_elec_control";
-    const created = await serverApi(server, `/v1/projects/${projectId}/documents`, { body: { docId, fileId: "fil_elec_control", kind: "markdown" }, token });
-    assert.equal(created.status, 201);
-    assert.equal((await alice.call("GET", ControlRoutes.docText(docId))).status, 404, "unknown docs are not opened");
-    alice.app.runtime.host.store.upsertDoc({ docId, projectId, fileId: "fil_elec_control", path: "notes.md", materializedHash: null });
-    resolved = { docId, projectId, fileId: "fil_elec_control", path: "Shared/notes.md", kind: "markdown", role: "owner", readOnly: false };
+    // --- documents: the shared file resolves through the NotebookService
     const resolvedDoc = await alice.call<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}?path=${encodeURIComponent("Shared/notes.md")}`);
-    assert.equal(resolvedDoc.body?.docId, docId);
+    assert.equal(resolvedDoc.status, 200);
+    const docId = resolvedDoc.body?.docId ?? "";
+    assert.ok(docId, "notes.md is a shared document");
     assert.equal((await alice.call<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}?path=Other.md`)).body, null);
     assert.equal((await alice.call<ResolvedDoc>("GET", ControlRoutes.doc(docId))).body.path, "Shared/notes.md");
     assert.equal((await alice.call("GET", ControlRoutes.doc("doc_unknown"))).status, 404);
+    assert.equal((await alice.call("GET", ControlRoutes.docText("doc_unknown"))).status, 404, "unknown docs are not opened");
 
-    const empty = await alice.call<DocText>("GET", ControlRoutes.docText(docId));
-    assert.equal(empty.status, 200);
-    assert.equal(empty.body.text, "");
+    const baseRefs = alice.app.runtime.host.registry.refCount(docId);
+    const imported = await alice.call<DocText>("GET", ControlRoutes.docText(docId));
+    assert.equal(imported.status, 200);
+    assert.equal(imported.body.text, "Hello world\n");
 
     const first = await alice.call<ApplyEditsResponse>("POST", ControlRoutes.docEdits(docId), {
-      edits: [{ start: 0, end: 0, text: "Hello world\nSecond line\n", before: "" }],
+      edits: [{ start: 12, end: 12, text: "Second line\n", before: "" }],
       provenance: { source: "ai", feature: "agent", model: "test/model", runId: "run_elec_1", suggestionId: "spoofed" },
     });
     assert.equal(first.status, 200, JSON.stringify(first.body));
@@ -392,13 +358,14 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     assert.ok(annotations.body.updates.some((update) => update.actor?.kind === "ai" && (update.actor as { feature?: string }).feature === "agentic-review"));
 
     // The hub is released after each request.
-    assert.equal(alice.app.runtime.host.registry.refCount(docId), 0);
-    await until(() => alice.app.runtime.host.registry.get(docId) === null, "the doc hub to close after its requests");
+    // Requests hold the hub only while they run (the materializer keeps its own reference).
+    assert.equal(alice.app.runtime.host.registry.refCount(docId), baseRefs);
 
-    // --- notebook routes are mounted after the core routes
-    const shared = await alice.call<{ shared: string }>("POST", ControlRoutes.share, { notebook: "Shared" });
-    assert.equal(shared.status, 202);
-    assert.equal(shared.body.shared, "Shared");
+    // The materializer writes the shared text back to the working copy.
+    await until(
+      () => readFileSync(path.join(alice.dir, "library", "Shared", "notes.md"), "utf8") === "Hi there\nSecond line\nThird line\n",
+      "the working copy to follow the edits",
+    );
 
     // --- persistence: Bob's host restarts and signs in from the stored session
     await bob.app.close();

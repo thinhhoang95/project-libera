@@ -181,7 +181,11 @@ export class CollabRuntime {
     const notebooks = factory({
       host,
       libraryRoot: this.options.libraryRoot,
-      emit: (event) => this.options.emit(event),
+      emit: (event) => {
+        this.options.emit(event);
+        // Shares, joins, revocations and reconciliations change HostStatus.projects.
+        if (event.t === "project-changed" || event.t === "reconcile-needed") this.statusChanged();
+      },
       statusChanged: () => this.statusChanged(),
     });
     this.notebookRoutes.clear();
@@ -249,17 +253,18 @@ export class CollabRuntime {
     if (generation) {
       try {
         const store = generation.host.store;
-        projects = store.listProjects().map((row) => {
-          const state = generation.notebooks.projectState?.(row.projectId) ?? null;
-          return {
+        // The notebook service knows folders, revocation and pending
+        // reconciliations; the projects table is the fallback.
+        projects =
+          generation.notebooks.localProjects?.() ??
+          store.listProjects().map((row) => ({
             projectId: row.projectId,
             name: row.name,
             role: row.role ?? "viewer",
-            notebook: state?.notebook ?? (row.localRoot ? path.basename(row.localRoot) : row.name),
-            revoked: state?.revoked ?? false,
-            reconcilePending: state?.reconcilePending ?? 0,
-          };
-        });
+            notebook: row.localRoot ? path.basename(row.localRoot) : row.name,
+            revoked: false,
+            reconcilePending: 0,
+          }));
         pendingCommands = store.listCommands().length;
       } catch {
         // The host is between databases; report what is known.
