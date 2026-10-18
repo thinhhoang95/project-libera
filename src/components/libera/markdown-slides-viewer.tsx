@@ -1,8 +1,14 @@
 "use client";
 
 import { X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import {
+  CitationScope,
+  ReferenceRenderProvider,
+  referenceNotebookForPath,
+  useReferenceRender,
+} from "@/components/libera/references/reference-render-context";
 import {
   hasMarkdownSlideTemplate,
   renderMarkdownSlideTemplate,
@@ -35,6 +41,19 @@ function slideKey(slide: MarkdownSlide, index: number) {
   return `${slide.sourceStart}:${slide.sourceEnd}:${index}`;
 }
 
+/**
+ * Citations in a deck: formatted with the notebook's references (the
+ * workspace's provider, or one for the deck's notebook) and numbered across
+ * all slides; the bibliography goes where a slide has `:::bibliography`.
+ */
+function SlideDeckReferences({ children, deck, documentPath }: { children: ReactNode; deck: MarkdownSlideDeck; documentPath?: string }) {
+  const outer = useReferenceRender();
+  const sources = useMemo(() => deck.slides.map((slide) => slide.content), [deck]);
+  const scoped = <CitationScope sources={sources}>{children}</CitationScope>;
+  if (outer || !documentPath) return scoped;
+  return <ReferenceRenderProvider notebook={referenceNotebookForPath(documentPath)}>{scoped}</ReferenceRenderProvider>;
+}
+
 function MarkdownSlideContent({
   baseLineHeight,
   deck,
@@ -56,6 +75,7 @@ function MarkdownSlideContent({
     children: slide.content.trim() ? (
       <MarkdownRenderer
         baseLineHeight={baseLineHeight}
+        citationScopeIndex={slideNumber - 1}
         className="[&>*:last-child]:mb-0"
         content={slide.content}
         documentPath={documentPath}
@@ -113,6 +133,7 @@ export function MarkdownSlidesPreview({
   const clampedActiveSlideIndex = clampSlideIndex(deck, activeSlideIndex);
 
   return (
+    <SlideDeckReferences deck={deck} documentPath={documentPath}>
     <div className="flex min-h-full flex-col items-center gap-6 bg-zinc-100 px-6 py-6">
       <MarkdownSlidesDiagnostics deck={deck} />
       {deck.slides.length ? (
@@ -148,6 +169,7 @@ export function MarkdownSlidesPreview({
         </div>
       )}
     </div>
+    </SlideDeckReferences>
   );
 }
 
@@ -279,6 +301,7 @@ export function MarkdownSlidesPresenter({
   }, [deck.slides.length, exitPresenter, goToSlide, slideIndex]);
 
   return (
+    <SlideDeckReferences deck={deck} documentPath={documentPath}>
     <div
       ref={rootRef}
       className="fixed inset-0 z-[100] flex min-h-0 items-center justify-center overflow-hidden bg-zinc-950 text-white"
@@ -322,5 +345,6 @@ export function MarkdownSlidesPresenter({
         <X aria-hidden className="h-4 w-4" />
       </button>
     </div>
+    </SlideDeckReferences>
   );
 }

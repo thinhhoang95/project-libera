@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { ReferenceRenderProvider, referenceNotebookForPath } from "@/components/libera/references/reference-render-context";
 import {
   getRenderedMarkdownFontStack,
   type MarkdownPreferences,
@@ -73,14 +74,16 @@ export function MarkdownPreviewPage({
       <div className="min-h-0 flex-1 overflow-auto" aria-busy={busy}>
         <article className="mx-auto max-w-4xl p-8">
           {snapshot ? (
-            <MarkdownRenderer
-              mathMarkers={markdownPreferences}
-              content={snapshot.content}
-              documentPath={snapshot.documentPath}
-              fontFamily={getRenderedMarkdownFontStack(
-                markdownPreferences.renderedMarkdownFontFamily,
-              )}
-            />
+            <ReferenceRenderProvider notebook={referenceNotebookForPath(snapshot.documentPath)}>
+              <MarkdownRenderer
+                mathMarkers={markdownPreferences}
+                content={snapshot.content}
+                documentPath={snapshot.documentPath}
+                fontFamily={getRenderedMarkdownFontStack(
+                  markdownPreferences.renderedMarkdownFontFamily,
+                )}
+              />
+            </ReferenceRenderProvider>
           ) : (
             <p className="text-sm text-muted-foreground" role="status">
               {busy ? "Loading preview…" : "No preview loaded."}

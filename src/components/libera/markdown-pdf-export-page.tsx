@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
+  ReferenceRenderProvider,
+  referenceNotebookForPath,
+  waitForReferencesReady,
+} from "@/components/libera/references/reference-render-context";
+import {
   getRenderedMarkdownFontStack,
   type MarkdownPreferences,
 } from "@/lib/markdown-preferences";
@@ -83,6 +88,10 @@ function fitOversizedDisplayMath(root: HTMLElement) {
 }
 
 async function waitForExportReady(root: HTMLElement) {
+  await nextFrame();
+  // Citations need the notebook's library and style, then formatting; the
+  // printed PDF must show formatted citations and the bibliography.
+  await waitForReferencesReady(root);
   await nextFrame();
   await nextFrame();
   await document.fonts?.ready;
@@ -167,16 +176,18 @@ export function MarkdownPdfExportPage({
     <main className="markdown-pdf-export-page">
       <article ref={rootRef} className="markdown-pdf-export-document">
         {payload ? (
-          <MarkdownRenderer
-            mathMarkers={markdownPreferences}
-            baseFontSize={markdownPreferences.pdfExportBaseFontSize}
-            baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
-            content={payload.content}
-            documentPath={payload.documentPath}
-            fontFamily={getRenderedMarkdownFontStack(
-              markdownPreferences.renderedMarkdownFontFamily,
-            )}
-          />
+          <ReferenceRenderProvider notebook={referenceNotebookForPath(payload.documentPath)}>
+            <MarkdownRenderer
+              mathMarkers={markdownPreferences}
+              baseFontSize={markdownPreferences.pdfExportBaseFontSize}
+              baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
+              content={payload.content}
+              documentPath={payload.documentPath}
+              fontFamily={getRenderedMarkdownFontStack(
+                markdownPreferences.renderedMarkdownFontFamily,
+              )}
+            />
+          </ReferenceRenderProvider>
         ) : (
           <p className="markdown-pdf-export-loading">Preparing export...</p>
         )}
