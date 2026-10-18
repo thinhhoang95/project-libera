@@ -14,7 +14,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 need
 | Wave | Content | Branches | Status |
 |---|---|---|---|
 | 0 | Scaffolding (M1.0): dependencies, protocol, schema, server skeleton | `collaboration` | ◐ |
-| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | — | ☐ |
+| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge`, `collab/edlib` | ◐ |
 | 2 | Electron host integration · replica · bindings in editors · shared notebooks · status UI · Phase 1 AI | — | ☐ |
 | 3 | Phase 2: comments, mentions, notifications, history, restore, offline commands | — | ☐ |
 | 4 | Phase 3: suggestions, suggest mode, decisions, AI suggester, reviews, audit | — | ☐ |
@@ -40,8 +40,9 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ `src/lib/collab/protocol/`: codec, messages, actor, roles, schema, REST contracts, local replica protocol (`npm run test:collab`)
 - ☑ Server skeleton on Fastify with PGlite or Postgres, migrations, full schema, tokens, access helpers, error handling (`cd server && npm test`)
 - ☑ Build config: tsconfig/eslint excludes, Next tracing exclude, gitignore, host esbuild bundle script
-- ☐ `SETUP.md` first version
-- ☐ CI jobs for the server and host tests
+- ☑ `SETUP.md` first version (local development on PGlite, configuration, tests, deployment)
+- ☑ Server Dockerfile; `ops/collab` production and development compose files; nginx site with WebSocket upgrade; `npm run collab:deploy` (dry run verified; 👤 first real deploy needs DNS, Docker and `.env` on the VPS)
+- ◐ CI workflow `.github/workflows/collab.yml` (written; runs once the branch is pushed to GitHub)
 - ☐ Feature flag `LIBERA_COLLAB` and Preferences → Collaboration
 
 ### M1.1 Server sync core
