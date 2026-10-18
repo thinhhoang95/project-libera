@@ -255,10 +255,15 @@ test("scanning a 1 MB document is fast", () => {
   };
   const { best, result } = timed(source);
   assert.equal(result.length, blocks * 6);
-  assert.ok(best < 200, `took ${best.toFixed(1)} ms`);
-  // Pathological input stays linear too.
+  // About 90 ms on an idle laptop. The cap is loose so a loaded machine (the
+  // full suite runs files in parallel) does not fail it; quadratic behaviour
+  // would take many seconds.
+  assert.ok(best < 2000, `took ${best.toFixed(1)} ms`);
+  // Pathological input stays linear: 4x the input may not cost much more than 4x the time.
   for (const unit of ["[", "`", "$", "\\(", "<!--", "[@a, ", "[a](", "*_[", "\\[\n", "> - ", "www."]) {
-    const text = unit.repeat(Math.ceil(100_000 / unit.length));
-    assert.ok(timed(text).best < 200, unit);
+    const small = timed(unit.repeat(Math.ceil(25_000 / unit.length))).best;
+    const large = timed(unit.repeat(Math.ceil(100_000 / unit.length))).best;
+    assert.ok(large < 2000, `${unit}: ${large.toFixed(1)} ms`);
+    assert.ok(large < Math.max(small, 2) * 12, `${unit}: ${small.toFixed(1)} ms → ${large.toFixed(1)} ms`);
   }
 });
