@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applyLibraryOps, emptyReferenceLibrary, LibraryOpError } from "../../src/lib/references/library-ops";
-import type { FieldProvenance, ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp } from "../../src/lib/references/types";
+import type { CslItem, FieldProvenance, ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp } from "../../src/lib/references/types";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-02-01T00:00:00.000Z";
@@ -24,7 +24,7 @@ function byKey(library: ReferenceLibrary, key: string) {
   return entry;
 }
 
-const smith = { type: "article-journal", title: "Sparse coding of images", author: [{ family: "Smith", given: "Ann" }], issued: { "date-parts": [[2020]] } } as const;
+const smith: CslItem = { type: "article-journal", title: "Sparse coding of images", author: [{ family: "Smith", given: "Ann" }], issued: { "date-parts": [[2020]] } };
 
 function withSmith() {
   return apply(emptyReferenceLibrary(), [{ op: "add", entry: { csl: { ...smith }, provenance: { title: crossref } } }], T0).library;
