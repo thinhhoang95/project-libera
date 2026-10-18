@@ -10,6 +10,22 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Each lane works on `references/<lane>` in `.claude/worktrees/refs-<lane>`, branched from the integration tip at the start of its wave, and is merged with `--no-ff`.
 - The collaboration work continues on `collaboration` in the main checkout. A single merge of `references/integration` into `collaboration` happens later (see “Big merge” below). No reference lane touches collab code.
 
+## Resume here (paused 18 Oct 2026)
+
+- Wave 0 and Wave 1 are merged and verified on `references/integration`.
+- Wave 2 worktrees exist, branched from the integration tip, but no agent has started:
+  - `.claude/worktrees/refs-preview` on `references/preview` (dev port 3101)
+  - `.claude/worktrees/refs-interop` on `references/interop` (port 3102)
+  - `.claude/worktrees/refs-panel` on `references/panel` (port 3103)
+- The Wave 1 worktrees (`refs-core`, `refs-syntax`, `refs-storage`) are merged and can be removed with `git worktree remove`.
+- The Wave 2 contracts are in [lanes.md](lanes.md): rendered citation DOM, reference render context, citation index, import and export, plus `REFERENCES_ADD_REQUEST_EVENT` / `REFERENCES_REVEAL_EVENT` and `FieldAlternative` conflicts in `types.ts`.
+- Scope moved out of Wave 2 into Wave 3's `moves` lane: formatted reference-list export and the LaTeX export placeholder path (both need `format.ts` from the preview lane).
+- Notes for Wave 3 briefs:
+  - `citationTriggerAt` re-analyses the whole document, at about 90 ms per MB, so editors should call it only around `@`.
+  - `remarkCitations` must be `.use`d after remark-parse.
+  - The storage `merge` op should be checked against `mergeEntryFields` (core) semantics.
+  - Interop's import route decides the status of imported entries: `confirmed` when title, creator and date are present, otherwise `needs-review`.
+
 ## Baseline
 
 `npm run test:editor` on `references/integration` before any lane: 559 tests, 552 pass, 4 fail, 2 cancelled, 1 skipped. The failures and cancellations are pre-existing (global search index tests 132, 158, 159, 180; PDF worker resolution 415; atomic-write cleanup 455), the same set `docs/collaboration/progress.md` records. Lanes must not add to this list.
@@ -36,9 +52,9 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ◐ |
-| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ◐ |
-| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ◐ |
+| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ☐ |
+| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ☐ |
+| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ☐ |
 
 ## Wave 3: editors, capture, agent runtime, moves
 
