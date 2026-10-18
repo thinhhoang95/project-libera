@@ -170,5 +170,9 @@ describe("internal routes and metrics", () => {
     assert.ok(metric(text, "libera_storage_compaction_lag_updates") !== undefined);
     assert.match(text, /libera_storage_doc_log_bytes\{doc_id="[^"]+"\} \d+/);
     assert.ok(metric(text, "libera_storage_quarantined_updates") !== undefined);
+    // The job gauge is labelled "name": a "job" label would be renamed to
+    // exported_job by Prometheus, which owns "job" for the scrape target.
+    assert.match(text, /libera_job_last_success_timestamp_seconds\{name="storage-metrics"\} \d/);
+    assert.doesNotMatch(text, /libera_job_last_success_timestamp_seconds\{job=/);
   });
 });
