@@ -32,13 +32,27 @@ function isForeignOnnxBinary(entryPath) {
   return Boolean(platform && arch && arch !== process.arch);
 }
 
-async function copy(source, destination) {
+async function copy(source, destination, filter = () => true) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.cp(source, destination, {
-    filter: (entryPath) => !path.basename(entryPath).startsWith("._") && !isForeignOnnxBinary(entryPath),
+    filter: (entryPath) => !path.basename(entryPath).startsWith("._") && !isForeignOnnxBinary(entryPath) && filter(entryPath),
     recursive: true,
     verbatimSymlinks: true,
   });
+}
+
+const collabSourceRoot = path.join(projectRoot, "electron", "collab");
+const collabBundleRoot = path.join(collabSourceRoot, "dist");
+
+/**
+ * electron/collab/ is TypeScript bundled into electron/collab/dist/host.cjs
+ * (scripts/build-collab-host.cjs, run by electron:build-next). Ship only the
+ * bundle and its source map, not the sources.
+ */
+function isShippedElectronEntry(entryPath) {
+  if (entryPath === collabSourceRoot || entryPath === collabBundleRoot) return true;
+  if (!entryPath.startsWith(collabSourceRoot + path.sep)) return true;
+  return entryPath.startsWith(collabBundleRoot + path.sep);
 }
 
 /**
@@ -304,7 +318,10 @@ async function main() {
   await fs.rm(distAppRoot, { force: true, recursive: true });
   await fs.mkdir(distAppRoot, { recursive: true });
 
-  await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"));
+  if (!existsSync(path.join(collabBundleRoot, "host.cjs"))) {
+    throw new Error(`${path.join(collabBundleRoot, "host.cjs")} was not found. Run npm run electron:build-next first.`);
+  }
+  await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"), isShippedElectronEntry);
   await copy(path.join(projectRoot, "assets"), path.join(distAppRoot, "assets"));
   await moveStandalone(
     path.join(projectRoot, ".next", "standalone"),

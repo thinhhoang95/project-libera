@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webFrame } = require("electron");
 
 function readProcessSwitch(name) {
   const prefix = `--${name}=`;
@@ -122,3 +122,96 @@ contextBridge.exposeInMainWorld("liberaUpdater", {
     return () => ipcRenderer.removeListener("updater:state-changed", handler);
   },
 });
+
+// Collaboration (electron/collab-host.cjs). Exposed only when the host runs.
+// contextBridge cannot pass MessagePorts, so window.liberaCollab is defined in
+// the page's own world: attach() asks main for a port, main posts it to this
+// preload, and the preload forwards it to the page with window.postMessage
+// under a request id. Only `require("electron")` is used here because the
+// popped-out file and LaTeX PDF windows load this preload sandboxed.
+const COLLAB_PORT_MESSAGE = "libera-collab:port";
+
+function collabEnabled() {
+  try {
+    return ipcRenderer.sendSync("collab:enabled") === true;
+  } catch {
+    return false;
+  }
+}
+
+// Runs in the main world (serialized there), so it must be self-contained.
+function installCollabBridge(ipc, messageType) {
+  if (window.liberaCollab) return;
+  const waiting = new Map();
+  let counter = 0;
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (event.source !== window || !data || data.type !== messageType || typeof data.requestId !== "string") return;
+    const entry = waiting.get(data.requestId);
+    if (!entry) return;
+    waiting.delete(data.requestId);
+    clearTimeout(entry.timer);
+    event.stopImmediatePropagation();
+    const port = event.ports && event.ports[0];
+    if (port) entry.resolve(port);
+    else entry.reject(new Error("The collaboration service sent no port."));
+  });
+  const bridge = Object.freeze({
+    attach(docId) {
+      if (typeof docId !== "string" || !docId) return Promise.reject(new TypeError("A document id is required."));
+      counter += 1;
+      const requestId = `${Date.now().toString(36)}-${counter.toString(36)}-${Math.random().toString(36).slice(2)}`;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiting.delete(requestId);
+          reject(new Error("The collaboration service did not answer."));
+        }, 15000);
+        waiting.set(requestId, { resolve, reject, timer });
+        Promise.resolve(ipc.requestPort(docId, requestId)).catch((error) => {
+          if (!waiting.delete(requestId)) return;
+          clearTimeout(timer);
+          const message = String((error && error.message) || error).replace(/^Error invoking remote method 'collab:attach': (Error: )?/, "");
+          reject(new Error(message));
+        });
+      });
+    },
+    onEvent(listener) {
+      return ipc.onEvent(listener);
+    },
+    nudge() {
+      ipc.nudge();
+    },
+  });
+  Object.defineProperty(window, "liberaCollab", { value: bridge, enumerable: true, configurable: false, writable: false });
+}
+
+if (collabEnabled()) {
+  ipcRenderer.on("collab:port", (event, info) => {
+    const port = event.ports && event.ports[0];
+    if (!port) return;
+    if (!info || typeof info.requestId !== "string") {
+      port.close();
+      return;
+    }
+    const origin = window.location.origin && window.location.origin !== "null" ? window.location.origin : "*";
+    window.postMessage({ type: COLLAB_PORT_MESSAGE, requestId: info.requestId, docId: info.docId }, origin, [port]);
+  });
+  const ipc = {
+    requestPort: (docId, requestId) => ipcRenderer.invoke("collab:attach", docId, requestId),
+    onEvent: (listener) => {
+      const handler = (_event, hostEvent) => listener(hostEvent);
+      ipcRenderer.on("collab:event", handler);
+      return () => ipcRenderer.removeListener("collab:event", handler);
+    },
+    nudge: () => ipcRenderer.send("collab:nudge"),
+  };
+  if (typeof contextBridge.executeInMainWorld === "function") {
+    contextBridge.executeInMainWorld({ func: installCollabBridge, args: [ipc, COLLAB_PORT_MESSAGE] });
+  } else {
+    // Older Electron: expose the IPC half, then define the bridge in the page.
+    contextBridge.exposeInMainWorld("__liberaCollabIpc", ipc);
+    void webFrame.executeJavaScript(
+      `(${installCollabBridge.toString()})(window.__liberaCollabIpc, ${JSON.stringify(COLLAB_PORT_MESSAGE)}); delete window.__liberaCollabIpc;`,
+    );
+  }
+}

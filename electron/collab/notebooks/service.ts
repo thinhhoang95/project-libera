@@ -310,6 +310,26 @@ export class NotebookServiceImpl implements NotebookService {
     };
   }
 
+  /** The reverse of resolvePath, over the same index (GET /docs/:docId). */
+  resolveDoc(docId: string): ResolvedDoc | null {
+    if (typeof docId !== "string" || !docId) return null;
+    for (const handle of this.projects.values()) {
+      for (const doc of handle.index.values()) {
+        if (doc.docId !== docId) continue;
+        return {
+          docId: doc.docId,
+          projectId: handle.projectId,
+          fileId: doc.fileId,
+          path: `${handle.notebook}/${doc.path}`,
+          kind: doc.docKind,
+          role: handle.role,
+          readOnly: handle.revoked || !roleAtLeast(handle.role, "editor"),
+        };
+      }
+    }
+    return null;
+  }
+
   private handleForNotebook(notebook: string): ProjectHandle | null {
     const key = notebook.normalize("NFC").toLowerCase();
     let fallback: ProjectHandle | null = null;

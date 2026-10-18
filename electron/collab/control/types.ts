@@ -50,6 +50,11 @@ export interface ControlDeps {
   /** Pushes an event to every window (through main and the preload). */
   emit(event: HostEvent): void;
   notebooks: NotebookService;
+  /**
+   * Asks the control server to recompute HostStatus and push it as a
+   * `status` event if it changed (after a share, join or revocation).
+   */
+  statusChanged?(): void;
 }
 
 /**
@@ -61,6 +66,12 @@ export interface NotebookService {
   stop(): Promise<void>;
   /** Maps a Libera path ("Notebook/sub/file.md") to its shared document, or null. */
   resolvePath(liberaPath: string): ResolvedDoc | null;
+  /**
+   * The reverse of resolvePath: the shared file a docId belongs to, or null.
+   * Optional until the notebook service implements it; GET /docs/:docId
+   * answers 404 without it.
+   */
+  resolveDoc?(docId: string): ResolvedDoc | null;
   /** Called after sign-in/sign-out so the service can (re)attach projects. */
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;
