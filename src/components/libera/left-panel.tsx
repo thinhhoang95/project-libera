@@ -194,6 +194,7 @@ export function LeftPanel({
                 notebook={notebookPanelProps.selectedNotebookName}
                 tree={notebookPanelProps.tree}
                 activeMarkdownDraft={references?.activeMarkdownDraft ?? null}
+                activeDocumentPath={references?.activeDocumentPath ?? null}
                 openDrafts={references?.openDrafts ?? NO_DRAFTS}
                 canCite={references?.canCite ?? false}
                 onCite={references?.onCite ?? (() => undefined)}

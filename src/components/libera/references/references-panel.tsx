@@ -1,15 +1,19 @@
 "use client";
 
 import {
+  AlertCircle,
   Check,
   Download,
+  FileSearch,
   FileUp,
+  ListChecks,
   Loader2,
   MoreVertical,
   Palette,
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Table2,
   Undo2,
   X,
@@ -25,13 +29,21 @@ import {
   isImportablePath,
   TREE_FILE_MIME,
 } from "@/components/libera/references/add-reference-box";
+import {
+  claimPrivacyNotice,
+  formattedReferenceForCopy,
+  PrivacyNotice,
+  ReresolveDialog,
+  sessionWebSearchChoice,
+  setSessionWebSearch,
+  writeRichClipboard,
+} from "@/components/libera/references/reference-candidates";
 import { ReferenceCard } from "@/components/libera/references/reference-card";
 import {
   citingPaths,
   entrySearchText,
   entryMatchesWords,
   fileBaseName,
-  formatPlainReference,
   hasPdf,
   keyLookup,
   REFERENCE_SORTS,
@@ -61,16 +73,21 @@ import {
   useReferenceCitations,
   type OpenReferenceDraft,
 } from "@/components/libera/references/use-reference-citations";
+import { useReferenceJobs } from "@/components/libera/references/use-reference-jobs";
 import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import { isReferenceUndoShortcut, useReferenceUndo } from "@/components/libera/references/use-reference-undo";
 import { findDuplicateGroups } from "@/lib/references/dedupe";
+import { isActiveReferenceJob, type ReferenceJobRequest, type ReferenceJobStatus } from "@/lib/references/jobs-types";
 import {
   BUNDLED_CSL_STYLES,
+  FACT_CHECK_REQUEST_EVENT,
   REFERENCES_ADD_REQUEST_EVENT,
   REFERENCES_REVEAL_EVENT,
   type ReferenceEntry,
   type ReferenceEntryInput,
   type ReferenceLibraryOp,
+  type FactCheckRequestDetail,
+  type ReferenceLibrary,
   type ReferencesAddRequestDetail,
   type ReferencesRevealDetail,
 } from "@/lib/references/types";
@@ -78,9 +95,11 @@ import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 // The References panel in the left rail: the library of the selected
 // notebook with search, filters and sorting, the cited-in-this-document
-// highlight, row actions, the detail card, the Add box, drops from the
-// notebook tree and the OS, the style picker, export, undo and the Manage
-// references dialog. See docs/references/plan.md §1.1.
+// highlight, row actions, the detail card, the Add box with lookups and
+// candidate confirmation, drops from the notebook tree and the OS, background
+// jobs for PDFs, re-resolve, the style picker, export, undo, the fact-check
+// entry point and the Manage references dialog. See docs/references/plan.md
+// §1.1 and §4.4.
 
 export type ReferenceFilter = "all" | "cited" | "review" | "uncited" | "duplicates" | "missing-pdf";
 
@@ -153,6 +172,8 @@ export type ReferencesPanelProps = {
   tree: LiberaTree;
   /** Markdown text of the active document (its open draft), or null when no Markdown document is active. */
   activeMarkdownDraft: string | null;
+  /** Library path of the active document, when it is a saved file. */
+  activeDocumentPath?: string | null;
   /** Unsaved text of open Markdown tabs, for citation counts. */
   openDrafts: OpenReferenceDraft[];
   /** A Markdown editor is active, so Cite at cursor can insert. */
@@ -241,10 +262,18 @@ async function copyText(text: string) {
 
 type Notice = { tone: "info" | "error"; text: string; undo?: boolean };
 
+const MARKDOWN_PATH = /\.(md|markdown)$/i;
+
+/** Library paths a tree drag carries (one path; several separated by newlines). */
+function treePaths(data: string) {
+  return data.split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+}
+
 function ReferencesPanelBody({
   notebook,
   tree,
   activeMarkdownDraft,
+  activeDocumentPath,
   openDrafts,
   canCite,
   onCite,
@@ -267,18 +296,38 @@ function ReferencesPanelBody({
   }), [notebook]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [addBox, setAddBox] = useState<{ id: number; query: string } | null>(null);
+  const [addBox, setAddBox] = useState<{ id: number; query: string; path?: string } | null>(null);
   const [menu, setMenu] = useState<{ entryId: string; point: { x: number; y: number } } | null>(null);
   const [panelMenuOpen, setPanelMenuOpen] = useState(false);
-  const [editing, setEditing] = useState<{ entry?: ReferenceEntry; initial?: ReferenceEntryInput } | null>(null);
+  const [editing, setEditing] = useState<{ entry?: ReferenceEntry; initial?: ReferenceEntryInput; extraOps?: ReferenceLibraryOp[] } | null>(null);
   const [deleting, setDeleting] = useState<ReferenceEntry[] | null>(null);
   const [mergeGroup, setMergeGroup] = useState<ReferenceEntry[] | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
+  const [webSearch, setWebSearchState] = useState(() => sessionWebSearchChoice() ?? false);
+  const [webSearchChosen, setWebSearchChosen] = useState(() => sessionWebSearchChoice() !== null);
+  const [privacyNotice, setPrivacyNotice] = useState(false);
+  const [reresolving, setReresolving] = useState<ReferenceEntry | null>(null);
+  const [reviewFilter, setReviewFilter] = useState<{ jobId: string; ids: Set<string> } | null>(null);
+  const [factCheckOpen, setFactCheckOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const reloadLibrary = useCallback(() => void reload().catch(() => undefined), [reload]);
+  const jobs = useReferenceJobs(notebook, reloadLibrary);
+
+  const setWebSearch = useCallback((value: boolean) => {
+    setSessionWebSearch(value);
+    setWebSearchState(value);
+    setWebSearchChosen(true);
+  }, []);
+
+  /** The first online lookup of the session shows what is sent where. */
+  const noteLookup = useCallback(() => {
+    if (claimPrivacyNotice()) setPrivacyNotice(true);
+  }, []);
 
   useEffect(() => {
     if (!notice || notice.tone === "error") return;
@@ -310,6 +359,8 @@ function ReferencesPanelBody({
   const listed = useMemo(() => {
     const matching = entries.filter((entry) => {
       if (words.length && !entryMatchesWords(searchTexts.get(entry.id) ?? "", words)) return false;
+      // The temporary filter of a job's new entries replaces the chosen filter while it is on.
+      if (reviewFilter) return reviewFilter.ids.has(entry.id);
       switch (view.filter) {
         case "cited": return activeIds.has(entry.id);
         case "review": return entry.status !== "confirmed";
@@ -320,11 +371,11 @@ function ReferencesPanelBody({
       }
     });
     return sortEntries(matching, view.sort);
-  }, [entries, words, searchTexts, view.filter, view.sort, activeIds, citingById, duplicateIds]);
-  const listedMissing = view.filter === "cited"
+  }, [entries, words, searchTexts, view.filter, view.sort, activeIds, citingById, duplicateIds, reviewFilter]);
+  const listedMissing = view.filter === "cited" && !reviewFilter
     ? missingKeys.filter((key) => !words.length || words.every((word) => key.toLowerCase().includes(word)))
     : [];
-  const listedGroups = view.filter === "duplicates"
+  const listedGroups = view.filter === "duplicates" && !reviewFilter
     ? duplicateGroups.filter((group) => group.some((entry) => listed.some((item) => item.id === entry.id)))
     : [];
 
@@ -420,6 +471,16 @@ function ReferencesPanelBody({
     }
   }
 
+  async function copyFormatted(entry: ReferenceEntry) {
+    try {
+      const { text, html } = await formattedReferenceForCopy(notebook, library?.style ?? "", entry);
+      await writeRichClipboard(text, html);
+      setNotice({ tone: "info", text: "Reference copied." });
+    } catch {
+      setNotice({ tone: "error", text: "Reference could not be copied." });
+    }
+  }
+
   function requestDelete(entry: ReferenceEntry) {
     if (citingOf(entry).length) {
       setDeleting([entry]);
@@ -436,7 +497,8 @@ function ReferencesPanelBody({
       case "open-pdf": { const pdf = attachment("pdf"); if (pdf && pdf.kind !== "url") onOpenPath(pdf.path); return; }
       case "open-note": { const note = attachment("markdown"); if (note && note.kind !== "url") onOpenPath(note.path); return; }
       case "copy-key": return void copy(entry.key, "Key");
-      case "copy-formatted": return void copy(formatPlainReference(entry.csl), "Reference");
+      case "copy-formatted": return void copyFormatted(entry);
+      case "reresolve": return setReresolving(entry);
       case "edit": return setEditing({ entry });
       case "delete": return requestDelete(entry);
     }
@@ -472,6 +534,7 @@ function ReferencesPanelBody({
   // Drops
   // -------------------------------------------------------------------------
 
+  /** Today's entries for files that cannot be resolved: titled after the file, unresolved, attached. */
   async function attachFiles(paths: string[]) {
     const fresh: ReferenceEntryInput[] = [];
     let revealId: string | null = null;
@@ -497,25 +560,59 @@ function ReferencesPanelBody({
     }
   }
 
+  async function startJob(request: Omit<ReferenceJobRequest, "notebook" | "webSearch">) {
+    noteLookup();
+    setReviewFilter(null);
+    return jobs.start({ ...request, webSearch });
+  }
+
+  /**
+   * Dropped PDFs and Markdown files: one is looked up and confirmed in the
+   * Add box; several are read by a background job. Files that already have
+   * an entry reveal it.
+   */
+  async function resolveFiles(paths: string[]) {
+    const fresh = paths.filter((path) => !entryWithAttachment(library, path));
+    if (!fresh.length) {
+      await attachFiles(paths);
+      return;
+    }
+    if (fresh.length === 1) {
+      setOpenId(null);
+      setAddBox({ id: Date.now(), query: "", path: fresh[0] });
+      return;
+    }
+    try {
+      await startJob({ action: "resolve-paths", paths: fresh });
+      setNotice({ tone: "info", text: `Reading ${fresh.length} files in the background. New entries appear as they are found.` });
+    } catch (jobError) {
+      // Without the job, the files still get entries to complete later.
+      await attachFiles(fresh);
+      setNotice({ tone: "error", text: `${jobError instanceof Error ? jobError.message : "The files could not be looked up."} They were added as unresolved entries.` });
+    }
+  }
+
   async function handleDrop(event: ReactDragEvent) {
     event.preventDefault();
     setDragActive(false);
-    const treePath = event.dataTransfer.getData(TREE_FILE_MIME);
+    const dragged = treePaths(event.dataTransfer.getData(TREE_FILE_MIME));
     try {
-      if (treePath) {
-        if (!treePath.startsWith(`${notebook}/`)) {
+      if (dragged.length) {
+        if (dragged.some((path) => !path.startsWith(`${notebook}/`))) {
           setNotice({ tone: "error", text: `Only files in ${notebook} can be added to its references.` });
-        } else if (isImportablePath(treePath)) {
+          return;
+        }
+        const imports = dragged.filter(isImportablePath);
+        for (const treePath of imports) {
           const before = library;
           const result = await importReferences({ notebook, path: treePath });
           if (before) undo.record(before, result.library, `Import ${fileBaseName(treePath)}`, result.added);
           announceLibraryChange(notebook, result.library.revision);
           setNotice({ tone: result.errors.length ? "error" : "info", text: `Imported ${result.added.length} reference${result.added.length === 1 ? "" : "s"} from ${fileBaseName(treePath)}${result.duplicates.length ? `; ${result.duplicates.length} possible duplicate${result.duplicates.length === 1 ? "" : "s"}` : ""}${result.errors.length ? `; ${result.errors.length} problem${result.errors.length === 1 ? "" : "s"}` : ""}.` });
-        } else if (droppedFileEntry(treePath)) {
-          await attachFiles([treePath]);
-        } else {
-          setNotice({ tone: "error", text: "Drop a PDF or Markdown file, or a .bib, .ris or CSL-JSON file to import." });
         }
+        const files = dragged.filter((path) => droppedFileEntry(path));
+        if (files.length) await resolveFiles(files);
+        else if (!imports.length) setNotice({ tone: "error", text: "Drop a PDF or Markdown file, or a .bib, .ris or CSL-JSON file to import." });
         return;
       }
       const files = Array.from(event.dataTransfer.files ?? []);
@@ -535,10 +632,32 @@ function ReferencesPanelBody({
         setNotice({ tone: "error", text: "The PDF could not be uploaded." });
         return;
       }
-      await attachFiles(paths);
+      await resolveFiles(paths);
     } catch (dropError) {
       setNotice({ tone: "error", text: dropError instanceof Error ? dropError.message : "The drop could not be added." });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Background jobs and fact-check
+  // -------------------------------------------------------------------------
+
+  async function generateForPdfs() {
+    try {
+      await startJob({ action: "resolve-pdfs" });
+    } catch (jobError) {
+      setNotice({ tone: "error", text: jobError instanceof Error ? jobError.message : "The PDFs could not be read." });
+    }
+  }
+
+  const activeIsMarkdown = Boolean(activeDocumentPath && MARKDOWN_PATH.test(activeDocumentPath) && activeMarkdownDraft !== null);
+  const factCheckBlocker = !activeIsMarkdown ? "Open a saved Markdown document to fact-check its citations." : !activeKeys.length ? "This document cites nothing yet." : null;
+
+  function requestFactCheck(withWeb: boolean) {
+    if (!activeDocumentPath || factCheckBlocker) return;
+    setFactCheckOpen(false);
+    window.dispatchEvent(new CustomEvent<FactCheckRequestDetail>(FACT_CHECK_REQUEST_EVENT, { detail: { path: activeDocumentPath, webSearch: withWeb } }));
+    setNotice({ tone: "info", text: `Fact-checking the citations of ${fileBaseName(activeDocumentPath)} in the AI panel.` });
   }
 
   function dragOver(event: ReactDragEvent) {
@@ -589,7 +708,7 @@ function ReferencesPanelBody({
         </div>
       );
     }
-    if (view.filter === "duplicates") {
+    if (view.filter === "duplicates" && !reviewFilter) {
       return (
         <div className="min-h-0 flex-1 overflow-auto px-3 pb-4">
           <DuplicateGroupsList groups={listedGroups} onMerge={setMergeGroup} onOpen={(entry) => { setSelectedId(entry.id); setOpenId(entry.id); }} />
@@ -599,7 +718,7 @@ function ReferencesPanelBody({
     if (!listed.length && !listedMissing.length) {
       return (
         <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-          {words.length ? "No references match." : view.filter === "cited" ? (activeMarkdownDraft === null ? "Open a Markdown document to see what it cites." : "This document cites nothing yet.") : "Nothing here."}
+          {words.length ? "No references match." : reviewFilter ? "None of the new entries are left." : view.filter === "cited" ? (activeMarkdownDraft === null ? "Open a Markdown document to see what it cites." : "This document cites nothing yet.") : "Nothing here."}
         </p>
       );
     }
@@ -659,6 +778,9 @@ function ReferencesPanelBody({
         <button type="button" className={iconButton} aria-label="Add references" title="Add references" aria-pressed={Boolean(addBox)} onClick={() => setAddBox((current) => current ? null : { id: Date.now(), query: "" })}>
           <Plus aria-hidden className="h-4 w-4" />
         </button>
+        <button type="button" className={iconButton} aria-label="Generate entries for PDFs without one" title={jobs.active ? "Reading PDFs…" : "Generate entries for PDFs without one"} disabled={!library || jobs.active} onClick={() => void generateForPdfs()}>
+          <FileSearch aria-hidden className="h-4 w-4" />
+        </button>
         <button type="button" className={iconButton} aria-label="Manage references" title="Manage references" disabled={!library} onClick={() => setManageOpen(true)}>
           <Table2 aria-hidden className="h-4 w-4" />
         </button>
@@ -680,6 +802,13 @@ function ReferencesPanelBody({
                 .catch((exportError: Error) => setNotice({ tone: "error", text: exportError.message }))}
               onImport={() => { setOpenId(null); setAddBox({ id: Date.now(), query: "" }); }}
               onManage={() => setManageOpen(true)}
+              jobActive={jobs.active}
+              onGenerate={() => void generateForPdfs()}
+              autoCreate={library.settings?.autoCreateForPdfs}
+              onAutoCreate={(value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], "Change automatic PDF entries",
+                value === null ? "New PDFs follow the preference." : value ? `New PDFs in ${notebook} get entries automatically.` : `New PDFs in ${notebook} do not get entries automatically.`).catch(() => undefined)}
+              factCheckBlocker={factCheckBlocker}
+              onFactCheck={() => setFactCheckOpen(true)}
             />
           ) : null}
         </div>
@@ -693,24 +822,61 @@ function ReferencesPanelBody({
         </div>
       ) : null}
 
+      {factCheckOpen ? (
+        <FactCheckPopover
+          path={activeDocumentPath ?? ""}
+          defaultWebSearch={webSearch}
+          blocker={factCheckBlocker}
+          onCancel={() => setFactCheckOpen(false)}
+          onStart={requestFactCheck}
+        />
+      ) : null}
+
+      {jobs.job ? (
+        <JobStatusLine
+          job={jobs.job}
+          library={library}
+          error={jobs.error}
+          reviewing={reviewFilter?.jobId === jobs.job.id}
+          onCancel={(jobId) => void jobs.cancel(jobId)}
+          onDismiss={(jobId) => {
+            jobs.dismiss(jobId);
+            if (reviewFilter?.jobId === jobId) setReviewFilter(null);
+          }}
+          onReview={(job) => {
+            setOpenId(null);
+            setReviewFilter({ jobId: job.id, ids: new Set([...job.createdEntryIds, ...job.updatedEntryIds]) });
+          }}
+        />
+      ) : null}
+
       {addBox && library ? (
         <AddReferenceBox
           key={addBox.id}
           notebook={notebook}
           library={library}
           initialQuery={addBox.query}
+          initialPath={addBox.path}
+          webSearch={webSearch}
+          webSearchChosen={webSearchChosen}
+          onWebSearchChange={setWebSearch}
           apply={(ops, label) => run(ops, label)}
           record={undo.record}
           onClose={() => setAddBox(null)}
           onReveal={(entryId) => { setAddBox(null); reveal(entryId); }}
-          onEditNew={(initial) => setEditing({ initial })}
+          onEditNew={(initial, extraOps) => setEditing({ initial, extraOps })}
           onMerge={(ids) => setMergeGroup(ids.map((id) => library.entries[id]).filter(Boolean))}
+          onLookup={noteLookup}
+          onNotice={setNotice}
         />
       ) : null}
+
+      {privacyNotice ? <PrivacyNotice onDismiss={() => setPrivacyNotice(false)} /> : null}
 
       {openEntry && library ? (
         <ReferenceCard
           key={openEntry.id}
+          notebook={notebook}
           entry={openEntry}
           library={library}
           citing={citingOf(openEntry)}
@@ -722,12 +888,22 @@ function ReferencesPanelBody({
           }}
           onCite={() => cite(openEntry)}
           onCopy={(text, what) => void copy(text, what)}
+          onCopyFormatted={() => void copyFormatted(openEntry)}
+          onReresolve={() => setReresolving(openEntry)}
           onOpenPath={onOpenPath}
           onEditAll={() => setEditing({ entry: openEntry })}
           onDelete={() => requestDelete(openEntry)}
         />
       ) : (
         <>
+          {reviewFilter ? (
+            <div className="flex items-center gap-1.5 px-3 pb-2" aria-label="Temporary filter">
+              <span className="libera-reference-tag">
+                <ListChecks aria-hidden className="h-3 w-3" /> New from the PDF lookup ({reviewFilter.ids.size})
+                <button type="button" aria-label="Clear the new-entries filter" onClick={() => setReviewFilter(null)}><X aria-hidden className="h-3 w-3" /></button>
+              </span>
+            </div>
+          ) : null}
           {library && entries.length ? (
             <div className="space-y-2 px-3 pb-2">
               <div className="relative">
@@ -801,7 +977,9 @@ function ReferencesPanelBody({
         onClose={() => setEditing(null)}
         onSubmit={async (ops) => {
           const before = new Set(Object.keys(library?.entries ?? {}));
-          const after = await undo.apply(ops, editing?.entry ? `Edit ${editing.entry.key}` : "Add reference");
+          // Updates that come with a looked-up candidate (attaching a converted note) apply with it.
+          const all = editing?.entry ? ops : [...ops, ...(editing?.extraOps ?? [])];
+          const after = await undo.apply(all, editing?.entry ? `Edit ${editing.entry.key}` : "Add reference");
           const added = Object.keys(after.entries).filter((id) => !before.has(id));
           if (added.length === 1) reveal(added[0]);
         }}
@@ -833,9 +1011,111 @@ function ReferencesPanelBody({
           duplicateGroups={duplicateGroups}
           apply={(ops, label) => undo.apply(ops, label)}
           undo={{ canUndo: undo.canUndo, stale: undo.stale, label: undo.undoLabel, run: () => undo.undo() }}
+          webSearch={webSearch}
+          onLookup={noteLookup}
           onClose={() => setManageOpen(false)}
         />
       ) : null}
+      {reresolving ? (
+        <ReresolveDialog
+          key={reresolving.id}
+          notebook={notebook}
+          entry={library?.entries[reresolving.id] ?? reresolving}
+          webSearch={webSearch}
+          onLookup={noteLookup}
+          onClose={() => setReresolving(null)}
+          onApply={(op, label) => run([op], label, `Updated ${reresolving.key} from its sources.`)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const AUTO_CREATE_CHOICES: Array<{ value: boolean | null; label: string }> = [
+  { value: null, label: "Follow Preferences" },
+  { value: true, label: "On for this notebook" },
+  { value: false, label: "Off for this notebook" },
+];
+
+/** "Reading 3 of 12 PDFs… current file" while a job runs; "N new entries · M need review · K failed" when it is done. */
+export function jobProgressText(job: ReferenceJobStatus) {
+  const things = job.kind === "resolve-pdfs" ? "PDFs" : "files";
+  if (job.state === "queued") return `Waiting to read ${things}…`;
+  if (!job.total) return job.kind === "resolve-pdfs" ? "Looking for PDFs without an entry…" : "Starting…";
+  const position = Math.min(job.total, job.done + job.failed + 1);
+  return `Reading ${position} of ${job.total} ${things}…${job.current ? ` ${fileBaseName(job.current)}` : ""}`;
+}
+
+export function jobSummaryText(job: ReferenceJobStatus, library: ReferenceLibrary | null) {
+  const ids = [...new Set([...job.createdEntryIds, ...job.updatedEntryIds])];
+  const review = ids.filter((id) => library?.entries[id] && library.entries[id].status !== "confirmed").length;
+  const created = job.createdEntryIds.length;
+  const parts = [`${created} new entr${created === 1 ? "y" : "ies"}`, `${review} need${review === 1 ? "s" : ""} review`, `${job.failed} failed`];
+  const prefix = job.state === "cancelled" ? "Stopped: " : job.state === "failed" ? "The job failed: " : "";
+  return `${prefix}${parts.join(" · ")}`;
+}
+
+function JobStatusLine({ job, library, error, reviewing, onCancel, onDismiss, onReview }: {
+  job: ReferenceJobStatus;
+  library: ReferenceLibrary | null;
+  error: string;
+  reviewing: boolean;
+  onCancel: (jobId: string) => void;
+  onDismiss: (jobId: string) => void;
+  onReview: (job: ReferenceJobStatus) => void;
+}) {
+  const [showErrors, setShowErrors] = useState(false);
+  const active = isActiveReferenceJob(job);
+  const touched = job.createdEntryIds.length + job.updatedEntryIds.length;
+  return (
+    <div className="libera-panel-card mx-3 mb-2 space-y-1 p-2 text-[11px] leading-relaxed" role="status" aria-label="Background lookup" data-job-state={job.state}>
+      <div className="flex items-center gap-2">
+        {active ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : job.failed || job.state === "failed" ? <AlertCircle aria-hidden className="h-3.5 w-3.5 shrink-0 text-destructive" /> : <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-accent" />}
+        <span className="min-w-0 flex-1 truncate" title={job.current}>{active ? jobProgressText(job) : jobSummaryText(job, library)}</span>
+        {active ? (
+          <button type="button" className="libera-panel-button h-6 shrink-0 px-2 text-[11px]" onClick={() => onCancel(job.id)}>Cancel</button>
+        ) : (
+          <button type="button" className="shrink-0" aria-label="Dismiss" onClick={() => onDismiss(job.id)}><X aria-hidden className="h-3 w-3" /></button>
+        )}
+      </div>
+      {!active && (touched || job.errors.length) ? (
+        <div className="flex flex-wrap items-center gap-2 pl-5">
+          {touched ? <button type="button" className="font-medium text-accent hover:underline disabled:opacity-50" disabled={reviewing} onClick={() => onReview(job)}>Review new entries</button> : null}
+          {job.errors.length ? <button type="button" className="font-medium text-accent hover:underline" aria-expanded={showErrors} onClick={() => setShowErrors((current) => !current)}>{showErrors ? "Hide errors" : "Show errors"}</button> : null}
+        </div>
+      ) : null}
+      {showErrors && !active ? (
+        <ul className="max-h-32 space-y-0.5 overflow-auto pl-5 text-destructive" aria-label="Job errors">
+          {job.errors.map((item, index) => <li key={index}><span className="font-medium">{fileBaseName(item.path)}</span>: {item.message}</li>)}
+        </ul>
+      ) : null}
+      {error ? <p className="pl-5 text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function FactCheckPopover({ path, defaultWebSearch, blocker, onCancel, onStart }: {
+  path: string;
+  defaultWebSearch: boolean;
+  blocker: string | null;
+  onCancel: () => void;
+  onStart: (webSearch: boolean) => void;
+}) {
+  const [webSearch, setWebSearch] = useState(defaultWebSearch);
+  return (
+    <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5 text-[12px]" role="dialog" aria-label="Fact-check citations">
+      <p className="font-semibold">Fact-check citations</p>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        The AI panel checks each citation in <span className="font-medium text-foreground">{fileBaseName(path)}</span> against its source and suggests corrections you can review.
+      </p>
+      {blocker ? <p role="alert" className="text-[11px] text-destructive">{blocker}</p> : null}
+      <label className="flex items-center gap-1.5 text-[11px]">
+        <input type="checkbox" checked={webSearch} onChange={(event) => setWebSearch(event.target.checked)} /> Let the AI search the web for sources
+      </label>
+      <div className="flex justify-end gap-1.5">
+        <button type="button" className="libera-panel-button h-7 px-3" onClick={onCancel}>Cancel</button>
+        <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={Boolean(blocker)} onClick={() => onStart(webSearch)}>Start fact-check</button>
+      </div>
     </div>
   );
 }
@@ -851,6 +1131,12 @@ function PanelMenu({
   onExport,
   onImport,
   onManage,
+  jobActive,
+  onGenerate,
+  autoCreate,
+  onAutoCreate,
+  factCheckBlocker,
+  onFactCheck,
 }: {
   currentStyle: string;
   styleFiles: string[];
@@ -862,6 +1148,14 @@ function PanelMenu({
   onExport: (format: ExportFormat) => void;
   onImport: () => void;
   onManage: () => void;
+  jobActive: boolean;
+  onGenerate: () => void;
+  /** The notebook's setting: on, off, or unset (follow the preference). */
+  autoCreate: boolean | undefined;
+  onAutoCreate: (value: boolean | null) => void;
+  /** Why fact-checking is unavailable, or null. */
+  factCheckBlocker: string | null;
+  onFactCheck: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -909,6 +1203,26 @@ function PanelMenu({
           <span className="font-mono text-[11px] text-muted-foreground">.{format.extension}</span>
         </button>
       ))}
+      <div className="my-1 h-px bg-border" />
+      <button type="button" role="menuitem" className={item} disabled={jobActive} title={jobActive ? "PDFs are being read" : undefined} onClick={act(onGenerate)}>
+        <FileSearch aria-hidden className="h-4 w-4" /> Generate entries for PDFs without one
+      </button>
+      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Create entries for new PDFs automatically</p>
+      <div role="group" aria-label="Create entries for new PDFs automatically">
+        {AUTO_CREATE_CHOICES.map((choice) => {
+          const checked = (autoCreate ?? null) === choice.value;
+          return (
+            <button key={String(choice.value)} type="button" role="menuitemradio" aria-checked={checked} className={item} onClick={act(() => { if (!checked) onAutoCreate(choice.value); })}>
+              <span className="flex w-4 justify-center">{checked ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
+              <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="my-1 h-px bg-border" />
+      <button type="button" role="menuitem" className={item} disabled={Boolean(factCheckBlocker)} title={factCheckBlocker ?? "Check that the cited sources support each claim"} onClick={act(onFactCheck)}>
+        <ShieldCheck aria-hidden className="h-4 w-4" /> Fact-check citations…
+      </button>
       <div className="my-1 h-px bg-border" />
       <button type="button" role="menuitem" className={item} onClick={act(onImport)}>
         <FileUp aria-hidden className="h-4 w-4" /> Import or paste…

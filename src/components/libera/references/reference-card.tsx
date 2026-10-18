@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Check, Copy, ExternalLink, FileText, FileType2, Globe, Pencil, Quote, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Copy, ExternalLink, FileText, FileType2, Globe, Pencil, Quote, RotateCw, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -9,11 +9,11 @@ import {
   fieldLabel,
   fileBaseName,
   formatFieldValue,
-  formatPlainReference,
   PROVENANCE_LABELS,
   STATUS_LABELS,
   typeLabel,
 } from "@/components/libera/references/reference-display";
+import { FormattedReference } from "@/components/libera/references/reference-candidates";
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
 import { CITE_UNAVAILABLE, StatusBadge } from "@/components/libera/references/reference-row";
 import { isValidCitationKey } from "@/lib/references/keys";
@@ -105,6 +105,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 type CardProps = {
+  notebook: string;
   entry: ReferenceEntry;
   library: ReferenceLibrary;
   citing: string[];
@@ -113,12 +114,16 @@ type CardProps = {
   onBack: () => void;
   onCite: () => void;
   onCopy: (text: string, what: string) => void;
+  /** Copy the reference formatted in the notebook's style, as text and HTML. */
+  onCopyFormatted: () => void;
+  /** Look the entry up again and review the differences. */
+  onReresolve: () => void;
   onOpenPath: (path: string) => void;
   onEditAll: () => void;
   onDelete: () => void;
 };
 
-export function ReferenceCard({ entry, library, citing, canCite, apply, onBack, onCite, onCopy, onOpenPath, onEditAll, onDelete }: CardProps) {
+export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete }: CardProps) {
   const [error, setError] = useState("");
   const reviewing = entry.status !== "confirmed";
 
@@ -150,6 +155,9 @@ export function ReferenceCard({ entry, library, citing, canCite, apply, onBack, 
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Cite at cursor" title={canCite ? "Cite at cursor" : CITE_UNAVAILABLE} disabled={!canCite} onClick={onCite}>
           <Quote aria-hidden className="h-4 w-4" />
         </button>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label="Re-resolve" title="Look this reference up again" onClick={onReresolve}>
+          <RotateCw aria-hidden className="h-4 w-4" />
+        </button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label="Edit all fields" title="Edit all fields" onClick={onEditAll}>
           <Pencil aria-hidden className="h-4 w-4" />
         </button>
@@ -167,7 +175,7 @@ export function ReferenceCard({ entry, library, citing, canCite, apply, onBack, 
             </div>
             <StatusBadge status={entry.status} />
           </div>
-          <p className="text-[12px] leading-relaxed text-muted-foreground" aria-label="Formatted reference">{formatPlainReference(entry.csl)}</p>
+          <FormattedReference className="text-[12px] leading-relaxed text-muted-foreground" notebook={notebook} setting={library.style} entry={entry} />
           <p className="text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
           {reviewing ? (
             <div className="flex items-center gap-2 pt-1">
@@ -279,7 +287,7 @@ export function ReferenceCard({ entry, library, citing, canCite, apply, onBack, 
         <NotesEditor entry={entry} onSave={(notes) => run([{ op: "update", id: entry.id, notes }], `Edit notes of ${entry.key}`)} />
 
         <div className="flex justify-end">
-          <button type="button" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => onCopy(formatPlainReference(entry.csl), "Reference")}>
+          <button type="button" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground" onClick={onCopyFormatted}>
             <Copy aria-hidden className="h-3 w-3" /> Copy formatted reference
           </button>
         </div>

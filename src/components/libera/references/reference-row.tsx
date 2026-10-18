@@ -12,6 +12,7 @@ import {
   Pencil,
   Plus,
   Quote,
+  RotateCw,
   ScrollText,
   Trash2,
 } from "lucide-react";
@@ -178,7 +179,7 @@ export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: strin
 }
 
 export type ReferenceMenuAction =
-  | "cite" | "open-pdf" | "open-note" | "copy-key" | "copy-formatted" | "edit" | "delete";
+  | "cite" | "open-pdf" | "open-note" | "copy-key" | "copy-formatted" | "reresolve" | "edit" | "delete";
 
 type MenuProps = {
   entry: ReferenceEntry;
@@ -259,6 +260,7 @@ export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, 
         </ul>
       ) : null}
       <div className="my-1 h-px bg-border" />
+      <MenuItem icon={<RotateCw aria-hidden className="h-4 w-4" />} label="Re-resolve…" onClick={act("reresolve")} />
       <MenuItem icon={<Pencil aria-hidden className="h-4 w-4" />} label="Edit…" onClick={act("edit")} />
       <MenuItem icon={<Trash2 aria-hidden className="h-4 w-4" />} label="Delete…" tone="destructive" onClick={act("delete")} />
     </div>
