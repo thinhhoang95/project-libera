@@ -53,7 +53,8 @@ const DOCKER_INSTALL = [
 function generateEnvStep(remoteRoot, remoteSource, domain) {
   const env = `${remoteRoot}/.env`;
   return [
-    `if ! test -s '${env}'; then`,
+    // A subshell, so the umask does not apply to the steps after it.
+    `if ! test -s '${env}'; then (`,
     `umask 077;`,
     `sed -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 32)|"`,
     `-e "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 48)|"`,
@@ -62,7 +63,7 @@ function generateEnvStep(remoteRoot, remoteSource, domain) {
     `-e "s|^ALLOW_OPEN_SIGNUP=.*|ALLOW_OPEN_SIGNUP=0|"`,
     `'${remoteSource}/ops/collab/.env.example' > '${env}';`,
     `chmod 0600 '${env}'; echo 'Generated ${env} with new random secrets.';`,
-    `fi`,
+    `) fi`,
   ].join(" ");
 }
 
