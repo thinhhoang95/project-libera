@@ -225,7 +225,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         if (quote) {
           event.preventDefault();
           setDragging(false);
-          dropQuoteRef.current(quote, view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? view.state.selection.from);
+          let pos = view.state.selection.from;
+          try {
+            pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? pos;
+          } catch {
+            // No layout (a hidden pane): the quote goes after the caret's block.
+          }
+          dropQuoteRef.current(quote, pos);
           return true;
         }
         if (moved || !event.dataTransfer?.files.length) return false;
