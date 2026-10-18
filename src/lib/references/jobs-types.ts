@@ -55,7 +55,13 @@ export type RetractionCheckRequest = {
 };
 
 /** Reply of POST /api/references/retractions: the job, or null when no check was due (or nothing has a DOI). */
-export type RetractionCheckResponse = { job: ReferenceJobStatus | null; lastCheckedAt?: string };
+export type RetractionCheckResponse = {
+  job: ReferenceJobStatus | null;
+  /** When the last check completed. */
+  lastCheckedAt?: string;
+  /** Why no check started: online lookups are off, the last check is recent, or no entry has a DOI. */
+  skipped?: "lookups-off" | "not-due" | "no-dois";
+};
 
 /** A notebook's library is checked at most this often unless forced: 7 days. */
 export const RETRACTION_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;

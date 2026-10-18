@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { entryForKey } from "@/lib/references/format";
 import { titleSimilarity } from "@/lib/references/dedupe";
+import { retractionBadgeState, retractionDescription } from "@/lib/references/retraction";
 import {
   REFERENCES_ADD_REQUEST_EVENT,
   REFERENCES_REVEAL_EVENT,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/references/types";
 import { attachmentLocator, useReferenceRender, WithoutReferenceRender, type CitationDocumentValue } from "./reference-render-context";
 import { FormattedCitationHtml } from "./citation-chip";
+import { RetractionBadge } from "./retraction-badge";
 
 // The card a citation chip opens on hover or keyboard focus, and pins on
 // click (plan.md §1.3): per cited work, the formatted reference, abstract and
@@ -251,6 +253,12 @@ function ResolvedItem({ item, entry, document }: { item: CitationItem; entry: Re
   return (
     <section className="citation-card-item">
       <div className="citation-card-reference">{formatted ? <FormattedCitationHtml html={formatted} /> : plainReference(entry)}</div>
+      {retractionBadgeState(entry.retraction) ? (
+        <p className="citation-card-retraction">
+          <RetractionBadge status={entry.retraction} />
+          <span className="citation-card-meta">{retractionDescription(entry.retraction)}</span>
+        </p>
+      ) : null}
       <p className="citation-card-key">@{entry.key}{item.key !== entry.key ? ` (cited as @${item.key})` : ""}</p>
       {abstract ? <CardMarkdown label="Abstract" markdown={abstract} /> : null}
       {notes ? <CardMarkdown label="Notes" markdown={notes} /> : null}

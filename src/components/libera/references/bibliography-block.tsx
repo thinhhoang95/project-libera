@@ -1,7 +1,10 @@
 "use client";
 
 import { useCitationDocument, useReferenceRender } from "./reference-render-context";
+import { sanitizeCitationHtml } from "@/lib/references/format";
+import type { ReferenceLibrary } from "@/lib/references/types";
 import { FormattedCitationHtml } from "./citation-chip";
+import { RetractionBadge, retractionTone } from "./retraction-badge";
 
 // The document's bibliography: `<section class="libera-bibliography"
 // data-libera-bibliography="">` with a References heading and the formatted
@@ -29,7 +32,39 @@ export function BibliographyBlock(props: { [attribute: string]: unknown }) {
       data-preview-source-id={source("data-preview-source-id")}
     >
       <h2 className="libera-bibliography-heading">References</h2>
-      <FormattedCitationHtml html={bibliography} />
+      <BibliographyEntries bibliography={bibliography} entries={document.formatting.result?.bibliographyEntries ?? {}} library={render.library} />
     </section>
+  );
+}
+
+/** The wrapper classes of citeproc's bibliography HTML (csl-bib-body, hanging indent…). */
+function bibliographyBodyClass(html: string) {
+  const root = sanitizeCitationHtml(html).children[0];
+  return root?.type === "element" && Array.isArray(root.properties.className) ? root.properties.className.join(" ") : "csl-bib-body";
+}
+
+/**
+ * The formatted list. When a listed work is retracted, withdrawn or under an
+ * expression of concern, each entry is rendered on its own so a small
+ * "[Retracted]" badge (with the notice in its tooltip) can follow it. The
+ * badge is preview only: copying drops the whole bibliography, the PDF
+ * export hides it (globals.css), and formatted exports never include it.
+ */
+function BibliographyEntries({ bibliography, entries, library }: { bibliography: string; entries: Record<string, string>; library: ReferenceLibrary | null }) {
+  const ids = Object.keys(entries);
+  const flagged = ids.some((id) => retractionTone(library?.entries[id]?.retraction) === "warning");
+  if (!flagged) return <FormattedCitationHtml html={bibliography} />;
+  return (
+    <div className={bibliographyBodyClass(bibliography)}>
+      {ids.map((id) => {
+        const status = library?.entries[id]?.retraction;
+        return (
+          <div key={id} className="libera-bibliography-item">
+            <FormattedCitationHtml html={entries[id]} />
+            {retractionTone(status) === "warning" ? <RetractionBadge status={status} compact /> : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
