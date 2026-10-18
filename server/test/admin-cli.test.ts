@@ -392,6 +392,24 @@ describe("admin CLI: accounts and audit", () => {
     assert.match(human.stdout, /admin\.account\.reset-password/);
   });
 
+  test("signup-code create prints a code once; list and revoke manage it", async () => {
+    const created = await cli("signup-code", "create", "--note", "for Sam", "--uses", "2", "--json");
+    assert.equal(created.code, 0, created.stderr);
+    const code = created.json.code as string;
+    assert.match(code, /^LBR-[a-z2-9]{5}(-[a-z2-9]{5}){3}$/);
+    const id = created.json.id as string;
+    const listed = await cli("signup-code", "list", "--json");
+    const row = (listed.json.codes as any[]).find((c) => c.id === id);
+    assert.equal(row.status, "active");
+    assert.equal(row.maxUses, 2);
+    assert.ok(!JSON.stringify(listed.json).includes(code), "the code itself is never listed");
+    assert.equal((await cli("signup-code", "revoke", id)).code, 0);
+    assert.equal((await cli("signup-code", "revoke", id)).code, 1, "already revoked");
+    const after = await cli("signup-code", "list", "--json");
+    assert.equal((after.json.codes as any[]).find((c) => c.id === id).status, "revoked");
+    assert.equal((await cli("signup-code", "create", "--uses", "0")).code, 1);
+  });
+
   test("account create makes an owner-to-be with a one-time password, even with sign-up closed", async () => {
     const email = `First.Owner-${Date.now()}@Example.test`;
     const created = await cli("account", "create", email, "--name", "First Owner", "--json");

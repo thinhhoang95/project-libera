@@ -23,6 +23,7 @@ import type { AdminContext, CommandResult } from "./context.js";
 import { docExport, docInspect, docSnapshot, docsList, docText, projectExport } from "./documents.js";
 import { CliError } from "./history.js";
 import { docQuarantine } from "./quarantine.js";
+import { signupCodeCreate, signupCodeList, signupCodeRevoke } from "./signup-codes.js";
 import { docRebuild } from "./rebuild.js";
 import { verifyCommand } from "./verify.js";
 
@@ -47,6 +48,9 @@ Accounts and audit
   account disable <email>
   account enable <email>
   account reset-password <email>
+  signup-code create [--note text] [--uses n] [--expires-days n]   prints a one-time registration code
+  signup-code list
+  signup-code revoke <codeId>
   audit tail [--project <projectId>] [--limit n] [--follow]
 
 Checks
@@ -75,6 +79,9 @@ const COMMANDS: Record<string, Handler> = {
   "account disable": accountDisable,
   "account enable": accountEnable,
   "account reset-password": accountResetPassword,
+  "signup-code create": signupCodeCreate,
+  "signup-code list": signupCodeList,
+  "signup-code revoke": signupCodeRevoke,
   "audit tail": auditTail,
   verify: verifyCommand,
 };

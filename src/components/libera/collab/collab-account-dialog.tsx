@@ -116,7 +116,7 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
               </>
             ) : onJoin ? (
               <p className="px-1 text-xs text-muted-foreground">
-                Got an invitation? Create an account with its link or code, or sign in and choose “Join a shared notebook”.
+                Got a notebook invitation? Create an account with the server’s registration code and the invitation, or sign in and choose “Join a shared notebook”.
               </p>
             ) : null}
             <ReportSyncProblem />
@@ -220,6 +220,7 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [invitation, setInvitation] = useState("");
+  const [registrationCode, setRegistrationCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const reauth = Boolean(account);
@@ -245,7 +246,7 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
       const base = { serverUrl: url, email: email.trim(), password };
       const next =
         mode === "register"
-          ? await collabClient.register({ ...base, displayName: displayName.trim(), invitationToken: invitation.trim() || undefined })
+          ? await collabClient.register({ ...base, displayName: displayName.trim(), invitationToken: invitation.trim() || undefined, registrationCode: registrationCode.trim() || undefined })
           : await collabClient.signIn(base);
       rememberServerUrl(url);
       setPassword("");
@@ -321,11 +322,20 @@ function SignInForm({ account, onSignedIn }: { account: LocalAccount | null; onS
       </div>
       {mode === "register" ? (
         <div>
+          <label className={LABEL} htmlFor={`${id}-registration`}>
+            Registration code <span className="font-normal text-muted-foreground">(from the server administrator)</span>
+          </label>
+          <input autoComplete="off" className={FIELD} id={`${id}-registration`} spellCheck={false} value={registrationCode} onChange={(event) => setRegistrationCode(event.target.value)} />
+          <p className="mt-1 text-xs text-muted-foreground">New accounts need a code unless the server is open to everyone.</p>
+        </div>
+      ) : null}
+      {mode === "register" ? (
+        <div>
           <label className={LABEL} htmlFor={`${id}-invitation`}>
             Invitation link or code <span className="font-normal text-muted-foreground">(optional)</span>
           </label>
           <input className={FIELD} id={`${id}-invitation`} spellCheck={false} value={invitation} onChange={(event) => setInvitation(event.target.value)} />
-          <p className="mt-1 text-xs text-muted-foreground">Some servers only accept new accounts with an invitation.</p>
+          <p className="mt-1 text-xs text-muted-foreground">A notebook invitation adds you to that notebook after sign-up.</p>
         </div>
       ) : null}
       {error ? (

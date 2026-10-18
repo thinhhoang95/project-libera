@@ -247,12 +247,13 @@ export class AccountManager {
     return this.apiFor(request.serverUrl).login({ email: request.email, password: request.password, deviceName: "Libera desktop" });
   }
 
-  register(request: { serverUrl: string; email: string; password: string; displayName: string; invitationToken?: string }): Promise<AuthResponse> {
+  register(request: { serverUrl: string; email: string; password: string; displayName: string; invitationToken?: string; registrationCode?: string }): Promise<AuthResponse> {
     return this.apiFor(request.serverUrl).register({
       email: request.email,
       password: request.password,
       displayName: request.displayName,
       ...(request.invitationToken ? { invitationToken: request.invitationToken } : {}),
+      ...(request.registrationCode ? { registrationCode: request.registrationCode } : {}),
       deviceName: "Libera desktop",
     });
   }

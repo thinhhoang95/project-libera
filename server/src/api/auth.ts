@@ -18,6 +18,7 @@ import { ApiRoutes, type Account, type AuthResponse } from "../protocol.js";
 import { emailSchema, hexColorSchema, iso, isUniqueViolation, notifyRooms, requireAccount } from "./common.js";
 import { acceptInvitationRecord, assertInvitedEmail, findInvitation } from "./invitations.js";
 import { announceMembership } from "./projects.js";
+import { redeemRegistrationCode } from "./registration-codes.js";
 import { authLimits, enforce } from "./rate-limit.js";
 
 const password = z.string().min(8, "Use at least 8 characters.").max(200);
@@ -29,6 +30,7 @@ const registerBody = z.object({
   password,
   displayName,
   invitationToken: z.string().min(1).max(200).optional(),
+  registrationCode: z.string().min(1).max(200).optional(),
   deviceName,
 });
 const loginBody = z.object({ email: emailSchema, password: z.string().max(200), deviceName });
@@ -149,16 +151,21 @@ export function registerAuthRoutes(app: FastifyInstance, context: ServerContext)
       [limits.registerPerEmail, body.email],
     ]);
 
+    // Invitation-only (the default): a new account needs a registration code
+    // from the server admin. A notebook invitation never stands in for one.
+    if (!config.ALLOW_OPEN_SIGNUP && !body.registrationCode) {
+      throw new HttpError("signup-disabled", "Sign-up needs a registration code from the server administrator.");
+    }
     let invitation: Awaited<ReturnType<typeof findInvitation>> | undefined;
     if (body.invitationToken) {
       invitation = await findInvitation(db, body.invitationToken);
       assertInvitedEmail(invitation, body.email);
-    } else if (!config.ALLOW_OPEN_SIGNUP) {
-      throw new HttpError("signup-disabled", "Sign-up needs an invitation.");
     }
 
     // One transaction, so a failed acceptance does not leave an account behind.
     const { account, role } = await db.transaction().execute(async (trx) => {
+      // Inside the transaction, so a failed sign-up gives the use back.
+      if (!config.ALLOW_OPEN_SIGNUP && body.registrationCode) await redeemRegistrationCode(trx, body.registrationCode);
       const created = await insertAccount(trx, body);
       const joined = invitation ? await acceptInvitationRecord(trx, invitation, created.id) : null;
       return { account: created, role: joined };

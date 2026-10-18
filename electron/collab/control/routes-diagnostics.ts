@@ -62,6 +62,7 @@ const FORBIDDEN_KEYS = new Set(
     "authorization",
     "cookie",
     "invitationToken",
+    "registrationCode",
   ].map((key) => key.toLowerCase()),
 );
 

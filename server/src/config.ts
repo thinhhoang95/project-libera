@@ -29,7 +29,10 @@ const schema = z.object({
    */
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(90),
   INVITATION_TTL_DAYS: z.coerce.number().int().positive().default(14),
-  /** Allow sign-up without an invitation token. */
+  /**
+   * Sign-up without a registration code. Off by default: the server is
+   * invitation-only and new accounts need a code from `admin signup-code create`.
+   */
   ALLOW_OPEN_SIGNUP: boolean,
   /** "disk" (BLOB_DIR) or "s3" (BLOB_S3_*). */
   BLOB_DRIVER: z.enum(["disk", "s3"]).default("disk"),

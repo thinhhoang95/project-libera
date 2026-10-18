@@ -237,6 +237,18 @@ export interface QuarantinedUpdatesTable {
   quarantined_at: CreatedAt;
 }
 
+/** migrations/003_registration_codes.sql: admin-issued codes for new accounts. */
+export interface RegistrationCodesTable {
+  id: string;
+  code_hash: string;
+  note: string | null;
+  max_uses: Generated<number>;
+  uses: Generated<number>;
+  created_at: CreatedAt;
+  expires_at: NullableTime;
+  revoked_at: NullableTime;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   applied_at: CreatedAt;
@@ -262,6 +274,7 @@ export interface DB {
   commands: CommandsTable;
   audit_log: AuditLogTable;
   quarantined_updates: QuarantinedUpdatesTable;
+  registration_codes: RegistrationCodesTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

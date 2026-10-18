@@ -54,12 +54,14 @@ export function registerAccountRoutes(router: Router, runtime: CollabRuntime): v
     const password = requiredString(body.password, "password", 200);
     const displayName = requiredString(body.displayName, "displayName", 100).trim();
     const invitation = optionalString(body.invitationToken, "invitationToken", 2000);
+    const registrationCode = optionalString(body.registrationCode, "registrationCode", 200);
     const auth = await runtime.accounts.register({
       serverUrl,
       email,
       password,
       displayName,
       ...(invitation?.trim() ? { invitationToken: invitationToken(invitation) } : {}),
+      ...(registrationCode?.trim() ? { registrationCode: registrationCode.trim() } : {}),
     });
     await runtime.signedIn(serverUrl, auth);
     return { status: 201, body: runtime.status() };

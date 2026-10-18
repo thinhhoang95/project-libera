@@ -31,6 +31,7 @@ export type ApiErrorCode =
   | "invalid-invitation"
   | "email-taken"
   | "signup-disabled"
+  | "invalid-registration-code"
   | "client-too-old"
   | "internal";
 
@@ -60,8 +61,10 @@ export interface RegisterRequest {
   email: string;
   password: string;
   displayName: string;
-  /** Required unless the server allows open sign-up. */
+  /** Notebook invitation to accept while registering. */
   invitationToken?: string;
+  /** Admin-issued code; required unless the server allows open sign-up. */
+  registrationCode?: string;
   deviceName?: string;
 }
 

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import { DEFAULT_COLORS } from "../src/api/auth.js";
+import { hashRegistrationCode } from "../src/api/registration-codes.js";
+import { newRegistrationCode } from "../src/admin/signup-codes.js";
+import { loadConfig } from "../src/config.js";
 import { hashPassword, verifyPassword } from "../src/auth/passwords.js";
 import { signAccessToken } from "../src/auth/tokens.js";
 import type { Account, AuthResponse } from "../src/protocol.js";
@@ -185,20 +188,87 @@ describe("auth routes", () => {
   });
 });
 
-describe("closed sign-up", () => {
-  test("needs an invitation unless ALLOW_OPEN_SIGNUP", async () => {
+describe("invitation-only sign-up", () => {
+  const body = (email: string, extra: Record<string, unknown> = {}) => ({ email, password: "long enough", displayName: "C", ...extra });
+
+  async function issueCode(h: ApiHarness, options: { maxUses?: number; expiresAt?: Date; revoked?: boolean } = {}): Promise<string> {
+    const code = newRegistrationCode();
+    await h.server.context.db
+      .insertInto("registration_codes")
+      .values({
+        id: `reg_${code}`,
+        code_hash: hashRegistrationCode(code),
+        note: null,
+        max_uses: options.maxUses ?? 1,
+        expires_at: options.expiresAt ?? null,
+        revoked_at: options.revoked ? new Date() : null,
+      })
+      .execute();
+    return code;
+  }
+
+  test("is the default: no registration code, no account", async () => {
+    assert.equal(loadConfig({ NODE_ENV: "test", DATABASE_URL: "pglite://memory" }).ALLOW_OPEN_SIGNUP, false);
     const h = await startApi({ ALLOW_OPEN_SIGNUP: false });
     try {
-      const response = await json(h.url, "/v1/auth/register", {
-        body: { email: "closed@example.test", password: "long enough", displayName: "C" },
-      });
+      const response = await json(h.url, "/v1/auth/register", { body: body("closed@example.test") });
       assert.equal(response.status, 403);
       assert.equal(errorCode(response), "signup-disabled");
-      const badToken = await json(h.url, "/v1/auth/register", {
-        body: { email: "closed@example.test", password: "long enough", displayName: "C", invitationToken: "nope" },
-      });
+      const wrong = await json(h.url, "/v1/auth/register", { body: body("closed@example.test", { registrationCode: "LBR-nope" }) });
+      assert.equal(wrong.status, 403);
+      assert.equal(errorCode(wrong), "invalid-registration-code");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a notebook invitation does not replace a registration code", async () => {
+    const h = await startApi({ ALLOW_OPEN_SIGNUP: false });
+    try {
+      const response = await json(h.url, "/v1/auth/register", { body: body("closed@example.test", { invitationToken: "nope" }) });
+      assert.equal(response.status, 403);
+      assert.equal(errorCode(response), "signup-disabled");
+      const code = await issueCode(h);
+      const badToken = await json(h.url, "/v1/auth/register", { body: body("closed@example.test", { registrationCode: code, invitationToken: "nope" }) });
       assert.equal(badToken.status, 404);
       assert.equal(errorCode(badToken), "invalid-invitation");
+      const still = await h.server.context.db.selectFrom("registration_codes").select("uses").executeTakeFirstOrThrow();
+      assert.equal(Number(still.uses), 0, "a rejected sign-up does not use the code");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("a code creates one account, then is used up", async () => {
+    const h = await startApi({ ALLOW_OPEN_SIGNUP: false });
+    try {
+      const code = await issueCode(h);
+      const ok = await json<AuthResponse>(h.url, "/v1/auth/register", { body: body("first@example.test", { registrationCode: ` ${code.toLowerCase().replace("lbr", "LBR")} ` }) });
+      assert.equal(ok.status, 201);
+      const again = await json(h.url, "/v1/auth/register", { body: body("second@example.test", { registrationCode: code }) });
+      assert.equal(again.status, 403);
+      assert.equal(errorCode(again), "invalid-registration-code");
+      const reuse = await json(h.url, "/v1/auth/register", { body: body("first@example.test", { registrationCode: await issueCode(h) }) });
+      assert.equal(reuse.status, 409, "email already taken");
+      const rows = await h.server.context.db.selectFrom("registration_codes").select("uses").orderBy("created_at").execute();
+      assert.deepEqual(rows.map((r) => Number(r.uses)), [1, 0], "the failed sign-up gave its use back");
+    } finally {
+      await h.close();
+    }
+  });
+
+  test("honors max uses, expiry and revocation", async () => {
+    const h = await startApi({ ALLOW_OPEN_SIGNUP: false });
+    try {
+      const multi = await issueCode(h, { maxUses: 2 });
+      for (const n of [1, 2]) {
+        assert.equal((await json(h.url, "/v1/auth/register", { body: body(`m${n}@example.test`, { registrationCode: multi }) })).status, 201);
+      }
+      assert.equal((await json(h.url, "/v1/auth/register", { body: body("m3@example.test", { registrationCode: multi }) })).status, 403);
+      const expired = await issueCode(h, { expiresAt: new Date(Date.now() - 1000) });
+      assert.equal((await json(h.url, "/v1/auth/register", { body: body("e@example.test", { registrationCode: expired }) })).status, 403);
+      const revoked = await issueCode(h, { revoked: true });
+      assert.equal((await json(h.url, "/v1/auth/register", { body: body("r@example.test", { registrationCode: revoked }) })).status, 403);
     } finally {
       await h.close();
     }

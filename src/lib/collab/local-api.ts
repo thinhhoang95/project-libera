@@ -90,6 +90,7 @@ export interface SignInRequest {
 export interface RegisterLocalRequest extends SignInRequest {
   displayName: string;
   invitationToken?: string;
+  registrationCode?: string;
 }
 
 export interface UpdateAccountRequest {

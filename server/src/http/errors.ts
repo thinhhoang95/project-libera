@@ -18,6 +18,7 @@ const STATUS: Record<ApiErrorCode, number> = {
   "invalid-invitation": 404,
   "email-taken": 409,
   "signup-disabled": 403,
+  "invalid-registration-code": 403,
   "client-too-old": 426,
   internal: 500,
 };
