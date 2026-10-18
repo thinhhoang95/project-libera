@@ -268,3 +268,7 @@ export type ReferencesAddRequestDetail = { notebook: string; query: string };
 /** Window event asking the References panel to show an entry, by id or by key/alias. */
 export const REFERENCES_REVEAL_EVENT = "libera:references-reveal";
 export type ReferencesRevealDetail = { notebook: string; entryId?: string; key?: string };
+
+/** Window event asking the AI panel to start a fact-check agent run on a Markdown document. */
+export const FACT_CHECK_REQUEST_EVENT = "libera:fact-check-request";
+export type FactCheckRequestDetail = { path: string; webSearch?: boolean };

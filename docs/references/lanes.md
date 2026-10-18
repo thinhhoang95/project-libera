@@ -138,3 +138,8 @@ Components that render citations call `useReferenceRender()`. Without a provider
 - `src/lib/references/jobs-types.ts` exports `ReferenceJobStatus`:
   `{ id, notebook, kind: "resolve-pdfs" | "resolve-paths", state: "queued" | "running" | "done" | "failed" | "cancelled", total, done, failed, current?: string, createdEntryIds: string[], updatedEntryIds: string[], errors: { path: string; message: string }[], webSearch: boolean, createdAt, startedAt?, finishedAt? }`.
 - Candidates returned by `/api/references/resolve` and created by jobs carry full provenance and `conflicts` where sources disagree.
+
+### Fact-check request (resolution-ui dispatches; factcheck lane listens)
+
+- `FACT_CHECK_REQUEST_EVENT` (`types.ts`), with `{ path, webSearch? }`. The References panel and the Markdown toolbar dispatch it.
+- The AI panel switches to Agent mode, opens a new chat, and starts a run whose first message asks to fact-check `path`, with the `fact-check-citations` skill preloaded.
