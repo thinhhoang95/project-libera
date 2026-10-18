@@ -296,6 +296,19 @@ export type HostEvent =
   | { t: "notification"; notification: NotificationInfo }
   | { t: "project-changed"; projectId: string }
   | { t: "files-changed"; projectId: string; paths: string[] }
+  /**
+   * Files of a shared notebook were added, moved or removed (by anyone).
+   * Windows refresh the Notebooks tree and re-point tabs of moved files.
+   * Paths are Libera paths ("Notebook/sub/file.md").
+   */
+  | {
+      t: "tree-changed";
+      projectId: string;
+      notebook: string;
+      added: string[];
+      moves: { from: string; to: string }[];
+      removed: string[];
+    }
   | { t: "server-event"; scope: string; id: string; kind: string; payload: unknown }
   /**
    * The hourly divergence check found this document differing from the

@@ -7,6 +7,7 @@ import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabProjects, useCollabStatus } from "@/lib/collab/ui/hooks";
 import { CollabAccountDialog } from "./collab-account-dialog";
 import { useDesktopNotifications } from "./desktop-notifications";
+import { useForwardSharedFileChanges } from "./forward-search-changes";
 import { JoinNotebookDialog } from "./join-notebook-dialog";
 import { ShareNotebookDialog } from "./share-notebook-dialog";
 
@@ -45,6 +46,7 @@ export interface CollabProviderProps {
  * and the rail need no extra props.
  */
 export function CollabProvider({ children, onNotebookJoined, onOpenPath }: CollabProviderProps) {
+  useForwardSharedFileChanges();
   const collab = useCollabStatus();
   const { projectForNotebook } = useCollabProjects();
   const [accountOpen, setAccountOpen] = useState(false);

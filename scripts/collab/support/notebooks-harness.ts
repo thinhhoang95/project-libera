@@ -9,6 +9,7 @@ import path from "node:path";
 import type { ControlHandler, ControlRouter } from "../../../electron/collab/control/types";
 import { CollabHost, type FetchLike } from "../../../electron/collab/core";
 import { NotebookServiceImpl } from "../../../electron/collab/notebooks/service";
+import type { Timings } from "../../../electron/collab/notebooks/project";
 import type { HostEvent } from "../../../src/lib/collab/local-api";
 import type { AuthResponse } from "../../../src/lib/collab/protocol/api";
 import type { ServerProcess } from "./server-process";
@@ -98,6 +99,8 @@ export interface Peer {
 export interface PeerOptions {
   fetch?: FetchLike;
   library?: string;
+  /** Overrides the fast test timings (e.g. to check the write cadence). */
+  timings?: Partial<Timings>;
 }
 
 export async function makePeer(dir: string, name: string, server: ServerProcess, auth: AuthResponse, options: PeerOptions = {}): Promise<Peer> {
@@ -135,7 +138,7 @@ export async function makePeer(dir: string, name: string, server: ServerProcess,
     { host, libraryRoot: library, emit: (event) => events.push(event) },
     {
       logger,
-      timings: { writeDebounceMs: 40, settleMs: 80, deleteGraceMs: 500, pollMs: 700, retryMs: 700 },
+      timings: { writeDebounceMs: 40, writeMaxWaitMs: 400, settleMs: 80, deleteGraceMs: 500, pollMs: 700, retryMs: 700, ...options.timings },
       joinTimeoutMs: 30_000,
       shareSyncTimeoutMs: 15_000,
     },

@@ -46,8 +46,16 @@ import { readBase, readState, writeBase, writeState, deleteBase, type LayoutReco
 import { diffText } from "./text-diff";
 
 export interface Timings {
-  /** Debounce of a document's disk write after a change. */
+  /**
+   * Quiet time after a change before a document's working copy is written.
+   * The CRDT in the host's SQLite is the real copy (every edit is committed
+   * there first), so the disk copy only needs to be fresh enough for search,
+   * builds and other programs: a collaborator typing must not mean a disk
+   * write per keystroke.
+   */
   writeDebounceMs: number;
+  /** Longest a document's working copy waits while changes keep coming. */
+  writeMaxWaitMs: number;
   /** Quiet time after a watcher event before scanning. */
   settleMs: number;
   /** How long a file must stay missing before it counts as deleted (lets delete+create pair into a rename). */
@@ -59,7 +67,8 @@ export interface Timings {
 }
 
 export const DEFAULT_TIMINGS: Timings = {
-  writeDebounceMs: 300,
+  writeDebounceMs: 2000,
+  writeMaxWaitMs: 15_000,
   settleMs: 250,
   deleteGraceMs: 1200,
   pollMs: 5000,
@@ -97,6 +106,8 @@ interface DocRuntime {
   hub: DocHub;
   unsubscribe: Array<() => void>;
   writeTimer: ReturnType<typeof setTimeout> | null;
+  /** When the oldest change not yet written arrived (for writeMaxWaitMs). */
+  pendingSince: number | null;
   /** The content was rolled back and is empty until the server sends it again. */
   rebuilt: boolean;
   wasReady: boolean;
@@ -406,6 +417,7 @@ export class SharedProject {
     if (layoutChanged) {
       this.saveSoon();
       this.ctx.layoutChanged(this.info.projectId);
+      this.treeChanged(previous, next);
     }
     if (touched.size > 0) this.filesChanged([...touched]);
     // Documents whose file is missing or new get written now that their place exists.
@@ -515,7 +527,7 @@ export class SharedProject {
       return;
     }
     const hub = this.ctx.host.acquire(docId, { kind: "file", projectId: this.info.projectId });
-    const runtime: DocRuntime = { docId, fileId, hub, unsubscribe: [], writeTimer: null, rebuilt: false, wasReady: false };
+    const runtime: DocRuntime = { docId, fileId, hub, unsubscribe: [], writeTimer: null, pendingSince: null, rebuilt: false, wasReady: false };
     this.docs.set(docId, runtime);
     runtime.unsubscribe.push(
       hub.observe("content", (change) => {
@@ -553,10 +565,14 @@ export class SharedProject {
   private scheduleWrite(runtime: DocRuntime): void {
     if (this.stopped) return;
     if (runtime.writeTimer) clearTimeout(runtime.writeTimer);
+    const now = Date.now();
+    runtime.pendingSince ??= now;
+    const untilMaxWait = runtime.pendingSince + this.ctx.timings.writeMaxWaitMs - now;
     runtime.writeTimer = setTimeout(() => {
       runtime.writeTimer = null;
+      runtime.pendingSince = null;
       void this.enqueue(() => this.materializeDoc(runtime.docId));
-    }, this.ctx.timings.writeDebounceMs);
+    }, Math.max(0, Math.min(this.ctx.timings.writeDebounceMs, untilMaxWait)));
     runtime.writeTimer.unref?.();
   }
 
@@ -609,6 +625,11 @@ export class SharedProject {
     this.ctx.host.store.upsertDoc({ docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: hash });
     this.saveSoon();
     this.filesChanged([record.path]);
+    // A collaborator's new document exists on disk only now; the tree-changed
+    // sent when its manifest entry arrived came before the file did.
+    if (!disk) {
+      this.ctx.emit({ t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook, added: [this.liberaPath(record.path)], moves: [], removed: [] });
+    }
   }
 
   /** Records bytes already on disk as the materialized state of a document. */
@@ -1157,6 +1178,26 @@ export class SharedProject {
 
   liberaPath(relative: string): string {
     return `${this.info.notebook}/${relative}`;
+  }
+
+  // Files appeared, moved or went away (a collaborator's file op or our own):
+  // windows refresh the Notebooks tree and re-point open tabs of moved files.
+  // Separate from files-changed, which also fires for every text write and
+  // must not make the tree reload while someone types.
+  private treeChanged(previous: Record<string, LayoutRecord>, next: Record<string, LayoutRecord>): void {
+    const moves: { from: string; to: string }[] = [];
+    const removed: string[] = [];
+    const added: string[] = [];
+    for (const [fileId, record] of Object.entries(next)) {
+      const before = previous[fileId];
+      if (!before) added.push(this.liberaPath(record.path));
+      else if (before.path !== record.path) moves.push({ from: this.liberaPath(before.path), to: this.liberaPath(record.path) });
+    }
+    for (const [fileId, record] of Object.entries(previous)) {
+      if (!next[fileId]) removed.push(this.liberaPath(record.path));
+    }
+    if (moves.length === 0 && removed.length === 0 && added.length === 0) return;
+    this.ctx.emit({ t: "tree-changed", projectId: this.info.projectId, notebook: this.info.notebook, added, moves, removed });
   }
 
   private filesChanged(paths: string[]): void {

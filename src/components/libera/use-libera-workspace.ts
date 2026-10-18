@@ -71,6 +71,7 @@ import { applyTextToSession, applyTextToShared } from "@/lib/collab/client/apply
 import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client/registry";
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
+import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 
 const TYPING: Provenance = { source: "typing" };
@@ -2919,6 +2920,71 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceInputDialog({ mode: "move-file", file: tab.file });
   }
 
+  /** Points the open tab of `fromPath` (if any) at the file now at `payload`. */
+  function retargetOpenTab(fromPath: string, payload: LiberaFilePayload) {
+    const nextId = payload.file.path;
+    const openTab = tabs.find((tab) => tab.file.path === fromPath);
+    if (openTab) {
+      const draft = getTabDraft(openTab);
+
+      forgetTabDraft(openTab.id);
+      rememberTabDraft(nextId, draft);
+    }
+    setTabs((currentTabs) =>
+      currentTabs.map((currentTab) =>
+        currentTab.file.path === fromPath
+          ? {
+              ...currentTab,
+              id: nextId,
+              draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
+              file: payload.file,
+              rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
+            }
+          : currentTab,
+      ),
+    );
+    setActiveTabId((current) => (current === fromPath ? nextId : current));
+  }
+
+  // Collaborators add, move and remove files of shared notebooks; the host
+  // says so with tree-changed (not on every text write). Refresh the tree
+  // once things settle, and follow open tabs whose file moved.
+  const treeChangeRef = useRef({ timer: null as ReturnType<typeof setTimeout> | null, moves: [] as { from: string; to: string }[] });
+  const latestTreeChange = useRef({ refreshTree, retargetOpenTab });
+  useLayoutEffect(() => {
+    latestTreeChange.current = { refreshTree, retargetOpenTab };
+  });
+  useEffect(() => {
+    if (!authenticated) return;
+    const pending = treeChangeRef.current;
+    const stop = subscribeHostEvents((event) => {
+      if (event.t !== "tree-changed") return;
+      pending.moves.push(...event.moves);
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.timer = setTimeout(() => {
+        pending.timer = null;
+        const moves = pending.moves.splice(0);
+        void (async () => {
+          const { refreshTree: refresh, retargetOpenTab: retarget } = latestTreeChange.current;
+          for (const move of moves) {
+            try {
+              const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
+              retarget(move.from, payload);
+            } catch {
+              // The file moved again or is gone; the tree refresh below shows where it is.
+            }
+          }
+          await refresh();
+        })().catch((error: Error) => setWorkspaceError(error.message));
+      }, 300);
+    });
+    return () => {
+      stop();
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.timer = null;
+    };
+  }, [authenticated]);
+
   async function moveFileNode(
     file: LiberaFileNode,
     destinationNotebook: string,
@@ -2946,27 +3012,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           destinationName,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
-      const nextId = payload.file.path;
-      if (openTab) {
-        const draft = getTabDraft(openTab);
-
-        forgetTabDraft(openTab.id);
-        rememberTabDraft(nextId, draft);
-      }
-      setTabs((currentTabs) =>
-        currentTabs.map((currentTab) =>
-          currentTab.file.path === file.path
-            ? {
-                ...currentTab,
-                id: nextId,
-                draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
-                file: payload.file,
-                rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
-              }
-            : currentTab,
-        ),
-      );
-      setActiveTabId((current) => (current === file.path ? nextId : current));
+      retargetOpenTab(file.path, payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not move file.");
