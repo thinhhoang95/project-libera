@@ -1,4 +1,4 @@
-import { Extension, mergeAttributes } from "@tiptap/core";
+import { Extension, mergeAttributes, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import Highlight from "@tiptap/extension-highlight";
@@ -7,9 +7,11 @@ import Image from "@tiptap/extension-image";
 import { TextStyle, FontSize, LineHeight, Color } from "@tiptap/extension-text-style";
 import { TableKit } from "@tiptap/extension-table";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
+import Link from "@tiptap/extension-link";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
 import { markdownTextStyleAttributes } from "./markdown-text-styles";
 import { LiberaBlockquote } from "./tiptap-boxes";
+import { CitationNode, CITATION_NODE_NAME } from "./tiptap-citation";
 
 const LiberaHighlight = Highlight.extend({
   renderHTML({ HTMLAttributes }) {
@@ -104,9 +106,26 @@ const LiberaLineHeight = LineHeight.extend({
   },
 });
 
-export function createMarkdownExtensions(documentPath: string) {
+// Link text is never a citation (the shared grammar, citation-syntax.ts): a
+// citation token parsed inside `[…](url)` stays the text it was written as.
+const LiberaLink = Link.extend({
+  parseMarkdown(token, helpers) {
+    const content = helpers.parseInline(token.tokens ?? []).map((node: JSONContent): JSONContent =>
+      node.type === CITATION_NODE_NAME ? { type: "text", text: String(node.attrs?.raw ?? ""), ...(node.marks ? { marks: node.marks } : {}) } : node);
+    return helpers.applyMark("link", content, { href: token.href, title: token.title || null });
+  },
+});
+
+export type MarkdownExtensionOptions = {
+  /** The Visual editor's citation node view (references/tiptap-citation-view.tsx). */
+  citationNodeView?: NodeViewRenderer;
+};
+
+export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
   return [
-    StarterKit.configure({ link: { openOnClick: false }, trailingNode: false, underline: false, blockquote: false }),
+    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false }),
+    LiberaLink.configure({ openOnClick: false }),
+    CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
     LiberaBlockquote,
     Underline.extend({
       renderMarkdown: (node, h) => `<u>${h.renderChildren(node)}</u>`,
