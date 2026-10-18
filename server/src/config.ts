@@ -22,7 +22,12 @@ const schema = z.object({
   /** Secret for signing access tokens. At least 32 characters in production. */
   JWT_SECRET: z.string().min(16).default("development-only-secret-change-me"),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(15 * 60),
-  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  /**
+   * Refresh tokens rotate on every use and each rotation starts a new
+   * lifetime, so this is how long a device may stay unused before its user
+   * has to sign in again.
+   */
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(90),
   INVITATION_TTL_DAYS: z.coerce.number().int().positive().default(14),
   /** Allow sign-up without an invitation token. */
   ALLOW_OPEN_SIGNUP: boolean,

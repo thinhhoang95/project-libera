@@ -109,7 +109,7 @@ All variables are read by `server/src/config.ts`. `server/.env.example` is the d
 | `DATABASE_URL` | `pglite://./data/pglite` | `postgres://…`, `pglite://<dir>`, or `pglite://memory` |
 | `JWT_SECRET` | development value | Signs access tokens. At least 32 random characters in production. |
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | Access token lifetime (15 min) |
-| `REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh token lifetime. Tokens rotate on every use. |
+| `REFRESH_TOKEN_TTL_DAYS` | `90` | How long a device may stay unused before its user must sign in again. Refresh tokens rotate on every use, and each rotation starts a new lifetime, so a device in use stays signed in. |
 | `INVITATION_TTL_DAYS` | `14` | Invitation link lifetime |
 | `ALLOW_OPEN_SIGNUP` | off | `1` allows registering without an invitation |
 | `BLOB_DRIVER` | `disk` | `disk` or `s3` |
