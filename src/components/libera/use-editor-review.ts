@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
+import type { Transaction } from "@tiptap/pm/state";
+import { TIPTAP_BRIDGE_META } from "@/lib/collab/bindings/tiptap-ytext";
 import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
 import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
 import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
@@ -169,7 +171,14 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
       if (event.key === "Escape") review.clearSelection();
     }
-    const changed = () => latest.current?.clearSelection();
+    // Only the user's own edits invalidate the selection. The shared Visual
+    // bridge also dispatches document changes (a collaborator's typing, the
+    // rebuild after a blur sync); clearing on those closed the comment
+    // popover between a real mousedown and its click.
+    const changed = ({ transaction }: { transaction: Transaction }) => {
+      if (transaction.getMeta(TIPTAP_BRIDGE_META)) return;
+      latest.current?.clearSelection();
+    };
     editor.on("update", changed);
     root.addEventListener("mouseup", mouse); root.addEventListener("keydown", key, true);
     return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); };

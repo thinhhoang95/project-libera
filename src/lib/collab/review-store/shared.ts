@@ -154,7 +154,10 @@ export class SharedReviewStore implements ReviewStore {
     this.docId = options.docId;
     this.api = options.api ?? threadApi;
     this.newId = options.newId ?? randomId;
-    this.schedule = options.schedule ?? queueMicrotask;
+    // Wrapped, not stored bare: browsers refuse `queueMicrotask` called as a
+    // method of another object ("Illegal invocation"), which would leave the
+    // projection frozen at its first, empty build while writes still went out.
+    this.schedule = options.schedule ?? ((run) => queueMicrotask(run));
     this.detachDelayMs = options.detachDelayMs ?? DEFAULT_DETACH_DELAY_MS;
     this.projection = this.build();
     this.observe();
@@ -613,7 +616,7 @@ export class SharedReviewStore implements ReviewStore {
   private changed(): void {
     if (this.destroyed || this.scheduled) return;
     this.scheduled = true;
-    this.schedule(() => {
+    this.scheduleRun(() => {
       this.scheduled = false;
       if (this.destroyed) return;
       this.projection = this.build();
@@ -622,6 +625,16 @@ export class SharedReviewStore implements ReviewStore {
       for (const listener of [...this.projectionListeners]) listener(this.projection);
       for (const listener of [...this.listeners]) listener(doc);
     });
+  }
+
+  /** A scheduler that throws must not leave `scheduled` set, or no later change would ever be published. */
+  private scheduleRun(run: () => void): void {
+    try {
+      this.schedule(run);
+    } catch (error) {
+      this.scheduled = false;
+      throw error;
+    }
   }
 
   /** Rebuilds the projection now (tests, and callers that just wrote). */

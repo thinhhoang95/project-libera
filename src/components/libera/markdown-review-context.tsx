@@ -9,13 +9,18 @@ import { registerStateFlusher } from "./deferred-save";
 import { LocalReviewStore } from "@/lib/collab/review-store/local";
 import { SharedReviewStore } from "@/lib/collab/review-store/shared";
 import { sharedReviewDocument, type SharedReviewProjection } from "@/lib/collab/review-store/types";
-import type { ReattachCandidate } from "@/lib/collab/anchors";
+import { relativeRange, resolveRelativeRange, type ReattachCandidate } from "@/lib/collab/anchors";
+import type { RelativePositionJSON } from "@/lib/collab/protocol/schema";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 import { useSessionEndRevisions } from "./collab/history/session-end";
 
 type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
-export type ReviewSelection = { range: ReviewRange; x: number; y: number };
+export type ReviewSelection = {
+  range: ReviewRange; x: number; y: number;
+  /** Shared documents: the selection as Yjs positions, so it follows collaborators' edits while the popover is open. */
+  anchor?: { start: RelativePositionJSON; end: RelativePositionJSON };
+};
 /** Review Mode on a shared document: threads come from the collab server (SharedReviewStore). */
 export type SharedReviewState = {
   docId: string; projectId: string; projection: SharedReviewProjection;
@@ -277,13 +282,23 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const select = useCallback((range: ReviewRange, x: number, y: number) => {
     try {
       const expanded = (current.current.activeTab?.file.fileType === "latex" ? plainParagraphRange : paragraphRange)(snapshot(), range);
-      if (expanded) setSelection({ range: expanded, x, y });
+      if (!expanded) return;
+      const replica = sharedStore.current ? sharedReplica : null;
+      setSelection({ range: expanded, x, y, ...(replica && expanded.end <= replica.ytext.length ? { anchor: relativeRange(replica.ytext, expanded.start, expanded.end) } : {}) });
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Selection failed."); }
-  }, [snapshot]);
+  }, [snapshot, sharedReplica]);
+  // A collaborator's edit moves the selected passage; the projection changes
+  // with every text change, so resolving here keeps the popover on it.
+  const liveSelection = useMemo<ReviewSelection | null>(() => {
+    if (!selection?.anchor || !sharedReplica || !sharedProjection) return selection;
+    const range = resolveRelativeRange(sharedReplica.ytext, selection.anchor.start, selection.anchor.end);
+    if (!range || range.end <= range.start) return null;
+    return range.start === selection.range.start && range.end === selection.range.end ? selection : { ...selection, range };
+  }, [selection, sharedReplica, sharedProjection]);
   const reportViewport = useCallback((range: ReviewRange | null) => {
     setViewport((previous) => previous?.start === range?.start && previous?.end === range?.end ? previous : range);
   }, []);
-  const value = useMemo<ContextValue>(() => ({ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate,
+  const value = useMemo<ContextValue>(() => ({ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection: liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate,
     selectThread: (id) => { selectThread(id); if (id) current.current.openComments(); },
     showComments: () => current.current.openComments(),
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
@@ -291,6 +306,6 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error("Document changed. Retry recovery."); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : "Recovery failed."); } },
     stop: () => pending.current?.abort(), reportError: setError,
     recoverDraft: (key, text) => current.current.recoverDraft(key, text),
-  }), [shown, busy, locked, error, recovery, selection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);
+  }), [shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);
   return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
 }

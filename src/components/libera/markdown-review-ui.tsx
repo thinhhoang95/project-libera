@@ -122,6 +122,10 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
     {revision !== null && <form className="mt-2" onSubmit={async (e) => { e.preventDefault(); if (await r.generate("revise", revision, undefined, undefined, suggestion.id)) setRevision(null); }}><textarea aria-label={`Revision for change ${number}`} className="review-textarea" value={revision} onChange={(e) => setRevision(e.target.value)} /><button className={button} disabled={!revision.trim() || !!r.busy}>Revise this change</button></form>}
   </article>;
 }
+// The popover's buttons keep focus where it is (the comment box, or the
+// editor before composing): a mousedown that moves focus makes the editor
+// blur and resync, and the click must land on the same button it started on.
+const keepFocus = (event: { preventDefault(): void }) => event.preventDefault();
 export function ReviewPopover() {
   const r = useMarkdownReview();
   const [text, setText] = useState("");
@@ -138,7 +142,7 @@ export function ReviewPopover() {
     <blockquote className="my-2 max-h-20 overflow-auto whitespace-pre-wrap border-l-2 border-accent pl-2 text-xs text-muted-foreground">{r.doc.snapshot.slice(range.start, range.end)}</blockquote>
     {threads.map((t) => <button key={t.id} className="my-1 block w-full rounded bg-muted p-2 text-left text-sm" onClick={() => { r.selectThread(t.id); r.clearSelection(); }}>{t.messages[0]?.text} <span className="text-xs text-muted-foreground">· {t.messages.length} message(s)</span></button>)}
     {visible.map((s) => <ReviewSuggestionCard key={s.id} suggestion={s} number={suggestions.indexOf(s) + 1} />)}
-    {composing ? <form onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={button} disabled={!text.trim() || !!r.busy}>Add comment</button></form> : <button className={button} disabled={!!r.busy} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
+    {composing ? <form onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={button} disabled={!text.trim() || !!r.busy} onMouseDown={keepFocus}>Add comment</button></form> : <button className={button} disabled={!!r.busy} onMouseDown={keepFocus} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
   </div>;
 }
 export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs: OpenTab[] }) {
