@@ -1955,7 +1955,14 @@ async function createMainWindow(url) {
           transparent: false,
           titleBarStyle: "default",
           autoHideMenuBar: true,
-          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            // Overriding webPreferences drops the opener's preload. With
+            // collaboration on, pop-outs need window.liberaCollab for shared files.
+            ...(collabHost.enabled ? { preload: path.join(__dirname, "preload.cjs") } : {}),
+          },
         },
       };
     }
