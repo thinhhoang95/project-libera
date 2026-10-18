@@ -194,7 +194,13 @@ export type HostEvent =
   | { t: "notification"; notification: NotificationInfo }
   | { t: "project-changed"; projectId: string }
   | { t: "files-changed"; projectId: string; paths: string[] }
-  | { t: "server-event"; scope: string; id: string; kind: string; payload: unknown };
+  | { t: "server-event"; scope: string; id: string; kind: string; payload: unknown }
+  /**
+   * The hourly divergence check found this document differing from the
+   * server at the same state vector. `recovered` says whether re-opening it
+   * with the server's full state made it match again (nothing local is dropped).
+   */
+  | { t: "divergence"; docId: string; recovered: boolean };
 
 export const ControlRoutes = {
   status: "/status",
@@ -225,6 +231,10 @@ export const ControlRoutes = {
   notifications: "/notifications",
   /** POST MarkNotificationsReadRequest → 204. */
   notificationsRead: "/notifications/read",
+  /** GET → HostDiagnostics (ui/diagnostics-types.ts): the "Report sync problem" bundle, no content. */
+  diagnostics: "/diagnostics",
+  /** POST → DivergenceRecord[]: runs the divergence check on every open or recent document now. */
+  divergenceCheck: "/diagnostics/divergence-check",
 } as const;
 
 /** Next routes are the control routes under this prefix. */

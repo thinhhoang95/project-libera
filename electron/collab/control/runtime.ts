@@ -219,6 +219,10 @@ export class CollabRuntime {
       this.statusChanged();
       return;
     }
+    if (event.source === "divergence") {
+      this.options.emit({ t: "divergence", docId: event.docId, recovered: event.record.recovered === true });
+      return;
+    }
     if (event.source !== "sync") return;
     const sync = event.event;
     if (sync.type === "state" || sync.type === "update-required" || sync.type === "needs-sign-in" || sync.type === "signed-out") {
