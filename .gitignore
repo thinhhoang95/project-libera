@@ -26,6 +26,14 @@
 # local app data
 /data
 
+# collaboration
+/electron/collab/dist/
+/server/node_modules/
+/server/dist/
+/server/data/
+/server/.env
+!/server/.env.example
+
 # misc
 .DS_Store
 ._*
