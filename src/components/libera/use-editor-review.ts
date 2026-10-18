@@ -127,11 +127,12 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
-      ...(r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+      // A shared document shows proposals as overlay suggestions instead.
+      ...(r.shared ? [] : r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
       ...(r.selection ? [r.selection.range] : []),
     ] : [];
     view.dispatch({ effects: setReviewHighlights.of(ranges) });
-  }, [view, r?.doc, r?.enabled, r?.selection]);
+  }, [view, r?.doc, r?.enabled, r?.selection, r?.shared]);
   return r;
 }
 export function useTiptapReview(editor: Editor | null, lastValue: RefObject<string>, read: () => string, replace: (markdown: string) => void) {
@@ -213,7 +214,8 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, source, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their
     // decisions still go through the review so its undo/CAS state stays exact.
-    const suggestions = r?.doc?.session?.suggestions ?? [];
+    // On a shared document they are overlay suggestions, drawn on their own channel.
+    const suggestions = sharedDoc ? [] : r?.doc?.session?.suggestions ?? [];
     const changes = tiptapReviewChanges(editor, source, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
     const decide: ChangeDecider = (ids, decision) => {
       const review = latest.current;

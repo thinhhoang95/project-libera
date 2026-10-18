@@ -110,6 +110,7 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
   return <article className="review-suggestion" aria-label={`Change ${number}: ${suggestion.title}`}>
     <div className="flex items-start gap-2"><button className="flex-1 text-left font-semibold" onClick={() => r.focus(suggestion.edits[0])}>Change {number}: {suggestion.title}</button><span className="text-xs capitalize">{suggestion.status}</span></div>
     <p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p>
+    {r.shared && <p className="mt-1 text-xs text-muted-foreground">Shared as a suggestion: collaborators see it, and an editor accepts or rejects it.</p>}
     {suggestion.edits.length > 1 && <p className="mt-1 text-xs font-semibold">Linked changes · accepted together</p>}
     {suggestion.edits.map((edit, index) => <div key={index} className="review-diff"><div aria-label="Original text"><span className="review-diff-label">Original</span><pre>{edit.before}</pre></div><div aria-label="Proposed text"><span className="review-diff-label">Proposed</span><pre>{edit.after || "(delete passage)"}</pre></div></div>)}
     <p className="text-xs text-muted-foreground">Comments {suggestion.commentIds.map((id) => (r.doc?.threads.findIndex((t) => t.id === id) ?? -1) + 1).join(", ")}</p>
@@ -117,7 +118,7 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
       {pending && <><button className={button} disabled={!!r.busy || r.recovery} onClick={() => void r.action("decision", { ids: [suggestion.id], decision: "accept" })}><Check size={14} /> Accept</button><button className={button} disabled={!!r.busy} onClick={() => void r.action("decision", { ids: [suggestion.id], decision: "reject" })}><X size={14} /> Reject</button></>}
       {conflicted && <button className={button} disabled={!!r.busy} onClick={() => void r.action("decision", { ids: [suggestion.id], decision: "reject" })}>Reject</button>}
       {(pending || conflicted) && <button className={button} disabled={!!r.busy} onClick={() => setRevision(revision === null ? "" : null)}>Request revision</button>}
-      {suggestion.status === "rejected" && <button className={button} disabled={!!r.busy} onClick={() => void r.action("decision", { ids: [suggestion.id], decision: "reopen" })}>Reopen change</button>}
+      {suggestion.status === "rejected" && !r.shared && <button className={button} disabled={!!r.busy} onClick={() => void r.action("decision", { ids: [suggestion.id], decision: "reopen" })}>Reopen change</button>}
     </div>
     {revision !== null && <form className="mt-2" onSubmit={async (e) => { e.preventDefault(); if (await r.generate("revise", revision, undefined, undefined, suggestion.id)) setRevision(null); }}><textarea aria-label={`Revision for change ${number}`} className="review-textarea" value={revision} onChange={(e) => setRevision(e.target.value)} /><button className={button} disabled={!revision.trim() || !!r.busy}>Revise this change</button></form>}
   </article>;
@@ -165,9 +166,9 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
   }, [doc]);
   const suggestions = session?.suggestions ?? [];
   const pending = suggestions.filter((s) => s.status === "pending");
-  // A shared document's comments live on the collab server; agentic review
-  // keeps its local session for now and plans from the prompt alone there.
-  const selectedIds = r.shared ? [] : doc?.threads.filter((t) => t.status === "open" && !excluded.includes(t.id)).map((t) => t.id) ?? [];
+  // A shared document's threads come from the collab server; the plan
+  // addresses them by id like local comments.
+  const selectedIds = doc?.threads.filter((t) => t.status === "open" && !excluded.includes(t.id)).map((t) => t.id) ?? [];
   const contextChanged = !!session && (JSON.stringify(references) !== JSON.stringify(session.references) || JSON.stringify([...selectedIds].sort()) !== JSON.stringify([...session.selectedIds].sort()));
   async function send() {
     setError("");
@@ -210,7 +211,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
 
       {!doc ? <>{recoverable.length > 0 && <section className="space-y-2"><strong className="text-sm">Recover unsaved reviews</strong>{recoverable.map((draft) => <button key={draft.id} className="review-button w-full flex-col items-start text-left" onClick={() => r.recoverDraft(draft.key, draft.snapshot)}><span className="line-clamp-2">{draft.snapshot.slice(0, 120) || "Untitled review"}</span><span>{draft.commentCount} comments · restore draft</span></button>)}</section>}</> : <>
       {session && <p className="break-all text-xs text-muted-foreground">Reviewing: {doc.key} · round {doc.round ?? 1} · full current draft</p>}
-      {!r.shared && (session || doc.threads.some((thread) => thread.status === "open")) && <details className="libera-review-comment-picker" open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>}
+      {(session || doc.threads.some((thread) => thread.status === "open")) && <details className="libera-review-comment-picker" open={!session}><summary className="cursor-pointer text-sm">Comments to address ({selectedIds.length})</summary>{doc.threads.filter((t) => t.status === "open").map((t) => <label key={t.id} className="mt-2 flex gap-2 text-sm"><input type="checkbox" checked={!excluded.includes(t.id)} onChange={(e) => setExcluded(e.target.checked ? excluded.filter((id) => id !== t.id) : [...excluded, t.id])} />{t.messages[0]?.text}</label>)}</details>}
       {!!doc.previousRounds?.length && <details>
         <summary className="cursor-pointer text-xs text-muted-foreground">Previous rounds ({doc.previousRounds.length})</summary>
         {doc.previousRounds.map((round) => <details key={round.session.id} className="mt-2 rounded-lg border border-border p-2 text-xs">

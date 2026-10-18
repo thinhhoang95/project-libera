@@ -23,7 +23,7 @@ import type { Actor, AiFeature, Provenance } from "../protocol/actor";
 import type { DecisionKind, DecisionOutcome, DecideSuggestionsResponse, Member, SuggestionInfo, UserSummary } from "../protocol/api";
 import { can, canWriteSubdoc, type Role } from "../protocol/roles";
 import type { SuggestionRecord, SuggestionStatus } from "../protocol/schema";
-import type { HostEvent, SuggestionCommandStatus } from "../local-api";
+import type { CreateSuggestionsRequest, CreateSuggestionsResponse, HostEvent, SuggestionCommandStatus } from "../local-api";
 import { PROVENANCE_META_KEY } from "../bindings/codemirror";
 import {
   createSuggestion,
@@ -775,6 +775,15 @@ export class SuggestionsController {
     const result = created as ReturnType<typeof suggestionsFromSnapshotEdits> | null;
     if (!result) return { ok: false, reason: "empty", message: "AI proposed no change." };
     return { ok: true, ids: result.suggestions.map((record) => record.id), matched: result.matched.length, conflicted: result.conflicted.length };
+  }
+
+  /**
+   * Creates suggestions through the host's control API rather than in this
+   * replica: used where the edits come from elsewhere (agentic review's
+   * session snapshot), so the host maps them and marks stale ones once.
+   */
+  createViaHost(body: CreateSuggestionsRequest): Promise<CreateSuggestionsResponse> {
+    return this.api.create(this.docId, body);
   }
 
   /* ---- Reply and reveal ------------------------------------------------------------------------------------------------------ */

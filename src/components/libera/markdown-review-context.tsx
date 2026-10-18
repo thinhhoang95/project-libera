@@ -14,6 +14,8 @@ import type { RelativePositionJSON } from "@/lib/collab/protocol/schema";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 import { useSessionEndRevisions } from "./collab/history/session-end";
+import { useSuggestions } from "./collab/suggestions/use-suggestions";
+import { agenticGroupId, reviewThreadsForPlanning, syncAgenticReviewSuggestions, withOverlayStatuses } from "@/lib/collab/client/agentic-review";
 
 type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
 export type ReviewSelection = {
@@ -46,8 +48,10 @@ type ContextValue = {
 const ReviewContext = createContext<ContextValue | null>(null);
 export const useMarkdownReview = () => useContext(ReviewContext);
 // Comment operations a shared document sends to its SharedReviewStore. The
-// agentic-review actions (toggle, sync, decision, undo, redo, new-round) and
-// plan/generate keep the local path for now, on the same file's local review.
+// agentic-review session (toggle, sync, undo, redo, new-round, plan and
+// generate) stays private in the same file's local review; on a shared
+// document its proposals are overlay suggestions and "decision" is a server
+// decision on them (sharedDecision).
 const SHARED_ACTIONS = new Set(["comment", "reply", "edit", "resolve", "reattach", "delete", "delete-message", "retry", "discard"]);
 function sharedAccount() {
   const account = getCollabStatusStore().getSnapshot().status?.account;
@@ -162,6 +166,11 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     return () => { off(); offStatus(); store.destroy(); if (sharedStore.current === store) sharedStore.current = null; };
   }, [sharedReplica, sharedResolved]);
   const sharedProjection = projection && projection.docId === sharedResolved?.docId ? projection : null;
+  // Agentic-review proposals on a shared document are overlay suggestions;
+  // their decisions and statuses come from this controller (plan M3.4).
+  const { controller: sharedSuggestions, snapshot: suggestionsSnapshot } = useSuggestions(sharedProjection ? sharedSession : null);
+  const sharedSuggestionsRef = useRef<typeof sharedSuggestions>(null);
+  useLayoutEffect(() => { sharedSuggestionsRef.current = sharedSuggestions; }, [sharedSuggestions]);
 
   const sharedAction = useCallback(async (name: string, fields: Record<string, unknown>) => {
     const store = sharedStore.current;
@@ -193,8 +202,24 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     }
   }, []);
 
+  // Accept and reject of a proposal on a shared document are server
+  // decisions on its overlay group (anyone allowed to decide sees the same
+  // group); the session's local snapshot apply is for local documents.
+  const sharedDecision = useCallback(async (fields: Record<string, unknown>) => {
+    const controller = sharedSuggestionsRef.current;
+    const ids = Array.isArray(fields.ids) ? (fields.ids as unknown[]).filter((id): id is string => typeof id === "string") : [];
+    const decision = fields.decision;
+    if (!controller || !ids.length) return false;
+    if (decision !== "accept" && decision !== "reject") { setError("A decided suggestion in a shared document cannot be reopened. Ask for a revision instead."); return false; }
+    setError("");
+    const outcomes = await controller.decide(ids.map(agenticGroupId), decision, { checkpoint: ids.length > 1 }).settled;
+    const failed = [...outcomes.values()].find((outcome) => outcome.kind === "failed" || outcome.kind === "stale" || outcome.kind === "not-found");
+    if (failed) { setError(failed.message); return false; }
+    return true;
+  }, []);
   const action = useCallback(async (name: string, fields: Record<string, unknown> = {}) => {
     if (sharedStore.current && SHARED_ACTIONS.has(name)) return sharedAction(name, fields);
+    if (sharedStore.current && name === "decision") return sharedDecision(fields);
     const stored = latest.current, tab = current.current.activeTab;
     if (!stored || !tab || busyRef.current || !localStore) return false;
     const controller = new AbortController(); pending.current = controller;
@@ -223,7 +248,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       return false;
     }
     finally { metadataWrite.current = null; if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
-  }, [publish, snapshot, localStore, sharedAction]);
+  }, [publish, snapshot, localStore, sharedAction, sharedDecision]);
 
   const generate = useCallback(async (stage: "plan" | "generate" | "revise", prompt: string, ids?: string[], references?: ChatContext[], suggestionId?: string) => {
     const stored = latest.current, tab = current.current.activeTab;
@@ -231,9 +256,20 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     const controller = new AbortController(); pending.current = controller;
     busyRef.current = true; setBusy(stage); setError("");
     try {
-      const result = await apiRequest<ReviewDocument>("/api/document-review", { method: "POST", signal: controller.signal, body: JSON.stringify({ action: stage, id: stored.id, revision: stored.revision, snapshot: snapshot(), prompt, ids, references, suggestionId, planVersion: stored.session?.plan.version }) });
+      const shared = sharedStore.current;
+      const text = snapshot();
+      const sharedThreads = shared ? reviewThreadsForPlanning(shared.getProjection().threads) : undefined;
+      const result = await apiRequest<ReviewDocument>("/api/document-review", { method: "POST", signal: controller.signal, body: JSON.stringify({ action: stage, id: stored.id, revision: stored.revision, snapshot: text, prompt, ids, references, suggestionId, planVersion: stored.session?.plan.version, ...(sharedThreads ? { sharedThreads } : {}) }) });
       if (controller.signal.aborted || current.current.activeTab?.id !== tab.id) return false;
-      publish(result); return true;
+      publish(result);
+      const suggestions = sharedSuggestionsRef.current;
+      if (shared && suggestions) {
+        // Proposals become overlay groups collaborators see; superseded ones
+        // (a revision, a new plan) are withdrawn.
+        const synced = await syncAgenticReviewSuggestions({ doc: result, controller: suggestions, snapshot: result.snapshot });
+        if (synced.failed.length) setError(`${synced.failed.length === 1 ? "A proposed change" : `${synced.failed.length} proposed changes`} could not be shared as suggestions: ${synced.failed[0].message}`);
+      }
+      return true;
     } catch (cause) { if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? "Generation stopped. No proposed changes were applied. Reload review before retrying." : cause instanceof Error ? cause.message : "Agentic review failed."); return false; }
     finally { if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
   }, [publish, snapshot]);
@@ -280,9 +316,12 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   // Shared threads are already resolved against the live text; the local
   // document only contributes Review Mode's switch and agentic review.
   const shown = useMemo(() => {
-    if (sharedProjection) return sharedReviewDocument(sharedProjection, doc?.key === key ? syncReview(doc, sharedProjection.text) : null);
+    if (sharedProjection) {
+      const base = doc?.key === key ? syncReview(doc, sharedProjection.text) : null;
+      return sharedReviewDocument(sharedProjection, base && suggestionsSnapshot ? withOverlayStatuses(base, suggestionsSnapshot.groups) : base);
+    }
     return doc?.key === key && draft !== undefined ? syncReview(doc, draft) : null;
-  }, [doc, key, draft, sharedProjection]);
+  }, [doc, key, draft, sharedProjection, suggestionsSnapshot]);
   const shared = useMemo<SharedReviewState | null>(() => sharedProjection ? {
     docId: sharedProjection.docId, projectId: sharedProjection.projectId, projection: sharedProjection,
     reattachCandidates: (threadId) => sharedStore.current?.reattachCandidates(threadId) ?? [],

@@ -281,12 +281,15 @@ type Route = (body: unknown, url: URL) => unknown | Response | Promise<unknown |
  * reaches the host's control API, `routes` ("METHOD /path") answer other app
  * routes, and anything absolute passes through (the host's own requests).
  */
-export function installRendererFetch(client: Client, routes: Record<string, Route> = {}) {
+export function installRendererFetch(client: Client, routes: Record<string, Route> = {}, options: { external?: (url: string, init?: RequestInit) => Response | Promise<Response> | null } = {}) {
   const original = globalThis.fetch;
   const calls: { method: string; path: string; body: unknown }[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = String(input instanceof Request ? input.url : input);
-    if (/^https?:/.test(raw)) return original(input, init);
+    if (/^https?:/.test(raw)) {
+      const answered = options.external?.(raw, init);
+      return answered ? answered : original(input, init);
+    }
     const url = new URL(raw, "http://localhost");
     const method = init?.method ?? "GET";
     const body = typeof init?.body === "string" && init.body ? JSON.parse(init.body) : undefined;
@@ -356,3 +359,16 @@ export function strictBrowserGlobals(): () => void {
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A renderer fetch route answered by a real Next route handler, signed in. */
+export function nextRoute(handler: (request: import("next/server").NextRequest) => Promise<Response>, path: string): Route {
+  return async (body) => {
+    const { NextRequest } = await import("next/server");
+    const { createSessionToken, SESSION_COOKIE_NAME } = await import("../../../src/lib/auth");
+    return handler(new NextRequest(`http://localhost${path}`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}`, "content-type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    }));
+  };
+}
