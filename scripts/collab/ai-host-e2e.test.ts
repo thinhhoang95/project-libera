@@ -27,7 +27,7 @@ import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 import { RunSnapshots, undoRun } from "../../src/lib/agent/snapshots";
 import { ALL_TOOLS, type ToolContext } from "../../src/lib/agent/tools";
 import type { AgentEvent } from "../../src/lib/agent/types";
-import { ControlRoutes, type DocText, type HostStatus, type ResolvedDoc } from "../../src/lib/collab/local-api";
+import { ControlRoutes, type CreateThreadAtRangeResponse, type DocText, type HostStatus, type ResolvedDoc } from "../../src/lib/collab/local-api";
 import { ApiRoutes, type AuthResponse, type SuggestionInfo, type UpdatesPage } from "../../src/lib/collab/protocol/api";
 import { ContentKeys } from "../../src/lib/collab/protocol/schema";
 import { invalidateSharedNotebookCache, type SharedNotebookMarker } from "../../src/lib/collab/shared-notebook";
@@ -188,6 +188,16 @@ test("agent, undo, OCR and uploads on a shared notebook through the real host an
     assert.deepEqual([undone.status, undone.shared, undone.withdrawn], ["restored", true, 2]);
     await until(async () => (await overlay()).every((info) => info.status === "withdrawn"), "the server to see them withdrawn");
     assert.equal((await docText(resolved.docId)).text, "Hello world\n");
+
+    // --- ReadComments: threads and replies from the server, anchored by the host
+    const commented = await control<CreateThreadAtRangeResponse>("POST", ControlRoutes.threadsAtRange(resolved.docId), { range: { start: 6, end: 11 }, body: "Which world?" });
+    assert.equal(commented.status, 201, JSON.stringify(commented.body));
+    const threadId = commented.body.queued ? commented.body.threadId : commented.body.thread.id;
+    const replied = await control("POST", ControlRoutes.threadMessages(threadId), { id: "msg_e2e_reply_1", body: "This one, keep it." });
+    assert.equal(replied.status, 201, JSON.stringify(replied.body));
+    const comments = await tool("ReadComments").run({ file_path: "Shared/notes.md" }, context);
+    assert.equal(comments.isError, false, comments.text);
+    assert.match(comments.text, new RegExp(`Thread ${threadId} · open · line 1, on “world”\\n {2}- Ada \\(the user\\), comment, \\d{4}-\\d\\d-\\d\\d:\\n {4}Which world\\?\\n {2}- Ada \\(the user\\), reply, \\d{4}-\\d\\d-\\d\\d:\\n {4}This one, keep it\\.`));
 
     // --- an older run's direct edits (M1.11) still undo as inverse edits, and refuse after a collaborator's edit
     for (const collaboratorTypes of [false, true]) {

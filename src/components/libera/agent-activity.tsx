@@ -9,7 +9,7 @@ import type { AgentRunRecord, AgentStep, SubagentOutcome } from "@/lib/agent/typ
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
   Glob: FolderSearch, Grep: Search, Read: FileText, Edit: Pencil, Write: FilePlus2, TaskCreate: ListChecks, TaskUpdate: ListChecks,
-  Skill: BookOpen, LeaveComment: MessageSquarePlus, ReviewComments: MessagesSquare, WebSearch: Globe, SuggestEdit: FilePenLine, SuggestedEdits: FilePenLine,
+  Skill: BookOpen, LeaveComment: MessageSquarePlus, ReviewComments: MessagesSquare, ReadComments: MessagesSquare, WebSearch: Globe, SuggestEdit: FilePenLine, SuggestedEdits: FilePenLine,
 };
 
 const SUBAGENT_OUTCOMES: Record<SubagentOutcome, string> = {

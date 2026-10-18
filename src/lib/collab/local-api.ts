@@ -350,6 +350,20 @@ export type CreateThreadAtRangeResponse =
   | { queued: true; threadId: string; commandId: string };
 
 /**
+ * GET /docs/:docId/threads/anchored: a document's comment threads with each
+ * anchor resolved in the host's copy, for callers that cannot read the
+ * annotations themselves (the agent's ReadComments, which runs in Next).
+ * `range` offsets refer to `text`, the live text they were resolved against;
+ * null when the anchor is missing or its passage was deleted.
+ */
+export interface AnchoredThreadsResponse {
+  text: string;
+  /** The signed-in account, so callers can tell the user's own messages. */
+  accountId: string;
+  threads: (Thread & { range: { start: number; end: number } | null })[];
+}
+
+/**
  * POST /reviews/:reviewId/decision. `commandId` is the idempotency key, as
  * for suggestion decisions. Online: the server's updated Review (200).
  * Offline or unreachable: queued as a `review.decide` command (202) and
@@ -465,6 +479,8 @@ export const ControlRoutes = {
   threads: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads`,
   /** POST CreateThreadAtRangeRequest → CreateThreadAtRangeResponse (201, or 202 queued). */
   threadsAtRange: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads/at-range`,
+  /** GET → AnchoredThreadsResponse. */
+  threadsAnchored: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads/anchored`,
   /** GET → Thread; DELETE → 204. */
   thread: (threadId: string) => `/threads/${encodeURIComponent(threadId)}`,
   /** POST CreateMessageRequest → ThreadMessage. */

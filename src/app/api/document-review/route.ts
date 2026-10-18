@@ -31,6 +31,7 @@ function reviewThreads(value: unknown, snapshot: string): ReviewThread[] {
         id: reviewString(message?.id, "message ID", 100),
         text: reviewString(message?.text ?? "", "comment", 20_000),
         createdAt: reviewString(message?.createdAt ?? "", "comment time", 100),
+        ...(message?.by ? { by: reviewString(message.by, "comment author", 200) } : {}),
       })),
     };
   });

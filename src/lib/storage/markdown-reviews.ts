@@ -61,6 +61,10 @@ export async function loadReview(key: string, snapshot: string) {
     return doc;
   });
 }
+/** A document's stored review, or null when it has none. Never creates one. */
+export async function findReview(key: string) {
+  return (await readDatabase()).documents.find((d) => d.key === key) ?? null;
+}
 /**
  * Add comment threads to a document's review, creating it if needed. `snapshot`
  * is the text the ranges refer to; existing threads are mapped onto it first.

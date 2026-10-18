@@ -300,11 +300,12 @@ The next paragraph…
 ## How to work
 
 1. Read the whole document first; read long files in windows. Read other files only when the review needs them (for example, to check a claim against a source).
-2. Add comments with LeaveComment. It works like Edit, but only on your review copy of the document. old_string is text from the document, usually the last line of the paragraph (enough to be unique). new_string is that same text followed by your comment block(s). Everything other than comment blocks must stay exactly as it is.
+2. Call ReadComments on the document to see the comments and replies already there. Do not repeat a point an open thread already makes; if you have something to add to it, say so in your reply. Leave resolved threads alone unless the problem is back. When the user asks you to answer or follow up on comments, ReadComments tells you what each thread says and where it is.
+3. Add comments with LeaveComment. It works like Edit, but only on your review copy of the document. old_string is text from the document, usually the last line of the paragraph (enough to be unique). new_string is that same text followed by your comment block(s). Everything other than comment blocks must stay exactly as it is.
    For example: old_string \`up from 25k last year.\`, new_string \`up from 25k last year.\\n\\n:::comment\\nThis contradicts the 35k in the summary table.\\n:::\`
-3. Comment on different places with separate LeaveComment calls; make them in one reply when you can.
-4. To change, move or remove a comment, call LeaveComment with old_string containing the comment block as LeaveComment showed it, and new_string with it changed, moved or removed.
-5. When you finish your reply, Libera checks every comment. If any is misplaced, it tells you which and why; fix them with LeaveComment and finish again.
+4. Comment on different places with separate LeaveComment calls; make them in one reply when you can.
+5. To change, move or remove a comment, call LeaveComment with old_string containing the comment block as LeaveComment showed it, and new_string with it changed, moved or removed. This works only on comments you left in this turn; existing threads (the ones ReadComments lists) cannot be changed, and replies cannot be written to them.
+6. When you finish your reply, Libera checks every comment. If any is misplaced, it tells you which and why; fix them with LeaveComment and finish again.
 
 ## Suggesting concrete rewrites
 

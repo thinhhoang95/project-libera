@@ -165,3 +165,60 @@ test("unrelated file moves, copies and deletions do not rewrite the review datab
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("the plan reads whole threads with authors, and only planned comments get proposals", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-review-intent-"));
+  const env = { LIBERA_DATA_DIR: process.env.LIBERA_DATA_DIR, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY, LIBERA_OPENROUTER_MODEL: process.env.LIBERA_OPENROUTER_MODEL, LIBERA_CONFIG_PATH: process.env.LIBERA_CONFIG_PATH };
+  process.env.LIBERA_DATA_DIR = directory; process.env.OPENROUTER_API_KEY = "test-key"; process.env.LIBERA_OPENROUTER_MODEL = "test/model"; process.env.LIBERA_CONFIG_PATH = path.join(directory, "missing.json");
+  const originalFetch = globalThis.fetch;
+  const contexts: { system: string; context: { comments: { id: string; messages: { kind: string; from: string; text: string }[] }[] } }[] = [];
+  let reply: (system: string, context: { comments: { id: string }[]; target: { blocks: { text: string }[] } }) => unknown = () => ({});
+  let doc: ReviewDocument;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "test/model", context_length: 200_000 }] });
+    const body = JSON.parse(String(init?.body));
+    const context = JSON.parse(body.messages[1].content);
+    contexts.push({ system: body.messages[0].content, context });
+    return Response.json({ choices: [{ message: { content: JSON.stringify(reply(body.messages[0].content, context)) } }] });
+  };
+  async function mutate(action: string, fields = {}) {
+    const response = await review(request({ action, id: doc.id, revision: doc.revision, snapshot: doc.snapshot, ...fields }));
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    doc = await response.json();
+  }
+  const plan = (action: string) => agent(request({ action, id: doc.id, revision: doc.revision, snapshot: doc.snapshot, planVersion: doc.session?.plan.version, prompt: "", ids: doc.threads.map((t) => t.id), references: [] }));
+  try {
+    doc = await (await review(request({ action: "load", key: "Notes/intent.md", snapshot: "First paragraph.\n\nSecond paragraph." }))).json();
+    await mutate("comment", { range: { start: 0, end: 16 }, text: "Shorten this." });
+    await mutate("comment", { range: { start: 18, end: 35 }, text: "Why second?" });
+    await mutate("reply", { threadId: doc.threads[1].id, text: "Never mind, it reads fine." });
+    const [edit, question] = doc.threads.map((t) => t.id);
+
+    reply = () => ({ summary: "One edit", steps: [{ commentIds: [edit], targetBlockIds: ["b1"], proposedChange: "Shorten", rationale: "Asked" }], dispositions: [{ commentId: question, reason: "The reply withdrew the question." }], blockingQuestions: [], revisionSummary: "" });
+    let response = await plan("plan"); assert.equal(response.status, 200, JSON.stringify(await response.clone().json())); doc = await response.json();
+    const sent = contexts.at(-1)!;
+    assert.match(sent.system, /Not every comment asks for an edit/);
+    assert.deepEqual(sent.context.comments[1].messages.map((m) => [m.kind, m.from, m.text]), [["comment", "the user", "Why second?"], ["reply", "the user", "Never mind, it reads fine."]]);
+
+    // A proposal for the comment the plan settled without an edit is refused.
+    reply = (_, context) => ({ proposals: [{ title: "Edit second", reason: "x", commentIds: [question], edits: [{ targetBlockId: "b2", before: context.target.blocks[1].text, after: "Changed." }] }], summary: "" });
+    assert.equal((await plan("generate")).status, 400);
+    reply = (_, context) => ({ proposals: [{ title: "Shorten first", reason: "Asked", commentIds: [edit], edits: [{ targetBlockId: "b1", before: context.target.blocks[0].text, after: "First." }] }], summary: "Done" });
+    response = await plan("generate"); assert.equal(response.status, 200, JSON.stringify(await response.clone().json())); doc = await response.json();
+    assert.deepEqual(doc.session!.suggestions.map((s) => s.commentIds), [[edit]]);
+
+    // A plan with no steps confirms without asking the model for edits.
+    await mutate("new-round");
+    reply = () => ({ summary: "Nothing to edit", steps: [], dispositions: [{ commentId: edit, reason: "Already short." }, { commentId: question, reason: "Withdrawn." }], blockingQuestions: [], revisionSummary: "" });
+    response = await plan("plan"); assert.equal(response.status, 200); doc = await response.json();
+    const calls = contexts.length;
+    response = await plan("generate"); assert.equal(response.status, 200, JSON.stringify(await response.clone().json())); doc = await response.json();
+    assert.equal(contexts.length, calls, "no model call for a plan without edits");
+    assert.equal(doc.session!.phase, "completed");
+    assert.deepEqual(doc.session!.suggestions, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -13,7 +13,7 @@
 
 import { randomBytes } from "node:crypto";
 
-import { createAnchor, readAnchor, writeAnchor } from "../../../src/lib/collab/anchors";
+import { createAnchor, readAnchor, resolveAnchor, writeAnchor } from "../../../src/lib/collab/anchors";
 import { mapSnapshotEdits } from "../../../src/lib/collab/suggestions/model";
 import { canWriteSubdoc } from "../../../src/lib/collab/protocol/roles";
 import { ApiClientError } from "../core/api-client";
@@ -30,6 +30,7 @@ import type {
 import { ContentKeys } from "../../../src/lib/collab/protocol/schema";
 import {
   ControlRoutes,
+  type AnchoredThreadsResponse,
   type CommandsState,
   type CreateThreadAtRangeResponse,
   type EnqueueCommandResponse,
@@ -54,6 +55,7 @@ import { aiFeature, bad, objectBody, optionalString, requiredString, stringList 
 const pattern = {
   threads: decodeURIComponent(ControlRoutes.threads(":docId")),
   threadsAtRange: decodeURIComponent(ControlRoutes.threadsAtRange(":docId")),
+  threadsAnchored: decodeURIComponent(ControlRoutes.threadsAnchored(":docId")),
   thread: decodeURIComponent(ControlRoutes.thread(":threadId")),
   threadMessages: decodeURIComponent(ControlRoutes.threadMessages(":threadId")),
   threadStatus: decodeURIComponent(ControlRoutes.threadStatus(":threadId")),
@@ -286,6 +288,39 @@ export function registerThreadRoutes(router: Router, runtime: CollabRuntime, opt
     } catch (error) {
       if (error instanceof ApiClientError && (error.transient || error.code === "network" || error.code === "needs-sign-in")) return queue();
       throw error;
+    }
+  });
+
+  // Threads with their anchors resolved in the host's copy (the agent's
+  // ReadComments): Next cannot read the annotations, only offsets into text.
+  router.add("GET", pattern.threadsAnchored, async (request): Promise<{ body: AnchoredThreadsResponse }> => {
+    const api = requireApi(runtime);
+    const accountId = runtime.accounts.account!.id;
+    const docId = request.params.docId;
+    const host = runtime.host;
+    const record = host.store.getDoc(docId);
+    const meta = host.store.getDocMeta(docId);
+    if (!record && !meta) throw new ControlError(404, "unknown-doc", `Document ${docId} is not shared with this machine.`);
+    const threads = await api.listThreads(docId);
+    const projectId = record?.projectId ?? meta?.projectId ?? undefined;
+    const hub = host.acquire(docId, projectId ? { projectId } : {});
+    try {
+      await whenLoaded(hub, loadTimeoutMs);
+      const ytext = hub.getDoc("content").getText(ContentKeys.source);
+      const annotations = hub.getDoc("annotations");
+      return {
+        body: {
+          text: hub.getText("content"),
+          accountId,
+          threads: threads.map((thread) => {
+            const anchor = readAnchor(annotations, thread.anchorId);
+            const resolved = anchor ? resolveAnchor(ytext, anchor) : null;
+            return { ...thread, range: resolved?.state === "attached" ? { start: resolved.start, end: resolved.end } : null };
+          }),
+        },
+      };
+    } finally {
+      host.release(docId);
     }
   });
 

@@ -10,7 +10,7 @@
 // Never import this from client components: the token must stay on the
 // server.
 
-import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
+import type { LocalProject, AnchoredThreadsResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -137,6 +137,11 @@ export function withdrawSuggestions(docId: string, request: WithdrawSuggestionsR
 /** A comment thread on a range of text; the host writes its anchor (queued offline). */
 export function createThreadAtRange(docId: string, request: CreateThreadAtRangeRequest, config?: HostClientConfig | null): Promise<CreateThreadAtRangeResponse> {
   return hostJson(ControlRoutes.threadsAtRange(docId), { method: "POST", body: request, config });
+}
+
+/** A document's comment threads, each with its anchor resolved against the live text. */
+export function listAnchoredThreads(docId: string, config?: HostClientConfig | null): Promise<AnchoredThreadsResponse> {
+  return hostJson(ControlRoutes.threadsAnchored(docId), { config });
 }
 
 /** The projects joined on this machine, refreshed from the server when it can be reached. */

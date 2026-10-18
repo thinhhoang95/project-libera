@@ -7,8 +7,11 @@ import type { ChatContext } from "./document-chat";
 export type ReviewRange = { start: number; end: number };
 export type ReviewBlock = ReviewRange & { id: string; type: string; text: string };
 export type ReviewAnchor = ReviewRange & { quote: string; prefix: string; suffix: string; state: "attached" | "orphaned" | "ambiguous" };
-/** `author` is "agent" for comments Agent mode left; the user's own have none. */
-export type ReviewMessage = { id: string; text: string; createdAt: string; author?: "agent" };
+/**
+ * `author` is "agent" for comments Agent mode left; the user's own have none.
+ * `by` names who wrote a shared thread's message, for Agentic Review's model.
+ */
+export type ReviewMessage = { id: string; text: string; createdAt: string; author?: "agent"; by?: string };
 export type ReviewThread = { id: string; anchor: ReviewAnchor; messages: ReviewMessage[]; status: "open" | "addressed" | "resolved" };
 export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string }[]; blockingQuestions: string[]; revisionSummary: string };
 export type ReviewEdit = ReviewRange & { before: string; after: string };

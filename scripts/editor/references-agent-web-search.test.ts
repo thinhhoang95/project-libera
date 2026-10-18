@@ -58,7 +58,7 @@ test("WebSearch is offered only when the run allows it", () => {
   const base = toolsForPermission("read-only");
   assert.ok(!activeTools(base, context([], { allowWebSearch: false })).some((tool) => tool.name === "WebSearch"));
   assert.ok(!activeTools([...base, webSearchTool], context([], { allowWebSearch: undefined })).some((tool) => tool.name === "WebSearch"), "never offered without permission, even if listed");
-  assert.deepEqual(activeTools(base, context([])).map((tool) => tool.name), ["Glob", "Grep", "Read", "TaskCreate", "TaskUpdate", "Skill", "References", "WebSearch"]);
+  assert.deepEqual(activeTools(base, context([])).map((tool) => tool.name), ["Glob", "Grep", "Read", "ReadComments", "TaskCreate", "TaskUpdate", "Skill", "References", "WebSearch"]);
   assert.equal(activeTools([...base, webSearchTool], context([])).filter((tool) => tool.name === "WebSearch").length, 1);
   assert.match(buildAgentEnvironment({ date: "2026-10-18", permission: "read-only", notebook: null, notebooks: [], activeFile: null, openFiles: [], unsavedFiles: new Set(), webSearch: true }), /\nWeb search: allowed\./);
   assert.ok(!buildAgentEnvironment({ date: "2026-10-18", permission: "read-only", notebook: null, notebooks: [], activeFile: null, openFiles: [], unsavedFiles: new Set() }).includes("Web search"));

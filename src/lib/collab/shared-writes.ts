@@ -40,8 +40,8 @@ import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
-import type { CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
+import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, listAnchoredThreads, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
 import { isSharedNotebookPath, sharedManifestPath } from "./shared-notebook";
@@ -268,6 +268,18 @@ export async function commentOnSharedText(
     throw new SharedWriteError(403, "forbidden", isRevoked(doc) ? `${liberaPath} is read-only: access to its shared notebook was revoked.` : `Your role in this shared notebook (${doc.role}) cannot comment on ${liberaPath}.`);
   }
   return host(liberaPath, () => createThreadAtRange(doc.docId, { range: input.range, snapshot: input.snapshot, body: input.body, ...(input.ai ? { ai: input.ai } : {}) }, config));
+}
+
+/** A shared document's comment threads and replies, anchored in the live text the response carries. */
+export async function readSharedThreads(liberaPath: string, options: SharedWriteOptions & { doc?: ResolvedDoc } = {}): Promise<AnchoredThreadsResponse> {
+  const config = hostConfig(liberaPath, options);
+  const doc = options.doc ?? (await requireSharedDoc(liberaPath, { config }));
+  try {
+    return await listAnchoredThreads(doc.docId, config);
+  } catch (error) {
+    if (!(error instanceof CollabHostError)) throw error;
+    throw new SharedWriteError(error.status, error.code, `Could not read the comments on ${liberaPath} from the shared notebook: ${error.message}`);
+  }
 }
 
 function manifestTarget(liberaPath: string): { projectId: string; path: string } {

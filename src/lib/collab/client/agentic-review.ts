@@ -15,10 +15,10 @@
 // overlay. "Request revision" supersedes a proposal; its group is withdrawn
 // and the revised proposal gets a group of its own.
 
-import type { ReviewDocument, ReviewSuggestion, ReviewThread } from "@/lib/markdown-review";
+import type { ReviewDocument, ReviewMessage, ReviewSuggestion, ReviewThread } from "@/lib/markdown-review";
 import type { TextEdit } from "../local-api";
 import type { SuggestionGroupView, SuggestionsController } from "./suggestions";
-import { isSharedThread } from "../review-store/types";
+import { isSharedMessage, isSharedThread } from "../review-store/types";
 
 /** The overlay group of an agentic-review proposal. */
 export function agenticGroupId(proposalId: string): string {
@@ -115,16 +115,26 @@ export async function syncAgenticReviewSuggestions(input: {
   return result;
 }
 
+/** Who wrote a shared message, as the planning model reads it: a name, "(the user)" for the requester, "AI for …" for AI actors. */
+function messageAuthor(message: ReviewMessage): string | undefined {
+  if (!isSharedMessage(message)) return undefined;
+  const person = `${message.shared.author.displayName}${message.shared.mine ? " (the user)" : ""}`;
+  return message.shared.actor?.kind === "ai" ? `AI for ${person}` : person;
+}
+
 /**
  * Comment threads of a shared document in the shape the review route
- * expects (the plan addresses them by id). Authors and pending chips stay
- * behind: the model sees what the comments say and where they are.
+ * expects (the plan addresses them by id), with who wrote each message so
+ * the model can weigh replies. Pending chips stay behind.
  */
 export function reviewThreadsForPlanning(threads: readonly ReviewThread[]): ReviewThread[] {
   return threads.filter((thread) => !isSharedThread(thread) || !thread.shared.pending).map((thread) => ({
     id: thread.id,
     anchor: thread.anchor,
     status: thread.status,
-    messages: thread.messages.map((message) => ({ id: message.id, text: message.text, createdAt: message.createdAt })),
+    messages: thread.messages.map((message) => {
+      const by = messageAuthor(message);
+      return { id: message.id, text: message.text, createdAt: message.createdAt, ...(by ? { by } : {}) };
+    }),
   }));
 }
