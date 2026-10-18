@@ -1,0 +1,10 @@
+**
+!server/package.json
+!server/package-lock.json
+!server/src/**
+!server/scripts/**
+!server/tsconfig.json
+!src/lib/collab/protocol/**
+server/node_modules
+server/dist
+server/data

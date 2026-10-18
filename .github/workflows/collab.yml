@@ -1,0 +1,61 @@
+name: Collaboration
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - "src/lib/collab/**"
+      - "electron/collab/**"
+      - "scripts/collab/**"
+      - ".github/workflows/collab.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "src/lib/collab/**"
+      - "electron/collab/**"
+      - "scripts/collab/**"
+  schedule:
+    # Nightly: longer fuzz runs and the soak test.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npx tsc --noEmit -p tsconfig.json
+        working-directory: server
+      - run: npm test
+        working-directory: server
+      - run: npm run build
+        working-directory: server
+
+  app-collab:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm ci
+        working-directory: server
+      - run: npm run test:collab
+        env:
+          LIBERA_COLLAB_FUZZ_RUNS: ${{ github.event_name == 'schedule' && '2000' || '200' }}
+      - run: node scripts/build-collab-host.cjs

@@ -1,0 +1,8 @@
+[
+  {
+    "name": "collab",
+    "listen": "0.0.0.0:4401",
+    "upstream": "host.docker.internal:4400",
+    "enabled": true
+  }
+]

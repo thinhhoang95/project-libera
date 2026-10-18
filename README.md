@@ -22,6 +22,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser.
 
 The app uses the Next.js App Router in `src/app`.
 
+## Collaboration
+
+Real-time collaboration (shared notebooks, comments, suggestions, reviews) is being built on the `collaboration` branch. See [SETUP.md](SETUP.md) to run the collaboration server, [docs/collaboration/README.md](docs/collaboration/README.md) for the architecture, and [docs/collaboration/progress.md](docs/collaboration/progress.md) for status.
+
 ## Storage
 
 Libera stores files under `LIBERA_DATA_DIR`, with `./data/libera` as the local fallback. The single-admin master directory is:
