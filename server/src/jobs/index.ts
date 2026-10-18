@@ -74,7 +74,9 @@ export function startJobs(context: ServerContext, options: { enabled: boolean })
     async runNow(name) {
       const job = jobs.find((candidate) => candidate.name === name);
       if (!job) throw new Error(`Unknown job: ${name}`);
+      // Unlike timer runs, errors propagate to the caller (tests, admin).
       await job.run(context);
+      lastSuccessGauge(context.metrics).set({ name: job.name }, Date.now() / 1000);
     },
     stop() {
       for (const timer of timers) clearInterval(timer);

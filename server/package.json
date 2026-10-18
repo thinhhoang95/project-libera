@@ -14,6 +14,7 @@
     "migrate": "tsx src/db/migrate-cli.ts",
     "seed": "tsx src/db/seed-cli.ts",
     "admin": "tsx src/admin/cli.ts",
+    "load": "node --import tsx test/load/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\""
   },
