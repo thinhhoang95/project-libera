@@ -1,33 +1,39 @@
 "use client";
 
-import { AlertCircle, ArrowLeft, Check, FileUp, Loader2, Merge, Search, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { ArrowLeft, FileUp, Globe, Loader2, Merge, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  authorYearLabel,
+  CandidateList,
+  isAbortError,
+  resolveReference,
+  type ResolveResponse,
+} from "@/components/libera/references/reference-candidates";
+import {
   entryTitle,
+  fileBaseName,
   fileTitle,
   INPUT_KIND_LABELS,
   titleMatchKey,
 } from "@/components/libera/references/reference-display";
 import { parseBibtex } from "@/lib/references/bibtex";
 import { parseCslJson } from "@/lib/references/csl-json";
-import { classifyReferenceInput, splitBibliography, type ReferenceInputKind } from "@/lib/references/identifiers";
+import { classifyReferenceInput, splitBibliography } from "@/lib/references/identifiers";
 import { parseRis } from "@/lib/references/ris";
 import {
   REFERENCES_UPDATED_EVENT,
-  type CslItemType,
   type ReferenceEntry,
   type ReferenceEntryInput,
-  type ReferenceIdentifiers,
   type ReferenceLibrary,
   type ReferenceLibraryOp,
   type ReferencesUpdatedDetail,
 } from "@/lib/references/types";
 
 // The Add box: one input for an identifier, BibTeX/RIS/CSL-JSON, a free-text
-// reference or a whole pasted bibliography. Identifiers go through
-// `resolveReferenceInput` and a confirmation step; formats go to the import
-// route; free text opens the edit form. Also the helpers the panel uses for
+// reference or a whole pasted bibliography. BibTeX, RIS and CSL-JSON go to
+// the import route; everything else is looked up through POST
+// /api/references/resolve and confirmed on candidate cards
+// (reference-candidates.tsx). A PDF or Markdown file dropped on the panel is
+// resolved the same way by its path. Also the helpers the panel uses for
 // files dropped on it.
 
 export type ImportFormat = "bibtex" | "ris" | "csl-json";
@@ -37,11 +43,8 @@ export type ImportResult = {
   added: string[];
   errors: { line: number; message: string }[];
   duplicates: { entryId: string; existingId: string; reason: string }[];
-};
-
-export type ResolveResult = {
-  candidates: ReferenceEntryInput[];
-  duplicates: { candidateIndex: number; entryId: string }[];
+  /** Keys that had to change (taken or invalid), when the server reports them. */
+  renamedKeys?: { sourceKey: string; key: string }[];
 };
 
 async function errorMessage(response: Response, fallback: string) {
@@ -75,61 +78,20 @@ export async function importReferences(request: { notebook: string; format?: Imp
   });
   if (!response.ok) throw new Error(await errorMessage(response, "The references could not be imported."));
   const result = await response.json() as Partial<ImportResult> & { library: ReferenceLibrary };
-  return { library: result.library, added: result.added ?? [], errors: result.errors ?? [], duplicates: result.duplicates ?? [] };
-}
-
-const IDENTIFIER_KINDS = new Set<ReferenceInputKind>(["doi", "arxiv", "isbn", "pmid", "pmcid", "url"]);
-
-/** The CSL type and fields a bare identifier implies, before any lookup. */
-export function identifierStub(kind: ReferenceInputKind, value: string): ReferenceEntryInput | null {
-  const now = new Date().toISOString();
-  const user = { source: "user" as const, confidence: 1, retrievedAt: now };
-  const make = (type: CslItemType, field: string, fieldValue: string, identifiers: ReferenceIdentifiers): ReferenceEntryInput => ({
-    csl: { type, [field]: fieldValue },
-    identifiers,
-    provenance: { [field]: user },
-    status: "unresolved",
-  });
-  switch (kind) {
-    case "doi": return make("article-journal", "DOI", value, { doi: value });
-    case "arxiv": return make("article", "URL", `https://arxiv.org/abs/${value}`, { arxiv: value });
-    case "isbn": return make("book", "ISBN", value, { isbn: [value] });
-    case "pmid": return make("article-journal", "PMID", value, { pmid: value });
-    case "pmcid": return make("article-journal", "PMCID", value, { pmcid: value });
-    case "url": return make("webpage", "URL", value, {});
-    default: return null;
-  }
-}
-
-function sameIdentifier(entry: ReferenceEntry, candidate: ReferenceEntryInput) {
-  const a = entry.identifiers;
-  const b = candidate.identifiers ?? {};
-  if (a.doi && a.doi === b.doi) return true;
-  if (a.arxiv && a.arxiv === b.arxiv) return true;
-  if (a.pmid && a.pmid === b.pmid) return true;
-  if (a.pmcid && a.pmcid === b.pmcid) return true;
-  if (a.isbn?.some((isbn) => b.isbn?.includes(isbn))) return true;
-  const url = candidate.csl.URL;
-  return typeof url === "string" && typeof entry.csl.URL === "string" && url === entry.csl.URL;
+  return {
+    library: result.library,
+    added: result.added ?? [],
+    errors: result.errors ?? [],
+    duplicates: result.duplicates ?? [],
+    ...(Array.isArray(result.renamedKeys) ? { renamedKeys: result.renamedKeys } : {}),
+  };
 }
 
 /**
- * Candidates for a pasted identifier, and which ones the library already has.
- * Today a candidate is the identifier alone, added as unresolved; the
- * resolution lane replaces this function with POST /api/references/resolve,
- * which returns the same shape.
+ * Imported items whose key had to change (taken or invalid): source key →
+ * library key, inferred by matching titles. Only used when the import route
+ * does not report `renamedKeys`.
  */
-export async function resolveReferenceInput(input: string, context: { notebook: string; library: ReferenceLibrary | null }): Promise<ResolveResult> {
-  const { kind, value } = classifyReferenceInput(input);
-  const stub = value ? identifierStub(kind, value) : null;
-  if (!stub) return { candidates: [], duplicates: [] };
-  const duplicates = Object.values(context.library?.entries ?? {})
-    .filter((entry) => sameIdentifier(entry, stub))
-    .map((entry) => ({ candidateIndex: 0, entryId: entry.id }));
-  return { candidates: [stub], duplicates };
-}
-
-/** Imported items whose key had to change (taken or invalid): source key → library key. */
 export function renamedImportKeys(format: ImportFormat, text: string, added: ReferenceEntry[]) {
   let parsed: { input: ReferenceEntryInput; sourceKey: string }[] = [];
   try {
@@ -147,13 +109,23 @@ export function renamedImportKeys(format: ImportFormat, text: string, added: Ref
   return renamed;
 }
 
+type Rename = { from: string; to: string };
+
+/** The keys an import renamed: the server's `renamedKeys`, else inferred from the source text. */
+export function importRenames(result: ImportResult, format: ImportFormat | undefined, sourceText: string | undefined): Rename[] {
+  if (result.renamedKeys) return result.renamedKeys.map(({ sourceKey, key }) => ({ from: sourceKey, to: key }));
+  if (!format || !sourceText) return [];
+  const added = result.added.map((id) => result.library.entries[id]).filter(Boolean);
+  return renamedImportKeys(format, sourceText, added);
+}
+
 // ---------------------------------------------------------------------------
 // Dropped files
 // ---------------------------------------------------------------------------
 
 export const TREE_FILE_MIME = "application/x-libera-file-path";
 
-/** The entry a dropped PDF or Markdown file creates: titled after the file, unresolved, with the file attached. */
+/** The entry a dropped PDF or Markdown file creates when it cannot be resolved: titled after the file, unresolved, with the file attached. */
 export function droppedFileEntry(path: string): ReferenceEntryInput | null {
   const lower = path.toLowerCase();
   const kind = lower.endsWith(".pdf") ? "pdf" : lower.endsWith(".md") || lower.endsWith(".markdown") ? "markdown" : null;
@@ -181,37 +153,145 @@ export function isImportablePath(path: string) {
 
 type View =
   | { kind: "input" }
-  | { kind: "candidates"; result: ResolveResult }
-  | { kind: "imported"; result: ImportResult; renamed: { from: string; to: string }[]; existing: number }
-  | { kind: "bibliography"; items: string[]; selected: boolean[] };
+  | { kind: "candidates"; result: ResolveResponse }
+  | { kind: "imported"; result: ImportResult; renamed: Rename[]; existing: number };
+
+const FORMAT_KINDS = new Set(["bibtex", "ris", "csl-json"]);
 
 type BoxProps = {
   notebook: string;
   library: ReferenceLibrary | null;
   initialQuery?: string;
+  /** A dropped PDF or Markdown file to resolve right away. */
+  initialPath?: string;
+  /** Let the model search the web for this session's lookups. */
+  webSearch: boolean;
+  /** Whether the user chose the web-search setting (the preference cannot be read in the panel, so it starts off). */
+  webSearchChosen: boolean;
+  onWebSearchChange: (webSearch: boolean) => void;
   apply: (ops: ReferenceLibraryOp[], label: string) => Promise<ReferenceLibrary>;
   record: (before: ReferenceLibrary, after: ReferenceLibrary, label: string, touched?: Iterable<string>) => void;
   onClose: () => void;
   onReveal: (entryId: string) => void;
-  onEditNew: (initial: ReferenceEntryInput) => void;
+  onEditNew: (initial: ReferenceEntryInput, extraOps?: ReferenceLibraryOp[]) => void;
   onMerge: (entryIds: string[]) => void;
+  /** An online lookup is starting (for the privacy notice). */
+  onLookup?: () => void;
+  onNotice?: (notice: { tone: "info" | "error"; text: string }) => void;
 };
 
-export function AddReferenceBox({ notebook, library, initialQuery = "", apply, record, onClose, onReveal, onEditNew, onMerge }: BoxProps) {
+export function AddReferenceBox({
+  notebook,
+  library,
+  initialQuery = "",
+  initialPath,
+  webSearch,
+  webSearchChosen,
+  onWebSearchChange,
+  apply,
+  record,
+  onClose,
+  onReveal,
+  onEditNew,
+  onMerge,
+  onLookup,
+  onNotice,
+}: BoxProps) {
   const [text, setText] = useState(initialQuery);
   const [view, setView] = useState<View>({ kind: "input" });
   const [busy, setBusy] = useState(false);
+  const [lookup, setLookup] = useState<string | null>(null);
   const [error, setError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const controllerRef = useRef<AbortController | null>(null);
   const detected = useMemo(() => text.trim() ? classifyReferenceInput(text) : null, [text]);
+  const isFormat = Boolean(detected && FORMAT_KINDS.has(detected.kind));
+
+  // A lookup in flight is cancelled when the box closes.
+  useEffect(() => () => controllerRef.current?.abort(), []);
+
+  function cancelLookup() {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    setLookup(null);
+  }
+
+  async function commit(ops: ReferenceLibraryOp[], label: string, revealId?: string) {
+    setError("");
+    setBusy(true);
+    try {
+      const before = new Set(Object.keys(library?.entries ?? {}));
+      const after = await apply(ops, label);
+      const added = Object.keys(after.entries).filter((id) => !before.has(id));
+      setText("");
+      setView({ kind: "input" });
+      const target = revealId ?? (added.length === 1 ? added[0] : undefined);
+      if (target) onReveal(target);
+      onClose();
+    } catch (addError) {
+      setError(addError instanceof Error ? addError.message : "The reference could not be added.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** A dropped file that could not be resolved still gets an entry: titled after the file, unresolved, with the file attached. */
+  async function addUnresolvedFile(path: string, reason: string) {
+    const entry = droppedFileEntry(path);
+    if (!entry) {
+      setError(reason);
+      return;
+    }
+    await commit([{ op: "add", entry }], `Add ${fileBaseName(path)}`);
+    onNotice?.({ tone: "error", text: `${fileBaseName(path)} could not be looked up (${reason.replace(/\.$/, "")}). It was added as an unresolved entry with the file attached.` });
+  }
+
+  async function resolve(request: { input: string } | { path: string }, label: string) {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setError("");
+    setLookup(label);
+    onLookup?.();
+    try {
+      const result = await resolveReference({ notebook, ...request, webSearch }, controller.signal);
+      if (controller.signal.aborted) return;
+      controllerRef.current = null;
+      setLookup(null);
+      if ("path" in request && !result.candidates.length && !result.updates.length) {
+        await addUnresolvedFile(request.path, result.warnings[0] ?? "nothing was found");
+        return;
+      }
+      setView({ kind: "candidates", result });
+    } catch (lookupError) {
+      if (controller.signal.aborted || isAbortError(lookupError)) return;
+      controllerRef.current = null;
+      setLookup(null);
+      const message = lookupError instanceof Error ? lookupError.message : "The reference could not be looked up.";
+      if ("path" in request) await addUnresolvedFile(request.path, message);
+      else setError(message);
+    }
+  }
+
+  // A dropped file is resolved as soon as the box opens.
+  useEffect(() => {
+    if (!initialPath) return;
+    // Starting the request shows its progress line at once.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void resolve({ path: initialPath }, `Reading ${fileBaseName(initialPath)}…`);
+    // resolve() sets the controller before it awaits; unmounting (or Strict Mode's rehearsal) aborts this lookup.
+    const controller = controllerRef.current;
+    return () => controller?.abort();
+    // Once per dropped file; resolve reads the current props.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPath]);
 
   async function runImport(request: { format?: ImportFormat; text?: string; path?: string }, sourceText?: string) {
     const before = library;
     const result = await importReferences({ notebook, ...request });
     if (before) record(before, result.library, `Import ${result.added.length} reference${result.added.length === 1 ? "" : "s"}`, result.added);
     announceLibraryChange(notebook, result.library.revision);
-    const added = result.added.map((id) => result.library.entries[id]).filter(Boolean);
-    const renamed = request.format && sourceText ? renamedImportKeys(request.format, sourceText, added) : [];
+    const renamed = importRenames(result, request.format, sourceText);
     setView({ kind: "imported", result, renamed, existing: result.duplicates.filter((duplicate) => !result.added.includes(duplicate.entryId)).length });
   }
 
@@ -219,39 +299,16 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
     const input = text.trim();
     if (!input || !detected) return;
     setError("");
+    if (!isFormat) {
+      const label = detected.kind === "bibliography" ? `Looking up ${splitBibliography(input).length} references…` : "Looking up…";
+      await resolve({ input }, label);
+      return;
+    }
     setBusy(true);
     try {
-      if (detected.kind === "bibtex" || detected.kind === "ris" || detected.kind === "csl-json") {
-        await runImport({ format: detected.kind, text: input }, input);
-      } else if (IDENTIFIER_KINDS.has(detected.kind)) {
-        setView({ kind: "candidates", result: await resolveReferenceInput(input, { notebook, library }) });
-      } else if (detected.kind === "bibliography") {
-        const items = splitBibliography(input);
-        setView({ kind: "bibliography", items, selected: items.map(() => true) });
-      } else {
-        onEditNew({ csl: { type: "article-journal", note: input }, status: "needs-review" });
-        onClose();
-      }
+      await runImport({ format: detected.kind as ImportFormat, text: input }, input);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "That could not be added.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function addEntries(entries: ReferenceEntryInput[], label: string) {
-    setError("");
-    setBusy(true);
-    try {
-      const before = new Set(Object.keys(library?.entries ?? {}));
-      const after = await apply(entries.map((entry) => ({ op: "add", entry })), label);
-      const added = Object.keys(after.entries).filter((id) => !before.has(id));
-      setText("");
-      setView({ kind: "input" });
-      if (added.length === 1) onReveal(added[0]);
-      onClose();
-    } catch (addError) {
-      setError(addError instanceof Error ? addError.message : "The reference could not be added.");
     } finally {
       setBusy(false);
     }
@@ -272,8 +329,6 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
       setBusy(false);
     }
   }
-
-  const entries = library?.entries ?? {};
 
   return (
     <div className="libera-panel-card mx-3 mb-2 space-y-2 p-2.5" role="group" aria-label="Add references">
@@ -299,14 +354,19 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
             placeholder="DOI, arXiv ID, ISBN, PubMed ID, URL, BibTeX, RIS, CSL-JSON, a reference or a whole bibliography"
             autoFocus
             value={text}
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => {
+              // New input cancels a lookup in flight.
+              if (controllerRef.current) cancelLookup();
+              setText(event.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey || !text.includes("\n")) && !event.shiftKey) {
                 event.preventDefault();
                 void submit();
               } else if (event.key === "Escape") {
                 event.stopPropagation();
-                onClose();
+                if (lookup) cancelLookup();
+                else onClose();
               }
             }}
           />
@@ -317,11 +377,24 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
             <button type="button" className="libera-panel-button h-7 px-2" title="Import a BibTeX, RIS or CSL-JSON file" onClick={() => fileInputRef.current?.click()}>
               <FileUp aria-hidden className="h-3.5 w-3.5" /> File
             </button>
-            <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={!detected || busy} onClick={() => void submit()}>
-              {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : detected && IDENTIFIER_KINDS.has(detected.kind) ? <Search aria-hidden className="h-3.5 w-3.5" /> : null}
-              {!detected ? "Add" : detected.kind === "bibtex" || detected.kind === "ris" || detected.kind === "csl-json" ? "Import" : IDENTIFIER_KINDS.has(detected.kind) ? "Look up" : detected.kind === "bibliography" ? "Split" : "Fill in…"}
+            <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={!detected || busy || Boolean(lookup)} onClick={() => void submit()}>
+              {busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : detected && !isFormat ? <Search aria-hidden className="h-3.5 w-3.5" /> : null}
+              {!detected ? "Add" : isFormat ? "Import" : detected.kind === "bibliography" ? "Look up all" : "Look up"}
             </button>
           </div>
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title="Let the AI search the web when the catalogues have no match">
+            <input type="checkbox" checked={webSearch} onChange={(event) => onWebSearchChange(event.target.checked)} />
+            <Globe aria-hidden className="h-3 w-3 shrink-0" />
+            <span className="shrink-0">Search the web</span>
+            {!webSearchChosen ? <span className="min-w-0 truncate" aria-label="Web search default">· off: your Preferences default can&apos;t be read here</span> : null}
+          </label>
+          {lookup ? (
+            <div className="flex items-center gap-2 text-[11px]" role="status" aria-label="Lookup progress">
+              <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
+              <span className="min-w-0 flex-1 truncate">{lookup}</span>
+              <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancelLookup}>Cancel</button>
+            </div>
+          ) : null}
           <input ref={fileInputRef} type="file" hidden accept=".bib,.ris,.json,.txt" aria-label="Reference file to import" onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";
@@ -329,32 +402,21 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
           }} />
         </>
       ) : view.kind === "candidates" ? (
-        view.result.candidates.length ? (
-          <div className="space-y-2" aria-label="Candidates">
-            {view.result.candidates.map((candidate, index) => {
-              const duplicates = view.result.duplicates.filter((duplicate) => duplicate.candidateIndex === index).map((duplicate) => entries[duplicate.entryId]).filter(Boolean);
-              return (
-                <div key={index} className="space-y-1.5 rounded-lg border border-input p-2 text-[12px]">
-                  <p className="font-medium">{candidate.csl.title ? entryTitle({ csl: candidate.csl }) : "Not looked up yet"}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    {candidate.csl.title ? authorYearLabel(candidate.csl) : <>Added as <span className="font-medium">unresolved</span> with {INPUT_KIND_LABELS[detected?.kind ?? "doi"]} <span className="font-mono">{detected?.value}</span>. Fill in the details or let a lookup complete it later.</>}
-                  </p>
-                  {duplicates.map((duplicate) => (
-                    <p key={duplicate.id} className="flex items-center gap-1 text-[11px] text-destructive">
-                      <AlertCircle aria-hidden className="h-3 w-3" /> Already in the library as <button type="button" className="font-mono underline" onClick={() => onReveal(duplicate.id)}>{duplicate.key}</button>
-                    </p>
-                  ))}
-                  <div className="flex justify-end">
-                    <button type="button" className="libera-panel-primary h-7 px-3 text-[12px]" disabled={busy} onClick={() => void addEntries([candidate], "Add reference")}>
-                      <Check aria-hidden className="h-3.5 w-3.5" /> {duplicates.length ? "Add anyway" : "Add"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : <p className="text-[12px] text-muted-foreground">Nothing was found for this input.</p>
-      ) : view.kind === "imported" ? (
+        library ? (
+          <CandidateList
+            notebook={notebook}
+            library={library}
+            result={view.result}
+            busy={busy}
+            onCommit={commit}
+            onEdit={(candidate, extraOps) => {
+              onEditNew(candidate, extraOps);
+              onClose();
+            }}
+            onReveal={onReveal}
+          />
+        ) : null
+      ) : (
         <div className="space-y-1.5 text-[12px]" aria-label="Import result">
           <p><span className="font-semibold">{view.result.added.length}</span> added{view.existing ? <>, <span className="font-semibold">{view.existing}</span> already in the library</> : null}.</p>
           {view.result.added.length ? (
@@ -367,7 +429,7 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
           {view.renamed.length ? (
             <div>
               <p className="text-[11px] font-medium">Keys changed because they were taken or invalid:</p>
-              <ul className="text-[11px] text-muted-foreground">
+              <ul className="text-[11px] text-muted-foreground" aria-label="Renamed keys">
                 {view.renamed.map((rename) => <li key={rename.from}><span className="font-mono">{rename.from}</span> → <span className="font-mono">{rename.to}</span></li>)}
               </ul>
             </div>
@@ -406,33 +468,6 @@ export function AddReferenceBox({ notebook, library, initialQuery = "", apply, r
           ) : null}
           <div className="flex justify-end">
             <button type="button" className="libera-panel-button h-7 px-3" onClick={() => { setText(""); setView({ kind: "input" }); onClose(); }}>Done</button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-1.5" aria-label="Bibliography items">
-          <p className="text-[11px] text-muted-foreground">Each item becomes an unresolved entry with its text in the note. Untick the ones you do not want.</p>
-          <ul className="max-h-56 space-y-1 overflow-auto">
-            {view.items.map((item, index) => (
-              <li key={index}>
-                <label className="flex items-start gap-2 text-[11px] leading-snug">
-                  <input type="checkbox" className="mt-0.5" checked={view.selected[index]} aria-label={`Include item ${index + 1}`} onChange={(event) => setView({ ...view, selected: view.selected.map((value, position) => position === index ? event.target.checked : value) })} />
-                  <span>{item}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-          <div className="flex justify-end">
-            <button
-              type="button"
-              className="libera-panel-primary h-7 px-3 text-[12px]"
-              disabled={busy || !view.selected.some(Boolean)}
-              onClick={() => {
-                const chosen = view.items.filter((_, index) => view.selected[index]);
-                void addEntries(chosen.map((item) => ({ csl: { type: "document", note: item }, status: "unresolved" })), `Add ${chosen.length} references`);
-              }}
-            >
-              Add {view.selected.filter(Boolean).length} reference{view.selected.filter(Boolean).length === 1 ? "" : "s"}
-            </button>
           </div>
         </div>
       )}

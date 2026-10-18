@@ -93,7 +93,7 @@ function hashText(text: string) {
 }
 
 /** Read a notebook's custom `.csl` style through the file API: a library-relative path, or one relative to the notebook. */
-async function readCustomStyle(notebook: string | null, path: string) {
+export async function readCustomStyle(notebook: string | null, path: string) {
   const candidates = [path, ...(notebook && !path.startsWith(`${notebook}/`) ? [`${notebook}/${path}`] : [])];
   for (const candidate of candidates) {
     try {

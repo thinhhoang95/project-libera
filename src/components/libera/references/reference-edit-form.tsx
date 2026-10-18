@@ -273,13 +273,17 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
     } else {
       const now = new Date().toISOString();
       const complete = !isEmpty(csl.title) && !isEmpty(csl.author ?? csl.editor) && !isEmpty(csl.issued);
+      // A looked-up candidate keeps its sources for the fields left as they were; edited fields are the user's.
+      const unchanged = (field: string) => initial !== undefined && stableJson(initial.csl[field]) === stableJson(csl[field]);
+      const conflicts = Object.fromEntries(Object.entries(initial?.conflicts ?? {}).filter(([field, alternatives]) => alternatives?.length && unchanged(field)));
       ops = [{
         op: "add",
         entry: {
           ...initial,
           csl,
           identifiers: { ...initial?.identifiers, ...identifiersFromCsl(csl) },
-          provenance: Object.fromEntries(Object.keys(csl).filter((field) => field !== "type").map((field) => [field, userProvenance(now)])),
+          provenance: Object.fromEntries(Object.keys(csl).filter((field) => field !== "type").map((field) => [field, (unchanged(field) && initial?.provenance?.[field]) || userProvenance(now)])),
+          ...(Object.keys(conflicts).length ? { conflicts } : { conflicts: undefined }),
           status: complete ? "confirmed" : "needs-review",
         },
       }];
