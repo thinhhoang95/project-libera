@@ -32,7 +32,8 @@
     "test:collab": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/collab/*.test.ts",
     "collab:server": "npm --prefix server run dev",
     "collab:build-host": "node scripts/build-collab-host.cjs",
-    "collab:deploy": "node scripts/setup-collab-server.cjs"
+    "collab:deploy": "node scripts/setup-collab-server.cjs",
+    "test:collab-e2e": "node --import tsx scripts/collab/e2e/two-users.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
