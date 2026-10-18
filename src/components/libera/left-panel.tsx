@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { CollabRailButtons } from "@/components/libera/collab/collab-shell";
+import { CommentsWithSuggestions } from "@/components/libera/collab/suggestions";
 import { SearchPanel } from "@/components/libera/global-search/search-panel";
 import { ImageGenerationPanel } from "@/components/libera/image-generation-panel";
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
@@ -180,7 +181,7 @@ export function LeftPanel({
             ) : activePanel === "search" ? (
               <SearchPanel onOpenPreferences={onOpenSearchPreferences} />
             ) : activePanel === "comments" ? (
-              <ReviewComments key={activeTab?.id ?? "no-document"} />
+              <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
             ) : (
               <OutlinePanel
                 activeTab={activeTab}
