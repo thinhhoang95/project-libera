@@ -160,12 +160,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Server: suggestion mirror, decisions serialized in the room (stale checks incl. insertion neighbours, groups all-or-nothing, accept-all with checkpoint, revert, offline replay), reviews with revision-bound approvals and outdated detection, audit entries; hard cases 1–7 end to end (`server/test/hard-cases.test.ts`)
 - ☑ Server: annotation authorship enforced for every role (new records in the sender's name, no re-attribution, suggestion actor = creator) (`server/test/sync-authorship.test.ts`)
 - ☑ Client library: overlay model, stale detection, groups, snapshot-edit mapping, CodeMirror preview and suggest mode, Tiptap preview with authors; hard cases 1, 2, 4 and 7 at model level (`scripts/collab/edlib-*.test.ts`)
-- ☐ M3.1 Overlay model; Tiptap preview rendering with authors; CodeMirror preview extension; Suggestions panel
-- ☐ M3.2 Suggest mode in CodeMirror; "Suggest edit" in Visual; editing your own suggestion
-- ☐ M3.3 Decision commands with stale check and exactly-once apply; accept-all checkpoint; revert; offline decisions
-- ☐ M3.4 AI as suggester: rewrite/write/format/image; agentic review groups; agent suggest modes; `ai-cannot-decide`
-- ☐ M3.5 Review requests, revision-bound approvals, outdated detection, checkpoint mode
-- ☐ M3.6 Audit log and viewer
+- ☑ M3.1 Overlay suggestions rendered in every shared editor with author colours and AI labels; Suggestions panel (filters, groups, stepping, accept/reject all, withdraw/edit own, undo acceptance)
+- ◐ M3.2 Suggest mode in CodeMirror (toggle; forced for commenters; IME held until compositionend); "Suggest edit" in Visual; editing your own suggestion. Not done: free typing in suggest mode in Visual
+- ☑ M3.3 Decisions through the server (exactly once), accept-all with checkpoint, revert, offline decisions queued and replayed
+- ◐ M3.4 AI Rewrite/Write/Format/Image create AI-actor suggestions on shared tabs; `ai-cannot-decide` on the server. Agentic review groups and agent suggest modes in Phase 3b (running)
+- ◐ M3.5 Server done; desktop UI in Phase 3b (running)
+- ◐ M3.6 Server audit log done; viewer in Phase 3b (running)
 - ☐ Hard cases 1–7 automated
 
 ## Phase 4: hardening and beta
