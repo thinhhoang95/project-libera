@@ -32,7 +32,13 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
-import { encodeFilePath } from "@/components/libera/api-client";
+import { apiRequest, encodeFilePath } from "@/components/libera/api-client";
+import {
+  ReferenceRenderProvider,
+  referenceNotebookForPath,
+  type ReferenceAttachmentLocator,
+} from "@/components/libera/references/reference-render-context";
+import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
@@ -101,7 +107,7 @@ import {
   getTextareaVisualProgressForRange,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
-import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
+import type { LiberaFileNode, LiberaFilePayload, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
   // False for background panes of a split canvas: they render their tab but
@@ -925,6 +931,24 @@ function WorkspacePanelContent({
     return openMarkdownFileLinkRef.current(sourcePath, href);
   }, []);
 
+  // Citation hover cards open an entry's attachment: a PDF at the cited page
+  // (the viewState.pdf.reveal request Global Search uses), or the file.
+  const openFileRef = useRef(onOpenFile);
+  useEffect(() => {
+    openFileRef.current = onOpenFile;
+  }, [onOpenFile]);
+  const openReferenceAttachment = useCallback((attachment: ReferenceAttachment, locator?: ReferenceAttachmentLocator) => {
+    if (attachment.kind === "url") {
+      window.open(attachment.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(attachment.path)}`)
+      .then(({ file }) => openFileRef.current(file, attachment.kind === "pdf" && locator?.page
+        ? { viewState: { pdf: { reveal: { page: locator.page, nonce: Date.now() } } } }
+        : undefined))
+      .catch(() => undefined);
+  }, []);
+
   useLayoutEffect(() => {
     markdownRestoreViewStateRef.current = activeMarkdownViewState;
   }, [activeMarkdownViewState]);
@@ -1705,7 +1729,12 @@ function WorkspacePanelContent({
           onSave={() => void onSave()}
         />
       ) : activeTab.file.fileType === "markdown" ? (
-        <>
+        <ReferenceRenderProvider
+          notebook={activeTab.untitled
+            ? referenceNotebookForPath(activeTab.saveDirectory) ?? selectedNotebook?.name ?? null
+            : referenceNotebookForPath(activeTab.file.path)}
+          onOpenAttachment={openReferenceAttachment}
+        >
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
               collab={sharedVisual ?? undefined}
@@ -1957,7 +1986,7 @@ function WorkspacePanelContent({
             }}
           />
           </>}
-        </>
+        </ReferenceRenderProvider>
       ) : activeTab.file.fileType === "image" ? (
         <NoteMathMarkersProvider value={markdownPreferences}>
           <ImageViewer
