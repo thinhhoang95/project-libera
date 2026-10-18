@@ -28,7 +28,11 @@ export interface CollabStatusStore {
   refresh(): Promise<void>;
   /** Re-reads only the project list (after share, join, leave or a project-changed event). */
   refreshProjects(): Promise<void>;
-  /** Applies a status the caller already has, e.g. the sign-in response. */
+  /**
+   * Shows a status the caller already has (e.g. the sign-in response) at once,
+   * then confirms it with a fresh request: the response may be older than a
+   * status event that already arrived.
+   */
   setStatus(status: HostStatus): void;
 }
 
@@ -39,6 +43,8 @@ export interface CollabStatusStoreOptions {
   hasLiveEvents?: () => boolean;
   /** Poll interval when there are no live events. 0 turns polling off. */
   pollMs?: number;
+  /** First retry delay after a failed request (doubles up to 30 s). 0 turns retries off. */
+  retryMs?: number;
 }
 
 const INITIAL: CollabSnapshot = { phase: "loading", status: null };
@@ -48,11 +54,15 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
   const subscribeEvents = options.subscribeEvents ?? subscribeHostEvents;
   const hasLiveEvents = options.hasLiveEvents ?? (() => Boolean(getCollabBridge()));
   const pollMs = options.pollMs ?? 30_000;
+  const retryBaseMs = options.retryMs ?? 2_000;
 
   let snapshot: CollabSnapshot = INITIAL;
   const listeners = new Set<() => void>();
   let stopEvents: (() => void) | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryDelay = retryBaseMs;
+  let stopFocus: (() => void) | null = null;
   // Responses can land out of order (a slow GET after a status event);
   // only the newest request may write.
   let requestSeq = 0;
@@ -62,16 +72,44 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
     for (const listener of [...listeners]) listener();
   }
 
-  function setStatus(status: HostStatus) {
+  // Status events are the newest truth: apply them and cancel any request in flight.
+  function applyStatus(status: HostStatus) {
     requestSeq += 1;
+    clearRetry();
     emit({ phase: "ready", status });
+  }
+
+  function setStatus(status: HostStatus) {
+    applyStatus(status);
+    void refresh();
+  }
+
+  function clearRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    retryDelay = retryBaseMs;
+  }
+
+  // A failed request is retried with backoff even when live events exist:
+  // the first request can fail before the local app session exists (401 on
+  // the login screen), and nothing else would ever ask again.
+  function scheduleRetry() {
+    if (retryBaseMs <= 0 || retryTimer || listeners.size === 0) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      retryDelay = Math.min(retryDelay * 2, 30_000);
+      void refresh();
+    }, retryDelay);
   }
 
   async function refresh() {
     const seq = ++requestSeq;
     try {
       const status = await client.status();
-      if (seq === requestSeq) emit({ phase: "ready", status });
+      if (seq === requestSeq) {
+        clearRetry();
+        emit({ phase: "ready", status });
+      }
     } catch (error) {
       if (seq !== requestSeq) return;
       if (isCollabDisabledError(error)) {
@@ -80,6 +118,7 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
       } else {
         // Keep the last known status so badges do not flicker away on a blip.
         emit({ phase: snapshot.status ? "ready" : "error", status: snapshot.status, error: describeError(error) });
+        scheduleRetry();
       }
     }
   }
@@ -99,7 +138,7 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
 
   function handleEvent(event: HostEvent) {
     if (event.t === "status") {
-      setStatus(event.status);
+      applyStatus(event.status);
     } else if (event.t === "project-changed") {
       void refreshProjects();
     }
@@ -112,6 +151,15 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
 
   function start() {
     stopEvents = subscribeEvents(handleEvent);
+    if (typeof window !== "undefined") {
+      // Coming back to the window (or logging in, which focuses it) is a good
+      // moment to recover from an earlier failure.
+      const onFocus = () => {
+        if (snapshot.phase === "error" || snapshot.phase === "loading") void refresh();
+      };
+      window.addEventListener("focus", onFocus);
+      stopFocus = () => window.removeEventListener("focus", onFocus);
+    }
     void refresh();
     if (pollMs > 0 && !hasLiveEvents()) {
       pollTimer = setInterval(() => {
@@ -123,7 +171,10 @@ export function createCollabStatusStore(options: CollabStatusStoreOptions = {}):
   function stop() {
     stopEvents?.();
     stopEvents = null;
+    stopFocus?.();
+    stopFocus = null;
     stopPolling();
+    clearRetry();
   }
 
   return {
