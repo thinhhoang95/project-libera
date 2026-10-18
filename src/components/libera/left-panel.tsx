@@ -14,6 +14,7 @@ import {
   ScanSearch,
   type LucideIcon,
 } from "lucide-react";
+import { CollabRailButtons } from "@/components/libera/collab/collab-shell";
 import { SearchPanel } from "@/components/libera/global-search/search-panel";
 import { ImageGenerationPanel } from "@/components/libera/image-generation-panel";
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
@@ -256,6 +257,7 @@ function LeftPanelRail({
       </div>
 
       <div className="min-h-0 flex-1" />
+      <CollabRailButtons />
       <SidebarAppMenu collapsed onLogout={onLogout} />
     </div>
   );
