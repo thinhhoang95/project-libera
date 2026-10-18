@@ -121,9 +121,11 @@ type CardProps = {
   onOpenPath: (path: string) => void;
   onEditAll: () => void;
   onDelete: () => void;
+  /** After a key rename: offer to rewrite the citations that still use the old key (now an alias). */
+  onUpdateCitations?: (from: string, to: string) => void;
 };
 
-export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete }: CardProps) {
+export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations }: CardProps) {
   const [error, setError] = useState("");
   const reviewing = entry.status !== "confirmed";
 
@@ -194,7 +196,13 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
 
         {error ? <div role="alert" className="rounded-lg bg-destructive-muted p-2.5 text-xs text-destructive">{error}</div> : null}
 
-        <KeyEditor entry={entry} library={library} onRename={(key) => run([{ op: "rename-key", id: entry.id, key }], `Rename ${entry.key}`)} onCopy={() => onCopy(entry.key, "Key")} />
+        <KeyEditor
+          entry={entry}
+          library={library}
+          onRename={(key) => run([{ op: "rename-key", id: entry.id, key }], `Rename ${entry.key}`)}
+          onCopy={() => onCopy(entry.key, "Key")}
+          onUpdateCitations={onUpdateCitations}
+        />
 
         <Section title="Fields">
           <dl className="space-y-1">
@@ -296,9 +304,18 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
   );
 }
 
-function KeyEditor({ entry, library, onRename, onCopy }: { entry: ReferenceEntry; library: ReferenceLibrary; onRename: (key: string) => Promise<boolean>; onCopy: () => void }) {
+function KeyEditor({ entry, library, onRename, onCopy, onUpdateCitations }: {
+  entry: ReferenceEntry;
+  library: ReferenceLibrary;
+  onRename: (key: string) => Promise<boolean>;
+  onCopy: () => void;
+  onUpdateCitations?: (from: string, to: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(entry.key);
+  // The last rename in this card, while its old key is still an alias of this entry.
+  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
+  const offer = renamed && renamed.to === entry.key && entry.aliases.includes(renamed.from) ? renamed : null;
   const trimmed = draft.trim();
   const takenBy = trimmed && trimmed.toLowerCase() !== entry.key.toLowerCase()
     ? Object.values(library.entries).find((other) => other.id !== entry.id && [other.key, ...other.aliases].some((key) => key.toLowerCase() === trimmed.toLowerCase()))
@@ -311,7 +328,11 @@ function KeyEditor({ entry, library, onRename, onCopy }: { entry: ReferenceEntry
       setEditing(false);
       return;
     }
-    if (await onRename(trimmed)) setEditing(false);
+    const from = entry.key;
+    if (await onRename(trimmed)) {
+      setEditing(false);
+      setRenamed({ from, to: trimmed });
+    }
   }
 
   return (
@@ -336,6 +357,12 @@ function KeyEditor({ entry, library, onRename, onCopy }: { entry: ReferenceEntry
           <button type="button" className="libera-panel-button h-7 px-2.5" onClick={() => { setDraft(entry.key); setEditing(true); }}>Rename key</button>
         </div>
       )}
+      {offer && onUpdateCitations ? (
+        <div className="flex items-center gap-2 rounded-lg bg-muted/60 p-2 text-[11px]" role="status" aria-label="Key renamed">
+          <span className="min-w-0 flex-1">Documents citing <code className="font-mono">{offer.from}</code> still work. Rewrite them to <code className="font-mono">{offer.to}</code>?</span>
+          <button type="button" className="libera-panel-button h-7 shrink-0 px-2.5" onClick={() => onUpdateCitations(offer.from, offer.to)}>Update citations…</button>
+        </div>
+      ) : null}
       {entry.aliases.length ? (
         <p className="text-[11px] text-muted-foreground" aria-label="Aliases">
           Also resolves: {entry.aliases.map((alias, index) => <span key={alias}>{index ? ", " : ""}<code className="font-mono">{alias}</code></span>)}

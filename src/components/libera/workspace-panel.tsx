@@ -1760,6 +1760,7 @@ function WorkspacePanelContent({
             key={`${activeTab.id}-toolbar`}
             files={files}
             documentPath={activeTab.file.path}
+            untitled={activeTab.untitled}
             canStartScreenshotSnip={canStartScreenshotSnip}
             isSlideDeck={activeMarkdownIsSlides}
             markdownBaseFontSize={markdownPreferences.baseFontSize}

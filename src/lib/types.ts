@@ -1,3 +1,5 @@
+import type { ReferenceMoveResult } from "@/lib/references/moves";
+
 export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
 
 /** File types whose content is edited as text in a tab. */
@@ -175,6 +177,14 @@ export type LiberaFilePayload = {
   file: LiberaFileNode;
   content?: string;
   rawUrl?: string;
+};
+
+/**
+ * PATCH /api/files after a move or rename. Markdown moved to another notebook
+ * also reports the references copied along (src/lib/references/moves.ts).
+ */
+export type LiberaFileMovePayload = LiberaFilePayload & {
+  references?: ReferenceMoveResult;
 };
 
 export type PdfAnnotationsPayload = {

@@ -17,6 +17,7 @@ import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libe
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -237,6 +238,8 @@ export function LiberaApp({
     onUploadFiles: workspace.uploadFiles,
     request: referenceRequests.request,
     onRequestHandled: referenceRequests.handled,
+    onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
+    onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
   };
 
   const canvas = workspace.canvas;
@@ -645,6 +648,7 @@ export function LiberaApp({
       </div>
 
       {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
+      <ReferenceMoveNotice key={workspace.referenceMoveNotice?.id} notice={workspace.referenceMoveNotice} onDismiss={workspace.dismissReferenceMoveNotice} />
       {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
       <NotebookDialog
         dialog={workspace.notebookDialog}

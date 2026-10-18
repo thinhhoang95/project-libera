@@ -4,7 +4,7 @@ import { normalizeArxivId, normalizeDoi, normalizeIsbn } from "../identifiers";
 import { parseName } from "../names";
 import { normalizeEntryInput, parseDateText } from "../normalize";
 import { CSL_ITEM_TYPES, type CslItem, type CslItemType, type CslName, type FieldProvenance, type ReferenceEntryInput } from "../types";
-import { compactInput, type ResolveContext } from "./record";
+import { compactInput, fillFieldProvenance, type ResolveContext } from "./record";
 
 // Model calls for resolution (docs/references/plan.md §4.4 steps 3–5): read
 // a PDF's first page, parse a reference string, propose an entry for a
@@ -241,11 +241,11 @@ export function extractionToInput(extraction: LlmExtraction, { source, confidenc
   const provenance: Record<string, FieldProvenance> = {};
   const value = Math.min(confidence, LLM_CONFIDENCE);
   for (const field of Object.keys(csl)) provenance[field] = { source, confidence: source === "llm" ? value : confidence, retrievedAt };
-  return compactInput(normalizeEntryInput({
+  return compactInput(fillFieldProvenance(normalizeEntryInput({
     csl,
     identifiers: { ...(extraction.doi ? { doi: extraction.doi } : {}), ...(extraction.arxiv ? { arxiv: extraction.arxiv } : {}), ...(extraction.isbn ? { isbn: [extraction.isbn] } : {}) },
     provenance,
-  }));
+  }), () => ({ source, confidence: source === "llm" ? value : confidence, retrievedAt })));
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +333,8 @@ export function webLookupToInput(lookup: WebLookup, webCitations: WebCitation[],
   provenance.type = titleProvenance ? { ...titleProvenance } : { source: "llm", confidence: UNVERIFIED_WEB_CONFIDENCE, retrievedAt };
   if (!csl.title) return { input: null, downgraded, dropped };
   return {
-    input: compactInput({ ...normalizeEntryInput({ csl, provenance }), status: "needs-review" }),
+    // An identifier read from a verified field (a DOI in the URL) shares that field's source.
+    input: compactInput({ ...fillFieldProvenance(normalizeEntryInput({ csl, provenance }), () => provenance.URL ?? provenance.type), status: "needs-review" }),
     downgraded,
     dropped,
   };

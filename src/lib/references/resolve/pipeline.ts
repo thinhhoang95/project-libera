@@ -13,7 +13,7 @@ import { lookupArxiv, lookupDoi, lookupIdentifiers, lookupIsbn, lookupPmcid, loo
 import { resolveMarkdownFile, type MarkdownResolveDeps } from "./markdown";
 import { scoreReferenceText } from "./match";
 import { resolvePdfFile, type PdfResolveDeps } from "./pdf";
-import { combineInputs, compactInput, type ResolveContext } from "./record";
+import { combineInputs, compactInput, fillFieldProvenance, identifierSupplier, type ResolveContext } from "./record";
 import { getReferenceResolveSettings, type ReferenceResolveSettings } from "./settings";
 import { fetchPageMetadata, pageMetadataToInput } from "./url";
 
@@ -98,7 +98,8 @@ function rethrowAbort(error: unknown, env: ResolveEnvironment) {
 function parseOnly(csl: CslItem, retrievedAt: string, identifiers?: ReferenceIdentifiers, source: FieldProvenance["source"] = "import", confidence = PARSE_ONLY_CONFIDENCE): ReferenceEntryInput {
   const provenance: Record<string, FieldProvenance> = {};
   for (const field of Object.keys(csl)) provenance[field] = { source, confidence, retrievedAt };
-  return compactInput({ ...normalizeEntryInput({ csl, ...(identifiers ? { identifiers } : {}), provenance }), status: "unresolved" });
+  const input = fillFieldProvenance(normalizeEntryInput({ csl, ...(identifiers ? { identifiers } : {}), provenance }), () => ({ source, confidence, retrievedAt }));
+  return compactInput({ ...input, status: "unresolved" });
 }
 
 /** A reference string read without any source: a quoted or leading title and a year. */
@@ -276,8 +277,18 @@ export function findCandidateDuplicates(candidates: ReferenceEntryInput[], libra
   return duplicates;
 }
 
+/**
+ * The last guard of "every field has a source": a field the producers left
+ * without provenance takes that of the candidate's own source (its item
+ * type's), and the type that of the title.
+ */
+function withFieldProvenance(candidate: ReferenceEntryInput) {
+  const identifiers = identifierSupplier([candidate]);
+  return fillFieldProvenance(candidate, (field) => field === "type" ? candidate.provenance?.title : identifiers(field) ?? candidate.provenance?.type);
+}
+
 function finish(candidates: ReferenceEntryInput[], env: ResolveEnvironment, library: ReferenceLibrary | undefined, updates: ReferenceLibraryOp[] = []): ResolveResult {
-  const normalized = candidates.map((candidate) => compactInput({ ...normalizeEntryInput(candidate), status: candidate.status ?? "needs-review" }));
+  const normalized = candidates.map((candidate) => compactInput({ ...withFieldProvenance(normalizeEntryInput(candidate)), status: candidate.status ?? "needs-review" }));
   return { candidates: normalized, duplicates: findCandidateDuplicates(normalized, library), updates, warnings: env.warnings };
 }
 

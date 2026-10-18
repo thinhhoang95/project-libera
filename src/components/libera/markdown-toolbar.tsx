@@ -65,6 +65,8 @@ type MarkdownToolbarProps = {
   /** Opens a link written relative to this note. */
   onOpenFileLink: (href: string) => Promise<boolean>;
   previewFullscreen: boolean;
+  /** An unsaved draft: fact-checking needs a saved file. */
+  untitled?: boolean;
 };
 
 const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
@@ -90,7 +92,7 @@ export function FactCheckButton({ documentPath, markdown, className = "toolbar-b
     <button
       aria-label="Fact-check citations"
       className={`${className} disabled:cursor-not-allowed disabled:opacity-40`}
-      title={disabled ? "Save the document to fact-check its citations" : hasCitations ? "Fact-check citations: the agent checks each citation against its source" : "Fact-check citations: this document has no citations"}
+      title={disabled ? "Save the document first" : hasCitations ? "Fact-check citations: the agent checks each citation against its source" : "Fact-check citations: this document has no citations"}
       type="button"
       disabled={unavailable}
       onMouseDown={(event) => event.preventDefault()}
@@ -137,6 +139,7 @@ export function MarkdownToolbar({
   onTogglePreviewFullscreen,
   onOpenFileLink,
   previewFullscreen,
+  untitled = false,
 }: MarkdownToolbarProps) {
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string } | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -748,7 +751,7 @@ export function MarkdownToolbar({
           renderSecondaryControls()
         )}
         {renderFullscreenButton()}
-        <FactCheckButton documentPath={documentPath} markdown={markdownContent} />
+        <FactCheckButton documentPath={documentPath} markdown={markdownContent} disabled={untitled} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => markdownContent} />
       </div>
       {toolbarCollapsed && toolbarExpanded ? (

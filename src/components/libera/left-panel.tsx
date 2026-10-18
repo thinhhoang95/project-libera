@@ -205,6 +205,8 @@ export function LeftPanel({
                 onUploadFiles={references?.onUploadFiles}
                 request={references?.request}
                 onRequestHandled={references?.onRequestHandled}
+                onApplyCitationRewrite={references?.onApplyCitationRewrite}
+                onRevertCitationRewrite={references?.onRevertCitationRewrite}
               />
             ) : activePanel === "comments" ? (
               <ReviewComments key={activeTab?.id ?? "no-document"} />
