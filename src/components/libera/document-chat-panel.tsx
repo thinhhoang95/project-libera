@@ -552,6 +552,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             const existing = run.changes.find((change) => change.path === event.path);
             if (existing) existing.created ||= event.created; else run.changes.push({ path: event.path, created: event.created });
             publish("streaming");
+            // Shared files changed through the collab host: the tab's live replica already has the edit.
+            if (event.shared) return;
             const changedPath = event.path;
             syncQueue = syncQueue.then(async () => {
               const synced = await agentWorkspaceRef.current?.syncTabFromDisk(changedPath, baselines.get(changedPath)).catch(() => null);
@@ -637,7 +639,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       const { results } = await apiRequest<{ results: UndoResult[] }>("/api/agent/undo", { method: "POST", body: JSON.stringify({ runId: run.runId, paths }) });
       const bridge = agentWorkspaceRef.current;
       for (const result of results) {
-        if (result.status === "restored" || result.status === "deleted") bridge?.restoreTabAfterUndo(result.path, { status: result.status, content: result.content, draft: result.draft });
+        if ((result.status === "restored" || result.status === "deleted") && !result.shared) bridge?.restoreTabAfterUndo(result.path, { status: result.status, content: result.content, draft: result.draft });
       }
       const undone = new Set(results.filter((result) => result.status === "restored" || result.status === "deleted" || result.status === "already-reverted").map((result) => result.path));
       updateChat(chatId, (current) => ({ ...current, messages: current.messages.map((message) => message.id === messageId && message.agent

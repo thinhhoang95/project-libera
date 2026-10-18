@@ -1,5 +1,6 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { readSharedText, writeSharedText } from "@/lib/collab/shared-writes";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +12,10 @@ import type { UndoResult } from "./types";
 // Before an agent run first writes a file, its original content is kept here
 // so the run, or any single file in it, can be undone. Manifests live in the
 // app's state folder, never inside a notebook.
+//
+// Files in a shared notebook are recorded with `shared`: their "original" is
+// the document's text from the collab host, and undo sends inverse edits
+// through the host (provenance "undo") instead of writing the working copy.
 
 type SnapshotFile = {
   /** False when the run created the file. */
@@ -22,6 +27,8 @@ type SnapshotFile = {
   /** Hash of the content the agent last wrote, to detect later edits. */
   written: string;
   reverted?: boolean;
+  /** Set when the file is a shared document: undo goes through the collab host. */
+  shared?: { docId: string };
 };
 
 type Manifest = { version: 1; runId: string; createdAt: string; files: Record<string, SnapshotFile> };
@@ -93,9 +100,15 @@ export class RunSnapshots {
   }
 
   /** Call before the first write to a file in this run. */
-  async recordOriginal(filePath: string, original: string | null, draft?: string) {
+  async recordOriginal(filePath: string, original: string | null, draft?: string, shared?: { docId: string }) {
     if (this.has(filePath)) return;
-    this.manifest.files[filePath] = { existed: original !== null, original, ...(draft !== undefined && draft !== original ? { draft } : {}), written: "" };
+    this.manifest.files[filePath] = {
+      existed: original !== null,
+      original,
+      ...(draft !== undefined && draft !== original ? { draft } : {}),
+      written: "",
+      ...(shared ? { shared: { docId: shared.docId } } : {}),
+    };
     await this.flush();
     if (Object.keys(this.manifest.files).length === 1) void pruneManifests(this.runId).catch(() => undefined);
   }
@@ -122,6 +135,28 @@ async function readCurrent(absolutePath: string) {
   }
 }
 
+/** Undo of one shared document: inverse edits through the host, only while it still holds exactly what the agent wrote. */
+async function undoSharedFile(runId: string, filePath: string, file: SnapshotFile): Promise<UndoResult> {
+  if (!isSharedNotebookPath(filePath)) {
+    return { path: filePath, status: "conflict", message: `${filePath} is no longer in a shared notebook on this computer, so it was not undone.` };
+  }
+  let current: string;
+  try { current = (await readSharedText(filePath)).text; }
+  catch (error) { return { path: filePath, status: "conflict", message: error instanceof Error ? error.message : `${filePath} could not be read from the shared notebook.` }; }
+  if (file.written && hashContent(current) !== file.written) {
+    return { path: filePath, status: "conflict", message: `${filePath} changed after the agent edited it (in the shared notebook), so it was not undone.` };
+  }
+  try {
+    // expectedBefore: a collaborator's edit between the read and the write
+    // makes this a conflict instead of reverting their text too.
+    const result = await writeSharedText(filePath, file.original ?? "", { source: "undo", feature: "agent", runId }, { expectedBefore: current });
+    if (result.conflict) return { path: filePath, status: "conflict", message: `${filePath} changed while undoing (in the shared notebook), so it was not undone.` };
+    return { path: filePath, status: "restored", content: result.text, shared: true };
+  } catch (error) {
+    return { path: filePath, status: "conflict", message: error instanceof Error ? error.message : `${filePath} could not be undone in the shared notebook.` };
+  }
+}
+
 /** Restore files changed by a run: all of them, or only `paths`. Files edited after the run are left alone. */
 export async function undoRun(runId: string, paths?: string[]): Promise<UndoResult[]> {
   const manifest = await readManifest(runId);
@@ -131,6 +166,12 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
   for (const filePath of targets) {
     const file = manifest.files[filePath];
     if (file.reverted) { results.push({ path: filePath, status: "already-reverted" }); continue; }
+    if (file.shared) {
+      const result = await undoSharedFile(runId, filePath, file);
+      results.push(result);
+      if (result.status === "restored") file.reverted = true;
+      continue;
+    }
     let absolutePath: string;
     try { absolutePath = (await resolveLibraryPath(filePath)).absolutePath; }
     catch (error) { results.push({ path: filePath, status: "missing", message: error instanceof Error ? error.message : "The file's notebook is unavailable." }); continue; }

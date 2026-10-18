@@ -60,6 +60,11 @@ export type UndoResult = {
   /** The unsaved draft to put back in an open tab. */
   draft?: string;
   message?: string;
+  /**
+   * The file is in a shared notebook and was restored through the collab
+   * host; open tabs follow through their live replica, not from `content`.
+   */
+  shared?: boolean;
 };
 
 export type AgentEvent =
@@ -67,7 +72,12 @@ export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_started"; id: string; name: string; summary: string; diff?: { removed: string; added: string } }
   | { type: "tool_finished"; id: string; status: "ok" | "error"; result: string; detail?: string }
-  | { type: "file_changed"; path: string; created: boolean }
+  /**
+   * `shared`: the file is in a shared notebook and the change went through the
+   * collab host. Open tabs get it from their live replica, so the panel must
+   * not reload them from disk (the working copy lags the document).
+   */
+  | { type: "file_changed"; path: string; created: boolean; shared?: boolean }
   | { type: "comments_added"; path: string; count: number }
   | { type: "tasks_updated"; tasks: AgentTask[] }
   | { type: "usage"; usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } }
