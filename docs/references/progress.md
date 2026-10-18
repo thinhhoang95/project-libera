@@ -76,7 +76,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ◐ |
 | resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ◐ resolution-ui |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
-| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ◐ server half (copy-on-move, rewrite API, formatted bibliography export, LaTeX export); UI goes to resolution-ui |
+| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ☐ moves-ui (move toast + draft map, rename-key rewrite dialog, formatted bibliography menu; after resolution-ui) |
 
 ## Wave 4: fact-check and later items
 

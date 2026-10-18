@@ -327,3 +327,13 @@ test("numeric styles produce thebibliography, and the bibliography marker places
     assert.equal(orphan.bibliography, "");
   });
 });
+
+test("the LaTeX export still runs when the document's notebook has no readable library", async () => {
+  await withData(async () => {
+    const plan = await prepareLatexCitations("Claim [@smith2020, p. 3].", "Missing notebook");
+    assert.ok(plan, "citations are still planned");
+    assert.equal(plan.citations.size, 1);
+    const [latex] = [...plan.citations.values()];
+    assert.match(latex, /smith2020/, "an unresolved citation keeps its key");
+  });
+});

@@ -116,7 +116,14 @@ export function notebookOfDocument(documentPath: string) {
 
 async function libraryFor(notebook: string | null): Promise<ReferenceLibrary> {
   if (!notebook) return emptyReferenceLibrary();
-  return readReferenceLibrary(notebook);
+  try {
+    return await readReferenceLibrary(notebook);
+  } catch (error) {
+    // A document outside any notebook (or one that was removed) still
+    // exports: its citations stay unresolved, as without a library.
+    console.warn(`[references] LaTeX export without the library of “${notebook}”:`, error);
+    return emptyReferenceLibrary();
+  }
 }
 
 /**
