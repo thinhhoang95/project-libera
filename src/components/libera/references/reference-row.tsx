@@ -26,6 +26,7 @@ import {
   highlightSegments,
   STATUS_LABELS,
 } from "@/components/libera/references/reference-display";
+import { RetractionBadge } from "@/components/libera/references/retraction-badge";
 import type { ReferenceEntry, ReferenceStatus } from "@/lib/references/types";
 
 // One library entry in the References panel list, its actions menu, and the
@@ -110,6 +111,7 @@ export function ReferenceRow({ entry, words, selected, citedByActive, citingCoun
           </span>
         ) : null}
         <StatusBadge status={entry.status} />
+        <RetractionBadge status={entry.retraction} compact />
         {duplicate ? <StatusBadge status="duplicate" /> : null}
         {citingCount ? <span className="libera-backlink-count" title={countLabel} aria-label={countLabel}><Quote aria-hidden className="h-3 w-3" />{citingCount}</span> : null}
       </div>

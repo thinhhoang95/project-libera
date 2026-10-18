@@ -14,6 +14,7 @@ import {
   typeLabel,
 } from "@/components/libera/references/reference-display";
 import { FormattedReference } from "@/components/libera/references/reference-candidates";
+import { RetractionBadge } from "@/components/libera/references/retraction-badge";
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
 import { CITE_UNAVAILABLE, StatusBadge } from "@/components/libera/references/reference-row";
 import { isValidCitationKey } from "@/lib/references/keys";
@@ -177,6 +178,7 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
             </div>
             <StatusBadge status={entry.status} />
           </div>
+          <RetractionBadge status={entry.retraction} />
           <FormattedReference className="text-[12px] leading-relaxed text-muted-foreground" notebook={notebook} setting={library.style} entry={entry} />
           <p className="text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
           {reviewing ? (

@@ -1,5 +1,6 @@
 "use client";
 
+import { retractionTone } from "@/components/libera/references/retraction-badge";
 import {
   AlertCircle,
   Check,
@@ -1139,6 +1140,12 @@ const AUTO_CREATE_CHOICES: Array<{ value: boolean | null; label: string }> = [
 
 /** "Reading 3 of 12 PDFs… current file" while a job runs; "N new entries · M need review · K failed" when it is done. */
 export function jobProgressText(job: ReferenceJobStatus) {
+  if (job.kind === "check-retractions") {
+    if (job.state === "queued") return "Waiting to check for retractions…";
+    if (!job.total) return "Checking for retractions…";
+    const position = Math.min(job.total, job.done + job.failed + 1);
+    return `Checking ${position} of ${job.total} references for retractions…`;
+  }
   const things = job.kind === "resolve-pdfs" ? "PDFs" : "files";
   if (job.state === "queued") return `Waiting to read ${things}…`;
   if (!job.total) return job.kind === "resolve-pdfs" ? "Looking for PDFs without an entry…" : "Starting…";
@@ -1147,6 +1154,15 @@ export function jobProgressText(job: ReferenceJobStatus) {
 }
 
 export function jobSummaryText(job: ReferenceJobStatus, library: ReferenceLibrary | null) {
+  if (job.kind === "check-retractions") {
+    const changed = job.updatedEntryIds.map((id) => library?.entries[id]).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+    const warnings = changed.filter((entry) => retractionTone(entry.retraction) === "warning").length;
+    const notes = changed.filter((entry) => retractionTone(entry.retraction) === "note").length;
+    const parts = warnings || notes ? [`${warnings} retracted or flagged`, `${notes} corrected`] : ["No new notices"];
+    if (job.failed) parts.push(`${job.failed} not checked`);
+    const prefix = job.state === "cancelled" ? "Stopped: " : job.state === "failed" ? "The check failed: " : "Retraction check: ";
+    return `${prefix}${parts.join(" · ")}`;
+  }
   const ids = [...new Set([...job.createdEntryIds, ...job.updatedEntryIds])];
   const review = ids.filter((id) => library?.entries[id] && library.entries[id].status !== "confirmed").length;
   const created = job.createdEntryIds.length;
