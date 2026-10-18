@@ -32,7 +32,8 @@ export interface CollabEnv extends SyncEnv {
 }
 
 export async function startCollab(overrides: Partial<Config> = {}): Promise<CollabEnv> {
-  const env = await startSyncEnv(overrides);
+  // Tests open many sockets per account from one address.
+  const env = await startSyncEnv({ SYNC_MAX_SOCKETS_PER_ACCOUNT: 1000, SYNC_CONNECTIONS_PER_MINUTE: 10_000, ...overrides });
   const members: Record<string, AccountFixture> = {};
   for (const [name, role] of [
     ["editor", "editor"],

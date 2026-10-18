@@ -43,13 +43,17 @@ function isPositionJson(value: unknown): value is RelativePositionJSON {
 /** Resolves one stored position against the source text, or null when it no longer exists. */
 export function resolvePosition(content: Y.Doc, json: unknown): number | null {
   if (!isPositionJson(json)) return null;
+  // Typing the root first matters: a document loaded from updates holds a
+  // placeholder type until getText is called, and positions resolved before
+  // that would point at the placeholder instead of the Y.Text.
+  const text = sourceText(content);
   let absolute: Y.AbsolutePosition | null;
   try {
     absolute = Y.createAbsolutePositionFromRelativePosition(Y.createRelativePositionFromJSON(json), content);
   } catch {
     return null;
   }
-  if (!absolute || absolute.type !== sourceText(content)) return null;
+  if (!absolute || absolute.type !== text) return null;
   return absolute.index;
 }
 

@@ -11,6 +11,7 @@ import { registerInvitationRoutes } from "./invitations.js";
 import { registerNotificationRoutes } from "./notifications.js";
 import { registerProjectRoutes } from "./projects.js";
 import { registerRevisionRoutes } from "./revisions.js";
+import { registerSuggestionRoutes } from "./suggestions.js";
 import { registerSystemRoutes } from "./system.js";
 import { registerThreadRoutes } from "./threads.js";
 
@@ -23,6 +24,7 @@ export async function registerApi(app: FastifyInstance, context: ServerContext):
   registerBlobRoutes(app, context);
   registerThreadRoutes(app, context);
   registerRevisionRoutes(app, context);
+  registerSuggestionRoutes(app, context);
   registerNotificationRoutes(app, context);
   registerCommandRoutes(app, context);
 }
