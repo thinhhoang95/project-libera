@@ -90,6 +90,13 @@ export interface SuggestionRecord {
   decidedBy?: string;
   decidedAt?: number;
   staleReason?: "text-changed" | "target-removed";
+  /**
+   * Set by the server on accept: where the replacement now is in content
+   * (start sticks to its first character, end to its last). Revert checks
+   * that this range still holds `replacement`.
+   */
+  appliedStart?: RelativePositionJSON;
+  appliedEnd?: RelativePositionJSON;
 }
 
 export interface ReviewScopeRecord {
