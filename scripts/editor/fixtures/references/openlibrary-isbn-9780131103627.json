@@ -1,0 +1,119 @@
+{
+ "description": {
+  "type": "/type/text",
+  "value": "This updated edition covers ANSI C.\r\n\r\nThe authors present the complete guide to ANSI standard C language programming. Written by the developers of C, this new version helps readers keep up with the finalized ANSI standard for C while showing how to take advantage of C's rich set of operators, economy of expression, improved control flow, and data structures. The 2/E has been completely rewritten with additional examples and problem sets to clarify the implementation of difficult language constructs. For years, C programmers have let K&R guide them to building well-structured and efficient programs. Now this same help is available to those working with ANSI compilers. Includes detailed coverage of the C language plus the official C language reference manual for at-a-glance help with syntax notation, declarations, ANSI changes, scope rules, and the list goes on and on."
+ },
+ "notes": {
+  "type": "/type/text",
+  "value": "Includes index."
+ },
+ "identifiers": {
+  "librarything": [
+   "3600740"
+  ],
+  "goodreads": [
+   "515617",
+   "515601"
+  ]
+ },
+ "title": "The C Programming Language",
+ "authors": [
+  {
+   "key": "/authors/OL946967A"
+  }
+ ],
+ "publish_date": "1988",
+ "publishers": [
+  "Prentice Hall"
+ ],
+ "ia_box_id": [
+  "IA171801"
+ ],
+ "isbn_10": [
+  "0131103709",
+  "0131103628"
+ ],
+ "covers": [
+  5732572,
+  86185,
+  86184
+ ],
+ "ia_loaded_id": [
+  "cprogramminglang00bria"
+ ],
+ "lc_classifications": [
+  "QA76.73.C15 K47 1988",
+  "QA76.73.C15 .K4718 1991",
+  "QA76.73.C15K47 1988"
+ ],
+ "ocaid": "cprogramminglang00bria",
+ "publish_places": [
+  "Englewood Cliffs, N.J"
+ ],
+ "contributions": [
+  "Ritchie, Dennis M., 1941-"
+ ],
+ "languages": [
+  {
+   "key": "/languages/eng"
+  }
+ ],
+ "pagination": "xii, 272 p. ;",
+ "source_records": [
+  "marc:marc_records_scriblio_net/part20.dat:58227:675",
+  "marc:marc_ithaca_college/ic_marc.mrc:70170001:796",
+  "ia:eric_test_autocrop_03_test",
+  "marc:marc_loc_updates/v39.i42.records.utf8:1729576:710",
+  "ia:cprogramminglang00bria",
+  "ia:cprimer00lipp_519",
+  "ia:cprogramminglang00kern_288",
+  "ia:cprogramminglang00kern_063",
+  "ia:cprogramminglang00kern_564",
+  "ia:c00kern",
+  "ia:ellenguajedeprog0000kern",
+  "bwb:9780131103702",
+  "marc:marc_columbia/Columbia-extract-20221130-032.mrc:212020476:4311",
+  "marc:marc_columbia/Columbia-extract-20221130-027.mrc:39248461:4331",
+  "idb:9780131103627",
+  "idb:9780131103702",
+  "marc:marc_columbia/Columbia-extract-20221130-002.mrc:217937339:1610",
+  "marc:harvard_bibliographic_metadata/ab.bib.01.20150123.full.mrc:653728007:1630"
+ ],
+ "lccn": [
+  "88005934"
+ ],
+ "edition_name": "2nd ed.",
+ "dewey_decimal_class": [
+  "005.13/3"
+ ],
+ "subjects": [
+  "C (Computer program language)"
+ ],
+ "publish_country": "nju",
+ "by_statement": "Brian W. Kernighan, Dennis M. Ritchie.",
+ "type": {
+  "key": "/type/edition"
+ },
+ "oclc_numbers": [
+  "37671910",
+  "573196545",
+  "17650642"
+ ],
+ "key": "/books/OL2030445M",
+ "number_of_pages": 272,
+ "works": [
+  {
+   "key": "/works/OL4617640W"
+  }
+ ],
+ "latest_revision": 42,
+ "revision": 42,
+ "created": {
+  "type": "/type/datetime",
+  "value": "2008-04-01T03:28:50.625462"
+ },
+ "last_modified": {
+  "type": "/type/datetime",
+  "value": "2025-09-03T08:15:08.251983"
+ }
+}

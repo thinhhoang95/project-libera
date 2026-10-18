@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/BtAAsYhs5UVxCxHSOEYdcNWtmMA</id>
+  <title>arXiv Query: search_query=&amp;id_list=1404.7828&amp;start=0&amp;max_results=1</title>
+  <updated>2026-10-18T11:23:09Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=1&amp;id_list=1404.7828" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>1</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/1404.7828v4</id>
+    <title>Deep Learning in Neural Networks: An Overview</title>
+    <updated>2014-10-08T10:00:38Z</updated>
+    <link href="https://arxiv.org/abs/1404.7828v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1404.7828v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In recent years, deep artificial neural networks (including recurrent ones) have won numerous contests in pattern recognition and machine learning. This historical survey compactly summarises relevant work, much of it from the previous millennium. Shallow and deep learners are distinguished by the depth of their credit assignment paths, which are chains of possibly learnable, causal links between actions and effects. I review deep supervised learning (also recapitulating the history of backpropagation), unsupervised learning, reinforcement learning &amp; evolutionary computation, and indirect search for short programs encoding deep and large networks.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2014-04-30T18:39:00Z</published>
+    <arxiv:comment>88 pages, 888 references</arxiv:comment>
+    <arxiv:primary_category term="cs.NE"/>
+    <arxiv:journal_ref>Neural Networks, Vol 61, pp 85-117, Jan 2015</arxiv:journal_ref>
+    <author>
+      <name>Juergen Schmidhuber</name>
+    </author>
+    <arxiv:doi>10.1016/j.neunet.2014.09.003</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1016/j.neunet.2014.09.003" title="doi"/>
+  </entry>
+</feed>

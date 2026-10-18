@@ -1,0 +1,177 @@
+{
+ "data": {
+  "id": "10.5061/dryad.8515",
+  "type": "dois",
+  "attributes": {
+   "doi": "10.5061/dryad.8515",
+   "prefix": "10.5061",
+   "suffix": "dryad.8515",
+   "identifiers": [],
+   "alternateIdentifiers": [],
+   "creators": [
+    {
+     "name": "Ollomo, Benjamin",
+     "nameType": "Personal",
+     "givenName": "Benjamin",
+     "familyName": "Ollomo",
+     "affiliation": [
+      "Centre International de Recherches Médicales de Franceville"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Durand, Patrick",
+     "nameType": "Personal",
+     "givenName": "Patrick",
+     "familyName": "Durand",
+     "affiliation": [
+      "Centre National de la Recherche Scientifique"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Prugnolle, Franck",
+     "nameType": "Personal",
+     "givenName": "Franck",
+     "familyName": "Prugnolle",
+     "affiliation": [
+      "Centre National de la Recherche Scientifique"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Douzery, Emmanuel J. P.",
+     "nameType": "Personal",
+     "givenName": "Emmanuel J. P.",
+     "familyName": "Douzery",
+     "affiliation": [],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Arnathau, Céline",
+     "nameType": "Personal",
+     "givenName": "Céline",
+     "familyName": "Arnathau",
+     "affiliation": [
+      "Centre National de la Recherche Scientifique"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Nkoghe, Dieudonné",
+     "nameType": "Personal",
+     "givenName": "Dieudonné",
+     "familyName": "Nkoghe",
+     "affiliation": [
+      "Centre International de Recherches Médicales de Franceville"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Leroy, Eric",
+     "nameType": "Personal",
+     "givenName": "Eric",
+     "familyName": "Leroy",
+     "affiliation": [
+      "Centre International de Recherches Médicales de Franceville"
+     ],
+     "nameIdentifiers": []
+    },
+    {
+     "name": "Renaud, François",
+     "nameType": "Personal",
+     "givenName": "François",
+     "familyName": "Renaud",
+     "affiliation": [
+      "Centre National de la Recherche Scientifique"
+     ],
+     "nameIdentifiers": []
+    }
+   ],
+   "titles": [
+    {
+     "title": "Data from: A new malaria agent in African hominids."
+    }
+   ],
+   "publisher": "Dryad",
+   "container": {},
+   "publicationYear": 2011,
+   "contributors": [],
+   "dates": [
+    {
+     "date": "2011-02-01T13:09:15Z",
+     "dateType": "Submitted"
+    },
+    {
+     "date": "2011-02-01T17:22:41Z",
+     "dateType": "Issued"
+    },
+    {
+     "date": "2011-02-01T17:22:41Z",
+     "dateType": "Available"
+    }
+   ],
+   "language": "en",
+   "types": {
+    "ris": "DATA",
+    "bibtex": "misc",
+    "citeproc": "dataset",
+    "schemaOrg": "Dataset",
+    "resourceType": "dataset",
+    "resourceTypeGeneral": "Dataset"
+   },
+   "relatedIdentifiers": [
+    {
+     "relationType": "IsCitedBy",
+     "relatedIdentifier": "10.1371/journal.ppat.1000446",
+     "relatedIdentifierType": "DOI"
+    }
+   ],
+   "relatedItems": [],
+   "sizes": [
+    "128717 bytes"
+   ],
+   "formats": [],
+   "version": "1",
+   "rightsList": [
+    {
+     "rights": "Creative Commons Zero v1.0 Universal",
+     "rightsUri": "https://creativecommons.org/publicdomain/zero/1.0/legalcode",
+     "schemeUri": "https://spdx.org/licenses/",
+     "rightsIdentifier": "cc0-1.0",
+     "rightsIdentifierScheme": "SPDX"
+    }
+   ],
+   "descriptions": [
+    {
+     "description": "Plasmodium falciparum is the major human malaria agent responsible for 200\n to 300 million infections and one to three million deaths annually, mainly\n among African infants. The origin and evolution of this pathogen within\n the human lineage is still unresolved. A single species, P. reichenowi,\n which infects chimpanzees, is known to be a close sister lineage of P.\n falciparum. Here we report the discovery of a new Plasmodium species\n infecting Hominids. This new species has been isolated in two chimpanzees\n (Pan troglodytes) kept as pets by villagers in Gabon (Africa). Analysis of\n its complete mitochondrial genome (5529 nucleotides including Cyt b, Cox I\n and Cox III genes) reveals an older divergence of this lineage from the\n clade that includes P. falciparum and P. reichenowi (approximately 21+/-9\n Myrs ago using Bayesian methods and considering that the divergence\n between P. falciparum and P. reichenowi occurred 4 to 7 million years ago\n as generally considered in the literature). This time frame would be\n congruent with the radiation of hominoids, suggesting that this Plasmodium\n lineage might have been present in early hominoids and that they may both\n have experienced a simultaneous diversification. Investigation of the\n nuclear genome of this new species will further the understanding of the\n genetic adaptations of P. falciparum to humans. The risk of transfer and\n emergence of this new species in humans must be now seriously considered\n given that it was found in two chimpanzees living in contact with humans\n and its close relatedness to the most virulent agent of malaria.",
+     "descriptionType": "Abstract"
+    },
+    {
+     "description": "Ollomo_PLoSPathog_2009Nucleotide alignment concatenation of 4 mitochondrial genes for 17 Plasmodium species and one outgroup.Ollomo_PLoSPathog_2009_PHYMLMaximum likelihood tree inferred from the 4-gene concatenation using PHYML.",
+     "descriptionType": "Other"
+    }
+   ],
+   "url": "https://datadryad.org/dataset/doi:10.5061/dryad.8515",
+   "contentUrl": null,
+   "metadataVersion": 28,
+   "schemaVersion": "http://datacite.org/schema/kernel-4",
+   "source": "mds",
+   "isActive": true,
+   "state": "findable",
+   "reason": null,
+   "viewCount": 462,
+   "downloadCount": 38,
+   "referenceCount": 1,
+   "citationCount": 1,
+   "partCount": 2,
+   "partOfCount": 0,
+   "versionCount": 0,
+   "versionOfCount": 0,
+   "created": "2011-11-22T18:34:51.000Z",
+   "registered": "2011-02-01T17:32:02.000Z",
+   "published": "2011",
+   "updated": "2026-01-27T03:25:16.000Z"
+  }
+ }
+}

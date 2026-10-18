@@ -1,0 +1,376 @@
+{
+ "status": "ok",
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "message": {
+  "facets": {},
+  "total-results": 10226694,
+  "items": [
+   {
+    "publisher": "Elsevier BV",
+    "short-container-title": [
+     "Neural Networks"
+    ],
+    "published-print": {
+     "date-parts": [
+      [
+       2015,
+       1
+      ]
+     ]
+    },
+    "DOI": "10.1016/j.neunet.2014.09.003",
+    "type": "journal-article",
+    "page": "85-117",
+    "title": [
+     "Deep learning in neural networks: An overview"
+    ],
+    "volume": "61",
+    "author": [
+     {
+      "given": "Jürgen",
+      "family": "Schmidhuber",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     }
+    ],
+    "container-title": [
+     "Neural Networks"
+    ],
+    "issued": {
+     "date-parts": [
+      [
+       2015,
+       1
+      ]
+     ]
+    },
+    "URL": "https://doi.org/10.1016/j.neunet.2014.09.003",
+    "ISSN": [
+     "0893-6080"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2015,
+       1
+      ]
+     ]
+    }
+   },
+   {
+    "publisher": "Elsevier BV",
+    "short-container-title": [
+     "Neural Networks"
+    ],
+    "published-print": {
+     "date-parts": [
+      [
+       2021,
+       7
+      ]
+     ]
+    },
+    "DOI": "10.1016/j.neunet.2021.03.009",
+    "type": "journal-article",
+    "page": "199-200",
+    "title": [
+     "Deep neural network representation and Generative Adversarial Learning"
+    ],
+    "volume": "139",
+    "author": [
+     {
+      "given": "Ariel",
+      "family": "Ruiz-Garcia",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Jürgen",
+      "family": "Schmidhuber",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Vasile",
+      "family": "Palade",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Clive Cheong",
+      "family": "Took",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Danilo",
+      "family": "Mandic",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     }
+    ],
+    "container-title": [
+     "Neural Networks"
+    ],
+    "issued": {
+     "date-parts": [
+      [
+       2021,
+       7
+      ]
+     ]
+    },
+    "URL": "https://doi.org/10.1016/j.neunet.2021.03.009",
+    "ISSN": [
+     "0893-6080"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2021,
+       7
+      ]
+     ]
+    }
+   },
+   {
+    "publisher": "IEEE",
+    "published-print": {
+     "date-parts": [
+      [
+       2012,
+       6
+      ]
+     ]
+    },
+    "DOI": "10.1109/ijcnn.2012.6252544",
+    "type": "proceedings-article",
+    "page": "1-6",
+    "title": [
+     "Transfer learning for Latin and Chinese characters with Deep Neural Networks"
+    ],
+    "author": [
+     {
+      "given": "Dan C.",
+      "family": "Ciresan",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Ueli",
+      "family": "Meier",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     },
+     {
+      "given": "Jurgen",
+      "family": "Schmidhuber",
+      "sequence": "additional",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     }
+    ],
+    "container-title": [
+     "The 2012 International Joint Conference on Neural Networks (IJCNN)"
+    ],
+    "issued": {
+     "date-parts": [
+      [
+       2012,
+       6
+      ]
+     ]
+    },
+    "URL": "https://doi.org/10.1109/ijcnn.2012.6252544",
+    "published": {
+     "date-parts": [
+      [
+       2012,
+       6
+      ]
+     ]
+    }
+   },
+   {
+    "publisher": "Apress",
+    "published-print": {
+     "date-parts": [
+      [
+       2021
+      ]
+     ]
+    },
+    "DOI": "10.1007/978-1-4842-6513-0_3",
+    "type": "book-chapter",
+    "page": "57-80",
+    "title": [
+     "Deep Learning and Neural Networks Overview"
+    ],
+    "author": [
+     {
+      "given": "Orhan Gazi",
+      "family": "Yalçın",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+       {
+        "role": "author",
+        "vocabulary": "crossref"
+       }
+      ]
+     }
+    ],
+    "published-online": {
+     "date-parts": [
+      [
+       2020,
+       11,
+       30
+      ]
+     ]
+    },
+    "container-title": [
+     "Applied Neural Networks with TensorFlow 2"
+    ],
+    "issued": {
+     "date-parts": [
+      [
+       2020,
+       11,
+       30
+      ]
+     ]
+    },
+    "ISBN": [
+     "9781484265123",
+     "9781484265130"
+    ],
+    "URL": "https://doi.org/10.1007/978-1-4842-6513-0_3",
+    "published": {
+     "date-parts": [
+      [
+       2020,
+       11,
+       30
+      ]
+     ]
+    }
+   },
+   {
+    "publisher": "Scholarpedia",
+    "issue": "11",
+    "short-container-title": [
+     "Scholarpedia"
+    ],
+    "DOI": "10.4249/scholarpedia.32832",
+    "type": "journal-article",
+    "page": "32832",
+    "title": [
+     "Deep Learning"
+    ],
+    "volume": "10",
+    "author": [
+     {
+      "given": "Juergen",
+      "family": "Schmidhuber",
+      "sequence": "first",
+      "affiliation": [],
+      "role": [
+       {
+        "vocabulary": "crossref",
+        "role": "author"
+       }
+      ]
+     }
+    ],
+    "published-online": {
+     "date-parts": [
+      [
+       2015
+      ]
+     ]
+    },
+    "container-title": [
+     "Scholarpedia"
+    ],
+    "issued": {
+     "date-parts": [
+      [
+       2015
+      ]
+     ]
+    },
+    "URL": "https://doi.org/10.4249/scholarpedia.32832",
+    "ISSN": [
+     "1941-6016"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2015
+      ]
+     ]
+    }
+   }
+  ],
+  "items-per-page": 5,
+  "query": {
+   "start-index": 0,
+   "search-terms": null
+  }
+ }
+}
