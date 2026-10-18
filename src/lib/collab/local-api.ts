@@ -152,12 +152,20 @@ export interface CreateSuggestionsResponse {
 }
 
 export interface FileOpRequest {
-  op: "create-file" | "create-folder" | "rename" | "delete";
+  /**
+   * `write-blob` adds a binary file (an upload, a pasted image, an edited
+   * photo) or replaces the bytes of an existing blob entry. A new file whose
+   * path and bytes make it a text document is created as one, like
+   * `create-file`; an existing document is refused (change it with edits).
+   */
+  op: "create-file" | "create-folder" | "rename" | "delete" | "write-blob";
   path: string;
   /** For rename. */
   to?: string;
   /** For create-file of a text document: initial text. */
   content?: string;
+  /** For write-blob: the file's bytes, base64. */
+  contentBase64?: string;
 }
 
 export interface Reconciliation {

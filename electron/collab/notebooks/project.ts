@@ -977,7 +977,7 @@ export class SharedProject {
 
   // ------------------------------------------------------------ file operations (control API)
 
-  /** create-file, create-folder, rename and delete, through the manifest; the disk follows. */
+  /** create-file, create-folder, write-blob, rename and delete, through the manifest; the disk follows. */
   fileOp(request: FileOpRequest): Promise<{ paths: string[] }> {
     return this.enqueue(async () => {
       if (!this.canEdit) throw new ControlError(403, "forbidden", "Your role cannot add, rename or delete files.");
@@ -996,39 +996,41 @@ export class SharedProject {
           if (request.op === "create-folder") {
             created = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
           } else {
-            const api = this.ctx.host.api;
-            if (!api) throw new ControlError(401, "needs-sign-in", "Sign in to the collaboration server.");
-            const bytes = encodeText(request.content ?? "");
-            const classified = classifyFile(relative, bytes);
-            const hash = sha256(bytes);
-            const target = await this.resolveOrRefuse(relative);
-            if (await statIfExists(target)) throw new ControlError(409, "conflict", `${relative} already exists on disk.`);
-            if (classified.kind === "doc") {
-              const docId = randomId("doc");
-              await createSharedDocument(api, this.info.projectId, { docId, fileId }, classified.docKind, classified.text);
-              created = { fileId, path: relative, kind: "doc", docId, docKind: classified.docKind, size: bytes.byteLength, createdBy: accountId, createdAt: now, updatedAt: now };
-            } else {
-              const mime = mimeForPath(relative);
-              await api.uploadBlob(this.info.projectId, bytes, mime);
-              created = { fileId, path: relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
-            }
-            // The text is known, so write the file now instead of waiting for the server echo.
-            const stats = await writeFileAtomic(target, bytes);
-            this.state.layout[fileId] = {
-              path: relative,
-              kind: created.kind,
-              ...(created.docId ? { docId: created.docId, docKind: created.docKind } : {}),
-              hash,
-              size: stats.size,
-              mtimeMs: stats.mtimeMs,
-            };
-            if (created.docId) {
-              await writeBase(this.info.root, created.docId, request.content ?? "");
-              this.ctx.host.store.upsertDoc({ docId: created.docId, projectId: this.info.projectId, fileId, path: relative, materializedHash: hash });
-            }
+            created = await this.createFileEntry(fileId, relative, encodeText(request.content ?? ""), accountId, now);
           }
           await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
           paths.push(relative);
+          break;
+        }
+        case "write-blob": {
+          const bytes = base64Bytes(request.contentBase64);
+          const key = manifestPathKey(relative);
+          const existing = [...this.entries.values()].find((entry) => manifestPathKey(entry.path) === key);
+          if (!existing) {
+            // A new file: the same as create-file, from bytes.
+            this.assertFree(relative, []);
+            const fileId = randomId("fil");
+            const created = await this.createFileEntry(fileId, relative, bytes, accountId, now);
+            await this.writeManifest((map) => map.set(fileId, entryRecord(created)), { source: "typing" });
+            paths.push(relative);
+            break;
+          }
+          if (existing.kind === "doc") throw new ControlError(409, "conflict", `${existing.path} is a shared document; change its text with edits.`);
+          if (existing.kind !== "blob") throw new ControlError(409, "conflict", `${existing.path} is a folder.`);
+          const api = this.ctx.host.api;
+          if (!api) throw new ControlError(401, "needs-sign-in", "Sign in to the collaboration server.");
+          const hash = sha256(bytes);
+          // Upload first: a manifest entry must never name a blob the server lacks.
+          await api.uploadBlob(this.info.projectId, bytes, existing.mime ?? mimeForPath(existing.path));
+          const target = await this.resolveOrRefuse(existing.path);
+          const stats = await writeFileAtomic(target, bytes);
+          // Record the hash before the manifest changes, so neither the
+          // materializer nor the watcher treats our own write as remote or external.
+          this.state.layout[existing.fileId] = { path: existing.path, kind: "blob", hash, size: stats.size, mtimeMs: stats.mtimeMs };
+          this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
+          const updated: ManifestEntry = { ...existing, blobHash: hash, size: bytes.byteLength, updatedAt: now };
+          await this.writeManifest((map) => map.set(existing.fileId, entryRecord(updated)), { source: "typing" });
+          paths.push(existing.path);
           break;
         }
         case "rename": {
@@ -1064,8 +1066,49 @@ export class SharedProject {
       }
       // Make the disk match before answering, so the caller can re-read the tree.
       await this.applyManifest();
+      // Creates record their layout before applyManifest runs, so it sees no
+      // change; rebuild the resolvePath index here, or a file just created
+      // would not resolve (the caller's next request is often an edit to it).
+      this.ctx.layoutChanged(this.info.projectId);
       return { paths: paths.map((item) => this.liberaPath(item)) };
     });
+  }
+
+  /** A new file (document or blob) on the server and on disk; the caller adds its manifest entry. */
+  private async createFileEntry(fileId: string, relative: string, bytes: Uint8Array, accountId: string, now: number): Promise<ManifestEntry> {
+    const api = this.ctx.host.api;
+    if (!api) throw new ControlError(401, "needs-sign-in", "Sign in to the collaboration server.");
+    const classified = classifyFile(relative, bytes);
+    const hash = sha256(bytes);
+    const target = await this.resolveOrRefuse(relative);
+    if (await statIfExists(target)) throw new ControlError(409, "conflict", `${relative} already exists on disk.`);
+    let created: ManifestEntry;
+    if (classified.kind === "doc") {
+      const docId = randomId("doc");
+      await createSharedDocument(api, this.info.projectId, { docId, fileId }, classified.docKind, classified.text);
+      created = { fileId, path: relative, kind: "doc", docId, docKind: classified.docKind, size: bytes.byteLength, createdBy: accountId, createdAt: now, updatedAt: now };
+    } else {
+      const mime = mimeForPath(relative);
+      await api.uploadBlob(this.info.projectId, bytes, mime);
+      created = { fileId, path: relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
+    }
+    // The bytes are known, so write the file now instead of waiting for the server echo.
+    const stats = await writeFileAtomic(target, bytes);
+    this.state.layout[fileId] = {
+      path: relative,
+      kind: created.kind,
+      ...(created.docId ? { docId: created.docId, docKind: created.docKind } : {}),
+      hash,
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+    };
+    if (created.docId && classified.kind === "doc") {
+      await writeBase(this.info.root, created.docId, classified.text);
+      this.ctx.host.store.upsertDoc({ docId: created.docId, projectId: this.info.projectId, fileId, path: relative, materializedHash: hash });
+    } else {
+      this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
+    }
+    return created;
   }
 
   private assertFree(relative: string, except: string[]): void {
@@ -1143,6 +1186,14 @@ function normalizeRelative(input: string): string {
   const relative = input.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   if (!relative) throw new ControlError(400, "bad-request", "A path is required.");
   return relative;
+}
+
+/** The bytes of write-blob's `contentBase64`; Buffer.from would silently skip invalid characters. */
+function base64Bytes(value: unknown): Uint8Array {
+  if (typeof value !== "string" || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    throw new ControlError(400, "bad-request", "write-blob needs the file's bytes as base64 in contentBase64.");
+  }
+  return new Uint8Array(Buffer.from(value, "base64"));
 }
 
 /**

@@ -10,7 +10,7 @@
 // Never import this from client components: the token must stay on the
 // server.
 
-import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, DocText, HostStatus, ResolvedDoc } from "./local-api";
+import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -132,4 +132,9 @@ export function createSuggestions(docId: string, request: CreateSuggestionsReque
 /** The projects joined on this machine, refreshed from the server when it can be reached. */
 export function listProjects(config?: HostClientConfig | null): Promise<LocalProject[]> {
   return hostJson(ControlRoutes.projects, { config });
+}
+
+/** A file operation in a shared notebook (create, write-blob, rename, delete); resolves with the Libera paths it touched. */
+export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<{ paths: string[] }> {
+  return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
 }
