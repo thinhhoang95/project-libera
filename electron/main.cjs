@@ -758,6 +758,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        // Same preload as the main window; it only needs sandbox-safe APIs.
+        sandbox: true,
         preload: path.join(__dirname, "preload.cjs"),
       },
     });
@@ -999,6 +1001,7 @@ async function exportMarkdownPdf(event, input) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
     width: 960,
   });
@@ -1868,6 +1871,14 @@ async function createMainWindow(url) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // The renderer shows collaborators' content (security §7): keep it in
+      // Chromium's sandbox. Electron 20+ sandboxes by default, but saying so
+      // here stops a later preload change from silently turning it off. The
+      // preload uses only sandbox-safe modules (electron's contextBridge,
+      // ipcRenderer, webFrame) and process.argv/platform; workspace
+      // checkpoints keep using ipcRenderer.sendSync, which works sandboxed.
+      // scripts/collab/p4d-sandbox.test.ts loads it in a sandboxed window.
+      sandbox: true,
       preload: path.join(__dirname, "preload.cjs"),
       additionalArguments: [
         `--libera-platform=${glass.platform}`,

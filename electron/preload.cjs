@@ -1,3 +1,11 @@
+// Preload for every Libera window. All of them run sandboxed (main.cjs sets
+// sandbox: true), so this file may only require "electron" (contextBridge,
+// ipcRenderer, webFrame, webUtils, nativeImage, crashReporter), "events",
+// "timers" and "url", and may only read process.argv, platform, env and
+// versions. Anything needing Node (fs, path, child_process) belongs in main
+// behind an IPC channel. scripts/collab/p4d-sandbox.test.ts loads this file
+// in a sandboxed window and checks every exposed API against an unsandboxed
+// load.
 const { contextBridge, ipcRenderer, webFrame } = require("electron");
 
 function readProcessSwitch(name) {
