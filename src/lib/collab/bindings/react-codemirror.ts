@@ -8,10 +8,13 @@
 //
 // One controller per replica tracks the views bound to it in this window: it
 // applies read-only states (role, newer schema, access changed) to every view,
-// and drives quiet mode and follow mode for the presence avatars.
+// and drives quiet mode and follow mode for the presence avatars, and the
+// "Suggesting" toggle (plan M3.2): every view of a shared document renders
+// the overlay suggestions with Accept and Reject for editors, and runs
+// suggest mode, which a commenter's editor cannot leave.
 
 import type { Extension } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { ySyncAnnotation } from "y-codemirror.next";
 import { minimalTextChange } from "@/lib/markdown-codemirror/value-sync";
 import { quietMode, sectionTracker, setQuietMode, startFollowing } from "../awareness";
@@ -20,6 +23,10 @@ import type { CollabReplica } from "../client/replica";
 import type { SharedDocRegistry, SharedDocSession } from "../client/registry";
 import { getSharedDocRegistry } from "../client/registry";
 import { collabExtension, type CollabBinding } from "./codemirror";
+import { refreshSuggestionPreview, suggestionPreview } from "../suggestions/codemirror";
+import { suggestMode, type SuggestMode } from "../suggestions/suggest-mode";
+import { suggestionsFor, type SuggestionsController } from "../client/suggestions";
+import { sharedSuggester } from "../client/suggestions-ai";
 
 export interface SharedCodeMirrorBinding {
   /** The text the view must start from (the Y.Text right now). */
@@ -40,18 +47,58 @@ export interface SharedCodeMirrorSource {
 
 type FollowState = { clientId: number; stop: () => void } | null;
 
-/** Views, quiet mode and follow mode of one replica in this window. */
+export interface SharedEditorSnapshot {
+  quiet: boolean;
+  followingClientId: number | null;
+  views: number;
+  /** The "Suggesting" toggle (user choice; commenters are forced on regardless). */
+  suggesting: boolean;
+  /** A commenter: always suggesting. */
+  suggestForced: boolean;
+  /** Whether the local user may suggest at all (role, account known). */
+  canSuggest: boolean;
+}
+
+interface ViewEntry {
+  binding: CollabBinding;
+  suggest: SuggestMode | null;
+}
+
+/** Views, quiet mode, follow mode and suggest mode of one replica in this window. */
 export class SharedEditorController {
-  private readonly views = new Map<EditorView, CollabBinding>();
+  private readonly views = new Map<EditorView, ViewEntry>();
   private lastFocused: EditorView | null = null;
   private quiet = false;
+  private suggesting = false;
   private following: FollowState = null;
   private readonly listeners = new Set<() => void>();
-  private snapshot = { quiet: false, followingClientId: null as number | null, views: 0 };
+  private snapshot: SharedEditorSnapshot = { quiet: false, followingClientId: null, views: 0, suggesting: false, suggestForced: false, canSuggest: false };
   private readonly unsubscribe: () => void;
+  private suggestions: SuggestionsController | null = null;
+  private unsubscribeSuggestions: (() => void) | null = null;
+  private presentation = "";
 
   constructor(private readonly replica: CollabReplica) {
     this.unsubscribe = replica.subscribe(() => this.applyReadOnly());
+  }
+
+  /**
+   * Links the document's suggestions: previews redraw when authors or the
+   * right to decide change, and suggest mode follows the role.
+   */
+  useSuggestions(suggestions: SuggestionsController) {
+    if (this.suggestions === suggestions) return;
+    this.unsubscribeSuggestions?.();
+    this.suggestions = suggestions;
+    this.presentation = suggestions.presentationKey();
+    this.unsubscribeSuggestions = suggestions.subscribe(() => {
+      const key = suggestions.presentationKey();
+      if (key === this.presentation) return;
+      this.presentation = key;
+      for (const view of this.views.keys()) refreshSuggestionPreview(view);
+      this.applyReadOnly();
+      this.emit();
+    });
   }
 
   /** Whether local content edits are refused (viewer or commenter, schema newer, access changed, closed). */
@@ -67,16 +114,30 @@ export class SharedEditorController {
   getSnapshot = () => this.snapshot;
 
   private emit() {
-    this.snapshot = { quiet: this.quiet, followingClientId: this.following?.clientId ?? null, views: this.views.size };
+    const forced = this.suggestions?.isCommenter() ?? false;
+    this.snapshot = {
+      quiet: this.quiet,
+      followingClientId: this.following?.clientId ?? null,
+      views: this.views.size,
+      suggesting: this.suggesting || forced,
+      suggestForced: forced,
+      canSuggest: [...this.views.values()].some((entry) => entry.suggest) && (this.suggestions?.canSuggest() ?? false),
+    };
     for (const listener of [...this.listeners]) listener();
   }
 
   get isQuiet(): boolean { return this.quiet; }
 
-  addView(view: EditorView, binding: CollabBinding) {
-    this.views.set(view, binding);
+  /** The toggle's state, for views created later. */
+  get isSuggesting(): boolean { return this.suggesting; }
+
+  addView(view: EditorView, binding: CollabBinding, suggest: SuggestMode | null = null) {
+    this.views.set(view, { binding, suggest });
     this.lastFocused ??= view;
     view.dom.addEventListener("focusin", () => { this.lastFocused = view; });
+    // Forced first: a commenter's read-only binding must already let input
+    // reach suggest mode when it turns read-only.
+    suggest?.setForced(view, this.suggestions?.isCommenter() ?? false);
     binding.setReadOnly(view, this.readOnly);
     setQuietMode(view, this.quiet);
     this.emit();
@@ -90,12 +151,25 @@ export class SharedEditorController {
 
   private applyReadOnly() {
     const readOnly = this.readOnly;
-    for (const [view, binding] of this.views) {
+    const forced = this.suggestions?.isCommenter() ?? false;
+    const apply = (view: EditorView, entry: ViewEntry) => {
+      entry.suggest?.setForced(view, forced);
+      entry.binding.setReadOnly(view, readOnly);
+    };
+    for (const [view, entry] of this.views) {
       // Deferred when an update is running (a hub message can arrive during a
       // dispatch in tests and in synchronous Electron ports).
-      try { binding.setReadOnly(view, readOnly); }
-      catch { queueMicrotask(() => { if (this.views.has(view)) binding.setReadOnly(view, this.readOnly); }); }
+      try { apply(view, entry); }
+      catch { queueMicrotask(() => { if (this.views.has(view)) apply(view, entry); }); }
     }
+    if (forced !== this.snapshot.suggestForced) this.emit();
+  }
+
+  /** The "Suggesting" toggle in the shared tab's toolbar. */
+  setSuggesting(suggesting: boolean) {
+    this.suggesting = suggesting;
+    for (const [view, entry] of this.views) entry.suggest?.setEnabled(view, suggesting);
+    this.emit();
   }
 
   setQuiet(quiet: boolean) {
@@ -135,6 +209,7 @@ export class SharedEditorController {
   destroy() {
     this.stopFollowing();
     this.unsubscribe();
+    this.unsubscribeSuggestions?.();
     this.listeners.clear();
   }
 }
@@ -172,10 +247,36 @@ export function sharedCodeMirrorSource(session: SharedDocSession, registry: Shar
         user: registry.localUser,
         readOnly: false,
       });
+      const suggestions = suggestionsFor(session, { registry });
+      controller.useSuggestions(suggestions);
+      const annotations = replica.annotations;
+      const actor = suggestions.userActor();
+      // Without a known account nothing can be attributed: the overlay still
+      // shows, but typing cannot become suggestions.
+      const suggest = actor ? suggestMode({ ytext, annotations, actor, enabled: controller.isSuggesting, forced: suggestions.isCommenter() }) : null;
+      const preview = suggestionPreview({
+        ytext,
+        annotations,
+        author: suggestions.author,
+        canDecide: () => suggestions.canDecide(),
+        localUserId: actor?.userId,
+        onAccept: (group) => { suggestions.decide(group.ids, "accept"); },
+        onReject: (group) => { suggestions.decide(group.ids, "reject"); },
+        onReply: (group) => { suggestions.reply(group.groupId); },
+      });
       let attached: EditorView | null = null;
+      let unregisterReveal: (() => void) | null = null;
       return {
         initialText: ytext.toString(),
-        extension: [binding.extension, sectionTracker(replica.awareness, kind), quietMode(controller.isQuiet)],
+        extension: [
+          // Before the binding, so suggest mode's Undo (also Prec.highest) runs first.
+          ...(suggest ? [suggest.extension] : []),
+          binding.extension,
+          preview,
+          sharedSuggester.of(suggestions),
+          sectionTracker(replica.awareness, kind),
+          quietMode(controller.isQuiet),
+        ],
         attach(view) {
           attached = view;
           // y-codemirror.next assumes the view starts equal to the Y.Text. A
@@ -183,11 +284,20 @@ export function sharedCodeMirrorSource(session: SharedDocSession, registry: Shar
           // so bring it level without sending anything back.
           const change = minimalTextChange(view.state.doc.toString(), ytext.toString());
           if (change) view.dispatch({ changes: change, annotations: ySyncAnnotation.of(binding.origin) });
-          controller.addView(view, binding);
+          controller.addView(view, binding, suggest);
+          unregisterReveal = suggestions.registerRevealer((start, end) => {
+            if (!view.dom.isConnected || end > view.state.doc.length) return false;
+            view.dispatch({ selection: { anchor: start, head: end }, effects: EditorView.scrollIntoView(start, { y: "center" }) });
+            view.focus();
+            return true;
+          });
         },
         destroy() {
+          unregisterReveal?.();
+          unregisterReveal = null;
           if (attached) controller.removeView(attached);
           attached = null;
+          suggest?.destroy();
           binding.destroy();
         },
       };

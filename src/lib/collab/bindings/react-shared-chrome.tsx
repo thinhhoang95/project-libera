@@ -3,9 +3,10 @@
 // The strip above a shared tab's editor: the durability pill in place of the
 // unsaved-changes dot (map §6), the people in the document with follow and
 // quiet mode, and the banners for rejected edits, changed access and newer
-// documents (plan M1.6, M1.8, M1.9).
+// documents (plan M1.6, M1.8, M1.9), and the "Suggesting" toggle of the
+// CodeMirror editors (plan M3.2; a commenter's is always on).
 
-import { Lock } from "lucide-react";
+import { Lock, MessageSquarePlus } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
 import { syncWording } from "../ui/wording";
@@ -89,8 +90,21 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: 
         {roleReadOnly ? (
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Lock aria-hidden className="h-3.5 w-3.5" />
-            {role === "commenter" ? "You can comment on this note, not edit it." : "View only"}
+            {role === "commenter" ? "You can suggest changes and comment; editors decide." : "View only"}
           </span>
+        ) : null}
+        {controls.canSuggest ? (
+          <button
+            type="button"
+            className="libera-collab-suggesting-toggle inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs font-medium aria-pressed:bg-primary aria-pressed:text-primary-foreground disabled:opacity-80"
+            aria-pressed={controls.suggesting}
+            disabled={controls.suggestForced}
+            title={controls.suggestForced ? "Commenters always suggest: your edits become suggestions for an editor to accept." : controls.suggesting ? "Typing makes suggestions. Click to edit directly." : "Make your edits suggestions that others accept or reject."}
+            onClick={() => controller.setSuggesting(!controls.suggesting)}
+          >
+            <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
+            Suggesting
+          </button>
         ) : null}
         {notice ? <span className="truncate text-xs text-muted-foreground">{notice}</span> : null}
         <PresenceAvatars
