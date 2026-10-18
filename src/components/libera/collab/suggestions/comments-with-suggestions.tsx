@@ -13,14 +13,16 @@ const tabClass = "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-xs f
 export function CommentsWithSuggestions({ tabId, comments }: { tabId?: string; comments: ReactNode }) {
   const shared = useSharedTab(tabId, "suggestions-rail");
   const session = shared.snapshot?.attached ? shared.session : null;
-  const { snapshot } = useSuggestions(session);
-  const [view, setView] = useState<"comments" | "suggestions">("comments");
+  const { controller, snapshot } = useSuggestions(session);
+  const [chosen, setView] = useState<"comments" | "suggestions">("comments");
+  // A Reply gesture (in the panel or inline in an editor) shows its box here.
+  const view = snapshot?.replyingTo ? "suggestions" : chosen;
   if (!session) return <>{comments}</>;
   const open = snapshot?.groups.filter((group) => group.state !== "decided").length ?? 0;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div role="tablist" aria-label="Comments and suggestions" className="flex gap-1 border-b border-border px-2 py-1.5">
-        <button type="button" role="tab" aria-selected={view === "comments"} className={tabClass} onClick={() => setView("comments")}>Comments</button>
+        <button type="button" role="tab" aria-selected={view === "comments"} className={tabClass} onClick={() => { controller?.cancelReply(); setView("comments"); }}>Comments</button>
         <button type="button" role="tab" aria-selected={view === "suggestions"} className={tabClass} onClick={() => setView("suggestions")}>
           Suggestions
           {open ? <span className="rounded-full bg-primary px-1.5 text-[10px] leading-4 text-primary-foreground">{open}</span> : null}

@@ -16,6 +16,7 @@ import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 import { useSessionEndRevisions } from "./collab/history/session-end";
 import { useSuggestions } from "./collab/suggestions/use-suggestions";
 import { agenticGroupId, reviewThreadsForPlanning, syncAgenticReviewSuggestions, withOverlayStatuses } from "@/lib/collab/client/agentic-review";
+import { registerSuggestionReplyHandler } from "@/lib/collab/client/suggestions";
 
 type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
 export type ReviewSelection = {
@@ -171,6 +172,26 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const { controller: sharedSuggestions, snapshot: suggestionsSnapshot } = useSuggestions(sharedProjection ? sharedSession : null);
   const sharedSuggestionsRef = useRef<typeof sharedSuggestions>(null);
   useLayoutEffect(() => { sharedSuggestionsRef.current = sharedSuggestions; }, [sharedSuggestions]);
+  // Replies to suggestions are comment threads in this store, anchored on
+  // the suggestion's range (its paragraph for a pure insertion).
+  const sharedDocId = sharedProjection?.docId ?? null;
+  useEffect(() => {
+    if (!sharedDocId) return;
+    return registerSuggestionReplyHandler(sharedDocId, {
+      open: () => current.current.openComments(),
+      send: async (request) => {
+        const store = sharedStore.current;
+        if (!store || store.docId !== request.docId) throw new Error("Open the document's comments to reply.");
+        const text = store.getProjection().text;
+        const range = request.end > request.start ? { start: request.start, end: request.end } : paragraphRange(text, { start: request.start, end: request.end }) ?? plainParagraphRange(text, { start: request.start, end: request.end });
+        if (!range || range.end <= range.start) throw new Error("The suggestion's passage is no longer in the document.");
+        await store.comment({ range, text: request.body, mentions: request.mentions });
+        const threadId = store.lastCreatedThreadId();
+        if (!threadId) throw new Error("The reply could not be created.");
+        return threadId;
+      },
+    });
+  }, [sharedDocId]);
 
   const sharedAction = useCallback(async (name: string, fields: Record<string, unknown>) => {
     const store = sharedStore.current;

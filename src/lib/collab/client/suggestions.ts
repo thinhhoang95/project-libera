@@ -120,6 +120,8 @@ export interface SuggestionsSnapshot {
   /** The server mirror (decided history), or null until loaded. */
   history: SuggestionInfo[] | null;
   historyError: string | null;
+  /** The group whose Reply box is open (one at a time per document). */
+  replyingTo: string | null;
 }
 
 export interface AiSuggestionHint {
@@ -141,7 +143,7 @@ export interface DecisionResult {
   settled: Promise<Map<string, SuggestionOutcome>>;
 }
 
-/** What a reply gesture asks the shell to open: a comment thread on the suggestion's range. */
+/** A reply to a suggestion: a comment thread on the suggestion's range, linked to it. */
 export interface SuggestionReplyRequest {
   docId: string;
   groupId: string;
@@ -149,18 +151,32 @@ export interface SuggestionReplyRequest {
   start: number;
   end: number;
   quote: string;
+  /** Threads the suggestion already addresses. */
   threadIds: string[];
+  body: string;
+  mentions?: string[];
 }
 
-/** Dispatched on window when no reply handler is set (the shared comment store wires it later). */
-export const SUGGESTION_REPLY_EVENT = "libera:collab-suggestion-reply";
-
-let replyHandler: ((request: SuggestionReplyRequest) => void) | null = null;
-
-/** Lets the shell open a comment thread for a suggestion; null restores the window event. */
-export function setSuggestionReplyHandler(handler: ((request: SuggestionReplyRequest) => void) | null): void {
-  replyHandler = handler;
+/**
+ * Where replies to a document's suggestions go: the shared comment store of
+ * the window showing it (the Review provider registers it). `open` shows
+ * the Reply box (the Comments rail); `send` creates the thread and resolves
+ * with its id.
+ */
+export interface SuggestionReplyHandler {
+  open?(groupId: string): void;
+  send(request: SuggestionReplyRequest): Promise<string>;
 }
+
+const replyHandlers = new Map<string, SuggestionReplyHandler>();
+
+/** Registers the reply handler of a document; the most recent registration wins until it is removed. */
+export function registerSuggestionReplyHandler(docId: string, handler: SuggestionReplyHandler): () => void {
+  replyHandlers.set(docId, handler);
+  return () => { if (replyHandlers.get(docId) === handler) replyHandlers.delete(docId); };
+}
+
+export type SuggestionReplyResult = { ok: true; threadId: string } | { ok: false; message: string };
 
 export interface SuggestionsControllerOptions {
   api?: SuggestionsApi;
@@ -241,6 +257,7 @@ export class SuggestionsController {
   private readonly people = new Map<string, SuggestionAuthorInfo>();
   private readonly revealers: Array<(start: number, end: number) => boolean> = [];
   private history: SuggestionInfo[] | null = null;
+  private replyingTo: string | null = null;
   private historyError: string | null = null;
   private membersRequested = false;
   private snapshot: SuggestionsSnapshot | null = null;
@@ -495,6 +512,7 @@ export class SuggestionsController {
       groups: views,
       history: this.history,
       historyError: this.historyError,
+      replyingTo: this.replyingTo,
     };
   }
 
@@ -788,9 +806,33 @@ export class SuggestionsController {
 
   /* ---- Reply and reveal ------------------------------------------------------------------------------------------------------ */
 
-  reply(groupId: string): SuggestionReplyRequest | null {
+  /** Opens the Reply box of a group (the panel shows it; the shell brings the panel up). */
+  reply(groupId: string): boolean {
+    if (!this.group(groupId)) return false;
+    this.replyingTo = groupId;
+    this.changed();
+    replyHandlers.get(this.docId)?.open?.(groupId);
+    return true;
+  }
+
+  cancelReply(): void {
+    if (!this.replyingTo) return;
+    this.replyingTo = null;
+    this.changed();
+  }
+
+  /**
+   * Sends a reply: a comment thread on the group's range through the
+   * document's shared comment store, linked to the suggestions (their
+   * threadIds) where this account may change them.
+   */
+  async sendReply(groupId: string, body: string, mentions?: string[]): Promise<SuggestionReplyResult> {
     const group = this.group(groupId);
-    if (!group) return null;
+    if (!group) return { ok: false, message: "This suggestion no longer exists." };
+    const text = body.trim();
+    if (!text) return { ok: false, message: "Enter a reply." };
+    const handler = replyHandlers.get(this.docId);
+    if (!handler) return { ok: false, message: "Open the document's comments to reply." };
     const request: SuggestionReplyRequest = {
       docId: this.docId,
       groupId,
@@ -799,10 +841,37 @@ export class SuggestionsController {
       end: group.end,
       quote: this.replica.text().slice(group.start, group.end) || group.items[0].record.baseQuote,
       threadIds: [...new Set(group.items.flatMap((item) => item.record.threadIds ?? []))],
+      body: text,
+      ...(mentions?.length ? { mentions } : {}),
     };
-    if (replyHandler) replyHandler(request);
-    else if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(SUGGESTION_REPLY_EVENT, { detail: request }));
-    return request;
+    try {
+      const threadId = await handler.send(request);
+      this.linkThread(request.suggestionIds, threadId);
+      if (this.replyingTo === groupId) this.replyingTo = null;
+      this.changed();
+      return { ok: true, threadId };
+    } catch (error) {
+      return { ok: false, message: describeError(error) };
+    }
+  }
+
+  /**
+   * Adds a thread to the suggestions' threadIds, so the server lists it as
+   * addressed by them. The server lets the suggestion's author and editors
+   * change a record; for anyone else the thread stays on the range only.
+   */
+  private linkThread(suggestionIds: readonly string[], threadId: string) {
+    const me = this.localUserId;
+    const editor = this.canDecide();
+    const map = suggestionsMap(this.replica.annotations);
+    this.replica.annotations.transact(() => {
+      for (const id of suggestionIds) {
+        const record = map.get(id);
+        if (!record || (record.createdBy !== me && !editor)) continue;
+        if (record.threadIds?.includes(threadId)) continue;
+        map.set(id, { ...record, threadIds: [...(record.threadIds ?? []), threadId], updatedAt: this.now() });
+      }
+    }, this.origin);
   }
 
   /** Editors register how to show a source range; the most recent one wins. */
