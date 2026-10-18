@@ -1,4 +1,5 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -133,6 +134,11 @@ export async function undoRun(runId: string, paths?: string[]): Promise<UndoResu
     let absolutePath: string;
     try { absolutePath = (await resolveLibraryPath(filePath)).absolutePath; }
     catch (error) { results.push({ path: filePath, status: "missing", message: error instanceof Error ? error.message : "The file's notebook is unavailable." }); continue; }
+    if (isSharedNotebookPath(filePath)) {
+      // The notebook was shared after the run; undoing would bypass the collab host.
+      results.push({ path: filePath, status: "conflict", message: `${filePath} is in a shared notebook now, so it was not undone.` });
+      continue;
+    }
     const current = await readCurrent(absolutePath);
     if (current === null && file.existed) {
       results.push({ path: filePath, status: "missing", message: `${filePath} no longer exists.` });

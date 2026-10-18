@@ -35,7 +35,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ S4 MessagePort to main and child windows (M1.4/M2 wave 2)
 - ☑ S5 Server persist-before-ack kill test (M1.1)
 - ☐ S6 Overlay suggestions: hard cases scripted (M3.1)
-- ☐ S7 Watcher and materializer self-write and external-edit tests (M1.5); 👤 ExFAT check
+- ☑ S7 Watcher and materializer self-write and external-edit tests (M1.5); 👤 ExFAT and macOS check
 - ☐ Decision records D1–D14 in `decisions/`
 
 ## Phase 1: reliable real-time foundation
@@ -87,12 +87,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ◐ Presence: library done (awareness user state, sections, quiet mode, follow mode); UI in wave 2
 
 ### M1.5 Shared notebooks
-- ◐ Share: UI dialog merged (progress, invite, roles, revoke, leave); host side running in `collab/notebooks`
-- ◐ Join: UI dialog merged; host side running in `collab/notebooks`
-- ☐ Manifest-driven tree: create, rename, move, delete
-- ☐ Materializer and watcher; `409 shared-document` guard on every text writer
-- ☐ Blob sync both ways
-- ☐ Reconciliation view (`@codemirror/merge`)
+- ☑ Share: UI dialog; host import (exact text, blobs, folders, manifest), marker, retry-safe pending file
+- ☑ Join: UI dialog; host accepts the invitation and materializes everything with hash-checked blobs; name-clash suffix
+- ☑ Manifest-driven file ops: create, rename, move, delete (editor+); remote deletes go to `_archive`
+- ☑ Materializer (atomic, debounced, case-clash suffixes, path-escape refusal) and watcher (fs.watch plus a 5 s poll; self-writes ignored by hash); `409 shared-document` guard on every Libera writer (`scripts/collab/notebooks-guard.test.ts`). 👤 Watcher not yet tried on macOS or ExFAT
+- ☑ Blob sync both ways
+- ☑ Reconciliation: host side, routes and `ReconcileView` (`@codemirror/merge`)
 
 ### M1.6 Save states
 - ◐ Status pill component for all seven states (merged); mounting per tab in editor wiring
@@ -106,7 +106,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 
 ### M1.8 Roles
 - ◐ Reject rollback with "Copy my unsynced text": host side and banner component merged; mounting in editor wiring
-- ☐ Revocation: read-only, export, "no longer shared" marker
+- ☑ Revocation: sync stops, folder kept, marker `revoked: true`, resolvePath read-only (export UI banner merged; mounting in editor wiring)
 - ◐ UI hides disallowed actions in share/members dialogs (`can()`); editor-side read-only in editor wiring
 
 ### M1.9 Versioning
@@ -130,6 +130,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Kill tests in CI
 - ☐ Durability matrix: one test per §3.2 row
 - ☐ Soak runner (24 h nightly; 👤 schedule on CI)
+
+## Open gaps found during integration
+
+- ☐ Reroute Libera's own writers for shared files to the host: Save (no Save on shared tabs), the agent's Edit/Write (M1.11), OCR convert, uploads and image saves into shared notebooks (as blobs through file ops). Until then they get a clear 409.
+- ☐ Host `ApiClient.listDocuments` has no server route; the notebooks code works around it. Add `GET /v1/projects/:id/documents` or remove the client method.
+- ☐ Divergence check: server digest endpoint (Phase 4 agent) plus an hourly host comparison.
 
 ## Phase 2: comments and history
 - ☑ Server: revisions (named, auto checkpoints job, reconstruction at any seq), restore of a whole doc or a section as minimal forward edits (M2.4/M2.5 server sides)

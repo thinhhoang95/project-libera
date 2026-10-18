@@ -76,9 +76,8 @@ export interface NotebookService {
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;
   /**
-   * What the service knows about a local project for HostStatus (folder
-   * name, revoked, pending reconciliations). Optional: without it the
-   * status uses the projects table only.
+   * Shared notebooks on this device, for HostStatus.projects (role, folder,
+   * revoked, pending reconciliations). Optional so test doubles can omit it.
    */
-  projectState?(projectId: string): Partial<Pick<LocalProject, "notebook" | "revoked" | "reconcilePending">> | null;
+  localProjects?(): LocalProject[];
 }
