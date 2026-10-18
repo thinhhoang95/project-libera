@@ -20,6 +20,7 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { toStorageError } from "@/lib/storage/errors";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import type {
   ImageAnnotationsPayload,
@@ -332,6 +333,8 @@ export async function writePdfAnnotations(
   const annotationsPath = pdfAnnotationsPath(notebook, pathParts);
 
   await writeJsonAtomically(annotationsPath, { annotations: normalizedAnnotations });
+  // Highlight quotes are Global Search passages of the PDF.
+  notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
   return {
     path: relativeFilePath(notebook, pathParts),

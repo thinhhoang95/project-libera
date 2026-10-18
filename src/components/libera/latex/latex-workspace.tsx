@@ -5,7 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { apiRequest } from "@/components/libera/api-client";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
 import type { LatexDiagnostic } from "@/lib/latex/build";
-import type { LatexProjectData, LatexProjectFile } from "@/lib/latex/codemirror/editing";
+import { latexLibraryEntries, type LatexProjectData, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
+import type { BibMirrorResult } from "@/lib/references/bib-mirror";
+import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
@@ -71,8 +73,7 @@ function formatDuration(milliseconds: number) {
   return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();
-/** Main files found for chapter files, so reopening a chapter needs no lookup. */
+const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();/** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
 
 /** The live text of another open tab for compile staging: shared tabs always (the disk copy may lag), others when edited. */
@@ -258,7 +259,23 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       .flatMap((other) => readLatexLabels(other.draft));
   }, [build.version, readOpenTabs, tab.file.notebook, tab.id]);
 
-  const project = useMemo<LatexProjectData>(() => ({ labels: otherLabels, bibEntries, files: projectFiles }), [bibEntries, otherLabels, projectFiles]);
+  // The notebook's References: `\cite` offers their keys even before any .bib is referenced.
+  const { library: referenceLibrary } = useReferenceLibrary(isTex ? tab.file.notebook : null);
+  const libraryEntries = useMemo(() => latexLibraryEntries(referenceLibrary), [referenceLibrary]);
+  // A chapter's bibliography lives in its main file; only a main file gets the add-bibliography hint.
+  const hasBibliography = rootPath !== filePath || readLatexBibliographyReferences(draftForAnalysis).length > 0;
+  const notebook = tab.file.notebook;
+  const enableBibMirror = useCallback(() => {
+    void apiRequest<{ mirror: BibMirrorResult }>("/api/references/bib-mirror", { method: "POST", body: JSON.stringify({ notebook, enabled: true }) })
+      .then(({ mirror }) => setNotice(mirror.status === "protected"
+        ? `${mirror.editedPath} was edited outside Libera, so References are written to ${mirror.path} instead.`
+        : `${mirror.path} is now generated from this notebook's References.`))
+      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not turn on references.bib."));
+  }, [notebook]);
+  const project = useMemo<LatexProjectData>(
+    () => ({ labels: otherLabels, bibEntries, files: projectFiles, libraryEntries, hasBibliography, enableBibMirror }),
+    [bibEntries, otherLabels, projectFiles, libraryEntries, hasBibliography, enableBibMirror],
+  );
 
   /** Of packages a chapter file could not load itself, those its main file lacks too. */
   const missingInMainFile = useCallback(async (packages: string[]) => {

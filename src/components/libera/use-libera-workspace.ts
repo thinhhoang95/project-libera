@@ -3,7 +3,9 @@ import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdo
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
+import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import type {
+  LiberaFileMovePayload,
   LiberaFileNode,
   LiberaFilePayload,
   LiberaFolderNode,
@@ -54,6 +56,8 @@ import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
+import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import {
   ensureDocumentOcrModel,
   readImageAsMarkdown,
@@ -73,6 +77,9 @@ import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type Draf
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
+import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
+import { announceReferenceLibraryChange } from "@/lib/references/import";
+import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
@@ -355,6 +362,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [fileTagsDialogSubmitting, setFileTagsDialogSubmitting] = useState(false);
   const [fileTagsDialogError, setFileTagsDialogError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
+  const [referenceMoveNotice, setReferenceMoveNotice] = useState<ReferenceMoveNoticeState | null>(null);
   const [uploadNotebook, setUploadNotebook] = useState("");
   const activeTabHistoryRef = useRef<string[]>([]);
   const latestDraftByTabIdRef = useRef<Record<string, string>>({});
@@ -1189,6 +1197,71 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(path, (current) => ({ ...current, saved, draft: untouched ? next : current.draft, status: next === saved ? "clean" : "dirty", error: undefined }));
   }
 
+  /**
+   * A citation key rewrite reaching an open tab (Update citations in the
+   * References panel): the live draft gets the same rewrite, and the saved
+   * copy too when the file on disk was rewritten. Returns the draft before and
+   * after, for undo, or null when the file is not open as an editable tab.
+   */
+  function applyCitationRewriteToTab(path: string, map: Record<string, string>, options: { savedRewritten: boolean }) {
+    const tab = tabsRef.current.find((item) => item.id === path && !item.untitled);
+    if (!tab || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(path, isSharedTab)) return null;
+    const keys = new Map(Object.entries(map));
+    const before = getTabDraft(tab);
+    const after = rewriteCitationKeys(before, keys).text;
+    const saved = options.savedRewritten ? rewriteCitationKeys(tab.saved, keys).text : tab.saved;
+    rememberTabDraft(path, after);
+    updateTab(path, (current) => ({ ...current, saved, draft: after, status: after === saved ? "clean" : "dirty", error: undefined }));
+    return { before, after };
+  }
+
+  /**
+   * Undo of a citation rewrite in an open tab: the draft goes back unless it
+   * was edited since, and the saved copy is reloaded when the file was restored.
+   */
+  async function revertCitationRewriteInTab(path: string, change: { before: string; after: string }, options: { refreshSaved: boolean }) {
+    if (readOpenTabDraft(path) === null || !mayTakeContentFromDisk(path, isSharedTab)) return;
+    let saved: string | undefined;
+    if (options.refreshSaved) {
+      const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`);
+      saved = payload.content ?? "";
+    }
+    const tab = tabsRef.current.find((item) => item.id === path && !item.untitled);
+    if (!tab) return;
+    const current = getTabDraft(tab);
+    const draft = current === change.after ? change.before : current;
+    rememberTabDraft(path, draft);
+    updateTab(path, (item) => {
+      const nextSaved = saved ?? item.saved;
+      return { ...item, saved: nextSaved, draft, status: draft === nextSaved ? "clean" : "dirty", error: undefined };
+    });
+  }
+
+  /**
+   * The text of a tab whose Markdown moved to another notebook, where the
+   * server may have renamed citation keys (src/lib/references/moves.ts): the
+   * saved copy is the server's content, and the draft gets the same key map,
+   * or shows the new content when it had no unsaved changes.
+   */
+  function movedTabText(tab: OpenTab, draft: string, payload: LiberaFileMovePayload) {
+    const map = payload.references?.drafts.find((item) => item.path === payload.file.path)?.map;
+    if (!map || !Object.keys(map).length || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
+    const keys = new Map(Object.entries(map));
+    const saved = payload.content ?? rewriteCitationKeys(tab.saved, keys).text;
+    return { saved, draft: draft === tab.saved ? saved : rewriteCitationKeys(draft, keys).text };
+  }
+
+  /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
+  function reportReferenceMove(payload: LiberaFileMovePayload) {
+    const references = payload.references;
+    if (!references) return;
+    if (references.destinationRevision !== null) announceReferenceLibraryChange(payload.file.notebook, references.destinationRevision);
+    const summary = referenceMoveSummary(references, payload.file.notebook);
+    if (summary) setReferenceMoveNotice({ id: Date.now(), ...summary });
+  }
+
+  const dismissReferenceMoveNotice = useCallback(() => setReferenceMoveNotice(null), []);
+
   /** Files the agent created join the active workspace, like files created in the app. */
   async function refreshAfterAgentChanges(createdPaths: string[]) {
     if (createdPaths.length) {
@@ -1352,6 +1425,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectionStart: nextSelectionStart,
       selectionEnd: nextSelectionEnd,
     });
+  }
+
+  /** Cites `key` at the caret of the active Markdown editor as `[@key]`, in the source or the visual editor. */
+  function insertCitation(key: string) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") return false;
+    const citation = `[@${key}]`;
+    const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
+    if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });
+    else insertMarkdown(citation, "", "");
+    return true;
   }
 
   function insertMarkdownFileLinkPlaceholder() {
@@ -1761,9 +1844,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     returnToSnipTarget(session);
   }
 
-  function queueVisualInsertion(tabId: string, markdown: string) {
+  function queueVisualInsertion(tabId: string, markdown: string, options?: { inline?: boolean }) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setPendingVisualInsertions((current) => ({ ...current, [tabId]: { id, markdown } }));
+    setPendingVisualInsertions((current) => ({ ...current, [tabId]: { id, markdown, ...(options?.inline ? { inline: true } : {}) } }));
   }
 
   function finishVisualInsertion(tabId: string, id: string) {
@@ -1801,6 +1884,70 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
     return { start: insertion.start, end: insertion.end };
   }
+
+  /**
+   * Quote and cite from a PDF (references/pdf-quote-cite.tsx) into the most
+   * recently active Markdown tab, as a block after its caret's paragraph, in the source or
+   * the visual editor. With no Markdown tab open, the Markdown goes to the
+   * clipboard instead.
+   */
+  function quoteTargetTab() {
+    const open = new Map(tabsRef.current.map((tab) => [tab.id, tab]));
+    for (const id of [activeTabId, ...activeTabHistoryRef.current]) {
+      const tab = id ? open.get(id) : undefined;
+      if (tab?.file.fileType === "markdown" && !isGalleryTab(tab)) return tab;
+    }
+    return undefined;
+  }
+
+  function insertQuoteIntoTab(tabId: string, markdown: string) {
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    if (!tab || tab.file.fileType !== "markdown") return false;
+    const visual = (tab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(tab.file.path);
+    if (visual) {
+      queueVisualInsertion(tab.id, markdown);
+      return true;
+    }
+    const draft = getTabDraft(tab);
+    const caret = tab.id === activeTabId && textareaRef.current ? textareaRef.current.selectionEnd : tab.viewState?.markdown?.selectionEnd ?? draft.length;
+    const insertion = quoteBlockInsertion(draft, caret, markdown);
+    const written = writeSharedDraft(tab.id, insertion.value, { provenance: PASTE, base: draft });
+    if (!written) rememberTabDraft(tab.id, insertion.value);
+    updateTab(tab.id, (current) => ({
+      ...current,
+      ...(written ? {} : { draft: insertion.value, status: insertion.value === current.saved ? "clean" as const : "dirty" as const, error: undefined }),
+      viewState: { ...current.viewState, markdown: { ...current.viewState?.markdown, selectionStart: insertion.caret, selectionEnd: insertion.caret } },
+    }));
+    return true;
+  }
+
+  async function quotePdfIntoNote(source: PdfQuoteSource) {
+    const target = quoteTargetTab();
+    try {
+      const resolved = await resolvePdfQuote(source, target && !target.untitled ? target.file.notebook : null);
+      if (!resolved) return;
+      if (target && insertQuoteIntoTab(target.id, resolved.markdown)) {
+        showPdfQuoteNotice(`Quoted into ${target.file.name}.`);
+        return;
+      }
+      await navigator.clipboard.writeText(resolved.markdown);
+      showPdfQuoteNotice("No note is open: the quote and citation were copied to the clipboard.");
+    } catch (error) {
+      showPdfQuoteNotice(error instanceof Error ? error.message : "Could not quote the PDF.");
+    }
+  }
+  const quotePdfIntoNoteRef = useRef(quotePdfIntoNote);
+  useLayoutEffect(() => {
+    quotePdfIntoNoteRef.current = quotePdfIntoNote;
+  });
+  useEffect(() => {
+    function handleQuote(event: Event) {
+      const source = parsePdfQuoteSource((event as CustomEvent<PdfQuoteCiteDetail>).detail);
+      if (source) void quotePdfIntoNoteRef.current(source);
+    }
+    window.addEventListener(PDF_QUOTE_CITE_EVENT, handleQuote);
+    return () => window.removeEventListener(PDF_QUOTE_CITE_EVENT, handleQuote);
+  }, []);
 
   /** Read a snip with the local model. Runs after the snip layer closes, with a Cancel button meanwhile. */
   async function readSnipAsMarkdown(session: MarkdownScreenshotSnipSession, file: File, mathMarkers?: MathMarkerSettings) {
@@ -2920,15 +3067,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceInputDialog({ mode: "move-file", file: tab.file });
   }
 
-  /** Points the open tab of `fromPath` (if any) at the file now at `payload`. */
-  function retargetOpenTab(fromPath: string, payload: LiberaFilePayload) {
+  /**
+   * Points the open tab of `fromPath` (if any) at the file now at `payload`.
+   * A move into another notebook may have renamed citation keys; the tab's
+   * saved copy and draft follow (movedTabText).
+   */
+  function retargetOpenTab(fromPath: string, payload: LiberaFilePayload | LiberaFileMovePayload) {
     const nextId = payload.file.path;
     const openTab = tabs.find((tab) => tab.file.path === fromPath);
+    let moved: ReturnType<typeof movedTabText> = null;
     if (openTab) {
       const draft = getTabDraft(openTab);
+      moved = "references" in payload ? movedTabText(openTab, draft, payload) : null;
 
       forgetTabDraft(openTab.id);
-      rememberTabDraft(nextId, draft);
+      rememberTabDraft(nextId, moved?.draft ?? draft);
     }
     setTabs((currentTabs) =>
       currentTabs.map((currentTab) =>
@@ -2939,6 +3092,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
               draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
               file: payload.file,
               rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
+              ...(moved ? { saved: moved.saved, status: moved.draft === moved.saved ? "clean" as const : "dirty" as const } : {}),
             }
           : currentTab,
       ),
@@ -3004,7 +3158,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFileMovePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
@@ -3013,6 +3167,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
       retargetOpenTab(file.path, payload);
+      reportReferenceMove(payload);
       await refreshTree(payload.file.notebook);
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not move file.");
@@ -3041,35 +3196,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     try {
-      const payload = await workspaceFileRequest<LiberaFilePayload>("/api/files", {
+      const payload = await workspaceFileRequest<LiberaFileMovePayload>("/api/files", {
         method: "PATCH",
         body: JSON.stringify({
           path: file.path,
           destinationDirectory: normalizedDestination,
         }),
       }, (payload) => ({ paths: [payload.file.path], moved: { from: file.path, to: payload.file.path } }));
-      const nextId = payload.file.path;
-
-      if (openTab) {
-        const draft = getTabDraft(openTab);
-
-        forgetTabDraft(openTab.id);
-        rememberTabDraft(nextId, draft);
-      }
-      setTabs((currentTabs) =>
-        currentTabs.map((currentTab) =>
-          currentTab.file.path === file.path
-            ? {
-                ...currentTab,
-                id: nextId,
-                draft: latestDraftByTabIdRef.current[nextId] ?? currentTab.draft,
-                file: payload.file,
-                rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(nextId)}`,
-              }
-            : currentTab,
-        ),
-      );
-      setActiveTabId((current) => (current === file.path ? nextId : current));
+      retargetOpenTab(file.path, payload);
+      reportReferenceMove(payload);
       await refreshTree(payload.file.notebook);
       updateExpanded((current) => {
         const next = new Set(current);
@@ -3442,8 +3577,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     files: File[],
     destinationPath?: string,
   ) {
+    await uploadFiles(notebook, files, destinationPath);
+  }
+
+  /** Uploads files into a notebook folder (the root by default) and resolves to the uploaded files. */
+  async function uploadFiles(
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ): Promise<LiberaFileNode[]> {
     if (!files.length) {
-      return;
+      return [];
     }
 
     const formData = new FormData();
@@ -3472,8 +3616,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       setSelectedNotebookName(notebook);
       if (payload.error) setWorkspaceError(payload.error);
+      return payload.uploaded;
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
+      return [];
     }
   }
 
@@ -3733,6 +3879,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         ? { file: fileTagsDialogFile, error: fileTagsDialogError, submitting: fileTagsDialogSubmitting }
         : null,
       workspaceError,
+      referenceMoveNotice,
+      dismissReferenceMoveNotice,
       closeOtherTabs,
       closeTab,
       closeNotebookDialog,
@@ -3770,11 +3918,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       handleLogout,
       handleUploadChange,
       uploadFilesToNotebook,
+      uploadFiles,
       insertMarkdownFileLink,
       insertMarkdownFileLinkPlaceholder,
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
+      insertCitation,
+      activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,
@@ -3805,6 +3956,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       readOpenTabDraft,
       syncTabFromDisk,
       restoreTabAfterUndo,
+      applyCitationRewriteToTab,
+      revertCitationRewriteInTab,
       refreshAfterAgentChanges,
       setActiveTabId: activateTab,
       setActiveTabViewState,

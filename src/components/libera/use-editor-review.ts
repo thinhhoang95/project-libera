@@ -129,8 +129,10 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
-      // A shared document shows proposals as overlay suggestions instead.
+      // A shared document shows proposals as overlay suggestions instead
+      // (the agent's SuggestEdit there makes collaborative suggestions too).
       ...(r.shared ? [] : r.doc?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
+      ...(r.shared ? [] : r.doc?.agentSuggestions?.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
       ...(r.selection ? [r.selection.range] : []),
     ] : [];
     view.dispatch({ effects: setReviewHighlights.of(ranges) });
@@ -219,13 +221,22 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, source, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their
     // decisions still go through the review so its undo/CAS state stays exact.
-    // On a shared document they are overlay suggestions, drawn on their own channel.
+    // On a shared document they are overlay suggestions, drawn on their own
+    // channel. Agent suggestions (SuggestEdit) preview like Agentic Review's,
+    // labelled as the agent's.
     const suggestions = sharedDoc ? [] : r?.doc?.session?.suggestions ?? [];
-    const changes = tiptapReviewChanges(editor, source, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
+    const agentSuggestions = sharedDoc ? [] : r?.doc?.agentSuggestions ?? [];
+    const changes = tiptapReviewChanges(editor, source, [
+      ...suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []),
+      ...agentSuggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Agent edit ${index + 1}`, edits: s.edits }] : []),
+    ]);
     const decide: ChangeDecider = (ids, decision) => {
       const review = latest.current;
       if (!review || review.busy || (decision === "accept" && review.recovery)) return;
-      void review.action("decision", { ids, decision });
+      const agentIds = new Set(review.doc?.agentSuggestions?.map((s) => s.id));
+      const agent = ids.filter((id) => agentIds.has(id)), session = ids.filter((id) => !agentIds.has(id));
+      if (session.length) void review.action("decision", { ids: session, decision });
+      else if (agent.length) void review.action("agent-decision", { ids: agent, decision });
     };
     editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges).setMeta(tiptapChangesKey, { type: "preview", changes, decide } satisfies TiptapChangesMeta));
   }, [editor, r?.doc, r?.enabled, r?.selection, lastValue, sharedDoc, read]);

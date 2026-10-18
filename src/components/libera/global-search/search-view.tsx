@@ -59,6 +59,7 @@ const KIND_FILTERS: Array<{ id: KindFilter; label: string }> = [
   { id: "latex", label: "LaTeX" },
   { id: "text", label: "Text & code" },
   { id: "image", label: "Images" },
+  { id: "reference", label: "References" },
 ];
 
 const EXAMPLES: Array<{ text: string; label: string; icon: LucideIcon; color: string }> = [

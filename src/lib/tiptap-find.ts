@@ -50,23 +50,33 @@ export function findTiptapTextMatches(
       return false;
     }
     const relative: TiptapFindMatch[] = [];
-    let runStart = -1;
+    // A run of text and of atoms that read as text (`leafText`, e.g. a
+    // citation's source token). A match inside such an atom covers the atom.
     let runText = "";
+    let pieces: { text: number; length: number; position: number; size: number; atom: boolean }[] = [];
+    const positionAt = (offset: number, end: boolean) => {
+      const piece = pieces.find((candidate) => end
+        ? offset > candidate.text && offset <= candidate.text + candidate.length
+        : offset >= candidate.text && offset < candidate.text + candidate.length) ?? pieces.at(-1)!;
+      if (piece.atom) return end ? piece.position + piece.size : piece.position;
+      return piece.position + offset - piece.text;
+    };
     const flushRun = () => {
-      if (runStart >= 0) {
+      if (runText) {
         relative.push(...findTextMatches(runText, query, options).map((match) => ({
-          from: runStart + match.start,
-          to: runStart + match.end,
+          from: positionAt(match.start, false),
+          to: positionAt(match.end, true),
         })));
       }
-      runStart = -1;
+      pieces = [];
       runText = "";
     };
 
     node.descendants((child, childPosition) => {
-      if (child.isText) {
-        if (runStart < 0) runStart = childPosition;
-        runText += child.text ?? "";
+      const leafText = child.isText ? child.text ?? "" : child.isLeaf ? child.type.spec.leafText?.(child) : undefined;
+      if (leafText !== undefined && leafText !== "") {
+        pieces.push({ text: runText.length, length: leafText.length, position: childPosition, size: child.nodeSize, atom: !child.isText });
+        runText += leafText;
       } else if (child.isLeaf) {
         flushRun();
       }

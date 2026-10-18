@@ -1,15 +1,19 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { BookOpen, Check, ChevronRight, Circle, CircleDot, FilePlus2, FileSearch, FileText, FolderSearch, ListChecks, LoaderCircle, MessageSquarePlus, MessagesSquare, Pencil, Search, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
+import { BookOpen, Bot, Check, ChevronRight, Circle, CircleDot, FilePenLine, FilePlus2, FileSearch, FileText, FolderSearch, Globe, ListChecks, LoaderCircle, MessageSquarePlus, MessagesSquare, Pencil, Search, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { normalizeChatResponseMarkdown } from "@/lib/document-chat";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import type { AgentRunRecord, AgentStep } from "@/lib/agent/types";
+import type { AgentRunRecord, AgentStep, SubagentOutcome } from "@/lib/agent/types";
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
   Glob: FolderSearch, Grep: Search, Read: FileText, Edit: Pencil, Write: FilePlus2, TaskCreate: ListChecks, TaskUpdate: ListChecks,
-  Skill: BookOpen, LeaveComment: MessageSquarePlus, ReviewComments: MessagesSquare,
+  Skill: BookOpen, LeaveComment: MessageSquarePlus, ReviewComments: MessagesSquare, WebSearch: Globe, SuggestEdit: FilePenLine, SuggestedEdits: FilePenLine,
+};
+
+const SUBAGENT_OUTCOMES: Record<SubagentOutcome, string> = {
+  completed: "done", stopped: "stopped", limit: "stopped at a limit", stuck: "stopped (repeating itself)", error: "failed", budget: "not started (token budget used up)",
 };
 
 const OUTCOME_NOTES: Record<string, string> = {
@@ -20,6 +24,7 @@ const OUTCOME_NOTES: Record<string, string> = {
 };
 
 type ToolStep = Extract<AgentStep, { kind: "tool" }>;
+type SubagentStep = Extract<AgentStep, { kind: "subagent" }>;
 
 const AgentText = memo(function AgentText({ text, streaming, mathMarkers, fontSize, onOpenFileLink }: { text: string; streaming: boolean; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean> }) {
   const content = useMemo(() => normalizeChatResponseMarkdown(text, streaming, mathMarkers), [text, streaming, mathMarkers]);
@@ -55,6 +60,30 @@ function ToolLine({ step }: { step: ToolStep }) {
   </li>;
 }
 
+/** A child run: one line with its progress, expanding to its own steps. */
+function SubagentLine({ step }: { step: SubagentStep }) {
+  const running = step.status === "running";
+  const failed = !running && step.outcome !== "completed";
+  const Icon = running ? LoaderCircle : failed ? TriangleAlert : Bot;
+  const count = `${step.stepCount} ${step.stepCount === 1 ? "step" : "steps"}`;
+  const latest = step.steps.at(-1);
+  const progress = running ? `${count}${latest ? ` · ${latest.summary}` : " · starting"}` : `${count} · ${SUBAGENT_OUTCOMES[step.outcome ?? "completed"]}`;
+  return <li className="libera-agent-tool libera-agent-subagent" data-status={running ? "running" : failed ? "error" : "ok"}>
+    <details>
+      <summary className="libera-agent-tool-line" aria-label={`${step.label}: ${progress}`}>
+        <Icon aria-hidden size={13} className="libera-agent-tool-icon" />
+        <span className="libera-agent-tool-summary" title={step.label}>{step.label}</span>
+        <span className="libera-agent-tool-result" title={progress}>{progress}</span>
+        <ChevronRight aria-hidden size={12} className="libera-agent-tool-chevron" />
+      </summary>
+      {step.steps.length ? <ol className="libera-agent-tools pl-4" aria-label={`Steps of ${step.label}`}>
+        {step.stepCount > step.steps.length && <li className="text-xs text-muted-foreground">{step.stepCount - step.steps.length} earlier steps not shown</li>}
+        {step.steps.map((child) => <ToolLine key={child.id} step={{ kind: "tool", ...child }} />)}
+      </ol> : <p className="pl-4 text-xs text-muted-foreground">No steps yet.</p>}
+    </details>
+  </li>;
+}
+
 export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, onUndo, onOpenFile, onOpenFileLink }: {
   run: AgentRunRecord;
   streaming: boolean;
@@ -67,7 +96,7 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
 }) {
   // Consecutive tool steps read as one block of activity between the agent's messages.
   const blocks = useMemo(() => {
-    const result: ({ kind: "text"; text: string; index: number } | { kind: "tools"; steps: ToolStep[]; index: number })[] = [];
+    const result: ({ kind: "text"; text: string; index: number } | { kind: "tools"; steps: (ToolStep | SubagentStep)[]; index: number })[] = [];
     run.steps.forEach((step, index) => {
       const last = result.at(-1);
       if (step.kind === "text") result.push({ kind: "text", text: step.text, index });
@@ -79,14 +108,14 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
   const lastTextIndex = blocks.findLastIndex((block) => block.kind === "text");
   const lastStep = run.steps.at(-1);
   // Between steps the model is thinking; running tools and streaming text show themselves.
-  const working = streaming && (!lastStep || (lastStep.kind === "tool" && lastStep.status !== "running"));
+  const working = streaming && (!lastStep || (lastStep.kind !== "text" && lastStep.status !== "running"));
   const done = run.tasks.filter((task) => task.status === "completed").length;
   const pendingChanges = run.changes.filter((change) => !change.reverted);
 
   return <div className="libera-agent-run space-y-3">
     {blocks.map((block, index) => block.kind === "text"
       ? <AgentText key={block.index} text={block.text} streaming={streaming && index === lastTextIndex} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={onOpenFileLink} />
-      : <ol key={block.index} className="libera-agent-tools" aria-label="Agent activity">{block.steps.map((step) => <ToolLine key={step.id} step={step} />)}</ol>)}
+      : <ol key={block.index} className="libera-agent-tools" aria-label="Agent activity">{block.steps.map((step) => step.kind === "subagent" ? <SubagentLine key={step.id} step={step} /> : <ToolLine key={step.id} step={step} />)}</ol>)}
     {working && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Working…</p>}
     {!!run.tasks.length && <section className="libera-agent-tasks" aria-label="Agent tasks">
       <h3><ListChecks aria-hidden size={13} />Tasks <span>{done}/{run.tasks.length}</span></h3>
@@ -113,6 +142,13 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
       <ul>{run.comments.filter((entry) => entry.count).map((entry) => <li key={entry.path}>
         <button type="button" className="libera-agent-file" title={`Open ${entry.path} to see its comments`} onClick={() => onOpenFile(entry.path)}>{entry.path}</button>
         <span className="libera-agent-badge">{entry.count} {entry.count === 1 ? "comment" : "comments"}</span>
+      </li>)}</ul>
+    </section>}
+    {!!run.suggestions?.some((entry) => entry.count) && <section className="libera-agent-changes" aria-label="Suggested edits">
+      <h3><FilePenLine aria-hidden size={13} />Suggested edits <span>{run.suggestions.reduce((sum, entry) => sum + entry.count, 0)}</span></h3>
+      <ul>{run.suggestions.filter((entry) => entry.count).map((entry) => <li key={entry.path}>
+        <button type="button" className="libera-agent-file" title={`Open ${entry.path} to accept or reject the suggested edits`} onClick={() => onOpenFile(entry.path)}>{entry.path}</button>
+        <span className="libera-agent-badge">{entry.count} {entry.count === 1 ? "suggestion" : "suggestions"}</span>
       </li>)}</ul>
     </section>}
     {run.outcome && OUTCOME_NOTES[run.outcome] && <p className="text-xs text-muted-foreground">{OUTCOME_NOTES[run.outcome]}</p>}

@@ -1,8 +1,9 @@
 import { snippet, startCompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { indentUnit } from "@codemirror/language";
 import { EditorSelection, EditorState, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, type Command, type KeyBinding } from "@codemirror/view";
-import type { BibEntrySummary } from "@/lib/latex/project";
+import { EditorView, showPanel, type Command, type KeyBinding, type Panel } from "@codemirror/view";
+import { hasDocumentClass, readLatexBibliographyReferences, stripLatexComments, type BibEntrySummary } from "@/lib/latex/project";
+import type { ReferenceLibrary } from "@/lib/references/types";
 import { ENVIRONMENT_ARGUMENTS, LATEX_CLASSES, LATEX_COMMANDS, LATEX_ENVIRONMENTS, LATEX_PACKAGES } from "./latex-data";
 import { isInsideMath } from "./math";
 
@@ -15,10 +16,116 @@ export type LatexProjectData = {
   bibEntries: BibEntrySummary[];
   /** Files relative to the folder of the document being edited. */
   files: LatexProjectFile[];
+  /** The notebook's References library, offered by `\cite` completion even when no `.bib` is referenced. */
+  libraryEntries?: LatexLibraryEntry[];
+  /** Whether the project's main file names a bibliography (`\bibliography{}` or `\addbibresource{}`). */
+  hasBibliography?: boolean;
+  /** Turn on the notebook's generated references.bib (references/bib-mirror.ts). */
+  enableBibMirror?: () => void;
 };
+
+/** A References entry for `\cite` completion. */
+export type LatexLibraryEntry = { key: string; aliases: string[]; author?: string; year?: string; title?: string };
+
+/** A library's entries for `\cite` completion: key, aliases, first author, year, title. */
+export function latexLibraryEntries(library: ReferenceLibrary | null | undefined): LatexLibraryEntry[] {
+  return Object.values(library?.entries ?? {}).map((entry) => {
+    const names = entry.csl.author ?? entry.csl.editor ?? [];
+    const first = names[0] ? names[0].family ?? names[0].literal ?? "" : "";
+    const year = entry.csl.issued?.["date-parts"]?.[0]?.[0];
+    return {
+      key: entry.key,
+      aliases: entry.aliases ?? [],
+      ...(first ? { author: names.length > 1 ? `${first} et al.` : first } : {}),
+      ...(typeof year === "number" ? { year: String(year) } : {}),
+      ...(typeof entry.csl.title === "string" && entry.csl.title ? { title: entry.csl.title } : {}),
+    };
+  }).sort((left, right) => left.key.localeCompare(right.key));
+}
 
 export const setLatexProject = StateEffect.define<LatexProjectData>();
 const EMPTY_PROJECT: LatexProjectData = { labels: [], bibEntries: [], files: [] };
+
+/* ---- Add-bibliography hint ------------------------------------------------- */
+
+/** How the document loads its bibliography: biblatex (`\addbibresource`) or BibTeX (`\bibliography`). */
+export type LatexBibliographyKind = "biblatex" | "bibtex";
+export type LatexBibliographyHint = { key: string; kind: LatexBibliographyKind };
+
+export const showBibliographyHint = StateEffect.define<LatexBibliographyHint | null>();
+
+/** biblatex when the preamble loads it, else BibTeX (natbib and plain LaTeX both use `\bibliography`). */
+export function latexBibliographyKind(source: string): LatexBibliographyKind {
+  return /\\usepackage\s*(?:\[[^\]]*\])?\s*\{[^}]*\bbiblatex\b[^}]*\}/.test(stripLatexComments(source)) ? "biblatex" : "bibtex";
+}
+
+/**
+ * The edit that makes a document load the notebook's references.bib:
+ * `\addbibresource{references.bib}` before `\begin{document}` (biblatex), or
+ * `\bibliographystyle{plain}` (when missing) and `\bibliography{references}`
+ * before `\end{document}` (BibTeX). Null for a file that is not a main file.
+ */
+export function addBibliographyChange(source: string, kind: LatexBibliographyKind): { from: number; insert: string } | null {
+  if (!hasDocumentClass(source)) return null;
+  // Comments are blanked, not removed, so offsets still match the source.
+  const active = source.replace(/(^|[^\\])((?:\\\\)*)%[^\n]*/g, (match, before: string, slashes: string) => before + slashes + " ".repeat(match.length - before.length - slashes.length));
+  if (kind === "biblatex") {
+    const at = active.search(/^[ \t]*\\begin\s*\{document\}/m);
+    return at < 0 ? null : { from: at, insert: "\\addbibresource{references.bib}\n" };
+  }
+  const end = active.search(/^[ \t]*\\end\s*\{document\}/m);
+  const style = /\\bibliographystyle\s*\{/.test(active) ? "" : "\\bibliographystyle{plain}\n";
+  const lines = `${style}\\bibliography{references}\n`;
+  return end < 0 ? { from: source.length, insert: `${source.endsWith("\n") ? "" : "\n"}${lines}` } : { from: end, insert: lines };
+}
+
+function documentHasBibliography(state: EditorState) {
+  return readLatexBibliographyReferences(state.doc.toString()).length > 0;
+}
+
+function bibliographyHintPanel(view: EditorView, hint: LatexBibliographyHint): Panel {
+  const dom = document.createElement("div");
+  dom.className = "cm-latex-bibliography-hint";
+  dom.setAttribute("role", "status");
+  const change = addBibliographyChange(view.state.doc.toString(), hint.kind);
+  const command = hint.kind === "biblatex" ? "\\addbibresource{references.bib}" : "\\bibliography{references}";
+  const message = document.createElement("span");
+  message.textContent = change
+    ? `“${hint.key}” is from this notebook's References, but this document has no bibliography. Add ${command} and keep references.bib generated from References?`
+    : `“${hint.key}” is from this notebook's References. Add ${command} to the main file, and keep references.bib generated from References?`;
+  dom.append(message);
+  const button = (label: string, run: () => void) => {
+    const element = document.createElement("button");
+    element.type = "button";
+    element.textContent = label;
+    element.addEventListener("mousedown", (event) => event.preventDefault());
+    element.addEventListener("click", run);
+    dom.append(element);
+  };
+  button(change ? `Add ${command}` : "Generate references.bib", () => {
+    const current = addBibliographyChange(view.state.doc.toString(), hint.kind);
+    view.dispatch({ ...(current ? { changes: current } : {}), effects: showBibliographyHint.of(null), userEvent: "input" });
+    (view.state.field(latexProjectField, false) ?? EMPTY_PROJECT).enableBibMirror?.();
+    view.focus();
+  });
+  button("Dismiss", () => {
+    view.dispatch({ effects: showBibliographyHint.of(null) });
+    view.focus();
+  });
+  return { dom, top: false };
+}
+
+/** The hint shown after a References key is inserted into a document without a bibliography. */
+export const bibliographyHintField = StateField.define<LatexBibliographyHint | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(showBibliographyHint)) value = effect.value;
+    // Gone once the document names a bibliography.
+    if (value && tr.docChanged && documentHasBibliography(tr.state)) return null;
+    return value;
+  },
+  provide: (field) => showPanel.from(field, (hint) => (hint ? (view) => bibliographyHintPanel(view, hint) : null)),
+});
 
 export const latexProjectField = StateField.define<LatexProjectData>({
   create: () => EMPTY_PROJECT,
@@ -26,6 +133,8 @@ export const latexProjectField = StateField.define<LatexProjectData>({
     for (const effect of tr.effects) if (effect.is(setLatexProject)) value = effect.value;
     return value;
   },
+  // Wherever project data is, the add-bibliography hint can show.
+  provide: () => bibliographyHintField,
 });
 
 /* ---- Helpers --------------------------------------------------------------- */
@@ -172,6 +281,37 @@ function relativeFileOptions(files: LatexProjectFile[], kinds: LatexProjectFile[
   });
 }
 
+/** Insert a References key; in a document without a bibliography, offer to add one. */
+function libraryKeyApply(key: string, project: LatexProjectData): Completion["apply"] {
+  return (view, _completion, from, to) => {
+    const next = view.state.sliceDoc(to, to + 1);
+    const insert = next === "}" || next === "," ? key : `${key}}`;
+    const effects = !project.hasBibliography && !documentHasBibliography(view.state)
+      ? [showBibliographyHint.of({ key, kind: latexBibliographyKind(view.state.doc.toString()) })]
+      : [];
+    view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length }, effects, userEvent: "input.complete" });
+  };
+}
+
+/**
+ * The notebook library's keys, and its aliases (which insert the current
+ * key), that no `.bib` of the project already offers.
+ */
+function libraryCiteOptions(project: LatexProjectData, bibKeys: Set<string>): Completion[] {
+  const options: Completion[] = [];
+  for (const entry of project.libraryEntries ?? []) {
+    if (bibKeys.has(entry.key)) continue;
+    const info = [entry.title, entry.author].filter(Boolean).join(" — ") || undefined;
+    const apply = libraryKeyApply(entry.key, project);
+    options.push({ label: entry.key, apply, type: "constant", detail: entry.year ? `${entry.year} · References` : "References", info, boost: -1 });
+    for (const alias of entry.aliases) {
+      if (bibKeys.has(alias) || alias === entry.key) continue;
+      options.push({ label: alias, apply, type: "constant", detail: `alias of ${entry.key}`, info, boost: -2 });
+    }
+  }
+  return options;
+}
+
 function argumentCompletions(context: CompletionContext, command: string, typed: string): CompletionResult | null {
   const { state, pos } = context;
   const project = state.field(latexProjectField, false) ?? EMPTY_PROJECT;
@@ -191,15 +331,19 @@ function argumentCompletions(context: CompletionContext, command: string, typed:
   }
 
   if (CITE_COMMANDS.test(command)) {
+    const bibKeys = new Set(project.bibEntries.map((entry) => entry.key));
     return {
       from,
-      options: project.bibEntries.map((entry) => ({
-        label: entry.key,
-        apply: closingApply(entry.key),
-        type: "constant",
-        detail: entry.year,
-        info: [entry.title, entry.author].filter(Boolean).join(" — ") || undefined,
-      })),
+      options: [
+        ...project.bibEntries.map((entry) => ({
+          label: entry.key,
+          apply: closingApply(entry.key),
+          type: "constant",
+          detail: entry.year,
+          info: [entry.title, entry.author].filter(Boolean).join(" — ") || undefined,
+        })),
+        ...libraryCiteOptions(project, bibKeys),
+      ],
       validFor,
     };
   }

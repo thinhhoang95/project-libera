@@ -123,7 +123,7 @@ test("an agent run searches, reads in parallel, edits, streams events, and can b
     // The first request: tools, routing, prompt and conversation.
     const first = bodies[0] as { model: string; tools: { function: { name: string } }[]; provider: Record<string, unknown>; reasoning: unknown; session_id: string; messages: { role: string; content: string }[] };
     assert.equal(first.model, "test/agent-model");
-    assert.deepEqual(first.tools.map((tool) => tool.function.name), ["Glob", "Grep", "Read", "Edit", "Write", "TaskCreate", "TaskUpdate", "Skill"]);
+    assert.deepEqual(first.tools.map((tool) => tool.function.name), ["Glob", "Grep", "Read", "Edit", "Write", "TaskCreate", "TaskUpdate", "Skill", "References"]);
     assert.deepEqual(first.provider, { only: ["test"], require_parameters: true });
     assert.deepEqual(first.reasoning, { effort: "high" });
     assert.equal(first.session_id, "chat-1");
@@ -220,9 +220,9 @@ test("the loop answers malformed calls with errors, never runs cut-off calls, nu
     const context = loopContext(root, events);
     const profile = { contextLength: 200_000, supportsTools: true, known: true };
     const result = await runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Go" }], tools: toolsForPermission("read-only"), context, emit: (event) => events.push(event), signal: new AbortController().signal });
-    assert.deepEqual(result, { outcome: "completed" });
+    assert.equal(result.outcome, "completed");
     const toolResults = sent[1].messages.filter((message) => message.role === "tool");
-    assert.match(toolResults[0].content, /^Error: There is no tool named "Bash"\. Available tools: Glob, Grep, Read, TaskCreate, TaskUpdate, Skill\./);
+    assert.match(toolResults[0].content, /^Error: There is no tool named "Bash"\. Available tools: Glob, Grep, Read, TaskCreate, TaskUpdate, Skill, References./);
     assert.match(toolResults[1].content, /^Error: Could not parse the Read arguments as JSON/);
     assert.match(toolResults[2].content, /Created task #1/);
     assert.match(sent[2].messages.at(-1)!.content, /^Error: Your reply was cut off/);
@@ -247,7 +247,7 @@ test("the loop answers malformed calls with errors, never runs cut-off calls, nu
     globalThis.fetch = async (_input, init) => new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)));
     const stopping = runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Go" }], tools: toolsForPermission("read-only"), context: loopContext(root, []), emit: () => undefined, signal: controller.signal });
     controller.abort();
-    assert.deepEqual(await stopping, { outcome: "stopped" });
+    assert.equal((await stopping).outcome, "stopped");
   });
 });
 

@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import type { RefObject } from "react";
 import {
+  BookMarked,
   BookOpen,
   Images,
   Layers3,
@@ -21,13 +22,17 @@ import { ImageGenerationPanel } from "@/components/libera/image-generation-panel
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
 import { ReviewComments } from "@/components/libera/markdown-review-ui";
+import { ReferencesPanel, type ReferencesPanelProps } from "@/components/libera/references/references-panel";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
 
 import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
-import type { LiberaFileNode, LiberaTree } from "@/lib/types";
+import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
-export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search";
+export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search" | "references";
+
+/** What the References panel needs beyond the notebook and tree. */
+export type LeftPanelReferences = Omit<ReferencesPanelProps, "notebook" | "tree">;
 
 type LeftPanelProps = NotebookPanelProps & {
   workspaceManager: WorkspaceManager;
@@ -42,6 +47,7 @@ type LeftPanelProps = NotebookPanelProps & {
   onToggleCollapsed: () => void;
   onGeneratedFilesSaved: (files: LiberaFileNode[]) => void;
   onOpenSearchPreferences?: () => void;
+  references?: LeftPanelReferences;
 };
 
 const LEFT_PANEL_TABS: Array<{
@@ -55,6 +61,7 @@ const LEFT_PANEL_TABS: Array<{
   { id: "comments", label: "Comments", icon: MessageSquare },
   { id: "gallery", label: "Image Gallery", icon: Images },
   { id: "search", label: "Search", icon: ScanSearch },
+  { id: "references", label: "References", icon: BookMarked },
 ];
 
 export function LeftPanel({
@@ -70,6 +77,7 @@ export function LeftPanel({
   onToggleCollapsed,
   onGeneratedFilesSaved,
   onOpenSearchPreferences,
+  references,
   ...notebookPanelProps
 }: LeftPanelProps) {
   function selectPanel(panel: LeftPanelTab) {
@@ -104,7 +112,9 @@ export function LeftPanel({
                   ? "gallery"
                   : event.key === "6" || event.code === "Digit6"
                     ? "search"
-                    : null;
+                    : event.key === "7" || event.code === "Digit7"
+                      ? "references"
+                      : null;
 
       if (!nextPanel) {
         return;
@@ -180,6 +190,25 @@ export function LeftPanel({
               />
             ) : activePanel === "search" ? (
               <SearchPanel onOpenPreferences={onOpenSearchPreferences} />
+            ) : activePanel === "references" ? (
+              <ReferencesPanel
+                notebook={notebookPanelProps.selectedNotebookName}
+                tree={notebookPanelProps.tree}
+                activeMarkdownDraft={references?.activeMarkdownDraft ?? null}
+                activeDocumentPath={references?.activeDocumentPath ?? null}
+                openDrafts={references?.openDrafts ?? NO_DRAFTS}
+                canCite={references?.canCite ?? false}
+                onCite={references?.onCite ?? (() => undefined)}
+                onOpenPath={references?.onOpenPath ?? ((path) => {
+                  const file = findFileNode(notebookPanelProps.tree, path);
+                  if (file) notebookPanelProps.onOpenFile(file);
+                })}
+                onUploadFiles={references?.onUploadFiles}
+                request={references?.request}
+                onRequestHandled={references?.onRequestHandled}
+                onApplyCitationRewrite={references?.onApplyCitationRewrite}
+                onRevertCitationRewrite={references?.onRevertCitationRewrite}
+              />
             ) : activePanel === "comments" ? (
               <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
             ) : (
@@ -195,6 +224,22 @@ export function LeftPanel({
       </div>
     </aside>
   );
+}
+
+const NO_DRAFTS: LeftPanelReferences["openDrafts"] = [];
+
+function findFileNode(tree: LiberaTree, path: string): LiberaFileNode | undefined {
+  const walk = (nodes: LiberaTreeNode[]): LiberaFileNode | undefined => {
+    for (const node of nodes) {
+      if (node.kind === "file" && node.path === path) return node;
+      if (node.kind === "folder") {
+        const found = walk(node.children);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+  return walk(tree.notebooks.flatMap((notebook) => notebook.children));
 }
 
 function LeftPanelRail({

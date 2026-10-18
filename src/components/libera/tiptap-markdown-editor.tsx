@@ -19,6 +19,10 @@ import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
+import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/references/tiptap-citation-view";
+import { useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { droppedQuoteMarkdown, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
+import type { PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
@@ -26,6 +30,7 @@ import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
+import { FactCheckButton } from "@/components/libera/markdown-toolbar";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
@@ -166,10 +171,16 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const sharedRef = useRef<SharedVisualHandle | null>(null);
   const shared = !!collab;
   const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
+  // Citation nodes, the `@` popup and the citation popover (references lane).
+  const citations = useTiptapCitations();
+  // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
+  const referenceNotebook = useReferenceRender()?.notebook ?? null;
+  const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView }),
+    ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
     ...(shared ? [TiptapCollabHistory] : []),
@@ -187,7 +198,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared]);
+  ]; }, [documentPath, mathMarkers, shared, citations]);
 
   const editor = useEditor({
     extensions,
@@ -210,6 +221,19 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         },
       },
       handleDrop(view, event, _slice, moved) {
+        const quote = moved ? null : pdfQuoteFromDrop(event.dataTransfer);
+        if (quote) {
+          event.preventDefault();
+          setDragging(false);
+          let pos = view.state.selection.from;
+          try {
+            pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? pos;
+          } catch {
+            // No layout (a hidden pane): the quote goes after the caret's block.
+          }
+          dropQuoteRef.current(quote, pos);
+          return true;
+        }
         if (moved || !event.dataTransfer?.files.length) return false;
         event.preventDefault();
         setDragging(false);
@@ -348,17 +372,36 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   }
   useCanvasViewStateCapture(captureVisualState);
 
+  useLayoutEffect(() => {
+    dropQuoteRef.current = (source, pos) => {
+      void droppedQuoteMarkdown(source, referenceNotebook).then((markdown) => {
+        if (!markdown || !editor || editor.isDestroyed) return;
+        markPaste();
+        replaceTiptapRangeWithMarkdown(editor, getTiptapBlockInsertionRange(editor, Math.min(pos, editor.state.doc.content.size)), markdown);
+        editor.commands.focus();
+      });
+    };
+  }, [editor, markPaste, referenceNotebook]);
+
   // Runs after the saved selection is restored (a layout effect below), so a
   // snip lands where the caret was when it started.
   const handledInsertionRef = useRef<string | null>(null);
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
     handledInsertionRef.current = pendingInsertion.id;
-    const range = getTiptapBlockInsertionRange(editor, editor.state.selection.to);
-    markPaste();
-    replaceTiptapRangeWithMarkdown(editor, range, pendingInsertion.markdown);
-    editor.commands.focus();
-    onPendingInsertionHandled?.(pendingInsertion.id);
+    const insertion = pendingInsertion;
+    // After this commit: inserted citations mount React node views, which
+    // React cannot flush while it is still committing this effect.
+    queueMicrotask(() => {
+      if (editor.isDestroyed) return;
+      const range = insertion.inline
+        ? { from: editor.state.selection.from, to: editor.state.selection.to }
+        : getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+      markPaste();
+      replaceTiptapRangeWithMarkdown(editor, range, insertion.markdown);
+      editor.commands.focus();
+      onPendingInsertionHandled?.(insertion.id);
+    });
   }, [editor, pendingInsertion, onPendingInsertionHandled, markPaste]);
 
   useLayoutEffect(() => {
@@ -751,6 +794,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
+        <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
@@ -778,7 +822,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
               void insertImages(Array.from(event.dataTransfer.files), pos);
             }
           }}>
-          <EditorContent className="libera-text-width-content" editor={editor} />
+          <TiptapCitationLayer editor={editor} citations={citations}>
+            <EditorContent className="libera-text-width-content" editor={editor} />
+          </TiptapCitationLayer>
         </div>
         {findOpen ? (
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">

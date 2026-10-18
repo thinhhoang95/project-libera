@@ -1,5 +1,7 @@
 import { deletePdfAnnotationDirectory, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
+import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
+import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -57,6 +59,7 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
 /** Reads a file for a tab. Text files come with their content, except plain
@@ -186,10 +189,30 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  // After the attachment wiring, so copied entries see this file's new path.
+  const references = await copyCitedReferences(current.notebook, safeNextNotebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return readLiberaFile(nextRelativePath);
+  return withReferences(await readLiberaFile(nextRelativePath), references);
+}
+
+/**
+ * Markdown moved to another notebook takes the references it cites along
+ * (src/lib/references/moves.ts). Never fails the move.
+ */
+async function copyCitedReferences(fromNotebook: string, toNotebook: string, from: string, to: string) {
+  if (fromNotebook === toNotebook || assertSupportedFileName(to.split("/").at(-1) ?? "") !== "markdown") return null;
+  return copyReferencesOnMove(fromNotebook, toNotebook, [{ from, to }]);
+}
+
+/**
+ * A cross-notebook Markdown move adds `references` to the file payload: what
+ * was copied, reused and rewritten, and the key map to apply to an open draft.
+ */
+function withReferences<T extends object>(payload: T, references: ReferenceMoveResult | null): T & { references?: ReferenceMoveResult } {
+  return references ? { ...payload, references } : payload;
 }
 
 function suggestedCopyName(name: string) {
@@ -259,6 +282,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
     ]),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
     relativeFilePath(current.notebook, nextParts),
@@ -323,6 +347,7 @@ export async function archiveFolder(relativePath: string) {
     markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
   );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
   await renameNotebookPanelExpandedPathPrefix(currentRelativePath, nextRelativePath);
   notifySearchChanges();
@@ -350,6 +375,7 @@ export async function deleteFolder(relativePath: string) {
     recursive: true,
   });
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
+  await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
   await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
   await removeNotebookPanelExpandedPathPrefix(
     relativeFilePath(current.notebook, current.pathParts),
@@ -405,10 +431,13 @@ export async function moveFileToDirectory(
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
+  // After the attachment wiring, so copied entries see this file's new path.
+  const references = await copyCitedReferences(current.notebook, destination.notebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return readLiberaFile(nextRelativePath);
+  return withReferences(await readLiberaFile(nextRelativePath), references);
 }
 
 export async function archiveFile(relativePath: string) {
@@ -445,6 +474,7 @@ export async function archiveFile(relativePath: string) {
     nextFileType,
   );
   await moveReviewPath(currentRelativePath, nextRelativePath);
+  await moveReferenceAttachments(currentRelativePath, nextRelativePath);
   await renameFileMetadataPath(currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
@@ -487,6 +517,7 @@ export async function copyFileToDirectory(
   );
 
   await copyReviewPath(relativePath, relativeFilePath(destination.notebook, nextParts));
+  // A copy is a new file: no reference is attached to it, and the original keeps its references.
   notifySearchChanges([relativeFilePath(destination.notebook, nextParts)]);
   return readLiberaFile(relativeFilePath(destination.notebook, nextParts));
 }
@@ -521,6 +552,7 @@ export async function deleteFile(relativePath: string) {
     });
   }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
+  await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
@@ -555,6 +587,7 @@ export async function writeUploadedFile(
 
   await writeFile(targetPath, Buffer.from(await upload.arrayBuffer()));
   notifySearchChanges([relativeFilePath(safeNotebook, targetParts)]);
+  notifyReferenceFilesAdded([relativeFilePath(safeNotebook, targetParts)]);
 
   return getFileNode(safeNotebook, targetParts);
 }

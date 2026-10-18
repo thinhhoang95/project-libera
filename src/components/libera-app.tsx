@@ -15,7 +15,11 @@ import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
-import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
+import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
+import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
+import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
+import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -213,6 +217,33 @@ export function LiberaApp({
     },
   };
 
+  // The References panel: reveal/add requests from anywhere switch the rail
+  // to it and select their notebook; it cites into the active Markdown editor.
+  const referenceRequests = useReferencesPanelRequests((notebook) => {
+    changeLeftPanel("references");
+    setNotebooksCollapsed(false);
+    if (workspace.selectedNotebookName !== notebook) workspace.selectNotebook(notebook);
+  });
+  const openReferenceDrafts = useMemo(
+    () => workspace.tabs
+      .filter((tab) => tab.file.fileType === "markdown" && !tab.untitled && tab.draft !== tab.saved)
+      .map((tab) => ({ path: tab.file.path, text: tab.draft })),
+    [workspace.tabs],
+  );
+  const references: LeftPanelReferences = {
+    activeMarkdownDraft: workspace.activeMarkdownDraft,
+    activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
+    openDrafts: openReferenceDrafts,
+    canCite: workspace.activeTab?.file.fileType === "markdown",
+    onCite: (key) => { workspace.insertCitation(key); },
+    onOpenPath: agentWorkspace.openFile,
+    onUploadFiles: workspace.uploadFiles,
+    request: referenceRequests.request,
+    onRequestHandled: referenceRequests.handled,
+    onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
+    onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
+  };
+
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
   function openGalleryPhoto(photo: GalleryPhoto, placement: GalleryTabPlacement) {
@@ -225,6 +256,15 @@ export function LiberaApp({
     setActiveLeftPanel(lastCanvasPanelRef.current);
     if (result.source === "gallery") {
       if (result.photo) workspace.openGalleryPhoto(galleryPhotoFromSearch(result.photo), placement);
+      return;
+    }
+    if (result.source === "references") {
+      // A References entry opens in the References panel.
+      if (result.reference) {
+        window.dispatchEvent(new CustomEvent<ReferencesRevealDetail>(REFERENCES_REVEAL_EVENT, {
+          detail: { notebook: result.reference.notebook, entryId: result.reference.entryId },
+        }));
+      }
       return;
     }
     const file = workspace.files.find((candidate) => candidate.path === result.path) ?? result.file;
@@ -484,6 +524,7 @@ export function LiberaApp({
           }}
           onToggleNotebook={workspace.toggleNotebook}
           onOpenSearchPreferences={openSearchPreferences}
+          references={references}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
@@ -618,6 +659,7 @@ export function LiberaApp({
       </div>
 
       {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
+      <ReferenceMoveNotice key={workspace.referenceMoveNotice?.id} notice={workspace.referenceMoveNotice} onDismiss={workspace.dismissReferenceMoveNotice} />
       {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
       <NotebookDialog
         dialog={workspace.notebookDialog}
@@ -661,6 +703,7 @@ export function LiberaApp({
         onConfirm={workspace.submitWorkspaceConfirmDialog}
       />
       <ReviewPopover />
+      <PdfQuoteCiteHost />
     </main>
     </CollabProvider>
     </MarkdownReviewProvider>

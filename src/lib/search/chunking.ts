@@ -9,6 +9,8 @@
  * a boundary keep their meaning without duplicating keyword hits.
  */
 
+import { scanCitations } from "../references/citation-syntax";
+
 export const CHUNK_TARGET_CHARS = 1100;
 export const CHUNK_MAX_CHARS = 1800;
 export const CHUNK_CONTEXT_CHARS = 200;
@@ -392,12 +394,35 @@ export function chunkPdfPages(pages: Array<{ pageNumber: number; text: string }>
   return chunks;
 }
 
-/** Strip markup that carries no meaning for the embedding model. */
+/**
+ * A citation token becomes its keys separated by spaces, so a search for
+ * "smith2020sparse" finds it and brackets and locators are not embedded.
+ */
+function citationKeysText(markdown: string) {
+  if (!markdown.includes("@")) return markdown;
+  let text = "";
+  let last = 0;
+  for (const { citation, start, end } of scanCitations(markdown)) {
+    text += `${markdown.slice(last, start)}${citation.items.map((item) => item.key).join(" ")}`;
+    last = end;
+  }
+  return last ? text + markdown.slice(last) : markdown;
+}
+
+/**
+ * Strip markup that carries no meaning for the embedding model.
+ *
+ * The stored vectors are keyed by a hash of this text (see `promptHash` in
+ * database.ts) and files are re-chunked only when their signature changes,
+ * so a change here reaches an existing index file by file: an edited file
+ * re-embeds only the passages whose text changed (for citations, those that
+ * contain one), and unchanged files keep their vectors until edited.
+ */
 export function embeddingText(kind: string, text: string) {
   let value = text.replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi, " ");
 
   if (kind === "markdown") {
-    value = value
+    value = citationKeysText(value)
       .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/\[\/?color(=[^\]]*)?\]/g, "")
@@ -420,6 +445,11 @@ export function embeddingText(kind: string, text: string) {
 export function documentFileTitle(name: string) {
   const dot = name.lastIndexOf(".");
   return (dot > 0 ? name.slice(0, dot) : name).replace(/[_-]+/g, " ").trim() || name;
+}
+
+/** The title a record's passages are embedded under: a file's name without its extension, a reference's own title. */
+export function searchDocumentTitle(kind: string, name: string) {
+  return kind === "reference" ? name.replace(/\s+/g, " ").trim() || name : documentFileTitle(name);
 }
 
 /** The document side of EmbeddingGemma 2's retrieval prompt. */

@@ -10,6 +10,7 @@ import { tags } from "@lezer/highlight";
 import { codeHighlightStyle } from "@/lib/code-languages";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { findMatchesField } from "./find";
+import { citationDecorations } from "./citations";
 import { liberaSyntax } from "./libera-syntax";
 
 /* The CodeMirror Markdown Source editor's base configuration: GFM with fenced
@@ -69,6 +70,7 @@ export function markdownSourceSetup({ ariaLabel = "Source Markdown editor", math
     syntaxHighlighting(markdownHighlightStyle),
     syntaxHighlighting(fencedCodeHighlightStyle),
     liberaSyntax(mathMarkers),
+    citationDecorations(),
     findMatchesField,
     sourceTheme,
     EditorState.tabSize.of(4),

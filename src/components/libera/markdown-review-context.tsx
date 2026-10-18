@@ -327,7 +327,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   // A shared document's comments are anchored in the replica, so only an
   // agentic-review session needs this there.
   useEffect(() => {
-    if (!doc || draft === undefined || busy || error || recovery || (sharedProjection ? !doc.session : (!doc.threads.length && !doc.session)) || doc.snapshot === draft) return;
+    if (!doc || draft === undefined || busy || error || recovery || (sharedProjection ? !doc.session : (!doc.threads.length && !doc.session && !doc.agentSuggestions?.length)) || doc.snapshot === draft) return;
     let timer: number;
     const syncWhenReady = () => {
       // A background snapshot must not interrupt an IME session or surface a

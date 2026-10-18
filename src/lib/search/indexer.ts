@@ -8,18 +8,21 @@ import {
   chunkPdfPages,
   chunkPlainText,
   documentPrompt,
-  documentFileTitle,
+  searchDocumentTitle,
   type SourceChunk,
 } from "@/lib/search/chunking";
 import { SearchDatabase, type IndexedFile, type NewChunk, type PendingChunk } from "@/lib/search/database";
 import { contentHash, weightsSignature } from "@/lib/search/fingerprints";
 import { galleryMeta, planIndexRepair } from "@/lib/search/repair";
 import { readSearchFile, readSearchLibrary } from "@/lib/search/library-files";
+import { pdfHighlightChunks, pdfHighlightSignature } from "@/lib/search/pdf-highlights";
+import { currentReferenceSignature, parseReferenceRecordKey, readReferenceSource, type ReferenceRecord } from "@/lib/search/references-source";
 import { getSearchPreferences, searchIndexFile, type SearchPreferences } from "@/lib/search/settings";
 import { getSearchWorker } from "@/lib/search/worker-client";
 import { readFileSignature } from "@/lib/storage/file-signature";
 import { getGallery, getGalleryRoot } from "@/lib/storage/gallery";
-import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, referenceLibraryPath, splitFilePath } from "@/lib/storage/paths";
+import { referenceLibraryNotebooks } from "@/lib/storage/references";
 import { pageTextFromItems, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { isVisibleTreeFile } from "@/lib/storage/tree";
 import type { LiberaFileNode, PdfTextPage } from "@/lib/types";
@@ -62,6 +65,11 @@ function ftsNameOf(source: IndexedFile["source"], relativePath: string) {
   return source === "gallery" ? `Gallery ${words}` : words;
 }
 
+/** What the status line shows for a record being indexed. */
+function displayPath(record: Pick<IndexedFile, "source" | "path" | "name">) {
+  return record.source === "gallery" ? `Gallery/${record.path}` : record.source === "references" ? `References/${record.path}/${record.name}` : record.path;
+}
+
 function libraryAbsolutePath(relativePath: string) {
   const { notebook, pathParts } = splitFilePath(relativePath);
   return filePathFromParts(notebook, pathParts);
@@ -86,7 +94,8 @@ function nameOnlyChunk(name: string): NewChunk[] {
 }
 
 /**
- * Keeps the Global Search index in step with the library and the gallery.
+ * Keeps the Global Search index in step with the library, the gallery and
+ * the notebooks' References libraries (one record per entry).
  *
  * A pass first scans: new and changed files are split into passages and
  * stored with their text, so keyword search covers them at once. It then
@@ -106,6 +115,9 @@ export class SearchIndexer {
   private fullScanRequested = false;
   private changedPaths = new Set<string>();
   private galleryChanged = false;
+  /** Notebooks whose References library changed; `allReferencesChanged` stands for every one. */
+  private referenceNotebooks = new Set<string>();
+  private allReferencesChanged = false;
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastFullScanAt = 0;
   private state: IndexState = "idle";
@@ -268,6 +280,14 @@ export class SearchIndexer {
     this.scheduleChanges();
   }
 
+  /** A References library changed (every one without `notebooks`). Only those libraries are read again. */
+  notifyReferenceChanges(notebooks?: string[]) {
+    if (!this.automaticUpdatesAllowed() || !existsSync(searchIndexFile())) return;
+    if (notebooks) notebooks.forEach((notebook) => this.referenceNotebooks.add(notebook));
+    else this.allReferencesChanged = true;
+    this.scheduleChanges();
+  }
+
   private scheduleChanges(delay = CHANGE_DEBOUNCE_MS) {
     if (this.changeTimer) clearTimeout(this.changeTimer);
     this.changeTimer = setTimeout(() => {
@@ -383,11 +403,14 @@ export class SearchIndexer {
           const fullScan = this.fullScanRequested;
           const paths = [...this.changedPaths];
           const gallery = this.galleryChanged;
+          const references = this.allReferencesChanged ? null : [...this.referenceNotebooks];
           this.fullScanRequested = false;
           this.changedPaths.clear();
           this.galleryChanged = false;
+          this.referenceNotebooks.clear();
+          this.allReferencesChanged = false;
           if (fullScan) await this.scan(db, preferences);
-          else await this.scanChanges(db, preferences, paths, gallery);
+          else await this.scanChanges(db, preferences, paths, gallery, references);
           if (this.canIndex(db, preferences) && !this.mismatch) await this.embedPending(db, preferences);
         } catch (error) {
           if (this.rescanRequested) {
@@ -461,6 +484,8 @@ export class SearchIndexer {
       await yieldToServer();
     }
 
+    if (!await this.indexReferences(db, preferences, null, known, seen)) return;
+
     // Remove what is gone after adding what is new, so moved files can borrow vectors.
     if (!this.canIndex(db, preferences)) return;
     for (const [key, file] of known) {
@@ -475,12 +500,77 @@ export class SearchIndexer {
     this.lastScanAt = new Date().toISOString();
   }
 
+  /** A file, or a References record (its path is its notebook), under a folder that cannot be read now. */
   private isUnavailable(file: Pick<IndexedFile, "source" | "path">) {
-    return file.source === "library" && [...this.unavailablePaths].some((prefix) => file.path === prefix || file.path.startsWith(`${prefix}/`));
+    return (file.source === "library" || file.source === "references") &&
+      [...this.unavailablePaths].some((prefix) => file.path === prefix || file.path.startsWith(`${prefix}/`));
+  }
+
+  /**
+   * Index the References libraries of `notebooks` (every library with null).
+   * Entries are added to `seen`, and a full scan removes the unseen records
+   * after it; without `seen`, the records of each library read here that no
+   * longer match an entry are removed now. Returns false when indexing stopped.
+   */
+  private async indexReferences(
+    db: SearchDatabase,
+    preferences: SearchPreferences,
+    notebooks: string[] | null,
+    known: Map<string, IndexedFile>,
+    seen?: Set<string>,
+  ) {
+    const recordsByNotebook = new Map<string, IndexedFile[]>();
+    for (const file of known.values()) {
+      if (file.source !== "references") continue;
+      recordsByNotebook.set(file.notebook, [...(recordsByNotebook.get(file.notebook) ?? []), file]);
+    }
+    const libraries = notebooks ? [] : await referenceLibraryNotebooks().catch(() => null);
+    if (!this.canIndex(db, preferences)) return false;
+    // A notebook list that cannot be read is not proof that every library is gone.
+    if (!libraries) {
+      for (const file of known.values()) if (file.source === "references") seen?.add(file.key);
+      return true;
+    }
+    const names = notebooks ?? [...new Set([...libraries, ...recordsByNotebook.keys()])];
+    const removed: IndexedFile[] = [];
+
+    for (const notebook of names) {
+      if (!this.canIndex(db, preferences)) return false;
+      const existing = recordsByNotebook.get(notebook) ?? [];
+      const read = await readReferenceSource(notebook);
+      if (!this.canIndex(db, preferences)) return false;
+      if (read.status === "unreadable" || this.isUnavailable({ source: "references", path: notebook })) {
+        // Keep what is indexed until the library can be read again.
+        existing.forEach((file) => seen?.add(file.key));
+        continue;
+      }
+      const records = read.status === "ok" ? read.records : [];
+      const current = new Set(records.map((record) => record.key));
+      this.total += records.length;
+      for (const record of records) {
+        if (!this.canIndex(db, preferences)) return false;
+        seen?.add(record.key);
+        this.current = displayPath(record);
+        this.indexReferenceRecord(db, record, known.get(record.key));
+        this.done += 1;
+        await yieldToServer();
+      }
+      if (!seen) removed.push(...existing.filter((file) => !current.has(file.key)));
+    }
+
+    if (!this.canIndex(db, preferences)) return false;
+    for (const file of removed) db.deleteFile(file.id);
+    return true;
+  }
+
+  private indexReferenceRecord(db: SearchDatabase, record: ReferenceRecord, known: IndexedFile | undefined) {
+    if (known?.status === "ok" && known.signature === record.signature && known.meta === record.meta && known.name === record.name) return;
+    const { chunks, ftsName, ...file } = record;
+    db.replaceFile(file, chunks, ftsName);
   }
 
   /** A save/upload/move does not need a walk of the whole library. */
-  private async scanChanges(db: SearchDatabase, preferences: SearchPreferences, paths: string[], gallery: boolean) {
+  private async scanChanges(db: SearchDatabase, preferences: SearchPreferences, paths: string[], gallery: boolean, references: string[] | null = []) {
     this.state = "scanning";
     this.done = 0;
     this.total = paths.length;
@@ -534,6 +624,10 @@ export class SearchIndexer {
       }
     }
 
+    if (references === null || references.length) {
+      if (!await this.indexReferences(db, preferences, references, known)) return;
+    }
+
     if (!this.canIndex(db, preferences)) return;
     // Add destinations before removing sources, retaining reusable passage vectors.
     for (const key of removed) {
@@ -550,7 +644,8 @@ export class SearchIndexer {
    * really moved can still borrow their vectors.
    */
   private repair(db: SearchDatabase, files: LiberaFileNode[], photos: SearchGalleryPhoto[], galleryReadable: boolean) {
-    const indexed = db.listFiles().filter((file) => (galleryReadable || file.source !== "gallery") && !this.isUnavailable(file));
+    // References records are keyed by notebook and entry, not by a file's path.
+    const indexed = db.listFiles().filter((file) => file.source !== "references" && (galleryReadable || file.source !== "gallery") && !this.isUnavailable(file));
     const { relocations, stale } = planIndexRepair(indexed, files, photos);
     const sources = new Map(indexed.map((file) => [file.id, file.source]));
     for (const relocation of relocations) {
@@ -576,12 +671,11 @@ export class SearchIndexer {
     const ftsName = ftsNameOf("library", file.path);
 
     try {
-      const absolutePath = libraryAbsolutePath(file.path);
-      record.signature = await readFileSignature(absolutePath);
+      record.signature = await this.librarySignature(file.path, file.fileType);
       if (!this.canIndex(db, preferences)) return;
       if (known?.status === "ok" && known.signature === record.signature && known.kind === file.fileType) return;
       const chunks = await this.chunkLibraryFile({ ...file, size: Number(record.signature.split(":")[0]) });
-      const after = await readFileSignature(absolutePath);
+      const after = await this.librarySignature(file.path, file.fileType);
       if (!this.canIndex(db, preferences)) return;
       if (record.signature !== after) {
         this.changedPaths.add(file.path);
@@ -593,6 +687,18 @@ export class SearchIndexer {
       if (!this.canIndex(db, preferences)) return;
       db.markFailed(record, error instanceof Error ? error.message : "Could not read the file.", ftsName);
     }
+  }
+
+  /**
+   * A library file's identity. A PDF's includes its highlights' sidecar, so
+   * adding a highlight indexes its quote; a PDF without one keeps the plain
+   * file signature.
+   */
+  private async librarySignature(relativePath: string, fileType: LiberaFileNode["fileType"]) {
+    const signature = await readFileSignature(libraryAbsolutePath(relativePath));
+    if (fileType !== "pdf") return signature;
+    const highlights = await pdfHighlightSignature(relativePath);
+    return highlights ? `${signature}|${highlights}` : signature;
   }
 
   private async chunkLibraryFile(file: LiberaFileNode): Promise<NewChunk[]> {
@@ -609,7 +715,8 @@ export class SearchIndexer {
           if (!this.indexingAllowed()) throw error;
           return readPdfTextCache(file.path);
         });
-      const chunks = toNewChunks(chunkPdfPages(pages));
+      // Highlight quotes are passages of their own, so a search can find what was marked.
+      const chunks = [...toNewChunks(chunkPdfPages(pages)), ...await pdfHighlightChunks(file.path)];
       return chunks.length ? chunks : nameOnlyChunk(file.name);
     }
 
@@ -683,7 +790,19 @@ export class SearchIndexer {
   private sourcePath(chunk: PendingChunk) {
     return chunk.source === "gallery"
       ? path.join(getGalleryRoot(), ...chunk.path.split("/"))
-      : libraryAbsolutePath(chunk.path);
+      : chunk.source === "references"
+        ? referenceLibraryPath(chunk.notebook)
+        : libraryAbsolutePath(chunk.path);
+  }
+
+  /** The signature a record has now, to compare with the one its passages were stored under. */
+  private async currentSignature(chunk: PendingChunk) {
+    if (chunk.source === "references") {
+      const parsed = parseReferenceRecordKey(chunk.key);
+      return parsed ? currentReferenceSignature(parsed.notebook, parsed.entryId) : "";
+    }
+    if (chunk.source === "library") return this.librarySignature(chunk.path, chunk.kind as LiberaFileNode["fileType"]);
+    return readFileSignature(this.sourcePath(chunk));
   }
 
   /** Text can change during inference too; never attach a vector to stale source text. */
@@ -692,10 +811,11 @@ export class SearchIndexer {
     for (const chunk of chunks) {
       if (seen.has(chunk.key)) continue;
       seen.add(chunk.key);
-      const signature = await readFileSignature(this.sourcePath(chunk)).catch(() => "");
+      const signature = await this.currentSignature(chunk).catch(() => "");
       if (!this.canIndex(db, preferences)) return false;
       if (signature !== chunk.signature) {
         if (chunk.source === "gallery") this.galleryChanged = true;
+        else if (chunk.source === "references") this.referenceNotebooks.add(chunk.notebook);
         else this.changedPaths.add(chunk.path);
         this.rescanRequested = true;
         return false;
@@ -733,7 +853,7 @@ export class SearchIndexer {
 
       // Images go one at a time: each takes a while, and a search may be waiting.
       const work = batch[0].kind === "image" ? batch.slice(0, 1) : batch.filter((chunk) => chunk.kind !== "image");
-      this.current = work[0].source === "gallery" ? `Gallery/${work[0].path}` : work[0].path;
+      this.current = displayPath(work[0]);
 
       try {
         if (!await this.sourcesCurrent(db, work, preferences) || !this.canEmbed(db, preferences, epoch)) return;
@@ -779,7 +899,7 @@ export class SearchIndexer {
 
   private embedInput(chunk: PendingChunk) {
     if (chunk.kind === "image") return { images: [{ path: this.sourcePath(chunk) }] };
-    return { text: documentPrompt(chunk.kind, documentFileTitle(chunk.name), chunk) };
+    return { text: documentPrompt(chunk.kind, searchDocumentTitle(chunk.kind, chunk.name), chunk) };
   }
 
   status(): SearchIndexStatus {

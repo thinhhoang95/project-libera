@@ -6,7 +6,7 @@ import os from "node:os";
 import { homeDirectory, joinPath } from "@/lib/runtime-path";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
-import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, notebookPath as notebookFolderPath, splitFilePath } from "@/lib/storage/paths";
 import { parseBiberLog, parseBibtexLog, parseLatexLog, type LatexLogEntry, type LatexLogSeverity } from "./log-parser";
 import { isCompilableLatexPath, resolveLatexEngine, type LatexEngine, type LatexEngineSetting } from "./project";
 import { findTexToolchain, texEnvironment, texExecutable, texLatexmkLineLengthRc, texLineLengthArguments, texMissingMessage, type TexToolchain } from "./toolchain";
@@ -103,6 +103,7 @@ export function latexBuildPaths(rootPath: string) {
     workDirectory: path.join(buildDirectory, "work"),
     outDirectory: path.join(buildDirectory, "out"),
     sourceDirectory: path.dirname(rootAbsolute),
+    notebookDirectory: notebookFolderPath(notebook),
     rootAbsolute,
     rootDirectoryPath: [notebook, ...pathParts.slice(0, -1)].join("/"),
     jobName,
@@ -390,7 +391,8 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
       openin_any: "p",
       openout_any: "p",
       shell_escape: "f",
-      BIBINPUTS: `${paths.sourceDirectory}${listSeparator}`,
+      // The notebook folder too, so a document in a subfolder finds the notebook's generated references.bib.
+      BIBINPUTS: `${paths.sourceDirectory}${listSeparator}${paths.notebookDirectory !== paths.sourceDirectory ? `${paths.notebookDirectory}${listSeparator}` : ""}`,
       BSTINPUTS: `${paths.sourceDirectory}${listSeparator}`,
     });
     const pdfPath = path.join(paths.workDirectory, `${paths.jobName}.pdf`);

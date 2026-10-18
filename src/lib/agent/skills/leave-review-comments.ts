@@ -11,6 +11,7 @@ import {
   closestLines, findEditTarget, lineOfOffset, missingFileError, ok, plural, readCurrentText, requireString, resolve, sharedDocFor, ToolError,
   type AgentSkill, type AgentTool, type ToolContext,
 } from "../tools";
+import { finishSuggestedEdits, suggestEditTool } from "../suggest-edit";
 
 // Review comments, written the way a model edits text: LeaveComment is Edit
 // on a review copy of the document, where the model adds ":::comment" blocks
@@ -61,7 +62,7 @@ function region(text: string, start: number, end: number) {
   return lines.slice(first, last).join("\n");
 }
 
-const leaveCommentTool: AgentTool = {
+export const leaveCommentTool: AgentTool = {
   name: "LeaveComment",
   kind: "comment",
   description: `Adds, changes or removes review comments in a Markdown or LaTeX file. Follow the ${NAME} skill's instructions.
@@ -150,12 +151,37 @@ Usage:
   },
 };
 
+/**
+ * Adds a comment to the run's review copy of `filePath` at `offset` in
+ * `original` (the end of the block it is about), as a LeaveComment call
+ * would. For skills that write comments from their own results; the copy is
+ * compiled by finishComments like any other (shared threads on a shared
+ * document). Throws a ToolError when the file cannot take review comments.
+ */
+export function addReviewComment(context: ToolContext, filePath: string, original: string, offset: number, text: string) {
+  // A shared document's copy becomes shared threads in finishComments, which
+  // reports any the user's role cannot add.
+  const fileType = getFileType(filePath);
+  if (fileType !== "markdown" && fileType !== "latex") throw new ToolError(`${filePath} is not a Markdown or LaTeX file.`);
+  const copies = reviewCopies(context);
+  let copy = copies.get(filePath);
+  if (!copy) {
+    let existing = 0;
+    try { existing = parseReviewCopy(original).comments.length; } catch { existing = 1; }
+    if (existing) throw new ToolError(`${filePath} itself contains ":::comment" lines, so review comments cannot be written into it.`);
+    copy = { path: filePath, fileType, original, comments: [] };
+  } else if (copy.original !== original) {
+    copy = { ...copy, original, comments: rebaseComments(copy.comments, copy.original, original) };
+  }
+  copies.set(filePath, { ...copy, comments: [...copy.comments, { offset, text }] });
+}
+
 function listProblems(placements: CommentPlacement[], original: string) {
   return placements.filter((placement) => placement.problem).map((placement) => `- ${describePlacement(original, placement)}`);
 }
 
 /** Compile every review copy: send problems back to the model, or save the comments to the review. */
-async function finishPass(context: ToolContext, { final }: { final: boolean }): Promise<string | null> {
+export async function finishComments(context: ToolContext, { final }: { final: boolean }): Promise<string | null> {
   const copies = context.skillState.get(NAME) as Map<string, ReviewCopy> | undefined;
   if (!copies?.size) return null;
   const compiled: { copy: ReviewCopy; placements: CommentPlacement[] }[] = [];
@@ -240,10 +266,17 @@ async function addSharedThreads(context: ToolContext, copy: ReviewCopy, placed: 
   return failures;
 }
 
+/** Comments first: while some must be fixed, suggested edits wait, so the model can still revise them. */
+async function finishPass(context: ToolContext, options: { final: boolean }): Promise<string | null> {
+  const feedback = await finishComments(context, options);
+  if (feedback) return feedback;
+  return finishSuggestedEdits(context);
+}
+
 const instructions = `
 # Leaving review comments
 
-You review a document by writing comments into it, directly beneath the paragraphs they are about, with the LeaveComment tool. When you finish your reply, Libera turns each comment into a review comment attached to the paragraph above it. The user then works through them one by one in the Comments panel: they can reply, resolve them, or have Agentic Review address them. Comments never change the file, so you can leave them in any permission mode, including Read Only.
+You review a document by writing comments into it, directly beneath the paragraphs they are about, with the LeaveComment tool, and you may propose concrete rewrites with SuggestEdit. When you finish your reply, Libera turns each comment into a review comment attached to the paragraph above it. The user then works through them one by one in the Comments panel: they can reply, resolve them, or have Agentic Review address them. Comments never change the file, so you can leave them in any permission mode, including Read Only.
 
 ## Comment syntax
 
@@ -273,6 +306,14 @@ The next paragraph…
 4. To change, move or remove a comment, call LeaveComment with old_string containing the comment block as LeaveComment showed it, and new_string with it changed, moved or removed.
 5. When you finish your reply, Libera checks every comment. If any is misplaced, it tells you which and why; fix them with LeaveComment and finish again.
 
+## Suggesting concrete rewrites
+
+When the fix is clear and local (a wrong figure, a broken sentence, an unsupported claim that should be softened), you may propose the rewrite itself with SuggestEdit instead of, or as well as, describing it in a comment. The user sees the change in the editor and accepts or rejects it with one click; the file never changes until they do.
+
+- before is exact text from the document (within one paragraph, or whole paragraphs) and must occur once; after is your replacement; reason says why in a sentence or two.
+- Pass comment to add a review comment on the same passage when the reasoning needs more room. Do not also leave a LeaveComment comment about the same point.
+- Keep suggestions small and in the document's own style. Suggest only what the user asked about; for open questions or matters of judgement, leave a comment instead.
+
 ## What makes a good comment
 
 - Be specific and actionable: say what is wrong, missing or unclear, and suggest a fix or ask the question that would resolve it. Quote the exact words when the problem is a phrase.
@@ -283,13 +324,13 @@ The next paragraph…
 
 ## Your reply
 
-After commenting, reply briefly: how many comments you left in which file, and the two or three most important points. Do not repeat every comment; the user reads them in the Comments panel.
+After commenting, reply briefly: how many comments and suggested edits you left in which file, and the two or three most important points. Do not repeat every comment; the user reads them in the Comments panel.
 `;
 
 export const leaveReviewCommentsSkill: AgentSkill = {
   name: NAME,
-  description: "Review a Markdown or LaTeX document by leaving comments on its paragraphs, which the user works through in the Comments panel. Use only when the user asks you to review a document, give feedback on it, or leave or add comments; not to answer questions about a document or to edit it.",
+  description: "Review a Markdown or LaTeX document by leaving comments on its paragraphs (and, where the fix is clear, suggested edits), which the user works through in the Comments panel. Use only when the user asks you to review a document, give feedback on it, or leave or add comments; not to answer questions about a document or to edit it.",
   instructions,
-  tools: [leaveCommentTool],
+  tools: [leaveCommentTool, suggestEditTool],
   finishPass,
 };

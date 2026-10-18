@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
-import type { SearchFileKind } from "@/lib/global-search";
-import { documentFileTitle, documentPrompt } from "@/lib/search/chunking";
+import type { SearchFileKind, SearchSource } from "@/lib/global-search";
+import { documentPrompt, searchDocumentTitle } from "@/lib/search/chunking";
 
 /**
  * The Global Search index: one SQLite file holding files, their passages, a
@@ -46,7 +46,7 @@ function sqliteVecPath() {
 export type IndexedFile = {
   id: number;
   key: string;
-  source: "library" | "gallery";
+  source: SearchSource;
   kind: SearchFileKind;
   path: string;
   name: string;
@@ -75,9 +75,10 @@ export type PendingChunk = {
   fileId: number;
   kind: SearchFileKind;
   key: string;
-  source: "library" | "gallery";
+  source: SearchSource;
   path: string;
   name: string;
+  notebook: string;
   signature: string;
   title: string;
   text: string;
@@ -96,7 +97,7 @@ export type ChunkRow = {
   end: number | null;
   embedded: number;
   key: string;
-  source: "library" | "gallery";
+  source: SearchSource;
   kind: SearchFileKind;
   path: string;
   name: string;
@@ -112,7 +113,7 @@ const LEGACY_IMAGE_HASH = /^image:[a-f0-9]{40}$/;
 
 function promptHash(kind: SearchFileKind, name: string, chunk: Pick<NewChunk, "title" | "text" | "context">) {
   return createHash("sha256")
-    .update(`${kind}\u0000${documentPrompt(kind, documentFileTitle(name), chunk)}`).digest("hex");
+    .update(`${kind}\u0000${documentPrompt(kind, searchDocumentTitle(kind, name), chunk)}`).digest("hex");
 }
 
 /** Keep the leading dimensions (Matryoshka) and restore unit length. */
@@ -532,7 +533,7 @@ export class SearchDatabase {
 
   pendingChunks(limit: number, includeImages: boolean, excludedFileIds: number[] = []): PendingChunk[] {
     return this.statement(`
-      SELECT c.id, c.file_id AS fileId, f.kind, f.key, f.source, f.path, f.name, f.signature, c.title, c.text, c.context
+      SELECT c.id, c.file_id AS fileId, f.kind, f.key, f.source, f.path, f.name, f.notebook, f.signature, c.title, c.text, c.context
       FROM chunks c JOIN files f ON f.id = c.file_id
       WHERE c.embedded = 0 AND (f.kind != 'image' OR ?)
         AND f.id NOT IN (SELECT value FROM json_each(?))
@@ -576,6 +577,37 @@ export class SearchDatabase {
     this.db.exec("UPDATE chunks SET embedded = 0 WHERE embedded = 2");
   }
 
+  /** The ids of the records a restricted search covers: References entries of `notebooks`, library files at `paths`. */
+  fileIdsWithin({ notebooks = [], paths = [] }: { notebooks?: string[]; paths?: string[] }) {
+    if (!notebooks.length && !paths.length) return [];
+    return this.statement(`
+      SELECT id FROM files
+      WHERE (source = 'references' AND notebook IN (SELECT value FROM json_each(?)))
+        OR (source = 'library' AND path IN (SELECT value FROM json_each(?)))
+    `).all(JSON.stringify(notebooks), JSON.stringify(paths)).map((row) => Number(row.id));
+  }
+
+  /**
+   * The nearest passages among the given records only, compared one by one.
+   * The vector index returns the k nearest of the whole library, where a
+   * small set of records would mostly fall outside the top k.
+   */
+  nearestAmong(vector: Float32Array, limit: number, fileIds: number[], kinds?: SearchFileKind[]) {
+    if (!fileIds.length) return [];
+    const query = vectorBlob(truncateVector(vector, this.dimensions));
+    const rows = this.statement(`
+      SELECT c.id, vec_distance_cosine(v.embedding, ?) AS distance
+      FROM chunks c
+      JOIN files f ON f.id = c.file_id
+      JOIN chunks_vec v ON v.rowid = c.id
+      WHERE c.embedded = 1 AND c.file_id IN (SELECT value FROM json_each(?))
+        AND (? IS NULL OR f.kind IN (SELECT value FROM json_each(?)))
+      ORDER BY distance
+      LIMIT ?
+    `).all(query, JSON.stringify(fileIds), kinds?.length ? 1 : null, JSON.stringify(kinds ?? []), limit);
+    return rows.map((row) => ({ id: Number(row.id), similarity: 1 - Number(row.distance) }));
+  }
+
   nearest(vector: Float32Array, limit: number, kinds?: SearchFileKind[]) {
     const query = vectorBlob(truncateVector(vector, this.dimensions));
     const rows = kinds?.length
@@ -586,16 +618,18 @@ export class SearchDatabase {
     return rows.map((row) => ({ id: Number(row.id), similarity: 1 - Number(row.distance) }));
   }
 
-  keyword(match: string, limit: number, kinds?: SearchFileKind[]) {
+  /** Keyword (BM25) matches; `fileIds` restricts them to those records. */
+  keyword(match: string, limit: number, kinds?: SearchFileKind[], fileIds?: number[]) {
     const rows = this.statement(`
       SELECT chunks_fts.rowid AS id, bm25(chunks_fts, 4.0, 2.0, 1.0) AS rank
       FROM chunks_fts
       JOIN chunks c ON c.id = chunks_fts.rowid
       JOIN files f ON f.id = c.file_id
       WHERE chunks_fts MATCH ? AND (? IS NULL OR f.kind IN (SELECT value FROM json_each(?)))
+        AND (? IS NULL OR f.id IN (SELECT value FROM json_each(?)))
       ORDER BY rank
       LIMIT ?
-    `).all(match, kinds?.length ? 1 : null, JSON.stringify(kinds ?? []), limit);
+    `).all(match, kinds?.length ? 1 : null, JSON.stringify(kinds ?? []), fileIds ? 1 : null, JSON.stringify(fileIds ?? []), limit);
     return rows.map((row) => ({ id: Number(row.id), rank: Number(row.rank) }));
   }
 

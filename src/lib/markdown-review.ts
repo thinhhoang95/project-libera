@@ -14,8 +14,28 @@ export type ReviewPlan = { version: number; summary: string; steps: { commentIds
 export type ReviewEdit = ReviewRange & { before: string; after: string };
 export type ReviewSuggestion = { id: string; version: number; title: string; reason: string; commentIds: string[]; edits: ReviewEdit[]; status: "pending" | "accepted" | "rejected" | "superseded" | "conflicted" };
 export type ReviewSession = { id: string; phase: "awaiting_confirmation" | "reviewing_changes" | "completed" | "stale"; snapshot: string; commentsKey: string; references: ChatContext[]; selectedIds: string[]; plan: ReviewPlan; suggestions: ReviewSuggestion[]; messages: { role: "user" | "assistant"; text: string }[]; confirmedVersion?: number };
-export type ReviewUndo = { id: string; acceptedIds: string[]; planVersion: number; before: string; after: string; threads: ReviewThread[]; suggestions: ReviewSuggestion[] };
-export type ReviewDocument = { schemaVersion: 1; id: string; key: string; revision: number; snapshot: string; enabled: boolean; threads: ReviewThread[]; session?: ReviewSession; round?: number; previousRounds?: { number: number; session: ReviewSession }[]; undo: ReviewUndo[]; redo?: ReviewUndo[] };
+/**
+ * A suggested edit the agent left outside any Agentic Review session (the
+ * SuggestEdit tool). Same shape as a ReviewSuggestion, plus one anchor per
+ * edit, which syncReview maps like a comment's: when an edit's passage can no
+ * longer be found exactly, the suggestion is "conflicted".
+ *
+ * Mapping to the collab overlay's SuggestionRecord (src/lib/collab/suggestions):
+ * - one record per edit; several edits share a `groupId` (= this id)
+ * - `edits[i].before` -> `baseQuote`, `edits[i].after` -> `replacement`
+ * - `anchors[i]` -> `start`/`end` relative positions, resolved from its offsets
+ *   (or its quote, prefix and suffix) in the shared text
+ * - `commentIds` -> `threadIds`; `title` and `reason` carry over
+ * - `author: "agent"` and `runId` -> actor `{ kind: "ai", feature: "agent", runId, onBehalfOf: <user> }`
+ * - `createdAt`/`decidedAt` (ISO strings) -> epoch milliseconds
+ * - status: pending, accepted and rejected are the same; conflicted -> stale
+ *   (`target-removed` when the anchor is orphaned, otherwise `text-changed`);
+ *   superseded -> withdrawn.
+ */
+export type AgentSuggestion = ReviewSuggestion & { anchors: ReviewAnchor[]; author: "agent"; createdAt: string; decidedAt?: string; runId?: string };
+/** `kind: "agent"`: an acceptance of agent suggestions, outside any session. */
+export type ReviewUndo = { id: string; acceptedIds: string[]; planVersion: number; before: string; after: string; threads: ReviewThread[]; suggestions: ReviewSuggestion[]; kind?: "agent"; agentSuggestions?: AgentSuggestion[] };
+export type ReviewDocument = { schemaVersion: 1; id: string; key: string; revision: number; snapshot: string; enabled: boolean; threads: ReviewThread[]; session?: ReviewSession; agentSuggestions?: AgentSuggestion[]; round?: number; previousRounds?: { number: number; session: ReviewSession }[]; undo: ReviewUndo[]; redo?: ReviewUndo[] };
 
 export function startReviewRound(doc: ReviewDocument): ReviewDocument {
   return {
@@ -168,6 +188,23 @@ export function mapAnchor(anchor: ReviewAnchor, before: string, after: string, c
   }
   return { ...anchor, state: candidates.length ? "ambiguous" : "orphaned" };
 }
+/**
+ * Maps agent suggestions from one text to the next. An open suggestion is
+ * pending only while every edit's passage is found exactly; otherwise it is
+ * conflicted (and pending again if the passage comes back, e.g. after undo).
+ */
+function mapAgentSuggestions(suggestions: AgentSuggestion[], before: string, after: string, context = anchorMappingContext(before, after)): AgentSuggestion[] {
+  return suggestions.map((s) => {
+    const anchors = s.anchors.map((anchor) => mapAnchor(anchor, before, after, context));
+    const edits = s.edits.map((edit, index) => {
+      const anchor = anchors[index];
+      return anchor?.state === "attached" ? { ...edit, start: anchor.start, end: anchor.end } : edit;
+    });
+    const open = s.status === "pending" || s.status === "conflicted";
+    const intact = anchors.length === edits.length && anchors.every((anchor, index) => anchor.state === "attached" && after.slice(anchor.start, anchor.end) === edits[index].before);
+    return { ...s, anchors, edits, status: open ? (intact ? "pending" as const : "conflicted" as const) : s.status };
+  });
+}
 export function commentsKey(threads: ReviewThread[], ids: string[]) {
   return JSON.stringify(threads.filter((t) => ids.includes(t.id)).map((t) => ({ id: t.id, messages: t.messages, status: t.status === "resolved" ? "resolved" : "open" })));
 }
@@ -192,7 +229,8 @@ export function syncReview(doc: ReviewDocument, snapshot: string, detectHistory 
     });
     return { ...s, edits, status: conflict && s.status === "pending" ? "conflicted" as const : s.status };
   });
-  return { ...doc, snapshot, redo: [], threads: doc.threads.map((t) => ({ ...t, anchor: mapAnchor(t.anchor, doc.snapshot, snapshot, context) })), session: doc.session && { ...doc.session, phase: doc.session.phase === "awaiting_confirmation" ? "stale" : doc.session.phase, suggestions: suggestions! } };
+  return { ...doc, snapshot, redo: [], threads: doc.threads.map((t) => ({ ...t, anchor: mapAnchor(t.anchor, doc.snapshot, snapshot, context) })), session: doc.session && { ...doc.session, phase: doc.session.phase === "awaiting_confirmation" ? "stale" : doc.session.phase, suggestions: suggestions! },
+    ...(doc.agentSuggestions ? { agentSuggestions: mapAgentSuggestions(doc.agentSuggestions, doc.snapshot, snapshot, context) } : {}) };
 }
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };
@@ -252,6 +290,7 @@ export function decideSuggestions(doc: ReviewDocument, ids: string[], decision: 
 }
 export function undoReview(doc: ReviewDocument): ReviewDocument {
   const entry = doc.undo.at(-1);
+  if (entry?.kind === "agent") return undoAgentAcceptance(doc, entry);
   if (!entry || entry.after !== doc.snapshot || !doc.session) throw new Error("The document changed after this acceptance. Undo later edits first.");
   if ((entry.planVersion !== undefined && entry.planVersion !== doc.session.plan.version) || doc.session.suggestions.some((s) => !entry.suggestions.some((prior) => prior.id === s.id && prior.version === s.version))) throw new Error("Changes were revised after this acceptance. Restore through document editing rather than discard newer review decisions.");
   const acceptedIds = entry.acceptedIds ?? entry.suggestions.filter((s) => s.status === "pending" && doc.session!.suggestions.find((now) => now.id === s.id)?.status === "accepted").map((s) => s.id);
@@ -262,11 +301,16 @@ export function undoReview(doc: ReviewDocument): ReviewDocument {
     const prior = entry.threads.find((t) => t.id === thread.id);
     return { ...thread, anchor: prior?.anchor ?? mapAnchor(thread.anchor, entry.after, entry.before), status: thread.status === "resolved" ? "resolved" : prior?.status ?? thread.status };
   }), suggestions, acceptedIds);
-  return { ...doc, snapshot: entry.before, threads, session: { ...doc.session, suggestions, phase: doc.session.phase === "stale" ? "stale" : "reviewing_changes" }, undo: doc.undo.slice(0, -1), redo: [...(doc.redo ?? []), entry] };
+  return { ...doc, snapshot: entry.before, threads, session: { ...doc.session, suggestions, phase: doc.session.phase === "stale" ? "stale" : "reviewing_changes" }, undo: doc.undo.slice(0, -1), redo: [...(doc.redo ?? []), entry],
+    ...(doc.agentSuggestions ? { agentSuggestions: mapAgentSuggestions(doc.agentSuggestions, doc.snapshot, entry.before) } : {}) };
 }
 
 export function redoReview(doc: ReviewDocument): ReviewDocument {
   const entry = doc.redo?.at(-1);
+  if (entry?.kind === "agent") {
+    if (entry.before !== doc.snapshot) throw new Error("The document changed after undo. Accept the suggestion again.");
+    return { ...decideAgentSuggestions(doc, entry.acceptedIds, "accept", `redo-${entry.id}`), redo: doc.redo!.slice(0, -1) };
+  }
   if (!entry || entry.before !== doc.snapshot || doc.session?.plan.version !== entry.planVersion) throw new Error("The document changed after undo. Review the pending proposal again.");
   const next = decideSuggestions(doc, entry.acceptedIds, "accept", `redo-${entry.id}`);
   return { ...next, redo: doc.redo!.slice(0, -1) };
@@ -330,4 +374,88 @@ export function reviewIntent(text: string): ReviewIntent {
   if (/^(?:I\s+)?confirm(?:\s+(?:this|the|latest))?\s+plan(?:\s+\d+)?$/i.test(clean)) return { action: "confirm" };
   const match = /^(accept|reject)\s+(?:all(?:\s+remaining)?(?:\s+changes)?|changes?\s+(\d+(?:(?:\s*,\s*|\s+and\s+)\d+)*))$/i.exec(clean);
   return match ? { action: match[1].toLowerCase() as "accept" | "reject", numbers: match[2] ? match[2].split(/\s*,\s*|\s+and\s+/).map(Number) : "all" } : { action: "revise" };
+}
+
+// ---- Agent suggestions: decisions outside any Agentic Review session.
+
+export function agentSuggestionTitle(reason: string) {
+  const sentence = reason.trim().split(/(?<=[.!?])\s/)[0] ?? "";
+  return sentence.length > 80 ? `${sentence.slice(0, 79)}…` : sentence || "Suggested edit";
+}
+
+/**
+ * Accept or reject agent suggestions. Accepting applies their edits to the
+ * snapshot in one step (the client applies the new snapshot to the editor as
+ * one undoable change), remaps everything else, attaches linked comments to
+ * the replacement and marks them addressed, and records an undo entry.
+ */
+export function decideAgentSuggestions(doc: ReviewDocument, ids: string[], decision: "accept" | "reject", transactionId: string, now = new Date().toISOString()): ReviewDocument {
+  const all = doc.agentSuggestions ?? [];
+  if (!ids.length || new Set(ids).size !== ids.length) throw new Error("Choose suggested edits to review.");
+  const chosen = ids.map((id) => all.find((s) => s.id === id));
+  if (chosen.some((s) => !s || (decision === "accept" ? s.status !== "pending" : s.status !== "pending" && s.status !== "conflicted"))) {
+    throw new Error(decision === "accept" ? "This suggested edit was already decided, or its passage changed. Reject it or request a revision." : "This suggested edit was already decided.");
+  }
+  const picked = chosen as AgentSuggestion[];
+  const decided = (s: AgentSuggestion): AgentSuggestion => ids.includes(s.id) ? { ...s, status: decision === "accept" ? "accepted" : "rejected", decidedAt: now } : s;
+  if (decision === "reject") return { ...doc, agentSuggestions: all.map(decided) };
+  const edits = picked.flatMap((s) => s.edits);
+  const after = applyReviewEdits(doc.snapshot, edits);
+  // Map each edit separately, last first, so suggestions between two accepted
+  // edits keep their passages (as decideSuggestions does).
+  let mapped: ReviewDocument = { ...doc, agentSuggestions: all.map(decided) };
+  for (const edit of [...edits].sort((a, b) => b.start - a.start)) mapped = syncReview(mapped, applyReviewEdits(mapped.snapshot, [edit]), false);
+  const linked = new Set(picked.flatMap((s) => s.commentIds));
+  const threads = anchorToReplacements(mapped.threads, doc.threads, picked, after)
+    .map((t) => linked.has(t.id) && t.status === "open" ? { ...t, status: "addressed" as const } : t);
+  return {
+    ...mapped, snapshot: after, threads, redo: [],
+    undo: [...doc.undo.slice(-19), { id: transactionId, kind: "agent", acceptedIds: ids, planVersion: doc.session?.plan.version ?? 0, before: doc.snapshot, after, threads: doc.threads, suggestions: doc.session?.suggestions ?? [], agentSuggestions: all }],
+  };
+}
+
+function undoAgentAcceptance(doc: ReviewDocument, entry: ReviewUndo): ReviewDocument {
+  if (entry.after !== doc.snapshot) throw new Error("The document changed after this acceptance. Undo later edits first.");
+  const current = doc.agentSuggestions ?? [];
+  // Restore the accepted suggestions as they were; keep later decisions on the others.
+  const prior = entry.agentSuggestions ?? [];
+  const restored = prior.map((s) => entry.acceptedIds.includes(s.id) ? s : { ...s, status: current.find((now) => now.id === s.id)?.status ?? s.status });
+  const added = mapAgentSuggestions(current.filter((s) => !prior.some((p) => p.id === s.id)), doc.snapshot, entry.before);
+  const threads = doc.threads.map((thread) => {
+    const before = entry.threads.find((t) => t.id === thread.id);
+    return { ...thread, anchor: before?.anchor ?? mapAnchor(thread.anchor, entry.after, entry.before), status: thread.status === "resolved" ? "resolved" as const : before?.status ?? thread.status };
+  });
+  const session = doc.session && { ...doc.session, suggestions: entry.suggestions.length ? entry.suggestions.map((s) => ({ ...s, status: doc.session!.suggestions.find((now) => now.id === s.id)?.status ?? s.status })) : doc.session.suggestions };
+  return { ...doc, snapshot: entry.before, threads, session, agentSuggestions: [...restored, ...added], undo: doc.undo.slice(0, -1), redo: [...(doc.redo ?? []), entry] };
+}
+
+function quoteBlock(text: string) {
+  return text ? text.split(/\r?\n/).map((line) => `> ${line}`).join("\n") : "> (nothing: delete the passage)";
+}
+
+/**
+ * The user asks for a different version of an agent suggestion: a comment
+ * thread on its passage quotes the suggestion (as the agent's message) and
+ * the request (as the user's reply), and is linked to the suggestion, which
+ * stays open. The agent, or Agentic Review, follows up from the thread.
+ */
+export function requestAgentRevision(doc: ReviewDocument, id: string, request: string, makeId: () => string, now = new Date().toISOString()): ReviewDocument {
+  const suggestion = doc.agentSuggestions?.find((s) => s.id === id);
+  if (!suggestion || (suggestion.status !== "pending" && suggestion.status !== "conflicted")) throw new Error("This suggested edit was already decided.");
+  const text = request.trim();
+  if (!text) throw new Error("Describe the revision you want.");
+  const anchor = suggestion.anchors.find((a) => a.state === "attached");
+  if (!anchor) throw new Error("The passage this edit was about is no longer in the document. Reject the suggestion instead.");
+  const quoted = suggestion.edits.map((edit) => `${quoteBlock(edit.before)}\n\nwould become\n\n${quoteBlock(edit.after)}`).join("\n\n");
+  const thread: ReviewThread = {
+    id: makeId(), anchor: anchorAt(doc.snapshot, anchor), status: "open",
+    messages: [
+      { id: makeId(), text: `Suggested edit: ${suggestion.title}\n\n${quoted}${suggestion.reason ? `\n\nReason: ${suggestion.reason}` : ""}`, createdAt: now, author: "agent" },
+      { id: makeId(), text: `Revision requested: ${text}`, createdAt: now },
+    ],
+  };
+  return {
+    ...doc, threads: [...doc.threads, thread],
+    agentSuggestions: doc.agentSuggestions!.map((s) => s.id === id ? { ...s, commentIds: [...s.commentIds, thread.id] } : s),
+  };
 }
