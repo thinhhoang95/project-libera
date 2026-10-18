@@ -647,6 +647,47 @@
                   <option value="true">Enabled</option>
                 </select>
               </fieldset>
+              <fieldset class="ai-function-settings" id="references-settings">
+                <legend>References</legend>
+                <label for="ai-references-model">Model</label>
+                <input id="ai-references-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as AI Formatting" />
+                <label for="ai-references-effort">Reasoning effort</label>
+                <select id="ai-references-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="ai-references-caching">Prompt caching</label>
+                <select id="ai-references-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <div class="switch-row">
+                  <label for="references-lookup-online">Look up metadata online</label>
+                  <input id="references-lookup-online" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Crossref, DataCite, arXiv, OpenAlex, PubMed and Open Library. Only identifiers, titles and author names are sent.</p>
+                <div class="switch-row">
+                  <label for="references-use-ai">Use AI when no source is found</label>
+                  <input id="references-use-ai" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Reads a PDF’s first page or a note with the model above, using your OpenRouter key.</p>
+                <div class="switch-row">
+                  <label for="references-web-search">Allow web search by default</label>
+                  <input id="references-web-search" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Lets the model search the web for reports, theses and pages no catalogue has. Every field it finds names its source page.</p>
+                <div class="switch-row">
+                  <label for="references-auto-create-pdfs">Create entries automatically for new PDFs</label>
+                  <input id="references-auto-create-pdfs" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">A notebook’s own setting overrides this.</p>
+                <label for="references-contact-email">Crossref/OpenAlex contact email</label>
+                <input id="references-contact-email" type="email" autocomplete="off" spellcheck="false" placeholder="Optional" />
+                <p class="field-help">Sent with Crossref and OpenAlex lookups so they can contact you about heavy use, which gives faster service. Leave empty to send none.</p>
+              </fieldset>
               <p class="field-help">Enter or search OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
 
             </section>
@@ -933,6 +974,16 @@
         effort: document.querySelector(`#ai-${name}-effort`),
         caching: document.querySelector(`#ai-${name}-caching`),
       }]));
+      const referenceInputs = {
+        model: document.querySelector("#ai-references-model"),
+        effort: document.querySelector("#ai-references-effort"),
+        caching: document.querySelector("#ai-references-caching"),
+        lookupOnline: document.querySelector("#references-lookup-online"),
+        useAi: document.querySelector("#references-use-ai"),
+        webSearch: document.querySelector("#references-web-search"),
+        autoCreateForPdfs: document.querySelector("#references-auto-create-pdfs"),
+        contactEmail: document.querySelector("#references-contact-email"),
+      };
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
@@ -1509,6 +1560,7 @@
       for (const name of aiFunctionNames) {
         attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
       }
+      attachModelCombobox(referenceInputs.model);
       attachModelCombobox(aiChatAlternativeModelPicker, {
         onPick(modelId) {
           const models = aiChatAlternativeModelsInput.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -1539,6 +1591,15 @@
           ? state.aiFunctions.chat.alternativeModels.join("\n")
           : "";
         aiRewriteCustomInstructionInput.value = state.aiFunctions?.rewrite?.customInstruction || "";
+        const references = state.aiFunctions?.references || {};
+        referenceInputs.model.value = typeof references.model === "string" ? references.model : "";
+        referenceInputs.effort.value = references.reasoningEffort || "low";
+        referenceInputs.caching.value = String(references.promptCaching === true);
+        referenceInputs.lookupOnline.checked = references.lookupOnline !== false;
+        referenceInputs.useAi.checked = references.useAi !== false;
+        referenceInputs.webSearch.checked = references.webSearch === true;
+        referenceInputs.autoCreateForPdfs.checked = references.autoCreateForPdfs === true;
+        referenceInputs.contactEmail.value = typeof references.contactEmail === "string" ? references.contactEmail : "";
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -1827,7 +1888,16 @@
                 alternativeModels: aiChatAlternativeModelsInput.value.split(/\r?\n/),
               } : {}),
               ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
-            }])),
+            }]).concat([["references", {
+              model: referenceInputs.model.value.trim(),
+              reasoningEffort: referenceInputs.effort.value,
+              promptCaching: referenceInputs.caching.value === "true",
+              lookupOnline: referenceInputs.lookupOnline.checked,
+              useAi: referenceInputs.useAi.checked,
+              webSearch: referenceInputs.webSearch.checked,
+              autoCreateForPdfs: referenceInputs.autoCreateForPdfs.checked,
+              contactEmail: referenceInputs.contactEmail.value.trim(),
+            }]])),
             search: {
               textWeights: searchTextWeightsInput.value,
               visionWeights: searchVisionWeightsInput.value,

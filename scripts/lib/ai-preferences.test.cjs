@@ -15,6 +15,9 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
   assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true, customInstruction: '', alternativeModels: [] });
   assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low', promptCaching: false });
+  assert.deepEqual(legacy.references, { model: '', reasoningEffort: 'low', promptCaching: false, lookupOnline: true, useAi: true, webSearch: false, contactEmail: '', autoCreateForPdfs: false });
+  assert.equal(normalizeAiPreferences({ references: { contactEmail: 'not an email', model: 'bad model' } }).references.contactEmail, '');
+  assert.equal(normalizeAiPreferences({ references: { model: 'bad model' } }).references.model, '');
   const efforts = { formatting: 'low', rewrite: 'high', chat: 'xhigh', imageToMarkdown: 'medium', latex: 'max' };
   const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
     model: name === "chat" ? "deepseek/deepseek-v4.1-flash" : `provider/${name}`,
@@ -23,6 +26,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     ...(['rewrite', 'chat'].includes(name) ? { customInstruction: `Instructions for ${name}.` } : {}),
     ...(name === 'chat' ? { alternativeModels: ['anthropic/claude-sonnet-4.5', 'google/gemini-3.5-pro'] } : {}),
   }]));
+  aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', autoCreateForPdfs: true };
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
     const configPath = path.join(directory, 'libera-electron-config.json');
@@ -36,6 +40,14 @@ test('AI preferences migrate legacy models and survive a config file round trip'
       assert.equal(env[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_REASONING_EFFORT`], aiFunctions[name].reasoningEffort);
     }
     assert.equal(env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS, JSON.stringify(aiFunctions.chat.alternativeModels));
+    assert.equal(env.LIBERA_AI_REFERENCES_MODEL, 'provider/references');
+    assert.equal(env.LIBERA_AI_REFERENCES_REASONING_EFFORT, 'high');
+    assert.equal(env.LIBERA_AI_REFERENCES_PROMPT_CACHING, 'true');
+    assert.equal(env.LIBERA_REFERENCES_LOOKUP_ONLINE, 'false');
+    assert.equal(env.LIBERA_REFERENCES_USE_AI, 'true');
+    assert.equal(env.LIBERA_REFERENCES_WEB_SEARCH, 'true');
+    assert.equal(env.LIBERA_REFERENCES_CONTACT_EMAIL, 'me@example.org');
+    assert.equal(env.LIBERA_REFERENCES_AUTO_CREATE_PDFS, 'true');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -50,6 +62,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
   const aiFunctions = normalizeAiPreferences({
     chat: { customInstruction: 'Prefer concise answers.', model: 'test/default-model', alternativeModels: ['test/fast-model', 'test/deep-model'] },
     rewrite: { customInstruction: 'Preserve the author voice.' },
+    references: { webSearch: true, contactEmail: 'me@example.org' },
   });
   const quickPrompts = [{ identifier: 'summary', prompt: 'Summarize $1.' }];
   let saved;
@@ -96,6 +109,16 @@ test('Preferences UI loads and saves all five function settings', async () => {
       document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
       document.querySelector(`#ai-${name}-effort`).value = 'max';
     }
+    assert.equal(document.querySelector('#ai-references-model').value, '');
+    assert.equal(document.querySelector('#ai-references-model').placeholder, 'Same as AI Formatting');
+    assert.equal(document.querySelector('#references-lookup-online').checked, true);
+    assert.equal(document.querySelector('#references-use-ai').checked, true);
+    assert.equal(document.querySelector('#references-web-search').checked, true);
+    assert.equal(document.querySelector('#references-auto-create-pdfs').checked, false);
+    assert.equal(document.querySelector('#references-contact-email').value, 'me@example.org');
+    document.querySelector('#ai-references-model').value = ' custom/references ';
+    document.querySelector('#references-lookup-online').checked = false;
+    document.querySelector('#references-auto-create-pdfs').checked = true;
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Prefer concise answers.');
     assert.equal(document.querySelector('#ai-chat-alternative-models').value, 'test/fast-model\ntest/deep-model');
     document.querySelector('#ai-chat-alternative-models').value = 'custom/chat\ncustom/fast\ncustom/fast';
@@ -121,6 +144,9 @@ test('Preferences UI loads and saves all five function settings', async () => {
       promptCaching: name !== 'chat',
       ...(name === 'chat' ? { customInstruction: 'Instruction loaded from a file.', alternativeModels: ['custom/chat', 'custom/fast', 'custom/fast'] } : {}),
       ...(name === 'rewrite' ? { customInstruction: 'Rewrite instruction loaded from a file.' } : {}),
+    });
+    assert.deepEqual(saved.aiFunctions.references, {
+      model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org',
     });
     assert.deepEqual(saved.quickPrompts, [
       { identifier: 'summary', prompt: 'Summarize $1.' },
