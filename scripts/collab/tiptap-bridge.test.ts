@@ -331,21 +331,29 @@ test("cursor positions round-trip and the awareness format matches y-codemirror.
     assert.equal(JSON.stringify(cursor), JSON.stringify(reference));
     // A CodeMirror peer decodes it with y-codemirror.next's own helper.
     const codemirrorAwareness = new (await import("y-protocols/awareness")).Awareness(c.doc);
-    applyAwarenessUpdate(codemirrorAwareness, encodeAwarenessUpdate(a.awareness, [a.awareness.clientID]), "test");
-    const received = codemirrorAwareness.getStates().get(a.awareness.clientID)!.cursor;
-    const config = new YSyncConfig(c.ytext, codemirrorAwareness);
-    assert.equal(config.fromYPos(received.anchor).pos, anchor);
-    assert.equal(config.fromYPos(received.head).pos, head);
-    // And the CodeMirror user's cursor renders in the Visual editor.
-    codemirrorAwareness.setLocalStateField("user", { name: "Cody", color: "#ff0000" });
-    codemirrorAwareness.setLocalStateField("cursor", { anchor: config.toYPos(source.indexOf("item two") + 5), head: config.toYPos(source.indexOf("item two") + 5) });
-    applyAwarenessUpdate(a.awareness, encodeAwarenessUpdate(codemirrorAwareness, [codemirrorAwareness.clientID]), "test");
-    const caret = editor.view.dom.querySelector(".libera-collab-caret");
-    assert.ok(caret, "remote caret rendered");
-    assert.equal(caret!.textContent?.replace(/⁠/g, ""), "Cody");
-    assert.equal(caret!.parentElement?.textContent?.replace(/⁠|Cody/g, ""), "item two");
-    assert.equal(relativePositionToSourceOffset(a.ytext, received.anchor), anchor);
-    codemirrorAwareness.destroy();
+    // Destroy in finally: a failed assertion must not leave its timer running and hang the file.
+    try {
+      applyAwarenessUpdate(codemirrorAwareness, encodeAwarenessUpdate(a.awareness, [a.awareness.clientID]), "test");
+      const received = codemirrorAwareness.getStates().get(a.awareness.clientID)!.cursor;
+      const config = new YSyncConfig(c.ytext, codemirrorAwareness);
+      assert.equal(config.fromYPos(received.anchor).pos, anchor);
+      assert.equal(config.fromYPos(received.head).pos, head);
+      // And the CodeMirror user's cursor renders in the Visual editor.
+      codemirrorAwareness.setLocalStateField("user", { name: "Cody", color: "#ff0000" });
+      codemirrorAwareness.setLocalStateField("cursor", { anchor: config.toYPos(source.indexOf("item two") + 5), head: config.toYPos(source.indexOf("item two") + 5) });
+      applyAwarenessUpdate(a.awareness, encodeAwarenessUpdate(codemirrorAwareness, [codemirrorAwareness.clientID]), "test");
+      const caret = editor.view.dom.querySelector(".libera-collab-caret");
+      assert.ok(caret, "remote caret rendered");
+      assert.equal((caret as HTMLElement).dataset.name, "Cody");
+      // No text node inside the widget: the browser must never be able to put
+      // the local caret there (typing at the end of the doc was swallowed).
+      assert.equal(caret!.childNodes.length, 0);
+      assert.equal(caret!.getAttribute("contenteditable"), "false");
+      assert.equal(caret!.parentElement?.textContent, "item two");
+      assert.equal(relativePositionToSourceOffset(a.ytext, received.anchor), anchor);
+    } finally {
+      codemirrorAwareness.destroy();
+    }
   } finally { trio.destroy(); }
 });
 

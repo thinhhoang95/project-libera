@@ -73,17 +73,36 @@ export function publishAwarenessCursor(awareness: Awareness, ytext: Y.Text, anch
   if (!sameCursor(local.cursor as AwarenessCursor | null | undefined, cursor)) awareness.setLocalStateField("cursor", cursor);
 }
 
+// The caret widget must contain no text nodes: ProseMirror makes widgets
+// non-editable, and a text node inside one (an earlier version held word
+// joiners and the name label) is somewhere the browser can put the caret, for
+// example on Ctrl+End when a collaborator's caret sits at the end of the
+// document. Typing and arrow keys then went nowhere. The label is drawn by a
+// pseudo-element from data-name instead.
+const CARET_STYLE_ID = "libera-collab-caret-style";
+const CARET_CSS = `
+.libera-collab-caret{position:relative;display:inline-block;width:0;height:1.2em;vertical-align:text-bottom;margin:0 -1px;border-left:2px solid var(--libera-caret-color,#30bced);pointer-events:none;user-select:none}
+.libera-collab-caret::after{content:attr(data-name);position:absolute;top:-1.4em;left:-2px;font-size:0.75em;line-height:1.2;padding:0 3px;border-radius:3px;white-space:nowrap;color:#fff;background-color:var(--libera-caret-color,#30bced)}
+`;
+
+function ensureCaretStyle(doc: Document) {
+  if (doc.getElementById(CARET_STYLE_ID)) return;
+  const style = doc.createElement("style");
+  style.id = CARET_STYLE_ID;
+  style.textContent = CARET_CSS;
+  doc.head.append(style);
+}
+
 function caretWidget(color: string, name: string) {
-  return () => {
-    const caret = document.createElement("span");
+  return (view: { dom: HTMLElement }) => {
+    const doc = view.dom.ownerDocument ?? document;
+    ensureCaretStyle(doc);
+    const caret = doc.createElement("span");
     caret.className = "libera-collab-caret";
     caret.setAttribute("aria-hidden", "true");
-    caret.style.cssText = `position:relative;border-left:2px solid ${color};margin-left:-1px;margin-right:-1px;pointer-events:none`;
-    const label = document.createElement("span");
-    label.className = "libera-collab-caret-label";
-    label.textContent = name;
-    label.style.cssText = `position:absolute;top:-1.4em;left:-2px;font-size:0.75em;line-height:1.2;padding:0 3px;border-radius:3px;white-space:nowrap;user-select:none;color:#fff;background-color:${color}`;
-    caret.append("⁠", label, "⁠");
+    caret.setAttribute("contenteditable", "false");
+    caret.dataset.name = name;
+    caret.style.setProperty("--libera-caret-color", color);
     return caret;
   };
 }
