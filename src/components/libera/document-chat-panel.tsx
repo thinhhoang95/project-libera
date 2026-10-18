@@ -22,7 +22,8 @@ import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
-import { AGENT_PERMISSION_LABELS, AGENT_PERMISSIONS, compactAgentRunRecord, isAgentPermission, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -193,6 +194,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file : null;
   // "Modify all files in Notebook/Folder" applies to the notebook of the file in view, else the selected one.
   const agentNotebook = viewedFile?.notebook ?? agentWorkspace?.notebook;
+  // In a shared notebook the agent's changes are suggestions (plan M3.4).
+  const sharedAgent = useIsSharedNotebook(agentNotebook);
   const openTextFileCount = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).length;
   // A photo being viewed covers the editors, so it replaces the document as context.
   const document = useMemo<ChatContext | null>(() => !viewedPhoto && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
@@ -550,7 +553,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           } else if (event.type === "tasks_updated") { run.tasks = event.tasks; schedule(); }
           else if (event.type === "file_changed") {
             const existing = run.changes.find((change) => change.path === event.path);
-            if (existing) existing.created ||= event.created; else run.changes.push({ path: event.path, created: event.created });
+            if (existing) { existing.created ||= event.created; if (event.suggested) existing.suggested = true; }
+            else run.changes.push({ path: event.path, created: event.created, ...(event.suggested ? { suggested: true } : {}) });
             publish("streaming");
             // Shared files changed through the collab host: the tab's live replica already has the edit.
             if (event.shared) return;
@@ -781,10 +785,10 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
           <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
         </div>
-        {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${AGENT_PERMISSION_LABELS[permission]}`}>
+        {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${agentPermissionLabel(permission, sharedAgent)}`}>
           <span className="sr-only">Agent permission</span>
           <select value={permission} disabled={!chat || !!pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
-            {AGENT_PERMISSIONS.map((item) => <option key={item} value={item}>{AGENT_PERMISSION_LABELS[item]}</option>)}
+            {AGENT_PERMISSIONS.map((item) => <option key={item} value={item}>{agentPermissionLabel(item, sharedAgent)}</option>)}
           </select>
           <ChevronDown aria-hidden size={13} />
         </label>}
@@ -819,6 +823,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
             <p className="libera-chat-context-hint">{permission === "read-only" ? "Read Only: the agent will not change any file."
+              : sharedAgent ? `“${agentNotebook}” is shared: the agent suggests changes${permission === "open-files" ? " to the files open in the editor" : " to its files"}, which collaborators see and an editor accepts or rejects. Undo withdraws them.`
               : permission === "open-files" ? (openTextFileCount ? `It can modify the ${openTextFileCount === 1 ? "file" : `${openTextFileCount} files`} open in the editor. Changes show up right away and can be undone.` : "Open the files you want it to change. It can still search and read the rest.")
               : agentNotebook ? `It can modify and create files in “${agentNotebook}”. Changes show up right away and can be undone.` : "Open a file or select a notebook for it to work in."}</p>
             <p className="libera-chat-context-hint">Type @ to point it at a file, or add selected text with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
@@ -871,6 +876,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
           {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
+              : sharedAgent ? (permission === "open-files" ? `Can suggest in ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}` : `Can suggest in ${agentNotebook}`)
               : permission === "open-files" ? `Can modify ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}`
               : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}`}</p>
           </div>}

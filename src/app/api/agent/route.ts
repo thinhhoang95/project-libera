@@ -118,11 +118,8 @@ export async function POST(request: NextRequest) {
   const requestedNotebook = typeof body.notebook === "string" && notebooks.includes(body.notebook) ? body.notebook : null;
   const notebook = activeFile ? activeFile.split("/")[0] : requestedNotebook;
   if (permission === "notebook" && !notebook) return jsonError("Open a file or select a notebook so the agent knows which notebook it may change.", 400);
-  if (permission === "notebook" && notebook && isSharedNotebookPath(notebook)) {
-    // Phase 1: agent edits to shared files apply directly as the user's
-    // edits, so they are limited to files the user has open and can watch.
-    return jsonError(`"${notebook}" is a shared notebook, where "Modify all files in Notebook/Folder" is not available yet. Switch Agent permission to "Modify opened files only" (the agent then edits the shared files you have open) or Read Only.`, 409);
-  }
+  // In a shared notebook "notebook" is "Suggest in notebook": every change
+  // there is a suggestion others review (plan M3.4), so it needs no refusal.
 
   // Only drafts of files that are open and differ from disk matter. A shared
   // tab's text is a mirror of the shared document, which the agent reads

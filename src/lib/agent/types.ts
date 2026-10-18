@@ -13,6 +13,20 @@ export const AGENT_PERMISSION_LABELS: Record<AgentPermission, string> = {
   notebook: "Modify all files in Notebook/Folder",
 };
 
+/**
+ * The same modes in a shared notebook (plan M3.4), where the agent's changes
+ * are suggestions others review: it never edits a shared file directly.
+ */
+export const SHARED_AGENT_PERMISSION_LABELS: Record<AgentPermission, string> = {
+  "read-only": "Read Only",
+  "open-files": "Suggest in opened files",
+  notebook: "Suggest in notebook",
+};
+
+export function agentPermissionLabel(permission: AgentPermission, shared: boolean): string {
+  return (shared ? SHARED_AGENT_PERMISSION_LABELS : AGENT_PERMISSION_LABELS)[permission];
+}
+
 export type AgentTaskStatus = "pending" | "in_progress" | "completed";
 export type AgentTask = { id: string; subject: string; status: AgentTaskStatus };
 
@@ -36,7 +50,8 @@ export type AgentStep =
       diff?: { removed: string; added: string };
     };
 
-export type AgentFileChange = { path: string; created: boolean; reverted?: boolean };
+/** `suggested`: a file in a shared notebook, where the change is a pending suggestion (the text is unchanged). */
+export type AgentFileChange = { path: string; created: boolean; reverted?: boolean; suggested?: boolean };
 
 /** Review comments a run added to one file. */
 export type AgentCommentsAdded = { path: string; count: number };
@@ -65,6 +80,8 @@ export type UndoResult = {
    * host; open tabs follow through their live replica, not from `content`.
    */
   shared?: boolean;
+  /** Shared notebooks: how many of the run's pending suggestions were withdrawn. */
+  withdrawn?: number;
 };
 
 export type AgentEvent =
@@ -76,8 +93,9 @@ export type AgentEvent =
    * `shared`: the file is in a shared notebook and the change went through the
    * collab host. Open tabs get it from their live replica, so the panel must
    * not reload them from disk (the working copy lags the document).
+   * `suggested`: the change is a pending suggestion; the text is unchanged.
    */
-  | { type: "file_changed"; path: string; created: boolean; shared?: boolean }
+  | { type: "file_changed"; path: string; created: boolean; shared?: boolean; suggested?: boolean }
   | { type: "comments_added"; path: string; count: number }
   | { type: "tasks_updated"; tasks: AgentTask[] }
   | { type: "usage"; usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } }
@@ -106,7 +124,8 @@ export function validateAgentRunRecord(value: unknown): value is AgentRunRecord 
     Array.isArray(run.tasks) && run.tasks.length <= 100 && run.tasks.every((task) => task && isShortString(task.id, 32) && isShortString(task.subject, 500) &&
       (task.status === "pending" || task.status === "in_progress" || task.status === "completed")) &&
     Array.isArray(run.changes) && run.changes.length <= 500 && run.changes.every((change) => change && isShortString(change.path, 4_096) &&
-      typeof change.created === "boolean" && (change.reverted === undefined || typeof change.reverted === "boolean")) &&
+      typeof change.created === "boolean" && (change.reverted === undefined || typeof change.reverted === "boolean") &&
+      (change.suggested === undefined || typeof change.suggested === "boolean")) &&
     (run.comments === undefined || (Array.isArray(run.comments) && run.comments.length <= 500 && run.comments.every((entry) => entry && isShortString(entry.path, 4_096) &&
       Number.isInteger(entry.count) && entry.count >= 0)));
 }
