@@ -36,6 +36,7 @@ const {
 } = require("./directory-mode.cjs");
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
+const { createCollabHost } = require("./collab-host.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
@@ -82,6 +83,14 @@ const updaterService = createUpdaterService({
   getMainWindow: () => mainWindow,
   onBeforeInstall: prepareToQuit,
 });
+// Collaboration host (LIBERA_COLLAB=1 only; otherwise every call is a no-op).
+const collabHost = createCollabHost({
+  getMainWindow: () => mainWindow,
+  isTrustedFrame: (frame) => Boolean(nextServerUrl) && isSameOrigin(frame.url, nextServerUrl),
+  onUpdateRequired: () => void updaterService.check(),
+});
+const hasInstanceLock = collabHost.claimSingleInstance();
+if (!hasInstanceLock) app.quit();
 
 function getAppRoot() {
   return app.getAppPath();
@@ -1709,6 +1718,7 @@ async function startNextServer(config) {
     LIBERA_ELECTRON: "1",
     LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
     LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
+    ...collabHost.environment(),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
     LIBERA_SOURCE_EDITOR: normalizeSourceEditor(config.sourceEditor),
@@ -1987,6 +1997,7 @@ async function createMainWindow(url) {
 }
 
 async function bootstrap() {
+  if (!hasInstanceLock) return;
   try {
     applyApplicationIdentity();
 
@@ -2000,6 +2011,11 @@ async function bootstrap() {
       config = await createSetupWindow({ mode: "setup" });
     }
 
+    // Before Next, so the control API's URL and token are in Next's env.
+    await collabHost.start(config).catch((error) => {
+      console.error(`Collaboration is unavailable: ${error.message}`);
+    });
+    if (isQuitting) return;
     const url = await startNextServer(config);
     if (isQuitting) return;
     nextServerUrl = url;
@@ -2031,6 +2047,10 @@ function prepareToQuit() {
     }
     isQuitting = true;
     updaterService.dispose();
+    // The host flushes its SQLite work and closes before Next goes away.
+    await collabHost.stop().catch((error) => {
+      console.error(`Could not stop the collaboration host: ${error.message}`);
+    });
     await stopProcessTree(nextProcess).catch((error) => {
       console.error(`Could not stop the Next.js server: ${error.message}`);
     });
