@@ -164,6 +164,14 @@ export function flushBibMirror(notebook: string): Promise<BibMirrorResult | null
   return next;
 }
 
+/** Regenerate the mirror from `library` now, after any write in progress (replaces a pending regeneration). */
+export async function regenerateBibMirror(notebook: string, library: ReferenceLibrary): Promise<BibMirrorResult> {
+  scheduler.pending.set(notebook, library);
+  const result = await flushBibMirror(notebook);
+  if (!result) throw new Error("The .bib mirror could not be written.");
+  return result;
+}
+
 /**
  * A library transaction committed: regenerate the mirror after
  * BIB_MIRROR_DEBOUNCE_MS when the setting is on. Cheap when it is off.

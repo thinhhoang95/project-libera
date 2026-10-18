@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { flushBibMirror, lastBibMirrorResult, writeBibMirror } from "@/lib/references/bib-mirror";
+import { lastBibMirrorResult, regenerateBibMirror } from "@/lib/references/bib-mirror";
 import { LibraryOpError } from "@/lib/references/library-ops";
 import { StorageError, toStorageError } from "@/lib/storage/errors";
 import { assertSafeSegment } from "@/lib/storage/paths";
@@ -48,8 +48,7 @@ export async function POST(request: NextRequest) {
     const notebook = assertSafeSegment(notebookValue, "Notebook name");
     const library = await updateReferenceLibrary(notebook, null, [{ op: "set-settings", settings: { bibMirror: enabled } }]);
     // The commit scheduled a debounced rewrite; do it now instead.
-    await flushBibMirror(notebook);
-    const mirror = await writeBibMirror(notebook, library);
+    const mirror = await regenerateBibMirror(notebook, library);
     return NextResponse.json({ library, mirror });
   } catch (error) {
     return handleError(error, "Could not change the .bib mirror.");
