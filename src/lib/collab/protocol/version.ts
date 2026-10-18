@@ -35,10 +35,16 @@ export type CloseCode = (typeof CloseCode)[keyof typeof CloseCode];
 /** Client-side batching and protection limits (§4 of the source plan). */
 export const SyncLimits = {
   batchWindowMs: 30,
-  /** Largest single update the server accepts; clients split larger edits. */
-  maxUpdateBytes: 512 * 1024,
+  /** Clients stop merging queued updates into one batch past this size. */
+  batchMaxBytes: 256 * 1024,
+  /**
+   * Largest single update the server accepts. A Yjs update cannot be split
+   * after the fact, so editors split very large pastes into several
+   * transactions; this limit only stops runaway clients.
+   */
+  maxUpdateBytes: 4 * 1024 * 1024,
   /** Largest WebSocket frame either side sends. */
-  maxFrameBytes: 4 * 1024 * 1024,
+  maxFrameBytes: 8 * 1024 * 1024,
   awarenessTimeoutMs: 30_000,
   awarenessHeartbeatMs: 15_000,
   backoffBaseMs: 500,
