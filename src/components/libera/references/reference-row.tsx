@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   authorYearLabel,
@@ -237,8 +238,12 @@ export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, 
   };
   const left = typeof window !== "undefined" ? Math.min(point.x, Math.max(0, window.innerWidth - 240)) : point.x;
 
-  return (
-    <div ref={menuRef} role="menu" aria-label={`Actions for ${entry.key}`} className="fixed z-50 w-56 rounded-lg border border-border bg-card p-1 shadow-lg" style={{ left, top: point.y }}>
+  const top = typeof window !== "undefined" ? Math.min(point.y, Math.max(0, window.innerHeight - 360)) : point.y;
+
+  if (typeof document === "undefined") return null;
+  // Portal to body: the panel clips/contains fixed descendants, which cut the menu off at the panel edge.
+  return createPortal(
+    <div ref={menuRef} role="menu" aria-label={`Actions for ${entry.key}`} className="fixed z-50 w-56 rounded-lg border border-border bg-card p-1 shadow-lg" style={{ left, top }}>
       <MenuItem icon={<Quote aria-hidden className="h-4 w-4" />} label="Cite at cursor" disabled={!canCite} title={canCite ? undefined : CITE_UNAVAILABLE} onClick={act("cite")} />
       {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label="Open PDF" onClick={act("open-pdf")} /> : null}
       {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label="Open note" onClick={act("open-note")} /> : null}
@@ -265,6 +270,7 @@ export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, 
       <MenuItem icon={<RotateCw aria-hidden className="h-4 w-4" />} label="Re-resolve…" onClick={act("reresolve")} />
       <MenuItem icon={<Pencil aria-hidden className="h-4 w-4" />} label="Edit…" onClick={act("edit")} />
       <MenuItem icon={<Trash2 aria-hidden className="h-4 w-4" />} label="Delete…" tone="destructive" onClick={act("delete")} />
-    </div>
+    </div>,
+    document.body,
   );
 }
