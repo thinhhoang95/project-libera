@@ -18,8 +18,9 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 need
 | Wave | Content | Branches | Status |
 |---|---|---|---|
 | 0 | Scaffolding (M1.0): dependencies, protocol, schema, server skeleton | `collaboration` | ☑ |
-| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge`, `collab/edlib` | ◐ |
-| 2 | Electron host integration · replica · bindings in editors · shared notebooks · status UI · Phase 1 AI | — | ☐ |
+| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge` (running), `collab/edlib` | ◐ |
+| 1b | Server: revisions, restore, decisions, reviews, audit | `collab/srv23` | ☑ |
+| 2 | Electron host integration · shared notebooks · collab UI · test harness (running); editor wiring and Phase 1 AI next | `collab/elec`, `collab/notebooks`, `collab/ui`, `collab/harness` | ◐ |
 | 3 | Phase 2: comments, mentions, notifications, history, restore, offline commands | — | ☐ |
 | 4 | Phase 3: suggestions, suggest mode, decisions, AI suggester, reviews, audit | — | ☐ |
 | 5 | Phase 4: load, admin CLI, backups, observability, crash reporting, hardening | — | ☐ |
@@ -131,6 +132,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Soak runner (24 h nightly; 👤 schedule on CI)
 
 ## Phase 2: comments and history
+- ☑ Server: revisions (named, auto checkpoints job, reconstruction at any seq), restore of a whole doc or a section as minimal forward edits (M2.4/M2.5 server sides)
 - ☑ Client library: RelativePosition anchors, detach and reattach candidates, 1,000-operation anchor fuzz (`src/lib/collab/anchors.ts`)
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☐ M2.1 `ReviewStore` interface; local and shared stores; RelativePosition anchors; authors on messages; sidebar alignment
@@ -141,6 +143,8 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ M2.6 Offline comments through pending commands with idempotency
 
 ## Phase 3: suggestions and review
+- ☑ Server: suggestion mirror, decisions serialized in the room (stale checks incl. insertion neighbours, groups all-or-nothing, accept-all with checkpoint, revert, offline replay), reviews with revision-bound approvals and outdated detection, audit entries; hard cases 1–7 end to end (`server/test/hard-cases.test.ts`)
+- ☑ Server: annotation authorship enforced for every role (new records in the sender's name, no re-attribution, suggestion actor = creator) (`server/test/sync-authorship.test.ts`)
 - ☑ Client library: overlay model, stale detection, groups, snapshot-edit mapping, CodeMirror preview and suggest mode, Tiptap preview with authors; hard cases 1, 2, 4 and 7 at model level (`scripts/collab/edlib-*.test.ts`)
 - ☐ M3.1 Overlay model; Tiptap preview rendering with authors; CodeMirror preview extension; Suggestions panel
 - ☐ M3.2 Suggest mode in CodeMirror; "Suggest edit" in Visual; editing your own suggestion
