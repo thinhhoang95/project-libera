@@ -1238,7 +1238,8 @@ export function MarkdownEditor({
     const textarea = textareaRef.current;
     if (!textarea || !activeFilePath || detail.path !== activeFilePath || detail.handled) return;
     detail.handled = true;
-    const currentValue = editorValueRef.current;
+    // The textarea holds the latest text, even before React has seen its last input.
+    const currentValue = textarea.value;
     const nextValue = writeDocumentStyleForPath(activeFilePath, currentValue, detail.style);
     if (nextValue === currentValue) return;
     const change = textChange(currentValue, nextValue);

@@ -365,13 +365,16 @@ export function MarkdownCodeMirrorEditor({
       return true;
     };
     const popupOpen = () => fileLinkPopupRef.current !== null;
-    const citationKey = (key: string) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key }) ?? false);
+    const citationKey = (key: string, shiftKey = false) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key, shiftKey }) ?? false);
 
     const state = EditorState.create({
       doc: initial.value,
       extensions: [
-        // The citation popup takes the arrows, Enter, Tab and Escape while open.
-        Prec.highest(keymap.of(["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })))),
+        // The citation popup takes the arrows, Enter (Shift+Enter: narrative), Tab and Escape while open.
+        Prec.highest(keymap.of([
+          ...["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })),
+          { key: "Shift-Enter", run: citationKey("Enter", true) },
+        ])),
         // The file-link picker takes the arrows, Enter and Escape while open.
         Prec.highest(keymap.of([
           { key: "Escape", run: () => { if (!popupOpen()) return false; closeFileLinkPopup(); return true; } },

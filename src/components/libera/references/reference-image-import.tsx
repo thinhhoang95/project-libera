@@ -77,9 +77,13 @@ export function referenceListText(markdown: string) {
       .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
       .replace(/\[([^\]]*)\]\(([^)\s]*)[^)]*\)/g, (_, text: string, url: string) => text.includes(url) || !url ? text : `${text} ${url}`)
       .replace(/<[^>]+>/g, "")
+      // Escaped `*` and `_` are text, not emphasis: set them aside first.
+      .replace(/\\([*_])/g, (_, char: string) => char === "*" ? "" : "")
       .replace(/(\*\*|__)(.+?)\1/g, "$2")
       .replace(/(^|[^\p{L}\p{N}])[*_](\S(?:.*?\S)?)[*_](?=[^\p{L}\p{N}]|$)/gu, "$1$2")
-      .replace(/\\([!-/:-@[-`{-~])/g, "$1");
+      .replace(/\\([!-/:-@[-`{-~])/g, "$1")
+      .replace(//g, "*")
+      .replace(//g, "_");
     if (/^\s*#{1,6}\s+/.test(line)) line = line.replace(/^\s*#{1,6}\s+/, "");
     const bullet = /^\s*[-*+•]\s+/.exec(line);
     if (bullet) {
