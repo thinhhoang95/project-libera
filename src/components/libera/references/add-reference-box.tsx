@@ -166,8 +166,10 @@ type BoxProps = {
   initialPath?: string;
   /** Let the model search the web for this session's lookups. */
   webSearch: boolean;
-  /** Whether the user chose the web-search setting (the preference cannot be read in the panel, so it starts off). */
+  /** Whether the user chose the web-search setting this session; until then it follows the preference. */
   webSearchChosen: boolean;
+  /** The Preferences default (GET /api/references/settings), or null when it could not be read (then the toggle starts off). */
+  webSearchDefault?: boolean | null;
   onWebSearchChange: (webSearch: boolean) => void;
   apply: (ops: ReferenceLibraryOp[], label: string) => Promise<ReferenceLibrary>;
   record: (before: ReferenceLibrary, after: ReferenceLibrary, label: string, touched?: Iterable<string>) => void;
@@ -187,6 +189,7 @@ export function AddReferenceBox({
   initialPath,
   webSearch,
   webSearchChosen,
+  webSearchDefault = null,
   onWebSearchChange,
   apply,
   record,
@@ -386,7 +389,11 @@ export function AddReferenceBox({
             <input type="checkbox" checked={webSearch} onChange={(event) => onWebSearchChange(event.target.checked)} />
             <Globe aria-hidden className="h-3 w-3 shrink-0" />
             <span className="shrink-0">Search the web</span>
-            {!webSearchChosen ? <span className="min-w-0 truncate" aria-label="Web search default">· off: your Preferences default can&apos;t be read here</span> : null}
+            {!webSearchChosen ? (
+              <span className="min-w-0 truncate" aria-label="Web search default">
+                {webSearchDefault === null ? "· off: your Preferences default can't be read here" : `· ${webSearchDefault ? "on" : "off"} in Preferences`}
+              </span>
+            ) : null}
           </label>
           {lookup ? (
             <div className="flex items-center gap-2 text-[11px]" role="status" aria-label="Lookup progress">
