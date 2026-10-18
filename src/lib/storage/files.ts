@@ -58,6 +58,7 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
 /** Reads a file for a tab. Text files come with their content, except plain
@@ -564,6 +565,7 @@ export async function writeUploadedFile(
 
   await writeFile(targetPath, Buffer.from(await upload.arrayBuffer()));
   notifySearchChanges([relativeFilePath(safeNotebook, targetParts)]);
+  notifyReferenceFilesAdded([relativeFilePath(safeNotebook, targetParts)]);
 
   return getFileNode(safeNotebook, targetParts);
 }
