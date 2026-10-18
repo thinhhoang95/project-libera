@@ -364,13 +364,16 @@ export class ReferenceJobRunner {
   async scheduleRetractionCheck(notebook: string, { force = false }: { force?: boolean } = {}): Promise<RetractionCheckResponse> {
     await this.load(notebook);
     const lastCheckedAt = await this.lastRetractionCheck(notebook);
+    const result = (job: ReferenceJobStatus | null, skipped?: RetractionCheckResponse["skipped"]): RetractionCheckResponse => ({
+      job, ...(lastCheckedAt ? { lastCheckedAt } : {}), ...(skipped ? { skipped } : {}),
+    });
     const active = this.jobs.get(notebook)?.find((job) => job.kind === "check-retractions" && isActiveReferenceJob(job));
-    if (active) return { job: publicStatus(active), lastCheckedAt };
-    if (!this.deps.settings().lookupOnline) return { job: null, lastCheckedAt, skipped: "lookups-off" };
-    if (!force && lastCheckedAt && this.deps.now().getTime() - Date.parse(lastCheckedAt) < RETRACTION_CHECK_INTERVAL_MS) return { job: null, lastCheckedAt, skipped: "not-due" };
+    if (active) return result(publicStatus(active));
+    if (!this.deps.settings().lookupOnline) return result(null, "lookups-off");
+    if (!force && lastCheckedAt && this.deps.now().getTime() - Date.parse(lastCheckedAt) < RETRACTION_CHECK_INTERVAL_MS) return result(null, "not-due");
     const library = await this.deps.readLibrary(notebook);
-    if (!Object.values(library.entries).some((entry) => entryDoi(entry))) return { job: null, lastCheckedAt, skipped: "no-dois" };
-    return { job: await this.enqueue(notebook, "check-retractions"), lastCheckedAt };
+    if (!Object.values(library.entries).some((entry) => entryDoi(entry))) return result(null, "no-dois");
+    return result(await this.enqueue(notebook, "check-retractions"));
   }
 
   /**
