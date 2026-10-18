@@ -6,6 +6,7 @@ import {
   PROVENANCE_SOURCES,
   REFERENCE_LIBRARY_VERSION,
   type CslItem,
+  type FieldAlternative,
   type FieldProvenance,
   type ReferenceAttachment,
   type ReferenceEntry,
@@ -156,6 +157,34 @@ function validateProvenance(value: unknown, { allowNull = false } = {}) {
     validateFieldProvenance(provenance, field);
   }
   return value as Record<string, FieldProvenance | null | undefined>;
+}
+
+function validateConflicts(value: unknown, { allowNull = false } = {}) {
+  if (!isRecord(value)) fail("Conflicts must be an object.");
+  const conflicts: Record<string, FieldAlternative[] | null> = {};
+  for (const [field, alternatives] of Object.entries(value)) {
+    if (alternatives === null || alternatives === undefined || (Array.isArray(alternatives) && !alternatives.length)) {
+      if (!allowNull && alternatives !== undefined) fail(`Conflict for “${field}” has no alternatives.`);
+      conflicts[field] = null;
+      continue;
+    }
+    conflicts[field] = assertList(alternatives, `Alternatives for “${field}”`).map((alternative) => {
+      if (!isRecord(alternative)) fail(`An alternative for “${field}” is invalid.`);
+      validateCslValue(field, alternative.value);
+      return { value: structuredClone(alternative.value), provenance: structuredClone(validateFieldProvenance(alternative.provenance, field)) };
+    });
+  }
+  return conflicts;
+}
+
+function applyConflicts(entry: ReferenceEntry, conflicts: Record<string, FieldAlternative[] | null>) {
+  const next = { ...entry.conflicts };
+  for (const [field, alternatives] of Object.entries(conflicts)) {
+    if (alternatives) next[field] = alternatives;
+    else delete next[field];
+  }
+  if (Object.keys(next).length) entry.conflicts = next;
+  else delete entry.conflicts;
 }
 
 function validateStatus(value: unknown): ReferenceStatus {
@@ -310,6 +339,7 @@ function addEntry(library: Library, input: ReferenceEntryInput, now: string) {
     identifiers: input.identifiers === undefined ? {} : structuredClone(validateIdentifiers(input.identifiers)),
     provenance: input.provenance === undefined ? {} : structuredClone(validateProvenance(input.provenance)) as ReferenceEntry["provenance"],
     status: input.status === undefined ? "needs-review" : validateStatus(input.status),
+    ...(input.conflicts !== undefined && Object.keys(input.conflicts).length ? { conflicts: validateConflicts(input.conflicts) as ReferenceEntry["conflicts"] } : {}),
     attachments: input.attachments === undefined ? [] : uniqueAttachments(assertList(input.attachments, "Attachments").map(validateAttachment)),
     ...(input.versions !== undefined ? { versions: uniqueVersions(structuredClone(validateVersions(input.versions))) } : {}),
     ...(input.notes !== undefined ? { notes: assertString(input.notes, "Notes") } : {}),
@@ -356,6 +386,7 @@ function updateEntry(library: Library, op: Extract<ReferenceLibraryOp, { op: "up
       // Provenance for a field the entry does not have would describe nothing.
     }
   }
+  if (op.conflicts !== undefined) applyConflicts(entry, validateConflicts(op.conflicts, { allowNull: true }));
   if (op.identifiers !== undefined) entry.identifiers = structuredClone(validateIdentifiers(op.identifiers));
   if (op.status !== undefined) entry.status = validateStatus(op.status);
   if (op.notes !== undefined) entry.notes = assertString(op.notes, "Notes");
@@ -449,6 +480,7 @@ function validateEntry(value: unknown): ReferenceEntry {
   validateCsl(value.csl);
   validateIdentifiers(value.identifiers);
   validateProvenance(value.provenance);
+  if (value.conflicts !== undefined) validateConflicts(value.conflicts);
   validateStatus(value.status);
   const attachments = assertList(value.attachments, "Attachments").map(validateAttachment);
   if (uniqueAttachments(attachments).length !== attachments.length) fail(`Reference “${key}” lists an attachment twice.`);

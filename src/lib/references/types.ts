@@ -109,6 +109,9 @@ export type FieldProvenance = {
 
 export type ReferenceStatus = "confirmed" | "needs-review" | "unresolved";
 
+/** A competing value for a field, from a source that disagrees with the entry's current value. */
+export type FieldAlternative = { value: unknown; provenance: FieldProvenance };
+
 export type ReferenceAttachment =
   | {
     kind: "pdf" | "markdown";
@@ -141,6 +144,8 @@ export type ReferenceEntry = {
   csl: CslItem;
   identifiers: ReferenceIdentifiers;
   provenance: Partial<Record<CslField, FieldProvenance>>;
+  /** Fields whose sources disagree: the alternatives to the current value, shown on the confirmation card. */
+  conflicts?: Partial<Record<CslField, FieldAlternative[]>>;
   status: ReferenceStatus;
   attachments: ReferenceAttachment[];
   versions?: ReferenceVersionLink[];
@@ -231,6 +236,7 @@ export type ReferenceEntryInput = {
   csl: CslItem;
   identifiers?: ReferenceIdentifiers;
   provenance?: Partial<Record<CslField, FieldProvenance>>;
+  conflicts?: Partial<Record<CslField, FieldAlternative[]>>;
   status?: ReferenceStatus;
   attachments?: ReferenceAttachment[];
   versions?: ReferenceVersionLink[];
@@ -240,7 +246,7 @@ export type ReferenceEntryInput = {
 
 export type ReferenceLibraryOp =
   | { op: "add"; entry: ReferenceEntryInput }
-  | { op: "update"; id: string; csl?: Partial<CslItem>; removeFields?: string[]; identifiers?: ReferenceIdentifiers; provenance?: Partial<Record<CslField, FieldProvenance>>; status?: ReferenceStatus; notes?: string; tags?: string[]; versions?: ReferenceVersionLink[]; retraction?: RetractionStatus }
+  | { op: "update"; id: string; csl?: Partial<CslItem>; removeFields?: string[]; identifiers?: ReferenceIdentifiers; provenance?: Partial<Record<CslField, FieldProvenance>>; /** Per field; null or [] clears that field's conflict. */ conflicts?: Partial<Record<CslField, FieldAlternative[] | null>>; status?: ReferenceStatus; notes?: string; tags?: string[]; versions?: ReferenceVersionLink[]; retraction?: RetractionStatus }
   | { op: "rename-key"; id: string; key: string }
   | { op: "delete"; id: string }
   | { op: "merge"; keepId: string; mergeIds: string[] }
@@ -254,3 +260,11 @@ export type ReferenceLibraryOp =
 /** Window event dispatched after any library change this window knows about. */
 export const REFERENCES_UPDATED_EVENT = "libera:references-updated";
 export type ReferencesUpdatedDetail = { notebook: string; revision: number };
+
+/** Window event asking the References panel to open its Add box for `query` (e.g. an unresolved key or a pasted DOI). */
+export const REFERENCES_ADD_REQUEST_EVENT = "libera:references-add-request";
+export type ReferencesAddRequestDetail = { notebook: string; query: string };
+
+/** Window event asking the References panel to show an entry, by id or by key/alias. */
+export const REFERENCES_REVEAL_EVENT = "libera:references-reveal";
+export type ReferencesRevealDetail = { notebook: string; entryId?: string; key?: string };

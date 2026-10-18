@@ -29,16 +29,16 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | core | `references/core` | BibTeX/BibLaTeX, RIS, CSL-JSON parse and serialize; names; normalization; identifiers; dedupe scoring | ☑ merged 58eae11; 57 tests |
-| syntax | `references/syntax` | Citation grammar, scanner, serializer, trigger detection, key rewrite; micromark/mdast extension | ◐ |
+| syntax | `references/syntax` | Citation grammar, scanner, serializer, trigger detection, key rewrite; micromark/mdast extension | ☑ merged 894fa1b; 91 shared cases, fuzzed against micromark |
 | storage | `references/storage` | Library storage and transactions; library API; attachments follow renames, moves, copies, archive, delete; re-attach by hash; client store | ☑ merged 1678274; suite 585 tests, only the baseline 4 fail + 2 cancelled |
 
 ## Wave 2: Markdown integration and panel
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ☐ |
-| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ☐ |
-| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ☐ |
+| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ◐ |
+| interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ◐ |
+| panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ◐ |
 
 ## Wave 3: editors, capture, agent runtime, moves
 

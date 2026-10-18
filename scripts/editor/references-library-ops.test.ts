@@ -295,3 +295,22 @@ test("put inserts or replaces a whole entry by id, keeping its timestamps, and c
   assert.throws(() => clash({ status: "done" as never }), /status/);
   assert.equal(other.key, "other");
 });
+
+test("conflicts record competing values per field, validate them, and clear with null or an empty list", () => {
+  const pdfText: FieldProvenance = { source: "pdf-text", confidence: 0.6, retrievedAt: T0 };
+  const library = withSmith();
+  const entry = only(library);
+  const withConflict = apply(library, [{ op: "update", id: entry.id, conflicts: { title: [{ value: "Sparse Coding of Natural Images", provenance: pdfText }] } }]).library;
+  assert.deepEqual(only(withConflict).conflicts, { title: [{ value: "Sparse Coding of Natural Images", provenance: pdfText }] });
+
+  assert.throws(() => apply(withConflict, [{ op: "update", id: entry.id, conflicts: { title: [{ value: 42, provenance: pdfText }] } }]), LibraryOpError);
+  assert.throws(() => apply(withConflict, [{ op: "update", id: entry.id, conflicts: { title: [{ value: "x", provenance: { source: "nowhere", confidence: 1, retrievedAt: T0 } as unknown as FieldProvenance }] } }]), LibraryOpError);
+
+  assert.equal(only(apply(withConflict, [{ op: "update", id: entry.id, conflicts: { title: null } }]).library).conflicts, undefined);
+  assert.equal(only(apply(withConflict, [{ op: "update", id: entry.id, conflicts: { title: [] } }]).library).conflicts, undefined);
+
+  const added = apply(emptyReferenceLibrary(), [{ op: "add", entry: { csl: { ...smith }, conflicts: { title: [{ value: "Other", provenance: pdfText }] } } }]).library;
+  assert.deepEqual(Object.keys(only(added).conflicts ?? {}), ["title"]);
+  const put = apply(emptyReferenceLibrary(), [{ op: "put", entry: structuredClone(only(added)) }]).library;
+  assert.deepEqual(only(put).conflicts, only(added).conflicts);
+});
