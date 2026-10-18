@@ -3,6 +3,7 @@
 // which run it under plain Node against the real collab server.
 
 import { registerAccountRoutes } from "./routes-account";
+import { registerDiagnosticsRoutes } from "./routes-diagnostics";
 import { registerDocRoutes, type DocRouteOptions } from "./routes-docs";
 import { registerProjectRoutes } from "./routes-projects";
 import { CollabRuntime, type CollabRuntimeOptions } from "./runtime";
@@ -27,6 +28,7 @@ export async function startControlApp(options: ControlAppOptions): Promise<Contr
   registerAccountRoutes(server.routes, runtime);
   registerProjectRoutes(server.routes, runtime);
   registerDocRoutes(server.routes, runtime, options.docs);
+  registerDiagnosticsRoutes(server.routes, runtime);
   // Core routes first; shared-notebook routes (share, join, files,
   // reconciliations) come from the current NotebookService.
   server.mount(runtime.notebookRoutes);
