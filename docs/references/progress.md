@@ -24,8 +24,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
   - pdfcite: quote and cite from the PDF viewer, drag into editors, semantic `@` search. Waits for editors.
   - syntax2: narrative citations, per-document style, reference-list screenshot OCR. Waits for editors.
 - **Small follow-ups:**
-  - Place the scholarly lane's `RetractionBadge` on panel rows and cards.
-  - Have the jobs UI show the `check-retractions` job kind.
+  - ☑ `RetractionBadge` on panel rows and cards, and the `check-retractions` job text (ab117fa).
   - Investigate the intermittent "PDF export waits for the library…" test in `references-preview.test.ts`. It fails only when many files run in parallel. The suspect is the main-thread citeproc fallback under CPU contention, plus the new abbreviation-table load.
 - **Final step:** full suite, `npm run test:editor-worker-bundle`, browser checks with `next dev --webpack` in refs-integration (chips, hover cards, panel, `@` popup, fact-check, LaTeX hint, export dialog), and the feature doc `docs/features/references.md`.
 
@@ -103,7 +102,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ☑ merged 3e6e194 |
 | resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ☑ resolution-ui merged f1b5afd |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
-| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ◐ moves-ui (move toast + draft map, rename-key rewrite dialog, formatted bibliography menu, preference defaults endpoint, identifier provenance, untitled fact-check guard) |
+| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ☑ moves-ui merged 89cde8a |
 
 ## Wave 4: fact-check and later items
 
