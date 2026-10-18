@@ -10,7 +10,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Each lane works on `references/<lane>` in `.claude/worktrees/refs-<lane>`, branched from the integration tip at the start of its wave, and is merged with `--no-ff`.
 - The collaboration work continues on `collaboration` in the main checkout. A single merge of `references/integration` into `collaboration` happens later (see “Big merge” below). No reference lane touches collab code.
 
-## Resume here (paused again on 18 Oct 2026 at the usage limit)
+## Resume here (resumed: editors merged; moves-ui finishing; pdfcite and syntax2 running)
 
 **Latest state (supersedes the older notes below):**
 
@@ -51,6 +51,11 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Search index: unchanged files keep their pre-citation embeddings until edited, because there is no embedding-text version. This is acceptable; record it in the feature doc.
 - Preview: Turbopack can't start from the shared `node_modules`, so lanes use `next dev --webpack`. Check `npm run test:editor-worker-bundle` at final integration: the preview worker check reported `structuredClone is not defined` in its VM scope, possibly pre-existing.
 - The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
+
+### Known limits (editors)
+
+- In the visual editor, bold or italic that wraps a citation is split around it on save (`**a [@c]**` becomes `**a** [@c]`), because `@tiptap/markdown` marks only text nodes.
+- The textarea editor has no inline chip styling, which would need a whole-document scan per keystroke. Hover and Ctrl/Cmd+click work.
 
 ### Watch list
 
@@ -95,7 +100,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ◐ |
+| editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ☑ merged 3e6e194 |
 | resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ☑ server merged 0b544fe · ☑ resolution-ui merged f1b5afd |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
 | moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☑ server merged d9469b2 · ◐ moves-ui (move toast + draft map, rename-key rewrite dialog, formatted bibliography menu, preference defaults endpoint, identifier provenance, untitled fact-check guard) |
@@ -105,9 +110,9 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☑ merged 7208feb |
-| pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☐ |
+| pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ◐ |
 | scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ☑ merged 03fc2dd |
-| syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☐ |
+| syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ◐ |
 
 ## Deferred
 
