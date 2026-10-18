@@ -41,10 +41,13 @@ async function main() {
   // Hidden incremental cache files cannot be reopened for writing on some
   // removable/shared Windows filesystems. Production output is disposable, so
   // start Electron builds from a clean Next directory on every platform.
-  await fs.rm(path.join(projectRoot, ".next"), { force: true, recursive: true });
+  // Windows may briefly keep directory entries open after their files are
+  // removed. Retry transient ENOTEMPTY/EPERM/EBUSY failures during cleanup.
+  const cleanupOptions = { force: true, recursive: true, maxRetries: 5, retryDelay: 200 };
+  await fs.rm(path.join(projectRoot, ".next"), cleanupOptions);
   // The collab host ships with every build (collaboration is on unless LIBERA_COLLAB=0);
   // prepare-dist copies electron/collab/dist into the app.
-  await fs.rm(path.join(projectRoot, "electron", "collab", "dist"), { force: true, recursive: true });
+  await fs.rm(path.join(projectRoot, "electron", "collab", "dist"), cleanupOptions);
   await buildCollabHost();
   process.exitCode = await runNextBuild();
 }
