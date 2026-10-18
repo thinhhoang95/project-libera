@@ -20,6 +20,7 @@ import type { Citation, CitationItem, CitationLocatorLabel, CitationOccurrence }
 import { escapedAt, mathMarkerPairs, type MathMarkerPair, type MathMarkerSettings } from "../math-markers";
 import { MARKDOWN_BOX_SHORTCUTS } from "../markdown-boxes";
 
+/** Options for the document-level functions; pass the same math markers the preview uses. */
 export type CitationSyntaxOptions = {
   /** The notebook's math markers. Defaults to the app defaults (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`). */
   mathMarkers?: MathMarkerSettings;
@@ -208,7 +209,10 @@ export function parseCitationContent(content: string): ParsedContent | null {
   let itemStart = 0;
   for (let index = 0; index <= content.length; index += 1) {
     const char = content[index];
-    if (char === "\\") { index += 1; continue; }
+    if (char === "\\") {
+      if (isAsciiPunctuation(content.charCodeAt(index + 1))) index += 1;
+      continue;
+    }
     if (char === "[" || char === "{") depth += 1;
     else if ((char === "]" || char === "}") && depth > 0) depth -= 1;
     else if (index === content.length || (char === ";" && depth === 0)) {
@@ -428,9 +432,9 @@ type Leaf =
   /** A content block: link reference definitions, then paragraph lines (`pieces`). */
   | { kind: "paragraph"; depth: number; pieces: Array<[number, number]> }
   | { kind: "table"; depth: number }
-  | { kind: "fence"; depth: number; char: string; length: number; start: number }
-  | { kind: "indented"; depth: number; start: number }
-  | { kind: "html"; depth: number; end: RegExp | null; start: number };
+  | { kind: "fence"; depth: number; char: string; length: number }
+  | { kind: "indented"; depth: number }
+  | { kind: "html"; depth: number; end: RegExp | null };
 
 const BOX_LETTERS = new Set(MARKDOWN_BOX_SHORTCUTS.toLowerCase().split(""));
 /** First characters of interrupting flow blocks and of containers, for quick rejection. */
@@ -525,7 +529,7 @@ class Analyzer {
     }
   }
 
-  skip(start: number, end: number) {
+  private skip(start: number, end: number) {
     if (end <= start) return;
     const ranges = this.ranges;
     if (ranges.length && ranges[ranges.length - 1] >= start && ranges[ranges.length - 2] <= start) {
@@ -536,7 +540,7 @@ class Analyzer {
     ranges.push(start, end);
   }
 
-  skipLines(first: number, last: number) {
+  private skipLines(first: number, last: number) {
     this.skip(this.lineStarts[first], this.lineEnds[last]);
   }
 
@@ -675,7 +679,7 @@ class Analyzer {
 
   /** Whether the text at `pos` starts a flow block that interrupts a paragraph (containers are checked separately). */
   private interrupts(pos: number, end: number, indent: number) {
-    if (indent >= 4 || !FLOW_STARTS.has(this.source[pos]) && !this.displayStarts.has(this.source[pos])) return false;
+    if (indent >= 4 || (!FLOW_STARTS.has(this.source[pos]) && !this.displayStarts.has(this.source[pos]))) return false;
     const text = this.source.slice(pos, end);
     if (ATX_HEADING.test(text) || THEMATIC_BREAK.test(text) || OPENING_FENCE.test(text)) return true;
     if (this.displayPairs.some((pair) => text.startsWith(pair.open))) return true;
@@ -831,7 +835,7 @@ class Analyzer {
         const [start] = HTML_BLOCK_STARTS[HTML_BLOCK_STARTS.length - 1];
         if (space.column - base < 4 && start.test(source.slice(space.pos, lineEnd))) {
           this.closeLeaf();
-          this.leaf = { kind: "html", depth: this.stack.length, end: null, start: line };
+          this.leaf = { kind: "html", depth: this.stack.length, end: null };
           this.skipLines(line, line);
           return line;
         }
@@ -842,6 +846,8 @@ class Analyzer {
       leaf = this.leaf;
     }
 
+    // A lazy line: not every open container continued and none started.
+    let lazy = !allMatched;
     if (!flowOnly) {
       const interrupt = allMatched && interruptible;
       for (;;) {
@@ -849,6 +855,7 @@ class Analyzer {
         if (!start) break;
         this.closeLeaf();
         leaf = null;
+        lazy = false;
         this.stack.push(start.container);
         ({ pos, column, base } = start);
       }
@@ -897,14 +904,15 @@ class Analyzer {
     }
 
     if (indent >= 4) {
-      this.leaf = { kind: "indented", depth, start: line };
+      // Indented code that starts on a lazy line ends with that line.
+      this.leaf = lazy ? null : { kind: "indented", depth };
       this.skipLines(line, line);
       return line;
     }
 
     const fence = FENCE.exec(text);
     if (fence && !(fence[1][0] === "`" && text.slice(fence[1].length).includes("`"))) {
-      this.leaf = { kind: "fence", depth, char: fence[1][0], length: fence[1].length, start: line };
+      this.leaf = { kind: "fence", depth, char: fence[1][0], length: fence[1].length };
       this.skipLines(line, line);
       return line;
     }
@@ -924,7 +932,7 @@ class Analyzer {
       const match = start.exec(text);
       if (!match) continue;
       this.skipLines(line, line);
-      if (!end || !end.test(text.slice(endFrom ?? match[0].length))) this.leaf = { kind: "html", depth, end, start: line };
+      if (!end || !end.test(text.slice(endFrom ?? match[0].length))) this.leaf = { kind: "html", depth, end };
       return line;
     }
 
@@ -1012,6 +1020,7 @@ class Analyzer {
     let finder: Finder | null = null;
     let runs: Map<number, number[]> | null = null;
     let closes: Int32Array | null = null;
+    const hasAt = text.includes("@");
     // Links cannot contain links: brackets below this stack height are inactive.
     let inactiveBelow = 0;
     let index = 0;
@@ -1040,9 +1049,11 @@ class Analyzer {
         } else index += size;
         continue;
       }
-      if ((code === 104 || code === 72 || code === 119 || code === 87) && !brackets.length) {
-        // micromark tries an email literal first at the same position.
-        const end = literalEmailEnd(text, index) ?? literalAutolinkEnd(text, index);
+      // GFM literal autolinks, which cannot start inside an open bracket. An
+      // email cannot contain a bracket, but can cover a would-be `www.` or `http`.
+      if (!brackets.length && code < 128 && EMAIL_START[code]) {
+        const end = (hasAt ? literalEmailEnd(text, index) : undefined)
+          ?? (code === 104 || code === 72 || code === 119 || code === 87 ? literalAutolinkEnd(text, index) : -1);
         if (end > 0) {
           this.skipText(segment, index, end);
           index = end;
@@ -1209,6 +1220,8 @@ function autolinkTrail(text: string, index: number) {
 }
 
 const EMAIL_ATEXT = /[A-Za-z0-9+\-._]/;
+/** Characters that may start a GFM literal email or URL, by char code. */
+const EMAIL_START = Array.from({ length: 128 }, (_, code) => EMAIL_ATEXT.test(String.fromCharCode(code)));
 const ASCII_ALPHANUMERIC = /[A-Za-z0-9]/;
 
 /** End of a GFM literal email autolink starting at `index`, or undefined. */
@@ -1352,7 +1365,7 @@ function matchResource(text: string, start: number) {
     index += 1;
     for (;;) {
       const char = text[index];
-      if (char === undefined || (quote === "(" && char === "(")) return -1;
+      if (char === undefined) return -1;
       if (char === closing) { index += 1; break; }
       index += char === "\\" && isAsciiPunctuation(text.charCodeAt(index + 1)) ? 2 : 1;
     }
@@ -1406,7 +1419,7 @@ function parseDefinition(text: string) {
     let at = title + 1;
     for (;;) {
       const char = text[at];
-      if (char === undefined || (quote === "(" && char === "(")) { at = -1; break; }
+      if (char === undefined) { at = -1; break; }
       if (char === closing) { at += 1; break; }
       at += char === "\\" && isAsciiPunctuation(text.charCodeAt(at + 1)) ? 2 : 1;
     }
@@ -1652,6 +1665,9 @@ export const CITATION_SYNTAX_CASES: CitationSyntaxCase[] = [
   { name: "citation then reference label", source: "[@a][@b]", expected: [cite("[@b]", { key: "b" })] },
   { name: "link destination and title", source: "[link](https://example.com/[@x] \"[@t]\") [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "autolinks", source: "<https://example.com/[@x]> https://example.com/[@z] [@y]", expected: [cite("[@y]", { key: "y" })] },
+  { name: "literal www link", source: "www.example.com/[@x] [@y]", expected: [cite("[@y]", { key: "y" })] },
+  { name: "literal email covering a URL", source: "Mail me@x.org.https://example.com/[@a] or [@b]", expected: [cite("[@a]", { key: "a" }), cite("[@b]", { key: "b" })] },
+  { name: "multi-line definition", source: "[ref]:\n  /url\n  \"[@x]\"\n\n[@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "footnotes", source: "Claim[^1].\n\n[^1]: See [@a].", expected: [cite("[@a]", { key: "a" })] },
   // Code, math, HTML, front matter
   { name: "code span", source: "`[@x]` and [@y]", expected: [cite("[@y]", { key: "y" })] },
@@ -1663,6 +1679,7 @@ export const CITATION_SYNTAX_CASES: CitationSyntaxCase[] = [
   { name: "fence in a box", source: "y> ```\ny> [@x]\ny> ```\ny> [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "indented code", source: "Para\n\n    [@x]\n\n[@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "indented text in a list is not code", source: "- one\n\n    [@a]", expected: [cite("[@a]", { key: "a" })] },
+  { name: "an empty list item ends at a blank line", source: "-\n\n    [@x]", expected: [] },
   { name: "inline math", source: "$[@x]$ and [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "double-dollar math", source: "$$[@x]$$ [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "parenthesis math", source: "\\([@x]\\) [@y]", expected: [cite("[@y]", { key: "y" })] },
