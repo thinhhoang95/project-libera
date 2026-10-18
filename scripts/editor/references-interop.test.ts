@@ -418,7 +418,7 @@ test("the citation index reads only new and changed files and drops deleted ones
     const indexPath = citationIndexPath("Notes");
     assert.equal(indexPath, path.join(root, ".libera", "references", "citations.json"));
     const index = JSON.parse(await readFile(indexPath, "utf8"));
-    assert.equal(index.version, 1);
+    assert.equal(index.version, 2, "version 2 indexes narrative @key candidates too");
     assert.deepEqual(Object.keys(index.files), ["Notes/a.md", "Notes/c.md", "Notes/sub/b.md"]);
     assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["keys", "mtimeMs", "size"]);
     const indexMtime = (await stat(indexPath)).mtimeMs;
