@@ -86,7 +86,8 @@ export function pdfQuoteCitation(key: string, locator: string) {
 
 /** Each line of `text` as a blockquote line; blank lines become `>`. */
 export function blockquoteLines(text: string) {
-  return text.replace(/\r\n?/g, "\n").trim().split("\n").map((line) => line.trim() ? `> ${line}` : ">").join("\n");
+  const body = text.replace(/\r\n?/g, "\n").trim();
+  return body ? body.split("\n").map((line) => line.trim() ? `> ${line}` : ">").join("\n") : "";
 }
 
 /** The quote-and-cite Markdown: the quote as a blockquote, then the citation on its own quoted line. */
