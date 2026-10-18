@@ -39,12 +39,12 @@ Not merged: editor wiring (`collab/wire`, clone `scratchpad/clones/wire`, commit
 | Wave | Content | Branches | Status |
 |---|---|---|---|
 | 0 | Scaffolding (M1.0): dependencies, protocol, schema, server skeleton | `collaboration` | ☑ |
-| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge` (running), `collab/edlib` | ◐ |
+| 1 | Server sync · server API · host core · CodeMirror Markdown · Visual bridge · editor collab library | `collab/sync`, `collab/api`, `collab/host`, `collab/cmmd`, `collab/bridge`, `collab/edlib` | ☑ |
 | 1b | Server: revisions, restore, decisions, reviews, audit | `collab/srv23` | ☑ |
-| 2 | Electron host integration · shared notebooks · collab UI · test harness (running); editor wiring and Phase 1 AI next | `collab/elec`, `collab/notebooks`, `collab/ui`, `collab/harness` | ◐ |
-| 3 | Phase 2: comments, mentions, notifications, history, restore, offline commands | — | ☐ |
-| 4 | Phase 3: suggestions, suggest mode, decisions, AI suggester, reviews, audit | — | ☐ |
-| 5 | Phase 4: load, admin CLI, backups, observability, crash reporting, hardening | — | ☐ |
+| 2 | Electron host integration · shared notebooks · collab UI · test harness · editor wiring · Phase 1 AI | `collab/elec`, `collab/notebooks`, `collab/ui`, `collab/harness`, `collab/wire`, `collab/ai` | ☑ |
+| 3 | Phase 2: comments, mentions, notifications, history, restore, offline commands | `collab/p2` | ☑ |
+| 4 | Phase 3: suggestions, suggest mode, decisions, AI suggester, reviews, audit | `collab/p3a`, `collab/p3b` | ☑ |
+| 5 | Phase 4: load, admin CLI, backups, observability, crash reporting, hardening | `collab/srv4`, `collab/p4d` | ◐ (👤 items left) |
 
 ## Phase 0: decisions and spikes
 
