@@ -149,12 +149,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Server: revisions (named, auto checkpoints job, reconstruction at any seq), restore of a whole doc or a section as minimal forward edits (M2.4/M2.5 server sides)
 - ☑ Client library: RelativePosition anchors, detach and reattach candidates, 1,000-operation anchor fuzz (`src/lib/collab/anchors.ts`)
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
-- ☐ M2.1 `ReviewStore` interface; local and shared stores; RelativePosition anchors; authors on messages; sidebar alignment
-- ☐ M2.2 Detached state and reattach; split, move and paste rules; 1,000-operation anchor fuzz
-- ◐ M2.3 Notifications bell UI merged (grouped, mark read, open document); server mentions/digest done; desktop notifications, mention picker and AI-authored comments pending
-- ☐ M2.4 Automatic and named revisions; viewer; diff with attribution
-- ☐ M2.5 Restore (whole or section) as forward edits
-- ☐ M2.6 Offline comments through pending commands with idempotency
+- ☑ M2.1 `ReviewStore` interface; local store (unchanged behaviour) and shared store; RelativePosition anchors; authors (AI shown as "AI · requested by X"); panel follows scroll (best effort)
+- ☑ M2.2 Detached state with stored quote, reattach to selection, "found similar text"; anchor fuzz in the library
+- ◐ M2.3 Bell, @ member picker, desktop notifications (with a switch), server mentions and digest. Remaining: AI-authored review comments on shared docs (the leave-review-comments skill is still disabled there)
+- ☑ M2.4 Automatic and named revisions, session-end revisions; History panel with a revision viewer and diffs coloured by author (AI provenance labelled)
+- ☑ M2.5 Restore whole document or a selection as forward edits, with a checkpoint
+- ☑ M2.6 Offline comments through pending commands, with pending/failed chips, retry and discard; plus a one-time migration of local comments into a shared notebook
 
 ## Phase 3: suggestions and review
 - ☑ Server: suggestion mirror, decisions serialized in the room (stale checks incl. insertion neighbours, groups all-or-nothing, accept-all with checkpoint, revert, offline replay), reviews with revision-bound approvals and outdated detection, audit entries; hard cases 1–7 end to end (`server/test/hard-cases.test.ts`)
