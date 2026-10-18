@@ -391,4 +391,21 @@ describe("admin CLI: accounts and audit", () => {
     const human = await cli("audit", "tail", "--limit", "1");
     assert.match(human.stdout, /admin\.account\.reset-password/);
   });
+
+  test("account create makes an owner-to-be with a one-time password, even with sign-up closed", async () => {
+    const email = `First.Owner-${Date.now()}@Example.test`;
+    const created = await cli("account", "create", email, "--name", "First Owner", "--json");
+    assert.equal(created.code, 0, created.stderr);
+    assert.equal(created.json.email, email.toLowerCase());
+    assert.equal(created.json.displayName, "First Owner");
+    const password = created.json.temporaryPassword as string;
+    assert.match(password, /^[A-Za-z2-9]{20}$/);
+    const login = await json<any>(env.server.url, "/v1/auth/login", { body: { email, password } });
+    assert.equal(login.status, 200);
+    assert.equal(login.body.account.displayName, "First Owner");
+    assert.equal((await cli("account", "create", email.toUpperCase())).code, 1, "a second account with the same email is refused");
+    assert.equal((await cli("account", "create", "not-an-email")).code, 1);
+    const audit = await cli("audit", "tail", "--limit", "3", "--json");
+    assert.ok(audit.json.entries.some((entry: any) => entry.action === "admin.account.create"));
+  });
 });

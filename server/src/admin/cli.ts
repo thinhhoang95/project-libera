@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig, type Config } from "../config.js";
 import { openDatabase, type Database } from "../db/database.js";
 import { migrate } from "../db/migrate.js";
-import { accountDisable, accountEnable, accountResetPassword, accountsList, auditTail } from "./accounts.js";
+import { accountCreate, accountDisable, accountEnable, accountResetPassword, accountsList, auditTail } from "./accounts.js";
 import { Args, parseArgs } from "./args.js";
 import type { AdminContext, CommandResult } from "./context.js";
 import { docExport, docInspect, docSnapshot, docsList, docText, projectExport } from "./documents.js";
@@ -43,6 +43,7 @@ Documents
 
 Accounts and audit
   accounts list
+  account create <email> [--name <display name>]   prints a one-time password
   account disable <email>
   account enable <email>
   account reset-password <email>
@@ -70,6 +71,7 @@ const COMMANDS: Record<string, Handler> = {
   "doc quarantine": docQuarantine,
   "project export": projectExport,
   "accounts list": accountsList,
+  "account create": accountCreate,
   "account disable": accountDisable,
   "account enable": accountEnable,
   "account reset-password": accountResetPassword,

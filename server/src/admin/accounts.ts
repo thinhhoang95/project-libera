@@ -7,6 +7,8 @@ import { sql, type Kysely } from "kysely";
 
 import { writeAudit } from "../auth/access.js";
 import { hashPassword } from "../auth/passwords.js";
+import { insertAccount } from "../api/auth.js";
+import { HttpError } from "../http/errors.js";
 import type { AccountRow, DB } from "../db/types.js";
 import type { Actor } from "../protocol.js";
 import { isoTime, table, type AdminContext, type CommandResult } from "./context.js";
@@ -124,6 +126,33 @@ export function temporaryPassword(): string {
  * printed once (never stored or logged in clear); give it to the user over a
  * trusted channel and ask them to change it in Preferences → Collaboration.
  */
+/**
+ * Creates an account with a one-time password. With ALLOW_OPEN_SIGNUP off
+ * (production) this is how the first owner gets in; everyone else joins by
+ * invitation.
+ */
+export async function accountCreate(ctx: AdminContext): Promise<CommandResult> {
+  const email = ctx.args.positional(2, "email").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new CliError(`Not an email address: ${email}`);
+  const displayName = (ctx.args.string("name") ?? email.split("@")[0]).trim().slice(0, 80);
+  const password = temporaryPassword();
+  let account: AccountRow;
+  try {
+    account = await insertAccount(ctx.db, { email, password, displayName });
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "email-taken") throw new CliError(`An account with ${email} already exists.`);
+    throw error;
+  }
+  await writeAudit(ctx.db, { projectId: null, actor: ADMIN_ACTOR, accountId: null, action: "admin.account.create", target: account.id, details: {} });
+  return {
+    data: { accountId: account.id, email: account.email, displayName: account.display_name, temporaryPassword: password },
+    text: [
+      `Created ${account.email} (${account.display_name}). Temporary password: ${password}`,
+      "Sign in from Libera with it, then change it in the Collaboration dialog.",
+    ],
+  };
+}
+
 export async function accountResetPassword(ctx: AdminContext): Promise<CommandResult> {
   const email = ctx.args.positional(2, "email");
   const account = await findAccount(ctx.db, email);
