@@ -44,6 +44,24 @@ export interface RoomService {
    */
   withDocs<T>(docId: string, read: (docs: Record<Subdoc, Y.Doc>, serverSeq: number) => T | Promise<T>): Promise<T>;
 
+  /**
+   * Runs `task` inside the room's write lock with read access to every
+   * sub-document and a `transact` that writes without leaving the lock.
+   * Suggestion decisions use it to check anchors, apply replacements to
+   * content and record statuses in annotations as one serialized step, so no
+   * client update or other decision interleaves (calling the top-level
+   * transact or withDocs from inside would wait for the lock forever).
+   */
+  batch<T>(docId: string, task: (batch: RoomBatch) => T | Promise<T>): Promise<T>;
+
+  /**
+   * Calls `listener` after every update (client or server) is persisted and
+   * applied to the live document. Listeners run inside the room lock and
+   * must not wait on the room: they schedule their own work. Returns an
+   * unsubscribe function.
+   */
+  onPersisted(listener: (update: PersistedUpdate) => void): () => void;
+
   /** Highest persisted serverSeq for a document (from the room if loaded). */
   currentServerSeq(docId: string): Promise<number>;
 
@@ -55,6 +73,28 @@ export interface RoomService {
 
   /** The account's sessions must end (logout everywhere, disabled account). */
   accountRevoked(accountId: string, familyId?: string): void;
+}
+
+export interface RoomBatch {
+  /** Live sub-documents, as in withDocs: read them, change them with transact. */
+  readonly docs: Record<Subdoc, Y.Doc>;
+  /** The latest persisted serverSeq, including this batch's own writes. */
+  serverSeq(): number;
+  /** Same contract as RoomService.transact, inside the batch's lock. */
+  transact<T>(
+    subdoc: Subdoc,
+    actor: Actor,
+    provenance: Provenance,
+    change: (doc: Y.Doc) => T,
+  ): Promise<{ serverSeq: number; result: T }>;
+}
+
+export interface PersistedUpdate {
+  docId: string;
+  subdoc: Subdoc;
+  serverSeq: number;
+  actor: Actor;
+  provenance: Provenance | undefined;
 }
 
 export interface ServerContext {

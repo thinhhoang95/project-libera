@@ -114,8 +114,10 @@ export function annotationViolation(
 
 /**
  * accepted, rejected and stale are decisions the server makes through
- * RoomService.transact; clients may only create pending suggestions and
- * withdraw their own.
+ * RoomService.transact; clients may only create suggestions and withdraw
+ * their own. A new suggestion may be created stale: agentic review turns
+ * edits computed on an old snapshot whose text has since changed into stale
+ * suggestions (hard case 7), so the panel shows what the AI saw.
  */
 function suggestionTransitionViolation(
   previous: JsonRecord | undefined,
@@ -123,7 +125,9 @@ function suggestionTransitionViolation(
   accountId: string,
 ): string | null {
   if (next === undefined) return null;
-  if (previous === undefined) return next.status === "pending" ? null : "New suggestions must be pending.";
+  if (previous === undefined) {
+    return next.status === "pending" || next.status === "stale" ? null : "New suggestions must be pending or stale.";
+  }
   if (previous.status === next.status) return null;
   if (
     previous.status === "pending" &&

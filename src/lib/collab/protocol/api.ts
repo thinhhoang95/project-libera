@@ -322,6 +322,8 @@ export interface DecideSuggestionsRequest {
   decisions: { suggestionId: string; decision: DecisionKind }[];
   /** Take a checkpoint revision before applying (accept-all always does). */
   checkpoint?: boolean;
+  /** Only so the server can refuse it: AI actors cannot decide. */
+  ai?: AiActorHint;
 }
 
 export type DecisionOutcome = "applied" | "rejected" | "stale" | "already-decided" | "not-found";
@@ -330,6 +332,11 @@ export interface DecideSuggestionsResponse {
   results: { suggestionId: string; outcome: DecisionOutcome; decidedBy?: UserSummary }[];
   serverSeq: number;
   checkpointRevisionId: string | null;
+}
+
+export interface RevertSuggestionRequest {
+  /** Only so the server can refuse it: AI actors cannot decide. */
+  ai?: AiActorHint;
 }
 
 export interface RevertSuggestionResponse {
@@ -373,11 +380,18 @@ export interface RestoreRequest {
   revisionId: string;
   /** Restore only this range of the revision's text, by UTF-16 offsets in the revision text. */
   range?: { start: number; end: number };
+  /** Only so the server can refuse it: AI actors cannot restore. */
+  ai?: AiActorHint;
 }
 
 export interface RestoreResponse {
   serverSeq: number;
   checkpointRevisionId: string;
+}
+
+/** Payload of EventKind.RevisionCreated. */
+export interface RevisionCreatedEvent {
+  revision: Revision;
 }
 
 // ---------------------------------------------------------------- reviews
@@ -416,6 +430,8 @@ export interface CreateReviewRequest {
   scope: ReviewScope;
   assignees: string[];
   note?: string;
+  /** Only so the server can refuse it: AI actors cannot request reviews. */
+  ai?: AiActorHint;
 }
 
 export interface DecideReviewRequest {
@@ -423,6 +439,13 @@ export interface DecideReviewRequest {
   /** The revision the reviewer read; defaults to the latest. */
   revisionId?: string;
   comment?: string;
+  /** Only so the server can refuse it: AI actors cannot approve. */
+  ai?: AiActorHint;
+}
+
+/** Payload of EventKind.ReviewChanged. */
+export interface ReviewChangedEvent {
+  review: Review;
 }
 
 // ---------------------------------------------------------------- notifications
