@@ -67,7 +67,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Documents create (one-time import), updates feed with baseSnapshot, delete
 - ☑ Blobs PUT/GET/HEAD with hash check (disk driver; S3 driver with SigV4 checked against AWS vectors; 👤 not yet tried against a real S3 service)
 - ☑ Mail (SMTP or log)
-- ☐ Desktop sign-in dialog and `safeStorage` refresh token (wave 2)
+- ◐ Desktop sign-in dialog (UI merged: account dialog, colour, connection wording); `safeStorage` refresh token in wave 2 (Electron host)
 
 ### M1.3 DocHub host
 - ☑ SQLite store (WAL, `synchronous=FULL`): updates, snapshots, outbound, doc_meta, threads_cache, pending_commands, docs, projects, blobs_cache, rejected edits; owner lock
@@ -87,15 +87,15 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ◐ Presence: library done (awareness user state, sections, quiet mode, follow mode); UI in wave 2
 
 ### M1.5 Shared notebooks
-- ☐ Share: create project, one-time import, `.libera-shared.json`
-- ☐ Join: materialize, name clash handling
+- ◐ Share: UI dialog merged (progress, invite, roles, revoke, leave); host side running in `collab/notebooks`
+- ◐ Join: UI dialog merged; host side running in `collab/notebooks`
 - ☐ Manifest-driven tree: create, rename, move, delete
 - ☐ Materializer and watcher; `409 shared-document` guard on every text writer
 - ☐ Blob sync both ways
 - ☐ Reconciliation view (`@codemirror/merge`)
 
 ### M1.6 Save states
-- ☐ Status pill with six states
+- ◐ Status pill component for all seven states (merged); mounting per tab in editor wiring
 - ☐ No Save or dirty state on shared tabs; updater count; journals skip shared tabs
 - ☐ Quit waits for local commit
 
@@ -105,9 +105,9 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Silent token refresh; sign-in prompt keeps local editing
 
 ### M1.8 Roles
-- ☐ Reject rollback with "Copy my unsynced text"
+- ◐ Reject rollback with "Copy my unsynced text": host side and banner component merged; mounting in editor wiring
 - ☐ Revocation: read-only, export, "no longer shared" marker
-- ☐ UI hides disallowed actions
+- ◐ UI hides disallowed actions in share/members dialogs (`can()`); editor-side read-only in editor wiring
 
 ### M1.9 Versioning
 - ☐ schemaVersion read-only mode; minProtocolVersion; forced-update flow; compatibility test
@@ -137,7 +137,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☐ M2.1 `ReviewStore` interface; local and shared stores; RelativePosition anchors; authors on messages; sidebar alignment
 - ☐ M2.2 Detached state and reattach; split, move and paste rules; 1,000-operation anchor fuzz
-- ☐ M2.3 Mentions; in-app, desktop and email-digest notifications; AI-authored review comments
+- ◐ M2.3 Notifications bell UI merged (grouped, mark read, open document); server mentions/digest done; desktop notifications, mention picker and AI-authored comments pending
 - ☐ M2.4 Automatic and named revisions; viewer; diff with attribution
 - ☐ M2.5 Restore (whole or section) as forward edits
 - ☐ M2.6 Offline comments through pending commands with idempotency
