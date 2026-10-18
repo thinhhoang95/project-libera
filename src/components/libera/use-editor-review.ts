@@ -3,13 +3,39 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { Editor } from "@tiptap/core";
 import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
-import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
+import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
 import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
 import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownReview } from "./markdown-review-context";
 
 const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
+
+/**
+ * Reports the source range an editor shows while it scrolls, so the Comments
+ * panel of a shared document can line its cards up with the text (plan M2.1).
+ * Scrolling may happen in the editor or in any container around it, hence the
+ * capturing listener on the document. One measurement per animation frame.
+ */
+function watchViewport(root: HTMLElement, measure: (top: number, bottom: number) => { start: number; end: number } | null, report: (range: { start: number; end: number } | null) => void) {
+  let frame = 0;
+  const run = () => {
+    frame = 0;
+    const rect = root.getBoundingClientRect();
+    const top = Math.max(rect.top, 0) + 2;
+    const bottom = Math.min(rect.bottom, window.innerHeight || rect.bottom) - 2;
+    if (bottom <= top) return;
+    try { report(measure(top, bottom)); } catch { /* Layout is not available (hidden pane). */ }
+  };
+  const onScroll = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Node && target !== document && !target.contains(root) && !root.contains(target)) return;
+    if (!frame) frame = window.requestAnimationFrame(run);
+  };
+  document.addEventListener("scroll", onScroll, true);
+  frame = window.requestAnimationFrame(run);
+  return () => { document.removeEventListener("scroll", onScroll, true); if (frame) window.cancelAnimationFrame(frame); };
+}
 
 export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | null>, apply: (text: string) => void) {
   const r = useMarkdownReview();
@@ -83,6 +109,17 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     return () => { unregister(); root.removeEventListener("input", changed); root.removeEventListener("mouseup", select); root.removeEventListener("keydown", key, true); };
   }, [view, register]);
   useEffect(() => { if (view) { installCodeMirrorReview(view); setCodeMirrorReviewLocked(view, !!r?.locked); } }, [view, r?.locked]);
+  const sharedDoc = !!r?.shared;
+  const reportViewport = r?.reportViewport;
+  useEffect(() => {
+    if (!view || !sharedDoc || !reportViewport) return;
+    const left = () => view.contentDOM.getBoundingClientRect().left + 4;
+    return watchViewport(view.dom, (top, bottom) => {
+      const start = view.posAtCoords({ x: left(), y: top }, false);
+      const end = view.posAtCoords({ x: left(), y: bottom }, false);
+      return { start, end: Math.max(start, end) };
+    }, reportViewport);
+  }, [view, sharedDoc, reportViewport]);
   useEffect(() => {
     if (!view) return;
     installCodeMirrorReview(view);
@@ -138,21 +175,42 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); };
   }, [editor, register, lastValue, read, replace]);
   useEffect(() => { if (editor && editor.isEditable !== !r?.locked) editor.setEditable(!r?.locked, false); }, [editor, r?.locked]);
+  const sharedDoc = !!r?.shared;
+  const reportViewport = r?.reportViewport;
+  useEffect(() => {
+    if (!editor || !sharedDoc || !reportViewport) return;
+    const root = editor.view.dom;
+    const sourceAt = (y: number) => {
+      const left = root.getBoundingClientRect().left + 4;
+      const pos = editor.view.posAtCoords({ left, top: y })?.pos;
+      if (pos === undefined) return null;
+      const block = tiptapReviewBlocks(editor, read()).find((item) => item.to > pos) ?? null;
+      return block ? block.start : read().length;
+    };
+    return watchViewport(root, (top, bottom) => {
+      const start = sourceAt(top);
+      if (start === null) return null;
+      return { start, end: Math.max(start, sourceAt(bottom) ?? start) };
+    }, reportViewport);
+  }, [editor, sharedDoc, reportViewport, read]);
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
+    // A shared tab's Visual editor is built from the shared text, which the
+    // draft ref only catches up with on read; anchors resolve against it.
+    const source = sharedDoc ? read() : lastValue.current;
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => ({ ...t.anchor, kind: "comment" })) ?? []),
       ...(r.selection ? [{ ...r.selection.range, kind: "selection" }] : []),
-    ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, lastValue.current, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
+    ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, source, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their
     // decisions still go through the review so its undo/CAS state stays exact.
     const suggestions = r?.doc?.session?.suggestions ?? [];
-    const changes = tiptapReviewChanges(editor, lastValue.current, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
+    const changes = tiptapReviewChanges(editor, source, suggestions.flatMap((s, index) => s.status === "pending" ? [{ id: s.id, label: `Change ${index + 1}`, edits: s.edits }] : []));
     const decide: ChangeDecider = (ids, decision) => {
       const review = latest.current;
       if (!review || review.busy || (decision === "accept" && review.recovery)) return;
       void review.action("decision", { ids, decision });
     };
     editor.view.dispatch(editor.state.tr.setMeta(tiptapReviewKey, ranges).setMeta(tiptapChangesKey, { type: "preview", changes, decide } satisfies TiptapChangesMeta));
-  }, [editor, r?.doc, r?.enabled, r?.selection, lastValue]);
+  }, [editor, r?.doc, r?.enabled, r?.selection, lastValue, sharedDoc, read]);
 }
