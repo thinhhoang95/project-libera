@@ -1934,13 +1934,11 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
 
 .libera-notebook-section[data-related="true"] > .libera-notebook-row {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* Files whose Markdown links to the open file (backlinks). */
 .libera-left-panel button[data-backlink="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .libera-left-panel button[data-backlink="true"]:hover {

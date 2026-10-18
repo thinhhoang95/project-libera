@@ -76,6 +76,7 @@ import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
+import { subscribeSharedTreeChanges } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
@@ -3100,43 +3101,28 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setActiveTabId((current) => (current === fromPath ? nextId : current));
   }
 
-  // Collaborators add, move and remove files of shared notebooks; the host
-  // says so with tree-changed (not on every text write). Refresh the tree
-  // once things settle, and follow open tabs whose file moved.
-  const treeChangeRef = useRef({ timer: null as ReturnType<typeof setTimeout> | null, moves: [] as { from: string; to: string }[] });
+  // Shared working-copy writes can change links without changing the file layout.
+  // Refresh for both host event types, and follow open tabs whose file moved.
   const latestTreeChange = useRef({ refreshTree, retargetOpenTab });
   useLayoutEffect(() => {
     latestTreeChange.current = { refreshTree, retargetOpenTab };
   });
   useEffect(() => {
     if (!authenticated) return;
-    const pending = treeChangeRef.current;
-    const stop = subscribeHostEvents((event) => {
-      if (event.t !== "tree-changed") return;
-      pending.moves.push(...event.moves);
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.timer = setTimeout(() => {
-        pending.timer = null;
-        const moves = pending.moves.splice(0);
-        void (async () => {
-          const { refreshTree: refresh, retargetOpenTab: retarget } = latestTreeChange.current;
-          for (const move of moves) {
-            try {
-              const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
-              retarget(move.from, payload);
-            } catch {
-              // The file moved again or is gone; the tree refresh below shows where it is.
-            }
+    return subscribeSharedTreeChanges(subscribeHostEvents, (moves) => {
+      void (async () => {
+        const { refreshTree: refresh, retargetOpenTab: retarget } = latestTreeChange.current;
+        for (const move of moves) {
+          try {
+            const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(move.to)}`);
+            retarget(move.from, payload);
+          } catch {
+            // The file moved again or is gone; the tree refresh below shows where it is.
           }
-          await refresh();
-        })().catch((error: Error) => setWorkspaceError(error.message));
-      }, 300);
+        }
+        await refresh();
+      })().catch((error: Error) => setWorkspaceError(error.message));
     });
-    return () => {
-      stop();
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.timer = null;
-    };
   }, [authenticated]);
 
   async function moveFileNode(

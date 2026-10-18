@@ -6,6 +6,8 @@ Selecting a notebook highlights other notebooks referenced by its saved Markdown
 
 While a file is open, the panel highlights the files whose saved Markdown links to it — notes, PDFs and photos alike, across notebooks. Highlighted rows have a tinted background, an accent edge and a link icon. Collapsed notebooks and folders show how many backlinking files they contain. The server records each Markdown file's resolved targets as `linkedFilePaths` on its tree node, from the same link index; the panel inverts them for the open file. Image embeds (`![](…)`) don't count, and backlinks update when the tree refreshes after a save.
 
+For collaborative notebooks, the panel also refreshes after the host writes shared text to the local working copy. Content and structural events are batched for 300 ms, updating outgoing notebook highlights and backlinks without requiring a manual save or reload.
+
 ## Links dialog
 
 The visual and source Markdown toolbars have a **Backlinks and forward links** button (network icon). It opens one dialog with two lists:

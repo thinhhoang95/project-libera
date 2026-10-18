@@ -99,7 +99,6 @@ function SuggestionCard({ group, controller, selected, onSelect, replying, proje
       data-suggestion-group={group.id}
       data-state={group.state}
       className={`libera-suggestion-card rounded-lg border px-2.5 py-2 text-sm ${selected ? "border-primary bg-primary/5" : "border-border bg-card"} ${group.state === "stale" ? "border-dashed" : ""}`}
-      style={{ boxShadow: `inset 3px 0 0 ${group.author.color}` }}
       onClick={onSelect}
     >
       <div className="flex items-center gap-1.5 text-xs">
