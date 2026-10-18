@@ -28,6 +28,7 @@
     "test:editor": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
+    "test:latex-production": "node scripts/check-latex-production.cjs",
     "search:download-model": "node scripts/download-embeddinggemma.cjs"
   },
   "dependencies": {

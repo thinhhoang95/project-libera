@@ -150,6 +150,7 @@ type WorkspacePanelProps = {
   onInsertFileLinkPlaceholder: () => void;
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
+  onInsertMarkdownTable: (rows: number, columns: number) => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   /** Shows another image from the same folder in this image tab. */
   onShowImage?: (file: LiberaFileNode) => void;
@@ -544,6 +545,7 @@ const PANEL_CALLBACKS = [
   "onInsertFileLinkPlaceholder",
   "onInsertImage",
   "onInsertMarkdown",
+  "onInsertMarkdownTable",
   "onOpenFile",
   "onShowImage",
   "onSaveEditedImageCopy",
@@ -641,6 +643,7 @@ function WorkspacePanelContent({
   onInsertFileLink,
   onInsertImage,
   onInsertMarkdown,
+  onInsertMarkdownTable,
   onOpenFile,
   onShowImage,
   onSaveEditedImageCopy,
@@ -1683,6 +1686,7 @@ function WorkspacePanelContent({
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
+            onInsertTable={onInsertMarkdownTable}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}

@@ -35,12 +35,13 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   let savedFontSize: number | null = null;
   let savedHistory: ChatStore | null = null;
   let fileReads = 0;
+  let historyWrites = 0;
   globalThis.fetch = async (input, init) => {
     if (String(input).startsWith("/api/files?")) { fileReads++; return Response.json({ file: { fileType: "markdown" }, content: "# Curated reference" }); }
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
-      if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else savedHistory = body.value; return Response.json({ saved: true }); }
+      if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else { savedHistory = body.value; historyWrites++; } return Response.json({ saved: true }); }
       return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", alternativeModels: ["test/alternative-model"], defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
@@ -106,10 +107,13 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await click("Remove selection 1");
     assert.equal(stored().chats[0].selections.length, 1);
     const composer = host.querySelector<HTMLTextAreaElement>('[aria-label="Chat prompt"]')!;
+    const writesBeforeTyping = historyWrites;
     await act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(composer, "Explain this");
       composer.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 1100));
     });
+    assert.equal(historyWrites, writesBeforeTyping, "Typing a prompt does not rewrite the chat history");
     await click("Send message");
     await settle();
     assert.equal(requests.length, 1);

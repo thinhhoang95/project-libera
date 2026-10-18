@@ -375,6 +375,7 @@ export function LiberaApp({
         onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
         onInsertImage={workspace.insertMarkdownImage}
         onInsertMarkdown={workspace.insertMarkdown}
+        onInsertMarkdownTable={workspace.insertMarkdownTable}
         onOpenFile={workspace.openFile}
         onShowImage={(file) => {
           if (tab) workspace.showImageInTab(tab.id, file);

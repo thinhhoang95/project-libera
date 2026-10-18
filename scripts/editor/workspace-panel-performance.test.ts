@@ -58,7 +58,7 @@ test("pane bodies skip unrelated drafts and scrolling while callbacks and link p
     onAiRewriteSelection: asyncNoOp, onAiWriteAt: asyncNoOp, onCreateMarkdown: asyncNoOp, onCreateSlides: asyncNoOp, onCreateNotebook: noOp, fileTags: {}, onEditFileTags: noOp,
     onCancelScreenshotSnip: noOp, onCompleteScreenshotSnip: asyncNoOp, onInsertExistingImage: asyncNoOp,
     onFinishVisualInsertion: noOp, onCreateMarkdownBesidePdf: async () => { throw new Error("unused"); }, onWriteConvertedMarkdown: asyncNoOp,
-    onInsertFileLink: noOp, onInsertFileLinkPlaceholder: noOp, onInsertImage: asyncNoOp, onInsertMarkdown: noOp,
+    onInsertFileLink: noOp, onInsertFileLinkPlaceholder: noOp, onInsertImage: asyncNoOp, onInsertMarkdown: noOp, onInsertMarkdownTable: noOp,
     onOpenFile: asyncNoOp, onSave: asyncNoOp, onSetDraft: noOp, onSetViewState: noOp,
     onOpenMarkdownFileLink: async () => false, onStartScreenshotSnip: noOp,
 

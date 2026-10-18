@@ -36,6 +36,7 @@ import { MarkdownLinkInput } from "./markdown-link-input";
 import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
 import { NoteLinksButton } from "./note-links-dialog";
+import { TableInsertButton } from "./table-grid-picker";
 
 type Props = {
   files?: LiberaFileNode[];
@@ -288,6 +289,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
+    table: current.isActive("table"),
     boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
     highlightTool: highlightToolKey.getState(current.state) ?? defaultHighlightToolState,
     highlight: current.isActive("highlight"),
@@ -710,6 +712,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
             <button type="button" aria-label="Snip as Markdown" title={canStartScreenshotSnip ? "Snip as Markdown: read a region of an image or PDF tab into text" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
           </>
         ) : null}
+        <TableInsertButton className={buttonClass} disabled={state.table} title={state.table ? "Tables cannot be placed inside a table" : "Insert table"}
+          onPick={(rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()} />
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>

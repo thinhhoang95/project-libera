@@ -80,6 +80,18 @@ function createChat(mode: ChatMode = "chat", agentPermission?: AgentPermission):
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [], ...(mode === "agent" ? { mode, agentPermission } : {}) };
 }
 
+// True when the only difference is the composer text of some chats.
+function onlyPromptsChanged(previous: ChatStore, next: ChatStore) {
+  if (previous.activeId !== next.activeId || previous.chats.length !== next.chats.length) return false;
+  return next.chats.every((chat, index) => {
+    const before = previous.chats[index];
+    if (chat === before) return true;
+    const keys = new Set([...Object.keys(before), ...Object.keys(chat)] as (keyof DocumentChat)[]);
+    keys.delete("prompt");
+    return [...keys].every((key) => before[key] === chat[key]);
+  });
+}
+
 const CHAT_MODE_STORAGE_KEY = "libera.chatMode";
 const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
 const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
@@ -170,6 +182,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }, []);
   useEffect(() => { agentWorkspaceRef.current = agentWorkspace; }, [agentWorkspace]);
   const latestStore = useRef<ChatStore | null>(null);
+  const streamCheckpointRef = useRef<{ timer?: number; saved?: boolean }>({});
   const fontSizeWrite = useRef<Promise<unknown> | null>(null);
   const historyWriter = useMemo(() => createDeferredSave(async (body) => {
     await apiRequest("/api/document-chat/state", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
@@ -240,9 +253,35 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }, []);
 
   useEffect(() => {
+    const previous = latestStore.current;
     latestStore.current = store;
-    if (store) historyWriter.schedule({ kind: "history", value: store }, pending ? 30_000 : 1000);
+    // Typing in the composer would rewrite the whole history on every pause. The
+    // unsent prompt rides along with the next real change, or is saved when the
+    // panel closes or the app exits.
+    if (!store || (previous && previous !== store && onlyPromptsChanged(previous, store))) return;
+    const checkpoint = streamCheckpointRef.current;
+    if (!pending) {
+      window.clearTimeout(checkpoint.timer);
+      streamCheckpointRef.current = {};
+      historyWriter.schedule({ kind: "history", value: store });
+      return;
+    }
+    // A reply updates the store every 50 ms; serializing the whole history for
+    // each frame is wasted work. Save the sent message soon after the reply
+    // starts, then checkpoint every 30 s until it finishes.
+    checkpoint.timer ??= window.setTimeout(() => {
+      checkpoint.timer = undefined;
+      checkpoint.saved = true;
+      if (latestStore.current) historyWriter.schedule({ kind: "history", value: latestStore.current }, 0);
+    }, checkpoint.saved ? 30_000 : 1000);
   }, [store, pending, historyWriter]);
+  useEffect(() => () => window.clearTimeout(streamCheckpointRef.current.timer), []);
+
+  useEffect(() => {
+    if (!collapsed || !latestStore.current) return;
+    historyWriter.schedule({ kind: "history", value: latestStore.current });
+    void historyWriter.flush().catch(() => undefined);
+  }, [collapsed, historyWriter]);
 
   useEffect(() => {
     const flush = () => {

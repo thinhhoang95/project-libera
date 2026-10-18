@@ -42,6 +42,8 @@ type OpenRouterMessageContent =
     >;
 
 type OpenRouterResponse = {
+  id?: string;
+  provider?: string;
   usage?: unknown;
   choices?: Array<{
     finish_reason?: string;
@@ -111,7 +113,10 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-type CompletionOptions = { model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void };
+/** Which OpenRouter generation served a request, and the provider OpenRouter routed it to. */
+export type OpenRouterGeneration = { id?: string; provider?: string };
+
+type CompletionOptions = { model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage, generation: OpenRouterGeneration) => void };
 
 async function requestOpenRouterCompletion(
   messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
@@ -157,7 +162,7 @@ async function requestOpenRouterCompletion(
   return response;
 }
 
-export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage }> {
+export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage; generation?: OpenRouterGeneration }> {
   const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
@@ -165,6 +170,7 @@ export async function createOpenRouterCompletion(messages: OpenRouterMessage[], 
     content: extractMessageContent(payload.choices?.[0]?.message?.content),
     finishReason: payload.choices?.[0]?.finish_reason,
     usage: parseOpenRouterUsage(payload.usage),
+    generation: { id: payload.id, provider: payload.provider },
   };
 }
 
@@ -175,16 +181,21 @@ export async function createOpenRouterMarkdownCompletion(messages: OpenRouterMes
 export async function* streamOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}) {
   const response = await requestOpenRouterCompletion(messages, options, true);
   if (!response.body) throw new Error("The model returned no response stream.");
+  const generation: OpenRouterGeneration = {};
   for await (const data of readSseData(response.body, options.signal)) {
     if (data.trim() === "[DONE]") return;
     const payload = JSON.parse(data) as {
+      id?: string;
+      provider?: string;
       usage?: unknown;
       error?: { message?: string };
       choices?: { delta?: { content?: OpenRouterMessageContent }; finish_reason?: string }[];
     };
     if (payload.error) throw new Error(payload.error.message || "The model stream failed.");
+    if (typeof payload.id === "string") generation.id ??= payload.id;
+    if (typeof payload.provider === "string") generation.provider ??= payload.provider;
     const usage = parseOpenRouterUsage(payload.usage);
-    if (usage) options.onUsage?.(usage);
+    if (usage) options.onUsage?.(usage, { ...generation });
     const choice = payload.choices?.[0];
     if (choice?.finish_reason === "error") throw new Error("The model stream failed.");
     const text = extractMessageContent(choice?.delta?.content);

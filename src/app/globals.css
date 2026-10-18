@@ -1606,17 +1606,39 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-/* Files whose Markdown links to the open file (backlinks). */
+/* Files linked with the open file: backlinks (link to it) in the accent teal,
+   forward links (it links to them) in indigo, and a split tint when both. */
+.libera-left-panel { --forwardlink: #6366f1; }
+html.dark .libera-left-panel { --forwardlink: #a5b4fc; }
+
 .libera-left-panel button[data-backlink="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .libera-left-panel button[data-backlink="true"]:hover {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.libera-backlink-count {
+.libera-left-panel button[data-forwardlink="true"] {
+  background: color-mix(in srgb, var(--forwardlink) 9%, transparent);
+}
+
+.libera-left-panel button[data-forwardlink="true"]:hover {
+  background: color-mix(in srgb, var(--forwardlink) 15%, transparent);
+}
+
+.libera-left-panel button[data-backlink="true"][data-forwardlink="true"] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), color-mix(in srgb, var(--forwardlink) 9%, transparent));
+}
+
+.libera-left-panel button[data-backlink="true"][data-forwardlink="true"]:hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 15%, transparent), color-mix(in srgb, var(--forwardlink) 15%, transparent));
+}
+
+.libera-forwardlink-icon { display: inline-flex; color: var(--forwardlink); }
+
+.libera-backlink-count,
+.libera-forwardlink-count {
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
@@ -1626,6 +1648,8 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   line-height: 1;
   color: var(--accent);
 }
+
+.libera-forwardlink-count { color: var(--forwardlink); }
 
 /* Links dialog: backlinks and forward links of the open note. */
 .libera-links-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
