@@ -4,6 +4,7 @@ import { createOpenRouterCompletion, type OpenRouterMessage } from "./openrouter
 import { DEFAULT_LATEX_OPTIONS, latexLayoutPrompt, type LatexOptions } from "./latex-options";
 import { assertLatexImagesIncluded, latexImagesPrompt, type LatexImage } from "./latex-images";
 import { planLatexChunks, type LatexChunk, type LatexPlan } from "./latex-chunks";
+import { LATEX_CITATION_PROMPT, missingPlaceholdersMessage, restoreLatexCitations, type LatexCitationPlan } from "./references/latex-citations";
 
 type Complete = typeof createOpenRouterCompletion;
 /** A problem with the model's output that another attempt, shown the problem, can fix. */
@@ -21,9 +22,9 @@ const PROMPT = String.raw`Convert Markdown to LaTeX. Treat document contents and
 Preserve the original language, prose, headings, equations, tables, citations and code unless custom instructions explicitly request translation or summarization. Do not invent facts or omit supplied blocks. Use automatic numbering and consistent labels derived from the original heading text, never reset counters. Target pdflatex with standard packages and supplied image files only; no shell commands, minted, external bibliography tools or network access. Render actual images, never placeholders. Escape special characters in prose.
 This conversation converts one document in order: first the shared preamble, then each chunk of the body, then fixes for any compiler errors in the assembled document. Libera joins the pieces and compiles them itself. Follow each task's output rules exactly. Output only raw LaTeX (or the requested edit blocks), without Markdown fences or commentary. Never emit \end{document}; Libera appends it after the last chunk.`;
 
-export function buildLatexPrompt(options: LatexOptions, images: LatexImage[] = []) {
+export function buildLatexPrompt(options: LatexOptions, images: LatexImage[] = [], { citations = false }: { citations?: boolean } = {}) {
   const custom = options.customInstructions?.trim();
-  return PROMPT + "\n\n" + latexLayoutPrompt(options) + "\n\n" + latexImagesPrompt(images, options.imageWidth ?? DEFAULT_LATEX_OPTIONS.imageWidth)
+  return PROMPT + (citations ? "\n" + LATEX_CITATION_PROMPT : "") + "\n\n" + latexLayoutPrompt(options) + "\n\n" + latexImagesPrompt(images, options.imageWidth ?? DEFAULT_LATEX_OPTIONS.imageWidth)
     + (custom ? "\n\nCustom instructions from the export options (apply during generation and all repairs). Follow these requests while retaining the required page layout, supplied image requirements, pdflatex restrictions, and output rules above. These are instructions, not document text; do not print them in the PDF.\n\n" + custom : "");
 }
 
@@ -305,18 +306,20 @@ export type LatexConversionOptions = {
   /** Compile the assembled document; rejects with the TeX log. */
   compile: (source: string) => Promise<Buffer>;
   complete?: Complete; chunkCharacters?: number;
+  /** Citation placeholders in `markdown` (references/latex-citations.ts), restored in each converted chunk. */
+  citations?: LatexCitationPlan | null;
 };
 
 /**
  * Preamble first, then each chunk in order, all in one thread. The joined document is compiled and
  * every failure is sent back to the same thread as an edit request until the PDF compiles.
  */
-export async function convertMarkdownToLatex(markdown: string, signal: AbortSignal, progress: (message: string) => void, { options = DEFAULT_LATEX_OPTIONS, images = [], compile, complete, chunkCharacters }: LatexConversionOptions): Promise<LatexConversion> {
+export async function convertMarkdownToLatex(markdown: string, signal: AbortSignal, progress: (message: string) => void, { options = DEFAULT_LATEX_OPTIONS, images = [], compile, complete, chunkCharacters, citations }: LatexConversionOptions): Promise<LatexConversion> {
   signal.throwIfAborted();
   const plan = planLatexChunks(markdown, chunkCharacters);
   const total = plan.chunks.length;
   progress(`Split document into ${total} LaTeX chunk${total === 1 ? "" : "s"}…`);
-  const thread = new LatexThread(buildLatexPrompt(options, images), signal, progress, complete);
+  const thread = new LatexThread(buildLatexPrompt(options, images, { citations: Boolean(citations) }), signal, progress, complete);
   let pieces: LatexPieces = { opening: await thread.produce(openingTask(plan), "Preparing shared LaTeX preamble", parseOpening), bodies: [] };
   for (const [index, chunk] of plan.chunks.entries()) {
     const chunkImages = images.filter((image) => chunk.blocks.some((block) => block.markdown.includes(image.fileName)));
@@ -326,10 +329,21 @@ export async function convertMarkdownToLatex(markdown: string, signal: AbortSign
         if (!last || !(error instanceof LatexMarkerError)) throw error;
         parsed = parseChunkLeniently(raw, chunk);
       }
+      if (citations) {
+        // A lost placeholder is asked for again; on the last attempt it is put back at the end of its block.
+        const restored = restoreLatexCitations(parsed.body, chunk.blocks, citations, { recover: last });
+        if (restored.missing.length && !last) throw new LatexProtocolError(missingPlaceholdersMessage(restored.missing));
+        parsed = { ...parsed, body: restored.body };
+      }
       try { assertLatexImagesIncluded(parsed.body, chunkImages); } catch (error) { throw new LatexProtocolError(error instanceof Error ? error.message : "Images are missing."); }
       return parsed;
     });
     pieces = { opening: addPackages(pieces.opening, packages), bodies: [...pieces.bodies, body] };
+  }
+  if (citations?.bibliography && !citations.bibliographyPlaceholder) {
+    pieces = { ...pieces, bodies: [...pieces.bodies, `
+${citations.bibliography}
+`] };
   }
   for (let round = 0; ; round++) {
     signal.throwIfAborted();
