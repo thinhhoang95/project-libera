@@ -568,7 +568,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                       <input type="checkbox" aria-label="Select all" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(visibleRows.map((row) => row.entry.id)))} />
                     </th>
                     {MANAGE_COLUMNS.map((column) => (
-                      <th key={column.id} className={`${column.width} px-1.5 py-1.5 text-left font-medium`} aria-sort={sort.column === column.id ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+                      <th key={column.id} className={`${column.width} whitespace-nowrap px-1.5 py-1.5 text-left font-medium`} aria-sort={sort.column === column.id ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
                         <button type="button" className="inline-flex items-center gap-1 hover:text-accent" onClick={() => setSort((current) => ({ column: column.id, direction: current.column === column.id && current.direction === "asc" ? "desc" : "asc" }))}>
                           {column.label}
                           {sort.column === column.id ? (sort.direction === "asc" ? <ArrowUp aria-hidden className="h-3 w-3" /> : <ArrowDown aria-hidden className="h-3 w-3" />) : null}
@@ -618,7 +618,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                           {row.entry.attachments.some((attachment) => attachment.kind === "url") ? <Globe aria-label="URL" className="h-3.5 w-3.5" /> : null}
                         </span>
                       </td>
-                      <td className="px-1.5 tabular-nums text-muted-foreground">{row.text.updated}</td>
+                      <td className="whitespace-nowrap px-1.5 tabular-nums text-muted-foreground">{row.text.updated}</td>
                     </tr>
                   ))}
                   {windowed && last < visibleRows.length ? <tr aria-hidden style={{ height: (visibleRows.length - last) * TABLE_ROW_HEIGHT }} /> : null}
