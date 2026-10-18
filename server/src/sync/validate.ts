@@ -95,6 +95,12 @@ export function annotationViolation(
         continue;
       }
       if (sameJson(previous, next)) continue;
+      // Authorship holds for every role: a new record is created by the
+      // sender, nobody re-attributes an existing one, and a suggestion's actor
+      // is the sender (or an AI acting for the sender). Otherwise an editor
+      // could plant comments or suggestions in someone else's name.
+      const authorship = authorshipViolation(root, previous, next, accountId);
+      if (authorship) return `${root}/${key}: ${authorship}`;
       if (commenter) {
         if (previous !== undefined && previous.createdBy !== accountId) {
           return `${root}/${key} belongs to another member.`;
@@ -108,6 +114,24 @@ export function annotationViolation(
         if (problem) return `${root}/${key}: ${problem}`;
       }
     }
+  }
+  return null;
+}
+
+function authorshipViolation(
+  root: string,
+  previous: JsonRecord | undefined,
+  next: JsonRecord | undefined,
+  accountId: string,
+): string | null {
+  if (next === undefined) return null;
+  if (previous === undefined && next.createdBy !== accountId) return "New entries must be created by you.";
+  if (previous !== undefined && next.createdBy !== previous.createdBy) return "createdBy cannot change.";
+  if (root === AnnotationKeys.suggestions) {
+    const actor = next.actor as JsonRecord | undefined;
+    const actorAccount = actor?.kind === "user" ? actor.userId : actor?.kind === "ai" ? actor.onBehalfOf : undefined;
+    if (actorAccount !== next.createdBy) return "The suggestion's actor must be its creator.";
+    if (previous !== undefined && !sameJson(previous.actor, next.actor)) return "The suggestion's actor cannot change.";
   }
   return null;
 }
