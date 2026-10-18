@@ -30,7 +30,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 
 - ☐ S1 Visual bridge: convergence, untouched blocks preserved, IME hold (tests in M1.4); 👤 real IME check
 - ☑ S2 CodeMirror Markdown inventory and parity list (`decisions/D8-codemirror-markdown.md`)
-- ☐ S3 Host SQLite kill test (M1.3)
+- ☑ S3 Host SQLite kill test (M1.3)
 - ☐ S4 MessagePort to main and child windows (M1.4/M2 wave 2)
 - ☑ S5 Server persist-before-ack kill test (M1.1)
 - ☐ S6 Overlay suggestions: hard cases scripted (M3.1)
@@ -69,13 +69,13 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Desktop sign-in dialog and `safeStorage` refresh token (wave 2)
 
 ### M1.3 DocHub host
-- ☐ SQLite store (WAL, `synchronous=FULL`): updates, snapshots, outbound, doc_meta, threads_cache, pending_commands, docs, projects, blobs_cache
-- ☐ DocHub registry, replica attach/detach, multi-window
-- ☐ Outbound queue with clientSeq, batching, splitting large updates
-- ☐ Sync client: one socket, multiplexed docs, ack tracking, rejects with rollback
+- ☑ SQLite store (WAL, `synchronous=FULL`): updates, snapshots, outbound, doc_meta, threads_cache, pending_commands, docs, projects, blobs_cache, rejected edits; owner lock
+- ☑ DocHub registry, replica attach/detach, multi-window (in-memory ports; MessagePort adapter in wave 2)
+- ☑ Outbound queue with clientSeq, batching, identical resends after restart
+- ☑ Sync client: one socket, multiplexed docs, ack tracking, rejects with rollback, backoff with full jitter, nudge, token refresh, 4026/access-revoked handling; verified against the real server (`scripts/collab/integration-host-server.test.ts`)
 - ☐ Control API on loopback with a per-launch token
 - ☐ utilityProcess entry, main-process glue (restart, powerMonitor, net, single-instance lock, quit flush)
-- ☐ Host kill test (S3)
+- ☑ Host kill test (S3): p95 append commit about 2 ms on this machine
 
 ### M1.4 Replica and bindings
 - ☐ Renderer replica client over MessagePort, tab-level registry outliving editor mounts
@@ -83,7 +83,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Markdown Source on CodeMirror 6 with feature parity, behind Preferences → Source editor (Classic default); external-document seam for the binding; parity table in `decisions/D8-codemirror-markdown.md`. 👤 Before the default flips: try it in the running app, run the IME matrix, and check typing on a 1 MB note
 - ☐ Visual block bridge (S1)
 - ☐ `getTabDraft` reads the replica for shared tabs
-- ☐ Presence: cursors, selections, avatars, quiet mode
+- ◐ Presence: library done (awareness user state, sections, quiet mode, follow mode); UI in wave 2
 
 ### M1.5 Shared notebooks
 - ☐ Share: create project, one-time import, `.libera-shared.json`
@@ -112,7 +112,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ schemaVersion read-only mode; minProtocolVersion; forced-update flow; compatibility test
 
 ### M1.10 Snapshots and compaction
-- ☐ Client snapshots (500 updates or 1 MB)
+- ☑ Client snapshots (500 updates or 1 MB) in a worker thread; only acked updates are pruned
 - ☑ Server compaction job (2,000 updates), retention that keeps revision snapshots
 - ☐ Cold open from snapshot plus tail
 
@@ -124,13 +124,14 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Leave review comments disabled on shared docs (until M2.3)
 
 ### M1.12 Test harness
-- ☐ Convergence fuzzer (fast-check)
+- ◐ Convergence fuzzer: anchor fuzz (1,000 operations) and a two-replica fuzz exist; the multi-host fuzz against the real server is in wave 2
 - ☐ Chaos proxy (latency, loss, resets)
 - ☐ Kill tests in CI
 - ☐ Durability matrix: one test per §3.2 row
 - ☐ Soak runner (24 h nightly; 👤 schedule on CI)
 
 ## Phase 2: comments and history
+- ☑ Client library: RelativePosition anchors, detach and reattach candidates, 1,000-operation anchor fuzz (`src/lib/collab/anchors.ts`)
 - ☑ Server: threads, messages, status, reattach, notifications (mentions, replies, resolved, invitations), digest job, idempotent offline commands endpoint (M2.1/M2.3/M2.6 server sides)
 - ☐ M2.1 `ReviewStore` interface; local and shared stores; RelativePosition anchors; authors on messages; sidebar alignment
 - ☐ M2.2 Detached state and reattach; split, move and paste rules; 1,000-operation anchor fuzz
@@ -140,6 +141,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ M2.6 Offline comments through pending commands with idempotency
 
 ## Phase 3: suggestions and review
+- ☑ Client library: overlay model, stale detection, groups, snapshot-edit mapping, CodeMirror preview and suggest mode, Tiptap preview with authors; hard cases 1, 2, 4 and 7 at model level (`scripts/collab/edlib-*.test.ts`)
 - ☐ M3.1 Overlay model; Tiptap preview rendering with authors; CodeMirror preview extension; Suggestions panel
 - ☐ M3.2 Suggest mode in CodeMirror; "Suggest edit" in Visual; editing your own suggestion
 - ☐ M3.3 Decision commands with stale check and exactly-once apply; accept-all checkpoint; revert; offline decisions

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Command } from "../../src/lib/collab/protocol/api";
-import { CollabHost, type CollabHostEvent } from "../../electron/collab/core/host";
+import { CollabHost, syncClientId, type CollabHostEvent } from "../../electron/collab/core/host";
 import { createMemoryPortPair } from "../../electron/collab/core/ports";
 import { HostStore, HostStoreLockedError } from "../../electron/collab/core/store";
 import { FakeSyncServer } from "./support/host-fake-server";
@@ -53,7 +53,9 @@ test("CollabHost wires replicas, sync, commands and shutdown", async () => {
     await waitFor(() => hub.pendingCount === 0);
     await waitFor(() => applied.includes("cmd-1"), 3000, "command replayed once online");
     assert.ok(server.sockets[0].url.startsWith("wss://collab.test/sync"));
-    assert.equal(server.liveSockets[0].clientId, "install-1:acct");
+    assert.equal(server.liveSockets[0].clientId, syncClientId("install-1", "acct"));
+    // Same rule as the server's isClientId (server/src/ids.ts).
+    assert.match(server.liveSockets[0].clientId, /^[A-Za-z0-9_-]{8,80}$/);
     assert.ok(events.some((event) => event.source === "sync" && event.event.type === "welcome"));
     assert.ok(events.some((event) => event.source === "commands" && event.event.type === "settled"));
 
