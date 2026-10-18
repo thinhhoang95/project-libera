@@ -8,9 +8,9 @@
 // window, encrypts refresh tokens with safeStorage, and stops the host inside
 // the quit sequence before Next stops.
 //
-// Feature flag: the host runs only when LIBERA_COLLAB=1 is set in the
-// environment of the Electron process. Without it nothing here starts, no
-// env is injected, and the preload exposes no window.liberaCollab.
+// Collaboration is on by default. LIBERA_COLLAB=0 in the environment of the
+// Electron process turns it off: then nothing here starts, no env is
+// injected, and the preload exposes no window.liberaCollab.
 //
 // The message shapes mirror electron/collab/adapters/protocol.ts.
 
@@ -41,7 +41,7 @@ const MAX_DOC_ID_LENGTH = 512;
 const MAX_REQUEST_ID_LENGTH = 128;
 
 function isCollabEnabled(env = process.env) {
-  return env.LIBERA_COLLAB === "1";
+  return env.LIBERA_COLLAB !== "0";
 }
 
 function freePort() {

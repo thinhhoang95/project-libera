@@ -83,7 +83,7 @@ const updaterService = createUpdaterService({
   getMainWindow: () => mainWindow,
   onBeforeInstall: prepareToQuit,
 });
-// Collaboration host (LIBERA_COLLAB=1 only; otherwise every call is a no-op).
+// Collaboration host (on unless LIBERA_COLLAB=0; when off every call is a no-op).
 const collabHost = createCollabHost({
   getMainWindow: () => mainWindow,
   isTrustedFrame: (frame) => Boolean(nextServerUrl) && isSameOrigin(frame.url, nextServerUrl),

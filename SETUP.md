@@ -136,7 +136,7 @@ All variables are read by `server/src/config.ts`. `server/.env.example` is the d
 ## 4. Client configuration *(lands in M1.3–M1.6)*
 
 - **Preferences → Collaboration:** server URL, sign-in and sign-out, display name and colour.
-- **`LIBERA_COLLAB=1`:** enables collaboration features while they are in beta.
+- **Collaboration is on by default.** Set `LIBERA_COLLAB=0` in the environment to start Libera without it (no collab host, no `window.liberaCollab`).
 - **Local data:** `userData/collab/<accountId>.sqlite` (update log, outbound queue, offline commands). The refresh token is stored encrypted with Electron `safeStorage`.
 - **Shared notebooks** appear under the master directory like other notebooks. Each one carries a `.libera-shared.json` marker. Their files are a working copy written by Libera. Editing them in other programs is supported (Libera merges the edits in), but deleting the marker does not unshare the notebook.
 

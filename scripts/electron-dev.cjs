@@ -3,15 +3,15 @@ const path = require("node:path");
 const { buildCollabHost } = require("./build-collab-host.cjs");
 
 // The collab host bundle must exist before Electron starts (main forks it
-// when LIBERA_COLLAB=1). It is rebuilt on change; restart Libera to load a
+// unless LIBERA_COLLAB=0). It is rebuilt on change; restart Libera to load a
 // rebuild. Without the flag a failed build only warns, as before.
 async function startCollabHostBuild() {
-  const required = process.env.LIBERA_COLLAB === "1";
+  const required = process.env.LIBERA_COLLAB !== "0";
   try {
     return await buildCollabHost({ watch: true, logLevel: required ? "info" : "warning" });
   } catch (error) {
     if (required) throw error;
-    console.warn(`Could not build the collab host (only needed with LIBERA_COLLAB=1): ${error.message || error}`);
+    console.warn(`Could not build the collab host (only needed when collaboration is on): ${error.message || error}`);
     return () => {};
   }
 }

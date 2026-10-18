@@ -42,7 +42,7 @@ async function main() {
   // removable/shared Windows filesystems. Production output is disposable, so
   // start Electron builds from a clean Next directory on every platform.
   await fs.rm(path.join(projectRoot, ".next"), { force: true, recursive: true });
-  // The collab host ships with every build (it only runs with LIBERA_COLLAB=1);
+  // The collab host ships with every build (collaboration is on unless LIBERA_COLLAB=0);
   // prepare-dist copies electron/collab/dist into the app.
   await fs.rm(path.join(projectRoot, "electron", "collab", "dist"), { force: true, recursive: true });
   await buildCollabHost();

@@ -351,7 +351,7 @@ export function openReplica(docId: string, port: ReplicaMessagePort, options?: R
   return new CollabReplica(docId, port, options);
 }
 
-/** Whether live documents can be attached in this window (`window.liberaCollab` exists only with LIBERA_COLLAB=1). */
+/** Whether live documents can be attached in this window (`window.liberaCollab` exists unless collaboration is turned off with LIBERA_COLLAB=0). */
 export function isLiveCollabAvailable(): boolean {
   return getCollabBridge() !== null;
 }
