@@ -4,7 +4,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
-import { anchorAt, newReview, syncReview, type ReviewDocument, type ReviewRange } from "../markdown-review";
+import { agentSuggestionTitle, anchorAt, newReview, syncReview, type AgentSuggestion, type ReviewDocument, type ReviewRange } from "../markdown-review";
 
 type ReviewDatabase = { schemaVersion: 1; documents: ReviewDocument[] };
 const databasePath = () => path.join(getStateRoot(), ".libera", "markdown-reviews.json");
@@ -75,6 +75,49 @@ export async function addReviewThreads(key: string, snapshot: string, threads: {
     for (const thread of threads) {
       doc.threads.push({ id: randomUUID(), anchor: anchorAt(snapshot, thread.range), messages: [{ id: randomUUID(), text: thread.text, createdAt, ...(thread.author ? { author: thread.author } : {}) }], status: "open" });
     }
+    doc.enabled = true;
+    doc.revision++;
+    db.documents[index] = doc;
+    return doc;
+  });
+}
+export type AgentSuggestionInput = {
+  /** The passage to replace, in `snapshot`. */
+  range: ReviewRange;
+  after: string;
+  reason: string;
+  title?: string;
+  /** Becomes an agent comment thread on the passage, linked to the suggestion. */
+  comment?: string;
+  runId?: string;
+};
+/**
+ * Add agent suggestions (pending suggested edits) to a document's review, the
+ * way addReviewThreads adds comments: `snapshot` is the text the ranges refer
+ * to, existing threads and suggestions are mapped onto it first, and review
+ * mode is turned on so the suggestions show.
+ */
+export async function addAgentSuggestions(key: string, snapshot: string, suggestions: AgentSuggestionInput[]) {
+  return transaction((db) => {
+    let index = db.documents.findIndex((d) => d.key === key);
+    if (index < 0) { db.documents.push(newReview(key, snapshot, randomUUID())); index = db.documents.length - 1; }
+    const doc = syncReview(db.documents[index], snapshot);
+    const createdAt = new Date().toISOString();
+    const added: AgentSuggestion[] = suggestions.map((input) => {
+      const anchor = anchorAt(snapshot, input.range);
+      const commentIds: string[] = [];
+      if (input.comment?.trim()) {
+        const thread = { id: randomUUID(), anchor, messages: [{ id: randomUUID(), text: input.comment.trim(), createdAt, author: "agent" as const }], status: "open" as const };
+        doc.threads.push(thread);
+        commentIds.push(thread.id);
+      }
+      return {
+        id: randomUUID(), version: 1, title: input.title?.trim() || agentSuggestionTitle(input.reason), reason: input.reason, commentIds,
+        edits: [{ start: anchor.start, end: anchor.end, before: anchor.quote, after: input.after }], anchors: [anchor],
+        status: "pending", author: "agent", createdAt, ...(input.runId ? { runId: input.runId } : {}),
+      };
+    });
+    doc.agentSuggestions = [...(doc.agentSuggestions ?? []), ...added];
     doc.enabled = true;
     doc.revision++;
     db.documents[index] = doc;

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, jsonError } from "@/lib/api";
-import { anchorAt, commentsKey, decideSuggestions, reviewString, startReviewRound, syncReview, undoReview, redoReview, type ReviewRange } from "@/lib/markdown-review";
+import { anchorAt, commentsKey, decideAgentSuggestions, decideSuggestions, requestAgentRevision, reviewString, startReviewRound, syncReview, undoReview, redoReview, type ReviewRange } from "@/lib/markdown-review";
 import { loadReview, readReview, updateReview, moveReviewPath, listRecoverableReviews } from "@/lib/storage/markdown-reviews";
 import { StorageError } from "@/lib/storage/errors";
 export const runtime = "nodejs";
@@ -50,6 +50,12 @@ export async function POST(request: NextRequest) {
           if (!Array.isArray(body.ids) || body.ids.some((id: unknown) => typeof id !== "string") || !["accept", "reject", "reopen"].includes(body.decision)) throw new Error("Invalid change decision.");
           doc = decideSuggestions(doc, body.ids, body.decision, randomUUID()); break;
         }
+        // Agent suggestions (SuggestEdit): accept or reject one or several, or ask for a revision.
+        case "agent-decision": {
+          if (!Array.isArray(body.ids) || body.ids.some((id: unknown) => typeof id !== "string") || !["accept", "reject"].includes(body.decision)) throw new Error("Invalid suggested edit decision.");
+          doc = decideAgentSuggestions(doc, body.ids, body.decision, randomUUID()); break;
+        }
+        case "agent-revision": doc = requestAgentRevision(doc, reviewString(body.suggestionId, "suggestion ID", 100), text(), randomUUID); break;
         case "undo": doc = undoReview(doc); break;
         case "redo": doc = redoReview(doc); break;
         case "migrate": doc.key = reviewString(body.key, "document key", 2000); break;

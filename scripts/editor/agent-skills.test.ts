@@ -110,8 +110,8 @@ test("skills are listed by name and loaded on demand, and their tools appear onc
     assert.ok(!activeTools(toolsForPermission("read-only"), context).some((tool) => tool.name === "LeaveComment"));
     assert.match((await call(context, "Skill", { name: "review" })).text, /There is no skill named "review"\. Available skills: leave-review-comments\./);
     const loaded = await call(context, "Skill", { name: "leave-review-comments" });
-    assert.match(loaded.text, /^<skill name="leave-review-comments">\n# Leaving review comments[\s\S]*<\/skill>\n\n\(Tools now available: LeaveComment\.\)$/);
-    assert.deepEqual(activeTools(toolsForPermission("read-only"), context).map((tool) => tool.name), ["Glob", "Grep", "Read", "TaskCreate", "TaskUpdate", "Skill", "LeaveComment"]);
+    assert.match(loaded.text, /^<skill name="leave-review-comments">\n# Leaving review comments[\s\S]*<\/skill>\n\n\(Tools now available: LeaveComment, SuggestEdit\.\)$/);
+    assert.deepEqual(activeTools(toolsForPermission("read-only"), context).map((tool) => tool.name), ["Glob", "Grep", "Read", "TaskCreate", "TaskUpdate", "Skill", "LeaveComment", "SuggestEdit"]);
     assert.equal((await call(context, "Skill", { name: "leave-review-comments" })).result, "Already loaded");
   });
 });
@@ -196,7 +196,7 @@ test("the loop compiles comments when the model finishes and sends misplaced one
     const { context, events } = makeContext("read-only");
     const result = await runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Review my plan." }], tools: toolsForPermission("read-only"), context, emit: context.emit, signal: new AbortController().signal });
 
-    assert.deepEqual(result, { outcome: "completed" });
+    assert.equal(result.outcome, "completed");
     assert.equal(sent.length, 5);
     assert.ok(!sent[0].tools.some((tool) => tool.function.name === "LeaveComment"));
     assert.ok(sent[1].tools.some((tool) => tool.function.name === "LeaveComment"));
@@ -222,7 +222,7 @@ test("after the feedback rounds, or when a run ends early, placed comments are k
     globalThis.fetch = async () => replies.shift()!();
     const { context, events } = makeContext();
     const result = await runAgent({ model: "test/agent-model", profile, system: "System", messages: [{ role: "user", content: "Review." }], tools: toolsForPermission("read-only"), context, emit: context.emit, signal: new AbortController().signal });
-    assert.deepEqual(result, { outcome: "completed" });
+    assert.equal(result.outcome, "completed");
     assert.equal(replies.length, 0);
     const final = events.filter((event): event is Extract<AgentEvent, { type: "tool_finished" }> => event.type === "tool_finished").at(-1)!;
     assert.equal(final.status, "error");

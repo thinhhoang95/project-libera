@@ -2,7 +2,7 @@
 
 import { useMemo, useEffect, useRef, useState, type RefObject } from "react";
 import { MessageSquarePlus, Check, X, Sparkles, Undo2, Redo2, Plus, ArrowLeft, ArrowUp, BookOpen, ListChecks, PencilLine, ShieldCheck, Send, Link2, Trash2, RotateCcw, Save, Search, CloudUpload, Clock, AlertTriangle } from "lucide-react";
-import type { ReviewSuggestion } from "@/lib/markdown-review";
+import type { AgentSuggestion, ReviewSuggestion } from "@/lib/markdown-review";
 import { isSharedThread, type PendingInfo, type SharedReviewMessage, type SharedReviewThread } from "@/lib/collab/review-store/types";
 import { commentAuthorLabel, initials } from "@/lib/collab/review-store/authors";
 import { localCommentsSummary, migrateLocalComments } from "@/lib/collab/review-store/api";
@@ -54,6 +54,10 @@ export function ReviewComments() {
   if (!r) return null;
   const threads = r.doc?.threads ?? [];
   const active = threads.find((t) => t.id === r.selectedThread);
+  // Agent suggestions keep their numbering too; only open ones are listed.
+  const agentSuggestions = r.doc?.agentSuggestions ?? [];
+  const openSuggestions = agentSuggestions.map((suggestion, index) => ({ suggestion, index })).filter(({ suggestion }) => suggestion.status === "pending" || suggestion.status === "conflicted");
+  const pendingSuggestions = openSuggestions.filter(({ suggestion }) => suggestion.status === "pending");
   // Comments keep their document numbering while filtered.
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = threads.map((thread, index) => ({ thread, index })).filter(({ thread, index }) => {
@@ -61,17 +65,22 @@ export function ReviewComments() {
     const haystack = [`comment ${index + 1}`, thread.status, thread.messages[0]?.author ?? "", thread.anchor.quote, ...thread.messages.map((m) => m.text), ...(isSharedThread(thread) ? [thread.shared.detached ? "detached" : "", ...thread.messages.map((m) => m.shared.author.displayName)] : [])].join("\n").toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
+  const shownSuggestions = openSuggestions.filter(({ suggestion, index }) => {
+    if (!terms.length) return true;
+    const haystack = [`edit ${index + 1}`, "agent", suggestion.status, suggestion.title, suggestion.reason, ...suggestion.edits.flatMap((edit) => [edit.before, edit.after])].join("\n").toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
   return <section className="review-comments flex min-h-0 flex-1 flex-col" aria-label="Review comments">
     <header className="shrink-0 space-y-3 px-3 pb-3 pt-4">
       <div className="libera-notebook-heading flex items-center gap-1">
         <h2 className="min-w-0 flex-1 text-sm font-semibold">Comments</h2>
-        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{threads.filter((t) => t.status === "open").length} open</span>
+        <span className="mr-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{threads.filter((t) => t.status === "open").length} open{openSuggestions.length > 0 && <span className="review-agent-suggestion-count" title="Suggested edits from the agent, waiting for your decision"> · {openSuggestions.length} suggested</span>}</span>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Undo acceptance" title="Undo acceptance" disabled={!!r.busy || !r.doc?.undo.length} onClick={() => void r.action("undo")}><Undo2 aria-hidden size={14} /></button>
         <button type="button" className="libera-sidebar-icon-button inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Redo acceptance" title="Redo acceptance" disabled={!!r.busy || !r.doc?.redo?.length} onClick={() => void r.action("redo")}><Redo2 aria-hidden size={14} /></button>
       </div>
       <button type="button" className="libera-panel-button h-9 w-full" aria-pressed={r.chatReview} title={r.chatReview ? "Return to regular chat" : "Plan how to address comments"} onClick={() => r.setChatReview(!r.chatReview)}><Sparkles size={14} /> Agentic review</button>
       {r.doc && <>
-        {threads.length > 0 && <div className="review-comment-search relative">
+        {(threads.length > 0 || openSuggestions.length > 0) && <div className="review-comment-search relative">
           <Search aria-hidden size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input type="search" aria-label="Search comments" placeholder="Search comments…" className="libera-panel-field h-9 w-full pl-8 pr-7 text-xs" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape" && query) { e.stopPropagation(); setQuery(""); } }} />
           {query && <button type="button" className="libera-sidebar-icon-button absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md" aria-label="Clear comment search" title="Clear search" onClick={() => setQuery("")}><X aria-hidden size={12} /></button>}
@@ -83,7 +92,15 @@ export function ReviewComments() {
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {shownSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
+        {pendingSuggestions.length > 1 && <div className="flex flex-wrap items-center gap-1">
+          <span className="min-w-0 flex-1 text-xs font-semibold">Suggested edits</span>
+          <button type="button" className={button} disabled={!!r.busy || r.recovery} onClick={() => void r.action("agent-decision", { ids: pendingSuggestions.map(({ suggestion }) => suggestion.id), decision: "accept" })}><Check size={14} /> Accept all</button>
+          <button type="button" className={button} disabled={!!r.busy} onClick={() => void r.action("agent-decision", { ids: pendingSuggestions.map(({ suggestion }) => suggestion.id), decision: "reject" })}><X size={14} /> Reject all</button>
+        </div>}
+        {shownSuggestions.map(({ suggestion, index }) => <AgentSuggestionCard key={suggestion.id} suggestion={suggestion} number={index + 1} />)}
+      </section>}
       {shown.map(({ thread, index }) => isSharedThread(thread) && r.shared ? <SharedThreadCard key={thread.id} thread={thread} index={index} shared={r.shared} selected={active?.id === thread.id} cardRef={active?.id === thread.id ? selectedCard : undefined} reply={reply} setReply={setReply} mentions={mentions} setMentions={setMentions} editing={editing} setEditing={setEditing} /> : <article key={thread.id} ref={active?.id === thread.id ? selectedCard : undefined} data-selected={active?.id === thread.id} className="review-comment-card libera-panel-card p-3 text-[13px] transition" aria-label={`Comment ${index + 1}`}>
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
           <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><span className="text-[11px] capitalize text-muted-foreground">{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
@@ -122,6 +139,35 @@ export function ReviewSuggestionCard({ suggestion, number }: { suggestion: Revie
     {revision !== null && <form className="mt-2" onSubmit={async (e) => { e.preventDefault(); if (await r.generate("revise", revision, undefined, undefined, suggestion.id)) setRevision(null); }}><textarea aria-label={`Revision for change ${number}`} className="review-textarea" value={revision} onChange={(e) => setRevision(e.target.value)} /><button className={button} disabled={!revision.trim() || !!r.busy}>Revise this change</button></form>}
   </article>;
 }
+/** A suggested edit the agent left (SuggestEdit), decided outside any Agentic Review session. */
+export function AgentSuggestionCard({ suggestion, number }: { suggestion: AgentSuggestion; number: number }) {
+  const r = useMarkdownReview()!;
+  const [revision, setRevision] = useState<string | null>(null);
+  const pending = suggestion.status === "pending", conflicted = suggestion.status === "conflicted";
+  const comments = suggestion.commentIds.map((id) => (r.doc?.threads.findIndex((t) => t.id === id) ?? -1) + 1).filter((n) => n > 0);
+  return <article className="review-suggestion review-agent-suggestion libera-panel-card p-3 text-[13px]" aria-label={`Suggested edit ${number}: ${suggestion.title}`} data-status={suggestion.status}>
+    <div className="flex items-start gap-2">
+      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { if (suggestion.anchors[0]?.state === "attached") r.focus(suggestion.edits[0]); }}>
+        <span className="flex flex-wrap items-center gap-1.5"><strong className="text-xs font-semibold">Edit {number}</strong><span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Suggested by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span></span>
+        <span className="mt-1 block font-semibold">{suggestion.title}</span>
+      </button>
+      <span className="text-[11px] capitalize text-muted-foreground">{conflicted ? "text changed" : suggestion.status}</span>
+    </div>
+    {suggestion.reason && suggestion.reason !== suggestion.title && <p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p>}
+    {suggestion.edits.map((edit, index) => <div key={index} className="review-diff"><div aria-label="Original text"><span className="review-diff-label">Original</span><pre>{edit.before}</pre></div><div aria-label="Proposed text"><span className="review-diff-label">Proposed</span><pre>{edit.after || "(delete passage)"}</pre></div></div>)}
+    {conflicted && <p className="text-xs text-muted-foreground">The passage changed since the agent suggested this, so it cannot be applied as is.</p>}
+    {comments.length > 0 && <p className="text-xs text-muted-foreground">{comments.length === 1 ? "Comment" : "Comments"} {comments.join(", ")}</p>}
+    <div className="mt-2 flex flex-wrap gap-1">
+      {pending && <button type="button" className={button} disabled={!!r.busy || r.recovery} onClick={() => void r.action("agent-decision", { ids: [suggestion.id], decision: "accept" })}><Check size={14} /> Accept</button>}
+      <button type="button" className={button} disabled={!!r.busy} onClick={() => void r.action("agent-decision", { ids: [suggestion.id], decision: "reject" })}><X size={14} /> Reject</button>
+      <button type="button" className={button} disabled={!!r.busy || suggestion.anchors.every((anchor) => anchor.state !== "attached")} onClick={() => setRevision(revision === null ? "" : null)}>Request revision</button>
+    </div>
+    {revision !== null && <form className="mt-2" onSubmit={async (e) => { e.preventDefault(); if (await r.action("agent-revision", { suggestionId: suggestion.id, text: revision })) setRevision(null); }}>
+      <textarea aria-label={`Revision for suggested edit ${number}`} className="review-textarea" placeholder="What should change? This becomes a comment on the passage." value={revision} onChange={(e) => setRevision(e.target.value)} />
+      <button type="submit" className={button} disabled={!revision.trim() || !!r.busy}>Send revision request</button>
+    </form>}
+  </article>;
+}
 export function ReviewPopover() {
   const r = useMarkdownReview();
   const [text, setText] = useState("");
@@ -133,11 +179,14 @@ export function ReviewPopover() {
   const suggestions = r.doc.session?.suggestions ?? [];
   const visible = suggestions.filter((s) => ["pending", "conflicted"].includes(s.status) && s.edits.some(overlaps));
   const threads = r.doc.threads.filter((t) => t.anchor.state === "attached" && overlaps(t.anchor));
+  const agentSuggestions = r.doc.agentSuggestions ?? [];
+  const agentVisible = agentSuggestions.filter((s) => (s.status === "pending" || s.status === "conflicted") && s.edits.some(overlaps));
   return <div className="review-popover" role="dialog" aria-label="Passage review" onKeyDown={(e) => { if (e.key === "Escape") { r.clearSelection(); setComposing(false); setText(""); } }} style={{ left: Math.max(8, Math.min(x, (typeof window === "undefined" ? 1000 : window.innerWidth) - 376)), top: Math.max(8, Math.min(y + 8, (typeof window === "undefined" ? 800 : window.innerHeight) - 320)) }}>
     <div className="flex items-center gap-2"><strong className="flex-1 text-sm">Passage review</strong><button className={button} aria-label="Close passage review" onClick={() => { r.clearSelection(); setComposing(false); setText(""); }}><X size={14} /></button></div>
     <blockquote className="my-2 max-h-20 overflow-auto whitespace-pre-wrap border-l-2 border-accent pl-2 text-xs text-muted-foreground">{r.doc.snapshot.slice(range.start, range.end)}</blockquote>
     {threads.map((t) => <button key={t.id} className="my-1 block w-full rounded bg-muted p-2 text-left text-sm" onClick={() => { r.selectThread(t.id); r.clearSelection(); }}>{t.messages[0]?.text} <span className="text-xs text-muted-foreground">· {t.messages.length} message(s)</span></button>)}
     {visible.map((s) => <ReviewSuggestionCard key={s.id} suggestion={s} number={suggestions.indexOf(s) + 1} />)}
+    {agentVisible.map((s) => <AgentSuggestionCard key={s.id} suggestion={s} number={agentSuggestions.indexOf(s) + 1} />)}
     {composing ? <form onSubmit={async (e) => { e.preventDefault(); if (await r.action("comment", { range, text, ...(r.shared ? { mentions } : {}) })) { setText(""); setMentions([]); setComposing(false); r.clearSelection(); } }}>{r.shared ? <MentionTextarea autoFocus aria-label="New review comment" className="review-textarea" projectId={r.shared.projectId} selfId={r.shared.projection.me?.id} value={text} onChange={setText} onMentionsChange={setMentions} placeholder="Comment… Type @ to mention someone" /> : <textarea autoFocus aria-label="New review comment" className="review-textarea" value={text} onChange={(e) => setText(e.target.value)} />}<button className={button} disabled={!text.trim() || !!r.busy}>Add comment</button></form> : <button className={button} disabled={!!r.busy} onClick={() => setComposing(true)}><MessageSquarePlus size={14} /> Add comment</button>}
   </div>;
 }
