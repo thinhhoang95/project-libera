@@ -26,6 +26,12 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
   - The storage `merge` op should be checked against `mergeEntryFields` (core) semantics.
   - Interop's import route decides the status of imported entries: `confirmed` when title, creator and date are present, otherwise `needs-review`.
 
+### Handoffs for the fact-check lane (from agent-runtime)
+
+- `ToolContext` has no read scope. To restrict child Read, Grep and Glob to a batch's attachments plus the document, either wrap those tools or add a read-scope field.
+- A child given SuggestEdit keeps its suggestions in its own `skillState`, which is never saved. The parent records suggestions from the children's structured results instead.
+- The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
+
 ## Baseline
 
 `npm run test:editor` on `references/integration` before any lane: 559 tests, 552 pass, 4 fail, 2 cancelled, 1 skipped. The failures and cancellations are pre-existing (global search index tests 132, 158, 159, 180; PDF worker resolution 415; atomic-write cleanup 455), the same set `docs/collaboration/progress.md` records. Lanes must not add to this list.
@@ -62,7 +68,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 |---|---|---|---|
 | editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ☐ |
 | resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ◐ server |
-| agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ◐ |
+| agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
 | moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☐ |
 
 ## Wave 4: fact-check and later items
