@@ -1,0 +1,105 @@
+# Reference manager lanes: rules and contracts
+
+Every lane agent reads this file, [plan.md](plan.md) and `AGENTS.md` before writing code.
+
+## Rules for every lane
+
+1. **Stay in your worktree.** Work only inside the worktree path in your brief, on the branch in your brief. Never `cd` into `D:\project-libera` (the main checkout, where other agents are building collaboration on `collaboration`), into another lane's worktree, or into `refs-integration`. Never check out, merge, rebase, reset or push any other branch. Never use `git stash`, because the stash is shared across worktrees. Use WIP commits instead.
+2. **Stay in your lane.** Change only the files your brief owns, plus the small wiring edits it names. If you must touch anything else, keep the edit minimal and list it under “Outside lane” in your report.
+3. **Never touch collaboration code:** `src/lib/collab/`, `src/components/libera/collab/`, `electron/collab/`, `electron/collab-host.cjs`, `server/`, `ops/`, `scripts/collab/`, `docs/collaboration/`, `SETUP.md`.
+4. **Dependencies.** `node_modules` is a junction to the integration worktree's install and is shared by all lanes. Never run `npm install`, `npm ci`, `npm update` or `deps:*`, and never edit `package.json` or `package-lock.json`. If you need a package, stop and say so in your report. `citeproc` and `@tiptap/suggestion` are already installed.
+5. **Next.js.** This is Next 16.2.6, which differs from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing route handlers or other Next code.
+6. **Tests.**
+   - Put tests in `scripts/editor/references-<area>.test.ts`, using the existing `node:test` style and harness.
+   - Run your tests: `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/references-<area>.test.ts`.
+   - Also run the existing tests for every module you changed, `npx tsc --noEmit -p .` and `npx eslint <changed files>`. Fix everything you introduced.
+   - Known baseline failures in the full suite are listed in `progress.md`. Do not try to fix them.
+   - Tests never call live network services or models. Use recorded fixtures and mocked `fetch` and model responses, as the review-mode and agent tests do.
+7. **Manual checks.**
+   - Use a data directory inside your worktree, for example `LIBERA_DATA_DIR=<worktree>/data/manual`. `/data` is gitignored. Never point at the user's real library.
+   - A dev server must use a port unique to your lane (given in your brief): `npx next dev -p <port>`. The development password is `LIBERA_DEV_PASSWORD`, which defaults to `libera`.
+   - If the dev server cannot start from a junctioned `node_modules`, say so and rely on jsdom tests. The orchestrator runs the browser checks on the integration branch.
+8. **Quality.**
+   - Match the surrounding code: naming, comment density, idioms.
+   - Implement the whole brief. No TODO stubs, no placeholder behavior, no silently skipped cases.
+   - If something in the brief turns out to be wrong or impossible, do the closest sound thing and explain it in your report.
+9. **Commits.** Commit on your lane branch in logical steps, with messages like `feat(references): …`, `test(references): …`. End every commit message with:
+
+   ```
+   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+   ```
+
+   Leave the worktree clean at the end.
+10. **Report.** Finish with:
+    - a summary,
+    - files added and changed,
+    - the exact test commands run and their results (pass and fail counts),
+    - any deviations from the brief,
+    - anything outside your lane,
+    - open issues the orchestrator must handle.
+
+## Shared contracts
+
+These are fixed. A lane that implements one must match it exactly. A lane that consumes one may rely on it even before it is merged; integration checks happen at merge.
+
+### Types and keys (Wave 0, merged)
+
+- `src/lib/references/types.ts`: `ReferenceLibrary`, `ReferenceEntry`, `ReferenceEntryInput`, `ReferenceLibraryOp`, `Citation`, `CitationItem`, `CitationOccurrence`, `BUNDLED_CSL_STYLES`, `DEFAULT_CSL_STYLE`, `REFERENCES_UPDATED_EVENT`.
+- `src/lib/references/keys.ts`: `CITATION_KEY_SOURCE` (the key regex source, `u` flag), `isValidCitationKey`, `generateCitationKey(csl, taken)`, `takenCitationKeys(entries)`, `asciiKeyPart`.
+- `src/lib/openrouter.ts`: `createOpenRouterCompletion(messages, { webSearch: { maxResults } })` returns `webCitations?: { url, title?, content? }[]`.
+
+### Library API (storage lane)
+
+All routes check `requireAuth`. `notebook` is the notebook name.
+
+- `GET /api/references?notebook=N` → `{ library: ReferenceLibrary }`. A missing library is returned as an empty library at revision 0, without writing.
+- `PATCH /api/references` with `{ notebook, revision, ops: ReferenceLibraryOp[] }`:
+  - Success → `{ library }`.
+  - Revision conflict → status 409 with `{ error, library }`.
+  - Invalid op → status 400 with `{ error }`. All ops in a request apply atomically, or none do.
+- `src/lib/storage/references.ts` exports:
+  - `readReferenceLibrary(notebook)`
+  - `updateReferenceLibrary(notebook, expectedRevision | null, ops)`, where `null` means apply on the latest revision (for server-side jobs)
+  - `applyLibraryOps(library, ops, now)` (pure, also exported from `src/lib/references/library-ops.ts`)
+  - plus the move, copy and delete helpers that `storage/files.ts` calls
+- Client: `src/components/libera/references/use-reference-library.ts` exports:
+  - `useReferenceLibrary(notebook: string | null)`, returning `{ library, loading, error, apply(ops): Promise<ReferenceLibrary>, reload() }`
+  - `fetchReferenceLibrary(notebook)` and `applyReferenceOps(notebook, ops)`. These retry once on 409 by reloading and re-applying the ops against the new revision.
+  - It dispatches `REFERENCES_UPDATED_EVENT` and syncs across windows through a `BroadcastChannel("libera-references")`.
+
+### Citation syntax (syntax lane)
+
+`src/lib/references/citation-syntax.ts` exports:
+
+- `scanCitations(markdown): CitationOccurrence[]`. It skips fenced and indented code, code spans, inline and display math (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`), link destinations, autolinks and HTML comments.
+- `parseCitationToken(raw): Citation | null`
+- `serializeCitation(citation): string` (canonical form)
+- `citationTriggerAt(text, offset)` → `{ from, query, insideCitation: boolean } | null`, for the `@` popup
+- `rewriteCitationKeys(markdown, map: Map<string, string>)` → `{ text, count }`
+- `citedKeys(markdown): string[]`, in document order, unique
+- `CITATION_SYNTAX_CASES`, the shared table of `{ name, source, expected }` cases that every parser layer's tests run
+
+`src/lib/remark-citations.ts` exports `remarkCitations()`, which produces mdast nodes `{ type: "liberaCitation", citation, position }` with `data.hName = "libera-cite"`.
+
+### Formatting (preview lane)
+
+`src/lib/references/format.ts` exports:
+
+```ts
+formatCitations(input: {
+  citations: Citation[];                       // in document order
+  entries: Record<string, ReferenceEntry>;     // by key AND by alias
+  style: string;                               // CSL XML
+  locale?: string;                             // default "en-US"
+  format?: "html" | "text";                    // default "html"
+}): { citations: string[]; bibliography: string; unresolvedKeys: string[] }
+```
+
+- `loadCslStyle(styleId | xml)` returns the bundled styles.
+- `citationEntriesForDocument(library, keys)` returns the key-and-alias map.
+
+### Resolution (resolution lane)
+
+- `POST /api/references/resolve` with `{ notebook, input: string, webSearch?: boolean }` → `{ candidates: ReferenceEntryInput[], duplicates: { candidateIndex, entryId }[] }`. It does not write.
+- `POST /api/references/jobs` with `{ notebook, action: "resolve-pdfs" | "resolve-paths" | "cancel", paths?, jobId?, webSearch? }`.
+- `GET /api/references/jobs?notebook=N` → `{ jobs: ReferenceJobStatus[] }`.
