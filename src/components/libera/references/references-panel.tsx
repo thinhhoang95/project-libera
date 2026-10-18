@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   Check,
+  Copy,
   Download,
   FileSearch,
   FileUp,
@@ -15,6 +16,7 @@ import {
   Search,
   ShieldCheck,
   Table2,
+  TextQuote,
   Undo2,
   X,
 } from "lucide-react";
@@ -38,6 +40,15 @@ import {
   setSessionWebSearch,
   writeRichClipboard,
 } from "@/components/libera/references/reference-candidates";
+import {
+  BIBLIOGRAPHY_FORMATS,
+  copyBibliography,
+  DOCUMENT_EXPORT_FORMATS,
+  downloadBibliography,
+  unresolvedNote,
+  type BibliographyRequest,
+  type DocumentExportFormat,
+} from "@/components/libera/references/bibliography-actions";
 import { ReferenceCard } from "@/components/libera/references/reference-card";
 import {
   citingPaths,
@@ -75,6 +86,13 @@ import {
 } from "@/components/libera/references/use-reference-citations";
 import { useReferenceJobs } from "@/components/libera/references/use-reference-jobs";
 import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
+import { useReferencePreferences } from "@/components/libera/references/use-reference-preferences";
+import {
+  RewriteCitationsDialog,
+  type ApplyCitationRewriteToTab,
+  type CitationRewriteRequest,
+  type RevertCitationRewriteInTab,
+} from "@/components/libera/references/rewrite-citations-dialog";
 import { isReferenceUndoShortcut, useReferenceUndo } from "@/components/libera/references/use-reference-undo";
 import { findDuplicateGroups } from "@/lib/references/dedupe";
 import { isActiveReferenceJob, type ReferenceJobRequest, type ReferenceJobStatus } from "@/lib/references/jobs-types";
@@ -184,6 +202,10 @@ export type ReferencesPanelProps = {
   onUploadFiles?: (notebook: string, files: File[]) => Promise<LiberaFileNode[] | void>;
   request?: ReferencesPanelRequest | null;
   onRequestHandled?: (id: number) => void;
+  /** Put a citation key rewrite into an open tab: its draft, and its saved copy when the file was rewritten. Returns the change, for undo. */
+  onApplyCitationRewrite?: ApplyCitationRewriteToTab;
+  /** Undo such a change in an open tab, reloading its saved copy when the file was restored. */
+  onRevertCitationRewrite?: RevertCitationRewriteInTab;
 };
 
 export function ReferencesPanel(props: ReferencesPanelProps) {
@@ -262,6 +284,19 @@ async function copyText(text: string) {
 
 type Notice = { tone: "info" | "error"; text: string; undo?: boolean };
 
+/** After merging: every key and alias of the merged entries → the kept key, for rewriting their citations. */
+export function mergeRewriteMap(keep: ReferenceEntry, merged: ReferenceEntry[]) {
+  const map: Record<string, string> = {};
+  for (const entry of merged) {
+    for (const key of [entry.key, ...entry.aliases]) if (key.toLowerCase() !== keep.key.toLowerCase()) map[key] = keep.key;
+  }
+  return map;
+}
+
+function referencesCount(count: number) {
+  return `${count} reference${count === 1 ? "" : "s"}`;
+}
+
 const MARKDOWN_PATH = /\.(md|markdown)$/i;
 
 /** Library paths a tree drag carries (one path; several separated by newlines). */
@@ -281,6 +316,8 @@ function ReferencesPanelBody({
   onUploadFiles,
   request,
   onRequestHandled,
+  onApplyCitationRewrite,
+  onRevertCitationRewrite,
 }: ReferencesPanelProps) {
   const { library, error, reload } = useReferenceLibrary(notebook);
   const undo = useReferenceUndo(notebook, library);
@@ -306,8 +343,12 @@ function ReferencesPanelBody({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
-  const [webSearch, setWebSearchState] = useState(() => sessionWebSearchChoice() ?? false);
-  const [webSearchChosen, setWebSearchChosen] = useState(() => sessionWebSearchChoice() !== null);
+  const preferences = useReferencePreferences();
+  const [webSearchChoice, setWebSearchChoice] = useState(() => sessionWebSearchChoice());
+  // The session's choice wins; until there is one, the Preferences default (off while it cannot be read).
+  const webSearch = webSearchChoice ?? preferences?.webSearch ?? false;
+  const webSearchChosen = webSearchChoice !== null;
+  const [rewriteRequest, setRewriteRequest] = useState<CitationRewriteRequest | null>(null);
   const [privacyNotice, setPrivacyNotice] = useState(false);
   const [reresolving, setReresolving] = useState<ReferenceEntry | null>(null);
   const [reviewFilter, setReviewFilter] = useState<{ jobId: string; ids: Set<string> } | null>(null);
@@ -320,8 +361,12 @@ function ReferencesPanelBody({
 
   const setWebSearch = useCallback((value: boolean) => {
     setSessionWebSearch(value);
-    setWebSearchState(value);
-    setWebSearchChosen(true);
+    setWebSearchChoice(value);
+  }, []);
+
+  /** Offer to rewrite citations of old keys (still aliases) to their new key. */
+  const offerRewrite = useCallback((map: Record<string, string>, reason: CitationRewriteRequest["reason"]) => {
+    if (Object.keys(map).length) setRewriteRequest({ id: Date.now(), map, reason });
   }, []);
 
   /** The first online lookup of the session shows what is sent where. */
@@ -660,6 +705,36 @@ function ReferencesPanelBody({
     setNotice({ tone: "info", text: `Fact-checking the citations of ${fileBaseName(activeDocumentPath)} in the AI panel.` });
   }
 
+  // -------------------------------------------------------------------------
+  // Formatted reference lists and document bibliographies
+  // -------------------------------------------------------------------------
+
+  const documentBlocker = activeMarkdownDraft === null ? "Open a Markdown document to use what it cites." : !activeKeys.length ? "This document cites nothing yet." : null;
+
+  function listRequest(forDocument: boolean): BibliographyRequest {
+    return forDocument ? { notebook, documentText: activeMarkdownDraft ?? "", ...(activeDocumentPath ? { documentName: activeDocumentPath } : {}) } : { notebook };
+  }
+
+  async function copyList(forDocument: boolean) {
+    const what = forDocument ? "Bibliography" : "Reference list";
+    try {
+      const result = await copyBibliography(listRequest(forDocument));
+      // Unresolved keys stay on screen until dismissed.
+      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: `${what} copied (${referencesCount(result.count)}).${unresolvedNote(result.unresolvedKeys)}` });
+    } catch (copyError) {
+      setNotice({ tone: "error", text: copyError instanceof Error ? copyError.message : `${what} could not be copied.` });
+    }
+  }
+
+  async function exportList(format: DocumentExportFormat, forDocument: boolean) {
+    try {
+      const result = await downloadBibliography({ ...listRequest(forDocument), format });
+      setNotice({ tone: result.unresolvedKeys.length ? "error" : "info", text: `Exported ${result.fileName}.${unresolvedNote(result.unresolvedKeys)}` });
+    } catch (exportError) {
+      setNotice({ tone: "error", text: exportError instanceof Error ? exportError.message : "The reference list could not be exported." });
+    }
+  }
+
   function dragOver(event: ReactDragEvent) {
     const types = Array.from(event.dataTransfer.types ?? []);
     if (!types.includes(TREE_FILE_MIME) && !types.includes("Files")) return;
@@ -807,8 +882,14 @@ function ReferencesPanelBody({
               autoCreate={library.settings?.autoCreateForPdfs}
               onAutoCreate={(value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], "Change automatic PDF entries",
                 value === null ? "New PDFs follow the preference." : value ? `New PDFs in ${notebook} get entries automatically.` : `New PDFs in ${notebook} do not get entries automatically.`).catch(() => undefined)}
+              autoCreateDefault={preferences ? preferences.autoCreateForPdfs : null}
               factCheckBlocker={factCheckBlocker}
               onFactCheck={() => setFactCheckOpen(true)}
+              onCopyList={() => void copyList(false)}
+              onExportList={(format) => void exportList(format, false)}
+              documentBlocker={documentBlocker}
+              onCopyDocument={() => void copyList(true)}
+              onExportDocument={(format) => void exportList(format, true)}
             />
           ) : null}
         </div>
@@ -859,6 +940,7 @@ function ReferencesPanelBody({
           initialPath={addBox.path}
           webSearch={webSearch}
           webSearchChosen={webSearchChosen}
+          webSearchDefault={preferences ? preferences.webSearch : null}
           onWebSearchChange={setWebSearch}
           apply={(ops, label) => run(ops, label)}
           record={undo.record}
@@ -893,6 +975,7 @@ function ReferencesPanelBody({
           onOpenPath={onOpenPath}
           onEditAll={() => setEditing({ entry: openEntry })}
           onDelete={() => requestDelete(openEntry)}
+          onUpdateCitations={(from, to) => offerRewrite({ [from]: to }, { kind: "rename" })}
         />
       ) : (
         <>
@@ -998,8 +1081,12 @@ function ReferencesPanelBody({
         group={mergeGroup}
         onClose={() => setMergeGroup(null)}
         onMerge={async (keepId, mergeIds) => {
-          await undo.apply([{ op: "merge", keepId, mergeIds }], `Merge into ${library?.entries[keepId]?.key ?? "reference"}`);
-          setNotice({ tone: "info", text: `Merged into ${library?.entries[keepId]?.key ?? "the kept reference"}.`, undo: true });
+          const keep = library?.entries[keepId];
+          const merged = mergeIds.map((id) => library?.entries[id]).filter((entry): entry is ReferenceEntry => Boolean(entry));
+          await undo.apply([{ op: "merge", keepId, mergeIds }], `Merge into ${keep?.key ?? "reference"}`);
+          setNotice({ tone: "info", text: `Merged into ${keep?.key ?? "the kept reference"}.`, undo: true });
+          // The merged keys are aliases now, so nothing breaks; documents citing them can be rewritten to the kept key.
+          if (keep && merged.some((entry) => citingOf(entry).length)) offerRewrite(mergeRewriteMap(keep, merged), { kind: "merge", keep: keep.key });
         }}
       />
       {library ? (
@@ -1013,9 +1100,22 @@ function ReferencesPanelBody({
           undo={{ canUndo: undo.canUndo, stale: undo.stale, label: undo.undoLabel, run: () => undo.undo() }}
           webSearch={webSearch}
           onLookup={noteLookup}
+          onMerged={(keep, merged) => {
+            if (merged.some((entry) => citingOf(entry).length)) offerRewrite(mergeRewriteMap(keep, merged), { kind: "merge", keep: keep.key });
+          }}
+          blocked={Boolean(rewriteRequest)}
           onClose={() => setManageOpen(false)}
         />
       ) : null}
+      <RewriteCitationsDialog
+        notebook={notebook}
+        request={rewriteRequest}
+        openDrafts={openDrafts}
+        onApplyToTab={onApplyCitationRewrite}
+        onRevertTab={onRevertCitationRewrite}
+        onChanged={() => void citations.reload()}
+        onClose={() => setRewriteRequest(null)}
+      />
       {reresolving ? (
         <ReresolveDialog
           key={reresolving.id}
@@ -1135,8 +1235,14 @@ function PanelMenu({
   onGenerate,
   autoCreate,
   onAutoCreate,
+  autoCreateDefault,
   factCheckBlocker,
   onFactCheck,
+  onCopyList,
+  onExportList,
+  documentBlocker,
+  onCopyDocument,
+  onExportDocument,
 }: {
   currentStyle: string;
   styleFiles: string[];
@@ -1153,9 +1259,18 @@ function PanelMenu({
   /** The notebook's setting: on, off, or unset (follow the preference). */
   autoCreate: boolean | undefined;
   onAutoCreate: (value: boolean | null) => void;
+  /** The Preferences default for new PDFs, or null when it cannot be read. */
+  autoCreateDefault: boolean | null;
   /** Why fact-checking is unavailable, or null. */
   factCheckBlocker: string | null;
   onFactCheck: () => void;
+  /** The whole library's formatted reference list. */
+  onCopyList: () => void;
+  onExportList: (format: DocumentExportFormat) => void;
+  /** Why the active document has no bibliography to copy or export, or null. */
+  documentBlocker: string | null;
+  onCopyDocument: () => void;
+  onExportDocument: (format: DocumentExportFormat) => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1173,6 +1288,7 @@ function PanelMenu({
     };
   }, [onClose]);
   const item = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] hover:bg-muted disabled:opacity-40";
+  const chip = "rounded border border-input px-1.5 py-0.5 font-mono text-[11px] hover:bg-muted disabled:opacity-40";
   const act = (fn: () => void) => () => {
     onClose();
     fn();
@@ -1204,6 +1320,29 @@ function PanelMenu({
         </button>
       ))}
       <div className="my-1 h-px bg-border" />
+      <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><TextQuote aria-hidden className="h-3.5 w-3.5" /> Reference list</p>
+      <button type="button" role="menuitem" className={item} title="The whole library, formatted in the citation style" onClick={act(onCopyList)}>
+        <Copy aria-hidden className="h-4 w-4" /> Copy reference list
+      </button>
+      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label="Export reference list">
+        <span className="mr-1 text-muted-foreground">Export reference list…</span>
+        {BIBLIOGRAPHY_FORMATS.map((format) => (
+          <button key={format.id} type="button" role="menuitem" className={chip} aria-label={`Export reference list as ${format.label}`} title={format.label} onClick={act(() => onExportList(format.id))}>.{format.extension}</button>
+        ))}
+      </div>
+      <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">For this document</p>
+      <button type="button" role="menuitem" className={item} disabled={Boolean(documentBlocker)} title={documentBlocker ?? "What the active document cites, formatted in the citation style"} onClick={act(onCopyDocument)}>
+        <Copy aria-hidden className="h-4 w-4" /> Copy bibliography
+      </button>
+      <div className="flex flex-wrap items-center gap-1 px-2.5 py-1 text-[12px]" role="group" aria-label="Export bibliography" title={documentBlocker ?? undefined}>
+        <span className="mr-1 text-muted-foreground">Export bibliography as</span>
+        {DOCUMENT_EXPORT_FORMATS.map((format) => (
+          <button key={format.id} type="button" role="menuitem" className={chip} disabled={Boolean(documentBlocker)} aria-label={`Export bibliography as ${format.label}`} title={format.label} onClick={act(() => onExportDocument(format.id))}>
+            {format.id === "bibtex" ? "BibTeX" : format.id === "biblatex" ? "BibLaTeX" : format.id === "csl-json" ? "CSL-JSON" : format.id === "ris" ? "RIS" : `.${format.extension}`}
+          </button>
+        ))}
+      </div>
+      <div className="my-1 h-px bg-border" />
       <button type="button" role="menuitem" className={item} disabled={jobActive} title={jobActive ? "PDFs are being read" : undefined} onClick={act(onGenerate)}>
         <FileSearch aria-hidden className="h-4 w-4" /> Generate entries for PDFs without one
       </button>
@@ -1214,7 +1353,7 @@ function PanelMenu({
           return (
             <button key={String(choice.value)} type="button" role="menuitemradio" aria-checked={checked} className={item} onClick={act(() => { if (!checked) onAutoCreate(choice.value); })}>
               <span className="flex w-4 justify-center">{checked ? <Check aria-hidden className="h-3.5 w-3.5" /> : null}</span>
-              <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+              <span className="min-w-0 flex-1 truncate">{choice.value === null && autoCreateDefault !== null ? `${choice.label} (${autoCreateDefault ? "on" : "off"})` : choice.label}</span>
             </button>
           );
         })}

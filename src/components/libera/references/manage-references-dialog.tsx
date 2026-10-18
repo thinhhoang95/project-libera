@@ -360,6 +360,10 @@ type ManageProps = {
   webSearch?: boolean;
   /** An online lookup is starting (for the privacy notice). */
   onLookup?: () => void;
+  /** Entries were merged into `keep`: their keys are its aliases now, and their citations can be rewritten. */
+  onMerged?: (keep: ReferenceEntry, merged: ReferenceEntry[]) => void;
+  /** Another dialog is open on top, which takes Escape and outside clicks. */
+  blocked?: boolean;
   onClose: () => void;
 };
 
@@ -402,7 +406,7 @@ export async function reresolveSequentially(input: {
   return summary;
 }
 
-export function ManageReferencesDialog({ open, notebook, library, citations, duplicateGroups, apply, undo, webSearch = false, onLookup, onClose }: ManageProps) {
+export function ManageReferencesDialog({ open, notebook, library, citations, duplicateGroups, apply, undo, webSearch = false, onLookup, onMerged, blocked = false, onClose }: ManageProps) {
   const [tab, setTab] = useState<"all" | "duplicates">("all");
   const [sort, setSort] = useState<{ column: ManageColumn; direction: "asc" | "desc" }>({ column: "authors", direction: "asc" });
   const [filters, setFilters] = useState<Partial<Record<ManageColumn, string>>>({});
@@ -544,7 +548,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
   const windowed = visibleRows.length > WINDOW_THRESHOLD;
   const first = windowed ? Math.max(0, Math.floor(scroll.top / TABLE_ROW_HEIGHT) - 10) : 0;
   const last = windowed ? Math.min(visibleRows.length, Math.ceil((scroll.top + scroll.height) / TABLE_ROW_HEIGHT) + 10) : visibleRows.length;
-  const childOpen = Boolean(mergeGroup || deleting);
+  const childOpen = Boolean(mergeGroup || deleting || blocked);
 
   function editableCell(row: Row, column: "title" | "year" | "venue") {
     if (editing?.id === row.entry.id && editing.column === column) {
@@ -728,10 +732,15 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       <MergeReferencesDialog
         group={mergeGroup}
         onClose={() => setMergeGroup(null)}
-        onMerge={(keepId, mergeIds) => apply([{ op: "merge", keepId, mergeIds }], `Merge into ${library.entries[keepId]?.key ?? "reference"}`).then(() => {
-          setSelected(new Set());
-          setNotice(`Merged ${mergeIds.length + 1} references.`);
-        })}
+        onMerge={(keepId, mergeIds) => {
+          const keep = library.entries[keepId];
+          const merged = mergeIds.map((id) => library.entries[id]).filter(Boolean);
+          return apply([{ op: "merge", keepId, mergeIds }], `Merge into ${keep?.key ?? "reference"}`).then(() => {
+            setSelected(new Set());
+            setNotice(`Merged ${mergeIds.length + 1} references.`);
+            if (keep) onMerged?.(keep, merged);
+          });
+        }}
       />
       <DeleteReferencesDialog
         entries={deleting}
