@@ -16,6 +16,7 @@ import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
 import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 import { getSharedDocRegistry } from "@/lib/collab/client/registry";
+import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu";
@@ -125,6 +126,9 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const [cacheDialogOpen, setCacheDialogOpen] = useState(false);
   const [compileMenuOpen, setCompileMenuOpen] = useState(false);
   const compileMenuAnchorRef = useRef<HTMLDivElement>(null);
+  // The toolbar overflows sideways on narrow panes: no scrollbar, but the wheel scrolls it.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useHorizontalWheelScroll(toolbarRef);
   // The workspace renders on the client only, so storage can seed the state.
   const [splitPercent, setSplitPercent] = useState(readStoredSplit);
   const [dragging, setDragging] = useState(false);
@@ -428,7 +432,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   return (
     <div className="libera-latex-workspace flex min-h-0 flex-1 flex-col overflow-hidden" onKeyDown={handleKeyDown}>
       {/* A container, so narrow panes drop the status text and shortcut hint. */}
-      <div className="libera-latex-toolbar @container flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card px-3">
+      <div ref={toolbarRef} className="libera-latex-toolbar libera-horizontal-toolbar @container flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden border-b border-border bg-card px-3">
         {isTex ? (
           <>
             <div ref={compileMenuAnchorRef} className="libera-latex-compile flex shrink-0 items-stretch overflow-hidden rounded-lg">
