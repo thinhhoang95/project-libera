@@ -82,6 +82,7 @@ test("a fact-check request opens the AI panel and starts an Agent run with the s
     assert.deepEqual(started.messages.at(-1)!.agent!.suggestions, [{ path: "Research/draft.md", count: 2 }]);
     assert.ok(host.textContent?.includes("Fact-check the citations in Research/draft.md."));
   } finally {
+    await act(flushPendingState);
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;
   }

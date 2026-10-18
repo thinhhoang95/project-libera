@@ -15,8 +15,6 @@ import { readReferenceLibrary } from "../../src/lib/storage/references";
 import { fixtureFetch, testHttpClient, testSettings, type FetchLog } from "./references-resolve-helpers";
 import { addWorks, entryId, makeContext, withLibrary, work, writePdf, writeText } from "./references-factcheck-helpers";
 
-const LOREM = "Background text without the claim. ".repeat(20);
-
 // ---------------------------------------------------------------------------
 // References tool
 // ---------------------------------------------------------------------------

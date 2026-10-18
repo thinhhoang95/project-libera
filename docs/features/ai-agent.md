@@ -42,6 +42,7 @@ The agent uses a small tool set modeled on Claude Code's:
 - **Write** creates a file or replaces one it has fully read.
 - **TaskCreate** and **TaskUpdate** keep a task list for multi-step jobs, shown in the reply.
 - **Skill** loads a skill (see below).
+- **References** looks works up in the current notebook's References library: by citation key or alias (exact), or by words in authors, year, title, venue and tags. It returns each entry's key and aliases, the formatted reference (in the library's style), identifiers, status, attached files and the start of its abstract. The library is a hidden file the other tools cannot read, so this is how the agent learns which keys exist. It is read-only and offered in every permission; its description is in the tool list, so the system prompt stays the same.
 - **WebSearch** (only when **Allow web search** is on) asks the model, in a separate OpenRouter request with the web plugin, to answer one question briefly and list its sources. The agent gets the answer and each cited page's title, URL and a snippet, labelled as web data. It uses the run's model; if that model's providers do not take the plugin, the chat default model searches instead, and if neither works the tool says so. Its tokens count toward the run.
 
 ### PDFs
@@ -85,6 +86,40 @@ When the agent finishes its reply, each suggestion is saved in the document's re
 - A suggestion follows its passage as you edit. If the passage itself changes, it is marked "text changed" and can only be rejected; it becomes pending again if the passage comes back.
 
 The leave-review-comments skill offers SuggestEdit for clear, local fixes. Other skills reuse it: `suggestEditTool` and `finishSuggestedEdits` are exported from `src/lib/agent/suggest-edit.ts`; a skill lists the tool and calls the helper from its `finishPass`.
+
+### fact-check-citations
+
+Loaded when you ask the agent to fact-check a document, verify its citations or check its sources. **Fact-check citations** starts it too: a button in both Markdown editors' toolbars (off when the document has no citations) and in the References panel. The button opens the AI panel, starts a new Agent chat, sets web search as the request says, and sends "Fact-check the citations in <path>." with the skill preloaded: the agent route's `skill` field adds the skill's instructions to that request and offers its tools from the first turn. Like leave-review-comments, the skill never edits the document, so it works in Read Only. It is not available in shared notebooks.
+
+- **ListCitations(path)** parses the document (its unsaved draft when open, with the configured math markers) and lists each occurrence `c1`, `c2`… with:
+  - its claim: the sentence (at most 600 characters) and its block (at most 1,500);
+  - the cited works, with their formatted reference, status and attached files (PDF page counts from the text cache);
+  - static problems: unknown key, entry without a readable attachment, locator out of range, unresolved entry, retracted or withdrawn entry.
+
+  Locators are printed page numbers. When the entry's CSL `page` gives the work's range (say 340–351), printed page p is PDF page p − 340 + 1, assuming the PDF starts at the work's first page. A locator is flagged only when it is neither a printed page in that range nor a page of the PDF.
+- **CheckCitations(path, occurrences?, missingReferences?)** fans out to checker subagents:
+  - **Batches.** Occurrences are grouped by cited work; an occurrence citing several works joins each work's group. Groups are packed into batches of at most three works, or two when any of them has a PDF over 150 pages. Each batch is one child run (four at a time, 15 turns, 5 minutes) that reads each source once and checks every claim citing it.
+  - **Read scope.** The child's Read, Grep and Glob are wrappers: only the batch's attached files and the document can be read, and any other path is refused with the list of allowed files. Grep without a path searches each allowed file; Glob lists only allowed files. WebSearch is added when the run allows it.
+  - **Verdicts.** The child finishes with **SubmitVerdicts**, a strict schema with one repair round: one verdict per occurrence and work (`supported`, `partially-supported`, `not-supported`, `contradicted`, `cannot-verify` or `source-missing`), evidence `{path, page?, line?, quote}`, web sources `{url, title?, quote}`, a confidence, a note, and optionally `suggestedText` and `suggestedCitation`. Works with no entry, or with no readable file while web search is off, get `source-missing` without a child.
+  - **Budget.** Before the children start, the plan (how many subagents, and an input-token estimate against what is left of the run's budget) appears as a step and in the result. Batches that cannot start because the budget is used up are reported as not checked.
+- **Evidence verification.** Every quote is looked up in the cited file:
+  - PDFs: in the page text from the PDF text cache, on the page given. A quote found on the next or previous page, or across a page break, is kept with its page corrected. Found only on another page, or nowhere, it is dropped.
+  - Markdown and text files: anywhere in the file; the line is filled in.
+  - Matching ignores case, whitespace, quote and dash variants, ligatures, soft hyphens and words hyphenated across a line break. It then allows small (OCR) differences: the best approximate occurrence must reach a similarity of 0.85 (edit distance against any substring). Quotes under 20 characters must match exactly; a quote with an ellipsis is checked part by part.
+  - A verdict that loses all its evidence becomes `cannot-verify`, noted "evidence not found in source".
+  - Web quotes count only when their URL is one WebSearch returned as a cited page in that child's run. They are always labelled web evidence.
+- **Existence check** (no model). A work with a DOI is looked up at Crossref, then DataCite. A work without one is searched at Crossref and OpenAlex and scored with the resolution matcher (threshold 0.85).
+  - A work that does not resolve and has no attached file is a **possibly hallucinated reference**. A source that cannot be reached never makes a work hallucinated.
+  - An attached file whose first page does not show the entry's title (similarity below 0.8), or a DOI that belongs to another title, is a **metadata/attachment mismatch**.
+  - When online lookups are off in Preferences, the report says "existence not checked (online lookups off)". The attachment comparison still runs.
+- **Missing references** (on by default; only when every occurrence is checked). One more child reads the document, picks up to ten factual or quantitative claims without a citation, and Greps the notebook's attached files for support. A claim whose quote is verified gets a suggested edit adding `[@key, p. N]`; otherwise it gets the comment "uncited claim — no source found in this notebook".
+- **Output.**
+  - A review comment on each occurrence with a problem, quoting the verified evidence with its page.
+  - A suggested edit, with that comment linked, where the fix is concrete: a locator naming other pages than the evidence, an overstated claim (the checker's rewording, keeping the citation), or an unknown key one or two edits away from a library key.
+  - Comments go into the LeaveComment review copy and suggestions through SuggestEdit. The skill's finish pass runs the review-comment pass, then the suggested-edit pass, so both are saved.
+  - The reply carries the report: counts per verdict, sources not found locally, possibly hallucinated references, metadata mismatches, uncited claims, discarded evidence, and occurrences not checked with a "Continue" hint. Asking to continue in the same chat checks only the occurrences the report lists.
+
+The modules are `src/lib/agent/skills/fact-check-citations.ts`, `src/lib/agent/fact-check/` (`list-citations.ts`, `check-citations.ts`, `read-scope.ts`, `verdicts.ts`, `evidence.ts`, `existence.ts`, `report.ts`) and `src/lib/agent/references-tool.ts`.
 
 ## Child runs
 
@@ -137,6 +172,6 @@ Agent mode uses the chat model picker and reasoning effort. The model must suppo
 
 ## Checks
 
-`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts scripts/editor/references-agent-*.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts scripts/editor/references-agent-*.test.ts scripts/editor/references-factcheck*.test.ts`
 
-These cover skills (loading on demand, comment syntax and placement, feedback to the model, saving review threads), the path sandbox, every tool and its error messages, PDF reading and search, permissions, undo with drafts and conflicts, the loop's handling of malformed and cut-off tool calls, repeated calls, open tasks and stopping, parameter routing, and the panel's requests, activity view, tab syncing and undo. The `references-agent-*` tests cover child runs (isolation, concurrency, structured results, budget, stop, events and usage), WebSearch (mocked completions, fallback, when it is offered, the route and the panel toggle), and suggested edits (matching, the finish pass, remapping, decisions, the review route, and both editors and the Comments panel).
+These cover skills (loading on demand, comment syntax and placement, feedback to the model, saving review threads), the path sandbox, every tool and its error messages, PDF reading and search, permissions, undo with drafts and conflicts, the loop's handling of malformed and cut-off tool calls, repeated calls, open tasks and stopping, parameter routing, and the panel's requests, activity view, tab syncing and undo. The `references-agent-*` tests cover child runs (isolation, concurrency, structured results, budget, stop, events and usage), WebSearch (mocked completions, fallback, when it is offered, the route and the panel toggle), and suggested edits (matching, the finish pass, remapping, decisions, the review route, and both editors and the Comments panel). The `references-factcheck*` tests cover the References tool, ListCitations, batching, the read scope, SubmitVerdicts, evidence verification, the existence check, budget exhaustion and Continue, missing references, an end-to-end Read Only run over a document with planted errors, the route's skill preload, the panel's fact-check request and the toolbar button.
