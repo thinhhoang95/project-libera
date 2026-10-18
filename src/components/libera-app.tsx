@@ -16,6 +16,7 @@ import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
 import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
+import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
@@ -410,6 +411,14 @@ export function LiberaApp({
     <QuickPromptsContext.Provider value={quickPrompts}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
+    <CollabProvider
+      onNotebookJoined={async (notebook) => {
+        await workspace.refreshTree(notebook).catch(() => undefined);
+        workspace.selectNotebook(notebook);
+        changeLeftPanel("notebook");
+      }}
+      onOpenPath={agentWorkspace.openFile}
+    >
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
         inert={workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready)}
@@ -652,6 +661,7 @@ export function LiberaApp({
       />
       <ReviewPopover />
     </main>
+    </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
     </QuickPromptsContext.Provider>

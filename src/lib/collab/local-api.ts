@@ -11,7 +11,7 @@
 //
 // Types only plus route constants: imported by the renderer, Next and the host.
 
-import type { Invitation, Member, NotificationInfo } from "./protocol/api";
+import type { Invitation, MarkNotificationsReadRequest, Member, NotificationInfo } from "./protocol/api";
 import type { AiFeature, Provenance } from "./protocol/actor";
 import type { Role } from "./protocol/roles";
 import type { DocKind } from "./protocol/schema";
@@ -173,6 +173,14 @@ export interface Reconciliation {
   detectedAt: number;
 }
 
+/** Query of GET /notifications (mirrors the server's GET /v1/notifications). */
+export interface NotificationsQuery {
+  unread?: boolean;
+  /** ISO time; returns notifications created before it (paging). */
+  before?: string;
+  limit?: number;
+}
+
 export interface ResolveReconciliationRequest {
   /** The merged text to keep; applied as edits authored by the user. */
   text: string;
@@ -211,6 +219,12 @@ export const ControlRoutes = {
   files: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/files`,
   reconciliations: "/reconciliations",
   reconciliation: (id: string) => `/reconciliations/${encodeURIComponent(id)}`,
+  /** GET → ResolvedDoc: the reverse of `resolve`, so a notification about a docId can open its file. */
+  doc: (docId: string) => `/docs/${encodeURIComponent(docId)}`,
+  /** GET (NotificationsQuery as the query string) → NotificationInfo[], newest first. */
+  notifications: "/notifications",
+  /** POST MarkNotificationsReadRequest → 204. */
+  notificationsRead: "/notifications/read",
 } as const;
 
 /** Next routes are the control routes under this prefix. */
@@ -225,4 +239,4 @@ export interface LiberaCollabBridge {
   nudge(): void;
 }
 
-export type { Invitation, Member, NotificationInfo };
+export type { Invitation, MarkNotificationsReadRequest, Member, NotificationInfo };
