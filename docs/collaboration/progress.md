@@ -17,6 +17,19 @@ Server Phase 4 (`collab/srv4`) is merged: admin CLI, verify, load generator, bac
 
 Not merged: editor wiring (`collab/wire`, clone `scratchpad/clones/wire`, commits 4a4f4ca and e4f807a). The code for replica, tab registry, editor bindings, shared-tab save states, presence and banners is written and type-checks, and the editor suite is at baseline, but none of its `scripts/collab/wire-*.test.ts` tests exist, and `npm run test:collab` and eslint were not run on it. Write those tests, then merge. Still to do after those: Phase 1 AI rerouting (M1.11), Phase 2 client (shared ReviewStore, history viewer, restore UI, offline comments UI), Phase 3 client (suggestions panel, suggest mode in the editors, decisions UI, AI as suggester, review requests UI, audit viewer), Phase 4 desktop (sandbox, sanitizing, diagnostics, divergence check), and every 👤 item.
 
+## Checks from the end-to-end run and review (18 Oct 2026)
+
+- ☑ Two-user end-to-end run of the real app (`npm run test:collab-e2e`, `scripts/collab/e2e/`): share, join, identical disks, live typing in Source, Visual and LaTeX, concurrent edits, status pill, presence, offline and reconnect, clean quit. Bugs it found and their fixes:
+  - ☑ Collaboration status stuck after the local login (401 never retried) → retries with backoff and on focus
+  - ☑ "Connecting…" stuck after Create account (stale response over a newer event) → responses are confirmed with a fresh request
+  - ☑ Visual typing swallowed when a collaborator's caret was at the end of the document → caret widget has no text nodes
+  - ◐ Shared comments not listed in the Comments panel; first click on "Add comment" sometimes ignored → assigned to Phase 3b (running)
+- ☑ A collaborator's new, renamed or deleted file reaches the disk and the Notebooks tree at once (`tree-changed`; open tabs follow moves) (`scripts/collab/notebooks-tree-events.test.ts`)
+- ☑ Remote edits no longer write the working copy per keystroke: write after 2 s of quiet, at most every 15 s; the CRDT in SQLite stays the real copy
+- ☑ Global Search sees collaborators' edits (host `files-changed` → `POST /api/search/changes`)
+- ☑ Accounts are unique by email (case-insensitive) and the email cannot change; the desktop restores its session on launch (refresh token encrypted with safeStorage), and a device stays signed in until unused for 90 days (sliding). The e2e run checks this after a relaunch.
+- ☑ LaTeX toolbar: no scrollbar, vertical wheel scrolls it sideways
+
 ## Known pre-existing test failures
 
 `npm run test:editor` on this Windows checkout fails 4 tests and cancels 2: global-search-cache, global-search-triggers, global-search, pdf-chat-route and pdf-storage-lifecycle. They fail identically on the base commit 7008487, before any collaboration work. The likely cause is the mixed `node_modules`: the macOS dependency set is active here (`npm run deps:status` reports the win32 cache as stale). Every collaboration merge is checked against this baseline (547 of 554 passing after D8).
