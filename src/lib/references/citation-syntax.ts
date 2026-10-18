@@ -12,8 +12,32 @@
 // grammar as a micromark construct for the preview; `CITATION_SYNTAX_CASES`
 // is the shared table every parser layer is tested against.
 //
-// Only the bracketed form is a citation. A bare `@word` is always plain text
-// (decision D4), so emails, handles and mentions are never misread.
+// Narrative citations (decision D4), Pandoc's in-text form:
+//
+//   @smith2020sparse says …            "Smith (2020) says …"
+//   @smith2020sparse [p. 33] says …    "Smith (2020, p. 33) says …"
+//
+// - A bare `@key` is a narrative citation when its `@` starts the text or
+//   follows whitespace, `[` or `(`: never after a letter, digit, `.`, `_` or
+//   any other character, so emails (`me@example.com`) and handles in URLs
+//   (`example.com/@alice`) are not misread. Trailing punctuation is not part
+//   of the key (`CITATION_KEY_SOURCE`): `@smith2020.` cites `smith2020`.
+// - Only prose counts: not code, math, HTML, autolinks, link destinations or
+//   titles, front matter, link or image text, or the inside of a bracketed
+//   citation (where `@key` is an item).
+// - A bracket right after the key, or after one space, is its locator when it
+//   holds only a locator part (`[p. 33]`, `[ch. 3, emphasis added]`): no `@`,
+//   no nested brackets, one line, and not followed by `(` or `[` (a link).
+//   Anything else (`@alice [the user]`) is left as text after the citation.
+// - The occurrence has `citation.narrative = true`, one item, and the source
+//   text as `raw` (`@smith2020sparse [p. 33]`).
+//
+// Parsing never depends on the library: the scanner reports every narrative
+// candidate. What a candidate means does: `@someone` in prose is often not a
+// citation, so renderers show an unresolved narrative candidate as plain text
+// (no red chip), and only a key the library resolves renders as a citation.
+// `citedKeys` and the fact-check list count narrative occurrences only when
+// they resolve (`resolves`), unless asked for all (`allNarrative`).
 
 import { CITATION_KEY_SOURCE } from "./keys";
 import type { Citation, CitationItem, CitationLocatorLabel, CitationOccurrence } from "./types";
@@ -258,6 +282,91 @@ export function parseCitationToken(raw: string): Citation | null {
   return parsed ? { items: parsed.items, raw } : null;
 }
 
+// ---------------------------------------------------------------------------
+// Narrative citations
+// ---------------------------------------------------------------------------
+
+/** Whether a narrative `@` may follow `previous` (undefined or "": the start of the text). */
+export function narrativeMayFollow(previous: string | undefined) {
+  return !previous || previous === "[" || previous === "(" || WHITESPACE.test(previous);
+}
+
+/** Characters a key may contain (its run, before trailing punctuation is dropped). */
+export const KEY_RUN_CHARACTER = new RegExp(String.raw`[\p{L}\p{N}_:.#$%&\-+?<>~/]`, "u");
+
+export type NarrativeMatch = {
+  /** End (exclusive) of the token, locator bracket included. */
+  end: number;
+  /** The key's range in `text`. */
+  key: [number, number];
+  item: CitationItem;
+};
+
+/**
+ * The locator bracket of a narrative citation whose key ends at `keyEnd`:
+ * `[…]` right after the key or after one space, holding a locator part (see
+ * the header). Returns the end of the bracket and the parsed locator, or null.
+ * Stops at the first `[`, `@`, unescaped `]` or line break, so a scan is
+ * bounded by the next `@`.
+ */
+export function narrativeLocatorAt(text: string, keyEnd: number) {
+  let open = keyEnd;
+  if (text[open] === " ") open += 1;
+  if (text[open] !== "[") return null;
+  const limit = Math.min(text.length, open + CITATION_MAX_LENGTH);
+  for (let index = open + 1; index < limit; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 92) {
+      if (index + 1 < limit && isAsciiPunctuation(text.charCodeAt(index + 1))) index += 1;
+      continue;
+    }
+    if (code === 10 || code === 13 || code === 64 || code === 91) return null;
+    if (code !== 93) continue;
+    const next = text.charCodeAt(index + 1);
+    if (next === 40 || next === 91) return null;
+    const part = parseLocatorPart(collapse(text.slice(open + 1, index)));
+    return part.locator ? { end: index + 1, part } : null;
+  }
+  return null;
+}
+
+/**
+ * The narrative citation whose `@` is at `text[index]`, or null. `previous` is
+ * the character before it when that is not in `text` (undefined: the start).
+ * Only the grammar is checked here; whether the `@` is in prose is the
+ * scanner's business.
+ */
+export function narrativeCitationAt(text: string, index: number, previous = index > 0 ? text[index - 1] : undefined): NarrativeMatch | null {
+  if (text.charCodeAt(index) !== 64 || !narrativeMayFollow(previous)) return null;
+  KEY.lastIndex = index + 1;
+  const match = KEY.exec(text);
+  if (!match) return null;
+  const keyEnd = index + 1 + match[0].length;
+  const item: CitationItem = { key: match[0] };
+  const locator = narrativeLocatorAt(text, keyEnd);
+  if (locator) Object.assign(item, locator.part);
+  return { end: locator?.end ?? keyEnd, key: [index + 1, keyEnd], item };
+}
+
+/** Parse a complete narrative token such as `@a` or `@a [p. 12]`; null when `raw` is not exactly one. */
+export function parseNarrativeCitation(raw: string): Citation | null {
+  const match = narrativeCitationAt(raw, 0, undefined);
+  return match && match.end === raw.length ? { items: [match.item], raw, narrative: true } : null;
+}
+
+/** Parse either form: a bracketed token or a narrative one. */
+export function parseAnyCitation(raw: string): Citation | null {
+  return raw.startsWith("@") ? parseNarrativeCitation(raw) : parseCitationToken(raw);
+}
+
+/** Whether a citation can be written in the narrative form: one item, no prefix, no suppressed author, no suffix without a locator. */
+export function canBeNarrative(citation: Pick<Citation, "items">) {
+  const [item] = citation.items;
+  if (citation.items.length !== 1 || item.prefix || item.suppressAuthor || (item.suffix && !item.locator)) return false;
+  // The locator bracket holds no `@`, no line break and no unescaped bracket.
+  return [item.locator ?? "", item.suffix ?? ""].every((text) => !/[@\r\n]|(?:^|[^\\])(?:\\\\)*[[\]]/.test(text));
+}
+
 function serializeLocator(item: CitationItem) {
   if (!item.locator) return "";
   const label = item.label ?? "page";
@@ -271,8 +380,17 @@ function serializeLocator(item: CitationItem) {
  * Canonical text of a citation: items joined by `; `, each written as
  * `prefix -@key, p. 12 suffix` (or `@key, suffix` without a locator).
  * `parseCitationToken(serializeCitation(c))` equals `c` apart from `raw`.
+ * A narrative citation is written `@key` or `@key [p. 12 suffix]` (and
+ * `parseNarrativeCitation` reads it back); one the narrative form cannot hold
+ * (see `canBeNarrative`) is written bracketed.
  */
-export function serializeCitation(citation: Pick<Citation, "items">) {
+export function serializeCitation(citation: Pick<Citation, "items" | "narrative">) {
+  if (citation.narrative && canBeNarrative(citation)) {
+    // `@key` or `@key [p. 12, suffix]`.
+    const [item] = citation.items;
+    const locator = serializeLocator(item).slice(2);
+    return `@${item.key}${locator ? ` [${locator}${item.suffix ? ` ${item.suffix}` : ""}]` : ""}`;
+  }
   const items = citation.items.map((item) => {
     const locator = serializeLocator(item);
     const suffix = item.suffix ? `${locator ? " " : ", "}${item.suffix}` : "";
@@ -1063,6 +1181,14 @@ class Analyzer {
           continue;
         }
       }
+      if (code === 64) {
+        const narrative = this.narrativeToken(segment, index);
+        if (narrative) {
+          citations.push(narrative.occurrence);
+          index = narrative.end;
+          continue;
+        }
+      }
       if (code === 60) {
         const next = text[index + 1];
         if (next === "!" || next === "?") finder ??= new Finder(text);
@@ -1162,6 +1288,19 @@ class Analyzer {
     return {
       end,
       occurrence: { citation: { items: parsed.items, raw: this.source.slice(start, stop) }, start, end: stop, keys },
+    };
+  }
+
+  /** The narrative citation whose `@` is at `segment.text[index]`, if any (link text demotes it later). */
+  private narrativeToken(segment: Segment, index: number) {
+    const match = narrativeCitationAt(segment.text, index);
+    if (!match) return null;
+    const start = sourceAt(segment, index);
+    const stop = sourceAt(segment, match.end - 1) + 1;
+    const key: [number, number] = [sourceAt(segment, match.key[0]), sourceAt(segment, match.key[1] - 1) + 1];
+    return {
+      end: match.end,
+      occurrence: { citation: { items: [match.item], raw: this.source.slice(start, stop), narrative: true }, start, end: stop, keys: [key] },
     };
   }
 
@@ -1479,9 +1618,22 @@ function inSkip(skips: number[], offset: number) {
  * skipped, as are bracketed tokens that turn out to be link or image text.
  */
 export function scanCitations(markdown: string, options?: CitationSyntaxOptions): CitationOccurrence[] {
-  return analyze(markdown, options).citations.map(({ citation, start, end }) => ({
-    citation: { items: citation.items.map((item) => ({ ...item })), raw: citation.raw }, start, end,
-  }));
+  return analyze(markdown, options).citations.map(({ citation, start, end }) => ({ citation: copyCitation(citation), start, end }));
+}
+
+function copyCitation(citation: Citation): Citation {
+  const copy: Citation = { items: citation.items.map((item) => ({ ...item })), raw: citation.raw };
+  if (citation.narrative) copy.narrative = true;
+  return copy;
+}
+
+/**
+ * The occurrences that are citations given the library: every bracketed one,
+ * and a narrative one only when `resolves` knows its key (none without
+ * `resolves`). See the header: an unresolved `@word` is plain text.
+ */
+export function resolvedCitationOccurrences<T extends { citation: Citation }>(occurrences: readonly T[], resolves?: ((key: string) => boolean) | null): T[] {
+  return occurrences.filter(({ citation }) => !citation.narrative || Boolean(resolves && citation.items.every((item) => resolves(item.key))));
 }
 
 /** The citation containing `offset` (`start <= offset < end`), or null. For hover and click. */
@@ -1495,13 +1647,27 @@ export function citationAt(markdown: string, offset: number, options?: CitationS
   }
   const found = citations[low];
   if (!found || found.start > offset) return null;
-  return { citation: { items: found.citation.items.map((item) => ({ ...item })), raw: found.citation.raw }, start: found.start, end: found.end };
+  return { citation: copyCitation(found.citation), start: found.start, end: found.end };
 }
 
-/** Unique cited keys in document order. */
-export function citedKeys(markdown: string, options?: CitationSyntaxOptions) {
+export type CitedKeysOptions = CitationSyntaxOptions & {
+  /** Whether a key is in the library: a narrative citation counts only when its key resolves. */
+  resolves?: ((key: string) => boolean) | null;
+  /** Count every narrative candidate, resolved or not. */
+  allNarrative?: boolean;
+};
+
+/**
+ * Unique cited keys in document order: the keys of bracketed citations, and
+ * of narrative ones that resolve (or all of them with `allNarrative`).
+ */
+export function citedKeys(markdown: string, options?: CitedKeysOptions) {
   const keys = new Set<string>();
-  for (const { citation } of analyze(markdown, options).citations) for (const item of citation.items) keys.add(item.key);
+  const resolves = options?.resolves;
+  for (const { citation } of analyze(markdown, options).citations) {
+    if (citation.narrative && !options?.allNarrative && !(resolves && resolves(citation.items[0].key))) continue;
+    for (const item of citation.items) keys.add(item.key);
+  }
   return [...keys];
 }
 
@@ -1559,7 +1725,7 @@ export function citationTriggerAt(text: string, offset: number, options?: Citati
   if (inSkip(analysis.skips, at)) return null;
   const segment = analysis.segments.find((candidate) => candidate.start <= at && at < candidate.end);
   if (!segment) return null;
-  if (analysis.citations.some((citation) => citation.start < at && at < citation.end)) return { from: at, query, insideCitation: true };
+  if (analysis.citations.some((citation) => !citation.citation.narrative && citation.start < at && at < citation.end)) return { from: at, query, insideCitation: true };
   return { from: at, query, insideCitation: openCitationBefore(segment, at) };
 }
 
@@ -1595,11 +1761,13 @@ export type CitationSyntaxCase = {
   name: string;
   /** Markdown source. */
   source: string;
-  /** Every citation in the source, in order: its exact source text and parsed items. */
-  expected: Array<{ raw: string; items: CitationItem[] }>;
+  /** Every citation in the source, in order: its exact source text, parsed items, and whether it is narrative. */
+  expected: Array<{ raw: string; items: CitationItem[]; narrative?: true }>;
 };
 
 const cite = (raw: string, ...items: CitationItem[]) => ({ raw, items });
+/** A narrative candidate: `@key`, or `@key [locator]` with the item's locator. */
+const narr = (raw: string, item?: Partial<CitationItem>) => ({ raw, items: [{ key: /^@([^\s[]+)/.exec(raw)![1], ...item }], narrative: true as const });
 
 /**
  * The grammar as Markdown source → citations. Every parser layer (this
@@ -1644,28 +1812,28 @@ export const CITATION_SYNTAX_CASES: CitationSyntaxCase[] = [
   { name: "CRLF line break", source: "[see\r\n@a]", expected: [cite("[see\r\n@a]", { key: "a", prefix: "see" })] },
   // Not citations
   { name: "bracket without a key", source: "[see above] and [1]", expected: [] },
-  { name: "two keys in one item", source: "[@a and @b]", expected: [] },
-  { name: "empty item", source: "[@a;] [@b; ]", expected: [] },
+  { name: "two keys in one item", source: "[@a and @b]", expected: [narr("@a"), narr("@b")] },
+  { name: "empty item", source: "[@a;] [@b; ]", expected: [narr("@a"), narr("@b")] },
   { name: "@ inside a word", source: "[a-@b] [me@example.com] [*@c*]", expected: [] },
-  { name: "bare @key is text", source: "As @smith2020 shows, thanks to @alice.", expected: [] },
+  { name: "bare @key is a narrative candidate", source: "As @smith2020 shows, thanks to @alice.", expected: [narr("@smith2020"), narr("@alice")] },
   { name: "email addresses", source: "Write to me@example.com or <me@example.com>.", expected: [] },
-  { name: "handles beside a citation", source: "Thanks @alice for [@bob].", expected: [cite("[@bob]", { key: "bob" })] },
-  { name: "blank line inside", source: "[see\n\n@a]", expected: [] },
-  { name: "two line breaks", source: "[see\nalso\n@a]", expected: [] },
-  { name: "longer than 2000 characters", source: `[@a, ${"x".repeat(2000)}]`, expected: [] },
+  { name: "handles beside a citation", source: "Thanks @alice for [@bob].", expected: [narr("@alice"), cite("[@bob]", { key: "bob" })] },
+  { name: "blank line inside", source: "[see\n\n@a]", expected: [narr("@a")] },
+  { name: "two line breaks", source: "[see\nalso\n@a]", expected: [narr("@a")] },
+  { name: "longer than 2000 characters", source: `[@a, ${"x".repeat(2000)}]`, expected: [narr("@a")] },
   // Links, images, references, definitions
   { name: "inline link", source: "[@x](https://example.com) [@y](<a b>)", expected: [] },
-  { name: "full and collapsed references", source: "[@x][ref] [@y][]\n\n[ref]: https://example.com", expected: [] },
+  { name: "full and collapsed references", source: "[@x][ref] [@y][]\n\n[ref]: https://example.com", expected: [narr("@y")] },
   { name: "link reference definition", source: "[@x]: https://example.com\n   [@y]: /y", expected: [] },
   { name: "bracket colon outside line start", source: "Note [@a]: it holds.", expected: [cite("[@a]", { key: "a" })] },
   { name: "defined label still cites", source: "[@x]\n\n[@x]: https://example.com", expected: [cite("[@x]", { key: "x" })] },
-  { name: "images", source: "![@x](a.png) ![@y] ![see @z]", expected: [] },
+  { name: "images", source: "![@x](a.png) ![@y] ![see @z]", expected: [narr("@y"), narr("@z")] },
   { name: "escaped brackets", source: "\\[@x] and \\[@y\\]", expected: [] },
-  { name: "after an escaped exclamation mark", source: "\\![@x]", expected: [] },
+  { name: "after an escaped exclamation mark", source: "\\![@x]", expected: [narr("@x")] },
   { name: "escaped at sign", source: "[\\@x]", expected: [] },
   { name: "inside link text", source: "[see [@x] here](https://example.com)", expected: [] },
   { name: "inside image alt text", source: "![chart [@x]](chart.png)", expected: [] },
-  { name: "citation then reference label", source: "[@a][@b]", expected: [cite("[@b]", { key: "b" })] },
+  { name: "citation then reference label", source: "[@a][@b]", expected: [narr("@a"), cite("[@b]", { key: "b" })] },
   { name: "link destination and title", source: "[link](https://example.com/[@x] \"[@t]\") [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "autolinks", source: "<https://example.com/[@x]> https://example.com/[@z] [@y]", expected: [cite("[@y]", { key: "y" })] },
   { name: "literal www link", source: "www.example.com/[@x] [@y]", expected: [cite("[@y]", { key: "y" })] },
@@ -1703,4 +1871,34 @@ export const CITATION_SYNTAX_CASES: CitationSyntaxCase[] = [
   { name: "headings", source: "## Results [@a]\n\nMethods [@b]\n===", expected: [cite("[@a]", { key: "a" }), cite("[@b]", { key: "b" })] },
   { name: "adjacent punctuation", source: "Shown [@a]. Also ([@b]), [@c]; [@d]!", expected: [cite("[@a]", { key: "a" }), cite("[@b]", { key: "b" }), cite("[@c]", { key: "c" }), cite("[@d]", { key: "d" })] },
   { name: "emphasis around a citation", source: "*[@a]* **[@b]**", expected: [cite("[@a]", { key: "a" }), cite("[@b]", { key: "b" })] },
+  // Narrative citations
+  { name: "narrative citation", source: "As @smith2020sparse says, it holds.", expected: [narr("@smith2020sparse")] },
+  { name: "sentence-initial narrative", source: "@lee2019 argues the opposite.\nThen @doe2001 agrees.", expected: [narr("@lee2019"), narr("@doe2001")] },
+  { name: "narrative with a locator", source: "@smith2020 [p. 33] says so.", expected: [narr("@smith2020 [p. 33]", { label: "page", locator: "33" })] },
+  { name: "narrative locators with and without a space", source: "@a[ch. 3] and @b [pp. 3-4, emphasis added] and @c [33]", expected: [
+    narr("@a[ch. 3]", { label: "chapter", locator: "3" }),
+    narr("@b [pp. 3-4, emphasis added]", { label: "page", locator: "3-4", suffix: "emphasis added" }),
+    narr("@c [33]", { label: "page", locator: "33" }),
+  ] },
+  { name: "narrative locator with escaped brackets", source: "@a [p. 3 \\[sic\\]] wrote", expected: [narr("@a [p. 3 \\[sic\\]]", { label: "page", locator: "3", suffix: "\\[sic\\]" })] },
+  { name: "a bracket that is not a locator stays text", source: "@alice [the user] said @b [see @c] and @d [p. 3](u) and @e  [p. 4] and @f\n[p. 5]", expected: [
+    narr("@alice"), narr("@b"), cite("[see @c]", { key: "c", prefix: "see" }), narr("@d"), narr("@e"), narr("@f"),
+  ] },
+  { name: "narrative trailing punctuation", source: "By @smith2020. Also @lee2019, @doe:2020; @x-y! @z?", expected: [narr("@smith2020"), narr("@lee2019"), narr("@doe:2020"), narr("@x-y"), narr("@z")] },
+  { name: "narrative after brackets and parentheses", source: "(@a) and (see @b, 2020) and [see @c and @d]", expected: [narr("@a"), narr("@b"), narr("@c"), narr("@d")] },
+  { name: "narrative not after other characters", source: "*@a* **@b** \"@c\" -@d x@e _@f_ .@g 3@h ~@i", expected: [] },
+  { name: "narrative Unicode and internal punctuation", source: "@müller2020 and @黄2021学习 and @doe:2020.a/b.", expected: [narr("@müller2020"), narr("@黄2021学习"), narr("@doe:2020.a/b")] },
+  { name: "emails and handles", source: "me@example.com, first.last@uni.edu, https://x.com/@alice, www.example.com/@bob and <mailto:a@b.co>", expected: [] },
+  { name: "@ without a key", source: "@ @- @. @[p. 3] a @", expected: [] },
+  { name: "escaped narrative", source: "\\@a and \\\\@b", expected: [] },
+  { name: "narrative in code and math", source: "`@a` $@b$ \\(@c\\) @d", expected: [narr("@d")] },
+  { name: "narrative in link text", source: "[see @a](https://example.com) and [@b text](u) and ![@c](i.png)", expected: [] },
+  { name: "narrative in a link destination and title", source: "[x](https://e.com/@a \"@t\") (@y)", expected: [narr("@y")] },
+  { name: "narrative in HTML", source: "<span title=\"@a\">@b</span> <!-- @c --> @d", expected: [narr("@d")] },
+  { name: "narrative in front matter", source: "---\nauthor: @a\n---\n\n@b", expected: [narr("@b")] },
+  { name: "narrative in fenced and indented code", source: "```\n@a\n```\n\n    @b\n\n@c", expected: [narr("@c")] },
+  { name: "narrative in blocks", source: "# @a heading\n\n> @b\n\n- @c\n\n| @d | x |\n| --- | --- |\n| y | @e |", expected: [narr("@a"), narr("@b"), narr("@c"), narr("@d"), narr("@e")] },
+  { name: "narrative beside citations", source: "@a [@b] and [@c] @d, [see @e] @f [p. 2]", expected: [
+    narr("@a"), cite("[@b]", { key: "b" }), cite("[@c]", { key: "c" }), narr("@d"), cite("[see @e]", { key: "e", prefix: "see" }), narr("@f [p. 2]", { label: "page", locator: "2" }),
+  ] },
 ];

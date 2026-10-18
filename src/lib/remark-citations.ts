@@ -1,9 +1,11 @@
-import { markdownLineEnding } from "micromark-util-character";
+import { markdownLineEnding, markdownLineEndingOrSpace, unicodeWhitespace } from "micromark-util-character";
 import type { Code, Construct, State, TokenizeContext, TokenType } from "micromark-util-types";
 import type { Extension as FromMarkdownExtension } from "mdast-util-from-markdown";
 import type { Root } from "mdast";
 import type { Plugin } from "unified";
-import { CITATION_MAX_LENGTH, citationFrontMatterEnd, parseCitationContent } from "./references/citation-syntax";
+import {
+  CITATION_MAX_LENGTH, KEY_RUN_CHARACTER, citationFrontMatterEnd, narrativeCitationAt, parseCitationContent, parseNarrativeCitation,
+} from "./references/citation-syntax";
 import type { Citation } from "./references/types";
 
 // Bracketed citations, `[see @key, p. 12]`, as a micromark text construct.
@@ -14,6 +16,13 @@ import type { Citation } from "./references/types";
 // constructs claim the text first. The grammar is the one in
 // references/citation-syntax.ts, and the two are tested against the same
 // table (CITATION_SYNTAX_CASES) for identical results and offsets.
+//
+// Narrative citations, `@key` and `@key [p. 12]`, are a second text
+// construct, on `@`. It looks ahead (effects.check) to collect the key and a
+// possible locator bracket, lets the shared `narrativeCitationAt` decide how
+// far the token reaches, then consumes exactly that much. The `@` must start
+// the text or follow whitespace, `[` or `(`; GFM's email autolinks start at
+// the local part, so they claim `me@example.com` before the `@` is reached.
 
 /** mdast leaf for a citation. `value` is the source text, so `toString` (e.g. image alt text) keeps it. */
 export type LiberaCitationNode = {
@@ -27,6 +36,7 @@ export type LiberaCitationNode = {
 const CITATION = "liberaCitation" as TokenType;
 const MARKER = "liberaCitationMarker" as TokenType;
 const DATA = "liberaCitationData" as TokenType;
+const LOOKAHEAD = "liberaCitationLookahead" as TokenType;
 
 function isAsciiPunctuation(code: Code) {
   return code !== null && ((code >= 33 && code <= 47) || (code >= 58 && code <= 64) || (code >= 91 && code <= 96) || (code >= 123 && code <= 126));
@@ -102,12 +112,119 @@ function tokenizeCitation(this: TokenizeContext, effects: Parameters<Construct["
 
 const citationConstruct: Construct = { name: "liberaCitation", tokenize: tokenizeCitation };
 
+/** Whether a narrative `@` may follow `code` (null: the start of the text). Matches `narrativeMayFollow`. */
+function narrativeMayFollowCode(code: Code) {
+  return code === null || code === 91 || code === 40 || markdownLineEndingOrSpace(code) || unicodeWhitespace(code);
+}
+
+function isSurrogate(code: Code) {
+  return code !== null && code >= 0xd800 && code <= 0xdfff;
+}
+
+function tokenizeNarrative(this: TokenizeContext, effects: Parameters<Construct["tokenize"]>[0], ok: State, nok: State): State {
+  // The source text from the `@` as far as a narrative token could reach,
+  // plus the character after a locator bracket (collected by the lookahead).
+  let text = "";
+  let remaining = 0;
+
+  const lookahead: Construct = {
+    partial: true,
+    tokenize(effects, done) {
+      let length = 0;
+      const stop: State = (code) => {
+        effects.exit(LOOKAHEAD);
+        return done(code);
+      };
+      const take = (code: Code) => {
+        text += code === -2 ? "	" : code === -1 ? "" : String.fromCharCode(code as number);
+        length += 1;
+        effects.consume(code);
+      };
+      // The run of key characters (surrogates included; the key grammar decides).
+      const key: State = (code) => {
+        if (code !== null && code >= 0 && (isSurrogate(code) || KEY_RUN_CHARACTER.test(String.fromCharCode(code)))) {
+          take(code);
+          return key;
+        }
+        if (code === 32) {
+          take(code);
+          return open;
+        }
+        return open(code);
+      };
+      const open: State = (code) => {
+        if (code !== 91) return stop(code);
+        take(code);
+        return bracket;
+      };
+      const bracket: State = (code) => {
+        if (code === null || markdownLineEnding(code) || code === 64 || code === 91 || length > CITATION_MAX_LENGTH * 2) return stop(code);
+        take(code);
+        if (code === 93) return after;
+        return code === 92 ? escape : bracket;
+      };
+      const escape: State = (code) => {
+        if (code === null || markdownLineEnding(code)) return stop(code);
+        if (code >= 33 && code <= 126 && !/[A-Za-z0-9]/.test(String.fromCharCode(code))) {
+          take(code);
+          return bracket;
+        }
+        return bracket(code);
+      };
+      // The character after the bracket decides whether it is a link (`](` or `][`).
+      const after: State = (code) => {
+        if (code !== null && code >= 0) text += String.fromCharCode(code);
+        return stop(code);
+      };
+      return (code) => {
+        effects.enter(LOOKAHEAD);
+        take(code);
+        return key;
+      };
+    },
+  };
+
+  const decide: State = (code) => {
+    const match = narrativeCitationAt(text, 0, undefined);
+    if (!match) return nok(code);
+    remaining = match.end;
+    effects.enter(CITATION);
+    effects.enter(MARKER);
+    effects.consume(code);
+    effects.exit(MARKER);
+    remaining -= 1;
+    effects.enter(DATA);
+    return body;
+  };
+
+  const body: State = (code) => {
+    if (remaining === 0) {
+      effects.exit(DATA);
+      effects.exit(CITATION);
+      return ok(code);
+    }
+    // A tab's virtual spaces are not characters of the source.
+    if (code !== -1) remaining -= 1;
+    effects.consume(code);
+    return body;
+  };
+
+  return (code) => {
+    if (code !== 64 || !narrativeMayFollowCode(this.previous)) return nok(code);
+    text = "";
+    return effects.check(lookahead, decide, decide)(code);
+  };
+}
+
+const narrativeConstruct: Construct = { name: "liberaNarrativeCitation", tokenize: tokenizeNarrative };
+
 const fromMarkdown: FromMarkdownExtension = {
   enter: {
     [CITATION](token) {
       const raw = this.sliceSerialize(token);
-      const parsed = parseCitationContent(raw.slice(1, -1));
-      const citation: Citation = { items: parsed?.items ?? [], raw };
+      let citation: Citation;
+      if (raw.startsWith("@")) citation = parseNarrativeCitation(raw) ?? { items: [], raw, narrative: true };
+      else citation = { items: parseCitationContent(raw.slice(1, -1))?.items ?? [], raw };
       const node: LiberaCitationNode = {
         type: "liberaCitation",
         citation,
@@ -176,13 +293,13 @@ function finishCitations(tree: TreeNode, source: string | null) {
 }
 
 /**
- * Parse `[@key]` citations into `liberaCitation` leaves rendered as
+ * Parse `[@key]` and narrative `@key` citations into `liberaCitation` leaves rendered as
  * `<libera-cite data-citation="…">`. Use after remark-parse so the source is
  * available to settle `raw`; otherwise the source is read from the file.
  */
 export const remarkCitations: Plugin<[], Root> = function () {
   const data = this.data();
-  (data.micromarkExtensions ??= []).push({ text: { 91: citationConstruct } });
+  (data.micromarkExtensions ??= []).push({ text: { 91: citationConstruct, 64: narrativeConstruct } });
   (data.fromMarkdownExtensions ??= []).push(fromMarkdown);
   const parse = this.parser;
   if (parse) {

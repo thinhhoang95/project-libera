@@ -11,7 +11,11 @@ import {
   citationAt,
   citationTriggerAt,
   citedKeys,
+  narrativeCitationAt,
+  parseAnyCitation,
   parseCitationToken,
+  parseNarrativeCitation,
+  resolvedCitationOccurrences,
   rewriteCitationKeys,
   scanCitations,
   serializeCitation,
@@ -52,7 +56,7 @@ test("the shared case table covers the grammar and the scanner matches it", () =
   assert.equal(new Set(CITATION_SYNTAX_CASES.map((entry) => entry.name)).size, CITATION_SYNTAX_CASES.length);
   for (const { name, source, expected } of CITATION_SYNTAX_CASES) {
     const occurrences = scanCitations(source);
-    assert.deepEqual(occurrences.map(({ citation }) => ({ raw: citation.raw, items: citation.items })), expected, name);
+    assert.deepEqual(occurrences.map(({ citation }) => ({ raw: citation.raw, items: citation.items, ...(citation.narrative ? { narrative: true } : {}) })), expected, name);
     for (const { citation, start, end } of occurrences) assert.equal(source.slice(start, end), citation.raw, name);
   }
 });
@@ -89,6 +93,9 @@ test("random Markdown fragments parse identically in the scanner and in micromar
     "<", "<b>", "<!--", "-->", "<http://x.y>", " ", "\n", "\n\n", "\t", "> ", "y> ", "- ", "1. ", "2. ", "    ", "```", "~~~", "# ", "---",
     "|", "\n| a | b |\n| - | - |\n", "me@x.com", "www.a.b", "https://x.com/", "[ref]: /u", "[@a]: /u", "[^1]: ", "[x](", "[[@g]]",
     "[a [@h] b]", "[@j]\n(", "<div>", "\\[\n", "\n\\]", "[see\n@a]", "[@a\nb]", "*", "{", "p.", "12", "word",
+    // Narrative citations
+    "@a", " @b", "@c [p. 3]", "@d[ch. 2]", " [p. 4]", "@", "@e.", "x@y", "(@f)", "@g [x]", "@h [p. 5](u)", "\t", "@i [p.\t6]", "\\@j",
+    "@k ", "[p. 7]", "@黄", "@l\\[", "_@m_", "@n<b>", "@o$p$",
   ];
   let seed = 20261018;
   const random = (size: number) => {
@@ -172,9 +179,52 @@ test("serializeCitation writes the canonical form and round-trips every case", (
   for (const { name, source } of CITATION_SYNTAX_CASES) {
     for (const { citation } of scanCitations(source)) {
       const text = serializeCitation(citation);
-      assert.deepEqual(parseCitationToken(text)?.items, citation.items, `${name}: ${text}`);
+      assert.deepEqual(parseAnyCitation(text)?.items, citation.items, `${name}: ${text}`);
+      assert.equal(Boolean(parseAnyCitation(text)?.narrative), Boolean(citation.narrative), `${name}: ${text}`);
     }
   }
+});
+
+test("narrative tokens: parse, serialize, and fall back to brackets when the form cannot hold an item", () => {
+  assert.deepEqual(parseNarrativeCitation("@smith2020"), { items: [{ key: "smith2020" }], raw: "@smith2020", narrative: true });
+  assert.deepEqual(parseNarrativeCitation("@a [p. 33, emphasis added]")?.items, [{ key: "a", label: "page", locator: "33", suffix: "emphasis added" }]);
+  for (const raw of ["@a.", "@a [the user]", " @a", "x@a", "@a [p. 3](u)", "@a  [p. 3]", "[@a]", "@a [p. 3", "@"]) {
+    assert.equal(parseNarrativeCitation(raw), null, raw);
+  }
+  assert.equal(parseAnyCitation("[@a]")?.narrative, undefined);
+  assert.equal(parseAnyCitation("@a")?.narrative, true);
+  assert.equal(serializeCitation({ items: [{ key: "a" }], narrative: true }), "@a");
+  assert.equal(serializeCitation({ items: [{ key: "a", label: "chapter", locator: "3", suffix: "and passim" }], narrative: true }), "@a [ch. 3 and passim]");
+  // Not representable as narrative: written bracketed, nothing lost.
+  assert.equal(serializeCitation({ items: [{ key: "a", prefix: "see" }], narrative: true }), "[see @a]");
+  assert.equal(serializeCitation({ items: [{ key: "a", suppressAuthor: true }], narrative: true }), "[-@a]");
+  assert.equal(serializeCitation({ items: [{ key: "a", suffix: "emphasis added" }], narrative: true }), "[@a, emphasis added]");
+  assert.equal(serializeCitation({ items: [{ key: "a" }, { key: "b" }], narrative: true }), "[@a; @b]");
+  assert.equal(serializeCitation({ items: [{ key: "a", locator: "3", suffix: "see [x]" }], narrative: true }), "[@a, p. 3 see [x]]");
+  assert.equal(serializeCitation({ items: [{ key: "a", locator: "3", suffix: "per @b" }], narrative: true }), "[@a, p. 3 per @b]");
+  assert.deepEqual(narrativeCitationAt("x @a", 2), { end: 4, key: [3, 4], item: { key: "a" } });
+  assert.equal(narrativeCitationAt("x@a", 1), null);
+  assert.deepEqual(narrativeCitationAt("@a", 0, "("), { end: 2, key: [1, 2], item: { key: "a" } });
+  assert.equal(narrativeCitationAt("@a", 0, "*"), null);
+});
+
+test("narrative occurrences: offsets, citedKeys and the resolved filter", () => {
+  const source = "@a [p. 3] and [@b] and @alice, then @a again. me@x.com";
+  const found = scanCitations(source);
+  assert.deepEqual(found.map(({ citation, start, end }) => [citation.raw, citation.narrative ?? false, source.slice(start, end)]), [
+    ["@a [p. 3]", true, "@a [p. 3]"], ["[@b]", false, "[@b]"], ["@alice", true, "@alice"], ["@a", true, "@a"],
+  ]);
+  const library = new Set(["a", "b"]);
+  const resolves = (key: string) => library.has(key);
+  assert.deepEqual(citedKeys(source), ["b"]);
+  assert.deepEqual(citedKeys(source, { resolves }), ["a", "b"]);
+  assert.deepEqual(citedKeys(source, { allNarrative: true }), ["a", "b", "alice"]);
+  assert.deepEqual(resolvedCitationOccurrences(found, resolves).map(({ citation }) => citation.raw), ["@a [p. 3]", "[@b]", "@a"]);
+  assert.deepEqual(resolvedCitationOccurrences(found).map(({ citation }) => citation.raw), ["[@b]"]);
+  assert.equal(citationAt(source, 1)?.citation.narrative, true);
+  assert.equal(citationAt(source, source.indexOf("@alice") + 3)?.citation.raw, "@alice");
+  // The trigger: a narrative candidate is not "inside a citation".
+  assert.deepEqual(citationTriggerAt("See @smi", 8), { from: 4, query: "smi", insideCitation: false });
 });
 
 test("citationTriggerAt fires for @ at a word start outside code, math and links", () => {
@@ -211,8 +261,10 @@ test("citationTriggerAt fires for @ at a word start outside code, math and links
 test("rewriteCitationKeys changes keys only inside citation tokens and keeps every other byte", () => {
   const source = "See [see  @old,  p. 3; -@other] and [@old].\n\n`[@old]` @old me@old.com [@old](u) [@older]\n\n> [x\n> @old]\n";
   const { text, count } = rewriteCitationKeys(source, new Map([["old", "new2024"], ["other", "other"]]));
-  assert.equal(count, 3);
-  assert.equal(text, "See [see  @new2024,  p. 3; -@other] and [@new2024].\n\n`[@old]` @old me@old.com [@old](u) [@older]\n\n> [x\n> @new2024]\n");
+  // A narrative `@old` is rewritten too; one inside link text, code or a word is not.
+  assert.equal(count, 4);
+  assert.equal(text, "See [see  @new2024,  p. 3; -@other] and [@new2024].\n\n`[@old]` @new2024 me@old.com [@old](u) [@older]\n\n> [x\n> @new2024]\n");
+  assert.deepEqual(rewriteCitationKeys("@old [p. 3] and (@old).", new Map([["old", "n"]])), { text: "@n [p. 3] and (@n).", count: 2 });
   assert.deepEqual(rewriteCitationKeys(source, new Map()), { text: source, count: 0 });
 });
 
