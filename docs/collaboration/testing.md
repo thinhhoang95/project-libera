@@ -65,7 +65,7 @@ All support code lives in `scripts/collab/harness/`.
 
 ### `harness-proxy.test.ts` (about 6 s)
 
-A self-test of the proxy against a `ws` echo server. Each fault does what the other tests rely on: latency without reordering, the bandwidth cap, partitions, black holes, silent socket death that spares new sockets, per-direction stalls, duplication of whole sync frames only, reordering of server frames, and a reset when the upstream is down.
+A self-test of the proxy against a minimal WebSocket echo server. Each fault does what the other tests rely on: latency without reordering, the bandwidth cap, partitions, black holes, silent socket death that spares new sockets, per-direction stalls, duplication of whole sync frames only, reordering of server frames, and a reset when the upstream is down.
 
 ### `harness-durability.test.ts` (about 2.5 min)
 

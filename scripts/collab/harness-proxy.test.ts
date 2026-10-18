@@ -1,39 +1,93 @@
 // Self-test of the chaos proxy: each fault does what the durability matrix
-// and the fuzzer rely on. Uses a plain WebSocket echo server (ws), no
-// collab server, so it runs in about a second.
+// and the fuzzer rely on. Uses a minimal WebSocket echo server (below), no
+// collab server, so it runs in a few seconds.
 
 import assert from "node:assert/strict";
-import { createServer, type AddressInfo } from "node:net";
+import { createHash } from "node:crypto";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import test, { after, before } from "node:test";
-
-import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 
 import { encodeMessage, MessageType } from "../../src/lib/collab/protocol/messages";
 import { ChaosProxy, type ProxyLink } from "./harness/chaos-proxy";
 import { sleep, waitUntil } from "./harness/cluster";
 
-let wss: WebSocketServer;
+let echo: HttpServer;
 let port = 0;
 let proxy: ChaosProxy;
-const serverSockets = new Set<ServerSocket>();
+const serverSockets = new Set<Socket>();
+
+/**
+ * Echoes every binary message back. Hand-rolled (RFC 6455 handshake and
+ * framing) because the root package has no types for ws; the proxy only
+ * needs well-formed frames on the wire.
+ */
+function echoFrames(socket: Socket): void {
+  let buffer = Buffer.alloc(0);
+  socket.on("data", (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      if (buffer.length < 2) return;
+      const opcode = buffer[0] & 0x0f;
+      let length = buffer[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (buffer.length < 4) return;
+        length = buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (buffer.length < 10) return;
+        length = Number(buffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+      if (buffer.length < offset + 4 + length) return;
+      const mask = buffer.subarray(offset, offset + 4);
+      const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+      for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+      buffer = buffer.subarray(offset + 4 + length);
+      if (opcode === 8) {
+        socket.end(Buffer.from([0x88, 0]));
+        return;
+      }
+      if (opcode !== 2) continue;
+      const header =
+        payload.length < 126
+          ? Buffer.from([0x82, payload.length])
+          : payload.length < 65536
+            ? Buffer.from([0x82, 126, payload.length >> 8, payload.length & 0xff])
+            : Buffer.concat([Buffer.from([0x82, 127]), (() => {
+                const size = Buffer.alloc(8);
+                size.writeBigUInt64BE(BigInt(payload.length));
+                return size;
+              })()]);
+      socket.write(Buffer.concat([header, payload]));
+    }
+  });
+}
 
 before(async () => {
-  wss = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
-  await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-  port = (wss.address() as AddressInfo).port;
-  // Echoes every binary message back.
-  wss.on("connection", (socket) => {
+  echo = createHttpServer();
+  echo.on("upgrade", (request, socket: Socket) => {
+    const accept = createHash("sha1")
+      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      ["HTTP/1.1 101 Switching Protocols", "Upgrade: websocket", "Connection: Upgrade", `Sec-WebSocket-Accept: ${accept}`, "", ""].join("\r\n"),
+    );
     serverSockets.add(socket);
     socket.on("close", () => serverSockets.delete(socket));
-    socket.on("message", (data: Buffer) => socket.send(data));
+    socket.on("error", () => undefined);
+    echoFrames(socket);
   });
+  await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", () => resolve()));
+  port = (echo.address() as AddressInfo).port;
   proxy = new ChaosProxy({ port });
 });
 
 after(async () => {
   await proxy.close();
-  for (const socket of serverSockets) socket.terminate();
-  await new Promise<void>((resolve) => wss.close(() => resolve()));
+  for (const socket of serverSockets) socket.destroy();
+  await new Promise<void>((resolve) => echo.close(() => resolve()));
 });
 
 interface Client {
