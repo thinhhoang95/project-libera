@@ -1,5 +1,5 @@
-// Kysely table types for migrations/001_initial.sql. Keep them in step with
-// the SQL: there is no code generation.
+// Kysely table types for migrations/*.sql. Keep them in step with the SQL:
+// there is no code generation.
 
 import type { ColumnType, Generated, Insertable, Selectable, Updateable } from "kysely";
 
@@ -219,6 +219,24 @@ export interface AuditLogTable {
   at: CreatedAt;
 }
 
+/** migrations/002_quarantine.sql: updates detached by `admin doc quarantine`. */
+export interface QuarantinedUpdatesTable {
+  doc_id: string;
+  subdoc: SubdocColumn;
+  server_seq: number;
+  account_id: string | null;
+  client_id: string;
+  client_seq: number;
+  actor: Json<Actor | null>;
+  provenance: Json<Provenance | null>;
+  update: Uint8Array;
+  size: number;
+  received_at: ColumnType<Date, Date | string, Date | string>;
+  quarantine_id: string;
+  reason: "range" | "dependent";
+  quarantined_at: CreatedAt;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   applied_at: CreatedAt;
@@ -243,6 +261,7 @@ export interface DB {
   notifications: NotificationsTable;
   commands: CommandsTable;
   audit_log: AuditLogTable;
+  quarantined_updates: QuarantinedUpdatesTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

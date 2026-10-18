@@ -23,6 +23,7 @@ import {
   type Subdoc,
   type UpdateMessage,
 } from "../protocol.js";
+import { reportError } from "../observability/reporter.js";
 import { createSyncMetrics, type SyncMetrics } from "./metrics.js";
 import { InvalidUpdateError, Room, SERVER_ORIGIN } from "./room.js";
 import { Session, type OpenDoc } from "./session.js";
@@ -67,6 +68,10 @@ export class SyncServer {
       onPersisted: (listener) => {
         this.persistedListeners.add(listener);
         return () => this.persistedListeners.delete(listener);
+      },
+      isLoaded: (docId) => {
+        const room = this.loaded.get(docId);
+        return room !== undefined && !room.disposed;
       },
       currentServerSeq: (docId) => this.currentServerSeq(docId),
       membershipChanged: (projectId, accountId, role) => this.membershipChanged(projectId, accountId, role),
@@ -113,10 +118,12 @@ export class SyncServer {
   private accept(ws: WebSocket, request: IncomingMessage): void {
     const ip = this.clientIp(request);
     if (!this.admitConnection(ip)) {
+      this.metrics.connections.inc({ outcome: "rate-limited" });
       ws.on("error", () => undefined);
       ws.close(CloseCode.RateLimited, "Too many connections");
       return;
     }
+    this.metrics.connections.inc({ outcome: "accepted" });
     this.sessions.add(new Session(this, ws, ip));
   }
 
@@ -326,12 +333,19 @@ export class SyncServer {
     return serverSeq;
   }
 
+  /** Counts and reports an internal sync error (ids and sizes only, see observability/reporter.ts). */
+  reportError(error: unknown, area: "frame" | "update" | "listener", details: Record<string, string | number | undefined> = {}): void {
+    this.metrics.errors.inc({ area });
+    reportError(this.context, error, { area: `sync.${area}`, ...details });
+  }
+
   private firePersisted(update: PersistedUpdate): void {
     for (const listener of this.persistedListeners) {
       try {
         listener(update);
       } catch (error) {
         this.context.log.error({ err: error, docId: update.docId }, "Persisted-update listener failed");
+        this.reportError(error, "listener", { docId: update.docId, subdoc: update.subdoc, serverSeq: update.serverSeq });
       }
     }
   }

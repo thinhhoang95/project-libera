@@ -53,6 +53,14 @@ const schema = z.object({
   /** Unloaded rooms are evicted after this long without connections. */
   ROOM_IDLE_MS: z.coerce.number().int().positive().default(60_000),
   LOG_LEVEL: z.string().default("info"),
+  /**
+   * Sentry-compatible DSN (Sentry, self-hosted GlitchTip) for crash and error
+   * reports, e.g. https://<key>@glitchtip.example.com/<project>. Unset: errors
+   * are only logged. Reports carry ids, sizes, codes and stacks, never content.
+   */
+  ERROR_REPORT_DSN: z.string().optional(),
+  /** Environment tag on error reports. Defaults to NODE_ENV. */
+  ERROR_REPORT_ENVIRONMENT: z.string().optional(),
   TRUST_PROXY: boolean,
 });
 

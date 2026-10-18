@@ -1,7 +1,11 @@
 // Background jobs (compaction, checkpoints, notification digests). Each job
 // module exports a function registered here with its interval.
 
+import { Gauge, type Registry } from "prom-client";
+
 import type { ServerContext } from "../context.js";
+import { reportError } from "../observability/reporter.js";
+import { storageMetricsJob } from "../observability/storage-metrics.js";
 import { checkpointJob } from "./checkpoints.js";
 import { compactionJob } from "./compaction.js";
 import { digestJob } from "./digest.js";
@@ -9,6 +13,8 @@ import { digestJob } from "./digest.js";
 export interface Job {
   name: string;
   intervalMs: number;
+  /** Also run once when the jobs start (gauges that should not wait an interval). */
+  runAtStart?: boolean;
   run(context: ServerContext): Promise<void>;
 }
 
@@ -18,7 +24,24 @@ export interface JobRunner {
   stop(): void;
 }
 
-export const jobs: Job[] = [compactionJob, checkpointJob, digestJob];
+export const jobs: Job[] = [compactionJob, checkpointJob, digestJob, storageMetricsJob];
+
+const lastSuccess = new WeakMap<Registry, Gauge<"job">>();
+
+/** libera_job_last_success_timestamp_seconds{job}: alerts on a stalled compaction. */
+function lastSuccessGauge(registry: Registry): Gauge<"job"> {
+  let gauge = lastSuccess.get(registry);
+  if (!gauge) {
+    gauge = new Gauge({
+      name: "libera_job_last_success_timestamp_seconds",
+      help: "Unix time of each background job's last successful run.",
+      labelNames: ["job"],
+      registers: [registry],
+    });
+    lastSuccess.set(registry, gauge);
+  }
+  return gauge;
+}
 
 export function startJobs(context: ServerContext, options: { enabled: boolean }): JobRunner {
   const timers: NodeJS.Timeout[] = [];
@@ -29,8 +52,10 @@ export function startJobs(context: ServerContext, options: { enabled: boolean })
     running.add(job.name);
     try {
       await job.run(context);
+      lastSuccessGauge(context.metrics).set({ job: job.name }, Date.now() / 1000);
     } catch (error) {
       context.log.error({ err: error, job: job.name }, "Job failed");
+      reportError(context, error, { area: "job", job: job.name });
     } finally {
       running.delete(job.name);
     }
@@ -41,6 +66,7 @@ export function startJobs(context: ServerContext, options: { enabled: boolean })
       const timer = setInterval(() => void run(job), job.intervalMs);
       timer.unref();
       timers.push(timer);
+      if (job.runAtStart) void run(job);
     }
   }
 

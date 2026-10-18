@@ -33,6 +33,7 @@ export function recordingRooms(): RecordingRooms {
     withDocs: () => Promise.reject(new Error("withDocs is not stubbed")),
     batch: () => Promise.reject(new Error("batch is not stubbed")),
     onPersisted: () => () => undefined,
+    isLoaded: () => false,
     currentServerSeq: () => Promise.reject(new Error("currentServerSeq is not stubbed")),
     membershipChanged(...args) {
       rooms.calls.push({ method: "membershipChanged", args });

@@ -62,6 +62,13 @@ export interface RoomService {
    */
   onPersisted(listener: (update: PersistedUpdate) => void): () => void;
 
+  /**
+   * Whether the document is loaded in memory (open, or idle and not yet
+   * unloaded). The admin CLI refuses to rewrite a loaded document's storage,
+   * because the room would keep serving its in-memory state.
+   */
+  isLoaded(docId: string): boolean;
+
   /** Highest persisted serverSeq for a document (from the room if loaded). */
   currentServerSeq(docId: string): Promise<number>;
 

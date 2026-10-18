@@ -76,6 +76,7 @@ export class Session implements RoomMember {
         .then(() => this.handle(data, isBinary))
         .catch((error: unknown) => {
           this.server.context.log.error({ err: error }, "Sync frame handling failed");
+          this.server.reportError(error, "frame", { accountId: this.accountId || undefined, clientId: this.clientId || undefined });
           this.sendError("internal", "Internal error.");
         });
     });
@@ -317,6 +318,14 @@ export class Session implements RoomMember {
       .run(() => this.server.applyClientUpdate(this, open, message))
       .catch((error: unknown) => {
         this.server.context.log.error({ err: error, docId: message.docId }, "Sync update failed");
+        this.server.reportError(error, "update", {
+          docId: message.docId,
+          subdoc: message.subdoc,
+          clientSeq: message.clientSeq,
+          size: message.update.length,
+          accountId: this.accountId,
+          clientId: this.clientId,
+        });
         // No ack: the client keeps the update queued and resends it after reconnecting.
         this.sendError("internal", "The update could not be saved.", message.docId);
       });
