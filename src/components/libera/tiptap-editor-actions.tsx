@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, PenLine, Rows3, Sparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, MessageSquarePlus, PenLine, Rows3, Sparkles } from "lucide-react";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
@@ -21,6 +21,10 @@ import {
   trackTiptapRange,
   type EditorRange,
 } from "@/lib/tiptap-editor-actions";
+import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import type { SharedVisualSuggestions } from "@/lib/collab/bindings/react-visual";
+import { aiSuggestionNotice, imageSourceRange } from "@/lib/collab/client/suggestions-ai";
+import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 
 type ImageSelection = EditorRange & { src: string; alt: string };
 type Popup = EditorRange & {
@@ -33,21 +37,30 @@ type Popup = EditorRange & {
 type AiAction = "format" | "rewrite" | "write" | "image";
 const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
-export function TiptapEditorActions({ editor, documentPath, onError }: {
+export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
   editor: Editor;
   documentPath: string;
   onError: (message: string) => void;
+  /**
+   * Shared tab: AI results become AI suggestions on the overlay instead of
+   * applied changes (plan M3.4), and "Suggest edit" proposes a replacement
+   * for the selection (M3.2). Read at use, since the bridge binds after mount.
+   */
+  shared?: () => SharedVisualSuggestions | null;
 }) {
   const [popup, setPopup] = useState<Popup | null>(null);
   const [startAt, setStartAt] = useState("1");
   const [prompt, setPrompt] = useState("");
   const [writePrompt, setWritePrompt] = useState("");
+  const [suggestText, setSuggestText] = useState("");
   const [working, setWorking] = useState<AiAction | null>(null);
   useEffect(() => (working ? beginAiActivity() : undefined), [working]);
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
   const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
+  const sharedRef = useRef(shared);
+  useEffect(() => { sharedRef.current = shared; });
 
   useEffect(() => {
     function openContextMenu(event: MouseEvent | KeyboardEvent) {
@@ -85,6 +98,12 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
       setPrompt("");
       setWritePrompt("");
       setStartAt("1");
+      // "Suggest edit" starts from the selection's own source text.
+      const sharedTarget = sharedRef.current?.() ?? null;
+      if (sharedTarget && from !== to) {
+        const source = sharedTarget.sourceRange({ from, to });
+        setSuggestText(sharedTarget.text().slice(source.start, source.end));
+      } else setSuggestText("");
       setPopup({ from, to, kind: "context", image, tableCell,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
         y: Math.max(8, Math.min(point.top, window.innerHeight - 420)),
@@ -150,6 +169,21 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
     if (!range) return;
     if (action === "write" ? !writePrompt.trim() : range.from === range.to || (action === "rewrite" && !prompt.trim())) return;
     const tracked = trackTiptapRange(editor, range);
+    const target = shared?.() ?? null;
+    // On a shared tab the AI works on the source text it will suggest a
+    // replacement for, and the result is mapped from that snapshot onto the
+    // live text when it arrives.
+    let source: { snapshot: string; start: number; end: number } | null = null;
+    if (target) {
+      const mapped = target.sourceRange(range);
+      const snapshot = target.text();
+      if (action === "write") {
+        const position = findMarkdownBlockInsertionOffset(snapshot, mapped.start);
+        source = { snapshot, start: position, end: position };
+      } else if (action === "image" && popup.image) {
+        source = { snapshot, ...imageSourceRange(snapshot, mapped.start, mapped.end, popup.image.src) };
+      } else source = { snapshot, ...mapped };
+    }
     const controller = new AbortController();
     const pending = { controller, dispose: tracked.dispose };
     pendingRef.current = pending;
@@ -157,12 +191,15 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
     setPopup(null);
     onError("");
     try {
-      const text = action === "write" ? "" : getTiptapSelectionMarkdown(editor, range);
+      const text = action === "write" ? "" : source ? source.snapshot.slice(source.start, source.end) : getTiptapSelectionMarkdown(editor, range);
       // The Markdown on either side of the selection or insertion point.
-      const context = (action === "write" || action === "rewrite") && readIncludeDocumentContext() ? {
+      const context = (action === "write" || action === "rewrite") && readIncludeDocumentContext() ? (source ? {
+        before: source.snapshot.slice(0, source.start),
+        after: source.snapshot.slice(source.end),
+      } : {
         before: getTiptapSelectionMarkdown(editor, { from: 0, to: range.from }),
         after: getTiptapSelectionMarkdown(editor, { from: range.to, to: editor.state.doc.content.size }),
-      } : {};
+      }) : {};
       let markdown: string;
       const init = { method: "POST", signal: controller.signal };
       if (action === "image" && popup.image) {
@@ -187,6 +224,18 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
         markdown = result.formattedText;
       }
       if (controller.signal.aborted || editor.isDestroyed) return;
+      if (target && source) {
+        if (!markdown?.trim()) throw new Error("AI returned an empty response. Please retry.");
+        const edit: SnapshotEdit = action === "write"
+          ? { start: source.start, end: source.start, before: "", after: (() => {
+            const inserted = insertMarkdownBlock(source.snapshot, source.start, markdown).value;
+            return inserted.slice(source.start, source.start + inserted.length - source.snapshot.length);
+          })() }
+          : { start: source.start, end: source.end, before: source.snapshot.slice(source.start, source.end), after: markdown };
+        const notice = aiSuggestionNotice(target.controller.suggestAi(source.snapshot, [edit], { feature: action === "image" ? "image-to-markdown" : action }));
+        if (notice) onError(notice);
+        return;
+      }
       if (!tracked.isValid()) throw new Error(action === "write" ? "The text around the insertion point changed while AI was working. Please retry." : "The selected content changed while AI was working. Select it again and retry.");
       if (!markdown?.trim()) throw new Error("AI returned an empty response. Please retry.");
       tracked.dispose();
@@ -203,7 +252,18 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
     }
   }
 
+  function suggestEdit() {
+    const target = shared?.() ?? null;
+    if (!popup || !target || popup.from === popup.to) return;
+    const { start, end } = target.sourceRange(popup);
+    const result = target.controller.suggest(start, end, suggestText);
+    setPopup(null);
+    onError(result.ok ? "" : result.message);
+    editor.commands.focus();
+  }
+
   const selectedHeadings = popup ? getTiptapHeadings(editor, popup).filter((heading) => heading.selected) : [];
+  const canSuggestEdit = !!popup && popup.kind === "context" && popup.from !== popup.to && !!shared?.()?.controller.canSuggest();
   const hasText = popup ? !!getTiptapSelectionMarkdown(editor, popup).trim() : false;
   const canIndent = selectedHeadings.some(({ node }) => node.attrs.level < 6);
   const canUnindent = selectedHeadings.length > 0;
@@ -262,6 +322,16 @@ export function TiptapEditorActions({ editor, documentPath, onError }: {
             <button type="submit" disabled={!selectedHeadings.length} className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50">Apply</button>
           </div>
         </form>}
+        {canSuggestEdit ? <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); suggestEdit(); }}>
+          <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="visual-suggest-edit"><MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />Suggest edit</label>
+          <div className="mt-1 flex items-start gap-2">
+            <textarea id="visual-suggest-edit" rows={2} value={suggestText} placeholder="Replacement text (empty suggests deleting it)"
+              className="min-w-0 flex-1 resize-y rounded-md border border-border bg-card px-2 py-1 text-sm"
+              onChange={(event) => setSuggestText(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); suggestEdit(); } }} />
+            <button type="submit" aria-label="Suggest this replacement" title="Suggest this replacement" className="h-8 shrink-0 rounded-md bg-primary px-2 text-primary-foreground"><MessageSquarePlus aria-hidden className="h-4 w-4" /></button>
+          </div>
+        </form> : null}
         {popup.kind === "context" && !writeOnly ? <>
           <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); void runAi("rewrite"); }}>
             <label className="block text-xs font-medium text-muted-foreground" htmlFor="visual-ai-rewrite">AI Rewrite</label>

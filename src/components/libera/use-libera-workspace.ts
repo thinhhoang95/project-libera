@@ -65,11 +65,13 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
 import { latexDocumentTemplate } from "@/lib/latex/project";
-import type { Provenance } from "@/lib/collab/protocol/actor";
+import type { AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
 import { applyTextToSession, applyTextToShared } from "@/lib/collab/client/apply-text";
 import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client/registry";
 import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
+import { aiSuggestionNotice, suggestAiOnSharedTab } from "@/lib/collab/client/suggestions-ai";
+import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
@@ -808,6 +810,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const error = result.reason === "read-only" ? "This shared document is read-only for you." : "This shared document is still opening.";
       updateTab(tabId, (tab) => ({ ...tab, error }));
     }
+    return true;
+  }
+
+  /**
+   * AI results on a shared tab become AI suggestions on the overlay (plan
+   * M3.4) instead of edits: the text stays as it is until someone with
+   * editor rights accepts them. `edit` is in offsets of `base`, the text the
+   * AI was given, and is mapped onto the live text (a concurrent edit makes
+   * it conflicted, not lost). Returns false for tabs that are not (yet)
+   * shared, which then take the regular draft path.
+   */
+  function suggestSharedAi(tabId: string, base: string, edit: SnapshotEdit, feature: AiFeature) {
+    const result = suggestAiOnSharedTab(sharedRegistry, tabId, base, edit, feature);
+    if (!result) return false;
+    const notice = aiSuggestionNotice(result);
+    updateTab(tabId, (tab) => ({ ...tab, error: notice ?? undefined }));
     return true;
   }
 
@@ -1914,9 +1932,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const nextDraft = `${draft.slice(0, selection.start)}${payload.formattedText}${draft.slice(
         selection.end,
       )}`;
-      const nextSelectionEnd = selection.start + payload.formattedText.length;
+      const suggested = suggestSharedAi(tabId, draft, { start: selection.start, end: selection.end, before: selectedText, after: payload.formattedText }, "format");
+      // A suggestion leaves the text as it is, so the selection stays on it.
+      const nextSelectionEnd = suggested ? selection.end : selection.start + payload.formattedText.length;
 
-      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "format" }, base: draft })) {
+      if (!suggested) {
         rememberTabDraft(tabId, nextDraft);
         updateTab(tabId, (tab) => ({
           ...tab,
@@ -1976,9 +1996,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
       )}`;
-      const nextSelectionEnd = selection.start + payload.rewrittenText.length;
+      const suggested = suggestSharedAi(tabId, draft, { start: selection.start, end: selection.end, before: selectedText, after: payload.rewrittenText }, "rewrite");
+      const nextSelectionEnd = suggested ? selection.end : selection.start + payload.rewrittenText.length;
 
-      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "rewrite" }, base: draft })) {
+      if (!suggested) {
         rememberTabDraft(tabId, nextDraft);
         updateTab(tabId, (tab) => ({
           ...tab,
@@ -2026,8 +2047,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }),
       });
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
+      const suggested = suggestSharedAi(tabId, draft, {
+        start: position,
+        end: position,
+        before: "",
+        after: insertion.value.slice(position, position + insertion.value.length - draft.length),
+      }, "write");
 
-      if (!writeSharedDraft(tabId, insertion.value, { provenance: { source: "ai", feature: "write" }, base: draft })) {
+      if (!suggested) {
         rememberTabDraft(tabId, insertion.value);
         updateTab(tabId, (tab) => ({
           ...tab,
@@ -2039,8 +2066,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
       restoreMarkdownTextarea({
         ...scrollState,
-        selectionStart: insertion.start,
-        selectionEnd: insertion.end,
+        selectionStart: suggested ? position : insertion.start,
+        selectionEnd: suggested ? position : insertion.end,
       });
     } catch (error) {
       updateTab(tabId, (tab) => ({
@@ -2082,9 +2109,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const nextDraft = `${draft.slice(0, image.start)}${payload.markdown}${draft.slice(
         image.end,
       )}`;
-      const nextSelectionEnd = image.start + payload.markdown.length;
+      const suggested = suggestSharedAi(tabId, draft, { start: image.start, end: image.end, before: imageMarkdown, after: payload.markdown }, "image-to-markdown");
+      const nextSelectionEnd = suggested ? image.end : image.start + payload.markdown.length;
 
-      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "image-to-markdown" }, base: draft })) {
+      if (!suggested) {
         rememberTabDraft(tabId, nextDraft);
         updateTab(tabId, (tab) => ({
           ...tab,
@@ -2094,7 +2122,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         }));
       }
 
-      void apiRequest<{ deleted: boolean }>("/api/markdown-assets", {
+      // A pending suggestion still shows the image (and Reject keeps it), so
+      // its asset stays.
+      if (!suggested) void apiRequest<{ deleted: boolean }>("/api/markdown-assets", {
         method: "DELETE",
         body: JSON.stringify({
           documentPath: activeTab.file.path,
