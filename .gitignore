@@ -32,7 +32,6 @@
 /server/dist/
 /server/data/
 /server/.env
-!/server/.env.example
 
 # misc
 .DS_Store
@@ -50,6 +49,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!/server/.env.example
 
 # vercel
 .vercel
