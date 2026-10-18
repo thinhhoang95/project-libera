@@ -1674,6 +1674,67 @@ html.dark .libera-search-panel-stat { background: #a3bbef08; box-shadow: inset 0
 }
 @keyframes libera-search-dot-pulse { 50% { opacity: 0.35; } }
 
+/* References panel: library rows in the notebook rows' glass style. Rows cited
+   by the open document take the backlink tint and accent edge. */
+.libera-reference-row {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  margin: 0 0 2px; padding: 6px 8px; border-radius: 10px; cursor: default;
+  background: transparent; transition: background 150ms, box-shadow 150ms;
+}
+.libera-reference-row:hover { background: #ffffff44; }
+.libera-reference-row[aria-selected="true"] { background: #ffffff7a; box-shadow: inset 0 0 0 1px #3979e855; }
+.libera-reference-row[data-cited="true"] { background: color-mix(in srgb, var(--accent) 8%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+.libera-reference-row[data-cited="true"]:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.libera-reference-row[data-cited="true"][aria-selected="true"] { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px #3979e855; }
+.libera-reference-missing { background: color-mix(in srgb, var(--destructive) 7%, transparent); box-shadow: inset 2px 0 0 var(--destructive); }
+.libera-reference-list:focus-visible .libera-reference-row[aria-selected="true"] { box-shadow: inset 0 0 0 2px #457be6; }
+html.dark .libera-reference-row:hover { background: #a3bbef0c; }
+html.dark .libera-reference-row[aria-selected="true"] { background: #a3bbef14; box-shadow: inset 0 0 0 1px #7aa5ef66; }
+html.dark .libera-reference-row[data-cited="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+.libera-reference-badge {
+  display: inline-flex; flex-shrink: 0; align-items: center; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; line-height: 14px; white-space: nowrap;
+  background: color-mix(in srgb, var(--muted-foreground) 14%, transparent); color: var(--muted-foreground);
+}
+.libera-reference-badge[data-status="confirmed"] { background: #22a06b1f; color: #17855a; }
+.libera-reference-badge[data-status="needs-review"] { background: #e0a43a26; color: #a86a0c; }
+.libera-reference-badge[data-status="unresolved"] { background: #e8743b24; color: #c2541c; }
+.libera-reference-badge[data-status="duplicate"] { background: #8b7fd126; color: #6e5fc4; }
+.libera-reference-badge[data-status="missing"] { background: color-mix(in srgb, var(--destructive) 14%, transparent); color: var(--destructive); }
+html.dark .libera-reference-badge[data-status="confirmed"] { color: #5fd3a0; }
+html.dark .libera-reference-badge[data-status="needs-review"] { color: #f0c26b; }
+html.dark .libera-reference-badge[data-status="unresolved"] { color: #f4a273; }
+html.dark .libera-reference-badge[data-status="duplicate"] { color: #b9b0f0; }
+.libera-reference-attachment { display: inline-flex; color: #778bb2; }
+.libera-reference-attachment[data-kind="pdf"] { color: #d08178; }
+.libera-reference-attachment[data-kind="url"] { color: #29a9ce; }
+.libera-reference-chip {
+  display: inline-flex; flex-shrink: 0; align-items: center; gap: 2px; padding: 0 5px; border-radius: 6px;
+  font-size: 10px; font-weight: 500; line-height: 16px; white-space: nowrap;
+  background: #7392d114; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px #94a8ce26;
+}
+a.libera-reference-chip:hover { color: #457be6; }
+.libera-reference-chip[data-source="user"] { color: #3979e8; }
+.libera-reference-chip[data-low="true"] { background: #e0a43a1f; color: #a86a0c; box-shadow: inset 0 0 0 1px #e0a43a40; }
+html.dark .libera-reference-chip { background: #a3bbef0c; box-shadow: inset 0 0 0 1px #8298cb26; }
+html.dark .libera-reference-chip[data-source="user"] { color: #a2c9ff; }
+html.dark .libera-reference-chip[data-low="true"] { color: #f0c26b; }
+.libera-reference-field { padding: 4px 6px; border-radius: 8px; }
+.libera-reference-field[data-conflict="true"] { background: #e0a43a12; }
+.libera-reference-tag {
+  display: inline-flex; align-items: center; gap: 3px; padding: 1px 4px 1px 8px; border-radius: 999px;
+  font-size: 11px; line-height: 18px; background: #d8e7ff9e; color: #3979e8;
+}
+.libera-reference-tag button { display: inline-flex; border-radius: 999px; padding: 1px; opacity: 0.7; }
+.libera-reference-tag button:hover { opacity: 1; background: #3979e81a; }
+html.dark .libera-reference-tag { background: #678dcc26; color: #a2c9ff; }
+.libera-reference-dropzone {
+  z-index: 20; border: 1.5px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); backdrop-filter: blur(2px);
+}
+.libera-reference-table-row:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.libera-reference-table-row[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
 /* Glass form controls for the Create images and Comments panels: translucent
    fills, soft blue-grey rings and the rail's blue selection, so fields sit in
    the sheen like the notebook rows instead of as opaque cards. */

@@ -280,8 +280,8 @@ export type MarkdownScreenshotSnipSession = {
 
 export type MarkdownScreenshotSnipMode = "image" | "markdown";
 
-/** Markdown waiting for the visual editor of a tab to insert at its selection. */
-export type PendingVisualInsertion = { id: string; markdown: string };
+/** Markdown waiting for the visual editor of a tab to insert at its selection. `inline` inserts at the caret instead of as a new block. */
+export type PendingVisualInsertion = { id: string; markdown: string; inline?: boolean };
 
 export type LiberaWorkspace = {
   activeTab?: OpenTab;

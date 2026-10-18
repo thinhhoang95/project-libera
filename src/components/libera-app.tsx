@@ -15,7 +15,8 @@ import { ImageGalleryView } from "@/components/libera/image-gallery-view";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
-import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
+import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
+import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -211,6 +212,30 @@ export function LiberaApp({
       void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
         .then((payload) => workspace.openFile(payload.file)).catch(() => undefined);
     },
+  };
+
+  // The References panel: reveal/add requests from anywhere switch the rail
+  // to it and select their notebook; it cites into the active Markdown editor.
+  const referenceRequests = useReferencesPanelRequests((notebook) => {
+    changeLeftPanel("references");
+    setNotebooksCollapsed(false);
+    if (workspace.selectedNotebookName !== notebook) workspace.selectNotebook(notebook);
+  });
+  const openReferenceDrafts = useMemo(
+    () => workspace.tabs
+      .filter((tab) => tab.file.fileType === "markdown" && !tab.untitled && tab.draft !== tab.saved)
+      .map((tab) => ({ path: tab.file.path, text: tab.draft })),
+    [workspace.tabs],
+  );
+  const references: LeftPanelReferences = {
+    activeMarkdownDraft: workspace.activeMarkdownDraft,
+    openDrafts: openReferenceDrafts,
+    canCite: workspace.activeTab?.file.fileType === "markdown",
+    onCite: (key) => { workspace.insertCitation(key); },
+    onOpenPath: agentWorkspace.openFile,
+    onUploadFiles: workspace.uploadFiles,
+    request: referenceRequests.request,
+    onRequestHandled: referenceRequests.handled,
   };
 
   const canvas = workspace.canvas;
@@ -484,6 +509,7 @@ export function LiberaApp({
           }}
           onToggleNotebook={workspace.toggleNotebook}
           onOpenSearchPreferences={openSearchPreferences}
+          references={references}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}

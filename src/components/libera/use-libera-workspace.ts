@@ -3,6 +3,7 @@ import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdo
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
+import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import type {
   LiberaFileNode,
   LiberaFilePayload,
@@ -1335,6 +1336,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  /** Cites `key` at the caret of the active Markdown editor as `[@key]`, in the source or the visual editor. */
+  function insertCitation(key: string) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") return false;
+    const citation = `[@${key}]`;
+    const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
+    if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });
+    else insertMarkdown(citation, "", "");
+    return true;
+  }
+
   function insertMarkdownFileLinkPlaceholder() {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
@@ -1742,9 +1753,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     returnToSnipTarget(session);
   }
 
-  function queueVisualInsertion(tabId: string, markdown: string) {
+  function queueVisualInsertion(tabId: string, markdown: string, options?: { inline?: boolean }) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setPendingVisualInsertions((current) => ({ ...current, [tabId]: { id, markdown } }));
+    setPendingVisualInsertions((current) => ({ ...current, [tabId]: { id, markdown, ...(options?.inline ? { inline: true } : {}) } }));
   }
 
   function finishVisualInsertion(tabId: string, id: string) {
@@ -3366,8 +3377,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     files: File[],
     destinationPath?: string,
   ) {
+    await uploadFiles(notebook, files, destinationPath);
+  }
+
+  /** Uploads files into a notebook folder (the root by default) and resolves to the uploaded files. */
+  async function uploadFiles(
+    notebook: string,
+    files: File[],
+    destinationPath?: string,
+  ): Promise<LiberaFileNode[]> {
     if (!files.length) {
-      return;
+      return [];
     }
 
     const formData = new FormData();
@@ -3396,8 +3416,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       setSelectedNotebookName(notebook);
       if (payload.error) setWorkspaceError(payload.error);
+      return payload.uploaded;
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
+      return [];
     }
   }
 
@@ -3694,11 +3716,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       handleLogout,
       handleUploadChange,
       uploadFilesToNotebook,
+      uploadFiles,
       insertMarkdownFileLink,
       insertMarkdownFileLinkPlaceholder,
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
+      insertCitation,
+      activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,
