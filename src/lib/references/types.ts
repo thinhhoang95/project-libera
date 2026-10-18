@@ -246,6 +246,8 @@ export type ReferenceLibraryOp =
   | { op: "merge"; keepId: string; mergeIds: string[] }
   | { op: "attach"; id: string; attachment: ReferenceAttachment }
   | { op: "detach"; id: string; attachment: ReferenceAttachment }
+  /** Insert or replace a whole entry by id (used by undo). The key must be valid and free of other entries' keys and aliases. */
+  | { op: "put"; entry: ReferenceEntry }
   | { op: "set-style"; style: string }
   | { op: "set-settings"; settings: ReferenceLibrarySettings };
 

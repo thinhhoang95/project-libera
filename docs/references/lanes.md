@@ -103,3 +103,32 @@ formatCitations(input: {
 - `POST /api/references/resolve` with `{ notebook, input: string, webSearch?: boolean }` → `{ candidates: ReferenceEntryInput[], duplicates: { candidateIndex, entryId }[] }`. It does not write.
 - `POST /api/references/jobs` with `{ notebook, action: "resolve-pdfs" | "resolve-paths" | "cancel", paths?, jobId?, webSearch? }`.
 - `GET /api/references/jobs?notebook=N` → `{ jobs: ReferenceJobStatus[] }`.
+
+### Rendered citation DOM (preview lane renders; interop and editors lanes read)
+
+- A citation renders as `<span class="libera-citation" data-libera-citation="RAW">FORMATTED</span>`. `RAW` is the exact source token, such as `[@a, p. 3]`, HTML-escaped. An unresolved key adds the class `libera-citation-unresolved`.
+- The bibliography renders as `<section class="libera-bibliography" data-libera-bibliography="">…</section>`. Copying it to the clipboard drops it; it is generated, not source.
+- A `:::bibliography` line followed by a `:::` line (a paragraph whose text is exactly that) marks where the bibliography goes. Without one, the bibliography is appended at the end when the document has at least one citation.
+
+### Reference render context (preview lane)
+
+`src/components/libera/references/reference-render-context.tsx` exports:
+
+- `ReferenceRenderProvider({ notebook, children, onOpenAttachment? })`. It loads the notebook's library with `useReferenceLibrary` and the style XML.
+- `useReferenceRender()` → `{ notebook, library, styleXml, locale, entriesByKey, onOpenAttachment?(attachment, locator?) } | null`.
+
+Components that render citations call `useReferenceRender()`. Without a provider (chat messages, for example) they render the raw token styled as a chip.
+
+### Citation index (interop lane)
+
+- `src/lib/storage/reference-citations.ts` builds a per-notebook index at `<notebook system dir>/references/citations.json`. It holds the keys cited by each Markdown file, keyed by mtime and size like `notebook-links.json`, and is rebuilt incrementally on request.
+- `GET /api/references/citations?notebook=N` → `{ byFile: Record<path, string[]>, byKey: Record<key, path[]> }`. Paths are library-relative. Only saved files count; the client merges in open drafts itself.
+
+### Import and export (interop lane)
+
+- `POST /api/references/import` with `{ notebook, format: "auto" | "bibtex" | "ris" | "csl-json", text }` or `{ notebook, path }` (a `.bib`, `.ris` or `.json` file in the library) → `{ library, added: string[] /* entry ids */, errors: { line, message }[], duplicates: { entryId, existingId, reason }[] }`.
+  - Entries are normalized before they are added.
+  - Exact-identifier duplicates of existing entries are not added again. They are reported in `duplicates`.
+- `POST /api/references/export` with `{ notebook, format: "bibtex" | "biblatex" | "csl-json" | "ris", ids?: string[], documentText?: string, abbreviateJournals?: boolean }` → a file download (`Content-Disposition`).
+  - With `documentText`, only the keys it cites are exported, aliases resolved.
+  - Formatted reference lists are added in Wave 3.
