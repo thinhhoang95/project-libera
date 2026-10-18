@@ -234,6 +234,15 @@ export function MarkdownCodeMirrorEditor({
     publishedDraftsRef.current = [];
     const annotations = [markdownValueSync.of(source), ...(source === "review" ? [isolateHistory.of("full")] : [])];
     if (initialRef.current.documentSource === "external") {
+      // On a shared tab the workspace writes to the Y.Text itself and the
+      // binding has already brought the document level: re-applying the
+      // intended change would insert it twice.
+      if (text === current.state.doc.toString()) {
+        readDraft();
+        lastPublishedRef.current = text;
+        changesSinceBaseRef.current = null;
+        return;
+      }
       // The injected binding owns the document: turn the new value into the
       // edit it represents against the draft the workspace last saw, and move
       // that edit onto the current document.

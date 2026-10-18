@@ -14,6 +14,7 @@ import { codeHighlightStyle, codeLanguageName, findCodeLanguage, loadCodeLanguag
 import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { TextTabViewState } from "@/components/libera/types";
 import { registerEditorSelectionReader } from "@/components/libera/editor-selection-registry";
+import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 
 type CodeEditorProps = {
   fileName: string;
@@ -27,6 +28,12 @@ type CodeEditorProps = {
   onRegisterDraft?: (read: () => string) => () => void;
   onViewStateChange: (patch: TextTabViewState) => void;
   onSave: () => void;
+  /**
+   * Shared tab: the document is the shared Y.Text, edited through the
+   * binding. `value` and `onChange` are unused and no draft is registered.
+   * Fixed for the editor's lifetime; key the editor on its generation.
+   */
+  collab?: SharedCodeMirrorSource;
 };
 
 const DRAFT_DELAY_MS = 250;
@@ -35,7 +42,7 @@ const VIEW_STATE_DELAY_MS = 300;
 /** A CodeMirror editor for plain-text and code files, highlighted by file name. */
 export function CodeEditor({
   fileName, value, fontFamily, fontSizePx, lineHeight, initialViewState, saving,
-  onChange, onRegisterDraft, onViewStateChange, onSave,
+  onChange, onRegisterDraft, onViewStateChange, onSave, collab,
 }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -46,7 +53,8 @@ export function CodeEditor({
   const lastPublishedRef = useRef(value);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName });
+  const initialRef = useRef({ value, initialViewState, fileName, collab });
+  const shared = !!collab;
   const [cursor, setCursor] = useState({ line: 1, column: 1, selected: 0 });
 
   const publishDraft = useCallback(() => {
@@ -75,14 +83,17 @@ export function CodeEditor({
       });
   }, []);
   useCanvasViewStateCapture(() => {
-    publishDraft();
+    if (!shared) publishDraft();
     if (viewRef.current) reportViewState(viewRef.current);
   });
 
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const { value: initialValue, initialViewState: restore, fileName: name } = initialRef.current;
+    const { initialViewState: restore, fileName: name } = initialRef.current;
+    // Created with the view so the two live and die together (Strict Mode, tab switches).
+    const binding = initialRef.current.collab?.create() ?? null;
+    const initialValue = binding ? binding.initialText : initialRef.current.value;
     const language = new Compartment();
     // Prose-like files wrap; code keeps its lines.
     const description = findCodeLanguage(name);
@@ -104,7 +115,8 @@ export function CodeEditor({
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightSpecialChars(),
-        history(),
+        // Shared tabs undo through the binding's Y.UndoManager.
+        ...(binding ? [binding.extension] : [history()]),
         foldGutter({ openText: "▾", closedText: "▸" }),
         drawSelection(),
         dropCursor(),
@@ -121,10 +133,10 @@ export function CodeEditor({
         syntaxHighlighting(codeHighlightStyle),
         language.of([]),
         ...(wrap ? [EditorView.lineWrapping] : []),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, indentWithTab]),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, indentWithTab]),
         EditorView.contentAttributes.of({ "aria-label": `${name} source editor`, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(Transaction.remote))) {
+          if (!binding && update.docChanged && !update.transactions.some((transaction) => transaction.annotation(Transaction.remote))) {
             if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
             draftTimerRef.current = setTimeout(() => startTransition(() => { publishDraft(); }), DRAFT_DELAY_MS);
           }
@@ -147,6 +159,7 @@ export function CodeEditor({
     });
 
     const created = new EditorView({ state, parent: host });
+    binding?.attach(created);
     viewRef.current = created;
     const head = created.state.selection.main.head;
     const headLine = created.state.doc.lineAt(head);
@@ -180,23 +193,26 @@ export function CodeEditor({
       // flush both selection and scroll, even inside the debounce interval.
       if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
-      publishDraft();
+      if (!binding) publishDraft();
+      binding?.destroy();
       created.destroy();
       viewRef.current = null;
     };
   }, [publishDraft, reportViewState]);
 
   useLayoutEffect(() => {
+    // A shared tab's draft is read from the Y.Text, never from the editor.
+    if (shared) return;
     const unregister = onRegisterDraft?.(publishDraft);
     window.addEventListener("pagehide", publishDraft);
     return () => { unregister?.(); window.removeEventListener("pagehide", publishDraft); };
-  }, [onRegisterDraft, publishDraft]);
+  }, [onRegisterDraft, publishDraft, shared]);
 
   // Adopt outside changes to the draft (for example a reload), ignoring the
   // echoes of drafts this editor published itself.
   useLayoutEffect(() => {
     const current = viewRef.current;
-    if (!current) return;
+    if (!current || shared) return;
     const echo = publishedRef.current.indexOf(value);
     if (echo >= 0) {
       publishedRef.current.splice(0, echo + 1);
@@ -205,7 +221,7 @@ export function CodeEditor({
     if (value === current.state.doc.toString()) return;
     lastPublishedRef.current = value;
     current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: value }, annotations: Transaction.remote.of(true) });
-  }, [value]);
+  }, [value, shared]);
 
   useEffect(() => () => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);

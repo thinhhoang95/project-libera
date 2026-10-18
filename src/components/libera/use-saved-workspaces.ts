@@ -25,6 +25,8 @@ type Options = {
   refreshTree: () => Promise<LiberaTree>;
   session: WorkspaceSession;
   readDraft: (tab: OpenTab) => string;
+  /** Known shared documents: restored without disk content (the host owns their disk copy; the live text replaces it). */
+  isSharedPath?: (path: string) => boolean;
   applySession: (session: WorkspaceSession) => void;
   onError: (message: string) => void;
 };
@@ -115,6 +117,9 @@ export function useSavedWorkspaces(options: Options) {
         return tab.draft !== tab.saved ? { ...tab, untitled: true, status: "dirty" } : null;
       }
       const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(tab.file.path)}`);
+      if (current.current.isSharedPath?.(tab.file.path)) {
+        return { ...tab, file: payload.file, draft: "", saved: "", status: "clean", rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(tab.file.path)}` };
+      }
       const draft = tab.draft === tab.saved ? payload.content ?? "" : tab.draft;
       const saved = payload.content ?? "";
       return { ...tab, file: payload.file, draft, saved, status: draft === saved ? "clean" : "dirty", rawUrl: payload.rawUrl ?? `/api/files/raw/${encodeFilePath(tab.file.path)}` };

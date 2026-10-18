@@ -65,6 +65,16 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
 import { latexDocumentTemplate } from "@/lib/latex/project";
+import type { Provenance } from "@/lib/collab/protocol/actor";
+import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
+import { applyTextToSession, applyTextToShared } from "@/lib/collab/client/apply-text";
+import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client/registry";
+import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
+
+const TYPING: Provenance = { source: "typing" };
+/** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
+const isSharedRegistryTab = (tabId: string) => getSharedDocRegistry().isSharedTab(tabId);
+const PASTE: Provenance = { source: "paste" };
 
 function collectFileSearchResults(
   nodes: LiberaTreeNode[],
@@ -352,6 +362,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (editorDraftReadersRef.current.get(tabId) === read) editorDraftReadersRef.current.delete(tabId);
     };
   }, []);
+  // Shared documents (plan M1.4/M1.6): the replica of a shared tab lives in
+  // the registry for as long as the tab is open; its text is the tab's draft.
+  const sharedRegistry = getSharedDocRegistry();
+  const sharedTabIds = useSharedTabs(tabs, { onText: mirrorSharedText, onAttached: adoptPendingDraft });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const openingFilePathsRef = useRef<Set<string>>(new Set());
@@ -371,9 +385,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   const canvas = useCanvasLayout({ tabs, activeTabId, activateTab });
   const canvasLayout = canvas.layout;
-  const workspaceSession = useMemo(() => ({ tabs, activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout }), [tabs, activeTabId, selectedNotebookName, expanded, canvasLayout]);
+  // Shared tabs keep their place in the session but not their text: the
+  // host's SQLite is their journal (journalTab).
+  const workspaceSession = useMemo(() => ({
+    tabs: tabs.map((tab) => journalTab(tab, (tabId) => sharedTabIds.has(tabId))),
+    activeTabId, selectedNotebookName, expandedPaths: [...expanded], canvasLayout,
+  }), [tabs, sharedTabIds, activeTabId, selectedNotebookName, expanded, canvasLayout]);
   const workspaceManager = useSavedWorkspaces({
-    authenticated, tree, refreshTree, session: workspaceSession, readDraft: getTabDraft,
+    authenticated, tree, refreshTree, session: workspaceSession,
+    readDraft: (tab) => (sharedRegistry.isSharedTab(tab.id) ? tab.saved : getTabDraft(tab)),
+    isSharedPath: (path) => !!sharedRegistry.cachedResolution(path),
     onError: setWorkspaceError,
     applySession: (session) => {
       latestDraftByTabIdRef.current = Object.fromEntries(session.tabs.map((tab) => [tab.id, tab.draft]));
@@ -613,7 +634,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   function closeDirectory(name: string) {
     const dirtyTabCount = tabs.filter((tab) =>
-      tab.file.notebook === name && getTabDraft(tab) !== tab.saved,
+      tab.file.notebook === name && isTabDirty(tab, isSharedTab, getTabDraft),
     ).length;
 
     if (dirtyTabCount) {
@@ -737,7 +758,57 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   function getTabDraft(tab: OpenTab) {
-    return editorDraftReadersRef.current.get(tab.id)?.() ?? latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
+    // A shared tab's draft is the shared text: AI context, compile staging,
+    // links, export and review snapshots all read the live document.
+    return readTabDraft(tab, {
+      sharedText: (tabId) => getSharedDocRegistry().readTabText(tabId),
+      editorDraft: (tabId) => editorDraftReadersRef.current.get(tabId)?.(),
+      latestDraft: (tabId) => latestDraftByTabIdRef.current[tabId],
+    });
+  }
+
+  /** True while a tab's content belongs to a shared document (also while it opens). */
+  function isSharedTab(tabId: string) {
+    return sharedRegistry.isSharedTab(tabId);
+  }
+
+  /** The shared text reached the tab: it is both draft and saved, so the tab is never dirty. */
+  function mirrorSharedText(tabId: string, text: string) {
+    rememberTabDraft(tabId, text);
+    updateTab(tabId, (tab) => (tab.draft === text && tab.saved === text && tab.status === "clean" && !tab.error
+      ? tab
+      : { ...tab, draft: text, saved: text, status: "clean", error: undefined }));
+  }
+
+  /**
+   * A tab that was edited before it turned out to be shared (opened before
+   * the collaboration status arrived) keeps those edits: they are applied to
+   * the shared document as edits from the text they started from.
+   */
+  function adoptPendingDraft(tabId: string, session: SharedDocSession) {
+    const tab = tabsRef.current.find((item) => item.id === tabId);
+    const draft = latestDraftByTabIdRef.current[tabId];
+    if (!tab || draft === undefined || draft === tab.saved) return;
+    applyTextToSession(session, draft, TYPING, tab.saved);
+  }
+
+  /**
+   * Programmatic writes to a shared tab: minimal edits on the Y.Text with the
+   * feature's provenance, rebased from the text the caller started from.
+   * Returns false for tabs that are not (yet) shared, which then take the
+   * regular draft path.
+   */
+  function writeSharedDraft(tabId: string, value: string, options: DraftWriteOptions = {}) {
+    if (!sharedRegistry.sessionForTab(tabId)) return false;
+    const base = options.base ?? latestDraftByTabIdRef.current[tabId];
+    const result = applyTextToShared({ id: tabId }, value, options.provenance ?? TYPING, { base, registry: sharedRegistry });
+    if (result.applied) {
+      mirrorSharedText(tabId, sharedRegistry.readTabText(tabId) ?? value);
+    } else if (result.reason === "read-only" || result.reason === "not-ready") {
+      const error = result.reason === "read-only" ? "This shared document is read-only for you." : "This shared document is still opening.";
+      updateTab(tabId, (tab) => ({ ...tab, error }));
+    }
+    return true;
   }
 
   const duplicateMarkdown = useMarkdownWindows(tabs, getTabDraft, setWorkspaceError);
@@ -994,7 +1065,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab && getTabDraft(tab) !== tab.saved) {
+    if (tab && !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) {
       setWorkspaceConfirmDialog({
         mode: "close-tab",
         tabId,
@@ -1019,7 +1090,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const dirtyTabCount = otherTabs.filter((currentTab) => getTabDraft(currentTab) !== currentTab.saved).length;
+    const dirtyTabCount = otherTabs.filter((currentTab) => !isSharedRegistryTab(currentTab.id) && getTabDraft(currentTab) !== currentTab.saved).length;
     const otherTabIds = otherTabs.map((currentTab) => currentTab.id);
 
     if (dirtyTabCount > 0) {
@@ -1044,6 +1115,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function applyReviewDraft(tabId: string, before: string, after: string) {
     const tab = tabs.find((t) => t.id === tabId);
     if (!tab || getReviewDraft(tabId) !== before) return false;
+    if (sharedRegistry.sessionForTab(tabId)) {
+      const result = applyTextToShared(tab, after, { source: "ai", feature: "agentic-review" }, { base: before, registry: sharedRegistry });
+      if (!result.applied && result.reason !== "unchanged") return false;
+      mirrorSharedText(tabId, sharedRegistry.readTabText(tabId) ?? after);
+      return true;
+    }
     rememberTabDraft(tabId, after);
     updateTab(tabId, (current) => ({ ...current, draft: after, status: after === current.saved ? "clean" : "dirty", error: undefined }));
     return true;
@@ -1061,11 +1138,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    * started from); then their draft stays and only the saved copy moves on.
    */
   async function syncTabFromDisk(path: string, baseline?: string): Promise<{ content: string; keptDraft: boolean } | null> {
+    // The host owns a shared file's disk copy; the tab follows the Y.Text.
+    if (!mayTakeContentFromDisk(path, isSharedTab)) return null;
     if (readOpenTabDraft(path) === null) return null;
     const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`);
     const content = payload.content ?? "";
     const draft = readOpenTabDraft(path);
-    if (draft === null) return null;
+    if (draft === null || !mayTakeContentFromDisk(path, isSharedTab)) return null;
     const follow = baseline === undefined || draft === baseline || draft === content;
     if (follow) rememberTabDraft(path, content);
     updateTab(path, (current) => ({
@@ -1078,7 +1157,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   /** After an agent change is undone, put the tab back as it was: the restored file, and any unsaved draft the agent started from. */
   function restoreTabAfterUndo(path: string, result: { status: "restored" | "deleted"; content?: string; draft?: string }) {
     const tab = tabs.find((item) => item.id === path && !item.untitled);
-    if (!tab) return;
+    if (!tab || !mayTakeContentFromDisk(tab.id, isSharedTab)) return;
     const draft = getTabDraft(tab);
     const untouched = draft === tab.saved;
     if (result.status === "deleted") {
@@ -1099,15 +1178,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     await refreshTree().catch((error: Error) => setWorkspaceError(error.message));
   }
 
-  function setActiveDraft(value: string) {
+  function setActiveDraft(value: string, options?: DraftWriteOptions) {
     if (activeTab) {
-      setTabDraft(activeTab.id, value);
+      setTabDraft(activeTab.id, value, options);
     }
   }
 
   // Split panes edit their own tab; targeting it by id keeps a background pane
   // from ever writing into whichever tab happens to be active.
-  function setTabDraft(tabId: string, value: string) {
+  function setTabDraft(tabId: string, value: string, options?: DraftWriteOptions) {
+    // Never a whole-text replacement on a shared tab.
+    if (writeSharedDraft(tabId, value, options)) return;
     rememberTabDraft(tabId, value);
     updateTab(tabId, (tab) => ({
       ...tab,
@@ -1246,7 +1327,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    setActiveDraft(nextDraft);
+    setActiveDraft(nextDraft, { base: draft });
     restoreMarkdownTextarea({
       ...scrollState,
       selectionStart: nextSelectionStart,
@@ -1288,7 +1369,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    setActiveDraft(nextDraft);
+    setActiveDraft(nextDraft, { base: draft });
     restoreMarkdownTextarea({
       ...scrollState,
       selectionStart: destinationOffset,
@@ -1414,7 +1495,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    setActiveDraft(nextDraft);
+    setActiveDraft(nextDraft, { base: draft });
     restoreMarkdownTextarea({
       ...scrollState,
       selectionStart: nextSelectionStart,
@@ -1444,13 +1525,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       },
     );
 
-    rememberTabDraft(tabId, insertionState.nextDraft);
-    updateTab(tabId, (tab) => ({
-      ...tab,
-      draft: insertionState.nextDraft,
-      status: insertionState.nextDraft === tab.saved ? "clean" : "dirty",
-      error: undefined,
-    }));
+    if (!writeSharedDraft(tabId, insertionState.nextDraft, { provenance: PASTE, base: targetDraft })) {
+      rememberTabDraft(tabId, insertionState.nextDraft);
+      updateTab(tabId, (tab) => ({
+        ...tab,
+        draft: insertionState.nextDraft,
+        status: insertionState.nextDraft === tab.saved ? "clean" : "dirty",
+        error: undefined,
+      }));
+    }
 
     return insertionState;
   }
@@ -1688,13 +1771,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const position = unchanged ? Math.min(session.selectionEnd, draft.length) : draft.length;
     const insertion = insertMarkdownBlock(draft, position, markdown);
 
-    rememberTabDraft(targetTab.id, insertion.value);
-    updateTab(targetTab.id, (tab) => ({
-      ...tab,
-      draft: insertion.value,
-      status: insertion.value === tab.saved ? "clean" : "dirty",
-      error: undefined,
-    }));
+    if (!writeSharedDraft(targetTab.id, insertion.value, { provenance: PASTE, base: draft })) {
+      rememberTabDraft(targetTab.id, insertion.value);
+      updateTab(targetTab.id, (tab) => ({
+        ...tab,
+        draft: insertion.value,
+        status: insertion.value === tab.saved ? "clean" : "dirty",
+        error: undefined,
+      }));
+    }
     return { start: insertion.start, end: insertion.end };
   }
 
@@ -1831,13 +1916,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = selection.start + payload.formattedText.length;
 
-      rememberTabDraft(tabId, nextDraft);
-      updateTab(tabId, (tab) => ({
-        ...tab,
-        draft: nextDraft,
-        status: nextDraft === tab.saved ? "clean" : "dirty",
-        error: undefined,
-      }));
+      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "format" }, base: draft })) {
+        rememberTabDraft(tabId, nextDraft);
+        updateTab(tabId, (tab) => ({
+          ...tab,
+          draft: nextDraft,
+          status: nextDraft === tab.saved ? "clean" : "dirty",
+          error: undefined,
+        }));
+      }
 
       restoreMarkdownTextarea({
         ...scrollState,
@@ -1891,13 +1978,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = selection.start + payload.rewrittenText.length;
 
-      rememberTabDraft(tabId, nextDraft);
-      updateTab(tabId, (tab) => ({
-        ...tab,
-        draft: nextDraft,
-        status: nextDraft === tab.saved ? "clean" : "dirty",
-        error: undefined,
-      }));
+      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "rewrite" }, base: draft })) {
+        rememberTabDraft(tabId, nextDraft);
+        updateTab(tabId, (tab) => ({
+          ...tab,
+          draft: nextDraft,
+          status: nextDraft === tab.saved ? "clean" : "dirty",
+          error: undefined,
+        }));
+      }
 
       restoreMarkdownTextarea({
         ...scrollState,
@@ -1938,13 +2027,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
 
-      rememberTabDraft(tabId, insertion.value);
-      updateTab(tabId, (tab) => ({
-        ...tab,
-        draft: insertion.value,
-        status: insertion.value === tab.saved ? "clean" : "dirty",
-        error: undefined,
-      }));
+      if (!writeSharedDraft(tabId, insertion.value, { provenance: { source: "ai", feature: "write" }, base: draft })) {
+        rememberTabDraft(tabId, insertion.value);
+        updateTab(tabId, (tab) => ({
+          ...tab,
+          draft: insertion.value,
+          status: insertion.value === tab.saved ? "clean" : "dirty",
+          error: undefined,
+        }));
+      }
 
       restoreMarkdownTextarea({
         ...scrollState,
@@ -1993,13 +2084,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       )}`;
       const nextSelectionEnd = image.start + payload.markdown.length;
 
-      rememberTabDraft(tabId, nextDraft);
-      updateTab(tabId, (tab) => ({
-        ...tab,
-        draft: nextDraft,
-        status: nextDraft === tab.saved ? "clean" : "dirty",
-        error: undefined,
-      }));
+      if (!writeSharedDraft(tabId, nextDraft, { provenance: { source: "ai", feature: "image-to-markdown" }, base: draft })) {
+        rememberTabDraft(tabId, nextDraft);
+        updateTab(tabId, (tab) => ({
+          ...tab,
+          draft: nextDraft,
+          status: nextDraft === tab.saved ? "clean" : "dirty",
+          error: undefined,
+        }));
+      }
 
       void apiRequest<{ deleted: boolean }>("/api/markdown-assets", {
         method: "DELETE",
@@ -2155,6 +2248,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function saveActiveTab() {
     if (!activeTab || !isTextFileType(activeTab.file.fileType)) {
+      return;
+    }
+
+    // Shared tabs have no Save: every edit is already on this device. Show
+    // the status pill's detail instead (map §6).
+    if (isSharedTab(activeTab.id)) {
+      sharedRegistry.revealStatus(activeTab.id);
       return;
     }
 
@@ -3495,7 +3595,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      if (tabs.some((tab) => getTabDraft(tab) !== tab.saved)) {
+      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved)) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -3619,6 +3719,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectNotebook,
       setActiveDraft,
       setTabDraft,
+      isSharedTab,
+      sharedTabIds,
       canvas,
       registerEditorDraft,
       getReviewDraft,
