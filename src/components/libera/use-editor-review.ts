@@ -48,7 +48,8 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
     const input = textareaRef.current;
     if (!input || !register) return;
     let composing = false;
-    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text), focus: (range) => {
+    const unregister = register({ isComposing: () => composing, snapshot: () => { if (composing) throw new Error("Finish composing text before reviewing."); return input.value; }, apply: (text) => latest.current.apply(text),
+      selection: () => (input.selectionEnd > input.selectionStart ? { start: input.selectionStart, end: input.selectionEnd } : null), focus: (range) => {
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
     const start = () => { composing = true; }, end = () => { composing = false; };
@@ -83,7 +84,8 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const root = view.contentDOM;
     const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
-    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text), focus: (target) => {
+    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
+      selection: () => { const { from, to } = view.state.selection.main; return to > from ? { start: from, end: to } : null; }, focus: (target) => {
       const length = view.state.doc.length;
       const anchor = Math.min(target.start, length), head = Math.min(target.end, length);
       view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: "center" }) });
@@ -147,6 +149,9 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       editor.view.dispatch(closeHistory(editor.state.tr));
       replace(text);
       editor.view.dispatch(closeHistory(editor.state.tr));
+    }, selection: () => {
+      const { from, to } = editor.state.selection;
+      return to > from ? sourceRangeForTiptapSelection(editor, read(), from, to) : null;
     }, focus: (range) => {
       const target = tiptapRangeForSource(editor, read(), range);
       if (!target) return;

@@ -63,8 +63,8 @@ function attributionMarks(ranges: AttributedRange[]): Extension {
   });
 }
 
-/** A read-only CodeMirror view of a revision; reports the selected range for "Restore selection". */
-function RevisionView({ text, onSelection }: { text: string; onSelection: (range: { start: number; end: number } | null) => void }) {
+/** A read-only CodeMirror view of a revision; reports the selected range for "Restore selection" (also the review checkpoint view). */
+export function RevisionView({ text, onSelection }: { text: string; onSelection: (range: { start: number; end: number } | null) => void }) {
   const parent = useRef<HTMLDivElement | null>(null);
   const report = useRef(onSelection);
   useEffect(() => { report.current = onSelection; });
@@ -86,7 +86,7 @@ function RevisionView({ text, onSelection }: { text: string; onSelection: (range
   return <div ref={parent} className="libera-history-view max-h-[55vh] min-h-48 overflow-auto rounded-lg border border-border text-[13px]" aria-label="Revision text" />;
 }
 
-function DiffView({ attribution, before }: { attribution: Attribution; before: string }) {
+export function DiffView({ attribution, before }: { attribution: Attribution; before: string }) {
   const parent = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!parent.current) return;

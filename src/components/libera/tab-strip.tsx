@@ -11,6 +11,7 @@ import { isGalleryTab } from "./gallery-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
+import { RequestReviewButton } from "./collab/reviews";
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -541,7 +542,7 @@ function ActiveFileActions({
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown || isLatex ? <ReviewToggle /> : null}
+      {isMarkdown || isLatex ? <><ReviewToggle /><RequestReviewButton tabId={activeTab.id} /></> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
       <DocumentHistoryHost />
     </div>

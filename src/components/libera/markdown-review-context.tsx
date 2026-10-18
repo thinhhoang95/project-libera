@@ -17,8 +17,13 @@ import { useSessionEndRevisions } from "./collab/history/session-end";
 import { useSuggestions } from "./collab/suggestions/use-suggestions";
 import { agenticGroupId, reviewThreadsForPlanning, syncAgenticReviewSuggestions, withOverlayStatuses } from "@/lib/collab/client/agentic-review";
 import { registerSuggestionReplyHandler } from "@/lib/collab/client/suggestions";
+import { pendingReviewOpen, subscribeReviewOpen } from "@/lib/collab/client/reviews";
 
-type EditorBridge = { isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void };
+type EditorBridge = {
+  isComposing: () => boolean; snapshot: () => string; apply: (text: string) => void; focus: (range: ReviewRange) => void;
+  /** The editor's current selection as source offsets (Request review… on a selection). */
+  selection?: () => ReviewRange | null;
+};
 export type ReviewSelection = {
   range: ReviewRange; x: number; y: number;
   /** Shared documents: the selection as Yjs positions, so it follows collaborators' edits while the popover is open. */
@@ -37,6 +42,8 @@ type ContextValue = {
   /** The source range the editor shows (shared documents align the sidebar to it). */
   viewport: ReviewRange | null; reportViewport: (range: ReviewRange | null) => void;
   register: (bridge: EditorBridge) => () => void;
+  /** The active editor's selection in source offsets, or null (nothing selected, or no editor). */
+  editorSelection: () => ReviewRange | null;
   select: (range: ReviewRange, x: number, y: number) => void;
   clearSelection: () => void; focus: (range: ReviewRange) => void;
   selectThread: (id: string | null) => void; setChatReview: (value: boolean) => void; showComments: () => void;
@@ -172,6 +179,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const { controller: sharedSuggestions, snapshot: suggestionsSnapshot } = useSuggestions(sharedProjection ? sharedSession : null);
   const sharedSuggestionsRef = useRef<typeof sharedSuggestions>(null);
   useLayoutEffect(() => { sharedSuggestionsRef.current = sharedSuggestions; }, [sharedSuggestions]);
+  // Opening a review (from a notification) shows the Comments rail, where its Reviews tab is.
+  useEffect(() => subscribeReviewOpen(() => { if (pendingReviewOpen()) current.current.openComments(); }), []);
   // Replies to suggestions are comment threads in this store, anchored on
   // the suggestion's range (its paragraph for a pure insertion).
   const sharedDocId = sharedProjection?.docId ?? null;
@@ -366,7 +375,10 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const reportViewport = useCallback((range: ReviewRange | null) => {
     setViewport((previous) => previous?.start === range?.start && previous?.end === range?.end ? previous : range);
   }, []);
-  const value = useMemo<ContextValue>(() => ({ doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection: liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate,
+  const editorSelection = useCallback(() => {
+    try { return bridge.current?.selection?.() ?? null; } catch { return null; }
+  }, []);
+  const value = useMemo<ContextValue>(() => ({ editorSelection, doc: shown, enabled: !!shown?.enabled, busy, locked, error, recovery, selection: liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate,
     selectThread: (id) => { selectThread(id); if (id) current.current.openComments(); },
     showComments: () => current.current.openComments(),
     clearSelection: () => setSelection(null), focus: (range) => bridge.current?.focus(range),
@@ -374,6 +386,6 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     restore: () => { try { const saved = latest.current; if (!saved || !current.current.activeTab) return; const before = snapshot(); if (!current.current.applyDraft(current.current.activeTab.id, before, saved.snapshot)) throw new Error("Document changed. Retry recovery."); bridge.current?.apply(saved.snapshot); setRecovery(false); } catch (cause) { setError(cause instanceof Error ? cause.message : "Recovery failed."); } },
     stop: () => pending.current?.abort(), reportError: setError,
     recoverDraft: (key, text) => current.current.recoverDraft(key, text),
-  }), [shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);
+  }), [editorSelection, shown, busy, locked, error, recovery, liveSelection, selectedThread, chatReview, shared, viewport, reportViewport, register, select, snapshot, reload, action, generate]);
   return <ReviewContext.Provider value={value}>{children}</ReviewContext.Provider>;
 }
