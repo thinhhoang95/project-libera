@@ -7,6 +7,7 @@ import type { PreviewSourcePosition } from "./markdown-preview-patch";
 import type { MathMarkerSettings } from "./math-markers";
 import { markdownRemarkPlugins } from "./markdown-rendering";
 import { normalizeMarkdownHighlightDelimiters } from "./markdown-highlights";
+import { rehypeLiberaSanitize } from "./markdown-sanitize";
 
 export type MarkdownPreviewRequest = { id: number; markdown: string; mathMarkers?: MathMarkerSettings };
 export type MarkdownPreviewResponse = { id: number; children: Array<Root["children"][number] | number>; sources?: PreviewSourcePosition[]; error?: never } | { id: number; error: string; children?: never; sources?: never };
@@ -21,7 +22,10 @@ export function createMarkdownPreviewPatch(tree: Root, previous: string[]) {
 
 function previewProcessor(mathMarkers?: MathMarkerSettings) {
   return unified().use(remarkParse).use(markdownRemarkPlugins(mathMarkers))
-    .use(remarkRehype, { allowDangerousHtml: true }).use(cachedPreviewMath);
+    .use(remarkRehype, { allowDangerousHtml: true }).use(cachedPreviewMath)
+    // Collaborator content is untrusted: the worker's tree is allowlisted
+    // before it reaches the page (the renderer adds the shared image policy).
+    .use(rehypeLiberaSanitize);
 }
 const processors = new Map<string, ReturnType<typeof previewProcessor>>();
 export function prepareMarkdownPreview(markdown: string, mathMarkers?: MathMarkerSettings): Root {

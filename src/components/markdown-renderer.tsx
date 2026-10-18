@@ -2,7 +2,7 @@
 import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
 import type { CSSProperties } from "react";
-import { memo, useMemo, useLayoutEffect, useRef } from "react";
+import { memo, useCallback, useMemo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import type { Root } from "hast";
@@ -20,6 +20,9 @@ import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
+import { rehypeLiberaSanitize, type ContentTrust } from "@/lib/markdown-sanitize";
+import { getCollabBridge } from "@/lib/collab/ui/bridge";
+import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 
 type MarkdownRendererProps = {
   mathMarkers?: MathMarkerSettings;
@@ -36,7 +39,38 @@ type MarkdownRendererProps = {
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
   renderImages?: boolean;
+  /**
+   * "shared" renders collaborator content with the strict image policy
+   * (markdown-sanitize.ts). When omitted, a document whose top-level
+   * notebook is a shared project counts as shared.
+   */
+  contentTrust?: ContentTrust;
 };
+
+const NO_SUBSCRIPTION = () => () => {};
+
+/**
+ * Whether documentPath belongs to a shared notebook, from the collaboration
+ * status the shell already keeps. Without the collaboration bridge (plain
+ * browser, collaboration off, tests) nothing is subscribed and every note is
+ * local, so non-shared rendering is untouched. While the status is still
+ * loading, a path is treated as shared: a collaborator's image must not load
+ * before the check can say no.
+ */
+function useContentTrust(documentPath: string | undefined, explicit: ContentTrust | undefined): ContentTrust {
+  const store = explicit === undefined && documentPath && getCollabBridge() ? getCollabStatusStore() : null;
+  const subscribe = useCallback((listener: () => void) => (store ? store.subscribe(listener) : () => {}), [store]);
+  const notebook = documentPath?.replace(/^\/+/, "").split("/")[0] ?? "";
+  const getSnapshot = useCallback((): ContentTrust => {
+    if (!store) return "local";
+    const snapshot = store.getSnapshot();
+    if (snapshot.phase === "disabled") return "local";
+    if (!snapshot.status) return snapshot.phase === "loading" ? "shared" : "local";
+    return snapshot.status.projects.some((project) => project.notebook === notebook) ? "shared" : "local";
+  }, [store, notebook]);
+  const detected = useSyncExternalStore(store ? subscribe : NO_SUBSCRIPTION, getSnapshot, () => "local" as ContentTrust);
+  return explicit ?? detected;
+}
 
 function resolveMarkdownImageSource(src: string | undefined, documentPath: string | undefined) {
   if (
@@ -131,8 +165,13 @@ function markdownUrlTransform(url: string, key: string) {
 
 // Separate React work units let typing interrupt a large preview update.
 // Reused worker blocks also skip conversion and reconciliation altogether.
-const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components }: { node: Root["children"][number]; components: Components }) {
-  const plugins = useMemo<PluggableList>(() => [() => () => ({ type: "root", children: [node] })], [node]);
+// The worker already sanitized the block; it is sanitized again here with
+// this document's trust (the worker does not know whether it is shared).
+const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components, trust }: { node: Root["children"][number]; components: Components; trust: ContentTrust }) {
+  const plugins = useMemo<PluggableList>(
+    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }]],
+    [node, trust],
+  );
   return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
 });
 
@@ -151,8 +190,12 @@ function MarkdownRendererContent({
   onOpenFileLink,
   textScale = 1,
   renderImages = true,
+  contentTrust,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const trust = useContentTrust(documentPath, contentTrust);
+  // KaTeX first: its output is part of what the sanitizer allows.
+  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }]], [trust]);
   const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
@@ -486,10 +529,10 @@ function MarkdownRendererContent({
   return (
     <div
       ref={rootRef} className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
-      {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} />) : <ReactMarkdown
+      {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} trust={trust} />) : <ReactMarkdown
         urlTransform={markdownUrlTransform}
         remarkPlugins={configuredRemarkPlugins}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={rehypePlugins}
         components={components}
       >
         {normalizedContent}
