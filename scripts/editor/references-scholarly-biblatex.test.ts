@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { chooseBiblatexStyle, compileLatex, type LatexToolRunner } from "../../src/lib/latex-export";
+import { buildLatexPrompt, convertMarkdownToLatex } from "../../src/lib/latex-generation";
+import { DEFAULT_LATEX_OPTIONS, parseLatexOptions } from "../../src/lib/latex-options";
+import {
+  addBiblatexPreamble,
+  biblatexBibliography,
+  biblatexCitation,
+  biblatexLocator,
+  biblatexPreamble,
+  biblatexStyleFor,
+  genericBiblatexStyle,
+} from "../../src/lib/references/biblatex-export";
+import { parseCitationToken } from "../../src/lib/references/citation-syntax";
+import { citationEntriesForDocument, loadCslStyle } from "../../src/lib/references/format";
+import { applyLibraryOps, emptyReferenceLibrary } from "../../src/lib/references/library-ops";
+import { LATEX_CITATION_PROMPT, prepareLatexCitations } from "../../src/lib/references/latex-citations";
+import type { Citation, ReferenceLibraryOp } from "../../src/lib/references/types";
+import { createNotebook } from "../../src/lib/storage/notebooks";
+import { updateReferenceLibrary } from "../../src/lib/storage/references";
+
+// The biblatex option of the Markdown → LaTeX export: citation commands,
+// the .bib file, the preamble, the latex → biber → latex → latex build, and
+// the formatted default left as it was.
+
+const ADD: ReferenceLibraryOp[] = [
+  { op: "add", entry: { key: "smith2020", csl: { type: "article-journal", title: "Sparse attention", author: [{ family: "Smith", given: "Jane" }], issued: { "date-parts": [[2020]] }, "container-title": "Journal of Tests", volume: "3", page: "1-10" } } },
+  { op: "add", entry: { key: "lee2019", csl: { type: "book", title: "Graphs & trees", author: [{ family: "Lee", given: "Ann" }], issued: { "date-parts": [[2019]] }, publisher: "Press" } } },
+  { op: "add", entry: { key: "kim2018", csl: { type: "book", title: "Unused", author: [{ family: "Kim" }], issued: { "date-parts": [[2018]] } } } },
+];
+const NOW = "2026-10-18T00:00:00.000Z";
+let LIBRARY = applyLibraryOps(emptyReferenceLibrary(), ADD, NOW).library;
+const leeId = Object.values(LIBRARY.entries).find((entry) => entry.key === "lee2019")!.id;
+LIBRARY = applyLibraryOps(LIBRARY, [{ op: "rename-key", id: leeId, key: "lee2019graphs" }], NOW).library;
+
+function cite(token: string, narrative = false): Citation {
+  const citation = parseCitationToken(token);
+  assert.ok(citation, token);
+  return narrative ? { ...citation, narrative: true } : citation;
+}
+
+const entries = () => citationEntriesForDocument(LIBRARY, ["smith2020", "lee2019", "lee2019graphs", "ghost"]);
+
+test("citations map to \\parencite with pre- and postnotes, suppress-author, multiple keys and aliases", () => {
+  const cases: Array<[Citation, string]> = [
+    [cite("[@smith2020]"), "\\parencite{smith2020}"],
+    [cite("[@smith2020, p. 12]"), "\\parencite[p.~12]{smith2020}"],
+    [cite("[see @smith2020, pp. 12-14]"), "\\parencite[see][pp.~12--14]{smith2020}"],
+    [cite("[see @smith2020]"), "\\parencite[see][]{smith2020}"],
+    [cite("[@smith2020, ch. 3, emphasis added]"), "\\parencite[ch.~3, emphasis added]{smith2020}"],
+    [cite("[-@smith2020, p. 4]"), "\\parencite*[p.~4]{smith2020}"],
+    [cite("[@smith2020; @lee2019]"), "\\parencite{smith2020,lee2019graphs}", ],
+    [cite("[see @smith2020; @lee2019, p. 5]"), "\\parencite[see][p.~5]{smith2020,lee2019graphs}"],
+    [cite("[@smith2020, p. 1; see @lee2019, sec. 2]"), "\\parencites[p.~1]{smith2020}[see][sec.~2]{lee2019graphs}"],
+    [cite("[-@smith2020; -@lee2019, p. 2]"), "\\parencite*[p.~2]{smith2020,lee2019graphs}"],
+    [cite("[-@smith2020, p. 1; -@lee2019, p. 2]"), "\\parencite*[p.~1]{smith2020} \\parencite*[p.~2]{lee2019graphs}"],
+    [cite("[@smith2020; -@lee2019]"), "\\parencite{smith2020} \\parencite*{lee2019graphs}"],
+    [cite("[@smith2020; @ghost]"), "\\parencite{smith2020} @ghost?"],
+    [cite("[@smith2020, p. 3]", true), "\\textcite[p.~3]{smith2020}"],
+    [cite("[@smith2020, fig. 2]"), "\\parencite[fig.~2]{smith2020}"],
+    [cite("[50% of @smith2020, p. 7 [sic]]"), "\\parencite[50\\% of][{p.~7, [sic]}]{smith2020}"],
+  ];
+  for (const [citation, expected] of cases) assert.equal(biblatexCitation(citation, entries()), expected, citation.raw);
+  assert.equal(biblatexLocator({ locator: "iv", label: "volume" }), "vol.~iv");
+  assert.equal(biblatexLocator({ locator: "3, 5", label: "chapter" }), "chs.~3, 5");
+  assert.equal(biblatexLocator({ locator: "10", label: "sub-verbo" }), "sub verbo~10");
+});
+
+test("the .bib holds the cited, resolved entries in citation order as BibLaTeX", () => {
+  const { entries: cited, text } = biblatexBibliography([cite("[@lee2019; @ghost]"), cite("[@smith2020]"), cite("[@lee2019graphs]")], entries());
+  assert.deepEqual(cited.map((entry) => entry.key), ["lee2019graphs", "smith2020"]);
+  assert.ok(text.startsWith("% Generated by Libera from the notebook's References.\n\n@book{lee2019graphs,"));
+  assert.match(text, /title += \{Graphs \\& Trees\}|title += \{Graphs \\& trees\}/);
+  assert.match(text, /journaltitle = \{Journal of Tests\}/);
+  assert.match(text, /date += \{2020\}/);
+  assert.doesNotMatch(text, /kim2018|ghost/);
+  assert.equal(biblatexBibliography([cite("[@ghost]")], entries()).text, "");
+});
+
+test("CSL styles map to the closest biblatex style, falling back by citation class", async () => {
+  const expected: Record<string, string> = { apa: "apa", ieee: "ieee", "chicago-author-date": "chicago-authordate", nature: "nature", vancouver: "vancouver", "harvard-cite-them-right": "authoryear" };
+  for (const [csl, biblatex] of Object.entries(expected)) assert.equal(biblatexStyleFor(csl, await loadCslStyle(csl)), biblatex, csl);
+  const numeric = '<style><info><category citation-format="numeric"/></info></style>';
+  const note = '<style><info><category citation-format="note"/></info></style>';
+  assert.equal(biblatexStyleFor("Notes/styles/custom.csl", numeric), "numeric");
+  assert.equal(biblatexStyleFor("Notes/styles/custom.csl", note), "authoryear");
+  assert.equal(genericBiblatexStyle(await loadCslStyle("ieee")), "numeric");
+  assert.equal(genericBiblatexStyle(await loadCslStyle("apa")), "authoryear");
+  const plan = { style: "apa", fallbackStyle: "authoryear", bibFileName: "document.bib", bib: "" };
+  assert.equal(await chooseBiblatexStyle(plan, async () => true), "apa");
+  assert.equal(await chooseBiblatexStyle(plan, async () => false), "authoryear", "A style the TeX installation lacks");
+});
+
+test("the preamble loads biblatex with the style and the .bib, once", () => {
+  const preamble = biblatexPreamble("apa", "document.bib");
+  assert.equal(preamble, "\\usepackage{csquotes}\n\\usepackage[backend=biber,style=apa]{biblatex}\n\\addbibresource{document.bib}");
+  const opening = "\\documentclass{article}\n\\usepackage{csquotes}\n\\begin{document}\n\\maketitle\n";
+  assert.equal(addBiblatexPreamble(opening, preamble), "\\documentclass{article}\n\\usepackage{csquotes}\n\\usepackage[backend=biber,style=apa]{biblatex}\n\\addbibresource{document.bib}\n\\begin{document}\n\\maketitle\n");
+});
+
+test("the LaTeX option defaults to formatted text and accepts biblatex", () => {
+  assert.equal(DEFAULT_LATEX_OPTIONS.citations, "formatted");
+  const { citations: _ignored, ...older } = DEFAULT_LATEX_OPTIONS;
+  void _ignored;
+  assert.equal(parseLatexOptions(older).citations, "formatted", "Saved options from before the option");
+  assert.equal(parseLatexOptions({ ...DEFAULT_LATEX_OPTIONS, citations: "biblatex" }).citations, "biblatex");
+  assert.throws(() => parseLatexOptions({ ...DEFAULT_LATEX_OPTIONS, citations: "natbib" as never }), /formatted text or biblatex/);
+});
+
+test("compileLatex runs latex twice by default, and latex → biber → latex → latex with a bibliography", async () => {
+  const calls: Array<{ executable: string; args: string[]; files: string[] }> = [];
+  const run: LatexToolRunner = async (executable, args, directory) => {
+    calls.push({ executable, args, files: (await readdir(directory)).sort() });
+    if (executable === "pdflatex" && calls.filter((call) => call.executable === "pdflatex").length >= 2) {
+      await (await import("node:fs/promises")).writeFile(path.join(directory, "document.pdf"), "%PDF-1.5 test");
+    }
+  };
+  const pdf = await compileLatex("\\documentclass{article}\\begin{document}x\\end{document}", "pdflatex", new AbortController().signal, [], { run });
+  assert.equal(pdf.toString(), "%PDF-1.5 test");
+  assert.deepEqual(calls.map((call) => call.executable), ["pdflatex", "pdflatex"], "The default path is unchanged");
+  assert.deepEqual(calls[0].args, ["-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error", "-file-line-error", "document.tex"]);
+
+  calls.length = 0;
+  await compileLatex("tex", "pdflatex", new AbortController().signal, [], { run, bibliography: { fileName: "document.bib", content: "@book{a, title={A}}\n", biber: "biber" } });
+  assert.deepEqual(calls.map((call) => call.executable), ["pdflatex", "biber", "pdflatex", "pdflatex"]);
+  assert.deepEqual(calls[1].args, ["document"]);
+  assert.deepEqual(calls[0].files, ["document.bib", "document.tex"], "The .bib is next to the .tex");
+
+  // A biber failure reports biber's log.
+  const failing: LatexToolRunner = async (executable, _args, directory) => {
+    if (executable === "biber") {
+      await (await import("node:fs/promises")).writeFile(path.join(directory, "document.blg"), "ERROR - BibTeX subsystem: data source not found");
+      throw new Error("biber exited 2");
+    }
+  };
+  await assert.rejects(compileLatex("tex", "pdflatex", new AbortController().signal, [], { run: failing, bibliography: { fileName: "document.bib", content: "", biber: "biber" } }), /data source not found/);
+  await assert.rejects(compileLatex("tex", "pdflatex", new AbortController().signal, [], { run, bibliography: { fileName: "../evil.bib", content: "", biber: "biber" } }), /Invalid bibliography filename/);
+});
+
+// ---------------------------------------------------------------------------
+// End to end through the placeholder path
+// ---------------------------------------------------------------------------
+
+async function withData(run: () => Promise<void>) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "libera-references-biblatex-"));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = directory;
+  try {
+    await createNotebook("Refs");
+    await updateReferenceLibrary("Refs", null, ADD);
+    await updateReferenceLibrary("Refs", null, [{ op: "set-style", style: "ieee" }]);
+    await run();
+  } finally {
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
+    else process.env.LIBERA_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const OPENING = "\\documentclass{article}\n\\usepackage{hyperref}\n\\begin{document}\n\\maketitle\n";
+type Message = { role: string; content: unknown };
+
+function mockModel() {
+  const systems: string[] = [];
+  const complete = async (messages: Message[]) => {
+    systems.push(String(messages[0].content));
+    const task = String(messages.at(-1)!.content);
+    if (task.startsWith("TASK: shared preamble")) return { content: OPENING, finishReason: "stop" };
+    const markdown = task.slice(task.indexOf("MARKDOWN BLOCKS"));
+    const blocks = [...markdown.matchAll(/BLOCK (\d+) \([^\n]*\n([\s\S]*?)(?=\n\nBLOCK \d+ \(|$)/g)];
+    return { content: blocks.map((match) => `${match[2]}\n% LIBERA_BLOCK_${match[1]}_END`).join("\n"), finishReason: "stop" };
+  };
+  return { complete: complete as unknown as Parameters<typeof convertMarkdownToLatex>[3]["complete"], systems };
+}
+
+const DOCUMENT = "# Essay\n\nAs shown [@smith2020, p. 3] and [see @lee2019; @ghost].\n\n:::bibliography\n:::\n\nAfter the list.\n";
+
+test("biblatex mode restores placeholders as commands, adds the preamble and \\printbibliography at the marker", async () => {
+  await withData(async () => {
+    const plan = (await prepareLatexCitations(DOCUMENT, "Refs", { mode: "biblatex" }))!;
+    assert.ok(plan.biblatex);
+    assert.equal(plan.biblatex.style, "ieee");
+    assert.equal(plan.biblatex.fallbackStyle, "numeric");
+    assert.equal(plan.biblatex.bibFileName, "document.bib");
+    assert.match(plan.biblatex.bib, /@article\{smith2020,[\s\S]*@book\{lee2019,/);
+    assert.equal(plan.bibliography, "\\printbibliography");
+    assert.deepEqual([...plan.citations.values()], ["\\parencite[p.~3]{smith2020}", "\\parencite[see][]{lee2019} @ghost?"]);
+
+    const model = mockModel();
+    let compiled = "";
+    const result = await convertMarkdownToLatex(plan.markdown, new AbortController().signal, () => {}, {
+      compile: async (source) => { compiled = source; return Buffer.from("%PDF-"); },
+      complete: model.complete,
+      citations: plan,
+    });
+    assert.equal(result.source, compiled);
+    assert.match(result.source, /\\usepackage\{hyperref\}\n\\usepackage\{csquotes\}\n\\usepackage\[backend=biber,style=ieee\]\{biblatex\}\n\\addbibresource\{document\.bib\}\n\\begin\{document\}/);
+    assert.match(result.source, /As shown \\parencite\[p\.~3\]\{smith2020\} and \\parencite\[see\]\[\]\{lee2019\} @ghost\?\./);
+    assert.match(result.source, /\\printbibliography\n[\s\S]*After the list\./, "At the marker");
+    assert.equal((result.source.match(/\\printbibliography/g) ?? []).length, 1);
+    assert.ok(model.systems[0].includes("Libera adds \\usepackage{biblatex}"));
+  });
+});
+
+test("without a marker \\printbibliography goes at the end; without resolved works biblatex falls back to source text", async () => {
+  await withData(async () => {
+    const plan = (await prepareLatexCitations("Claim [@smith2020].\n", "Refs", { mode: "biblatex" }))!;
+    const result = await convertMarkdownToLatex(plan.markdown, new AbortController().signal, () => {}, {
+      compile: async () => Buffer.from("%PDF-"), complete: mockModel().complete, citations: plan,
+    });
+    assert.match(result.source, /\\parencite\{smith2020\}\.[\s\S]*\\printbibliography\n*\n\\end\{document\}\n$/);
+
+    const unresolved = (await prepareLatexCitations("Claim [@ghost].\n", "Refs", { mode: "biblatex" }))!;
+    assert.equal(unresolved.biblatex, undefined, "Nothing for biber to do");
+    assert.deepEqual([...unresolved.citations.values()], ["{[@ghost]}"], "As in the formatted path");
+  });
+});
+
+test("the formatted default is unchanged by the option", async () => {
+  await withData(async () => {
+    const formatted = (await prepareLatexCitations(DOCUMENT, "Refs"))!;
+    const explicit = (await prepareLatexCitations(DOCUMENT, "Refs", { mode: "formatted" }))!;
+    assert.equal(formatted.biblatex, undefined);
+    assert.equal([...formatted.citations.values()][0], "{[1, p. 3]}", "IEEE formatted text, braced after \item");
+    assert.deepEqual([...explicit.citations.values()], [...formatted.citations.values()]);
+    assert.match(formatted.bibliography, /^\\begin\{thebibliography\}/);
+    const prompt = buildLatexPrompt(DEFAULT_LATEX_OPTIONS, [], { citations: true });
+    assert.ok(prompt.includes(LATEX_CITATION_PROMPT));
+    assert.ok(!prompt.includes("biber"), "The biblatex instruction only with biblatex");
+    const model = mockModel();
+    const result = await convertMarkdownToLatex(formatted.markdown, new AbortController().signal, () => {}, {
+      compile: async () => Buffer.from("%PDF-"), complete: model.complete, citations: formatted,
+    });
+    assert.doesNotMatch(result.source, /biblatex|\\parencite|\\printbibliography/);
+  });
+});
+
+test("the export's zip carries document.bib (source check of the archive step)", async () => {
+  const source = await readFile(path.join(process.cwd(), "src", "lib", "latex-export.ts"), "utf8");
+  assert.match(source, /if \(bibliography\) zip\.file\(bibliography\.fileName, bibliography\.content\);/);
+});
