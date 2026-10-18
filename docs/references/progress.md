@@ -10,6 +10,24 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Each lane works on `references/<lane>` in `.claude/worktrees/refs-<lane>`, branched from the integration tip at the start of its wave, and is merged with `--no-ff`.
 - The collaboration work continues on `collaboration` in the main checkout. A single merge of `references/integration` into `collaboration` happens later (see “Big merge” below). No reference lane touches collab code.
 
+## Merge into collaboration (19 Oct 2026)
+
+- **Branch:** `references/merge-collaboration` = `collaboration` at `d211e51` + `references/integration` (merge `e00c9c8`) + a shared SuggestEdit test (`0533488`). It is a fast-forward of `collaboration` as long as `collaboration` stays at `d211e51`.
+- **Conflicts (6 files, 10 hunks), resolved to keep both sides:**
+  - agent run-record validation;
+  - the review-comments skill: collab's shared threads plus SuggestEdit;
+  - SuggestEdit and fact-check on shared documents, which now make collaborative suggestions and shared threads instead of refusing;
+  - local agent suggestions are previewed only on documents that are not shared;
+  - `retargetOpenTab` applies a cross-notebook move's citation rewrite, and both move paths use it;
+  - imports, and the review popover.
+- **Verification against `collaboration`'s own tip in this environment:**
+  - `test:collab` and `scripts/lib`: identical failure sets. The 60 collab failures need a real collab server, Postgres or the host; the convergence fuzzer fails with a random seed in both.
+  - `test:editor`: the merge adds only the two load-sensitive tests on the watch list (PDF export readiness; the workspace-panel render count). Both pass in 3 of 3 runs alone.
+  - tsc shows the 4 baseline errors.
+  - A dev-server smoke test of the merged app rendered citations correctly.
+- **Not yet done:** fast-forwarding `collaboration`. The main checkout had uncommitted collab work in `globals.css`, `markdown-review-ui.tsx` and `use-libera-workspace.ts`, which this merge also changes. Once that is committed, merge `collaboration` into `references/merge-collaboration` again (expect small conflicts in those files), re-run the checks, then fast-forward.
+- **Watch item for the collab team:** `workspace-panel-performance.test.ts` can count one extra render under heavy CPU load since the reference work. It is benign in the app (at most one render when a library loads), but the test is timing-sensitive.
+
 ## Status (19 Oct 2026): complete on `references/integration`
 
 Every lane of plan.md is merged, apart from the two items deferred below.
