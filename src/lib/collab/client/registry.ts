@@ -432,3 +432,44 @@ export function setSharedDocRegistry(registry: SharedDocRegistry | null) {
   if (sharedRegistry && sharedRegistry !== registry) sharedRegistry.destroy();
   sharedRegistry = registry;
 }
+
+/* ---- Undo scope of programmatic edits ---------------------------------------------- */
+
+/**
+ * Where a programmatic edit (AI result, review apply, image insertion) is
+ * recorded for Undo. By default that is the session's undo manager, which the
+ * CodeMirror editors share. A mounted Visual editor undoes through its
+ * bridge's own Y.UndoManager instead, so while one is bound the edit is made
+ * with an origin only that manager tracks: Undo in Visual then removes the AI
+ * result in one step. Exactly one manager tracks each edit, so it can never
+ * be undone twice.
+ */
+export interface UndoScope {
+  readonly origin: object;
+  readonly undoManager: Y.UndoManager;
+  /** Sends the editor's pending local changes first, so they are not merged into the edit. */
+  flush?(): void;
+}
+
+const undoScopes = new WeakMap<CollabReplica, UndoScope[]>();
+
+/** Registers an editor-owned undo manager for programmatic edits; returns the unregister function. */
+export function registerUndoScope(replica: CollabReplica, undoManager: Y.UndoManager, flush?: () => void): () => void {
+  const scope: UndoScope = { origin: new SharedEditOrigin(replica.docId), undoManager, flush };
+  undoManager.addTrackedOrigin(scope.origin);
+  const scopes = undoScopes.get(replica) ?? [];
+  scopes.push(scope);
+  undoScopes.set(replica, scopes);
+  return () => {
+    undoManager.removeTrackedOrigin(scope.origin);
+    const list = undoScopes.get(replica);
+    const index = list?.indexOf(scope) ?? -1;
+    if (list && index >= 0) list.splice(index, 1);
+  };
+}
+
+/** The scope a programmatic edit on `session` is recorded in right now (the latest Visual editor, else the session). */
+export function undoScopeFor(session: SharedDocSession): UndoScope {
+  const scopes = undoScopes.get(session.replica);
+  return scopes?.length ? scopes[scopes.length - 1] : { origin: session.editOrigin, undoManager: session.undoManager };
+}

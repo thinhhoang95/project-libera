@@ -19,7 +19,7 @@ import { ChangeSet, type ChangeSpec } from "@codemirror/state";
 import type * as Y from "yjs";
 import type { Provenance } from "../protocol/actor";
 import { PROVENANCE_META_KEY } from "../bindings/codemirror";
-import { getSharedDocRegistry, type SharedDocRegistry, type SharedDocSession } from "./registry";
+import { getSharedDocRegistry, undoScopeFor, type SharedDocRegistry, type SharedDocSession } from "./registry";
 
 /** Gives up on a precise diff past this many changed characters in one region (keeps big rewrites linear). */
 const DIFF_SCAN_LIMIT = 20_000;
@@ -100,14 +100,16 @@ export function applyTextToYText(ytext: Y.Text, nextText: string, provenance: Pr
 
 /** Applies a programmatic edit to a session: one undo step, refused when the document is read-only. */
 export function applyTextToSession(session: SharedDocSession, nextText: string, provenance: Provenance, base?: string): ApplySharedResult {
-  const { replica, undoManager, editOrigin } = session;
+  const { replica } = session;
   if (!replica.getSnapshot().attached) return { applied: false, reason: "not-ready" };
   if (!replica.canEditContent()) return { applied: false, reason: "read-only" };
-  // Its own undo step: Undo removes exactly this feature's result, not the
-  // typing just before or after it (plan M1.11).
-  undoManager.stopCapturing();
-  const edits = applyTextToYText(replica.ytext, nextText, provenance, { base, origin: editOrigin });
-  undoManager.stopCapturing();
+  // Its own undo step in whichever editor undoes it: Undo removes exactly
+  // this feature's result, not the typing just before or after it (M1.11).
+  const scope = undoScopeFor(session);
+  scope.flush?.();
+  scope.undoManager.stopCapturing();
+  const edits = applyTextToYText(replica.ytext, nextText, provenance, { base, origin: scope.origin });
+  scope.undoManager.stopCapturing();
   return edits.length ? { applied: true, edits } : { applied: false, reason: "unchanged" };
 }
 

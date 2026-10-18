@@ -39,7 +39,7 @@ import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
-import { isTextFileType, type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
+import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 
 type LiberaAppProps = {

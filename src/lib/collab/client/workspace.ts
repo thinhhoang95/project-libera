@@ -32,6 +32,17 @@ export function sourceEditorKind(preference: MarkdownSourceEditorKind, shared: b
   return shared ? "codemirror" : preference;
 }
 
+/**
+ * `getTabDraft` for any tab: the live shared text when the tab is a shared
+ * document that has attached, else the editor's live draft, else the last
+ * known one.
+ */
+export function readTabDraft<T extends TabLike>(tab: T, sources: { sharedText(tabId: string): string | null; editorDraft(tabId: string): string | undefined; latestDraft(tabId: string): string | undefined }): string {
+  const shared = sources.sharedText(tab.id);
+  if (shared !== null) return shared;
+  return sources.editorDraft(tab.id) ?? sources.latestDraft(tab.id) ?? tab.draft;
+}
+
 /** Whether a tab could be a shared document: a text file of a shared notebook. */
 export function isShareableTab(tab: TabLike, sharedNotebooks: ReadonlySet<string>): boolean {
   return !tab.untitled && !tab.gallery && !tab.standaloneSaveId && isTextFileType(tab.file.fileType) && sharedNotebooks.has(tab.file.notebook);

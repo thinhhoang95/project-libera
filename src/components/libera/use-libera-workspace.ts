@@ -69,9 +69,11 @@ import type { Provenance } from "@/lib/collab/protocol/actor";
 import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
 import { applyTextToSession, applyTextToShared } from "@/lib/collab/client/apply-text";
 import { getSharedDocRegistry, type SharedDocSession } from "@/lib/collab/client/registry";
-import { isTabDirty, journalTab, mayTakeContentFromDisk, type DraftWriteOptions } from "@/lib/collab/client/workspace";
+import { isTabDirty, journalTab, mayTakeContentFromDisk, readTabDraft, type DraftWriteOptions } from "@/lib/collab/client/workspace";
 
 const TYPING: Provenance = { source: "typing" };
+/** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
+const isSharedRegistryTab = (tabId: string) => getSharedDocRegistry().isSharedTab(tabId);
 const PASTE: Provenance = { source: "paste" };
 
 function collectFileSearchResults(
@@ -758,9 +760,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   function getTabDraft(tab: OpenTab) {
     // A shared tab's draft is the shared text: AI context, compile staging,
     // links, export and review snapshots all read the live document.
-    const shared = sharedRegistry.readTabText(tab.id);
-    if (shared !== null) return shared;
-    return editorDraftReadersRef.current.get(tab.id)?.() ?? latestDraftByTabIdRef.current[tab.id] ?? tab.draft;
+    return readTabDraft(tab, {
+      sharedText: (tabId) => getSharedDocRegistry().readTabText(tabId),
+      editorDraft: (tabId) => editorDraftReadersRef.current.get(tabId)?.(),
+      latestDraft: (tabId) => latestDraftByTabIdRef.current[tabId],
+    });
   }
 
   /** True while a tab's content belongs to a shared document (also while it opens). */
@@ -1061,7 +1065,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab && isTabDirty(tab, isSharedTab, getTabDraft)) {
+    if (tab && !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) {
       setWorkspaceConfirmDialog({
         mode: "close-tab",
         tabId,
@@ -1086,7 +1090,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const dirtyTabCount = otherTabs.filter((currentTab) => isTabDirty(currentTab, isSharedTab, getTabDraft)).length;
+    const dirtyTabCount = otherTabs.filter((currentTab) => !isSharedRegistryTab(currentTab.id) && getTabDraft(currentTab) !== currentTab.saved).length;
     const otherTabIds = otherTabs.map((currentTab) => currentTab.id);
 
     if (dirtyTabCount > 0) {
@@ -3591,7 +3595,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      if (tabs.some((tab) => isTabDirty(tab, isSharedTab, getTabDraft))) {
+      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved)) {
         event.preventDefault();
         event.returnValue = "";
       }

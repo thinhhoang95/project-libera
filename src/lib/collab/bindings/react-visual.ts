@@ -8,7 +8,7 @@
 
 import type { Editor } from "@tiptap/core";
 import type { Provenance } from "../protocol/actor";
-import type { SharedDocSession } from "../client/registry";
+import { registerUndoScope, type SharedDocSession } from "../client/registry";
 import { bindTiptapToYText, type TiptapYTextBridge } from "./tiptap-ytext";
 
 export interface SharedVisualHandle {
@@ -52,11 +52,15 @@ export function sharedVisualSource(session: SharedDocSession, options: { onError
         last = next;
         bridge.setReadOnly(next);
       });
+      // AI results, review applies and image insertions undo through this
+      // editor's Undo while it is mounted.
+      const unregisterUndo = registerUndoScope(replica, bridge.undoManager, () => bridge.flush());
       return {
         bridge,
         text: () => ytext.toString(),
         setNextProvenance: (provenance) => bridge.setNextProvenance(provenance),
         destroy() {
+          unregisterUndo();
           unsubscribe();
           bridge.destroy();
         },
