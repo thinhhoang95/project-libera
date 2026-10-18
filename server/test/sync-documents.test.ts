@@ -229,13 +229,18 @@ describe("sync documents", () => {
     await commenter.acked(
       commenter.edit(docId, "annotations", setEntry(suggestions, "s1", suggestion("s1", mine, "withdrawn"))),
     );
+    // A suggestion created stale (AI edits on an old snapshot) can be withdrawn by its author.
+    await commenter.acked(commenter.edit(docId, "annotations", setEntry(suggestions, "s3", suggestion("s3", mine, "stale"))));
+    await commenter.acked(
+      commenter.edit(docId, "annotations", setEntry(suggestions, "s3", suggestion("s3", mine, "withdrawn"))),
+    );
 
     // Editors are bound by the status rules too.
     await commenter.acked(commenter.edit(docId, "annotations", setEntry(suggestions, "s2", suggestion("s2", mine))));
     await eventually(
       async () =>
-        (await env.server.server.context.rooms.withDocs(docId, (docs) => docs.annotations.getMap(suggestions).size)) === 2 &&
-        owner.doc(docId, "annotations").getMap(suggestions).size === 2,
+        (await env.server.server.context.rooms.withDocs(docId, (docs) => docs.annotations.getMap(suggestions).size)) === 3 &&
+        owner.doc(docId, "annotations").getMap(suggestions).size === 3,
       "owner has both suggestions",
     );
     const decided = await owner.rejected(
@@ -258,6 +263,7 @@ describe("sync documents", () => {
     assert.equal(state.anchors.owners.createdBy, env.owner.id);
     assert.equal(state.suggestions.s1.status, "withdrawn");
     assert.equal(state.suggestions.s2.status, "pending");
+    assert.equal(state.suggestions.s3.status, "withdrawn");
     await owner.close();
     await commenter.close();
   });
