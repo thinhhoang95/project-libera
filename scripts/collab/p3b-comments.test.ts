@@ -82,7 +82,7 @@ function tab(id: string): OpenTab {
  * edit can.
  */
 async function realClick(target: HTMLElement, between?: () => Promise<void>) {
-  const init = { bubbles: true, cancelable: true, button: 0, view: dom.window };
+  const init = { bubbles: true, cancelable: true, button: 0 };
   await act(async () => {
     target.dispatchEvent(new dom.window.MouseEvent("pointerdown", init));
     const down = new dom.window.MouseEvent("mousedown", init);
@@ -249,7 +249,8 @@ test("a comment added from the popover lists for its author and reaches a collab
     await binding;
     await act(async () => { lateStatus.setStatus(signedIn); });
     await until(async () => { await flush(1); return /1 open/.test(lateContainer.textContent ?? "") && /Should we say wolves\?/.test(lateContainer.textContent ?? ""); }, "the late shared panel to list the thread");
-    assert.equal(probe.review!.shared?.projection.me?.id, alice.userId, "the account learned later is used");
+    const late = probe.review as Review | null;
+    assert.equal(late?.shared?.projection.me?.id, alice.userId, "the account learned later is used");
   } finally {
     await unmount?.();
     restoreGlobals();
