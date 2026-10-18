@@ -142,7 +142,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 ## Open gaps found during integration
 
 - ☑ Libera's own writers for shared files go through the host: shared tabs have no Save; the agent, OCR convert, uploads, markdown images, edited images and image generation into notebooks (blobs). Remaining: deleting/pruning images in shared notebooks still returns 409; blobs through the host are capped at 11 MB.
-- ☐ Host `ApiClient.listDocuments` has no server route; the notebooks code works around it. Add `GET /v1/projects/:id/documents` or remove the client method.
+- ☑ `GET /v1/projects/:id/documents` added for the host's `ApiClient.listDocuments` (members; live documents, no manifest).
 - ☑ Divergence check: server digest endpoint plus an hourly host comparison with recovery. Edge left: a local-only deletion the server never received cannot be recovered by the re-open.
 
 ## Phase 2: comments and history

@@ -107,6 +107,21 @@ describe("documents", () => {
     assert.equal((await request(h, "GET", "/v1/documents/doc_del_00001", editor)).status, 404);
   });
 
+  test("members list a project's live documents, without the manifest", async () => {
+    const { project, editor, viewer, outsider } = await team(h);
+    for (const id of ["doc_list_00001", "doc_list_00002"]) {
+      await request(h, "POST", `/v1/projects/${project.id}/documents`, editor, { docId: id, fileId: `file_${id}`, kind: "markdown" });
+    }
+    await request(h, "DELETE", "/v1/documents/doc_list_00002", editor);
+    const listed = await request(h, "GET", `/v1/projects/${project.id}/documents`, viewer);
+    assert.equal(listed.status, 200);
+    assert.deepEqual(
+      (listed.body as DocumentInfo[]).map((doc) => doc.id),
+      ["doc_list_00001"],
+    );
+    assert.equal((await request(h, "GET", `/v1/projects/${project.id}/documents`, outsider)).status, 404);
+  });
+
   test("the updates feed paginates and starts from a snapshot when the log was compacted", async () => {
     const { project, editor, viewer } = await team(h);
     const docId = "doc_feed_00001";

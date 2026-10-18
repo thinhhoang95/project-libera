@@ -157,6 +157,23 @@ export function registerDocumentRoutes(app: FastifyInstance, context: ServerCont
     return reply.status(201).send(documentInfo(created));
   });
 
+  // Every live document of a project except its manifest, for members. The
+  // desktop host uses it to find documents the manifest does not list yet.
+  app.get(route(ApiRoutes.documents, "projectId"), async (request): Promise<DocumentInfo[]> => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    await requireProjectAction(db, projectId, accountId, "read");
+    const rows = await db
+      .selectFrom("documents")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("deleted_at", "is", null)
+      .where("kind", "!=", "manifest")
+      .orderBy("created_at")
+      .execute();
+    return rows.map(documentInfo);
+  });
+
   app.get(route(ApiRoutes.document, "docId"), async (request): Promise<DocumentInfo> => {
     const { accountId } = await requireAccount(context, request);
     const { docId } = docParams.parse(request.params);
