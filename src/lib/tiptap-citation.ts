@@ -161,12 +161,14 @@ export function tiptapCitationTriggerAt($position: ResolvedPos): TiptapCitationT
 }
 
 /** The `raw` of the node a popup choice inserts at a trigger. */
-export function citationRawForTrigger(trigger: Pick<TiptapCitationTrigger, "insideCitation" | "open">, key: string) {
+export function citationRawForTrigger(trigger: Pick<TiptapCitationTrigger, "insideCitation" | "open">, key: string, pageLocator?: string) {
+  // `pageLocator` cites that page: `[@key, p. 12]`.
+  const item = pageLocator ? serializeCitation({ items: [{ key, locator: pageLocator, label: "page" }] }).slice(1, -1) : `@${key}`;
   if (trigger.insideCitation && trigger.open !== undefined) {
-    const raw = `${trigger.open}@${key}]`;
+    const raw = `${trigger.open}${item}]`;
     if (parseCitationToken(raw)) return raw;
   }
-  return `[@${key}]`;
+  return `[${item}]`;
 }
 
 // ---------------------------------------------------------------------------

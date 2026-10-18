@@ -20,6 +20,9 @@ import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
 import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/references/tiptap-citation-view";
+import { useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { droppedQuoteMarkdown, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
+import type { PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
@@ -170,6 +173,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
   // Citation nodes, the `@` popup and the citation popover (references lane).
   const citations = useTiptapCitations();
+  // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
+  const referenceNotebook = useReferenceRender()?.notebook ?? null;
+  const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
@@ -215,6 +221,19 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         },
       },
       handleDrop(view, event, _slice, moved) {
+        const quote = moved ? null : pdfQuoteFromDrop(event.dataTransfer);
+        if (quote) {
+          event.preventDefault();
+          setDragging(false);
+          let pos = view.state.selection.from;
+          try {
+            pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? pos;
+          } catch {
+            // No layout (a hidden pane): the quote goes after the caret's block.
+          }
+          dropQuoteRef.current(quote, pos);
+          return true;
+        }
         if (moved || !event.dataTransfer?.files.length) return false;
         event.preventDefault();
         setDragging(false);
@@ -350,6 +369,17 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     });
   }
   useCanvasViewStateCapture(captureVisualState);
+
+  useLayoutEffect(() => {
+    dropQuoteRef.current = (source, pos) => {
+      void droppedQuoteMarkdown(source, referenceNotebook).then((markdown) => {
+        if (!markdown || !editor || editor.isDestroyed) return;
+        markPaste();
+        replaceTiptapRangeWithMarkdown(editor, getTiptapBlockInsertionRange(editor, Math.min(pos, editor.state.doc.content.size)), markdown);
+        editor.commands.focus();
+      });
+    };
+  }, [editor, markPaste, referenceNotebook]);
 
   // Runs after the saved selection is restored (a layout effect below), so a
   // snip lands where the caret was when it started.

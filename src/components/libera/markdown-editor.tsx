@@ -77,6 +77,8 @@ import {
   type CitationPopupHandle,
 } from "@/components/libera/references/citation-popup";
 import { useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
+import { quoteBlockInsertion, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 
 type EditorContextMenuState = {
   hasText: boolean;
@@ -1154,12 +1156,12 @@ export function MarkdownEditor({
   const refreshCitationPopupRef = useRef(refreshCitationPopup);
   useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
 
-  function insertCitation(key: string, { locator }: { locator: boolean }) {
+  function insertCitation(key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) {
     const textarea = textareaRef.current;
     const popup = citationPopupRef.current;
     if (!textarea || !popup) return;
     // `[@key]` replaces `@query`; inside a citation `@key` replaces it.
-    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    const insertion = citationInsertion(key, popup.insideCitation, locator, pageLocator);
     const currentValue = editorValueRef.current;
     const nextValue = `${currentValue.slice(0, popup.from)}${insertion.text}${currentValue.slice(popup.to)}`;
     const caret = popup.from + insertion.caret;
@@ -1431,6 +1433,12 @@ export function MarkdownEditor({
   }
 
   function handleDragOver(event: DragEvent<HTMLTextAreaElement>) {
+    if (hasPdfQuoteDrag(event.dataTransfer)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      return;
+    }
+
     if (!hasImageDragItem(event.dataTransfer)) {
       return;
     }
@@ -1444,7 +1452,36 @@ export function MarkdownEditor({
     setDraggingImage(false);
   }
 
+  /** A quote dragged from a PDF: quote and cite it as a block at the drop point. */
+  async function insertDroppedQuote(source: PdfQuoteSource, offset: number) {
+    const markdown = await droppedQuoteMarkdown(source, referenceRender?.notebook ?? null);
+    const textarea = textareaRef.current;
+    if (!markdown || !textarea) return;
+    const currentValue = editorValueRef.current;
+    const insertion = quoteBlockInsertion(currentValue, offset, markdown);
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: insertion.from,
+      selectionEnd: insertion.from,
+      replacement: insertion.text,
+      nextSelectionStart: insertion.caret,
+      nextSelectionEnd: insertion.caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, insertion.value);
+    }
+    readDraft();
+  }
+
   async function handleDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const quote = pdfQuoteFromDrop(event.dataTransfer);
+    if (quote) {
+      event.preventDefault();
+      setDraggingImage(false);
+      void insertDroppedQuote(quote, getTextareaOffsetAtPoint(event.currentTarget, event.clientX, event.clientY));
+      return;
+    }
+
     const imageFiles = getDroppedImageFiles(event.dataTransfer);
 
     if (!imageFiles.length) {

@@ -39,6 +39,8 @@ import {
 } from "../references/citation-popup";
 import { CitationCardItems } from "../references/citation-hover-card";
 import { useReferenceRender } from "../references/reference-render-context";
+import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "../references/pdf-quote-cite";
+import { quoteBlockInsertion } from "@/lib/references/pdf-quote";
 import type { MarkdownSourceEditorProps } from "./types";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
@@ -147,7 +149,7 @@ export function MarkdownCodeMirrorEditor({
   const extensionsCompartment = useRef(new Compartment()).current;
   const mathCompartment = useRef(new Compartment()).current;
 
-  const latest = useRef({ onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers });
+  const latest = useRef({ onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null });
   // Keymaps are built once with the view; they call the current handlers.
   const handlersRef = useRef<{
     chooseActiveFileLink: () => boolean;
@@ -155,7 +157,7 @@ export function MarkdownCodeMirrorEditor({
     openFind: (query?: string) => void;
   }>({ chooseActiveFileLink: () => false, moveFileLinkSelection: () => false, openFind: () => {} });
   useLayoutEffect(() => {
-    latest.current = { onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers };
+    latest.current = { onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null };
   });
   useLayoutEffect(() => { findRef.current = find; }, [find]);
 
@@ -428,6 +430,11 @@ export function MarkdownCodeMirrorEditor({
             return true;
           },
           dragover: (event) => {
+            if (hasPdfQuoteDrag(event.dataTransfer)) {
+              event.preventDefault();
+              event.dataTransfer!.dropEffect = "copy";
+              return true;
+            }
             if (!event.dataTransfer || !hasImageDragItem(event.dataTransfer)) return false;
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
@@ -440,6 +447,20 @@ export function MarkdownCodeMirrorEditor({
           },
           drop: (event, target) => {
             setDraggingImage(false);
+            const quote = pdfQuoteFromDrop(event.dataTransfer);
+            if (quote) {
+              // A quote dragged from a PDF: quote and cite it as a block at the drop point.
+              event.preventDefault();
+              const offset = positionAt(target, event) ?? target.state.selection.main.head;
+              void droppedQuoteMarkdown(quote, latest.current.referenceNotebook).then((markdown) => {
+                if (!markdown || viewRef.current !== target) return;
+                const insertion = quoteBlockInsertion(target.state.doc.toString(), offset, markdown);
+                target.dispatch({ changes: { from: insertion.from, insert: insertion.text }, selection: { anchor: insertion.caret }, userEvent: "input.drop", scrollIntoView: true });
+                target.focus();
+                readDraft();
+              });
+              return true;
+            }
             const images = event.dataTransfer ? getDroppedImageFiles(event.dataTransfer) : [];
             if (!images.length) return false;
             event.preventDefault();
@@ -720,12 +741,12 @@ export function MarkdownCodeMirrorEditor({
 
   // Citation popup -------------------------------------------------------------
 
-  function insertCitation(key: string, { locator }: { locator: boolean }) {
+  function insertCitation(key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) {
     const current = viewRef.current;
     const popup = citationPopupRef.current;
     if (!current || !popup) return;
     // `[@key]` replaces `@query`; inside a citation `@key` replaces it. One undo step.
-    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    const insertion = citationInsertion(key, popup.insideCitation, locator, pageLocator);
     closeCitationPopup();
     current.dispatch({
       changes: { from: popup.from, to: popup.to, insert: insertion.text },

@@ -7,6 +7,7 @@
 // every word in some field. Entries already cited in the document come
 // first, then entries cited recently in this session.
 
+import { serializeCitation } from "./citation-syntax";
 import type { CslItem, CslName, ReferenceEntry, ReferenceLibrary } from "./types";
 
 export type ReferenceSuggestionField = "key" | "author" | "year" | "title" | "container" | "tags" | "notes";
@@ -313,9 +314,13 @@ export function mayTriggerCitation(before: string) {
   return false;
 }
 
-/** The text a citation popup inserts for `key` at a trigger (see `citationTriggerAt`). */
-export function citationInsertion(key: string, insideCitation: boolean, locator: boolean) {
-  const text = insideCitation ? `@${key}${locator ? ", " : ""}` : `[@${key}${locator ? ", " : ""}]`;
+/**
+ * The text a citation popup inserts for `key` at a trigger (see
+ * `citationTriggerAt`). `pageLocator` cites that page (`[@key, p. 12]`).
+ */
+export function citationInsertion(key: string, insideCitation: boolean, locator: boolean, pageLocator?: string) {
+  const item = pageLocator ? serializeCitation({ items: [{ key, locator: pageLocator, label: "page" }] }).slice(1, -1) : `@${key}`;
+  const text = insideCitation ? `${item}${locator ? ", " : ""}` : `[${item}${locator ? ", " : ""}]`;
   // The caret goes after the key, or at the locator position: `[@key, |]`.
   const caret = text.length - (insideCitation ? 0 : 1);
   return { text, caret: locator || insideCitation ? caret : text.length };

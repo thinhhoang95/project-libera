@@ -12,6 +12,7 @@ import {
   type SearchHit,
   type SearchImageRef,
   type SearchQueryPart,
+  type SearchReferenceRecord,
   type SearchRequest,
   type SearchResponse,
   type SearchResultFile,
@@ -141,11 +142,24 @@ function fileNode(row: ChunkRow): LiberaFileNode {
     name: row.name,
     path: row.path,
     notebook: row.notebook,
-    fileType: row.kind,
+    fileType: row.kind as LiberaFileNode["fileType"],
     createdAt: "",
     size: 0,
     updatedAt: "",
   };
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function parseMeta<T>(meta: string | null): T | undefined {
+  if (!meta) return undefined;
+  try {
+    return JSON.parse(meta) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 function toHit(row: ChunkRow, candidate: Candidate): SearchHit {
@@ -175,6 +189,11 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
     : [];
   const scope = Array.isArray(request.scope) ? new Set(request.scope.filter((item) => typeof item === "string")) : null;
   const includeArchive = request.includeArchive !== false;
+  // The References entries of a notebook show with its files.
+  const scopeNotebooks = scope ? new Set([...scope].map((item) => item.split("/")[0])) : null;
+  const within = request.within && typeof request.within === "object"
+    ? { notebooks: stringList(request.within.notebooks), paths: stringList(request.within.paths) }
+    : null;
   const limit = Math.max(1, Math.min(200, Number(request.limit) || DEFAULT_RESULT_LIMIT));
 
   const imageParts = parts.filter((part): part is Extract<SearchQueryPart, { type: "image" }> => part.type === "image");
@@ -194,6 +213,9 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
     };
   }
   indexer.requestScan();
+  // A restricted search ranks every passage of its records, not only those near the top of the whole index.
+  const fileIds = within ? db.fileIdsWithin(within) : undefined;
+  if (fileIds && !fileIds.length) return { results: [], mode: "keyword", terms, tookMs: Date.now() - started };
 
   const worker = getSearchWorker();
   if (worker.configure(getSearchPreferences())) indexer.requestScan({ force: true, manual: false });
@@ -215,7 +237,9 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
         ? { text: plainText ? `${SEARCH_QUERY_PREFIX}${text}` : undefined, images }
         : { text: `${SEARCH_QUERY_PREFIX}${plainText}` };
       const [vector] = await worker.embed([input], "query");
-      if (indexer.database() === db && indexer.vectorsUsable) nearest = db.nearest(vector, CANDIDATES, filter);
+      if (indexer.database() === db && indexer.vectorsUsable) {
+        nearest = fileIds ? db.nearestAmong(vector, CANDIDATES, fileIds, filter) : db.nearest(vector, CANDIDATES, filter);
+      }
     } catch (error) {
       if (error instanceof StorageError) throw error;
       warnings.push(`Semantic search is unavailable (${error instanceof Error ? error.message : "unknown error"}). Showing keyword matches.`);
@@ -233,10 +257,10 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   let anyTerm: Array<{ id: number }> = [];
   if (terms.length && (!imageParts.length || !nearest.length)) {
     try {
-      allTerms = db.keyword(keywordMatchExpression(terms, "AND"), CANDIDATES, filter);
+      allTerms = db.keyword(keywordMatchExpression(terms, "AND"), CANDIDATES, filter, fileIds);
       if (terms.length > 1 && allTerms.length < 5) {
         const seen = new Set(allTerms.map((hit) => hit.id));
-        anyTerm = db.keyword(keywordMatchExpression(terms, "OR"), CANDIDATES, filter).filter((hit) => !seen.has(hit.id));
+        anyTerm = db.keyword(keywordMatchExpression(terms, "OR"), CANDIDATES, filter, fileIds).filter((hit) => !seen.has(hit.id));
       }
     } catch {
       // A query FTS5 cannot parse simply has no keyword matches.
@@ -269,6 +293,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
     const row = rows.get(candidate.id);
     if (!row || indexer.isStale(row.fileId)) continue;
     if (row.source === "library" && scope && !scope.has(row.path)) continue;
+    if (row.source === "references" && scopeNotebooks && !scopeNotebooks.has(row.notebook)) continue;
     if (row.source === "library" && !includeArchive && row.path.split("/").includes(ARCHIVE_DIR)) continue;
     const entry = files.get(row.key) ?? { row, hits: [] };
     if (entry.hits.length < MAX_HITS_PER_FILE) entry.hits.push(toHit(row, candidate));
@@ -277,14 +302,8 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
 
   const results: SearchResultFile[] = [...files.values()]
     .map(({ row, hits }) => {
-      let photo: SearchGalleryPhoto | undefined;
-      if (row.source === "gallery" && row.meta) {
-        try {
-          photo = JSON.parse(row.meta) as SearchGalleryPhoto;
-        } catch {
-          photo = undefined;
-        }
-      }
+      const photo = row.source === "gallery" ? parseMeta<SearchGalleryPhoto>(row.meta) : undefined;
+      const reference = row.source === "references" ? parseMeta<SearchReferenceRecord>(row.meta) : undefined;
       return {
         key: row.key,
         source: row.source,
@@ -293,12 +312,13 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
         path: row.path,
         file: row.source === "library" ? fileNode(row) : undefined,
         photo,
+        reference,
         // A file with several strong passages ranks a little above one with a single match.
         score: hits[0].score + 0.1 * (hits[1]?.score ?? 0) + 0.05 * (hits[2]?.score ?? 0),
         hits,
       };
     })
-    .filter((result) => result.source === "library" || result.photo)
+    .filter((result) => result.source === "library" || result.photo || result.reference)
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
 

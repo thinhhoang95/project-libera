@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { libraryEntriesByKey } from "@/lib/references/format";
+import { locatorPages, pdfPageForPrinted } from "@/lib/references/pages";
 import type { ReferenceEntry } from "@/lib/references/types";
 import { attachmentPaths } from "../references-tool";
 import { runSubagents, type SubagentResult, type SubagentTask } from "../subagents";
@@ -7,7 +8,7 @@ import { ok, plural, ToolError, type AgentTool, type ToolContext } from "../tool
 import { webSearchTool } from "../web-search";
 import { findQuote, normalizeUrl, sourceTextLoader, verifyEvidence, verifyWebSources, type EvidenceQuote, type SourceTextLoader } from "./evidence";
 import { checkExistence, type ExistenceOptions, type ExistenceReport } from "./existence";
-import { describeFile, listCitations, locatorPages, pdfPageForPrinted, readableFiles, type CitationListing, type CitationOccurrenceInfo, type SourceSummary } from "./list-citations";
+import { describeFile, listCitations, readableFiles, type CitationListing, type CitationOccurrenceInfo, type SourceSummary } from "./list-citations";
 import { scopedReadTools } from "./read-scope";
 import { buildReport, writeFindings, type FactCheckOutcome, type NotChecked, type UncitedClaim } from "./report";
 import { settleVerdict, submitVerdictsTool, type Assignment, type CheckResult, type SubmittedVerdict } from "./verdicts";

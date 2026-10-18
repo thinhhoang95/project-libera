@@ -2,8 +2,12 @@ import type { LiberaFileNode, LiberaFileType } from "@/lib/types";
 
 /** Shared by the Global Search API and its client. Nothing here may touch the server. */
 
-export type SearchFileKind = LiberaFileType;
-export const SEARCH_FILE_KINDS: SearchFileKind[] = ["markdown", "pdf", "latex", "text", "image"];
+/** A library file type, or "reference": an entry of a notebook's References library. */
+export type SearchFileKind = LiberaFileType | "reference";
+export const SEARCH_FILE_KINDS: SearchFileKind[] = ["markdown", "pdf", "latex", "text", "image", "reference"];
+
+/** Where an indexed record comes from: library files, gallery photos, or References entries. */
+export type SearchSource = "library" | "gallery" | "references";
 
 /** An image placed in the query box. */
 export type SearchImageRef =
@@ -23,6 +27,12 @@ export type SearchRequest = {
   scope?: string[];
   /** Files in archive folders are left out unless the library shows the archive. */
   includeArchive?: boolean;
+  /**
+   * Search only within these records: the References entries of `notebooks`
+   * and the library files at `paths` (the `@` popup's notebook). Every match
+   * among them is ranked, not just those near the top of the whole index.
+   */
+  within?: { notebooks?: string[]; paths?: string[] };
   limit?: number;
 };
 
@@ -58,15 +68,26 @@ export type SearchGalleryPhoto = {
   prompt?: string;
 };
 
+/** A References entry found by Global Search. */
+export type SearchReferenceRecord = {
+  notebook: string;
+  entryId: string;
+  key: string;
+  /** "Smith & Lee (2020)". */
+  authors?: string;
+  year?: string;
+};
+
 export type SearchResultFile = {
   key: string;
-  source: "library" | "gallery";
+  source: SearchSource;
   kind: SearchFileKind;
   name: string;
-  /** The library path, or the path inside the gallery folder. */
+  /** The library path, the path inside the gallery folder, or a reference's notebook. */
   path: string;
   file?: LiberaFileNode;
   photo?: SearchGalleryPhoto;
+  reference?: SearchReferenceRecord;
   score: number;
   hits: SearchHit[];
 };
@@ -116,6 +137,9 @@ export type SearchIndexStatus = {
   indexPath: string;
   error?: string;
 };
+
+/** The section title of a PDF passage that is one of the PDF's highlight quotes. */
+export const SEARCH_HIGHLIGHT_SECTION = "Highlight";
 
 export const SEARCH_QUERY_PREFIX = "task: search result | query: ";
 export const SEARCH_IMAGE_PLACEHOLDER = "<|image|>";
@@ -185,6 +209,8 @@ export function searchKindLabel(kind: SearchFileKind) {
       return "Text & code";
     case "image":
       return "Image";
+    case "reference":
+      return "Reference";
   }
 }
 

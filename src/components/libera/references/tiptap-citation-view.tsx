@@ -456,11 +456,11 @@ export function TiptapCitationLayer({ editor, citations, children }: { editor: E
     activate: (pos) => openPopover(pos),
   }), [citations, openPopover]);
 
-  const insert = useCallback((key: string, { locator }: { locator: boolean }) => {
+  const insert = useCallback((key: string, { locator, pageLocator }: { locator: boolean; pageLocator?: string }) => {
     const state = citations.getSuggestion();
     if (!state) return;
     const { trigger } = state;
-    const raw = citationRawForTrigger(trigger, key);
+    const raw = citationRawForTrigger(trigger, key, pageLocator);
     let at = trigger.range.from;
     // One undo step: the typed `@query` becomes the citation node.
     // No focus command: the editor has focus while typing, and a deferred focus would take it from the popover.

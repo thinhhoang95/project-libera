@@ -5,8 +5,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { GlobalWorkerOptions, Util, getDocument } from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api";
 import { apiRequest, encodeFilePath } from "@/components/libera/api-client";
-import { FileTypeIcon } from "@/components/libera/file-type";
-import { resultImageRef, resultThumbnail, type SearchEntry } from "@/components/libera/global-search/search-results";
+import { Highlighted, ResultKindIcon, resultImageRef, resultThumbnail, resultWhere, type SearchEntry } from "@/components/libera/global-search/search-results";
 import { buildPdfSearchPage } from "@/components/libera/pdf-find";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
@@ -344,6 +343,17 @@ function ImagePassage({ result, onFindSimilar }: { result: SearchResultFile; onF
   );
 }
 
+/** A References entry's passage: its description, abstract or notes, as stored. */
+function ReferencePassage({ hit, terms }: { hit: SearchHit; terms: string[] }) {
+  return (
+    <div className="rounded-lg bg-muted/60 px-3 py-2 text-[13px] leading-5 text-foreground/85">
+      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{hit.location.section ?? "Reference"}</div>
+      <p className="whitespace-pre-wrap"><Highlighted text={hit.text.trim()} terms={terms} /></p>
+      <p className="mt-2 text-[11px] text-muted-foreground">Open shows the entry in References.</p>
+    </div>
+  );
+}
+
 function PreviewLoading() {
   return <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 aria-hidden className="h-4 w-4 animate-spin" /> Loading preview…</div>;
 }
@@ -368,12 +378,12 @@ export function SearchPreview({
   const { result } = entry;
   const hit = result.hits[entry.hit] ?? result.hits[0];
   const location = searchLocationLabel(result.kind, hit.location);
-  const where = result.source === "gallery" ? "Image Gallery" : result.path.split("/").slice(0, -1).join(" / ");
+  const where = resultWhere(result);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-start gap-2 border-b border-border px-4 py-3">
-        <span className="mt-0.5 text-muted-foreground"><FileTypeIcon fileType={result.kind} name={result.name} /></span>
+        <span className="mt-0.5 text-muted-foreground"><ResultKindIcon result={result} /></span>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-sm font-semibold">{result.name}</h3>
           <p className="truncate text-xs text-muted-foreground">
@@ -391,6 +401,7 @@ export function SearchPreview({
         {result.kind === "markdown" ? <MarkdownPassage key={`${result.key}:${hit.chunkId}`} result={result} hit={hit} mathMarkers={mathMarkers} terms={terms} />
           : result.kind === "pdf" ? <PdfPassage key={result.key} result={result} hit={hit} terms={terms} />
           : result.kind === "image" ? <ImagePassage result={result} onFindSimilar={onFindSimilar} />
+          : result.kind === "reference" ? <ReferencePassage hit={hit} terms={terms} />
           : <SourcePassage key={`${result.key}:${hit.chunkId}`} result={result} hit={hit} terms={terms} />}
       </div>
     </div>
