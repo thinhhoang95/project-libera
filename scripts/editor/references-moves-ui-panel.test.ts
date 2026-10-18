@@ -565,7 +565,7 @@ test("GET /api/references/settings returns the four flags and nothing else, behi
 test("the source toolbar disables Fact-check citations for untitled drafts, with a tooltip", () => {
   const props = {
     files: [], documentPath: "Untitled 1.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "See [@gamma2010].", markdownZoom: 1,
-    onEnumerateHeadings: () => undefined, onFixChatGptEquations: () => undefined, onInsert: () => undefined, onInsertExistingImage: () => undefined,
+    onEnumerateHeadings: () => undefined, onFixChatGptEquations: () => undefined, onInsert: () => undefined, onInsertTable: () => undefined, onInsertExistingImage: () => undefined,
     onInsertImage: async () => undefined, onMarkdownZoomChange: () => undefined, onStartScreenshotSnip: () => undefined, onTogglePreviewFullscreen: () => undefined,
     onOpenFileLink: async () => false, previewFullscreen: false,
   };

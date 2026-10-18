@@ -5,6 +5,7 @@ import { createContext, useContext, useMemo, useState, useSyncExternalStore } fr
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
+  ArrowUpRight,
   BookPlus,
   ChevronDown,
   ChevronRight,
@@ -399,42 +400,76 @@ function collectStarredFilesForPanel(tree: LiberaTree) {
     .filter((file): file is LiberaFileNode => Boolean(file));
 }
 
-type Backlinks = {
+type NoteLinks = {
   /** Files whose saved Markdown links to the open file. */
-  sources: Set<string>;
+  backlinks: Set<string>;
+  /** Files the open file's saved Markdown links to. */
+  forwardLinks: Set<string>;
   /** Backlink counts per notebook and folder path, shown while collapsed. */
-  counts: Map<string, number>;
+  backlinkCounts: Map<string, number>;
+  /** Forward-link counts per notebook and folder path, shown while collapsed. */
+  forwardLinkCounts: Map<string, number>;
 };
 
-const BacklinksContext = createContext<Backlinks>({ sources: new Set(), counts: new Map() });
+const NoteLinksContext = createContext<NoteLinks>({
+  backlinks: new Set(),
+  forwardLinks: new Set(),
+  backlinkCounts: new Map(),
+  forwardLinkCounts: new Map(),
+});
 
-function collectBacklinks(tree: LiberaTree, targetPath: string): Backlinks {
-  const sources = new Set<string>();
-  const counts = new Map<string, number>();
+function addContainerCounts(counts: Map<string, number>, filePath: string) {
+  const parts = filePath.split("/");
+  for (let index = 1; index < parts.length; index += 1) {
+    const containerPath = parts.slice(0, index).join("/");
+    counts.set(containerPath, (counts.get(containerPath) ?? 0) + 1);
+  }
+}
+
+function collectNoteLinks(tree: LiberaTree, targetPath: string): NoteLinks {
+  const links: NoteLinks = {
+    backlinks: new Set(),
+    forwardLinks: new Set(),
+    backlinkCounts: new Map(),
+    forwardLinkCounts: new Map(),
+  };
+  if (!targetPath) return links;
   const filesByPath = new Map<string, LiberaFileNode>();
-  if (!targetPath) return { sources, counts };
   for (const notebook of tree.notebooks) collectFilesByPath(notebook.children, filesByPath);
   for (const file of filesByPath.values()) {
     if (file.path === targetPath || !file.linkedFilePaths?.includes(targetPath)) continue;
-    sources.add(file.path);
-    const parts = file.path.split("/");
-    for (let index = 1; index < parts.length; index += 1) {
-      const containerPath = parts.slice(0, index).join("/");
-      counts.set(containerPath, (counts.get(containerPath) ?? 0) + 1);
-    }
+    links.backlinks.add(file.path);
+    addContainerCounts(links.backlinkCounts, file.path);
   }
-  return { sources, counts };
+  for (const linkedPath of filesByPath.get(targetPath)?.linkedFilePaths ?? []) {
+    if (linkedPath === targetPath || !filesByPath.has(linkedPath)) continue;
+    links.forwardLinks.add(linkedPath);
+    addContainerCounts(links.forwardLinkCounts, linkedPath);
+  }
+  return links;
 }
 
-function BacklinkCount({ path }: { path: string }) {
-  const count = useContext(BacklinksContext).counts.get(path);
-  if (!count) return null;
-  const label = `${count} ${count === 1 ? "file links" : "files link"} to the open file`;
+function NoteLinkCounts({ path }: { path: string }) {
+  const { backlinkCounts, forwardLinkCounts } = useContext(NoteLinksContext);
+  const backCount = backlinkCounts.get(path);
+  const forwardCount = forwardLinkCounts.get(path);
+  const backLabel = `${backCount} ${backCount === 1 ? "file links" : "files link"} to the open file`;
+  const forwardLabel = `The open file links to ${forwardCount} ${forwardCount === 1 ? "file" : "files"} here`;
   return (
-    <span className="libera-backlink-count" title={label} aria-label={label}>
-      <Link2 aria-hidden className="h-3 w-3" />
-      {count}
-    </span>
+    <>
+      {backCount ? (
+        <span className="libera-backlink-count" title={backLabel} aria-label={backLabel}>
+          <Link2 aria-hidden className="h-3 w-3" />
+          {backCount}
+        </span>
+      ) : null}
+      {forwardCount ? (
+        <span className="libera-forwardlink-count" title={forwardLabel} aria-label={forwardLabel}>
+          <ArrowUpRight aria-hidden className="h-3 w-3" />
+          {forwardCount}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -577,7 +612,7 @@ export function NotebookPanel({
     () => new Set(tree.notebooks.find((notebook) => notebook.name === selectedNotebookName)?.relatedNotebookNames ?? []),
     [tree.notebooks, selectedNotebookName],
   );
-  const backlinks = useMemo(() => collectBacklinks(tree, activeTabId), [tree, activeTabId]);
+  const noteLinks = useMemo(() => collectNoteLinks(tree, activeTabId), [tree, activeTabId]);
   const sortedTree = useMemo(
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
@@ -912,7 +947,7 @@ export function NotebookPanel({
           </div>
         ) : null}
 
-        <BacklinksContext.Provider value={backlinks}>
+        <NoteLinksContext.Provider value={noteLinks}>
         <div className="space-y-2">
           <StarredFilesSection
             activeTabId={activeTabId}
@@ -1003,7 +1038,7 @@ export function NotebookPanel({
             />
           ))}
         </div>
-        </BacklinksContext.Provider>
+        </NoteLinksContext.Provider>
       </div>
 
       {deepSearchOpen ? (
@@ -1395,7 +1430,7 @@ function NotebookSection({
                 <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               ) : null}
               <SharedNotebookBadge notebook={notebook.name} />
-              {isExpanded ? null : <BacklinkCount path={notebook.path} />}
+              {isExpanded ? null : <NoteLinkCounts path={notebook.path} />}
             </span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
               {linkedFolder?.missing
@@ -1680,7 +1715,7 @@ function TreeNodeRow({
   showNotebookName?: boolean;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
-  const backlinks = useContext(BacklinksContext);
+  const noteLinks = useContext(NoteLinksContext);
 
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
@@ -1735,7 +1770,7 @@ function TreeNodeRow({
           )}
           <Folder aria-hidden className="libera-folder-icon h-4 w-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{node.name}</span>
-          {isExpanded ? null : <BacklinkCount path={node.path} />}
+          {isExpanded ? null : <NoteLinkCounts path={node.path} />}
         </SidebarNameTooltipButton>
 
         {isExpanded ? (
@@ -1800,7 +1835,8 @@ function TreeNodeRow({
   }
 
   const isStarred = starredFilePaths.has(node.path);
-  const isBacklink = backlinks.sources.has(node.path);
+  const isBacklink = noteLinks.backlinks.has(node.path);
+  const isForwardLink = noteLinks.forwardLinks.has(node.path);
 
   return (
     <SidebarNameTooltipButton
@@ -1808,6 +1844,7 @@ function TreeNodeRow({
         activeTabId === node.path ? "bg-muted" : ""
       }`}
       data-backlink={isBacklink || undefined}
+      data-forwardlink={isForwardLink || undefined}
       draggable
       fullName={node.name}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -1848,6 +1885,11 @@ function TreeNodeRow({
       {isBacklink ? (
         <span className="shrink-0 text-accent" title="Links to the open file" aria-label="Links to the open file">
           <Link2 aria-hidden className="h-3.5 w-3.5" />
+        </span>
+      ) : null}
+      {isForwardLink ? (
+        <span className="libera-forwardlink-icon shrink-0" title="Linked from the open file" aria-label="Linked from the open file">
+          <ArrowUpRight aria-hidden className="h-3.5 w-3.5" />
         </span>
       ) : null}
       {isStarred ? (

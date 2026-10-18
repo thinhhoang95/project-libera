@@ -50,6 +50,16 @@ async function main() {
   await fs.rm(path.join(projectRoot, "electron", "collab", "dist"), cleanupOptions);
   await buildCollabHost();
   process.exitCode = await runNextBuild();
+  if (process.exitCode !== 0) return;
+  process.exitCode = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(__dirname, "check-latex-production.cjs")], {
+      cwd: projectRoot,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
 }
 
 main().catch((error) => {

@@ -29,6 +29,7 @@
     "lint": "eslint",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
     "search:download-model": "node scripts/download-embeddinggemma.cjs",
+    "test:latex-production": "node scripts/check-latex-production.cjs",
     "test:collab": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/collab/*.test.ts",
     "collab:server": "npm --prefix server run dev",
     "collab:build-host": "node scripts/build-collab-host.cjs",

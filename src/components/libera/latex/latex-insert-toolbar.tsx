@@ -6,8 +6,7 @@ import {
   Bold, BookMarked, BookmarkPlus, Check, ChevronDown, Code, Columns2, Hash, Heading, Image as ImageIcon, Italic, Link, List,
   Pencil, Puzzle, Quote, Sigma, Superscript, Table, Trash2,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { wrapSelection, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
 import { ensurePackages, insertSnippetText, insertTemplate } from "@/lib/latex/codemirror/snippets";
 import {
@@ -18,77 +17,16 @@ import {
 import type { LatexEditorHandle } from "./latex-editor";
 import type { LatexSnippetDialogRequest } from "./latex-snippet-dialog";
 import { deleteLatexSnippet, useLatexSnippets } from "./latex-snippets-store";
+import { TABLE_GRID_MENU_WIDTH, TableGridPicker } from "../table-grid-picker";
+import { ToolbarMenu } from "../toolbar-menu";
 
 type MenuId = "heading" | "list" | "math" | "figure" | "subfigures" | "table" | "code" | "bibliography" | "snippets";
 
 const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-foreground hover:bg-muted focus-visible:bg-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
 const sectionLabelClass = "px-2.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
-const TABLE_GRID = 8;
 
 /** The selection as the text of a one-line template field. */
 const field = (selection: string, fallback: string) => literalField(selection.trim().replace(/\s*\n\s*/g, " ")) || fallback;
-
-/** A dropdown below a toolbar button, in a portal because the toolbar scrolls
- * horizontally and would clip it. Arrow keys move between its items. */
-function ToolbarMenu({ anchorRef, label, width = 260, onClose, children }: {
-  anchorRef: RefObject<HTMLElement | null>;
-  label: string;
-  width?: number;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
-
-  useLayoutEffect(() => {
-    const rect = anchorRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), top: rect.bottom + 4, maxHeight: window.innerHeight - rect.bottom - 12 });
-    (menuRef.current?.querySelector<HTMLElement>("[data-autofocus]") ?? menuRef.current?.querySelector<HTMLElement>("[role^=menuitem]:not(:disabled)"))?.focus();
-  }, [anchorRef, width]);
-
-  useEffect(() => {
-    const outside = (event: Event) => event.target instanceof Node && !menuRef.current?.contains(event.target) && !anchorRef.current?.contains(event.target);
-    const close = (event: Event) => { if (outside(event)) onClose(); };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); anchorRef.current?.focus(); }
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", onClose);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", onClose);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [anchorRef, onClose]);
-
-  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>("[role^=menuitem]:not(:disabled)") ?? [])];
-    if (!items.length) return;
-    event.preventDefault();
-    const index = items.indexOf(document.activeElement as HTMLElement);
-    const next = event.key === "ArrowDown" ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
-    items[next].focus();
-  }
-
-  return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={label}
-      className="fixed z-50 overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg"
-      style={{ left: position?.left ?? -9999, top: position?.top ?? -9999, width, maxHeight: position?.maxHeight }}
-      onKeyDown={onKeyDown}
-    >
-      {children}
-    </div>,
-    document.body,
-  );
-}
 
 function MenuItem({ icon, label, detail, checked, disabled, onSelect }: { icon?: ReactNode; label: ReactNode; detail?: ReactNode; checked?: boolean; disabled?: boolean; onSelect: () => void }) {
   return (
@@ -297,7 +235,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       ) : null}
 
       {open === "table" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Insert table" width={TABLE_GRID * 22 + 26} onClose={close}>
+        <ToolbarMenu anchorRef={anchorRef} label="Insert table" width={TABLE_GRID_MENU_WIDTH} onClose={close}>
           <TableGridPicker onPick={(rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])} />
         </ToolbarMenu>
       ) : null}
@@ -344,35 +282,6 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
           />
         </ToolbarMenu>
       ) : null}
-    </div>
-  );
-}
-
-function TableGridPicker({ onPick }: { onPick: (rows: number, columns: number) => void }) {
-  const [size, setSize] = useState({ rows: 3, columns: 3 });
-  return (
-    <div className="p-1.5">
-      <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${TABLE_GRID}, 20px)` }}>
-        {Array.from({ length: TABLE_GRID * TABLE_GRID }, (_, index) => {
-          const rows = Math.floor(index / TABLE_GRID) + 1;
-          const columns = (index % TABLE_GRID) + 1;
-          const active = rows <= size.rows && columns <= size.columns;
-          return (
-            <button
-              key={index}
-              type="button"
-              role="menuitem"
-              aria-label={`${rows} by ${columns} table`}
-              data-autofocus={rows === 3 && columns === 3 ? "" : undefined}
-              className={`h-5 w-5 rounded-sm border focus-visible:outline-none ${active ? "border-accent bg-accent/25" : "border-border bg-card"}`}
-              onMouseEnter={() => setSize({ rows, columns })}
-              onFocus={() => setSize({ rows, columns })}
-              onClick={() => onPick(rows, columns)}
-            />
-          );
-        })}
-      </div>
-      <p className="pt-1.5 text-center text-xs text-muted-foreground">{size.rows} × {size.columns} (first row is the header)</p>
     </div>
   );
 }

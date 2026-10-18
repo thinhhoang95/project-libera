@@ -58,6 +58,7 @@ import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
 import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
 import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
+import { MARKDOWN_TABLE_FIRST_HEADER, markdownTable } from "@/lib/markdown-table";
 import {
   ensureDocumentOcrModel,
   readImageAsMarkdown,
@@ -1443,6 +1444,49 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });
     else insertMarkdown(citation, "", "");
     return true;
+  }
+
+  /** Insert an empty table as its own block after the caret's paragraph, with
+   * the first column name selected so typing replaces it. */
+  function insertMarkdownTable(rows: number, columns: number) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
+    const position = findMarkdownBlockInsertionOffset(draft, textarea?.selectionEnd ?? draft.length);
+    const insertion = insertMarkdownBlock(draft, position, markdownTable(rows, columns));
+    const replacement = insertion.value.slice(position, position + insertion.value.length - draft.length);
+    const nextSelectionStart = insertion.start + 2;
+    const nextSelectionEnd = nextSelectionStart + MARKDOWN_TABLE_FIRST_HEADER.length;
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd,
+        nextSelectionStart,
+        replacement,
+        selectionEnd: position,
+        selectionStart: position,
+      })
+    ) {
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: nextSelectionStart,
+        selectionEnd: nextSelectionEnd,
+      });
+      return;
+    }
+
+    setActiveDraft(insertion.value);
+    restoreMarkdownTextarea({
+      ...scrollState,
+      selectionStart: nextSelectionStart,
+      selectionEnd: nextSelectionEnd,
+    });
   }
 
   function insertMarkdownFileLinkPlaceholder() {
@@ -3923,6 +3967,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       insertMarkdown,
       insertCitation,
       activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,
+      insertMarkdownTable,
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,

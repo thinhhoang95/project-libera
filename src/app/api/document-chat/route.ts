@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getAiChatCustomInstruction, getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
-import { createOpenRouterCompletion, streamOpenRouterCompletion, type OpenRouterMessage } from "@/lib/openrouter";
+import { createOpenRouterCompletion, streamOpenRouterCompletion, type OpenRouterGeneration, type OpenRouterMessage } from "@/lib/openrouter";
+import type { TokenUsage } from "@/lib/chat-token-usage";
 import { chatCompletionContent, isChatReasoningEffort, validateChatMessages, type ChatMessage } from "@/lib/document-chat";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { readSharedText } from "@/lib/collab/shared-writes";
@@ -26,6 +27,14 @@ async function withSharedDocumentText(messages: ChatMessage[]): Promise<ChatMess
     catch { return context; }
   }));
   return [...messages.slice(0, -1), { ...last, contexts }];
+}
+
+// One line per request, so consecutive turns of a chat show whether they stayed
+// on one provider and how much of the prompt it read from its cache.
+function logChatUsage(model: string, sessionId: string | undefined, usage: TokenUsage | undefined, generation: OpenRouterGeneration) {
+  const cached = usage?.cachedTokens;
+  const share = usage && cached !== undefined && usage.inputTokens ? ` (${Math.round(cached / usage.inputTokens * 100)}%)` : "";
+  console.info(`[document-chat] model=${model} session=${sessionId?.slice(0, 8) ?? "-"} provider=${generation.provider ?? "unknown"} generation=${generation.id ?? "-"} input=${usage?.inputTokens ?? "?"} cached=${cached ?? "unreported"}${share}`);
 }
 
 export async function POST(request: NextRequest) {
@@ -63,7 +72,10 @@ export async function POST(request: NextRequest) {
           const send = (event: object) => { if (!cancellation.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); };
           let content = "";
           try {
-            for await (const text of streamOpenRouterCompletion(messages, { ...completionOptions, signal, onUsage: (usage) => send({ type: "usage", usage }) })) {
+            for await (const text of streamOpenRouterCompletion(messages, { ...completionOptions, signal, onUsage: (usage, generation) => {
+              logChatUsage(model, completionOptions.sessionId, usage, generation);
+              send({ type: "usage", usage });
+            } })) {
               content += text;
               if (content.length > 100_000) throw new Error("The response exceeded the size limit.");
               send({ type: "delta", text });
@@ -82,6 +94,7 @@ export async function POST(request: NextRequest) {
       return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" } });
     }
     const result = await createOpenRouterCompletion(messages, { ...completionOptions, signal: AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]) });
+    logChatUsage(model, completionOptions.sessionId, result.usage, result.generation ?? {});
     if (!result.content.trim()) return jsonError("The model returned an empty response. Please try again.", 502);
     return NextResponse.json({ text: result.content, model, usage: result.usage });
   } catch (error) {

@@ -39,6 +39,7 @@ import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enu
 import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import { NoteLinksButton } from "./note-links-dialog";
+import { TableInsertButton } from "./table-grid-picker";
 import type { LiberaFileNode } from "@/lib/types";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 
@@ -56,6 +57,7 @@ type MarkdownToolbarProps = {
   ) => void;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
+  onInsertTable: (rows: number, columns: number) => void;
   onInsertExistingImage: () => void;
   onInsertFromGallery?: () => void;
   onInsertImage: (file: File) => Promise<void>;
@@ -131,6 +133,7 @@ export function MarkdownToolbar({
   onEnumerateHeadings,
   onFixChatGptEquations,
   onInsert,
+  onInsertTable,
   onInsertExistingImage,
   onInsertFromGallery,
   onInsertImage,
@@ -520,6 +523,7 @@ export function MarkdownToolbar({
         >
           <Sigma aria-hidden className="h-4 w-4" />
         </button>
+        <TableInsertButton className="toolbar-button" onPick={onInsertTable} />
         <button
           aria-label="Fix ChatGPT equations"
           className="toolbar-button"
