@@ -95,6 +95,12 @@ export function annotationViolation(
         continue;
       }
       if (sameJson(previous, next)) continue;
+      // Authorship holds for every role: a new record is created by the
+      // sender, nobody re-attributes an existing one, and a suggestion's actor
+      // is the sender (or an AI acting for the sender). Otherwise an editor
+      // could plant comments or suggestions in someone else's name.
+      const authorship = authorshipViolation(root, previous, next, accountId);
+      if (authorship) return `${root}/${key}: ${authorship}`;
       if (commenter) {
         if (previous !== undefined && previous.createdBy !== accountId) {
           return `${root}/${key} belongs to another member.`;
@@ -112,10 +118,30 @@ export function annotationViolation(
   return null;
 }
 
+function authorshipViolation(
+  root: string,
+  previous: JsonRecord | undefined,
+  next: JsonRecord | undefined,
+  accountId: string,
+): string | null {
+  if (next === undefined) return null;
+  if (previous === undefined && next.createdBy !== accountId) return "New entries must be created by you.";
+  if (previous !== undefined && next.createdBy !== previous.createdBy) return "createdBy cannot change.";
+  if (root === AnnotationKeys.suggestions) {
+    const actor = next.actor as JsonRecord | undefined;
+    const actorAccount = actor?.kind === "user" ? actor.userId : actor?.kind === "ai" ? actor.onBehalfOf : undefined;
+    if (actorAccount !== next.createdBy) return "The suggestion's actor must be its creator.";
+    if (previous !== undefined && !sameJson(previous.actor, next.actor)) return "The suggestion's actor cannot change.";
+  }
+  return null;
+}
+
 /**
  * accepted, rejected and stale are decisions the server makes through
- * RoomService.transact; clients may only create pending suggestions and
- * withdraw their own.
+ * RoomService.transact; clients may only create suggestions and withdraw
+ * their own. A new suggestion may be created stale: agentic review turns
+ * edits computed on an old snapshot whose text has since changed into stale
+ * suggestions (hard case 7), so the panel shows what the AI saw.
  */
 function suggestionTransitionViolation(
   previous: JsonRecord | undefined,
@@ -123,7 +149,9 @@ function suggestionTransitionViolation(
   accountId: string,
 ): string | null {
   if (next === undefined) return null;
-  if (previous === undefined) return next.status === "pending" ? null : "New suggestions must be pending.";
+  if (previous === undefined) {
+    return next.status === "pending" || next.status === "stale" ? null : "New suggestions must be pending or stale.";
+  }
   if (previous.status === next.status) return null;
   if (
     previous.status === "pending" &&

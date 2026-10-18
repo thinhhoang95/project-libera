@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import * as Y from "yjs";
 
-import type { RoomService, ServerContext } from "../context.js";
+import type { PersistedUpdate, RoomBatch, RoomService, ServerContext } from "../context.js";
 import type { BusEvent } from "../events.js";
 import {
   actorAccountId,
@@ -46,6 +46,7 @@ export class SyncServer {
   private readonly sessions = new Set<Session>();
   private readonly byAccount = new Map<string, Set<Session>>();
   private readonly connectionsByIp = new Map<string, number[]>();
+  private readonly persistedListeners = new Set<(update: PersistedUpdate) => void>();
   private readonly unsubscribe: () => void;
   private readonly sweepTimer: NodeJS.Timeout;
   private detach: (() => void) | undefined;
@@ -62,6 +63,11 @@ export class SyncServer {
     this.rooms = {
       transact: (docId, subdoc, actor, provenance, change) => this.transact(docId, subdoc, actor, provenance, change),
       withDocs: (docId, read) => this.withDocs(docId, read),
+      batch: (docId, task) => this.batch(docId, task),
+      onPersisted: (listener) => {
+        this.persistedListeners.add(listener);
+        return () => this.persistedListeners.delete(listener);
+      },
       currentServerSeq: (docId) => this.currentServerSeq(docId),
       membershipChanged: (projectId, accountId, role) => this.membershipChanged(projectId, accountId, role),
       documentDeleted: (docId) => this.documentDeleted(docId),
@@ -316,7 +322,18 @@ export class SyncServer {
       return null;
     }
     if (!room.disposed) room.commit(subdoc, input.update, serverSeq);
+    this.firePersisted({ docId: room.docId, subdoc, serverSeq, actor: input.actor, provenance: input.provenance });
     return serverSeq;
+  }
+
+  private firePersisted(update: PersistedUpdate): void {
+    for (const listener of this.persistedListeners) {
+      try {
+        listener(update);
+      } catch (error) {
+        this.context.log.error({ err: error, docId: update.docId }, "Persisted-update listener failed");
+      }
+    }
   }
 
   // RoomService -------------------------------------------------------------
@@ -328,44 +345,66 @@ export class SyncServer {
     provenance: Provenance,
     change: (doc: Y.Doc) => T | Promise<T>,
   ): Promise<{ serverSeq: number; result: T }> {
-    return this.withRoom(docId, (room) =>
-      room.queue.run(async () => {
-        if (room.disposed) throw new Error(`Document ${docId} was deleted.`);
-        if (!room.hasSubdoc(subdoc)) throw new Error(`A ${room.kind} document has no ${subdoc} sub-document.`);
-        // The change runs on the probe copy rather than the live document,
-        // so a change that throws halfway leaves nothing behind: the probe is
-        // dropped and the live document never saw it.
-        const shadow = room.shadow(subdoc);
-        const updates: Uint8Array[] = [];
-        const collect = (update: Uint8Array) => updates.push(update);
-        shadow.on("update", collect);
-        let result: T;
-        try {
-          result = await shadow.transact(() => change(shadow), SERVER_ORIGIN);
-        } catch (error) {
-          room.discardShadow(subdoc);
-          throw error;
-        } finally {
-          shadow.off("update", collect);
-        }
-        if (updates.length === 0) return { serverSeq: room.serverSeq, result };
+    return this.withRoom(docId, (room) => room.queue.run(() => this.transactInRoom(room, subdoc, actor, provenance, change)));
+  }
 
-        const update = updates.length === 1 ? updates[0] : Y.mergeUpdates(updates);
-        const serverSeq = await this.persist(room, subdoc, {
-          accountId: actorAccountId(actor),
-          clientId: "server",
-          actor,
-          provenance,
-          update,
-        });
-        if (serverSeq === null) throw new Error(`Document ${docId} was deleted.`);
-        this.metrics.updates.inc({ subdoc, source: "server" });
-        const stopFanout = this.metrics.fanoutSeconds.startTimer();
-        room.broadcast(
-          encodeMessage({ type: MessageType.Remote, docId, subdoc, serverSeq, update, userId: "", clientId: "", provenance }),
-        );
-        stopFanout();
-        return { serverSeq, result };
+  /** The body of transact; the caller holds the room's queue. */
+  private async transactInRoom<T>(
+    room: Room,
+    subdoc: Subdoc,
+    actor: Actor,
+    provenance: Provenance,
+    change: (doc: Y.Doc) => T | Promise<T>,
+  ): Promise<{ serverSeq: number; result: T }> {
+    const { docId } = room;
+    if (room.disposed) throw new Error(`Document ${docId} was deleted.`);
+    if (!room.hasSubdoc(subdoc)) throw new Error(`A ${room.kind} document has no ${subdoc} sub-document.`);
+    // The change runs on the probe copy rather than the live document,
+    // so a change that throws halfway leaves nothing behind: the probe is
+    // dropped and the live document never saw it.
+    const shadow = room.shadow(subdoc);
+    const updates: Uint8Array[] = [];
+    const collect = (update: Uint8Array) => updates.push(update);
+    shadow.on("update", collect);
+    let result: T;
+    try {
+      result = await shadow.transact(() => change(shadow), SERVER_ORIGIN);
+    } catch (error) {
+      room.discardShadow(subdoc);
+      throw error;
+    } finally {
+      shadow.off("update", collect);
+    }
+    if (updates.length === 0) return { serverSeq: room.serverSeq, result };
+
+    const update = updates.length === 1 ? updates[0] : Y.mergeUpdates(updates);
+    const serverSeq = await this.persist(room, subdoc, {
+      accountId: actorAccountId(actor),
+      clientId: "server",
+      actor,
+      provenance,
+      update,
+    });
+    if (serverSeq === null) throw new Error(`Document ${docId} was deleted.`);
+    this.metrics.updates.inc({ subdoc, source: "server" });
+    const stopFanout = this.metrics.fanoutSeconds.startTimer();
+    room.broadcast(
+      encodeMessage({ type: MessageType.Remote, docId, subdoc, serverSeq, update, userId: "", clientId: "", provenance }),
+    );
+    stopFanout();
+    return { serverSeq, result };
+  }
+
+  private batch<T>(docId: string, task: (batch: RoomBatch) => T | Promise<T>): Promise<T> {
+    return this.withRoom(docId, (room) =>
+      room.queue.run(() => {
+        if (room.disposed) throw new Error(`Document ${docId} was deleted.`);
+        const batch: RoomBatch = {
+          docs: Object.fromEntries(room.docs) as Record<Subdoc, Y.Doc>,
+          serverSeq: () => room.serverSeq,
+          transact: (subdoc, actor, provenance, change) => this.transactInRoom(room, subdoc, actor, provenance, change),
+        };
+        return task(batch);
       }),
     );
   }

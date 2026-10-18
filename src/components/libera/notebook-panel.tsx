@@ -17,6 +17,13 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
+import { useCollabShell } from "@/components/libera/collab/collab-provider";
+import {
+  CollabJoinButton,
+  SharedNotebookBadge,
+  collabNotebookMenuItems,
+  runCollabNotebookMenuItem,
+} from "@/components/libera/collab/collab-shell";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
@@ -840,6 +847,7 @@ export function NotebookPanel({
               <FolderOpen aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
+          <CollabJoinButton className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg" />
           <button
             aria-label="New group"
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
@@ -1170,6 +1178,7 @@ function NotebookSection({
   visibleNodeLimitForPath: (path: string) => number;
 }) {
   const linkedFolder = notebook.folder;
+  const collabShell = useCollabShell();
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1187,6 +1196,7 @@ function NotebookSection({
         { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
         { id: "new-folder", label: "New folder", enabled: available },
         { id: "upload", label: "Upload", enabled: available },
+        ...collabNotebookMenuItems(collabShell, notebook),
         { type: "separator" },
         {
           id: "show-archive",
@@ -1221,7 +1231,7 @@ function NotebookSection({
       point,
     );
 
-    if (!selectedItemId) {
+    if (!selectedItemId || runCollabNotebookMenuItem(collabShell, selectedItemId, notebook.name)) {
       return;
     }
 
@@ -1346,6 +1356,7 @@ function NotebookSection({
               {linkedFolder ? (
                 <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               ) : null}
+              <SharedNotebookBadge notebook={notebook.name} />
               {isExpanded ? null : <BacklinkCount path={notebook.path} />}
             </span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
