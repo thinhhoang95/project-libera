@@ -4,10 +4,10 @@ import { startTransition, useEffect, useLayoutEffect, useRef, useState, type Com
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import type { MarkdownPreviewRequest, MarkdownPreviewResponse } from "@/lib/markdown-preview";
 import type { Root } from "hast";
-import type { PreviewSourcePosition } from "@/lib/markdown-preview-patch";
+import type { PreviewCitation, PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 
 type Props = ComponentProps<typeof MarkdownRenderer> & { onContentReady: (content: string) => void };
-type Result = { markdown: string; tree: Root; sources?: PreviewSourcePosition[] };
+type Result = { markdown: string; tree: Root; sources?: PreviewSourcePosition[]; citations?: PreviewCitation[] };
 
 export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ...props }: Props) {
   const [result, setResult] = useState<Result | null>(null);
@@ -53,7 +53,7 @@ export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ..
               if (tree) {
                 startTransition(() => {
                   // A more recent edit may have arrived before React commits.
-                  setResult((previous) => !disposed && latest === completed ? { markdown: completed.markdown, tree, sources: response.sources } : previous);
+                  setResult((previous) => !disposed && latest === completed ? { markdown: completed.markdown, tree, sources: response.sources, citations: response.citations } : previous);
                   setError("");
                 });
               } else setError("Could not prepare preview. Edit the document to retry.");
@@ -79,7 +79,7 @@ export function MarkdownWorkerPreview({ content, mathMarkers, onContentReady, ..
 
   return <>
     {error ? <p role="status" className="mb-3 text-sm text-muted-foreground">{error}</p> : null}
-    {result ? <MarkdownRenderer {...props} content={result.markdown} preparedTree={result.tree} preparedSources={result.sources} />
+    {result ? <MarkdownRenderer {...props} content={result.markdown} preparedTree={result.tree} preparedSources={result.sources} preparedCitations={result.citations} />
       : !error ? <p role="status" className="text-sm text-muted-foreground">Preparing preview…</p> : null}
   </>;
 }
