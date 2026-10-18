@@ -20,7 +20,7 @@ import { CodeMirrorTextareaAdapter } from "../../src/lib/markdown-codemirror/tex
 import { configureCitationFormatting } from "../../src/lib/references/format-client";
 import { PDF_CITATION_MIME, type PdfQuoteSource } from "../../src/lib/references/pdf-quote";
 import { resetRecentCitations } from "../../src/lib/references/reference-suggestions";
-import { REFERENCES_UPDATED_EVENT, type ReferencesUpdatedDetail } from "../../src/lib/references/types";
+import { REFERENCES_UPDATED_EVENT, type ReferenceLibrary, type ReferencesUpdatedDetail } from "../../src/lib/references/types";
 import { installReferenceFetch, makeLibrary, referenceEntry, SMITH, type MockServer } from "./references-editors-fixtures";
 
 /* Quote and cite from a PDF into the editors (drag and drop), the entry
@@ -60,7 +60,7 @@ function json(body: unknown, status = 200) {
 }
 
 /** The fixtures' reference routes, plus /api/search and /api/references/copy. */
-function setup(libraries = { Notes: makeLibrary() }, resolve: MockServer["resolve"] = () => 500) {
+function setup(libraries: Record<string, ReferenceLibrary> = { Notes: makeLibrary() }, resolve: MockServer["resolve"] = () => 500) {
   server = { libraries, requests: [], resolve };
   const restore = installReferenceFetch(server);
   const references = globalThis.fetch;
@@ -305,7 +305,7 @@ test("Visual editor: a dropped PDF quote becomes a blockquote with a citation no
     const plain = dragEvent("drop", { "text/plain": "Just text" });
     assert.ok(!view.someProp("handleDrop", (handler) => handler(view, plain, Slice.empty, false)), "other drops go to ProseMirror");
     const drop = dragEvent("drop", quoteDrag());
-    let handled: boolean | undefined;
+    let handled: boolean | void | undefined;
     await act(async () => { handled = view.someProp("handleDrop", (handler) => handler(view, drop, Slice.empty, false)); });
     await settle(50);
     assert.equal(handled, true);
