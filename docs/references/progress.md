@@ -35,6 +35,11 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - Preview: Turbopack can't start from the shared `node_modules`, so lanes use `next dev --webpack`. Check `npm run test:editor-worker-bundle` at final integration: the preview worker check reported `structuredClone is not defined` in its VM scope, possibly pre-existing.
 - The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
 
+### Watch list
+
+- `workspace-panel-performance.test.ts` ("pane bodies skip unrelated drafts…") failed once under full-suite load with a render count 1 too high. It passes alone. The suspect is the reference render provider's async library load landing mid-test. Re-check at final integration.
+- Fact-check source toolbar: the source-mode toolbar has no `untitled` prop, so its Fact-check button isn't disabled for untitled drafts (the route answers "file does not exist"). Tidy this in moves-ui or the editors follow-up.
+
 ### Other test baselines
 
 - `node --test scripts/lib/*.test.cjs`: 44 tests, 4 fail at the base commit `0ae5bce` (`session-shutdown.test.cjs`, "collabHost is not defined"). This is collaboration code. Reference lanes add none.
@@ -82,7 +87,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ◐ |
+| factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☑ merged 7208feb |
 | pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☐ |
 | scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ◐ |
 | syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ☐ |
