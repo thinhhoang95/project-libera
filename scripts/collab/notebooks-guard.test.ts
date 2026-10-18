@@ -232,14 +232,17 @@ test("every writer refuses a shared notebook and leaves it untouched", async () 
     const form = new FormData();
     form.set("notebook", "Shared");
     form.append("files", upload("u.png"));
+    // Uploads and Markdown images into a shared notebook go through the collab
+    // host (src/lib/collab/shared-writes.ts); with collaboration off they
+    // answer 503 and still write nothing.
     const uploaded = await UPLOADS_POST(authed("/api/uploads", { method: "POST", body: form }));
-    assert.equal(uploaded.status, 409);
-    assert.deepEqual(await uploaded.json(), { error: "shared-document" });
+    assert.equal(uploaded.status, 503);
+    assert.match(((await uploaded.json()) as { error: string }).error, /shared notebook.*collaboration is not running/);
     const assetForm = new FormData();
     assetForm.set("documentPath", "Shared/a.md");
     assetForm.set("file", upload("p.png"));
     const asset = await ASSETS_POST(authed("/api/markdown-assets", { method: "POST", body: assetForm }));
-    assert.equal(asset.status, 409);
+    assert.equal(asset.status, 503);
     assert.equal(fingerprint(sharedRoot), before);
 
     // The local archive inside a shared notebook stays writable.

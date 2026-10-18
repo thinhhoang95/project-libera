@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { getFileType } from "@/lib/storage/file-types";
 import { addReviewThreads } from "@/lib/storage/markdown-reviews";
 import {
@@ -17,6 +18,16 @@ import {
 // model is told which comments to fix.
 
 const NAME = "leave-review-comments";
+
+// Review comments live in Libera's local review store, which collaborators
+// never see. On a shared document they would be private notes posing as
+// review comments, so the skill is off there until shared comment threads
+// (Phase 2, M2.3) can carry them with an AI actor.
+const SHARED_UNAVAILABLE = "Review comments are not available for documents in shared notebooks yet: Libera's review comments are stored only on this computer, so collaborators would never see them. Shared comments arrive in a later update. Give your review in your reply instead (quote the passages you comment on), and tell the user why.";
+
+function sharedNotice(filePath: string) {
+  return `${filePath} is in a shared notebook. ${SHARED_UNAVAILABLE}`;
+}
 
 type ReviewCopy = { path: string; fileType: "markdown" | "latex"; original: string; comments: DraftComment[] };
 
@@ -64,6 +75,7 @@ Usage:
   describe: (args) => `Commenting on ${String(args.file_path ?? "a file")}`,
   async run(args, context) {
     const resolved = await resolve(context, requireString(args, "file_path"));
+    if (isSharedNotebookPath(resolved.path)) throw new ToolError(sharedNotice(resolved.path));
     const oldString = requireString(args, "old_string", { allowEmpty: true });
     const newString = requireString(args, "new_string", { allowEmpty: true });
     const fileType = getFileType(resolved.path);
@@ -140,6 +152,14 @@ async function finishPass(context: ToolContext, { final }: { final: boolean }): 
   const compiled: { copy: ReviewCopy; placements: CommentPlacement[] }[] = [];
   for (const copy of [...copies.values()]) {
     if (!copy.comments.length) { copies.delete(copy.path); continue; }
+    if (isSharedNotebookPath(copy.path)) {
+      // Shared since the comments were drafted: never save them locally.
+      copies.delete(copy.path);
+      const id = `comments-${randomUUID()}`;
+      context.emit({ type: "tool_started", id, name: "ReviewComments", summary: `Adding review comments to ${copy.path}` });
+      context.emit({ type: "tool_finished", id, status: "error", result: "Not available in shared notebooks", detail: copy.comments.map((comment) => comment.text).join("\n\n—\n\n") });
+      continue;
+    }
     let current: { content: string } | null = null;
     try { current = await readCurrentText(context, await resolve(context, copy.path)); } catch { current = null; }
     if (!current) {
@@ -240,4 +260,5 @@ export const leaveReviewCommentsSkill: AgentSkill = {
   instructions,
   tools: [leaveCommentTool],
   finishPass,
+  unavailable: (context) => context.notebook && isSharedNotebookPath(context.notebook) ? `The current notebook "${context.notebook}" is shared. ${SHARED_UNAVAILABLE}` : null,
 };

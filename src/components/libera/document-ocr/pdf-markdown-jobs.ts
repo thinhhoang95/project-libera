@@ -97,6 +97,28 @@ async function renderPage(page: PDFPageProxy, longEdge: number) {
   return canvas;
 }
 
+/**
+ * Into a shared notebook the file is created, and each page applied, through
+ * /api/document-ocr/output (the collab host, with AI provenance). Elsewhere
+ * the route answers { shared: false } and the app's own file writers are used
+ * as before.
+ */
+async function conversionOutput(pdfPath: string, conversion: PdfMarkdownConversion) {
+  const target = await apiRequest<{ shared: boolean; file?: LiberaFileNode }>("/api/document-ocr/output", {
+    method: "POST",
+    body: JSON.stringify({ pdfPath }),
+  });
+  if (!target.shared || !target.file) return { file: await conversion.createFile(pdfPath), writeFile: conversion.writeFile };
+  let previous = "";
+  return {
+    file: target.file,
+    writeFile: async (path: string, content: string) => {
+      await apiRequest<{ text: string }>("/api/document-ocr/output", { method: "PATCH", body: JSON.stringify({ path, content, previous }) });
+      previous = content;
+    },
+  };
+}
+
 async function uploadPicture(markdownPath: string, image: Blob, name: string) {
   const form = new FormData();
   form.append("documentPath", markdownPath);
@@ -152,7 +174,8 @@ async function runJob(
     const last = Math.min(lastPage, pdf.numPages);
     job.lastPage = last;
 
-    const file = await conversion.createFile(pdfPath);
+    const output = await conversionOutput(pdfPath, conversion);
+    const file = output.file;
     job.file = file;
     publish(job);
 
@@ -193,7 +216,7 @@ async function runJob(
       page.cleanup();
 
       pages.push(blocks.filter((block) => block.markdown.trim()));
-      await conversion.writeFile(file.path, `${joinDocumentPages(pages)}\n`);
+      await output.writeFile(file.path, `${joinDocumentPages(pages)}\n`);
       job.done += 1;
       publish(job);
     }

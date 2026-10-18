@@ -1,5 +1,7 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { canEditSharedContent, readSharedText, requireSharedDoc, SharedWriteError, writeSharedText } from "@/lib/collab/shared-writes";
+import type { ResolvedDoc } from "@/lib/collab/local-api";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
@@ -36,6 +38,10 @@ export type ToolContext = {
   maxResultChars: number;
   signal: AbortSignal;
   emit: (event: AgentEvent) => void;
+  /** The model running this agent, recorded in the provenance of edits to shared files. */
+  model?: string;
+  /** Shared documents resolved in this run, by library path. */
+  sharedDocs?: Map<string, ResolvedDoc>;
 };
 
 export type ToolResult = {
@@ -68,6 +74,12 @@ export type AgentSkill = {
   description: string;
   /** Markdown returned by the Skill tool. */
   instructions: string;
+  /**
+   * Why the skill cannot be used in this run, or null. An unavailable skill
+   * is not loaded, so its tools are never offered; the Skill tool returns the
+   * reason for the model to pass on.
+   */
+  unavailable?: (context: ToolContext) => string | null;
   /** Tools offered once the skill is loaded. */
   tools?: AgentTool[];
   /**
@@ -167,9 +179,56 @@ function hasNul(text: string) {
   return text.includes("\u0000");
 }
 
-/** The text the agent should see: an open editor's unsaved draft, else the file on disk. */
-export async function readCurrentText(context: ToolContext, resolved: ResolvedPath): Promise<{ content: string; fromDraft: boolean } | null> {
-  const draft = context.drafts.get(resolved.path);
+/** Attribution line for tool results on shared files. */
+export const SHARED_EDIT_NOTE = "This file is in a shared notebook: the change went through Libera's collaboration service, collaborators see it at once, and it is attributed to “AI on behalf of you”.";
+
+function sharedToolError(error: unknown): never {
+  if (error instanceof SharedWriteError) throw new ToolError(error.message);
+  throw error;
+}
+
+/**
+ * The shared document behind a library path, or null when the path is not in
+ * a shared notebook. Throws a ToolError when it is shared but the host cannot
+ * resolve it (collaboration off, host down, file not a shared document).
+ */
+export async function sharedDocFor(context: ToolContext, resolved: ResolvedPath): Promise<ResolvedDoc | null> {
+  if (!isSharedNotebookPath(resolved.path)) return null;
+  const cached = context.sharedDocs?.get(resolved.path);
+  if (cached) return cached;
+  const doc = await requireSharedDoc(resolved.path).catch(sharedToolError);
+  context.sharedDocs ??= new Map();
+  context.sharedDocs.set(resolved.path, doc);
+  return doc;
+}
+
+/** The current text of a shared document from the host; null when the host cannot serve it, so the caller reads the working copy. */
+async function readSharedCurrent(context: ToolContext, resolved: ResolvedPath): Promise<{ content: string; fromDraft: false; shared: ResolvedDoc } | null> {
+  let doc: ResolvedDoc | null;
+  try { doc = await sharedDocFor(context, resolved); }
+  catch { return null; }
+  if (!doc) return null;
+  try { return { content: (await readSharedText(resolved.path, { doc })).text, fromDraft: false, shared: doc }; }
+  catch { return null; }
+}
+
+/**
+ * The text the agent should see: an open editor's unsaved draft, else the file on disk.
+ * Shared files come from the collab host: the document is newer than its
+ * working copy, and editor drafts of shared tabs are only a mirror of it.
+ * When the host cannot serve the document, reading falls back to the working
+ * copy (a read is harmless); writing then fails with the host's error.
+ */
+export async function readCurrentText(context: ToolContext, resolved: ResolvedPath): Promise<{ content: string; fromDraft: boolean; shared?: ResolvedDoc } | null> {
+  const inShared = isSharedNotebookPath(resolved.path);
+  if (inShared && isTextFileType(getFileType(resolved.path) ?? undefined)) {
+    const shared = await readSharedCurrent(context, resolved);
+    if (shared) {
+      if (hasNul(shared.content)) throw new ToolError(`${resolved.path} is a binary file and cannot be read as text.`);
+      return shared;
+    }
+  }
+  const draft = inShared ? undefined : context.drafts.get(resolved.path);
   if (draft !== undefined) return { content: draft, fromDraft: true };
   const stats = await statLibraryPath(resolved);
   if (!stats) return null;
@@ -314,6 +373,7 @@ Usage:
     const notes = [
       partial ? `(Showing lines ${offset}-${shownEnd} of ${lines.length}. Use offset and limit to read more.)` : "",
       current.fromDraft ? "(This file is open in the editor with unsaved changes; you are reading the unsaved version.)" : "",
+      current.shared ? `(This file is in a shared notebook; you are reading the live shared document. Collaborators may change it while you work.${canEditSharedContent(current.shared) ? " Your edits are attributed to “AI on behalf of” the user." : ` The user's role (${current.shared.role}) cannot edit it.`})` : "",
     ].filter(Boolean).join("\n");
     return ok(notes ? `${body}\n\n${notes}` : body, partial ? `Lines ${offset}-${shownEnd} of ${lines.length}` : plural(lines.length, "line"));
   },
@@ -687,8 +747,10 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
     throw new ToolError(`${resolved.path} cannot be written: only Markdown (.md), LaTeX (.tex, .bib) and plain-text files can be edited.`);
   }
   if (resolved.pathParts[0] === ARCHIVE_DIR) throw new ToolError("Files in the _archive folder cannot be changed.");
-  if (isSharedNotebookPath(resolved.path)) {
-    throw new ToolError(`${resolved.path} is in a shared notebook, which the agent cannot change yet. Describe the change to the user instead.`);
+  if (isSharedNotebookPath(resolved.path) && context.permission === "notebook") {
+    // Until agent edits become suggestions (Phase 3), the agent may change a
+    // shared file only when the user has it open and is watching.
+    throw new ToolError(`${resolved.path} is in a shared notebook, where "Modify all files in Notebook/Folder" is not available yet. Ask the user to open the file and switch Agent permission to "Modify opened files only", or describe the change instead.`);
   }
   if (context.permission === "open-files") {
     if (creating) throw new ToolError("You can only modify files that are open in the editor, so you cannot create new files. Tell the user what file you would create, or ask them to switch the permission to \"Modify all files in Notebook/Folder\".");
@@ -702,9 +764,48 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
   }
 }
 
-async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean }) {
-  // Shared files are CRDT working copies: writing them here would bypass the
-  // host and lose attribution (SharedDocumentError, 409 shared-document).
+/** Refuses a write the user's role in a shared notebook does not allow; returns the document. */
+async function assertSharedWritable(context: ToolContext, resolved: ResolvedPath): Promise<ResolvedDoc | null> {
+  const doc = await sharedDocFor(context, resolved);
+  if (!doc) return null;
+  if (!canEditSharedContent(doc)) {
+    throw new ToolError(doc.readOnly
+      ? `${resolved.path} is read-only: access to its shared notebook was revoked. Describe the change to the user instead.`
+      : `Your role in this shared notebook (${doc.role}) cannot edit ${resolved.path}, so the agent cannot either. Describe the change to the user instead.`);
+  }
+  return doc;
+}
+
+/** A write to a shared document: minimal edits through the host, attributed to AI on behalf of the user. */
+async function writeSharedAgentFile(context: ToolContext, resolved: ResolvedPath, doc: ResolvedDoc, content: string, previous: { content: string | null }) {
+  // The agent built `content` from `previous`, which it read from the host.
+  // expectedBefore turns any collaborator edit since then into a conflict.
+  const before = previous.content ?? "";
+  const result = await writeSharedText(resolved.path, content, {
+    source: "ai",
+    feature: "agent",
+    ...(context.model ? { model: context.model } : {}),
+    runId: context.snapshots.runId,
+  }, { expectedBefore: before, doc }).catch(sharedToolError);
+  if (result.conflict) {
+    // Make the model read again before its next edit.
+    context.fileState.delete(resolved.path);
+    throw new ToolError(`${resolved.path} changed in the shared notebook since you read it (a collaborator may be editing it), so nothing was written. Read it again, then redo the change.`);
+  }
+  // Recorded only once the edit applied: a snapshot of a refused write would
+  // let undo "restore" the original over a collaborator's newer text.
+  if (!context.snapshots.has(resolved.path)) await context.snapshots.recordOriginal(resolved.path, before, undefined, { docId: doc.docId });
+  await context.snapshots.recordWritten(resolved.path, result.text);
+  context.fileState.set(resolved.path, { hash: hashContent(result.text), partial: false });
+  context.changed.set(resolved.path, { created: context.changed.get(resolved.path)?.created ?? false });
+  context.emit({ type: "file_changed", path: resolved.path, created: false, shared: true });
+}
+
+async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }) {
+  const shared = previous.shared ?? await assertSharedWritable(context, resolved);
+  if (shared) return writeSharedAgentFile(context, resolved, shared, content, previous);
+  // A notebook shared since the check: writing here would bypass the host
+  // and lose attribution (SharedDocumentError, 409 shared-document).
   assertNotSharedItem(resolved.notebook, resolved.pathParts);
   if (!context.snapshots.has(resolved.path)) {
     // Keep what was on disk (and any unsaved draft the agent built on) for undo.
@@ -756,8 +857,11 @@ Usage:
     const newString = requireString(args, "new_string", { allowEmpty: true });
     const replaceAll = optionalBoolean(args, "replace_all") ?? false;
     assertWritable(context, resolved, { creating: false });
+    const sharedDoc = await assertSharedWritable(context, resolved);
     const current = await readCurrentText(context, resolved);
     if (!current) return missingFileError(context, resolved);
+    // A shared file the host could not serve must not be edited from its working copy.
+    if (sharedDoc && !current.shared) await readSharedText(resolved.path, { doc: sharedDoc }).catch(sharedToolError);
     const state = context.fileState.get(resolved.path);
     if (!state) throw new ToolError(`Read ${resolved.path} before editing it.`);
     if (hashContent(current.content) !== state.hash) throw new ToolError(`${resolved.path} changed since you read it. Read it again before editing.`);
@@ -783,7 +887,7 @@ Usage:
     const firstStart = target.matches[0].index;
     const count = replaceAll ? target.matches.length : 1;
     const snippet = snippetAround(next, firstStart, firstStart + replacement.length);
-    const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
+    const text = [`Edited ${resolved.path}${count > 1 ? ` (${count} replacements)` : ""}.`, sharedDoc ? SHARED_EDIT_NOTE : "", target.note, `Edited region:\n${snippet}`].filter(Boolean).join("\n");
     return ok(text, count > 1 ? `${count} replacements` : "Edited", snippet);
   },
 };
@@ -816,10 +920,12 @@ Usage:
     const exists = !!stats || context.drafts.has(resolved.path);
     assertWritable(context, resolved, { creating: !exists });
     if (!exists && !path.extname(resolved.path)) throw new ToolError(`Add a file extension to ${resolved.path}, e.g. "${resolved.path}.md".`);
-    let previous: { content: string | null; fromDraft: boolean } = { content: null, fromDraft: false };
+    const sharedDoc = await assertSharedWritable(context, resolved);
+    let previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc } = { content: null, fromDraft: false };
     if (exists) {
       const current = await readCurrentText(context, resolved);
       if (!current) return missingFileError(context, resolved);
+      if (sharedDoc && !current.shared) await readSharedText(resolved.path, { doc: sharedDoc }).catch(sharedToolError);
       const state = context.fileState.get(resolved.path);
       if (!state || state.partial) throw new ToolError(`${resolved.path} already exists. Read the whole file before overwriting it, or use Edit to change part of it.`);
       if (hashContent(current.content) !== state.hash) throw new ToolError(`${resolved.path} changed since you read it. Read it again before overwriting it.`);
@@ -828,7 +934,7 @@ Usage:
     }
     await writeAgentFile(context, resolved, content, previous);
     const lineCount = splitLines(content).length;
-    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).`, `${exists ? "Overwrote" : "Created"}, ${plural(lineCount, "line")}`, preview(content));
+    return ok(`${exists ? "Overwrote" : "Created"} ${resolved.path} (${plural(lineCount, "line")}).${sharedDoc ? `\n${SHARED_EDIT_NOTE}` : ""}`, `${exists ? "Overwrote" : "Created"}, ${plural(lineCount, "line")}`, preview(content));
   },
 };
 
@@ -928,6 +1034,8 @@ Usage:
     if (!skill) {
       throw new ToolError(context.skills.length ? `There is no skill named "${name}". Available skills: ${context.skills.map((candidate) => candidate.name).join(", ")}.` : "No skills are available.");
     }
+    const unavailable = skill.unavailable?.(context);
+    if (unavailable) return ok(unavailable, "Not available here");
     const tools = skill.tools?.map((tool) => tool.name) ?? [];
     if (context.loadedSkills.has(skill.name)) {
       return ok(`The ${skill.name} skill is already loaded; follow its instructions from earlier in this turn.${tools.length ? ` Its tools: ${tools.join(", ")}.` : ""}`, "Already loaded");

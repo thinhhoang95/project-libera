@@ -5,6 +5,9 @@ import { jsonError, requireAuth } from "@/lib/api";
 import { getAiChatCustomInstruction, getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
 import { isChatReasoningEffort, validateChatMessages } from "@/lib/document-chat";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
+import { isCollabEnabled, listProjects } from "@/lib/collab/host-client";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { readSharedText } from "@/lib/collab/shared-writes";
 import { mathMarkerSystemInstruction } from "@/lib/math-markers";
 import { agentConversation } from "@/lib/agent/conversation";
 import { listNotebookNames, resolveLibraryPath, statLibraryPath } from "@/lib/agent/library";
@@ -65,10 +68,27 @@ async function readConventions(notebook: string | null, notebooks: string[]) {
   if (!notebook) return undefined;
   try {
     const resolved = await resolveLibraryPath(`${notebook}/${CONVENTIONS_FILE}`, { notebooks });
-    const text = await readFile(resolved.absolutePath, "utf8");
+    // In a shared notebook the file is a shared document written by
+    // collaborators: read its live text when the host can serve it.
+    const shared = isSharedNotebookPath(resolved.path);
+    const text = shared
+      ? await readSharedText(resolved.path).then((result) => result.text, () => readFile(resolved.absolutePath, "utf8"))
+      : await readFile(resolved.absolutePath, "utf8");
     if (!text.trim()) return undefined;
-    return { path: resolved.path, text: text.slice(0, MAX_CONVENTIONS_CHARS), truncated: text.length > MAX_CONVENTIONS_CHARS };
+    return { path: resolved.path, text: text.slice(0, MAX_CONVENTIONS_CHARS), truncated: text.length > MAX_CONVENTIONS_CHARS, ...(shared ? { shared: true } : {}) };
   } catch { return undefined; }
+}
+
+/** The shared notebooks in the library, with the user's role when the collab host answers. */
+async function sharedNotebooks(notebooks: string[]) {
+  const shared = notebooks.filter((name) => isSharedNotebookPath(name));
+  if (!shared.length) return [];
+  const roles = new Map<string, string>();
+  if (isCollabEnabled()) {
+    try { for (const project of await listProjects()) roles.set(project.notebook, project.revoked ? "access revoked" : project.role); }
+    catch { /* The host is down; the tools report it if the agent tries to write. */ }
+  }
+  return shared.map((name) => ({ notebook: name, ...(roles.has(name) ? { role: roles.get(name) } : {}) }));
 }
 
 export async function POST(request: NextRequest) {
@@ -98,12 +118,19 @@ export async function POST(request: NextRequest) {
   const requestedNotebook = typeof body.notebook === "string" && notebooks.includes(body.notebook) ? body.notebook : null;
   const notebook = activeFile ? activeFile.split("/")[0] : requestedNotebook;
   if (permission === "notebook" && !notebook) return jsonError("Open a file or select a notebook so the agent knows which notebook it may change.", 400);
+  if (permission === "notebook" && notebook && isSharedNotebookPath(notebook)) {
+    // Phase 1: agent edits to shared files apply directly as the user's
+    // edits, so they are limited to files the user has open and can watch.
+    return jsonError(`"${notebook}" is a shared notebook, where "Modify all files in Notebook/Folder" is not available yet. Switch Agent permission to "Modify opened files only" (the agent then edits the shared files you have open) or Read Only.`, 409);
+  }
 
-  // Only drafts of files that are open and differ from disk matter.
+  // Only drafts of files that are open and differ from disk matter. A shared
+  // tab's text is a mirror of the shared document, which the agent reads
+  // from the collab host instead.
   const drafts = new Map<string, string>();
   for (const [draftPath, draft] of Object.entries((body.drafts ?? {}) as Record<string, string>)) {
     const [resolved] = await libraryFiles([draftPath], notebooks);
-    if (resolved && openFiles.includes(resolved)) drafts.set(resolved, draft);
+    if (resolved && openFiles.includes(resolved) && !isSharedNotebookPath(resolved)) drafts.set(resolved, draft);
   }
 
   const fileExists = new Map<string, boolean>();
@@ -126,6 +153,7 @@ export async function POST(request: NextRequest) {
     openFiles,
     unsavedFiles: new Set(drafts.keys()),
     conventions: await readConventions(notebook, notebooks),
+    sharedNotebooks: await sharedNotebooks(notebooks),
   });
   const system = buildAgentSystemPrompt({
     permission,
@@ -171,6 +199,7 @@ export async function POST(request: NextRequest) {
           maxResultChars: Math.round(Math.min(100_000, Math.max(20_000, profile.contextLength * 0.4))),
           signal,
           emit: send,
+          model,
         };
         const result = await runAgent({
           model, profile, reasoningEffort, sessionId,

@@ -79,6 +79,20 @@ Review comments are not part of a run's undo; delete or resolve them in the Comm
 
 Before the agent first changes a file in a run, Libera keeps the original in `users/admin/.libera/agent-runs/` (the 200 most recent runs, for up to 60 days). **Undo** restores one file or, with **Undo all**, the whole run; files the run created are removed. A file you edited after the agent is left alone and reported. Regenerating or editing an earlier message is blocked while later replies have changes that are not undone.
 
+## Shared notebooks
+
+In a shared notebook every file is a working copy of a shared document, so the agent never writes it directly. Its changes go through Libera's collaboration service, as the user's edits, attributed to **AI on behalf of you** with the run and model (provenance `ai:agent`), and collaborators see them at once.
+
+- **Permissions.** "Modify opened files only" works: the agent changes the shared files you have open and cannot create files there. "Modify all files in Notebook/Folder" is refused for a shared notebook until agent edits become suggestions; the run does not start, and asks you to switch to "Modify opened files only" or Read Only. Read Only is unchanged.
+- **Roles.** Viewers and commenters cannot edit a shared document, so neither can the agent: Edit and Write answer that your role cannot edit the file, and the agent describes the change instead.
+- **Reading.** Read and Edit work on the shared document's live text from the collaboration service, not the working copy on disk or the tab's copy, which may lag. If a collaborator changed the file since the agent read it, the edit is refused and the agent reads it again.
+- **Tabs and undo.** Open tabs get the agent's edits from the shared document itself, so the panel does not reload them from disk. **Undo** sends the inverse edits through the collaboration service while the document still holds exactly what the agent wrote; after anyone else's edit it is reported as a conflict and left alone.
+- **AGENT_NOTES.md** in a shared notebook may have been written by collaborators. It is given to the agent as untrusted guidance for style and conventions only; it cannot widen what the agent may change.
+- **Review comments** (the leave-review-comments skill) are not available for shared documents yet: they are stored only on this computer, so collaborators would not see them. The skill says so, and its tool is not offered.
+- **Collaboration off or not running.** Changes to shared files fail with a clear message, and nothing is written to disk.
+
+The same rules cover Libera's other writers: "Convert PDF to Markdown" creates the Markdown file through the collaboration service and adds each page as an edit (provenance `ai:image-to-markdown`); uploads, pasted Markdown images, edited image copies and generated images saved to a notebook folder become shared files of the notebook. Document chat reads a shared document's attached text from the collaboration service. The helpers are in `src/lib/collab/shared-writes.ts`; the tests are `scripts/collab/ai-shared-writes.test.ts` (against a fake control API) and `scripts/collab/ai-host-e2e.test.ts` (the real host and server).
+
 ## Limits
 
 A run stops after 50 model turns, 20 minutes or 5 million input tokens, and when the agent repeats the same tool call five times in a row. **Stop** ends a run at once; changes made so far are kept and can be undone. Older tool results are shortened when the conversation nears the model's context window.

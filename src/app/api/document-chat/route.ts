@@ -2,11 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getAiChatCustomInstruction, getAiChatModels, getAiFunctionOptions } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, streamOpenRouterCompletion, type OpenRouterMessage } from "@/lib/openrouter";
-import { chatCompletionContent, isChatReasoningEffort, validateChatMessages } from "@/lib/document-chat";
+import { chatCompletionContent, isChatReasoningEffort, validateChatMessages, type ChatMessage } from "@/lib/document-chat";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { readSharedText } from "@/lib/collab/shared-writes";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
 import { mathMarkerSystemInstruction } from "@/lib/math-markers";
 
 export const runtime = "nodejs";
+
+/**
+ * Documents attached to the newest message that live in a shared notebook
+ * get their text from the collab host: the client's copy can lag the shared
+ * document (collaborators' edits still arriving). Earlier messages keep the
+ * snapshot they were sent with, so the conversation history does not shift.
+ * When the host cannot serve a document, the client's text is used.
+ */
+async function withSharedDocumentText(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  const last = messages.at(-1);
+  if (!last?.contexts?.some((context) => context.kind === "document" && isSharedNotebookPath(context.path))) return messages;
+  const contexts = await Promise.all(last.contexts.map(async (context) => {
+    if (context.kind !== "document" || !isSharedNotebookPath(context.path)) return context;
+    try { return { ...context, text: (await readSharedText(context.path)).text }; }
+    catch { return context; }
+  }));
+  return [...messages.slice(0, -1), { ...last, contexts }];
+}
 
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
@@ -31,7 +51,7 @@ export async function POST(request: NextRequest) {
     ].filter(Boolean).join("\n\n");
     const messages: OpenRouterMessage[] = [
       { role: "system", content: systemInstruction },
-      ...body.messages.map((message) => ({ role: message.role, content: chatCompletionContent(message) })),
+      ...(await withSharedDocumentText(body.messages)).map((message) => ({ role: message.role, content: chatCompletionContent(message) })),
     ];
     const completionOptions = { ...options, model, sessionId: body.sessionId as string | undefined, reasoning: { effort: body.reasoningEffort ?? options.reasoning.effort } };
     if (body.stream === true) {

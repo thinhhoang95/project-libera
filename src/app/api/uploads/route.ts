@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { getTree, toStorageError, writeUploadedFile } from "@/lib/storage";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { writeSharedUpload } from "@/lib/collab/shared-writes";
 
 export const runtime = "nodejs";
 
@@ -23,10 +25,12 @@ export async function POST(request: NextRequest) {
 
     const uploaded = [];
     let error: string | undefined;
+    // Into a shared notebook, uploads are added through the collab host as manifest blobs.
+    const shared = isSharedNotebookPath(destinationPath.trim() || notebook);
 
     for (const file of files) {
       try {
-        uploaded.push(await writeUploadedFile(notebook, file, destinationPath));
+        uploaded.push(shared ? await writeSharedUpload(notebook, file, destinationPath) : await writeUploadedFile(notebook, file, destinationPath));
       } catch (failure) {
         if (!uploaded.length) throw failure;
         // Return successful paths so the client can track them even if a later

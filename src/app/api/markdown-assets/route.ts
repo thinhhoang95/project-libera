@@ -5,6 +5,8 @@ import {
   toStorageError,
   writeMarkdownImageAsset,
 } from "@/lib/storage";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { writeSharedMarkdownImageAsset } from "@/lib/collab/shared-writes";
 
 export const runtime = "nodejs";
 
@@ -24,7 +26,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Image file is required." }, { status: 400 });
     }
 
-    return NextResponse.json(await writeMarkdownImageAsset(documentPath, file));
+    // A shared document's images are shared blobs, added through the collab host.
+    return NextResponse.json(isSharedNotebookPath(documentPath) ? await writeSharedMarkdownImageAsset(documentPath, file) : await writeMarkdownImageAsset(documentPath, file));
   } catch (error) {
     const storageError = toStorageError(error);
     return NextResponse.json({ error: storageError.message }, { status: storageError.status });
