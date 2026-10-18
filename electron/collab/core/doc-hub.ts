@@ -784,7 +784,16 @@ export class DocHub implements CompactionTarget {
         break;
       case "not-found":
         this.stopSyncing();
-        this.connectionDetail = "This document is not on the server.";
+        if (this.meta.lastSeenServerSeq > 0 || this.hasData) {
+          // The server knew this document before. "Not found" now means the
+          // account lost access (for example while offline) or the project
+          // went away: keep local work, stop sending, show Access changed.
+          this.store.updateDocMeta(this.docId, { readOnlyReason: "access-revoked" });
+          this.connectionDetail = "You no longer have access to this document.";
+          this.refreshMeta();
+        } else {
+          this.connectionDetail = "This document is not on the server.";
+        }
         break;
       case "client-closed":
         return;

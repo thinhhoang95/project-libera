@@ -1,0 +1,10 @@
+# The first Sunday of January, April, July and October, after that night's backup.
+[Unit]
+Description=Quarterly Libera collab restore drill
+
+[Timer]
+OnCalendar=Sun *-01,04,07,10-01..07 05:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

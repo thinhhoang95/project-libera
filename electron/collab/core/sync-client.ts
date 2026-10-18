@@ -249,7 +249,12 @@ export class SyncClient {
       case "stopped":
       case "signed-out":
       case "update-required":
+        return;
       case "connecting":
+        // A handshake started before a network switch can hang without ever
+        // failing. A nudge means the network just changed: start over now.
+        this.drop("nudge while connecting");
+        this.restartNow();
         return;
       case "connected": {
         // After sleep a socket can look open but be dead: ask for a pong soon.
@@ -260,16 +265,20 @@ export class SyncClient {
         this.nudgeTimer = this.clock.setTimeout(() => {
           this.nudgeTimer = null;
           if (this.awaitingPong === nonce) this.drop("no pong after nudge");
-        }, this.options.nudgePongTimeoutMs ?? 5000);
+        }, this.options.nudgePongTimeoutMs ?? 1500);
         return;
       }
       default:
-        this.attempt = 0;
-        this.authFailures = 0;
-        if (this.reconnectTimer) this.clock.clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-        void this.connect();
+        this.restartNow();
     }
+  }
+
+  private restartNow(): void {
+    this.attempt = 0;
+    this.authFailures = 0;
+    if (this.reconnectTimer) this.clock.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    void this.connect();
   }
 
   /** Another component refreshed the token: hand it to the live socket. */
@@ -360,7 +369,11 @@ export class SyncClient {
     socket.onmessage = (event) => this.handleFrame(socket, event.data);
     socket.onclose = (event) => this.handleClose(socket, event.code, event.reason);
     socket.onerror = () => {
-      // An error is always followed by close; recovery happens there.
+      // Not every implementation follows an error with close: Node's built-in
+      // WebSocket (undici) fires only onerror for a refused or reset
+      // handshake and stays CONNECTING. Treat the error as the end of this
+      // socket so the next backoff tick (or a nudge) can try again.
+      if (this.socket === socket) this.drop("socket error");
     };
   }
 
@@ -491,7 +504,12 @@ export class SyncClient {
     this.refreshTimer = null;
     const expiresAt = this.options.tokenProvider.accessTokenExpiresAt?.() ?? null;
     if (expiresAt === null) return;
-    const delay = Math.max(0, expiresAt - this.clock.now() - (this.options.refreshLeadMs ?? 60_000));
+    // Refresh a minute early, but never more than half the token's remaining
+    // life: with a short-lived token (or a skewed clock) a fixed lead would
+    // schedule every refresh immediately and loop.
+    const remaining = expiresAt - this.clock.now();
+    const lead = Math.min(this.options.refreshLeadMs ?? 60_000, Math.max(0, remaining / 2));
+    const delay = Math.max(1_000, remaining - lead);
     this.refreshTimer = this.clock.setTimeout(() => {
       this.refreshTimer = null;
       void this.refreshLiveToken();

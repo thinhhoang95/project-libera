@@ -2,6 +2,7 @@
 
 import type { FastifyInstance } from "fastify";
 
+import { registerAdminRoutes } from "../admin/routes.js";
 import type { ServerContext } from "../context.js";
 import { registerAuthRoutes } from "./auth.js";
 import { registerBlobRoutes } from "./blobs.js";
@@ -29,4 +30,6 @@ export async function registerApi(app: FastifyInstance, context: ServerContext):
   registerReviewRoutes(app, context);
   registerNotificationRoutes(app, context);
   registerCommandRoutes(app, context);
+  // Phase 4: telemetry, document digest, internal routes for the admin CLI.
+  registerAdminRoutes(app, context);
 }

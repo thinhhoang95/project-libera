@@ -1,0 +1,13 @@
+# Quarterly restore drill (SETUP.md §8.4). Its output lands in the journal:
+#   journalctl -u libera-collab-restore-drill
+[Unit]
+Description=Libera collab restore drill
+Requires=docker.service
+After=docker.service libera-collab-backup.service
+
+[Service]
+Type=oneshot
+Environment=LIBERA_COLLAB_ROOT=/srv/libera-collab
+ExecStart=/srv/libera-collab/backup/restore-drill.sh
+Nice=10
+TimeoutStartSec=2h

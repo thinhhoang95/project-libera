@@ -493,10 +493,38 @@ test("a token close to expiry is refreshed and sent as refresh-token", async () 
   const s = setup({ clock, tokens });
   try {
     await waitFor(() => s.client.connected);
+    // 61 s left: the lead is capped at half the remaining life (30.5 s).
+    clock.advance(30_000);
+    await settle();
+    assert.equal(s.tokens.refreshCalls, 0, "not refreshed too early");
     clock.advance(1_000);
     await waitFor(() => s.server.received.some((message) => message.type === MessageType.RefreshToken));
     const message = s.server.received.find((entry) => entry.type === MessageType.RefreshToken);
     assert.ok(message && message.type === MessageType.RefreshToken && message.token === "t2");
+  } finally {
+    s.close();
+  }
+});
+
+test("short-lived tokens are refreshed at half their life, never in a tight loop", async () => {
+  const clock = new ManualClock();
+  const tokens = new TestTokens("t1", "t2");
+  tokens.expiresAt = clock.now() + 10_000;
+  const realRefresh = tokens.refresh.bind(tokens);
+  tokens.refresh = async () => {
+    const token = await realRefresh();
+    tokens.expiresAt = clock.now() + 10_000;
+    return token;
+  };
+  const s = setup({ clock, tokens });
+  try {
+    await waitFor(() => s.client.connected);
+    for (let elapsed = 0; elapsed < 30_000; elapsed += 500) {
+      clock.advance(500);
+      await settle();
+    }
+    // Every ~5 s over 30 s: about 6 refreshes, not thousands.
+    assert.ok(tokens.refreshCalls >= 4 && tokens.refreshCalls <= 8, `refreshed ${tokens.refreshCalls} times`);
   } finally {
     s.close();
   }

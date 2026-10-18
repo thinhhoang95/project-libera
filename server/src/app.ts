@@ -12,6 +12,8 @@ import { migrate } from "./db/migrate.js";
 import { EventBus } from "./events.js";
 import { installErrorHandler } from "./http/errors.js";
 import { startJobs, type JobRunner } from "./jobs/index.js";
+import { installHttpMetrics } from "./observability/http-metrics.js";
+import { reportError } from "./observability/reporter.js";
 import { createSyncService, type SyncService } from "./sync/index.js";
 
 export interface CollabServer {
@@ -44,10 +46,9 @@ export async function buildServer(options: BuildOptions): Promise<CollabServer> 
     trustProxy: config.TRUST_PROXY,
     bodyLimit: 8 * 1024 * 1024,
   });
-  installErrorHandler(app);
-
   const metrics = new Registry();
   collectDefaultMetrics({ register: metrics });
+  installHttpMetrics(app, metrics);
 
   const context: ServerContext = {
     config,
@@ -58,6 +59,15 @@ export async function buildServer(options: BuildOptions): Promise<CollabServer> 
     metrics,
     rooms: undefined as unknown as RoomService,
   };
+  installErrorHandler(app, (error, request) =>
+    reportError(context, error, {
+      area: "http",
+      method: request.method,
+      route: request.routeOptions.url ?? "unmatched",
+      requestId: request.id,
+      accountId: request.account?.accountId,
+    }),
+  );
 
   const sync = createSyncService(context);
   context.rooms = sync.rooms;

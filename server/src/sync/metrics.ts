@@ -9,6 +9,8 @@ export interface SyncMetrics {
   fanoutSeconds: Histogram;
   updates: Counter<"subdoc" | "source">;
   rejects: Counter<"reason">;
+  connections: Counter<"outcome">;
+  errors: Counter<"area">;
 }
 
 export function createSyncMetrics(registry: Registry, sizes: { rooms(): number; sockets(): number }): SyncMetrics {
@@ -51,6 +53,18 @@ export function createSyncMetrics(registry: Registry, sizes: { rooms(): number; 
       name: "libera_sync_rejects_total",
       help: "Rejected updates by reason.",
       labelNames: ["reason"],
+      registers: [registry],
+    }),
+    connections: new Counter({
+      name: "libera_sync_connections_total",
+      help: "WebSocket connections by outcome (accepted, rate-limited). Reconnect storms show here.",
+      labelNames: ["outcome"],
+      registers: [registry],
+    }),
+    errors: new Counter({
+      name: "libera_sync_errors_total",
+      help: "Internal errors in the sync service by area (frame, update, listener).",
+      labelNames: ["area"],
       registers: [registry],
     }),
   };

@@ -9,6 +9,14 @@ prepare them, but only a person can finish them.
 
 Legend: ☐ not started · ◐ in progress · ☑ done and verified · 👤 needs a person
 
+## Status at pause (18 Oct 2026)
+
+Merged on `collaboration` and green: server (110 tests), desktop-side collaboration (250 tests), editor suite at baseline. Merged branches: protocol and server skeleton, server sync, server REST API, server revisions/decisions/reviews, host core, CodeMirror Markdown editor, Visual bridge, editor library, collaboration UI, shared notebooks, Electron host integration, test harness. Three host recovery bugs found by the harness are fixed.
+
+Server Phase 4 (`collab/srv4`) is merged: admin CLI, verify, load generator, backups and restore drill, monitoring, digest and telemetry endpoints, error reporting; 140 server tests pass. 👤 Real Postgres, Docker, systemd and rclone are untested. Still missing from it: `SETUP.md` §8–§10, `docs/collaboration/testing-load.md` (numbers are in the agent's report: 200×20 awareness-only fine; typing saturates PGlite above ~150 updates/s, so the full target needs real Postgres), and the `"load": "node --import tsx test/load/run.ts"` script in server/package.json.
+
+Not merged: editor wiring (`collab/wire`, clone `scratchpad/clones/wire`, commits 4a4f4ca and e4f807a). The code for replica, tab registry, editor bindings, shared-tab save states, presence and banners is written and type-checks, and the editor suite is at baseline, but none of its `scripts/collab/wire-*.test.ts` tests exist, and `npm run test:collab` and eslint were not run on it. Write those tests, then merge. Still to do after those: Phase 1 AI rerouting (M1.11), Phase 2 client (shared ReviewStore, history viewer, restore UI, offline comments UI), Phase 3 client (suggestions panel, suggest mode in the editors, decisions UI, AI as suggester, review requests UI, audit viewer), Phase 4 desktop (sandbox, sanitizing, diagnostics, divergence check), and every 👤 item.
+
 ## Known pre-existing test failures
 
 `npm run test:editor` on this Windows checkout fails 4 tests and cancels 2: global-search-cache, global-search-triggers, global-search, pdf-chat-route and pdf-storage-lifecycle. They fail identically on the base commit 7008487, before any collaboration work. The likely cause is the mixed `node_modules`: the macOS dependency set is active here (`npm run deps:status` reports the win32 cache as stale). Every collaboration merge is checked against this baseline (547 of 554 passing after D8).

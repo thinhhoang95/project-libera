@@ -11,7 +11,7 @@ import { actorAccountId, type Actor } from "../protocol/actor";
 import { can, roleAtLeast, type Role } from "../protocol/roles";
 import { AnnotationKeys, type SuggestionRecord, type SuggestionStatus } from "../protocol/schema";
 import { isPositionDeleted, relativeRange, resolveRelativeRange } from "../anchors";
-import { diffTexts } from "../../latex/codemirror/review";
+import { diffTexts } from "../../text-hunks";
 
 export type StaleReason = NonNullable<SuggestionRecord["staleReason"]>;
 
