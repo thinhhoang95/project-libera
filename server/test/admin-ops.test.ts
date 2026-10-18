@@ -99,7 +99,7 @@ describe("telemetry", () => {
     assert.equal((await post(env.editor, { ...report(), clientId: "x" })).status, 400);
     assert.equal((await post(env.editor, { ...report(), rejects: { nonsense: 1 } })).status, 400);
 
-    const ok = await post(env.editor, report({ pendingUpdates: 3, oldestUnackedSeconds: 400, reconnects: 2, rejects: { forbidden: 1 }, divergenceChecks: 4, divergenceFailures: 1 }));
+    const ok = await post(env.editor, report({ pendingUpdates: 3, oldestUnackedSeconds: 400, reconnects: 2, rejects: { forbidden: 1 }, divergenceChecks: 4, divergenceFailures: 1, reconnectSeconds: 12.5, hostRestarts: 1 }));
     assert.equal(ok.status, 200);
     assert.equal(ok.body.nextReportSeconds, 60);
     await post(env.editor2, report({ clientId: "cli_telemetry_test_2", pendingUpdates: 1, oldestUnackedSeconds: 10 }));
@@ -112,6 +112,8 @@ describe("telemetry", () => {
     assert.equal(metric(text, "libera_client_reconnects_total"), 2);
     assert.equal(metric(text, "libera_client_divergence_checks_total"), 4);
     assert.equal(metric(text, "libera_client_divergence_failures_total"), 1);
+    assert.equal(metric(text, "libera_client_disconnected_seconds_total"), 12.5);
+    assert.equal(metric(text, "libera_client_host_restarts_total"), 1);
     assert.match(text, /libera_client_rejects_total\{reason="forbidden"\} 1/);
     assert.doesNotMatch(text, new RegExp(env.editor.id), "no account ids in labels");
 

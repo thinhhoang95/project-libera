@@ -206,7 +206,7 @@ export interface UpdateRecord {
 }
 
 /**
- * GET documentUpdates?fromSeq=&toSeq=&limit=&subdoc= — fromSeq and toSeq are
+ * GET documentUpdates?fromSeq=&toSeq=&limit=&subdoc= â€” fromSeq and toSeq are
  * inclusive; subdoc limits the page to one sub-document.
  */
 export interface UpdatesPage {
@@ -561,6 +561,10 @@ export interface TelemetryReport {
   rejects: Partial<Record<RejectReason, number>>;
   divergenceChecks: number;
   divergenceFailures: number;
+  /** Seconds spent disconnected since the previous report (increment). */
+  reconnectSeconds?: number;
+  /** Host restarts after an unclean exit since the previous report (increment). */
+  hostRestarts?: number;
 }
 
 export interface TelemetryResponse {

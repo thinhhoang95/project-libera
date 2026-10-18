@@ -325,7 +325,7 @@ Same tables as the source plan's §5.2, plus:
 - **Tokens.**
   - Access tokens are short-lived JWTs (15 min). Refresh tokens rotate and are stored with `safeStorage`.
   - The host control API binds to 127.0.0.1 and requires a per-launch random bearer token.
-- **Renderer hardening.** The main window does not set `sandbox: true` today. Turning it on is part of Phase 4.
+- **Renderer hardening.** The main, setup and export windows run with `sandbox: true`, and collaborator Markdown goes through an allowlist sanitizer (`src/lib/markdown-sanitize.ts`). See [security.md](security.md).
 
 ---
 

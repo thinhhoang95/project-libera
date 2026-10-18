@@ -54,6 +54,9 @@ export const telemetrySchema = z.object({
   rejects: z.partialRecord(z.enum(REJECT_REASONS as unknown as [RejectReason, ...RejectReason[]]), count).default({}),
   divergenceChecks: count,
   divergenceFailures: count,
+  // Optional so hosts older than these fields still report.
+  reconnectSeconds: z.number().min(0).max(30 * 24 * 3600).default(0),
+  hostRestarts: count.default(0),
 });
 
 interface ClientState {
@@ -70,6 +73,8 @@ export class TelemetryStore {
   readonly rejects: Counter<"reason">;
   readonly divergenceChecks: Counter;
   readonly divergenceFailures: Counter;
+  readonly reconnectSeconds: Counter;
+  readonly hostRestarts: Counter;
   readonly limiter = new RateLimiter(6, 60_000);
 
   constructor(registry: Registry, private readonly now: () => number = Date.now) {
@@ -117,9 +122,19 @@ export class TelemetryStore {
       help: "Divergence checks where the host and server disagree.",
       registers,
     });
+    this.reconnectSeconds = new Counter({
+      name: "libera_client_disconnected_seconds_total",
+      help: "Seconds hosts spent disconnected before reconnecting.",
+      registers,
+    });
+    this.hostRestarts = new Counter({
+      name: "libera_client_host_restarts_total",
+      help: "Collab host restarts after an unclean exit, reported by hosts.",
+      registers,
+    });
   }
 
-  record(accountId: string, report: z.infer<typeof telemetrySchema>): void {
+  record(accountId: string, report: z.input<typeof telemetrySchema>): void {
     const key = `${accountId}/${report.clientId}`;
     if (!this.clients.has(key) && this.clients.size >= MAX_CLIENTS) this.prune();
     if (!this.clients.has(key) && this.clients.size >= MAX_CLIENTS) return;
@@ -131,9 +146,11 @@ export class TelemetryStore {
     });
     this.reports.inc();
     if (report.reconnects > 0) this.reconnects.inc(report.reconnects);
-    for (const [reason, value] of Object.entries(report.rejects)) if (value) this.rejects.inc({ reason }, value);
+    for (const [reason, value] of Object.entries(report.rejects ?? {})) if (value) this.rejects.inc({ reason }, value);
     if (report.divergenceChecks > 0) this.divergenceChecks.inc(report.divergenceChecks);
     if (report.divergenceFailures > 0) this.divergenceFailures.inc(report.divergenceFailures);
+    if ((report.reconnectSeconds ?? 0) > 0) this.reconnectSeconds.inc(report.reconnectSeconds ?? 0);
+    if ((report.hostRestarts ?? 0) > 0) this.hostRestarts.inc(report.hostRestarts ?? 0);
   }
 
   live(): ClientState[] {

@@ -199,7 +199,7 @@ export class SyncTestClient {
 
   /**
    * What a real client does after a reject: drop the local replica and load
-   * the server's state again (source plan ง4).
+   * the server's state again (source plan ยง4).
    */
   rollback(docId: string): Promise<OpenedMessage> {
     this.docs.delete(docId);
