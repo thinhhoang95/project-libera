@@ -21,7 +21,10 @@ export interface RoomService {
    * Runs `change` against the live sub-document inside the room's write lock,
    * persists the resulting update (if any) with `actor`, then broadcasts it.
    * Returns the new serverSeq, or the current one when nothing changed.
-   * `change` may throw to abort; nothing is persisted then.
+   * `change` may throw to abort; nothing is persisted then. It runs on an
+   * exact copy of the live sub-document, so an aborted change also leaves
+   * the live state untouched. The update is broadcast as `remote` to every
+   * socket with the document open, with empty userId and clientId.
    */
   transact<T>(
     docId: string,
@@ -34,7 +37,10 @@ export interface RoomService {
   /**
    * Runs `read` against the current state of several sub-documents of one
    * document inside the room's write lock, so no update interleaves. Used by
-   * decisions, which read annotations and content together.
+   * decisions, which read annotations and content together. `docs` holds
+   * only the sub-documents of the document's kind (just `manifest` for a
+   * manifest). The documents are live: read them, do not change them (use
+   * transact to change).
    */
   withDocs<T>(docId: string, read: (docs: Record<Subdoc, Y.Doc>, serverSeq: number) => T | Promise<T>): Promise<T>;
 
