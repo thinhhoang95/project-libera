@@ -10,6 +10,7 @@ import { FileTypeIcon } from "./file-type";
 import { isGalleryTab } from "./gallery-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
+import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -421,6 +422,8 @@ function ActiveFileActions({
     }
 
     const point = nativeMenuPointFromButton(event.currentTarget);
+    // Shared files have a version history.
+    const historyItems = historyMenuItems(activeTab.id);
 
     setActionMenuOpen(true);
 
@@ -494,6 +497,7 @@ function ActiveFileActions({
             ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
             : [
                 { type: "separator" as const },
+                ...(historyItems.length ? [...historyItems, { type: "separator" as const }] : []),
                 ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
                 { id: "rename", label: "Rename" },
                 { id: "move", label: "Move" },
@@ -530,6 +534,8 @@ function ActiveFileActions({
       await onMoveFile(activeTab);
     } else if (selectedItemId === "delete") {
       await onDeleteFile(activeTab);
+    } else if (selectedItemId === HISTORY_MENU_ID) {
+      openDocumentHistory(activeTab.id);
     }
   }
 
@@ -537,6 +543,7 @@ function ActiveFileActions({
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
       {isMarkdown || isLatex ? <ReviewToggle /> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
+      <DocumentHistoryHost />
     </div>
   );
 }
