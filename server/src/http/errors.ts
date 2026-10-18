@@ -1,4 +1,4 @@
-import type { FastifyError, FastifyInstance } from "fastify";
+import type { FastifyError, FastifyInstance, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 
 import type { ApiError, ApiErrorCode } from "../protocol.js";
@@ -40,7 +40,10 @@ export function errorBody(code: ApiErrorCode, message: string, details?: unknown
   return { error: details === undefined ? { code, message } : { code, message, details } };
 }
 
-export function installErrorHandler(app: FastifyInstance): void {
+/** Called for every unexpected (500) error, e.g. to send it to the error reporter. */
+export type UnexpectedErrorHook = (error: Error, request: FastifyRequest) => void;
+
+export function installErrorHandler(app: FastifyInstance, onUnexpected?: UnexpectedErrorHook): void {
   app.setErrorHandler((error: FastifyError | HttpError | ZodError | Error, request, reply) => {
     if (error instanceof HttpError) {
       return reply.status(error.status).send(errorBody(error.code, error.message, error.details));
@@ -55,6 +58,7 @@ export function installErrorHandler(app: FastifyInstance): void {
       return reply.status(statusCode).send(errorBody("bad-request", error.message));
     }
     request.log.error({ err: error }, "Unhandled error");
+    onUnexpected?.(error, request);
     return reply.status(500).send(errorBody("internal", "Internal server error."));
   });
   app.setNotFoundHandler((_request, reply) => reply.status(404).send(errorBody("not-found", "Route not found.")));

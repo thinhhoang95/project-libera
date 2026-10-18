@@ -1,0 +1,34 @@
+# Prometheus for the Libera collab server (SETUP.md §10). Used by
+# docker-compose.monitoring.yml; scrapes the collab container directly on the
+# compose network (nginx only lets 127.0.0.1 reach /metrics).
+#
+# The server serves /metrics to other hosts only with METRICS_TOKEN as a
+# bearer token. Put the same value in monitoring/metrics_token (SETUP.md §10.1).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    deployment: libera-collab
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: libera-collab
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token
+    static_configs:
+      - targets: ["collab:4400"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

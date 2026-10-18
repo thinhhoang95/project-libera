@@ -1,0 +1,16 @@
+# Nightly backup of the Libera collab stack (SETUP.md §8).
+# Install: see SETUP.md §8.2 (copies this and the .timer to /etc/systemd/system).
+[Unit]
+Description=Libera collab backup (pg_dump, base backup, WAL pruning, blobs, off-site copy)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=LIBERA_COLLAB_ROOT=/srv/libera-collab
+ExecStart=/srv/libera-collab/backup/backup.sh
+# Backups compete with nothing time-critical, but must not starve the server.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
