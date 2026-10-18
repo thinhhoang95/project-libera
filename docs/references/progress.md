@@ -32,6 +32,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 - A child given SuggestEdit keeps its suggestions in its own `skillState`, which is never saved. The parent records suggestions from the children's structured results instead.
 - The agent prompt (interop) says to cite only keys that are in the library, but the library is a hidden file the agent's tools cannot read. Fact-check adds a read-only `References` tool (search and look up the notebook library by key, author, title or year) for every agent run, not just inside the skill.
 - Search index: unchanged files keep their pre-citation embeddings until edited, because there is no embedding-text version. This is acceptable; record it in the feature doc.
+- Preview: Turbopack can't start from the shared `node_modules`, so lanes use `next dev --webpack`. Check `npm run test:editor-worker-bundle` at final integration: the preview worker check reported `structuredClone is not defined` in its VM scope, possibly pre-existing.
 - The APIs to use are `runSubagents`, `SubagentTask`, `suggestEditTool` + `finishSuggestedEdits`, and `webSearchTool` (see `src/lib/agent/subagents.ts`, `suggest-edit.ts`, `web-search.ts`).
 
 ## Baseline
@@ -60,7 +61,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ◐ |
+| preview | `references/preview` | CSL styles, citeproc formatting, preview plugin and worker, renderer chips, bibliography block, hover card, open PDF at locator, Markdown PDF export | ☑ merged d0bc068 (formatting runs in its own worker) |
 | interop | `references/interop` | Import/export API and document bibliography export; clipboard; text strippers; agent prompt syntax; LaTeX export placeholders | ☑ merged 084ba5c |
 | panel | `references/panel` | Left rail tab, References panel, detail card with provenance, Manage references dialog, Add box (paste BibTeX/RIS/identifiers), Cite at cursor, Cited in this document, style picker | ◐ |
 
@@ -68,10 +69,10 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ☐ |
+| editors | `references/editors` | `@` popup in textarea, CodeMirror and Visual; TipTap citation node and popover; CodeMirror decoration; suggestion index | ◐ |
 | resolution | `references/resolution` (server half, started early) + `references/resolution-ui` (after panel) | Identifier lookups (Crossref, DataCite, arXiv, OpenAlex, PubMed, ISBN); PDF and Markdown resolution; LLM + web; AI preferences; background jobs; dedupe and merge UI; confirmation cards | ◐ server |
 | agent-runtime | `references/agent-runtime` | Child agent runs, nested events and usage; WebSearch tool; agent suggestions bucket and its review UI | ☑ merged 8332ba7 |
-| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ☐ |
+| moves | `references/moves` | Cross-notebook copy-on-move; key rename with aliases and draft-aware citation rewrite | ◐ server half (copy-on-move, rewrite API, formatted bibliography export, LaTeX export); UI goes to resolution-ui |
 
 ## Wave 4: fact-check and later items
 
