@@ -1,0 +1,10 @@
+# Loads the dashboards in /var/lib/grafana/dashboards (grafana/dashboards in the repo).
+apiVersion: 1
+
+providers:
+  - name: libera
+    folder: Libera
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,12 @@
+# Runs libera-collab-backup.service every night at 03:15 UTC. Persistent:
+# a run missed while the VPS was down happens at the next boot.
+[Unit]
+Description=Nightly Libera collab backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,163 @@
+# Alert rules for the Libera collab server: source plan §11 and the
+# implementation plan's Phase 4 exit ("all alerts are wired up"). Thresholds
+# are starting points for the beta; tune them with real traffic.
+
+groups:
+  - name: libera-collab
+    rules:
+      # ------------------------------------------------------------ availability
+      - alert: LiberaCollabDown
+        expr: up{job="libera-collab"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The collab server does not answer /metrics
+          description: >-
+            Prometheus cannot scrape {{ $labels.instance }}. Check `docker compose ps`
+            and the collab logs. Clients keep editing offline meanwhile.
+
+      - alert: LiberaCollabNotScraped
+        expr: absent(up{job="libera-collab"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: No scrape target for the collab server
+          description: The libera-collab job has no target; prometheus.yml or the compose network is wrong.
+
+      # ------------------------------------------------------------ latency
+      - alert: LiberaPersistLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(libera_sync_persist_seconds_bucket{job="libera-collab"}[5m]))) > 0.2
+          and sum(rate(libera_sync_persist_seconds_count{job="libera-collab"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Persist latency p95 is above 200 ms
+          description: >-
+            Committing an update takes {{ $value | humanizeDuration }} at p95 (budget:
+            200 ms). Check Postgres load, disk latency and whether a backup is running.
+
+      - alert: LiberaFanoutLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(libera_sync_fanout_seconds_bucket{job="libera-collab"}[5m]))) > 0.05
+          and sum(rate(libera_sync_fanout_seconds_count{job="libera-collab"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fan-out latency p95 is above 50 ms
+          description: Sending updates to collaborators takes {{ $value | humanizeDuration }} at p95; the event loop is probably saturated.
+
+      - alert: LiberaEventLoopLagHigh
+        expr: nodejs_eventloop_lag_p99_seconds{job="libera-collab"} > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The collab server's event loop lags by more than 500 ms
+          description: Every socket waits behind the busy event loop. Look at CPU, the largest logs and reconnects.
+
+      # ------------------------------------------------------------ correctness
+      - alert: LiberaRejectRateHigh
+        expr: >-
+          (
+            sum(rate(libera_sync_rejects_total{job="libera-collab",reason!="not-open"}[10m]))
+            /
+            clamp_min(
+              sum(rate(libera_sync_updates_total{job="libera-collab",source="client"}[10m]))
+              + sum(rate(libera_sync_rejects_total{job="libera-collab"}[10m])),
+              0.001)
+          ) > 0.02
+          and sum(rate(libera_sync_rejects_total{job="libera-collab",reason!="not-open"}[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 2 % of client updates are rejected
+          description: >-
+            See "Rejects by reason". invalid-update points at a client bug or a schema
+            mismatch; forbidden or annotation-ownership at a permissions bug.
+
+      - alert: LiberaUnackedUpdatesStale
+        expr: libera_client_stale_unacked_clients{job="libera-collab"} > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} installation(s) have updates unacked for more than 5 minutes"
+          description: >-
+            Reported by the desktop hosts through POST /v1/telemetry. Their edits are safe
+            on the device but not on the server. Check rejects, sync errors and the server log.
+
+      - alert: LiberaDivergenceDetected
+        expr: increase(libera_client_divergence_failures_total{job="libera-collab"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A host's replica disagrees with the server
+          description: >-
+            The hourly digest check (GET /v1/documents/:docId/digest) failed {{ $value }}
+            time(s) in the last hour. Ask the user for "Report sync problem" diagnostics,
+            then check the document with the admin CLI (doc inspect, verify --doc).
+
+      - alert: LiberaSyncInternalErrors
+        expr: increase(libera_sync_errors_total{job="libera-collab"}[10m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: The sync service fails on {{ $labels.area }}
+          description: "{{ $value }} internal errors in 10 minutes. The error reporter (ERROR_REPORT_DSN) has the stacks."
+
+      - alert: LiberaHttpErrors
+        expr: sum(rate(libera_http_request_duration_seconds_count{job="libera-collab",status="5xx"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The REST API returns server errors
+          description: "{{ $value }} 5xx responses per second."
+
+      # ------------------------------------------------------------ resources
+      - alert: LiberaMemoryHigh
+        expr: process_resident_memory_bytes{job="libera-collab"} > 1.5e9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The collab server uses more than 1.5 GB of memory
+          description: Resident memory is {{ $value | humanize1024 }}B. Many loaded rooms or very large documents; check rooms and the largest logs.
+
+      - alert: LiberaReconnectStorm
+        expr: sum(rate(libera_sync_connections_total{job="libera-collab"}[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Clients connect at more than 5 new sockets per second
+          description: Usually after an outage or a proxy timeout. Refused connections show as outcome="rate-limited".
+
+      # ------------------------------------------------------------ storage
+      - alert: LiberaCompactionStalled
+        expr: >-
+          (time() - libera_job_last_success_timestamp_seconds{job="libera-collab",name="compaction"}) > 1800
+          or libera_storage_subdocs_over_snapshot_threshold{job="libera-collab"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Compaction is behind
+          description: >-
+            Compaction has not succeeded for 30 minutes, or sub-documents keep more than
+            SNAPSHOT_EVERY_UPDATES unsnapshotted updates. Cold opens get slower; look for
+            "Job failed" in the server log.
+
+      - alert: LiberaQuarantinedUpdates
+        expr: increase(libera_storage_quarantined_updates{job="libera-collab"}[1h]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: Updates were quarantined with the admin CLI
+          description: A record that `doc quarantine` ran; affected collaborators must reset their copy of the document.

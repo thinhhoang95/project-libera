@@ -26,16 +26,16 @@ export interface JobRunner {
 
 export const jobs: Job[] = [compactionJob, checkpointJob, digestJob, storageMetricsJob];
 
-const lastSuccess = new WeakMap<Registry, Gauge<"job">>();
+const lastSuccess = new WeakMap<Registry, Gauge<"name">>();
 
-/** libera_job_last_success_timestamp_seconds{job}: alerts on a stalled compaction. */
-function lastSuccessGauge(registry: Registry): Gauge<"job"> {
+/** libera_job_last_success_timestamp_seconds{name}: alerts on a stalled compaction ("job" would clash with Prometheus's own label). */
+function lastSuccessGauge(registry: Registry): Gauge<"name"> {
   let gauge = lastSuccess.get(registry);
   if (!gauge) {
     gauge = new Gauge({
       name: "libera_job_last_success_timestamp_seconds",
       help: "Unix time of each background job's last successful run.",
-      labelNames: ["job"],
+      labelNames: ["name"],
       registers: [registry],
     });
     lastSuccess.set(registry, gauge);
@@ -52,7 +52,7 @@ export function startJobs(context: ServerContext, options: { enabled: boolean })
     running.add(job.name);
     try {
       await job.run(context);
-      lastSuccessGauge(context.metrics).set({ job: job.name }, Date.now() / 1000);
+      lastSuccessGauge(context.metrics).set({ name: job.name }, Date.now() / 1000);
     } catch (error) {
       context.log.error({ err: error, job: job.name }, "Job failed");
       reportError(context, error, { area: "job", job: job.name });

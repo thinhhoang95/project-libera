@@ -1,0 +1,11 @@
+# Grafana datasource for the monitoring override (docker-compose.monitoring.yml).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: libera-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

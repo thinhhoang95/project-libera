@@ -67,6 +67,12 @@ function main() {
       `tar -xf '${remoteArchive}' -C '${remoteSource}'`,
       `docker build -f '${remoteSource}/server/Dockerfile' -t '${image}' '${remoteSource}'`,
       `install -m 0644 '${remoteSource}/ops/collab/docker-compose.prod.yml' '${remoteRoot}/docker-compose.prod.yml'`,
+      // Backup scripts and the optional monitoring stack (SETUP.md §8, §10). Local
+      // files there (metrics_token, alertmanager.yml) are kept.
+      `install -d -m 0755 '${remoteRoot}/backup' '${remoteRoot}/monitoring'`,
+      `cp -R '${remoteSource}/ops/collab/backup/.' '${remoteRoot}/backup/'`,
+      `chmod 0755 '${remoteRoot}/backup/backup.sh' '${remoteRoot}/backup/restore-drill.sh'`,
+      `cp -R '${remoteSource}/ops/collab/monitoring/.' '${remoteRoot}/monitoring/'`,
       // First run: serve the ACME challenge over plain HTTP and get a certificate.
       `if ! test -s /etc/letsencrypt/live/${domain}/fullchain.pem; then install -m 0644 '${remoteSource}/ops/collab/nginx/${domain}-http.conf' '${site}'; ln -sfn '${site}' /etc/nginx/sites-enabled/${domain}.conf; nginx -t; systemctl reload nginx; certbot certonly --webroot --webroot-path /var/www/acme --cert-name ${domain} --domains ${domain} --non-interactive --agree-tos --keep-until-expiring; fi`,
       `install -m 0644 '${remoteSource}/ops/collab/nginx/${domain}.conf' '${site}'`,
