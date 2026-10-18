@@ -212,6 +212,17 @@ export class SharedReviewStore implements ReviewStore {
     return this.loading.then(() => this.document());
   }
 
+  /** Loads unless a load succeeded already (or is running); for a host that became reachable. */
+  loadIfNeeded(): Promise<ReviewDocument> {
+    if (this.loaded && !this.loadError) return Promise.resolve(this.document());
+    return this.load();
+  }
+
+  /** Re-projects without fetching: the account or role it is built with changed. */
+  refresh(): void {
+    this.changed();
+  }
+
   private async fetchAll(): Promise<void> {
     try {
       const threads = await this.api.list(this.docId);

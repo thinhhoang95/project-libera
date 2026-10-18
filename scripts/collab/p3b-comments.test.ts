@@ -8,7 +8,8 @@
 // the shared store's projection froze at its first, empty build; and a
 // collaborator's edit (a "remote" bridge transaction) closed the popover
 // between a real mousedown and its click. The test runs with the browser's
-// queueMicrotask check and a remote edit landing mid-click.
+// queueMicrotask check and a remote edit landing mid-click, and then again in
+// a window that learns only after mounting that the tab is shared.
 
 import { dom, createProject, installBridge, installRendererFetch, openWindow, startClient, statusStoreFor, strictBrowserGlobals, until, type Client, type Window } from "./support/p3b-harness";
 import assert from "node:assert/strict";
@@ -20,7 +21,9 @@ import { act, createElement, useCallback, useEffect, useRef, useState, type Reac
 import { createRoot } from "react-dom/client";
 import { Editor } from "@tiptap/core";
 
-import { setSharedDocRegistry } from "../../src/lib/collab/client/registry";
+import { SharedDocRegistry, setSharedDocRegistry } from "../../src/lib/collab/client/registry";
+import { createMemoryPortPair } from "../../electron/collab/core/ports";
+import { browserPort } from "./support/wire-harness";
 import { sharedVisualSource } from "../../src/lib/collab/bindings/react-visual";
 import { setCollabStatusStore } from "../../src/lib/collab/ui/status-store";
 import { SharedReviewStore } from "../../src/lib/collab/review-store/shared";
@@ -205,6 +208,48 @@ test("a comment added from the popover lists for its author and reaches a collab
     assert.equal(seen.messages[0].text, "Should we say wolves?");
     assert.equal(seen.messages[0].shared.author.id, alice.userId);
     bobStore.destroy();
+
+    // A window that learns late that the tab is shared (the status store read
+    // failed at first, the path resolves after the panel mounted) must switch
+    // to the shared store and list what the server has.
+    await unmount();
+    unmount = null;
+    const hub = alice.app.runtime.host.acquire(doc.docId, { projectId: doc.projectId });
+    let resolveLater!: (value: typeof doc | null) => void;
+    const lateRegistry = new SharedDocRegistry({
+      resolve: () => new Promise((resolve) => { resolveLater = resolve; }),
+      attach: async () => { const pair = createMemoryPortPair(); hub.attachReplica(pair.hub); return browserPort(pair.replica); },
+      subscribeEvents: () => () => {},
+      replicaOptions: { schedule: (run) => queueMicrotask(run) },
+      available: () => true,
+    });
+    const lateStatus = statusStoreFor(alice);
+    const signedIn = lateStatus.getSnapshot().status!;
+    lateStatus.setStatus({ ...signedIn, connection: "connecting", account: null });
+    setSharedDocRegistry(lateRegistry);
+    setCollabStatusStore(lateStatus);
+    const lateBridge = installBridge(alice);
+    const lateFetch = installRendererFetch(alice, {
+      "POST /api/markdown-reviews": (body) => ({ ...newReview(PATH, (body as { snapshot?: string }).snapshot ?? TEXT, "local-review"), enabled: true }),
+    });
+    const lateContainer = document.createElement("div");
+    document.body.append(lateContainer);
+    const lateRoot = createRoot(lateContainer);
+    unmount = async () => { await act(async () => lateRoot.unmount()); lateContainer.remove(); lateBridge.remove(); lateFetch.restore(); lateRegistry.destroy(); alice.app.runtime.host.release(doc.docId); };
+    await act(async () => {
+      // eslint-disable-next-line react/no-children-prop
+      lateRoot.render(createElement(MarkdownReviewProvider, { activeTab: tab("late-tab"), getDraft: () => aliceWin.text(), applyDraft: () => false, recoverDraft: () => {}, openChat: () => {}, openComments: () => {}, children: [createElement(Probe, { key: "probe" }), createElement(ReviewComments, { key: "comments" })] }));
+    });
+    await flush();
+    const binding = lateRegistry.bindTab("late-tab", PATH);
+    await flush();
+    assert.equal(probe.review!.shared, null, "not shared while the path is unresolved");
+    assert.match(lateContainer.textContent ?? "", /0 open/);
+    resolveLater(doc);
+    await binding;
+    await act(async () => { lateStatus.setStatus(signedIn); });
+    await until(async () => { await flush(1); return /1 open/.test(lateContainer.textContent ?? "") && /Should we say wolves\?/.test(lateContainer.textContent ?? ""); }, "the late shared panel to list the thread");
+    assert.equal(probe.review!.shared?.projection.me?.id, alice.userId, "the account learned later is used");
   } finally {
     await unmount?.();
     restoreGlobals();

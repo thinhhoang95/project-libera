@@ -151,7 +151,15 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     const off = store.subscribeProjection(setProjection);
     queueMicrotask(() => { if (sharedStore.current === store) setProjection(store.getProjection()); });
     void store.load();
-    return () => { off(); store.destroy(); if (sharedStore.current === store) sharedStore.current = null; };
+    // The account and connection can become known after the panel mounted
+    // (the status store retries after a failed first read): re-project with
+    // the account, and load once the host is reachable.
+    const statusStore = getCollabStatusStore();
+    const offStatus = statusStore.subscribe(() => {
+      store.refresh();
+      if (statusStore.getSnapshot().status?.connection === "connected") void store.loadIfNeeded();
+    });
+    return () => { off(); offStatus(); store.destroy(); if (sharedStore.current === store) sharedStore.current = null; };
   }, [sharedReplica, sharedResolved]);
   const sharedProjection = projection && projection.docId === sharedResolved?.docId ? projection : null;
 
