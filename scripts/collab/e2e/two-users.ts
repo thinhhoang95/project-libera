@@ -567,9 +567,21 @@ async function main() {
     await clickWithFallback(addButton, `the popover's "Add comment" button`, composer);
     await page.fill(`document.querySelector('[aria-label="New review comment"]')`, comment, "New review comment field");
     await shot(page, "comment-composer-alice");
-    const started = Date.now();
     let aliceMissing = "";
     const posted = `[...document.querySelectorAll("article.review-comment-card")].some((c) => c.textContent.includes(${JSON.stringify(comment)}))`;
+    // In-page timestamps (not CDP polling): when the submit click happens and
+    // when each panel first shows the card. MutationObserver, not timers, which
+    // are throttled in a hidden window.
+    const watchCard = `(() => {
+      window.__e2eCardAt = null;
+      const check = () => { if (window.__e2eCardAt === null && ${posted}) window.__e2eCardAt = Date.now(); };
+      new MutationObserver(check).observe(document.body, { subtree: true, childList: true, characterData: true });
+      return true;
+    })()`;
+    await bob.page!.click(`document.querySelector("#left-panel-tab-comments")`, "Comments tab (Bob)");
+    await bob.page!.evaluate(watchCard);
+    await page.evaluate(watchCard);
+    await page.evaluate(`(() => { window.__e2eSubmitAt = null; document.addEventListener("click", () => { window.__e2eSubmitAt = Date.now(); }, { capture: true, once: true }); return true; })()`);
     await clickWithFallback(`document.querySelector(".review-popover form button")`, `the composer's "Add comment" submit button`, posted);
     const popoverError = await page.evaluate<string | null>(`document.querySelector(".review-popover [role=alert], .review-popover .text-destructive")?.textContent ?? null`);
     if (popoverError) note(`popover error: ${popoverError}`);
@@ -581,7 +593,13 @@ async function main() {
       aliceMissing = `${(error as Error).message}. Panel: ${JSON.stringify(panel)}. GET threads: ${JSON.stringify(stored)}. GET commands: ${JSON.stringify(queued)}`;
       observe(`Alice's comment was stored but is not in her own Comments panel: ${aliceMissing}`);
     });
-    if (!aliceMissing) timings["comment submit → visible in Alice's own panel"] = Date.now() - started;
+    const submitAt = await page.evaluate<number | null>("window.__e2eSubmitAt");
+    const aliceAt = await page.evaluate<number | null>("window.__e2eCardAt");
+    if (!aliceMissing) {
+      assert(submitAt && aliceAt, "no in-page timestamps for the submit click and Alice's card");
+      timings["comment submit click → card in Alice's own panel (in-page)"] = aliceAt - submitAt;
+      assert(aliceAt - submitAt < 1_500, `Alice's own panel showed her comment ${aliceAt - submitAt} ms after the click (budget 1.5 s)`);
+    }
     const bobPage = bob.page!;
     await bobPage.click(`document.querySelector("#left-panel-tab-comments")`, "Comments tab");
     const card = await waitFor(
@@ -594,7 +612,10 @@ async function main() {
     await shot(page, "comment-alice");
     await shot(bobPage, "comment-bob");
     if (card) {
-      timings["comment submit → visible in Bob's Comments panel"] = Date.now() - started;
+      const bobAt = await bobPage.evaluate<number | null>("window.__e2eCardAt");
+      assert(submitAt && bobAt, "no in-page timestamp for Bob's card");
+      timings["comment submit click → card in Bob's panel (in-page)"] = bobAt - submitAt;
+      assert(bobAt - submitAt < 1_500, `Bob's panel showed the comment ${bobAt - submitAt} ms after Alice's click (budget 1.5 s)`);
       assert(card.author.includes("Alice"), `the comment's author on Bob's side is ${JSON.stringify(card.author)}, expected Alice`);
       note(`Bob sees the comment with author ${JSON.stringify(card.author)}`);
     } else {
@@ -756,6 +777,7 @@ async function main() {
     server = await startServerProcess({ port: serverPort, dataDir: serverData, env: serverEnv });
     attachServerLog(server);
     note(`server restarted in ${Date.now() - started} ms`);
+    const listening = Date.now();
     const converged = await waitFor(
       async () => {
         const [left, right] = await Promise.all([cmText(alice.page!), cmText(bob.page!)]);
@@ -764,6 +786,10 @@ async function main() {
       { timeoutMs: 90_000, message: "the editors did not converge after the server came back", intervalMs: 100 },
     );
     timings["server restart → editors converged"] = Date.now() - started;
+    const reconnectMs = Date.now() - listening;
+    timings["server listening → editors converged"] = reconnectMs;
+    // Backoff is capped at 10 s and a /healthz probe shortcuts it; ~10 s is the budget.
+    assert(reconnectMs < 10_000, `the editors converged ${reconnectMs} ms after the server was listening again (budget 10 s)`);
     for (const instance of [alice, bob]) await waitPill(instance.page!, "saved-remote", instance.name, 60_000);
     timings["server restart → both pills Saved to workspace"] = Date.now() - started;
     await waitFor(() => readFileSync(aliceNotes, "utf8") === converged && readFileSync(bobNotes(), "utf8") === converged, { timeoutMs: 15_000, message: "the disks do not equal the converged text after reconnecting" });

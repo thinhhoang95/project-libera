@@ -64,6 +64,8 @@ export class CdpPage {
   readonly consoleErrors: string[] = [];
   /** False for the main-process inspector, where awaited evaluations can be collected. */
   awaitPromises = true;
+  /** How long the last click() waited for its target, and the last reason it was not clickable. */
+  lastClickWait: { ms: number; reason: string } = { ms: 0, reason: "" };
 
   private constructor(
     private readonly socket: WebSocket,
@@ -213,32 +215,67 @@ export class CdpPage {
 
   /**
    * Clicks the element `finder` (a JS expression evaluating to an Element or
-   * null) once it exists and is visible. Scrolls it into view first.
+   * null) once it exists, is enabled and hydrated, and is the topmost element
+   * at its centre. Scrolls only when it is off screen (scrolling can move
+   * floating UI such as popovers after it was measured), and clicks once two
+   * measurements 100 ms apart agree. Waits run in Node: page timers are
+   * throttled to about 1 s while the window is hidden or occluded.
    */
   async click(finder: string, what: string, timeoutMs = 20_000, react = true): Promise<void> {
+    let waited = "";
+    const started = Date.now();
     const rect = await waitFor(
-      () =>
-        this.evaluate<Rect | null>(`(async () => {
+      async () => {
+        const scrolled = await this.evaluate<boolean | null>(`(() => {
           const el = (${finder});
           if (!el) return null;
-          const before = el.getBoundingClientRect();
-          // Scroll only when needed: scrolling can move floating UI (popovers) after we measure.
-          if (before.top < 0 || before.left < 0 || before.bottom > innerHeight || before.right > innerWidth) el.scrollIntoView({ block: "center", inline: "center" });
-          // Let layout settle, then measure.
-          // (Not requestAnimationFrame: it does not run while the window is hidden or occluded.)
-          await new Promise((resolve) => setTimeout(resolve, 60));
           const r = el.getBoundingClientRect();
-          if (r.width === 0 || r.height === 0) return null;
-          if (el.disabled) return null;
+          if (r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth) return false;
+          el.scrollIntoView({ block: "center", inline: "center" });
+          return true;
+        })()`);
+        if (scrolled === null) {
+          waited = "not found";
+          return null;
+        }
+        if (scrolled) await sleep(80);
+        const measure = () => this.evaluate<Rect | { wait: string }>(`(() => {
+          const el = (${finder});
+          if (!el) return { wait: "not found" };
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return { wait: "zero size" };
+          if (el.disabled) return { wait: "disabled" };
           // Server-rendered markup exists before React hydrates it; wait for its props.
-          if (${react} && !Object.keys(el).some((key) => key.startsWith("__reactProps"))) return null;
+          if (${react} && !Object.keys(el).some((key) => key.startsWith("__reactProps"))) return { wait: "not hydrated" };
           // Something else on top (an overlay, a moving popover): wait, as a user would.
           const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-          if (!top || (top !== el && !el.contains(top))) return null;
+          if (!top || (top !== el && !el.contains(top))) return { wait: "covered by " + (top ? top.outerHTML.slice(0, 100) : "nothing") };
           return { x: r.x, y: r.y, width: r.width, height: r.height };
-        })()`),
+        })()`);
+        const first = await measure();
+        if ("wait" in first) {
+          waited = first.wait;
+          return null;
+        }
+        // Floating UI (popovers, dialogs) can still be moving into place: click
+        // only once two measurements 100 ms apart agree.
+        await sleep(100);
+        const second = await measure();
+        if ("wait" in second) {
+          waited = second.wait;
+          return null;
+        }
+        if (Math.abs(first.x - second.x) > 0.5 || Math.abs(first.y - second.y) > 0.5) {
+          waited = "still moving";
+          return null;
+        }
+        return second;
+      },
       { timeoutMs, message: `${this.label}: could not find ${what} to click` },
-    );
+    ).catch((error: Error) => {
+      throw new Error(`${error.message} (last reason: ${waited || "none"})`);
+    });
+    this.lastClickWait = { ms: Date.now() - started, reason: waited };
     await this.clickRect(rect);
   }
 
