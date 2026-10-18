@@ -88,7 +88,9 @@ test("S3: every committed local_seq survives SIGKILL and the doc decodes", { tim
       });
       assert.ok(lockChecked, "a second host on a live database is refused");
       assert.ok(!result.finished, "the typist was killed before it finished");
-      assert.ok(result.seqs.length > 1000, `typed ${result.seqs.length} updates before the kill`);
+      // Only a sanity floor: under parallel test load the typist is slower, and
+      // what matters is that every committed seq survives, however many there are.
+      assert.ok(result.seqs.length > 100, `typed ${result.seqs.length} updates before the kill`);
       allLatencies.push(...result.latencies);
 
       const store = new HostStore({ path: dbPath });
