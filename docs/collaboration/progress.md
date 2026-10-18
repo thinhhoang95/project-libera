@@ -87,12 +87,12 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Host kill test (S3): p95 append commit about 2 ms on this machine
 
 ### M1.4 Replica and bindings
-- ☐ Renderer replica client over MessagePort, tab-level registry outliving editor mounts
-- ☐ LaTeX and code editors: y-codemirror.next, local-origin UndoManager
+- ☑ Renderer replica client over MessagePort, tab-level registry outliving editor mounts (`scripts/collab/wire-*.test.ts`)
+- ☑ LaTeX and code editors: y-codemirror.next, local-origin UndoManager
 - ☑ Markdown Source on CodeMirror 6 with feature parity, behind Preferences → Source editor (Classic default); external-document seam for the binding; parity table in `decisions/D8-codemirror-markdown.md`. 👤 Before the default flips: try it in the running app, run the IME matrix, and check typing on a 1 MB note
-- ☐ Visual block bridge (S1)
-- ☐ `getTabDraft` reads the replica for shared tabs
-- ◐ Presence: library done (awareness user state, sections, quiet mode, follow mode); UI in wave 2
+- ☑ Visual block bridge (S1): about 2 ms per keystroke on 1 MB; wired so the editor starts empty and the bridge builds it. 👤 Real IME check
+- ☑ `getTabDraft` reads the replica for shared tabs; programmatic draft writers rerouted through minimal-diff Y writes with provenance
+- ☑ Presence: avatars with sections, quiet mode, follow mode (CodeMirror only; not Visual)
 
 ### M1.5 Shared notebooks
 - ☑ Share: UI dialog; host import (exact text, blobs, folders, manifest), marker, retry-safe pending file
@@ -103,8 +103,8 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☑ Reconciliation: host side, routes and `ReconcileView` (`@codemirror/merge`)
 
 ### M1.6 Save states
-- ◐ Status pill component for all seven states (merged); mounting per tab in editor wiring
-- ☐ No Save or dirty state on shared tabs; updater count; journals skip shared tabs
+- ☑ Status pill for all seven states, mounted per shared tab
+- ☑ No Save or dirty state on shared tabs; updater count 0; journals and checkpoints skip shared tabs; no disk reloads
 - ☐ Quit waits for local commit
 
 ### M1.7 Reconnect
@@ -126,11 +126,11 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 - ☐ Cold open from snapshot plus tail
 
 ### M1.11 AI at Phase 1 level
-- ☐ Provenance on every local edit, stored server-side
-- ☐ Rewrite/Write/Format/Image applied with `ai:<feature>` provenance; reject = local undo
-- ☐ Agentic review accept through the replica, with a `before` check
-- ☐ Agent Edit/Write through the control API; undo as inverse edits; notebook-wide mode disabled
-- ☐ Leave review comments disabled on shared docs (until M2.3)
+- ☑ Provenance on every local edit, stored server-side
+- ☑ Rewrite/Write/Format/Image applied with `ai:<feature>` provenance as one undo step (Visual included)
+- ☑ Agentic review accept through the replica, with a `before` check
+- ☑ Agent Edit/Write through the control API with ai/agent provenance; undo as inverse edits with conflict check; notebook-wide mode refused; role checks; AGENT_NOTES in shared notebooks labelled untrusted
+- ☑ Leave review comments disabled on shared docs (until M2.3)
 
 ### M1.12 Test harness
 - ◐ Convergence fuzzer: anchor fuzz (1,000 operations) and a two-replica fuzz exist; the multi-host fuzz against the real server is in wave 2
@@ -141,7 +141,7 @@ The spikes are carried out as the first, tested slice of the matching milestone,
 
 ## Open gaps found during integration
 
-- ☐ Reroute Libera's own writers for shared files to the host: Save (no Save on shared tabs), the agent's Edit/Write (M1.11), OCR convert, uploads and image saves into shared notebooks (as blobs through file ops). Until then they get a clear 409.
+- ☑ Libera's own writers for shared files go through the host: shared tabs have no Save; the agent, OCR convert, uploads, markdown images, edited images and image generation into notebooks (blobs). Remaining: deleting/pruning images in shared notebooks still returns 409; blobs through the host are capped at 11 MB.
 - ☐ Host `ApiClient.listDocuments` has no server route; the notebooks code works around it. Add `GET /v1/projects/:id/documents` or remove the client method.
 - ☐ Divergence check: server digest endpoint (Phase 4 agent) plus an hourly host comparison.
 
