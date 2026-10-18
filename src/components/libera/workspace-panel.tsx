@@ -670,6 +670,8 @@ function WorkspacePanelContent({
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const latestMarkdownSplit = useRef(markdownSplitPercent);
+  useLayoutEffect(() => { latestMarkdownSplit.current = markdownSplitPercent; }, [markdownSplitPercent]);
   const stopMarkdownSplitDragRef = useRef<(() => void) | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
@@ -1336,11 +1338,18 @@ function WorkspacePanelContent({
     };
   }, [activeFileType, activeTabId, activeTabStatus, focused, onSave]);
 
-  function saveMarkdownSplitPercent(value: number) {
+  function saveMarkdownSplitPercent(value: number, persist = true) {
     const clampedValue = clampMarkdownSplitPercent(value);
 
+    latestMarkdownSplit.current = clampedValue;
     setMarkdownSplitPercent(clampedValue);
-    window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+    if (persist) {
+      try {
+        if (window.localStorage.getItem(MARKDOWN_SPLIT_STORAGE_KEY) !== String(clampedValue)) {
+          window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+        }
+      } catch { /* Storage may be unavailable. */ }
+    }
   }
 
   function handleMarkdownZoomChange(value: number) {
@@ -1400,7 +1409,7 @@ function WorkspacePanelContent({
     }
 
     const offset = isDesktopSplit ? clientX - rect.left : clientY - rect.top;
-    saveMarkdownSplitPercent((offset / size) * 100);
+    saveMarkdownSplitPercent((offset / size) * 100, false);
   }
 
   function handleMarkdownSplitPointerDown(
@@ -1419,6 +1428,7 @@ function WorkspacePanelContent({
     function stopDragging() {
       stopMarkdownSplitDragRef.current = null;
       setMarkdownSplitDragging(false);
+      saveMarkdownSplitPercent(latestMarkdownSplit.current);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);

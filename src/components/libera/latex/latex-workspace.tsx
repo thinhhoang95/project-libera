@@ -131,6 +131,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   useHorizontalWheelScroll(toolbarRef);
   // The workspace renders on the client only, so storage can seed the state.
   const [splitPercent, setSplitPercent] = useState(readStoredSplit);
+  const latestSplit = useRef(splitPercent);
   const [dragging, setDragging] = useState(false);
   const [bibEntries, setBibEntries] = useState<BibEntrySummary[]>([]);
   const splitRef = useRef<HTMLDivElement>(null);
@@ -345,14 +346,23 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   /* ---- Split ------------------------------------------------------------------ */
 
+  function setSplit(value: number, persist = false) {
+    latestSplit.current = value;
+    setSplitPercent(value);
+    if (persist) {
+      try {
+        if (window.localStorage.getItem(SPLIT_STORAGE_KEY) !== String(value)) window.localStorage.setItem(SPLIT_STORAGE_KEY, String(value));
+      } catch { /* Storage may be unavailable. */ }
+    }
+  }
+
   function updateSplit(clientX: number, clientY: number) {
     const container = splitRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
     const wide = window.matchMedia("(min-width: 1024px)").matches;
     const percent = Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ((wide ? clientX - rect.left : clientY - rect.top) / (wide ? rect.width : rect.height)) * 100));
-    setSplitPercent(percent);
-    try { window.localStorage.setItem(SPLIT_STORAGE_KEY, String(percent)); } catch { /* Storage may be unavailable. */ }
+    setSplit(percent);
   }
 
   function startSplitDrag(event: ReactPointerEvent<HTMLDivElement>) {
@@ -563,12 +573,18 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
             tabIndex={0}
             onPointerDown={startSplitDrag}
             onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) updateSplit(event.clientX, event.clientY); }}
-            onPointerUp={(event) => { setDragging(false); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-            onLostPointerCapture={() => setDragging(false)}
+            onPointerUp={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+              updateSplit(event.clientX, event.clientY);
+              setSplit(latestSplit.current, true);
+              setDragging(false);
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onLostPointerCapture={() => { setDragging(false); setSplit(latestSplit.current, true); }}
             onKeyDown={(event) => {
               const step = event.shiftKey ? 10 : 5;
-              if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); setSplitPercent((value) => Math.max(MIN_SPLIT, value - step)); }
-              if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); setSplitPercent((value) => Math.min(MAX_SPLIT, value + step)); }
+              if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); setSplit(Math.max(MIN_SPLIT, latestSplit.current - step), true); }
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); setSplit(Math.min(MAX_SPLIT, latestSplit.current + step), true); }
             }}
           >
             <span className="h-1 w-10 rounded-full bg-input transition group-hover:bg-muted-foreground lg:h-10 lg:w-1" />

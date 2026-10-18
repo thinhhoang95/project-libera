@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, ImagePlus, Images, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { applyGallery, refreshGallery, subscribeReusePrompt, subscribeReferenceRequests, useGallery } from "@/components/libera/gallery-store";
 import {
   DEFAULT_IMAGE_GENERATION_SETTINGS,
@@ -21,7 +22,6 @@ import {
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 const PROMPT_STORAGE_KEY = "libera.imageGeneration.prompt";
-const SAVE_DELAY_MS = 400;
 const NEW_ALBUM = "\u0000new-album";
 const label = "mb-1.5 block px-1 text-xs font-medium text-muted-foreground";
 const field = "libera-panel-field h-9 w-full px-2.5 text-[13px]";
@@ -86,7 +86,9 @@ function readStoredPrompt() {
 }
 
 function storePrompt(prompt: string) {
-  try { window.localStorage.setItem(PROMPT_STORAGE_KEY, prompt); } catch { /* storage unavailable */ }
+  try {
+    if (readStoredPrompt() !== prompt) window.localStorage.setItem(PROMPT_STORAGE_KEY, prompt);
+  } catch { /* storage unavailable */ }
 }
 
 /** Draws a small frame in the shape of an aspect ratio such as `16:9`. */
@@ -187,15 +189,30 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
-  const pendingSaveRef = useRef<ImageGenerationSettings | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const latestPreferences = useRef({ settings, prompt });
+  useLayoutEffect(() => { latestPreferences.current = { settings, prompt }; }, [settings, prompt]);
+  const settingsWriter = useMemo(() => createDeferredSave(async (body) => {
+    await apiRequest("/api/image-generation/settings", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+  }, () => setError("Image generation settings could not be saved. The next save action will retry.")), []);
+  const flushSettings = useCallback(() => {
+    const latest = latestPreferences.current;
+    storePrompt(latest.prompt);
+    if (latest.settings) settingsWriter.schedule(latest.settings);
+    return settingsWriter.flush();
+  }, [settingsWriter]);
 
   useEffect(() => {
     let disposed = false;
     void apiRequest<ImageGenerationSettings>("/api/image-generation/settings")
-      .then((loaded) => { if (!disposed) setSettings(loaded); })
-      .catch(() => { if (!disposed) setSettings(DEFAULT_IMAGE_GENERATION_SETTINGS); });
+      .then((loaded) => { if (!disposed) { settingsWriter.markSaved(loaded); setSettings(loaded); } })
+      .catch(() => {
+        if (!disposed) {
+          // Opening/closing after a failed read must not overwrite saved settings.
+          settingsWriter.markSaved(DEFAULT_IMAGE_GENERATION_SETTINGS);
+          setSettings(DEFAULT_IMAGE_GENERATION_SETTINGS);
+        }
+      });
     void apiRequest<{ models: ImageGenerationModel[] }>("/api/image-generation/models")
       .then(({ models: loaded }) => { if (!disposed) setModels([...loaded].sort((first, second) => first.name.localeCompare(second.name))); })
       .catch((failure: Error) => { if (!disposed) { setModels([]); setModelsError(failure.message); } });
@@ -237,35 +254,19 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     promptRef.current?.focus();
   }), []);
 
-  // Flush unsaved settings when the panel closes so nothing is lost on quit.
-  useEffect(() => () => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    if (pendingSaveRef.current) {
-      void apiRequest("/api/image-generation/settings", { method: "PUT", body: JSON.stringify(pendingSaveRef.current), keepalive: true }).catch(() => undefined);
-    }
-    abortRef.current?.abort();
-  }, []);
-
-  const dirtyRef = useRef(false);
+  // Save on field commits, generation, and close, rather than typing or timers.
+  useEffect(() => {
+    const unregister = registerStateFlusher(flushSettings);
+    return () => {
+      unregister();
+      void flushSettings().catch(() => undefined);
+      abortRef.current?.abort();
+    };
+  }, [flushSettings]);
 
   function updateSettings(change: (current: ImageGenerationSettings) => ImageGenerationSettings) {
-    dirtyRef.current = true;
     setSettings((current) => (current ? change(current) : current));
   }
-
-  // Save shortly after the last change; the unmount flush above covers the rest.
-  useEffect(() => {
-    if (!dirtyRef.current || !settings) return;
-    dirtyRef.current = false;
-    pendingSaveRef.current = settings;
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      const toSave = pendingSaveRef.current;
-      pendingSaveRef.current = null;
-      if (toSave) void apiRequest("/api/image-generation/settings", { method: "PUT", body: JSON.stringify(toSave) }).catch(() => undefined);
-    }, SAVE_DELAY_MS);
-  }, [settings]);
 
   const model = models?.find((entry) => entry.id === settings?.model);
   const params = settings ? settings.paramsByModel[settings.model] ?? {} : {};
@@ -303,6 +304,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     setError("");
     setResult(null);
     try {
+      void flushSettings().catch(() => undefined);
       const response = await apiRequest<{ files?: LiberaFileNode[]; photos?: string[]; cost?: number; tree?: LiberaTree }>("/api/image-generation", {
         method: "POST",
         signal: controller.signal,
@@ -322,6 +324,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setGenerating(false);
+      void flushSettings().catch(() => undefined);
     }
   }
 
@@ -346,6 +349,10 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     </div>
     <form className={`min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-1 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-[#457be6]/60" : ""}`}
       onSubmit={(event) => { event.preventDefault(); void generate(); }}
+      onBlurCapture={() => { void flushSettings().catch(() => undefined); }}
+      onPointerUp={(event) => {
+        if (event.target instanceof HTMLInputElement && event.target.type === "range") void flushSettings().catch(() => undefined);
+      }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
@@ -364,7 +371,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
         <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder="A quiet reading room at dusk, warm lamps, rain on tall windows…"
           className="libera-panel-field w-full resize-y px-3 py-2.5 text-[13px] leading-relaxed"
           value={prompt}
-          onChange={(event) => { setPrompt(event.target.value); storePrompt(event.target.value); }}
+          onChange={(event) => { setPrompt(event.target.value); }}
           onPaste={(event) => {
             const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
             if (!images.length) return;

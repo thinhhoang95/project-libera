@@ -31,7 +31,7 @@ function tab(id: string): OpenTab {
 }
 
 
-test("pane bodies skip unrelated drafts and scrolling while callbacks and link positions stay current", async () => {
+test("pane bodies skip unrelated drafts and scrolling while callbacks and link positions stay current", async (context) => {
   const dom = setupDom();
   const require = createRequire(import.meta.url);
   const bodies = new Map<string, { renders: number; onChange: (text: string) => void; readOpenTabs?: () => OpenTab[] }>();
@@ -95,6 +95,22 @@ test("pane bodies skip unrelated drafts and scrolling while callbacks and link p
       await render(mode);
       assert.equal(bodies.get(a.id)!.renders, before + 1, "Own-document edits still render");
     }
+    const storage = context.mock.method(dom.window.Storage.prototype, "setItem");
+    const resizer = document.querySelector<HTMLElement>('[role="separator"]')!;
+    assert.ok(resizer);
+    const grid = resizer.closest<HTMLElement>(".markdown-split-grid")!;
+    grid.getBoundingClientRect = () => new dom.window.DOMRect(0, 0, 1000, 1000);
+    await act(async () => { resizer.dispatchEvent(new dom.window.MouseEvent("pointerdown", { clientY: 500, bubbles: true })); });
+    for (const clientY of [550, 700, 600]) {
+      await act(async () => { window.dispatchEvent(new dom.window.MouseEvent("pointermove", { clientY, bubbles: true })); });
+    }
+    const splitWrites = () => storage.mock.calls.filter((call) => call.arguments[0] === "libera.markdownEditorPreviewSplitPercent");
+    assert.equal(splitWrites().length, 0, "resizing only changes the live layout");
+    await act(async () => { window.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true })); });
+    assert.equal(splitWrites().length, 1, "finishing a resize writes once");
+    assert.equal(window.localStorage.getItem("libera.markdownEditorPreviewSplitPercent"), "60");
+    await act(async () => { resizer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    assert.equal(window.localStorage.getItem("libera.markdownEditorPreviewSplitPercent"), "65", "keyboard adjustments still persist");
   } finally {
     await act(async () => root.unmount());
     saved.forEach(({ id, module }) => { if (module) require.cache[id] = module; else delete require.cache[id]; });

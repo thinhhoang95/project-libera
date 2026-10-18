@@ -4,7 +4,7 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
 import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, Search, SpellCheck, FilePlus2 } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
@@ -81,6 +81,13 @@ function createChat(mode: ChatMode = "chat", agentPermission?: AgentPermission):
   return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [], ...(mode === "agent" ? { mode, agentPermission } : {}) };
 }
 
+// Keep the live UI separate from the snapshot captured by a save event. Tokens
+// and composer keystrokes must neither serialize history nor schedule writes.
+function reduceChatState(state: { store: ChatStore | null; snapshot: ChatStore | null }, action: { update: SetStateAction<ChatStore | null>; persist: boolean }) {
+  const store = typeof action.update === "function" ? action.update(state.store) : action.update;
+  return { store, snapshot: action.persist ? store : state.snapshot };
+}
+
 const CHAT_MODE_STORAGE_KEY = "libera.chatMode";
 const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
 const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
@@ -143,7 +150,10 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
   const [fontSizeError, setFontSizeError] = useState("");
-  const [store, setStore] = useState<ChatStore | null>(null);
+  const [{ store, snapshot }, dispatchStore] = useReducer(reduceChatState, { store: null, snapshot: null });
+  const setStore = useCallback((update: SetStateAction<ChatStore | null>, persist = true) => {
+    dispatchStore({ update, persist });
+  }, []);
   const [now, setNow] = useState(() => new Date());
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
@@ -175,7 +185,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const historyWriter = useMemo(() => createDeferredSave(async (body) => {
     await apiRequest("/api/document-chat/state", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
     setStorageError("");
-  }, () => setStorageError("Chat history could not be saved. Your next change will retry saving.")), []);
+  }, () => setStorageError("Chat history could not be saved. The next conversation action will retry saving.")), []);
   const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const handledAttachmentRequest = useRef<string | null>(null);
@@ -237,15 +247,18 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         const last = item.messages.at(-1);
         return last?.role === "user" ? { ...item, messages: item.messages.slice(0, -1), prompt: item.prompt || last.text, photos: [...(last.photos ?? []), ...(item.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...(last.contexts ?? []), ...item.selections] } : item;
       });
-      setStore(restored);
+      setStore(restored, history !== null);
     }).catch(() => { if (!disposed) setStorageError("Saved chats could not be loaded. Reload the app to retry."); });
     return () => { disposed = true; requestRef.current?.abort(); };
-  }, []);
+  }, [historyWriter, setStore]);
+
+  useLayoutEffect(() => { latestStore.current = store; }, [store]);
 
   useEffect(() => {
-    latestStore.current = store;
-    if (store) historyWriter.schedule({ kind: "history", value: store }, pending ? 30_000 : 1000);
-  }, [store, pending, historyWriter]);
+    if (!snapshot) return;
+    historyWriter.schedule({ kind: "history", value: snapshot });
+    void historyWriter.flush().catch(() => undefined);
+  }, [snapshot, historyWriter]);
 
   useEffect(() => {
     const flush = () => {
@@ -272,9 +285,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (log && followResponseRef.current) log.scrollTop = log.scrollHeight;
   }, [chat?.messages.length, lastMessageText, lastMessageSteps, pending]);
 
-  const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat) => {
-    setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }));
-  }, []);
+  const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat, persist = true) => {
+    setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }), persist);
+  }, [setStore]);
 
   useEffect(() => {
     function addSelection(event: KeyboardEvent) {
@@ -484,7 +497,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         return { ...current, messages: current.messages.some((item) => item.id === assistantId)
           ? current.messages.map((item) => item.id === assistantId ? assistant : item)
           : [...current.messages, assistant] };
-      });
+      }, status !== "streaming");
     }
     function schedule() {
       if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
@@ -501,16 +514,18 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         if (pendingPhoto) message.photos = [...photos, { id: crypto.randomUUID(), name: pendingPhoto.name, dataUrl: await viewedPhotoDataUrl(pendingPhoto, controller.signal), source: pendingPhoto.source }];
       }
       controller.signal.throwIfAborted();
-      updateChat(id, (current) => replay ? { ...current, messages } : ({ ...current,
-        title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || message.photos[0]?.name || "Photo chat").slice(0, 60), messages,
-        prompt: current.prompt === prompt ? "" : current.prompt,
-        selections: current.selections.filter((item) => !selections.includes(item)),
-        photos: current.photos?.filter((item) => !photos.includes(item)) ?? [],
-      }));
+      updateChat(id, (current) => {
+        const next = replay ? { ...current, messages } : { ...current,
+          title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || message.photos[0]?.name || "Photo chat").slice(0, 60), messages,
+          prompt: current.prompt === prompt ? "" : current.prompt,
+          selections: current.selections.filter((item) => !selections.includes(item)),
+          photos: current.photos?.filter((item) => !photos.includes(item)) ?? [],
+        };
+        // Save the sent turn and its request ledger together. Usage updates stay
+        // in memory until the response completes, fails, or is interrupted.
+        return { ...next, usageRequests: [...chatUsageRequests(current), { id: assistantId, messageId: messages.at(-1)!.id }] };
+      });
       committed = true;
-      // Keep the request ledger separate from replies so regenerations and failed
-      // attempts retain their usage even when the visible conversation changes.
-      updateChat(id, (current) => ({ ...current, usageRequests: [...chatUsageRequests(chat), { id: assistantId, messageId: messages.at(-1)!.id }] }));
       if (run) {
         const bridge = agentWorkspaceRef.current;
         // The agent sees what the user sees: unsaved drafts of open files go with
@@ -575,7 +590,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             usage.outputTokens += event.usage.outputTokens;
             usage.cachedTokens += event.usage.cachedTokens ?? 0;
             const total = { ...usage };
-            updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage: total } : request) }));
+            updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage: total } : request) }), false);
           } else if (event.type === "done") { run.outcome = event.outcome; doneMessage = event.message ?? ""; }
           else if (event.type === "error") failure = event.message;
         });
@@ -606,7 +621,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           if (first) publish("streaming");
           else if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
         }, (usage) => {
-          updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage } : request) }));
+          updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage } : request) }), false);
         });
         if (!answer.trim()) throw new Error("The model returned an empty response.");
         publish();
@@ -820,7 +835,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
                 { icon: Search, label: "Find everything about a topic", prompt: "Find everything in my notes about: " },
                 { icon: ListChecks, label: "Collect open questions and TODOs", prompt: "List the open questions and TODOs across the notes in this notebook, with the file each comes from." },
                 ...(permission === "notebook" ? [{ icon: FilePlus2, label: "Create an index note", prompt: "Create a note named Index.md in this notebook that links to every note, grouped by folder, with a one-line description of each." }] : []),
-              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt }), false); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
             <p className="libera-chat-context-hint">{permission === "read-only" ? "Read Only: the agent will not change any file."
               : sharedAgent ? `“${agentNotebook}” is shared: the agent suggests changes${permission === "open-files" ? " to the files open in the editor" : " to its files"}, which collaborators see and an editor accepts or rejects. Undo withdraws them.`
@@ -844,7 +859,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               ] : [
                 { icon: Lightbulb, label: "Explore a new idea", prompt: "Help me think through an idea: " },
                 { icon: BookOpen, label: "Make sense of a topic", prompt: "Help me understand this topic: " },
-              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt }), false); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
             <p className="libera-chat-context-hint">{includedPhoto ? "The photo you are viewing is included." : includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
             {!viewedPhoto && <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>}
@@ -906,7 +921,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           <div className="libera-chat-composer flex flex-col gap-0.5">
           <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} quickPrompts={quickPrompts}
             {...(agentMode ? { placeholder: "Ask the agent to find, read or edit… Type @ for files" } : {})}
-            onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }))}
+            onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }), false)}
             onSend={() => void send()} onAttachFile={(file) => attachFile(file)} />
           <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><select
             aria-label="Reasoning effort" title="Reasoning effort"

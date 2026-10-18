@@ -7,6 +7,12 @@ The AI panel has two modes, switched at the top of the panel:
 
 The mode is saved with each chat; new chats start in the mode you used last.
 
+## Saving conversations
+
+Chat and Agent save history when a message is sent (including an edit or regeneration), and when the response completes, is stopped, or fails. Creating, switching, branching, renaming, or deleting conversations, changing their settings or attachments, and undoing agent changes also save history. Unchanged snapshots are skipped.
+
+Typing in the composer, incoming tokens, tool activity, and token-usage updates stay in memory; there are no periodic history checkpoints. Closing or reloading the app flushes the latest draft and partial response. A crash or forced termination can lose changes since the last save event. Panel size and visibility are saved separately when you resize or toggle the panel.
+
 ## Permissions
 
 In Agent mode, the picker next to the switch sets what the agent may change:

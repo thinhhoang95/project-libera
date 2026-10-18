@@ -1,11 +1,12 @@
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { readSharedText, withdrawSharedRun, writeSharedText } from "@/lib/collab/shared-writes";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getStateRoot } from "@/lib/storage/paths";
 import { LIBERA_SYSTEM_DIR } from "@/lib/storage/constants";
+import { writeJsonState } from "@/lib/storage/json-state";
 import { resolveLibraryPath } from "./library";
 import type { UndoResult } from "./types";
 
@@ -62,13 +63,7 @@ function manifestPath(runId: string) {
 }
 
 async function writeManifest(manifest: Manifest) {
-  const target = manifestPath(manifest.runId);
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await mkdir(path.dirname(target), { recursive: true });
-  try {
-    await writeFile(temporary, JSON.stringify(manifest), { mode: 0o600 });
-    await rename(temporary, target);
-  } finally { await rm(temporary, { force: true }); }
+  await writeJsonState(manifestPath(manifest.runId), manifest);
 }
 
 async function readManifest(runId: string): Promise<Manifest | null> {

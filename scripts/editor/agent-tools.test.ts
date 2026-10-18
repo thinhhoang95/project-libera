@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { globToRegExp } from "../../src/lib/agent/glob";
@@ -88,6 +88,23 @@ async function call(context: ToolContext, name: string, args: Record<string, unk
     return { text: error instanceof Error ? error.message : String(error), isError: true, result: "" };
   }
 }
+
+test("identical agent undo snapshots do not rewrite the manifest", async () => {
+  await withLibrary(async (root) => {
+    const snapshots = new RunSnapshots("dedup-run-0001");
+    await snapshots.recordOriginal("Research/plan.md", "Original");
+    await snapshots.recordWritten("Research/plan.md", "Changed");
+    const target = path.join(root, ".libera", "agent-runs", "dedup-run-0001.json");
+    const before = await stat(target);
+    await snapshots.recordWritten("Research/plan.md", "Changed");
+    const after = await stat(target);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    await snapshots.recordWritten("Research/plan.md", "Changed again");
+    const manifest = JSON.parse(await readFile(target, "utf8"));
+    assert.equal(manifest.files["Research/plan.md"].written, createHash("sha256").update("Changed again").digest("hex"));
+  });
+});
 
 test("glob patterns match folders, names at any depth, alternatives and classes", () => {
   assert.ok(globToRegExp("**/*.md").test("ideas/atlas.md"));
