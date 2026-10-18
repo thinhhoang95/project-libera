@@ -34,7 +34,7 @@ import type {
   ThreadMessage,
   UpdatesPage,
 } from "./protocol/api";
-import type { AiFeature, Provenance } from "./protocol/actor";
+import type { AiActorHint, AiFeature, Provenance } from "./protocol/actor";
 import type { Role } from "./protocol/roles";
 import type { DocKind, SuggestionStatus } from "./protocol/schema";
 import type { SyncStatus } from "./protocol/local";
@@ -128,7 +128,10 @@ export interface ResolvedDoc {
   path: string;
   kind: DocKind;
   role: Role;
+  /** The text cannot be edited here: access was revoked, or the role is below editor. */
   readOnly: boolean;
+  /** Access was revoked (the folder is kept read-only); nothing can be written, suggestions and comments included. */
+  revoked?: boolean;
 }
 
 export interface DocText {
@@ -321,6 +324,29 @@ export interface DocUpdatesQuery {
 }
 
 /**
+ * POST /docs/:docId/threads/at-range: a comment thread on a range of text,
+ * for callers that cannot write the anchor themselves (the agent's review
+ * comments, which run in Next). The host writes the anchor into the
+ * document's annotations, then creates the thread; offline, the thread
+ * waits in the command queue like any comment (202). With `snapshot`, the
+ * range refers to that text and is mapped onto the live one (409
+ * `passage-changed` when the passage itself changed).
+ */
+export interface CreateThreadAtRangeRequest {
+  /** Client-chosen thread id (for an idempotent retry); the host makes one up otherwise. */
+  id?: string;
+  range: { start: number; end: number };
+  snapshot?: string;
+  body: string;
+  mentions?: string[];
+  ai?: AiActorHint;
+}
+
+export type CreateThreadAtRangeResponse =
+  | { queued: false; thread: Thread }
+  | { queued: true; threadId: string; commandId: string };
+
+/**
  * POST /reviews/:reviewId/decision. `commandId` is the idempotency key, as
  * for suggestion decisions. Online: the server's updated Review (200).
  * Offline or unreachable: queued as a `review.decide` command (202) and
@@ -420,6 +446,8 @@ export const ControlRoutes = {
   // ---- comments (Phase 2): proxies to /v1/documents/:docId/threads, /v1/threads, /v1/messages
   /** GET → Thread[]; POST CreateThreadRequest → Thread. */
   threads: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads`,
+  /** POST CreateThreadAtRangeRequest → CreateThreadAtRangeResponse (201, or 202 queued). */
+  threadsAtRange: (docId: string) => `/docs/${encodeURIComponent(docId)}/threads/at-range`,
   /** GET → Thread; DELETE → 204. */
   thread: (threadId: string) => `/threads/${encodeURIComponent(threadId)}`,
   /** POST CreateMessageRequest → ThreadMessage. */
