@@ -11,7 +11,7 @@
 // copies it into `transaction.meta`, so the replica can read an immutable
 // provenance for each update even when it batches them later.
 
-import { Annotation, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
+import { Annotation, EditorSelection, EditorState, Facet, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
 import { yCollab, ySyncAnnotation, ySyncFacet, YSyncConfig } from "y-codemirror.next";
 import type { Awareness } from "y-protocols/awareness";
@@ -113,6 +113,15 @@ function provenanceForTransaction_(tr: Transaction): Provenance {
 
 export const setCollabReadOnly = StateEffect.define<boolean>();
 
+/**
+ * Provided by forced suggest mode (a commenter's editor, plan M3.2). The
+ * content stays read-only, but input must still reach suggest mode's
+ * transaction filter, which turns it into overlay suggestions and drops the
+ * content change: change filters run before transaction filters, so a
+ * read-only change filter would discard the typing first.
+ */
+export const collabSuggestOnly = Facet.define<boolean, boolean>({ combine: (values) => values.some(Boolean) });
+
 /** Whether the binding currently refuses local edits (viewer, newer schema, access changed). */
 export const collabReadOnlyField = StateField.define<boolean>({
   create: () => false,
@@ -121,11 +130,11 @@ export const collabReadOnlyField = StateField.define<boolean>({
     return value;
   },
   provide: (field) => [
-    EditorState.readOnly.from(field),
+    EditorState.readOnly.compute([field, collabSuggestOnly], (state) => state.field(field) && !state.facet(collabSuggestOnly)),
     // EditorState.readOnly only stops user input; programmatic dispatches (AI
     // actions, toolbar commands) also have to be refused. Remote changes from
     // ySync always pass.
-    EditorState.changeFilter.from(field, (readOnly) => (tr: Transaction) => !readOnly || tr.annotation(ySyncAnnotation) !== undefined),
+    EditorState.changeFilter.from(field, (readOnly) => (tr: Transaction) => !readOnly || tr.annotation(ySyncAnnotation) !== undefined || tr.startState.facet(collabSuggestOnly)),
   ],
 });
 

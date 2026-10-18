@@ -160,6 +160,10 @@ test("the schedule sends reports on its own, never closer than minIntervalMs", {
   });
   hosts.push(host);
   await until(() => recorder.state.posts.length === 1, "the first scheduled report");
+  // The scheduled report may still be in flight, in which case reportNow()
+  // joins it (and resolves "sent") instead of starting a second one.
+  const first = await host.telemetry.reportNow();
+  assert.ok(first === "sent" || first === "too-soon", first);
   assert.equal(await host.telemetry.reportNow(), "too-soon");
   assert.equal(recorder.state.posts.length, 1);
 });

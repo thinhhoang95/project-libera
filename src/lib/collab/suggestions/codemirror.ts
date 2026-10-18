@@ -49,8 +49,12 @@ export interface SuggestionPreviewOptions {
   annotations: SuggestionsTarget;
   /** Display name and colour of a suggestion's account. For AI suggestions this is the user it acted for. */
   author: (record: SuggestionRecord) => SuggestionAuthor;
-  /** Whether to show Accept and Reject (editors and owners; never for viewers or commenters). */
-  canDecide?: boolean;
+  /**
+   * Whether to show Accept and Reject (editors and owners; never for viewers
+   * or commenters). A function is read on every redraw, so a role change
+   * shows after `refreshSuggestionPreview`.
+   */
+  canDecide?: boolean | (() => boolean);
   /** The local account, for editing your own pending suggestions inline in suggest mode. */
   localUserId?: string;
   onAccept?: (group: SuggestionGroupRef) => void;
@@ -261,6 +265,7 @@ function buildDecorations(state: EditorState, items: readonly ViewSuggestion[]):
   const config = state.facet(previewConfig);
   if (!config || !items.length) return Decoration.none;
   const editing = state.facet(inlineReplacementEditing);
+  const canDecide = typeof config.canDecide === "function" ? config.canDecide() : !!config.canDecide;
   const doc = state.doc;
   const ranges: Range<Decoration>[] = [];
   const lastOfGroup = new Map<string, ViewSuggestion>();
@@ -292,7 +297,7 @@ function buildDecorations(state: EditorState, items: readonly ViewSuggestion[]):
     }
     if (lastOfGroup.get(item.groupId) === item) {
       const stale = groupStale.get(item.groupId) ?? false;
-      const widget = new ActionsWidget(item.groupId, authorLabel(item.record, author), author.color, counts.get(item.groupId) ?? 1, stale, title, !!config.canDecide);
+      const widget = new ActionsWidget(item.groupId, authorLabel(item.record, author), author.color, counts.get(item.groupId) ?? 1, stale, title, canDecide);
       ranges.push(Decoration.widget({ widget, side: 2 }).range(item.to));
     }
   }
@@ -390,6 +395,16 @@ const theme = EditorView.baseTheme({
   ".cm-collab-suggestion-accept": { color: "var(--change-add, #2f9e44)" },
   ".cm-collab-suggestion-reject": { color: "var(--change-del, #d14343)" },
 });
+
+/**
+ * Re-resolves and redraws every suggestion, for changes the annotations map
+ * does not announce: author names and colours that arrived later, or a role
+ * change that shows or hides Accept and Reject.
+ */
+export function refreshSuggestionPreview(view: EditorView): void {
+  const config = view.state.facet(previewConfig);
+  if (config) view.dispatch({ effects: setSuggestionItems.of(resolveAll(config, view.state.doc.length)) });
+}
 
 /** Renders the overlay suggestions of `annotations` over `ytext` in this editor. */
 export function suggestionPreview(options: SuggestionPreviewOptions): Extension {

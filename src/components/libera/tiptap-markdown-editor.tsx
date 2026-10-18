@@ -294,6 +294,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     };
   }, [editor, collab]);
   const sharedDraft = useMemo(() => (collab ? { text: () => sharedRef.current?.text() ?? lastValue.current } : null), [collab]);
+  // Shared tab: AI results and "Suggest edit" go to the document's suggestions.
+  const sharedSuggestions = useCallback(() => sharedRef.current?.suggestions ?? null, []);
   const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft, sharedDraft);
   useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
@@ -703,7 +705,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           <option value="">Line spacing</option>
           {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{spacing}×</option>)}
         </select>
-        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
+        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} shared={collab ? sharedSuggestions : undefined} />
         {[
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },

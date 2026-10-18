@@ -17,19 +17,31 @@
 //   extension makes them editable while suggest mode is on).
 //
 // Remote changes and Y undo/redo (both dispatched by ySync) pass untouched.
+//
+// IME composition cannot be filtered keystroke by keystroke: the browser owns
+// the DOM text until the composition ends, and dropping its changes would
+// leave CodeMirror's document and the DOM disagreeing (the IME then commits
+// garbage). So composition input is applied to the editor only, never to
+// the Y.Text (it is tagged as a ySync transaction, which ySync does not echo),
+// and held as one change set. When the composition ends the held text is
+// rolled back and converted into suggestions in one step. Remote changes that
+// arrive meanwhile come in Y offsets, so they are moved over the held text.
 
-import { Annotation, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type Extension, type TransactionSpec } from "@codemirror/state";
+import { Annotation, ChangeSet, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction, type ChangeSpec, type Extension, type Text, type TransactionSpec } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
-import { ySyncAnnotation } from "y-codemirror.next";
+import { ySyncAnnotation, ySyncFacet } from "y-codemirror.next";
 import * as Y from "yjs";
 import { actorAccountId, type Actor } from "../protocol/actor";
 import type { SuggestionRecord } from "../protocol/schema";
 import { relativeRange } from "../anchors";
-import { aiEditAnnotation } from "../bindings/codemirror";
+import { aiEditAnnotation, collabSuggestOnly } from "../bindings/codemirror";
 import { inlineReplacementEditing } from "./codemirror";
 import { buildSuggestion, listSuggestions, newSuggestionId, resolveSuggestion, suggestionsMap, type ResolvedSuggestion, type SuggestionsTarget } from "./model";
 
-/** Let one transaction change content directly even in suggest mode (editors only; the server still checks roles). */
+/**
+ * Let one transaction change content directly even in suggest mode (editors
+ * only; the server still checks roles). Ignored while suggest mode is forced.
+ */
 export const bypassSuggestMode = Annotation.define<boolean>();
 
 export type SuggestOp =
@@ -40,6 +52,18 @@ export type SuggestOp =
 
 const suggestOps = StateEffect.define<SuggestOp[]>();
 const setSuggestModeEffect = StateEffect.define<boolean>();
+const setForcedEffect = StateEffect.define<boolean>();
+
+/** Composition text applied to the editor but not to the Y.Text: `changes` turn `base` (the Y.Text's text) into the editor's document. */
+interface HeldComposition {
+  changes: ChangeSet;
+  base: Text;
+}
+const setHeldComposition = StateEffect.define<HeldComposition | null>();
+const flushComposition = StateEffect.define<null>();
+
+/** How long after compositionend to wait for the browser's last composition change (CodeMirror flushes it in a microtask, Android later). */
+const COMPOSITION_SETTLE_MS = 40;
 
 export interface SuggestModeOptions {
   ytext: Y.Text;
@@ -47,7 +71,11 @@ export interface SuggestModeOptions {
   /** The local user (AI edits are attributed to an AI actor acting for them). */
   actor: Extract<Actor, { kind: "user" }>;
   enabled?: boolean;
-  /** Always on, whatever `setEnabled` says: a commenter's editor. */
+  /**
+   * Always on, whatever `setEnabled` says: a commenter's editor. Forced
+   * suggest mode also lets input through a read-only collab binding
+   * (`collabSuggestOnly`), since the input never reaches the content.
+   */
   forced?: boolean;
   makeId?: () => string;
   now?: () => number;
@@ -56,7 +84,12 @@ export interface SuggestModeOptions {
 export interface SuggestMode {
   extension: Extension;
   setEnabled(view: EditorView, enabled: boolean): void;
+  /** Changes whether the mode is forced (the role changed between commenter and editor). */
+  setForced(view: EditorView, forced: boolean): void;
   isEnabled(state: EditorState): boolean;
+  isForced(state: EditorState): boolean;
+  /** Converts held composition text now (tests, and editors that lose focus mid-composition). */
+  flushComposition(view: EditorView): void;
   /** Undoes this editor's suggestion operations (not content edits). */
   undoManager: Y.UndoManager;
   /** Origin of the annotations transactions suggest mode writes. */
@@ -151,6 +184,12 @@ export function planSuggestOps(
   return { ops, cursor: changes.length === 1 ? cursor : null };
 }
 
+function changeList(changes: ChangeSet): { from: number; to: number; insert: string }[] {
+  const list: { from: number; to: number; insert: string }[] = [];
+  changes.iterChanges((from, to, _fromB, _toB, inserted) => list.push({ from, to, insert: inserted.toString() }));
+  return list;
+}
+
 export function suggestMode(options: SuggestModeOptions): SuggestMode {
   const { ytext, actor } = options;
   const createdBy = options.actor.userId;
@@ -159,44 +198,107 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
   const origin = { suggestMode: createdBy };
   const undoManager = new Y.UndoManager(map, { trackedOrigins: new Set([origin]) });
   const now = options.now ?? Date.now;
-  const forced = !!options.forced;
   // The suggestion this editor wrote last, preferred when typing continues.
   let lastTouched: string | null = null;
 
   const enabledField = StateField.define<boolean>({
-    create: () => forced || !!options.enabled,
+    create: () => !!options.enabled,
     update(value, tr) {
-      for (const effect of tr.effects) if (effect.is(setSuggestModeEffect)) value = forced || effect.value;
+      for (const effect of tr.effects) if (effect.is(setSuggestModeEffect)) value = effect.value;
       return value;
     },
   });
+  const forcedField = StateField.define<boolean>({
+    create: () => !!options.forced,
+    update(value, tr) {
+      for (const effect of tr.effects) if (effect.is(setForcedEffect)) value = effect.value;
+      return value;
+    },
+  });
+  const heldField = StateField.define<HeldComposition | null>({
+    create: () => null,
+    update(value, tr) {
+      for (const effect of tr.effects) if (effect.is(setHeldComposition)) value = effect.value;
+      return value;
+    },
+  });
+  const active = (state: EditorState) => state.field(enabledField) || state.field(forcedField);
 
   const ownPending = (): ResolvedSuggestion[] => listSuggestions(map, { status: "pending", createdBy })
     .filter((record) => record.actor.kind === "user")
     .map((record) => resolveSuggestion(ytext, record))
     .filter((item) => !item.isStale);
 
+  /** Marks a transaction so ySync does not write it to the Y.Text (composition text and its rollback). */
+  const localOnly = (state: EditorState) => {
+    const conf = state.facet(ySyncFacet);
+    return conf ? [ySyncAnnotation.of(conf)] : [];
+  };
+
+  /**
+   * ySync built a remote change from Y offsets, which do not count the held
+   * composition text. Re-read it against the held base and move it over the
+   * held text (and the held text over it).
+   */
+  const remapRemote = (tr: Transaction, held: HeldComposition): TransactionSpec => {
+    const specs: ChangeSpec[] = changeList(tr.changes);
+    const remote = ChangeSet.of(specs, held.base.length);
+    const local = remote.map(held.changes);
+    const next: HeldComposition = { changes: held.changes.map(remote, true), base: remote.apply(held.base) };
+    const sync = tr.annotation(ySyncAnnotation);
+    return {
+      changes: local,
+      effects: [...tr.effects, setHeldComposition.of(next)],
+      annotations: sync === undefined ? [] : [ySyncAnnotation.of(sync)],
+    };
+  };
+
   const filter = EditorState.transactionFilter.of((tr): Transaction | TransactionSpec => {
-    if (!tr.docChanged || !tr.startState.field(enabledField)) return tr;
-    if (tr.annotation(ySyncAnnotation) !== undefined || tr.annotation(bypassSuggestMode)) return tr;
-    const changes: { from: number; to: number; insert: string }[] = [];
-    tr.changes.iterChanges((from, to, _fromB, _toB, inserted) => changes.push({ from, to, insert: inserted.toString() }));
+    const start = tr.startState;
+    const held = start.field(heldField);
+    const flushing = tr.effects.some((effect) => effect.is(flushComposition));
+    if (!held && (!tr.docChanged || !active(start))) return tr;
+    if (tr.annotation(ySyncAnnotation) !== undefined) return held && tr.docChanged ? remapRemote(tr, held) : tr;
+    if (!tr.docChanged && !flushing) return tr;
+    if (!held && tr.annotation(bypassSuggestMode) && !start.field(forcedField)) return tr;
+    const userEvent = tr.annotation(Transaction.userEvent);
+
+    if (tr.docChanged && tr.isUserEvent("input.type.compose")) {
+      // Mid-composition: keep the browser's text in the editor only.
+      const changes = held ? held.changes.compose(tr.changes) : tr.changes;
+      const base = held?.base ?? start.doc;
+      return {
+        changes: tr.changes,
+        selection: tr.selection,
+        effects: [...tr.effects, setHeldComposition.of({ changes, base })],
+        annotations: [...localOnly(start), ...(userEvent ? [Transaction.userEvent.of(userEvent)] : [])],
+        scrollIntoView: tr.scrollIntoView,
+      };
+    }
+
+    // Changes relative to the Y.Text: the held composition (if any) plus this
+    // transaction's own, which are relative to the editor's document.
+    const combined = held ? (tr.docChanged ? held.changes.compose(tr.changes) : held.changes) : tr.changes;
+    const rollback = held ? held.changes.invert(held.base) : null;
     const ai = tr.annotation(aiEditAnnotation);
     const aiActor: Actor | null = ai ? { kind: "ai", onBehalfOf: actorAccountId(actor)!, clientId: actor.clientId, feature: ai.feature, model: ai.model, runId: ai.runId } : null;
-    const plan = planSuggestOps(changes, ai ? [] : ownPending(), {
+    const plan = planSuggestOps(changeList(combined), ai ? [] : ownPending(), {
       actor: aiActor ?? actor,
       forward: tr.isUserEvent("delete.forward"),
       ai: !!ai,
       groupId: ai?.runId,
       preferId: lastTouched,
     });
-    const selection = plan.cursor === null ? tr.startState.selection : EditorSelection.cursor(Math.min(plan.cursor, tr.startState.doc.length));
-    const userEvent = tr.annotation(Transaction.userEvent);
+    const docLength = held ? held.base.length : start.doc.length;
+    const selection = plan.cursor === null
+      ? (rollback ? start.selection.map(rollback) : start.selection)
+      : EditorSelection.cursor(Math.min(plan.cursor, docLength));
     return {
+      ...(rollback ? { changes: rollback } : {}),
       selection,
-      effects: [...tr.effects, suggestOps.of(plan.ops)],
+      effects: [...tr.effects.filter((effect) => !effect.is(flushComposition)), suggestOps.of(plan.ops), ...(held ? [setHeldComposition.of(null)] : [])],
       scrollIntoView: tr.scrollIntoView,
-      annotations: userEvent ? Transaction.userEvent.of(userEvent) : undefined,
+      annotations: [...(rollback ? localOnly(start) : []), ...(userEvent ? [Transaction.userEvent.of(userEvent)] : [])],
     };
   });
 
@@ -223,31 +325,59 @@ export function suggestMode(options: SuggestModeOptions): SuggestMode {
     }, origin);
   };
 
-  const writer = ViewPlugin.define(() => ({
-    update(update: ViewUpdate) {
-      for (const tr of update.transactions) for (const effect of tr.effects) if (effect.is(suggestOps)) apply(effect.value);
-    },
-  }));
+  const flushNow = (view: EditorView) => {
+    if (view.state.field(heldField, false)) view.dispatch({ effects: flushComposition.of(null), userEvent: "input.type" });
+  };
+
+  const writer = ViewPlugin.define((view) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onCompositionEnd = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        // A new composition started meanwhile: its own end flushes both.
+        if (!view.composing) flushNow(view);
+      }, COMPOSITION_SETTLE_MS);
+    };
+    view.contentDOM.addEventListener("compositionend", onCompositionEnd);
+    return {
+      update(update: ViewUpdate) {
+        for (const tr of update.transactions) for (const effect of tr.effects) if (effect.is(suggestOps)) apply(effect.value);
+      },
+      destroy() {
+        if (timer) clearTimeout(timer);
+        view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
+      },
+    };
+  });
 
   // While suggesting, Undo first steps back through your suggestion edits.
   const undoKeys = Prec.highest(keymap.of([
-    { key: "Mod-z", run: (view) => view.state.field(enabledField) && undoManager.undoStack.length > 0 && !!undoManager.undo() },
-    { key: "Mod-y", mac: "Mod-Shift-z", run: (view) => view.state.field(enabledField) && undoManager.redoStack.length > 0 && !!undoManager.redo() },
+    { key: "Mod-z", run: (view) => active(view.state) && undoManager.undoStack.length > 0 && !!undoManager.undo() },
+    { key: "Mod-y", mac: "Mod-Shift-z", run: (view) => active(view.state) && undoManager.redoStack.length > 0 && !!undoManager.redo() },
   ]));
 
   return {
     extension: [
       enabledField,
+      forcedField,
+      heldField,
       filter,
       writer,
       undoKeys,
-      inlineReplacementEditing.compute([enabledField], (state) => state.field(enabledField)),
-      EditorView.editorAttributes.compute([enabledField], (state) => (state.field(enabledField) ? { class: "cm-collab-suggesting" } : ({} as Record<string, string>))),
+      inlineReplacementEditing.compute([enabledField, forcedField], (state) => active(state)),
+      collabSuggestOnly.compute([forcedField], (state) => state.field(forcedField)),
+      EditorView.editorAttributes.compute([enabledField, forcedField], (state) => (active(state) ? { class: "cm-collab-suggesting" } : ({} as Record<string, string>))),
     ],
     setEnabled(view, enabled) {
-      if (view.state.field(enabledField) !== (forced || enabled)) view.dispatch({ effects: setSuggestModeEffect.of(enabled) });
+      if (view.state.field(enabledField) !== enabled) view.dispatch({ effects: setSuggestModeEffect.of(enabled) });
     },
-    isEnabled: (state) => state.field(enabledField, false) ?? false,
+    setForced(view, forced) {
+      if (view.state.field(forcedField) !== forced) view.dispatch({ effects: setForcedEffect.of(forced) });
+    },
+    isEnabled: (state) => (state.field(enabledField, false) ?? false) || (state.field(forcedField, false) ?? false),
+    isForced: (state) => state.field(forcedField, false) ?? false,
+    flushComposition: flushNow,
     undoManager,
     origin,
     destroy() { undoManager.destroy(); },
