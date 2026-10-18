@@ -6,11 +6,16 @@ import { EditorView, keymap } from "@codemirror/view";
 import {
   startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
 } from "react";
+import { createPortal, flushSync } from "react-dom";
 import { beginAiActivity } from "@/lib/ai-activity";
 import {
   changeHeadingLevels, fileLinkDestinationAt, markdownFormatCommand, sourcePasteEdit, textareaEditSpec,
 } from "@/lib/markdown-codemirror/commands";
 import { setFindMatches } from "@/lib/markdown-codemirror/find";
+import { citationEditorHandlers, setCitationLibrary } from "@/lib/markdown-codemirror/citations";
+import { citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
+import { citationInsertion, mayTriggerCitation } from "@/lib/references/reference-suggestions";
+import type { Citation } from "@/lib/references/types";
 import { liberaMathMarkers } from "@/lib/markdown-codemirror/libera-syntax";
 import { markdownSourceSetup } from "@/lib/markdown-codemirror/setup";
 import type { CodeMirrorTextareaAdapter } from "@/lib/markdown-codemirror/textarea-adapter";
@@ -29,6 +34,11 @@ import { MarkdownFileLinkPopup, buildMarkdownFileLinkSections, flattenMarkdownFi
 import { useCodeMirrorReview } from "../use-editor-review";
 import { MarkdownSourceContextMenu, sourceContextMenuPosition, type SourceContextMenuState } from "./markdown-source-context-menu";
 import { MarkdownSourceFindBar } from "./markdown-source-find-bar";
+import {
+  CitationPopup, citationPopupPosition, openCitationAttachment, useSingleCitationDocument, type CitationPopupHandle,
+} from "../references/citation-popup";
+import { CitationCardItems } from "../references/citation-hover-card";
+import { useReferenceRender } from "../references/reference-render-context";
 import type { MarkdownSourceEditorProps } from "./types";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
@@ -48,6 +58,15 @@ type FileLinkPopupContext = {
   x: number;
   y: number;
 };
+
+type CitationPopupContext = { from: number; to: number; query: string; insideCitation: boolean; citedKeys: string[]; x: number; y: number };
+type CitationTooltip = { id: number; dom: HTMLElement; citation: Citation };
+
+/** The shared citation card's contents, inside a CodeMirror hover tooltip. */
+function CitationTooltipContent({ citation }: { citation: Citation }) {
+  const document = useSingleCitationDocument(citation);
+  return <CitationCardItems citation={citation} document={document} />;
+}
 
 type FindState = { open: boolean; query: string; replacement: string; wildcards: boolean; active: number; text: string };
 
@@ -106,6 +125,14 @@ export function MarkdownCodeMirrorEditor({
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
   const fileLinkFrameRef = useRef<number | null>(null);
+  // The `@` citation popup and citation hover tooltips (references/citation-popup.tsx).
+  const [citationPopup, setCitationPopup] = useState<CitationPopupContext | null>(null);
+  const citationPopupRef = useRef<CitationPopupContext | null>(null);
+  const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
+  const [citationTooltips, setCitationTooltips] = useState<CitationTooltip[]>([]);
+  const referenceRender = useReferenceRender();
+  const referenceRenderRef = useRef(referenceRender);
+  useLayoutEffect(() => { referenceRenderRef.current = referenceRender; }, [referenceRender]);
 
   // Draft flow (same contract as the textarea editor and the LaTeX editor).
   const lastPublishedRef = useRef(value);
@@ -182,12 +209,50 @@ export function MarkdownCodeMirrorEditor({
     emitSelection();
   }, [emitSelection]);
 
+  const closeCitationPopup = useCallback(() => {
+    if (!citationPopupRef.current) return;
+    citationPopupRef.current = null;
+    setCitationPopup(null);
+  }, []);
+
   const closeFileLinkPopup = useCallback(() => {
     if (fileLinkFrameRef.current !== null) window.cancelAnimationFrame(fileLinkFrameRef.current);
     fileLinkFrameRef.current = null;
     fileLinkPopupRef.current = null;
     setFileLinkPopup(null);
-  }, []);
+    closeCitationPopup();
+  }, [closeCitationPopup]);
+
+  /** Opens, moves or closes the citation popup. `citationTriggerAt` analyses the
+   * whole document, so it only runs right after `@` and key characters. */
+  const refreshCitationPopup = useCallback(() => {
+    const current = viewRef.current;
+    const previous = citationPopupRef.current;
+    let next: CitationPopupContext | null = null;
+    if (current?.hasFocus && current.state.selection.main.empty && !fileLinkPopupRef.current) {
+      const cursor = current.state.selection.main.head;
+      if (mayTriggerCitation(current.state.sliceDoc(Math.max(0, cursor - 260), cursor))) {
+        const text = current.state.doc.toString();
+        const mathMarkers = latest.current.mathMarkers;
+        const trigger = citationTriggerAt(text, cursor, { mathMarkers });
+        if (trigger) {
+          const same = previous?.from === trigger.from;
+          next = {
+            from: trigger.from,
+            to: cursor,
+            query: trigger.query,
+            insideCitation: trigger.insideCitation,
+            citedKeys: same ? previous.citedKeys : documentCitedKeys(text, { mathMarkers }),
+            ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(adapter.clientPointForOffset(trigger.from))),
+          };
+        }
+      }
+    }
+    if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
+    if (!previous && !next) return;
+    citationPopupRef.current = next;
+    setCitationPopup(next);
+  }, [adapter]);
 
   const refreshFileLinkPopup = useCallback(() => {
     const current = viewRef.current;
@@ -217,8 +282,9 @@ export function MarkdownCodeMirrorEditor({
     fileLinkFrameRef.current = window.requestAnimationFrame(() => {
       fileLinkFrameRef.current = null;
       refreshFileLinkPopup();
+      refreshCitationPopup();
     });
-  }, [refreshFileLinkPopup]);
+  }, [refreshFileLinkPopup, refreshCitationPopup]);
 
   /** Applies a whole text coming from outside the editor (workspace draft,
    * review result) without replacing the document. */
@@ -289,10 +355,13 @@ export function MarkdownCodeMirrorEditor({
       return true;
     };
     const popupOpen = () => fileLinkPopupRef.current !== null;
+    const citationKey = (key: string) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key }) ?? false);
 
     const state = EditorState.create({
       doc: initial.value,
       extensions: [
+        // The citation popup takes the arrows, Enter, Tab and Escape while open.
+        Prec.highest(keymap.of(["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })))),
         // The file-link picker takes the arrows, Enter and Escape while open.
         Prec.highest(keymap.of([
           { key: "Escape", run: () => { if (!popupOpen()) return false; closeFileLinkPopup(); return true; } },
@@ -412,6 +481,16 @@ export function MarkdownCodeMirrorEditor({
             return false;
           },
         }),
+        citationEditorHandlers.of({
+          hover: (dom, citation) => {
+            const id = Math.random();
+            // Render synchronously so CodeMirror measures the tooltip with its content.
+            const add = () => setCitationTooltips((list) => [...list, { id, dom, citation }]);
+            try { flushSync(add); } catch { add(); }
+            return () => setCitationTooltips((list) => list.filter((tooltip) => tooltip.id !== id));
+          },
+          open: (citation) => openCitationAttachment(referenceRenderRef.current, citation),
+        }),
         extensionsCompartment.of(initial.extensions ?? []),
       ],
     });
@@ -489,6 +568,12 @@ export function MarkdownCodeMirrorEditor({
   useEffect(() => {
     if (view) view.dispatch({ effects: mathCompartment.reconfigure(liberaMathMarkers.of(mathMarkers ?? {})) });
   }, [view, mathMarkers, mathCompartment]);
+
+  // Citation chips mark keys the notebook's library does not know.
+  const citationLibraryKeys = referenceRender?.library ? referenceRender.entriesByKey : null;
+  useEffect(() => {
+    if (view) view.dispatch({ effects: setCitationLibrary.of(citationLibraryKeys ? { has: (key) => Object.hasOwn(citationLibraryKeys, key) } : null) });
+  }, [view, citationLibraryKeys]);
 
   // Review mode: comment anchors, agentic-review suggestions, the comment
   // gesture and read-only locking come from the shared CodeMirror review hook.
@@ -633,6 +718,26 @@ export function MarkdownCodeMirrorEditor({
     handlersRef.current = { chooseActiveFileLink, moveFileLinkSelection, openFind };
   });
 
+  // Citation popup -------------------------------------------------------------
+
+  function insertCitation(key: string, { locator }: { locator: boolean }) {
+    const current = viewRef.current;
+    const popup = citationPopupRef.current;
+    if (!current || !popup) return;
+    // `[@key]` replaces `@query`; inside a citation `@key` replaces it. One undo step.
+    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    closeCitationPopup();
+    current.dispatch({
+      changes: { from: popup.from, to: popup.to, insert: insertion.text },
+      selection: { anchor: popup.from + insertion.caret },
+      annotations: isolateHistory.of("full"),
+      userEvent: "input.complete",
+      scrollIntoView: true,
+    });
+    current.focus();
+    readDraft();
+  }
+
   // Context menu ---------------------------------------------------------------
 
   function runMenuAction(action: (menu: SourceContextMenuState) => void) {
@@ -701,6 +806,19 @@ export function MarkdownCodeMirrorEditor({
           onImageToMarkdown={() => runMenuAction((menu) => { if (menu.image && !aiWorking) void onAiImageToMarkdown(menu.image); })}
         />
       ) : null}
+
+      {citationPopup ? (
+        <CitationPopup
+          ref={citationPopupHandleRef}
+          query={citationPopup.query}
+          citedKeys={citationPopup.citedKeys}
+          x={citationPopup.x}
+          y={citationPopup.y}
+          onInsert={insertCitation}
+          onClose={closeCitationPopup}
+        />
+      ) : null}
+      {citationTooltips.map((tooltip) => createPortal(<CitationTooltipContent citation={tooltip.citation} />, tooltip.dom, String(tooltip.id)))}
 
       {fileLinkPopup ? (
         <MarkdownFileLinkPopup
