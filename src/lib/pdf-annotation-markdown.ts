@@ -5,6 +5,7 @@ import { Marked, type marked } from "marked";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
+import { sanitizeHtmlFragment } from "@/lib/markdown-sanitize";
 
 const INLINE_KATEX_OPTIONS: KatexOptions = { displayMode: false, throwOnError: false, trust: false };
 // KaTeX requires display mode for equation tags.
@@ -133,7 +134,10 @@ export function renderAnnotationMarkdown(markdown: string, mathMarkers?: MathMar
     }
 
     const doc = renderer.manager.parse(markdown);
-    html = typesetMath(generateHTML(doc, renderer.extensions), doc);
+    // The schema already limits the markup; the allowlist also covers
+    // attribute values (link and image URLs) before this goes to innerHTML,
+    // since notes can come from a shared notebook.
+    html = sanitizeHtmlFragment(typesetMath(generateHTML(doc, renderer.extensions), doc));
   } catch {
     html = plainTextHtml(markdown);
   }

@@ -21,6 +21,7 @@ import { collabClient, describeError } from "@/lib/collab/ui/client";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
 import { isValidServerUrl, lastServerUrl, normalizeServerUrl, rememberServerUrl } from "@/lib/collab/ui/server-url";
 import { connectionWording, initials, readableTextColor, ROLE_LABEL } from "@/lib/collab/ui/wording";
+import { ReportSyncProblem } from "./diagnostics/report-sync-problem";
 import "./collab.css";
 
 /** Cursor colours: saturated enough to see on white and on the dark canvas. */
@@ -118,6 +119,7 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
                 Got an invitation? Create an account with its link or code, or sign in and choose “Join a shared notebook”.
               </p>
             ) : null}
+            <ReportSyncProblem />
           </>
         )}
       </div>
