@@ -229,6 +229,7 @@ export function LiberaApp({
   );
   const references: LeftPanelReferences = {
     activeMarkdownDraft: workspace.activeMarkdownDraft,
+    activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
     openDrafts: openReferenceDrafts,
     canCite: workspace.activeTab?.file.fileType === "markdown",
     onCite: (key) => { workspace.insertCitation(key); },

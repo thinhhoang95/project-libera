@@ -63,6 +63,8 @@ function fakeServer(library: ReferenceLibrary) {
     requests: [] as Request[],
     citations: { byFile: {} as Record<string, string[]>, byKey: {} as Record<string, string[]> },
     importResult: null as null | ((body: { text?: string; path?: string }) => unknown),
+    /** POST /api/references/resolve; without one the route is missing (404). */
+    resolveResult: null as null | ((body: { input?: string; path?: string; webSearch?: boolean }) => unknown),
     patches(): ReferenceLibraryOp[][] {
       return server.requests.filter((request) => request.method === "PATCH").map((request) => (request.body as { ops: ReferenceLibraryOp[] }).ops);
     },
@@ -73,6 +75,9 @@ function fakeServer(library: ReferenceLibrary) {
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined;
     server.requests.push({ url, method, body });
     if (url.startsWith("/api/references/citations")) return Response.json(server.citations);
+    if (url === "/api/references/resolve" && server.resolveResult) {
+      return Response.json(server.resolveResult(body as { input?: string; path?: string }));
+    }
     if (url === "/api/references/import") {
       const result = server.importResult?.(body as { text?: string; path?: string });
       return Response.json(result);
@@ -113,6 +118,12 @@ async function settle(ms = 0) {
   for (let index = 0; index < 4; index += 1) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
   }
+}
+
+/** Wait (up to a few seconds) for something asynchronous, such as the first citeproc load. */
+async function waitFor(check: () => boolean, what: string) {
+  for (let index = 0; index < 200 && !check(); index += 1) await settle(20);
+  assert.ok(check(), what);
 }
 
 let mounted: { root: Root; host: HTMLElement } | null = null;
@@ -396,7 +407,9 @@ test("rows open PDFs and citing documents from the actions menu, and copy format
   assert.deepEqual(calls.opened, ["Notes/papers/godel.pdf", "Notes/paper.md"]);
   await click(byLabel(host, "Actions for godel1931"));
   await click(buttonByText(host.querySelector("[role=menu]")!, "Copy formatted reference"));
-  assert.deepEqual(copied, ["Gödel, K. (1931). On formally undecidable propositions. Monatshefte für Mathematik."]);
+  // Formatted with the notebook's style (APA) through citeproc; plain text where only writeText exists.
+  await waitFor(() => copied.length === 1, "the formatted reference is copied");
+  assert.deepEqual(copied, ["Gödel, K. (1931). On formally undecidable propositions. Monatshefte Für Mathematik."]);
   await click(byLabel(host, "Actions for godel1931"));
   await click(buttonByText(host.querySelector("[role=menu]")!, "Copy key"));
   assert.equal(copied.at(-1), "godel1931");
@@ -484,37 +497,48 @@ test("notes autosave debounced and tags are edited as chips", async () => {
   assert.deepEqual(server.patches().at(-1), [{ op: "update", id: "ref_godel", tags: ["incompleteness"] }]);
 });
 
-test("the Add box classifies input and adds identifiers through a confirmation step", async () => {
+test("the Add box classifies input, looks identifiers up and adds them through a confirmation step", async () => {
   const server = fakeServer(sampleLibrary());
+  const crossref = { source: "crossref" as const, confidence: 0.95, retrievedAt: NOW };
+  server.resolveResult = (body) => {
+    const doi = String(body.input).replace(/^https:\/\/doi\.org\//, "").toLowerCase();
+    const csl: CslItem = { type: "article-journal", title: `Looked up ${doi}`, DOI: doi };
+    return {
+      candidates: [{ csl, identifiers: { doi }, provenance: { title: crossref, DOI: crossref }, status: "needs-review" }],
+      duplicates: doi === "10.1000/sparse" ? [{ candidateIndex: 0, entryId: "ref_smith", reason: "doi", score: 1 }] : [],
+      updates: [],
+      warnings: [],
+    };
+  };
   const { host } = await renderPanel();
   await click(byLabel(host, "Add references"));
   const input = byLabel(host, "Reference to add")!;
   await type(input, "https://doi.org/10.1000/SPARSE");
   assert.match(host.textContent ?? "", /Detected: DOI 10\.1000\/sparse/);
   await click(buttonByText(host, /Look up/));
-  assert.match(host.textContent ?? "", /Already in the library as smith2020sparse/);
-  assert.match(host.textContent ?? "", /Added as unresolved/);
+  assert.deepEqual(server.requests.find((request) => request.url === "/api/references/resolve")?.body, { notebook: "Notes", input: "https://doi.org/10.1000/SPARSE", webSearch: false });
+  assert.match(host.textContent ?? "", /Already in your library as smith2020sparse/);
   assert.equal(server.patches().length, 0, "nothing is added before confirmation");
   await click(byLabel(host, "Back to the input"));
 
-  const cases: Array<[string, string, CslItem, Record<string, unknown>]> = [
-    ["10.5555/new", "DOI", { type: "article-journal", DOI: "10.5555/new" }, { doi: "10.5555/new" }],
-    ["arXiv:2101.00001v2", "arXiv ID", { type: "article", URL: "https://arxiv.org/abs/2101.00001" }, { arxiv: "2101.00001" }],
-    ["ISBN 978-0-262-03384-8", "ISBN", { type: "book", ISBN: "9780262033848" }, { isbn: ["9780262033848"] }],
-    ["PMID: 12345", "PubMed ID", { type: "article-journal", PMID: "12345" }, { pmid: "12345" }],
-    ["https://example.org/post", "Web address", { type: "webpage", URL: "https://example.org/post" }, {}],
+  const cases: Array<[string, string]> = [
+    ["10.5555/new", "DOI"],
+    ["arXiv:2101.00001v2", "arXiv ID"],
+    ["ISBN 978-0-262-03384-8", "ISBN"],
+    ["PMID: 12345", "PubMed ID"],
+    ["https://example.org/post", "Web address"],
   ];
-  for (const [text, label, csl, identifiers] of cases) {
+  for (const [text, label] of cases) {
     if (!byLabel(host, "Reference to add")) await click(byLabel(host, "Add references"));
     await type(byLabel(host, "Reference to add"), text);
     assert.match(host.textContent ?? "", new RegExp(`Detected: ${label}`));
     await click(buttonByText(host, /Look up/));
+    assert.equal((server.requests.filter((request) => request.url === "/api/references/resolve").at(-1)?.body as { input: string }).input, text);
     await click(buttonByText(host, /^Add$/));
     const [op] = server.patches().at(-1)! as Array<Extract<ReferenceLibraryOp, { op: "add" }>>;
     assert.equal(op.op, "add");
-    assert.deepEqual(op.entry.csl, csl, text);
-    assert.deepEqual(op.entry.identifiers, identifiers, text);
-    assert.equal(op.entry.status, "unresolved");
+    assert.equal(op.entry.csl.title, `Looked up ${text.toLowerCase()}`, text);
+    assert.equal(op.entry.status, "needs-review", "Add keeps the status the lookup returned");
   }
   // The last added entry is revealed in its card.
   assert.ok(host.querySelector('[aria-label^="Reference "]'));
@@ -559,19 +583,28 @@ test("the Add box imports BibTeX and reports added, renamed and duplicate entrie
   assert.equal(merge.mergeIds.length, 1);
 });
 
-test("a pasted bibliography is split and added only after confirmation; free text opens the edit form", async () => {
+test("a pasted bibliography is looked up and added only after confirmation; free text can be edited before adding", async () => {
   const server = fakeServer(sampleLibrary());
+  const llm = { source: "llm" as const, confidence: 0.5, retrievedAt: NOW };
+  server.resolveResult = (body) => {
+    const items = String(body.input).split("\n").map((line) => line.replace(/^\d+\.\s*/, ""));
+    return {
+      candidates: items.map((item) => ({ csl: { type: "article-journal", title: item.split(". ")[2] ?? item, note: item }, provenance: { title: llm }, status: "unresolved" })),
+      duplicates: [], updates: [], warnings: [],
+    };
+  };
   const { host } = await renderPanel();
   await click(byLabel(host, "Add references"));
   const bibliography = "1. Smith J. 2020. A study of sparse things. Journal of Things.\n2. Lee K. 2019. Another careful study. Journal of Stuff.\n3. Park S. 2018. Yet another study. Annals.";
   await type(byLabel(host, "Reference to add"), bibliography);
   assert.match(host.textContent ?? "", /Detected: Bibliography/);
-  await click(buttonByText(host, "Split"));
-  assert.equal(host.querySelectorAll('[aria-label^="Include item"]').length, 3);
+  await click(buttonByText(host, "Look up all"));
+  assert.equal((server.requests.find((request) => request.url === "/api/references/resolve")?.body as { input: string }).input, bibliography);
+  assert.equal(host.querySelectorAll('[aria-label^="Include candidate"]').length, 3);
   assert.equal(server.patches().length, 0);
-  await act(async () => (byLabel(host, "Include item 2") as HTMLInputElement).click());
+  await act(async () => (byLabel(host, "Include candidate 2") as HTMLInputElement).click());
   await settle();
-  await click(buttonByText(host, "Add 2 references"));
+  await click(buttonByText(host, "Add selected (2)"));
   const ops = server.patches().at(-1)! as Array<Extract<ReferenceLibraryOp, { op: "add" }>>;
   assert.deepEqual(ops.map((op) => op.entry.csl.note), [
     "Smith J. 2020. A study of sparse things. Journal of Things.",
@@ -580,21 +613,21 @@ test("a pasted bibliography is split and added only after confirmation; free tex
   assert.ok(ops.every((op) => op.entry.status === "unresolved"));
 
   await click(byLabel(host, "Add references"));
-  await type(byLabel(host, "Reference to add"), "Smith, J. (2020) Sparse things in practice, Journal of Things 4.");
+  const reference = "Smith, J. (2020) Sparse things in practice, Journal of Things 4.";
+  await type(byLabel(host, "Reference to add"), reference);
   assert.match(host.textContent ?? "", /Detected: Reference text/);
-  await click(buttonByText(host, /Fill in/));
+  await click(buttonByText(host, /Look up/));
+  await click(buttonByText(host, /Edit before adding/));
   const form = document.querySelector('form[aria-label="New reference"]')!;
-  assert.equal((form.querySelector("#reference-field-note") as HTMLTextAreaElement).value, "Smith, J. (2020) Sparse things in practice, Journal of Things 4.");
-  await click(buttonByText(document.querySelector("[role=dialog]")!, "Add reference"));
-  assert.match(document.querySelector("[role=dialog]")?.textContent ?? "", /A title is needed/);
+  assert.equal((form.querySelector("#reference-field-note") as HTMLTextAreaElement).value, reference);
   await type(form.querySelector("#reference-field-title"), "Sparse things in practice");
   await click(buttonByText(document.querySelector("[role=dialog]")!, "Add reference"));
   const [add] = server.patches().at(-1)! as Array<Extract<ReferenceLibraryOp, { op: "add" }>>;
   assert.equal(add.entry.csl.title, "Sparse things in practice");
-  assert.equal(add.entry.provenance?.title?.source, "user");
+  assert.equal(add.entry.provenance?.title?.source, "user", "an edited field is the user's");
 });
 
-test("dropping notebook files creates unresolved entries, reveals attached ones and imports .bib files", async () => {
+test("dropped notebook files that cannot be looked up become unresolved entries; attached ones are revealed; .bib files import", async () => {
   const server = fakeServer(sampleLibrary());
   const uploads: File[][] = [];
   const { host } = await renderPanel({

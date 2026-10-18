@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowDown, ArrowUp, Download, FileText, FileType2, Globe, Merge, Undo2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Download, FileText, FileType2, Globe, Loader2, Merge, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
@@ -23,6 +23,7 @@ import {
   typeLabel,
   venueField,
 } from "@/components/libera/references/reference-display";
+import { buildReresolveOp, isAbortError, reresolveDiff, reresolveEntry } from "@/components/libera/references/reference-candidates";
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
 import { isReferenceUndoShortcut } from "@/components/libera/references/use-reference-undo";
 import type { CitingDocuments } from "@/components/libera/references/use-reference-citations";
@@ -355,10 +356,53 @@ type ManageProps = {
   duplicateGroups: ReferenceEntry[][];
   apply: (ops: ReferenceLibraryOp[], label: string) => Promise<unknown>;
   undo: { canUndo: boolean; stale: boolean; label: string | null; run: () => Promise<unknown> };
+  /** Let the model search the web when re-resolving. */
+  webSearch?: boolean;
+  /** An online lookup is starting (for the privacy notice). */
+  onLookup?: () => void;
   onClose: () => void;
 };
 
-export function ManageReferencesDialog({ open, notebook, library, citations, duplicateGroups, apply, undo, onClose }: ManageProps) {
+/**
+ * Re-resolve entries one after another: each is looked up, the resolved
+ * values replace the others' (fields the user wrote become conflicts), and
+ * the result is saved as its own change, so cancelling keeps what finished.
+ * Entries the sources agree with are left alone.
+ */
+export async function reresolveSequentially(input: {
+  notebook: string;
+  entries: ReferenceEntry[];
+  webSearch: boolean;
+  signal: AbortSignal;
+  current: (id: string) => ReferenceEntry | undefined;
+  apply: (ops: ReferenceLibraryOp[], label: string) => Promise<unknown>;
+  onProgress: (done: number, entry: ReferenceEntry) => void;
+}) {
+  const summary = { updated: 0, unchanged: 0, failed: [] as string[], cancelled: false };
+  for (const [index, listed] of input.entries.entries()) {
+    if (input.signal.aborted) break;
+    const entry = input.current(listed.id) ?? listed;
+    input.onProgress(index, entry);
+    try {
+      const { candidate } = await reresolveEntry(input.notebook, entry, input.webSearch, input.signal);
+      const latest = input.current(entry.id) ?? entry;
+      const rows = reresolveDiff(latest, candidate);
+      if (!rows.length) {
+        summary.unchanged += 1;
+        continue;
+      }
+      await input.apply([buildReresolveOp(latest, candidate, rows.filter((row) => !row.userOwned).map((row) => row.field))], `Re-resolve ${entry.key}`);
+      summary.updated += 1;
+    } catch (error) {
+      if (input.signal.aborted || isAbortError(error)) break;
+      summary.failed.push(`${entry.key}: ${error instanceof Error ? error.message : "could not be looked up"}`);
+    }
+  }
+  summary.cancelled = input.signal.aborted;
+  return summary;
+}
+
+export function ManageReferencesDialog({ open, notebook, library, citations, duplicateGroups, apply, undo, webSearch = false, onLookup, onClose }: ManageProps) {
   const [tab, setTab] = useState<"all" | "duplicates">("all");
   const [sort, setSort] = useState<{ column: ManageColumn; direction: "asc" | "desc" }>({ column: "authors", direction: "asc" });
   const [filters, setFilters] = useState<Partial<Record<ManageColumn, string>>>({});
@@ -371,7 +415,42 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
+  const [bulk, setBulk] = useState<{ done: number; total: number; key: string } | null>(null);
+  const bulkRef = useRef<AbortController | null>(null);
+  const libraryRef = useRef(library);
   const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
+  // Closing the dialog stops a re-resolve run.
+  useEffect(() => {
+    if (!open) bulkRef.current?.abort();
+  }, [open]);
+  useEffect(() => () => bulkRef.current?.abort(), []);
+
+  async function reresolveSelected(entries: ReferenceEntry[]) {
+    const controller = new AbortController();
+    bulkRef.current = controller;
+    setError("");
+    setNotice("");
+    onLookup?.();
+    setBulk({ done: 0, total: entries.length, key: entries[0]?.key ?? "" });
+    const summary = await reresolveSequentially({
+      notebook,
+      entries,
+      webSearch,
+      signal: controller.signal,
+      current: (id) => libraryRef.current.entries[id],
+      apply,
+      onProgress: (done, entry) => setBulk({ done, total: entries.length, key: entry.key }),
+    });
+    if (bulkRef.current === controller) bulkRef.current = null;
+    setBulk(null);
+    const parts = [`${summary.updated} updated`, `${summary.unchanged} unchanged`];
+    if (summary.failed.length) parts.push(`${summary.failed.length} failed`);
+    setNotice(`${summary.cancelled ? "Re-resolve stopped" : "Re-resolved"}: ${parts.join(", ")}.`);
+    if (summary.failed.length) setError(summary.failed.join("\n"));
+  }
 
   const citingOf = (entry: ReferenceEntry) => citingPaths(entry, citations);
 
@@ -520,7 +599,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
             <Undo2 aria-hidden className="h-3.5 w-3.5" /> Undo
           </button>
         </div>
-        {error ? <div role="alert" className="rounded-lg bg-destructive-muted p-2 text-xs text-destructive">{error}</div> : null}
+        {error ? <div role="alert" className="whitespace-pre-line rounded-lg bg-destructive-muted p-2 text-xs text-destructive">{error}</div> : null}
         {notice ? <div role="status" className="rounded-lg bg-muted p-2 text-xs">{notice}</div> : null}
 
         {tab === "duplicates" ? (
@@ -532,6 +611,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
             <div className="flex flex-wrap items-center gap-2 text-xs" aria-label="Bulk actions" role="toolbar">
               <span className="text-muted-foreground">{selectedEntries.length} selected</span>
               <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={selectedEntries.length < 2 || busy} onClick={() => setMergeGroup(selectedEntries)}>Merge selected</button>
+              <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy || Boolean(bulk)} title="Look the selected references up again" onClick={() => void reresolveSelected(selectedEntries)}>Re-resolve</button>
               <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => void run(selectedEntries.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" })), `Confirm ${selectedEntries.length} references`, `${selectedEntries.length} marked confirmed.`)}>Mark confirmed</button>
               <select className="h-7 px-2 text-xs" aria-label="Change type of selected" disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
                 const type = event.target.value as CslItemType;
@@ -553,6 +633,13 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
               </select>
               <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium text-destructive hover:bg-destructive-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => setDeleting(selectedEntries)}>Delete</button>
             </div>
+            {bulk ? (
+              <div className="flex items-center gap-2 rounded-lg bg-muted p-2 text-xs" role="status" aria-label="Re-resolve progress">
+                <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
+                <span className="min-w-0 flex-1 truncate">Re-resolving {bulk.done + 1} of {bulk.total}… <span className="font-mono">{bulk.key}</span></span>
+                <button type="button" className="rounded-lg border border-input px-2 py-0.5 font-medium hover:bg-card" onClick={() => bulkRef.current?.abort()}>Cancel</button>
+              </div>
+            ) : null}
             <div
               ref={scrollRef}
               className="max-h-[60vh] min-h-48 overflow-auto rounded-lg border border-border"

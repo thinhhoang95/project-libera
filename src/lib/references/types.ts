@@ -160,9 +160,12 @@ export type ReferenceEntry = {
 };
 
 export type ReferenceLibrarySettings = {
-  /** Create entries automatically for PDFs added to this notebook. */
+  /** Create entries automatically for PDFs added to this notebook. Unset follows the preference. */
   autoCreateForPdfs?: boolean;
 };
+
+/** A `set-settings` change: a value sets that setting, null clears it (back to the preference). */
+export type ReferenceLibrarySettingsPatch = { [K in keyof ReferenceLibrarySettings]?: ReferenceLibrarySettings[K] | null };
 
 export type ReferenceLibrary = {
   version: typeof REFERENCE_LIBRARY_VERSION;
@@ -255,7 +258,7 @@ export type ReferenceLibraryOp =
   /** Insert or replace a whole entry by id (used by undo). The key must be valid and free of other entries' keys and aliases. */
   | { op: "put"; entry: ReferenceEntry }
   | { op: "set-style"; style: string }
-  | { op: "set-settings"; settings: ReferenceLibrarySettings };
+  | { op: "set-settings"; settings: ReferenceLibrarySettingsPatch };
 
 /** Window event dispatched after any library change this window knows about. */
 export const REFERENCES_UPDATED_EVENT = "libera:references-updated";

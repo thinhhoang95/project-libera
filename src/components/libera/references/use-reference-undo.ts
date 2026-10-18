@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { applyReferenceOps } from "@/components/libera/references/use-reference-library";
-import type { ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp, ReferenceLibrarySettings } from "@/lib/references/types";
+import type { ReferenceEntry, ReferenceLibrary, ReferenceLibraryOp, ReferenceLibrarySettings, ReferenceLibrarySettingsPatch } from "@/lib/references/types";
 
 // Undo for library transactions made from this window (the References panel
 // and the Manage references dialog share one stack per notebook). Each
@@ -83,8 +83,8 @@ export function buildUndoRecord(before: ReferenceLibrary, after: ReferenceLibrar
     record.style = after.style;
   }
   if (!same(before.settings ?? {}, after.settings ?? {})) {
-    // set-settings merges, so every setting the transaction changed is written back explicitly.
-    const settings: ReferenceLibrarySettings = { autoCreateForPdfs: false, ...before.settings };
+    // set-settings merges, so every setting the transaction changed is written back explicitly (null: it was unset).
+    const settings: ReferenceLibrarySettingsPatch = { autoCreateForPdfs: before.settings?.autoCreateForPdfs ?? null };
     inverse.push({ op: "set-settings", settings });
     record.settings = structuredClone(after.settings ?? {});
   }

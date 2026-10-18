@@ -263,6 +263,10 @@ test("set-style accepts bundled ids and library .csl paths; set-settings merges"
   library = apply(library, [{ op: "set-settings", settings: { autoCreateForPdfs: true } }]).library;
   assert.deepEqual(library.settings, { autoCreateForPdfs: true });
   assert.equal(apply(library, [{ op: "set-settings", settings: { autoCreateForPdfs: true } }]).changed, false);
+  // null clears a setting, so the notebook follows the preference again.
+  library = apply(library, [{ op: "set-settings", settings: { autoCreateForPdfs: null } }]).library;
+  assert.deepEqual(library.settings, {});
+  assert.equal(apply(emptyReferenceLibrary(), [{ op: "set-settings", settings: { autoCreateForPdfs: null } }]).changed, false);
   assert.throws(() => apply(library, [{ op: "set-settings", settings: { other: true } } as unknown as ReferenceLibraryOp]), /Unknown library setting/);
 });
 
