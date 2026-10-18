@@ -218,11 +218,11 @@ test("new PDFs are batched into one automatic job when the notebook or the prefe
     const jobs = new ReferenceJobRunner({
       settings: () => testSettings({ autoCreateForPdfs: preference }),
       listNotebooks: async () => ["Notes"],
-      autoCreateDebounceMs: 30,
+      autoCreateDebounceMs: 150,
       resolvePdf: async (relativePath) => result([candidateFor(relativePath)]),
     });
     jobs.notifyFilesAdded(["Notes/one.pdf"]);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setTimeout(resolve, 250));
     assert.deepEqual(await jobs.list("Notes"), [], "off by default");
 
     await updateReferenceLibrary("Notes", null, [{ op: "set-settings", settings: { autoCreateForPdfs: true } }]);
