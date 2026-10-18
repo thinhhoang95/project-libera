@@ -208,10 +208,6 @@ test(
   "§3.2 network switch: nudge() replaces a socket that silently died within ~2 s",
   {
     timeout: 90_000,
-    todo:
-      "SyncClient.nudge() on a 'connected' socket sends a ping and only drops the socket after nudgePongTimeoutMs " +
-      "(5000 ms default), and CollabHostOptions cannot set that timeout. After a network switch the old socket is " +
-      "silently dead, so the host reconnects about 5.5 s after resume, not within the ~2 s of source-plan §3.2.",
   },
   async () => {
     try {
@@ -243,12 +239,6 @@ test(
   "§3.2 server restart: a reconnect attempt refused while the server was down does not delay recovery",
   {
     timeout: 90_000,
-    todo:
-      "SyncClient assumes 'an error is always followed by close' (sync-client.ts connect()). With Node's built-in " +
-      "WebSocket (undici 6.21, Node 22.17; Electron's main process uses the same), a handshake that fails with " +
-      "ECONNREFUSED or a reset fires onerror (or nothing) but never onclose, and readyState stays CONNECTING. The " +
-      "client stays 'connecting' until connectTimeoutMs (15 s) and nudge() is a no-op while connecting, so after a " +
-      "server restart or a brief partition, hosts resync ~15 s late instead of on the next backoff tick or nudge.",
   },
   async () => {
     try {
@@ -536,13 +526,6 @@ test(
   "§3.2 access revoked while offline: on reconnect the doc shows Access changed and becomes read-only",
   {
     timeout: 60_000,
-    todo:
-      "When a member lost access while offline, the server answers the reconnect's `open` with closed{reason: " +
-      "'not-found'} (session.ts open(): documentAccess() is null for a non-member), and DocHub.handleClosed treats " +
-      "'not-found' as 'This document is not on the server.': the doc stays writable (readOnly false) with status " +
-      "'offline'/'saved-local' instead of 'access-changed', unlike a revocation seen while online (closed " +
-      "'access-revoked'). Either the server should send 'access-revoked'/'forbidden' for an existing doc the " +
-      "account can no longer open, or the hub should treat not-found for a doc with server history as revoked.",
   },
   async () => {
     try {

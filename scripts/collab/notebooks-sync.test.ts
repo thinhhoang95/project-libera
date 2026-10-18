@@ -170,8 +170,10 @@ test("share, join and keep two notebook folders in step", { timeout: 300_000 }, 
       await until(() => existsSync(path.join(bobRoot, "brand-new")), "Bob's new folder");
       await until(() => !existsSync(path.join(bobRoot, "data.json")), "Bob's delete");
       await until(() => readText(bobRoot, "alpha/b/c/deep.md") === "deep\n", "Bob's folder rename");
-      assert.equal(existsSync(path.join(bobRoot, "notes", "unicode.md")), false);
-      assert.equal(existsSync(path.join(bobRoot, "a")), false, "the old folder is gone");
+      // Renames are two-phase, so the old paths disappear a moment after the
+      // new ones appear; wait for that instead of racing it under load.
+      await until(() => !existsSync(path.join(bobRoot, "notes", "unicode.md")), "Bob's old file name to go");
+      await until(() => !existsSync(path.join(bobRoot, "a")), "Bob's old folder to go");
       assert.equal(readText(bobRoot, "_archive/data.json"), '{"a":1}\n', "a remote delete is archived locally");
       await alice.service.project(projectId)?.whenIdle();
       await bob.service.project(projectId)?.whenIdle();
