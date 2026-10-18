@@ -5,7 +5,7 @@
 // documents) in control/, shared-notebook routes (share, join, files,
 // reconciliations) in notebooks/. Both receive ControlDeps.
 
-import type { HostEvent, ResolvedDoc } from "../../../src/lib/collab/local-api";
+import type { HostEvent, LocalProject, ResolvedDoc } from "../../../src/lib/collab/local-api";
 import type { CollabHost } from "../core/host";
 
 export interface ControlRequest {
@@ -64,4 +64,9 @@ export interface NotebookService {
   /** Called after sign-in/sign-out so the service can (re)attach projects. */
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;
+  /**
+   * Shared notebooks on this device, for HostStatus.projects (role, folder,
+   * revoked, pending reconciliations). Optional so test doubles can omit it.
+   */
+  localProjects?(): LocalProject[];
 }
