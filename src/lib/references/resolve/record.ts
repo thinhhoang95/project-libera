@@ -77,12 +77,55 @@ export function recordToInput(record: SourceRecord): ReferenceEntryInput {
   const provenance: Record<string, FieldProvenance> = {};
   for (const field of Object.keys(record.csl)) if (field !== "type") provenance[field] = provenanceFor(record, field);
   provenance.type = provenanceFor(record, "type");
-  return normalizeEntryInput({
+  // Identifiers the record has but its CSL item lacks (a PMID from OpenAlex) are the record's too.
+  return fillFieldProvenance(normalizeEntryInput({
     csl: record.csl,
     identifiers: record.identifiers,
     provenance,
     ...(record.versions?.length ? { versions: record.versions } : {}),
-  });
+  }), (field) => provenanceFor(record, field));
+}
+
+/** CSL fields that normalization fills from `identifiers` (normalize.ts, applyIdentifiersToCsl). */
+const IDENTIFIER_CSL_FIELDS: Record<string, keyof ReferenceIdentifiers> = { DOI: "doi", ISBN: "isbn", PMID: "pmid", PMCID: "pmcid" };
+
+function hasIdentifier(input: ReferenceEntryInput, name: keyof ReferenceIdentifiers) {
+  const value = input.identifiers?.[name];
+  return Array.isArray(value) ? value.length > 0 : !!value;
+}
+
+/**
+ * Every CSL field of a candidate says where it came from. Normalization
+ * copies identifiers into the CSL item (DOI, ISBN, PMID, PMCID) without a
+ * provenance of their own; each field still lacking one gets what
+ * `supplier` names for it.
+ */
+export function fillFieldProvenance(input: ReferenceEntryInput, supplier: (field: string) => FieldProvenance | undefined): ReferenceEntryInput {
+  const missing = Object.keys(input.csl).filter((field) => !input.provenance?.[field]);
+  if (!missing.length) return input;
+  const provenance: Record<string, FieldProvenance> = { ...(input.provenance as Record<string, FieldProvenance> | undefined) };
+  for (const field of missing) {
+    const supplied = supplier(field);
+    if (supplied) provenance[field] = { ...supplied };
+  }
+  return { ...input, provenance };
+}
+
+/**
+ * For an identifier field filled from `identifiers`: the provenance of the
+ * first of `inputs` that has that identifier (identifiers fill in that order),
+ * that is its own provenance of the field, else of its item type (the
+ * record's source).
+ */
+export function identifierSupplier(inputs: ReferenceEntryInput[]) {
+  return (field: string): FieldProvenance | undefined => {
+    const name = IDENTIFIER_CSL_FIELDS[field];
+    if (!name) return undefined;
+    const supplier = inputs.find((input) => hasIdentifier(input, name));
+    if (!supplier) return undefined;
+    const own = supplier.provenance as Record<string, FieldProvenance | undefined> | undefined;
+    return own?.[field] ?? own?.type ?? own?.title;
+  };
 }
 
 function fold(value: string) {
@@ -160,14 +203,14 @@ export function combineInputs(primary: ReferenceEntryInput, others: ReferenceEnt
   // arXiv ID in `identifiers` and also links it as `preprint-of`.)
   const isPreprintItself = !!identifiers.arxiv && (!identifiers.doi || identifiers.doi.startsWith("10.48550/arxiv."));
   const ownVersions = versions.filter((link) => link.identifier !== identifiers.doi && !(isPreprintItself && link.identifier === `arXiv:${identifiers.arxiv}`));
-  return compactInput(normalizeEntryInput({
+  return compactInput(fillFieldProvenance(normalizeEntryInput({
     ...primary,
     csl,
     identifiers,
     provenance,
     ...(Object.keys(conflicts).length ? { conflicts } : { conflicts: undefined }),
     ...(ownVersions.length ? { versions: ownVersions } : { versions: undefined }),
-  }));
+  }), identifierSupplier([primary, ...others])));
 }
 
 /** The conflicts entry for a field, built from a value and its provenance. */

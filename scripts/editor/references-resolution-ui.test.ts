@@ -413,7 +413,9 @@ test("Add & confirm needs every field from an authoritative source at confidence
   assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T" }, provenance: { title: { ...crossref, confidence: 0.8 } } }), "Title has confidence 80%, below 90%.");
   assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T" }, provenance: { title: crossref } }), null);
   // An identifier copied into the item without a source counts when it is one of the candidate's identifiers.
-  assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T", PMID: "26017442" }, identifiers: { pmid: "26017442" }, provenance: { title: crossref } }), null);
+  // Identifiers need a source too: the server records one for those it copies into the item (references-moves-ui-provenance.test.ts).
+  assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T", PMID: "26017442" }, identifiers: { pmid: "26017442" }, provenance: { title: crossref } }), "PMID has no source.");
+  assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T", PMID: "26017442" }, identifiers: { pmid: "26017442" }, provenance: { title: crossref, PMID: crossref } }), null);
   assert.equal(m.confirmBlocker({ csl: { type: "book", title: "T", PMID: "1" }, identifiers: { pmid: "2" }, provenance: { title: crossref } }), "PMID has no source.");
   await click(buttonByText(card, /^Add$/));
   assert.equal(lastAdd(server).status, "unresolved");

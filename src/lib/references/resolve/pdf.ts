@@ -8,7 +8,7 @@ import type { CslItem, CslName, FieldProvenance, ReferenceAttachment, ReferenceE
 import { extractionToInput, extractPdfFields, lookupWithWeb, type LlmExtraction } from "./llm";
 import { lookupArxiv, lookupDoi, onlineAllowed, searchBibliographic, type ResolveEnvironment } from "./lookup";
 import { titleSimilarityInText, TITLE_IN_TEXT_THRESHOLD } from "./match";
-import { combineInputs, compactInput } from "./record";
+import { combineInputs, compactInput, fillFieldProvenance } from "./record";
 import { isAbortError } from "./http";
 
 // PDF resolution (docs/references/plan.md §4.4 step 3). Inputs: the text of
@@ -147,7 +147,7 @@ export function identifiersInOrder(text: string) {
 function fieldsInput(csl: CslItem, provenance: FieldProvenance, attachment: ReferenceAttachment, status: "unresolved" | "needs-review"): ReferenceEntryInput {
   const fields: Record<string, FieldProvenance> = {};
   for (const field of Object.keys(csl)) fields[field] = provenance;
-  return compactInput({ ...normalizeEntryInput({ csl, provenance: fields, attachments: [attachment] }), status });
+  return compactInput({ ...fillFieldProvenance(normalizeEntryInput({ csl, provenance: fields, attachments: [attachment] }), () => provenance), status });
 }
 
 function withAttachment(input: ReferenceEntryInput, attachment: ReferenceAttachment, status: "needs-review" | "unresolved"): ReferenceEntryInput {
@@ -241,7 +241,7 @@ export async function resolvePdfFile(relativePath: string, env: ResolveEnvironme
       const csl: CslItem = { type: "document", title };
       const source = metadataTitle ? "pdf-metadata" : "pdf-text";
       const confidence = metadataTitle ? PDF_METADATA_CONFIDENCE : PDF_TEXT_CONFIDENCE;
-      const provenance: Record<string, FieldProvenance> = { title: { source, confidence, retrievedAt } };
+      const provenance: Record<string, FieldProvenance> = { title: { source, confidence, retrievedAt }, type: { source, confidence, retrievedAt } };
       const authors = metadataTitle ? pdfEvidence(metadata, retrievedAt)?.csl.author : undefined;
       if (authors?.length) {
         csl.author = authors;

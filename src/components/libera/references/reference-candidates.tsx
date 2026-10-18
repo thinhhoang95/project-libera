@@ -297,18 +297,6 @@ function pendingConflicts(candidate: Pick<ReferenceEntryInput, "conflicts">) {
   return Object.entries(candidate.conflicts ?? {}).filter(([, alternatives]) => alternatives?.length).map(([field]) => field);
 }
 
-const CSL_IDENTIFIER_FIELDS: Record<string, "doi" | "pmid" | "pmcid" | "isbn"> = { DOI: "doi", PMID: "pmid", PMCID: "pmcid", ISBN: "isbn" };
-
-function identifierFieldMatches(candidate: ReferenceEntryInput, field: string) {
-  const name = CSL_IDENTIFIER_FIELDS[field];
-  const value = candidate.csl[field];
-  if (!name || typeof value !== "string") return false;
-  const known = candidate.identifiers?.[name];
-  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
-    || a.toLowerCase().replace(/[^0-9a-z]/g, "") === b.toLowerCase().replace(/[^0-9a-z]/g, "");
-  return Array.isArray(known) ? known.some((item) => same(item, value)) : typeof known === "string" && same(known, value);
-}
-
 /**
  * Why a candidate cannot be added as confirmed, or null when it can: every
  * field must come from an authoritative source (Crossref, DataCite,
@@ -321,10 +309,8 @@ export function confirmBlocker(candidate: ReferenceEntryInput): string | null {
   const conflicts = pendingConflicts(candidate);
   if (conflicts.length) return `Sources disagree on ${conflicts.map((field) => fieldLabel(field).toLowerCase()).join(", ")}: choose a value first.`;
   for (const field of fields) {
+    // The resolution server gives every field a source, identifiers copied into the item included.
     const provenance = candidate.provenance?.[field];
-    // The pipeline copies identifiers it found (e.g. a PMID from OpenAlex) into the CSL item without a
-    // provenance of their own; they count when they match the candidate's identifiers.
-    if (!provenance && identifierFieldMatches(candidate, field)) continue;
     if (!provenance) return `${fieldLabel(field)} has no source.`;
     if (!AUTHORITATIVE_SOURCES.includes(provenance.source)) return `${fieldLabel(field)} comes from ${PROVENANCE_LABELS[provenance.source] ?? provenance.source}, not an authoritative source.`;
     if (provenance.confidence < CONFIRM_CONFIDENCE) return `${fieldLabel(field)} has confidence ${Math.round(provenance.confidence * 100)}%, below 90%.`;

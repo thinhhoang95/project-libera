@@ -6,7 +6,7 @@ import type { CslItem, CslName, FieldProvenance, ReferenceAttachment, ReferenceE
 import { isAbortError } from "./http";
 import { extractionToInput, proposeMarkdownEntry } from "./llm";
 import { lookupDoi, type ResolveEnvironment } from "./lookup";
-import { compactInput } from "./record";
+import { compactInput, fillFieldProvenance, identifierSupplier } from "./record";
 import { parseLooseDate } from "./url";
 
 // Markdown resolution (docs/references/plan.md §4.4 step 5). A converted
@@ -176,7 +176,7 @@ export async function resolveMarkdownFile(relativePath: string, library: Referen
         const fromFront = Object.keys(candidate.provenance ?? {}).filter((field) => candidate.provenance?.[field]?.confidence === FRONT_MATTER_CONFIDENCE);
         const csl = { ...proposed.csl, ...Object.fromEntries(fromFront.map((field) => [field, candidate.csl[field]])) } as CslItem;
         const provenance = { ...proposed.provenance, ...Object.fromEntries(fromFront.map((field) => [field, candidate.provenance![field]])) };
-        candidate = compactInput(normalizeEntryInput({ csl, provenance }));
+        candidate = compactInput(fillFieldProvenance(normalizeEntryInput({ csl, provenance }), identifierSupplier([proposed])));
       }
     } catch (error) {
       if (isAbortError(error) || env.ctx.signal?.aborted) throw error;

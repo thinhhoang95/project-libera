@@ -3,7 +3,7 @@ import { parseName } from "../names";
 import { normalizeEntryInput, parseDateText } from "../normalize";
 import type { CslDate, CslItem, CslName, FieldProvenance, ReferenceEntryInput } from "../types";
 import { decodeXmlEntities } from "./xml";
-import { compactInput, type ResolveContext } from "./record";
+import { compactInput, fillFieldProvenance, type ResolveContext } from "./record";
 
 // A pasted web address (docs/references/plan.md §4.4 step 1): the page is
 // fetched once (HTML only, size-limited, with a timeout) and its Highwire
@@ -134,7 +134,7 @@ export function pageMetadataToInput(page: PageMetadata, retrievedAt: string): Re
   const provenance: Record<string, FieldProvenance> = {};
   for (const field of Object.keys(csl)) provenance[field] = { source: "import", confidence: META_CONFIDENCE, url: page.url, retrievedAt };
   return compactInput({
-    ...normalizeEntryInput({ csl, provenance, attachments: [{ kind: "url", url: page.url }] }),
+    ...fillFieldProvenance(normalizeEntryInput({ csl, provenance, attachments: [{ kind: "url", url: page.url }] }), () => ({ source: "import", confidence: META_CONFIDENCE, url: page.url, retrievedAt })),
     status: "needs-review",
   });
 }
