@@ -1,10 +1,12 @@
 import { syntaxTree } from "@codemirror/language";
-import { Facet, RangeSetBuilder, type EditorState, type Extension, type Range } from "@codemirror/state";
+import { Facet, RangeSetBuilder, type EditorState, type Extension, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { MARKDOWN_BOX_PREFIX } from "@/lib/markdown-boxes";
 import { getMarkdownHighlightColorByShortcut, MARKDOWN_DEFAULT_HIGHLIGHT_COLOR } from "@/lib/markdown-colors";
 import { escapedAt, mathMarkerPairs, type MathMarkerPair, type MathMarkerSettings } from "@/lib/math-markers";
+import { scanCitations } from "@/lib/references/citation-syntax";
+import type { CitationOccurrence } from "@/lib/references/types";
 
 /* Libera's own Markdown syntax, decorated in the CodeMirror Source editor.
  *
@@ -16,6 +18,7 @@ import { escapedAt, mathMarkerPairs, type MathMarkerPair, type MathMarkerSetting
 
 export type LiberaSyntaxKind =
   | "box"
+  | "citation"
   | "color"
   | "highlight"
   | "math"
@@ -162,6 +165,47 @@ export const liberaMathMarkers = Facet.define<MathMarkerSettings, MathMarkerSett
   combine: (values) => values.at(-1) ?? {},
 });
 
+// Citations ------------------------------------------------------------------
+
+/** Documents larger than this are scanned for citations after a pause in typing (see citations.ts). */
+export const CITATION_SYNC_SCAN_LIMIT = 100_000;
+
+let citationScans = 0;
+const citationCache = new WeakMap<Text, { markers: MathMarkerSettings; citations: CitationOccurrence[] }>();
+
+/** How many times a document version was scanned for citations (tests). */
+export function liberaCitationScanCount() {
+  return citationScans;
+}
+
+/** The document's citations, from the shared scanner (citation-syntax.ts), scanned once per
+ * document version and math-marker setting. With `compute: false`, only an earlier scan of
+ * this exact version is returned (null when there is none). */
+export function liberaCitations(state: EditorState, { compute = true }: { compute?: boolean } = {}): CitationOccurrence[] | null {
+  const markers = state.facet(liberaMathMarkers);
+  const cached = citationCache.get(state.doc);
+  if (cached && cached.markers === markers) return cached.citations;
+  if (!compute) return null;
+  citationScans += 1;
+  const text = state.doc.toString();
+  const citations = text.includes("@") ? scanCitations(text, { mathMarkers: markers }) : [];
+  citationCache.set(state.doc, { markers, citations });
+  return citations;
+}
+
+/** The citation containing `pos` (`start <= pos < end`), or null. */
+export function liberaCitationAt(state: EditorState, pos: number) {
+  const citations = liberaCitations(state) ?? [];
+  let low = 0;
+  let high = citations.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (citations[mid].end <= pos) low = mid + 1; else high = mid;
+  }
+  const found = citations[low];
+  return found && found.start <= pos ? found : null;
+}
+
 const CODE_NODES = new Set(["FencedCode", "CodeBlock", "InlineCode", "CommentBlock", "ProcessingInstructionBlock", "HTMLBlock"]);
 const HEADING_NODE = /^(?:ATX|Setext)Heading([1-6])$/;
 const marker = Decoration.mark({ class: "cm-libera-marker" });
@@ -222,6 +266,14 @@ export function analyzeLiberaSyntax(state: EditorState, from = 0, to = state.doc
     if (code.some((span) => span.from <= block.from && span.to >= block.to)) continue;
     inline.push(...scanLiberaInline(doc.sliceString(block.from, block.to), block.from, { mathPairs: pairs, skip: code }));
   }
+  // Citations are drawn by citations.ts; a large document waits for its scan there.
+  const citations = liberaCitations(state, { compute: doc.length <= CITATION_SYNC_SCAN_LIMIT }) ?? [];
+  for (const citation of citations) {
+    if (citation.end < start) continue;
+    if (citation.start > end) break;
+    inline.push({ kind: "citation", from: citation.start, to: citation.end, contentFrom: citation.start, contentTo: citation.end });
+  }
+  inline.sort((a, b) => a.from - b.from || b.to - a.to);
   return { boxes, code, inline, lines };
 }
 

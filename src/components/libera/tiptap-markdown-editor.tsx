@@ -19,6 +19,7 @@ import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
+import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/references/tiptap-citation-view";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
@@ -167,10 +168,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const sharedRef = useRef<SharedVisualHandle | null>(null);
   const shared = !!collab;
   const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
+  // Citation nodes, the `@` popup and the citation popover (references lane).
+  const citations = useTiptapCitations();
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView }),
+    ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
     ...(shared ? [TiptapCollabHistory] : []),
@@ -188,7 +192,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared]);
+  ]; }, [documentPath, mathMarkers, shared, citations]);
 
   const editor = useEditor({
     extensions,
@@ -780,7 +784,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
               void insertImages(Array.from(event.dataTransfer.files), pos);
             }
           }}>
-          <EditorContent className="libera-text-width-content" editor={editor} />
+          <TiptapCitationLayer editor={editor} citations={citations}>
+            <EditorContent className="libera-text-width-content" editor={editor} />
+          </TiptapCitationLayer>
         </div>
         {findOpen ? (
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">

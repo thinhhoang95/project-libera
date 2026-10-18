@@ -67,6 +67,16 @@ import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-
 import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
 import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
 import type { MathMarkerSettings } from "@/lib/math-markers";
+import { citationAt, citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
+import { citationInsertion, mayTriggerCitation } from "@/lib/references/reference-suggestions";
+import {
+  CitationPopup,
+  citationPopupPosition,
+  openCitationAttachment,
+  useEditorCitationHover,
+  type CitationPopupHandle,
+} from "@/components/libera/references/citation-popup";
+import { useReferenceRender } from "@/components/libera/references/reference-render-context";
 
 type EditorContextMenuState = {
   hasText: boolean;
@@ -81,6 +91,16 @@ type FileLinkPopupContext = {
   destinationEnd: number;
   destinationStart: number;
   query: string;
+  x: number;
+  y: number;
+};
+
+type CitationPopupContext = {
+  from: number;
+  to: number;
+  query: string;
+  insideCitation: boolean;
+  citedKeys: string[];
   x: number;
   y: number;
 };
@@ -661,6 +681,12 @@ export function MarkdownEditor({
   highlightIndexRef.current ??= createMarkdownEditorLineIndex();
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
+  // The `@` citation popup, refreshed in the file-link popup's frame.
+  const [citationPopup, setCitationPopup] = useState<CitationPopupContext | null>(null);
+  const citationPopupRef = useRef<CitationPopupContext | null>(null);
+  const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
+  const referenceRender = useReferenceRender();
+  const citationHover = useEditorCitationHover();
   const publishedDraftsRef = useRef<string[]>([]);
   const composingRef = useRef(false);
   const previousActiveFilePathRef = useRef(activeFilePath);
@@ -1072,6 +1098,7 @@ export function MarkdownEditor({
       fileLinkPopupFrameRef.current = window.requestAnimationFrame(() => {
         fileLinkPopupFrameRef.current = null;
         refreshFileLinkPopup(textarea, nextValue);
+        refreshCitationPopupRef.current(textarea, nextValue);
       });
     },
     [refreshFileLinkPopup],
@@ -1085,6 +1112,112 @@ export function MarkdownEditor({
 
     fileLinkPopupRef.current = null;
     setFileLinkPopup(null);
+    closeCitationPopup();
+  }
+
+  function closeCitationPopup() {
+    if (!citationPopupRef.current) return;
+    citationPopupRef.current = null;
+    setCitationPopup(null);
+  }
+
+  /** Opens, moves or closes the citation popup for the caret. `citationTriggerAt`
+   * analyses the whole document, so it only runs right after `@` and key characters. */
+  function refreshCitationPopup(textarea: HTMLTextAreaElement, nextValue = editorValueRef.current) {
+    const cursor = textarea.selectionStart;
+    const previous = citationPopupRef.current;
+    let next: CitationPopupContext | null = null;
+    if (
+      textarea.selectionStart === textarea.selectionEnd &&
+      !fileLinkPopupRef.current &&
+      mayTriggerCitation(nextValue.slice(Math.max(0, cursor - 260), cursor))
+    ) {
+      const trigger = citationTriggerAt(nextValue, cursor, { mathMarkers });
+      if (trigger) {
+        const same = previous?.from === trigger.from;
+        next = {
+          from: trigger.from,
+          to: cursor,
+          query: trigger.query,
+          insideCitation: trigger.insideCitation,
+          // The trigger just analysed this text, so listing its keys reuses that analysis.
+          citedKeys: same ? previous.citedKeys : documentCitedKeys(nextValue, { mathMarkers }),
+          ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(getTextareaClientPointForOffset(textarea, trigger.from))),
+        };
+      }
+    }
+    if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
+    if (!previous && !next) return;
+    citationPopupRef.current = next;
+    setCitationPopup(next);
+  }
+  const refreshCitationPopupRef = useRef(refreshCitationPopup);
+  useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
+
+  function insertCitation(key: string, { locator }: { locator: boolean }) {
+    const textarea = textareaRef.current;
+    const popup = citationPopupRef.current;
+    if (!textarea || !popup) return;
+    // `[@key]` replaces `@query`; inside a citation `@key` replaces it.
+    const insertion = citationInsertion(key, popup.insideCitation, locator);
+    const currentValue = editorValueRef.current;
+    const nextValue = `${currentValue.slice(0, popup.from)}${insertion.text}${currentValue.slice(popup.to)}`;
+    const caret = popup.from + insertion.caret;
+    closeCitationPopup();
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: popup.from,
+      selectionEnd: popup.to,
+      replacement: insertion.text,
+      nextSelectionStart: caret,
+      nextSelectionEnd: caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+    readDraft();
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(caret, caret);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+    });
+  }
+
+  /** The citation under the pointer, for the hover card and Ctrl/Cmd+click. */
+  function citationAtPointer(textarea: HTMLTextAreaElement, clientX: number, clientY: number) {
+    const text = editorValueRef.current;
+    if (!text.includes("@")) return null;
+    const offset = getTextareaOffsetAtPoint(textarea, clientX, clientY);
+    const found = citationAt(text, offset, { mathMarkers });
+    if (!found) return null;
+    // The offset is the nearest caret position: check the pointer is over the token on its line.
+    const start = getTextareaClientPointForOffset(textarea, found.start);
+    const end = getTextareaClientPointForOffset(textarea, found.end);
+    if (start.y === end.y && (clientX < start.x - 2 || clientX > end.x + 2)) return null;
+    return found;
+  }
+
+  function handleCitationPointer(event: MouseEvent<HTMLTextAreaElement>) {
+    const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+    if (!found) {
+      citationHover.show(null);
+      return;
+    }
+    citationHover.show({
+      citation: found.citation,
+      rect: () => {
+        const current = textareaRef.current;
+        if (!current) return null;
+        const start = getTextareaClientPointForOffset(current, found.start);
+        const end = getTextareaClientPointForOffset(current, found.end);
+        const left = start.y === end.y ? start.x : current.getBoundingClientRect().left;
+        const right = start.y === end.y ? end.x : left + 1;
+        return new DOMRect(left, start.y - lineHeightPx, Math.max(1, right - left), end.y - start.y + lineHeightPx);
+      },
+    });
   }
 
   function insertFileLink(selection: MarkdownFileLinkSelection) {
@@ -1453,6 +1586,11 @@ export function MarkdownEditor({
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (citationPopupRef.current && citationPopupHandleRef.current?.handleKey(event)) {
+      event.preventDefault();
+      return;
+    }
+
     if (fileLinkPopup) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1665,6 +1803,14 @@ export function MarkdownEditor({
           scheduleFileLinkPopupRefresh(event.currentTarget);
           scheduleSelectionChange(event.currentTarget);
         }}
+        onMouseDown={(event) => {
+          // Ctrl/Cmd+click on a citation opens its attachment at the cited page.
+          if (event.button !== 0 || !(event.metaKey || event.ctrlKey)) return;
+          const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+          if (found && openCitationAttachment(referenceRender, found.citation)) event.preventDefault();
+        }}
+        onMouseMove={handleCitationPointer}
+        onMouseLeave={() => citationHover.show(null)}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
@@ -1872,6 +2018,19 @@ export function MarkdownEditor({
           ) : null}
         </div>
       ) : null}
+
+      {citationPopup ? (
+        <CitationPopup
+          ref={citationPopupHandleRef}
+          query={citationPopup.query}
+          citedKeys={citationPopup.citedKeys}
+          x={citationPopup.x}
+          y={citationPopup.y}
+          onInsert={insertCitation}
+          onClose={closeCitationPopup}
+        />
+      ) : null}
+      {citationHover.element}
 
       {fileLinkPopup ? (
         <MarkdownFileLinkPopup

@@ -314,6 +314,29 @@ function UnresolvedItem({ item }: { item: CitationItem }) {
   );
 }
 
+/**
+ * The card's contents for each cited work, without the positioned card around
+ * them. The CodeMirror Source editor shows them in its own hover tooltip.
+ */
+export function CitationCardItems({ citation, document: citationDocument }: { citation: Citation; document: CitationDocumentValue | null }) {
+  const render = useReferenceRender();
+  if (!render) return null;
+  const seen = new Set<string>();
+  const items: ReactNode[] = [];
+  citation.items.forEach((item, index) => {
+    const entry = entryForKey(render.entriesByKey, item.key);
+    if (entry) {
+      if (seen.has(entry.id)) return;
+      seen.add(entry.id);
+      items.push(<ResolvedItem key={index} item={item} entry={entry} document={citationDocument} />);
+    } else if (render.library) {
+      items.push(<UnresolvedItem key={index} item={item} />);
+    }
+  });
+  if (!items.length) items.push(<p key="loading" className="citation-card-meta">{render.library ? "No cited works." : "Loading references…"}</p>);
+  return <>{items}</>;
+}
+
 type Position = { left: number; top: number };
 
 export function CitationHoverCard({
@@ -405,19 +428,6 @@ export function CitationHoverCard({
     if (typeof ref === "function") ref(element);
     else if (ref) ref.current = element;
   };
-  const seen = new Set<string>();
-  const items: ReactNode[] = [];
-  citation.items.forEach((item, index) => {
-    const entry = entryForKey(render.entriesByKey, item.key);
-    if (entry) {
-      if (seen.has(entry.id)) return;
-      seen.add(entry.id);
-      items.push(<ResolvedItem key={index} item={item} entry={entry} document={citationDocument} />);
-    } else if (render.library) {
-      items.push(<UnresolvedItem key={index} item={item} />);
-    }
-  });
-  if (!items.length) items.push(<p key="loading" className="citation-card-meta">{render.library ? "No cited works." : "Loading references…"}</p>);
 
   return createPortal(
     <div
@@ -431,7 +441,7 @@ export function CitationHoverCard({
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
-      {items}
+      <CitationCardItems citation={citation} document={citationDocument} />
     </div>,
     window.document.body,
   );
