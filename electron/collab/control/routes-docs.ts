@@ -25,6 +25,7 @@ import { ControlError } from "./types";
 import { aiFeature, bad, objectBody, optionalString, provenanceValue, requiredString, stringList, textEdits } from "./validate";
 
 const pattern = {
+  doc: decodeURIComponent(ControlRoutes.doc(":docId")),
   docText: decodeURIComponent(ControlRoutes.docText(":docId")),
   docEdits: decodeURIComponent(ControlRoutes.docEdits(":docId")),
   docSuggestions: decodeURIComponent(ControlRoutes.docSuggestions(":docId")),
@@ -146,6 +147,14 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
   router.add("GET", ControlRoutes.resolve, (request): { body: ResolvedDoc | null } => {
     const liberaPath = requiredString(request.query.get("path"), "path", 4096);
     return { body: runtime.notebooks.resolvePath(liberaPath) };
+  });
+
+  // The reverse of resolve (a notification about a docId opens its file).
+  // "/docs/resolve" is a literal route, so it wins over this pattern.
+  router.add("GET", pattern.doc, (request): { body: ResolvedDoc } => {
+    const resolved = runtime.notebooks.resolveDoc?.(request.params.docId) ?? null;
+    if (!resolved) throw new ControlError(404, "unknown-doc", `Document ${request.params.docId} is not in a shared notebook on this machine.`);
+    return { body: resolved };
   });
 
   router.add("GET", pattern.docText, (request) =>

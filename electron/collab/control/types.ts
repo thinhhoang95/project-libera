@@ -66,6 +66,12 @@ export interface NotebookService {
   stop(): Promise<void>;
   /** Maps a Libera path ("Notebook/sub/file.md") to its shared document, or null. */
   resolvePath(liberaPath: string): ResolvedDoc | null;
+  /**
+   * The reverse of resolvePath: the shared file a docId belongs to, or null.
+   * Optional until the notebook service implements it; GET /docs/:docId
+   * answers 404 without it.
+   */
+  resolveDoc?(docId: string): ResolvedDoc | null;
   /** Called after sign-in/sign-out so the service can (re)attach projects. */
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;

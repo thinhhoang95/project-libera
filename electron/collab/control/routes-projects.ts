@@ -1,15 +1,20 @@
-// Control routes: projects, members, invitations. Thin proxies to the
+// Control routes: projects, members, invitations, notifications. Thin proxies to the
 // collab server's REST API for the signed-in account; the server enforces
 // every permission (only the owner may invite or change roles).
 
-import { ControlRoutes, type InviteRequest, type LocalProject } from "../../../src/lib/collab/local-api";
-import type { ListedProject, ProjectListing } from "../../../src/lib/collab/host-client";
+import {
+  ControlRoutes,
+  type InviteRequest,
+  type LocalProject,
+  type MarkNotificationsReadRequest,
+  type NotificationsQuery,
+} from "../../../src/lib/collab/local-api";
 import type { ApiClient } from "../core/api-client";
 import { ApiClientError } from "../core/api-client";
 import type { Router } from "./router";
 import type { CollabRuntime } from "./runtime";
 import { ControlError } from "./types";
-import { objectBody, requiredString, roleValue } from "./validate";
+import { bad, objectBody, requiredString, roleValue, stringList } from "./validate";
 
 /** ControlRoutes builders with ":name" placeholders (encoded by the builder, hence the decode) become router patterns. */
 const pattern = {
@@ -32,45 +37,53 @@ function localProjects(runtime: CollabRuntime): LocalProject[] {
 }
 
 export function registerProjectRoutes(router: Router, runtime: CollabRuntime): void {
-  router.add("GET", ControlRoutes.projects, async (): Promise<{ body: ProjectListing }> => {
+  // The projects joined on this machine (the UI keys them by notebook
+  // folder). When the server can be asked, names and roles are refreshed
+  // from it and a project it no longer lists is marked revoked.
+  router.add("GET", ControlRoutes.projects, async (): Promise<{ body: LocalProject[] }> => {
     const local = localProjects(runtime);
-    const byId = new Map(local.map((project) => [project.projectId, project]));
-    const fromLocal = (project: LocalProject): ListedProject => ({
-      projectId: project.projectId,
-      name: project.name,
-      role: project.role,
-      ownerId: null,
-      manifestDocId: null,
-      createdAt: null,
-      local: project,
-    });
     const api = runtime.host.api;
-    if (!api || !runtime.accounts.session) {
-      return { body: { source: "local", projects: local.map(fromLocal), detail: "Not signed in to the collaboration server." } };
-    }
+    if (!api || !runtime.accounts.session || local.length === 0) return { body: local };
+    let remote;
     try {
-      const remote = await api.listProjects();
-      const projects: ListedProject[] = remote.map((project) => ({
-        projectId: project.id,
-        name: project.name,
-        role: project.role,
-        ownerId: project.ownerId,
-        manifestDocId: project.manifestDocId,
-        createdAt: project.createdAt,
-        local: byId.get(project.id) ?? null,
-      }));
-      // Joined here but no longer listed by the server: access was revoked.
-      const listed = new Set(remote.map((project) => project.id));
-      for (const project of local) {
-        if (!listed.has(project.projectId)) projects.push({ ...fromLocal(project), local: { ...project, revoked: true } });
-      }
-      return { body: { source: "server", projects } };
+      remote = await api.listProjects();
     } catch (error) {
-      if (error instanceof ApiClientError && (error.transient || error.code === "needs-sign-in")) {
-        return { body: { source: "local", projects: local.map(fromLocal), detail: error.message } };
-      }
+      if (error instanceof ApiClientError && (error.transient || error.code === "needs-sign-in")) return { body: local };
       throw error;
     }
+    const byId = new Map(remote.map((project) => [project.id, project]));
+    return {
+      body: local.map((project) => {
+        const current = byId.get(project.projectId);
+        return current ? { ...project, name: current.name, role: current.role } : { ...project, revoked: true };
+      }),
+    };
+  });
+
+  // Notifications for the signed-in account, newest first.
+  router.add("GET", ControlRoutes.notifications, async (request) => {
+    const unread = request.query.get("unread");
+    const limitText = request.query.get("limit");
+    const limit = limitText === null ? undefined : Number(limitText);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) throw bad("limit must be an integer from 1 to 500.");
+    const before = request.query.get("before") ?? undefined;
+    if (before !== undefined && Number.isNaN(Date.parse(before))) throw bad("before must be an ISO time.");
+    const query: NotificationsQuery = {
+      ...(unread === null ? {} : { unread: unread === "true" || unread === "1" }),
+      ...(before ? { before } : {}),
+      ...(limit === undefined ? {} : { limit }),
+    };
+    return { body: await requireApi(runtime).listNotifications(query) };
+  });
+
+  router.add("POST", ControlRoutes.notificationsRead, async (request) => {
+    const body = objectBody(request.body);
+    const ids = stringList(body.ids, "ids", 1000);
+    if (body.all !== undefined && typeof body.all !== "boolean") throw bad("all must be a boolean.");
+    if (!ids?.length && body.all !== true) throw bad("Send ids or all: true.");
+    const read: MarkNotificationsReadRequest = { ...(ids?.length ? { ids } : {}), ...(body.all === true ? { all: true } : {}) };
+    await requireApi(runtime).markNotificationsRead(read);
+    return {};
   });
 
   router.add("GET", pattern.members, async (request) => ({ body: await requireApi(runtime).listMembers(request.params.projectId) }));

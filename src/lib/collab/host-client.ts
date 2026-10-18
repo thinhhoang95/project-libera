@@ -12,30 +12,10 @@
 
 import type { LocalProject, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, DocText, HostStatus, ResolvedDoc } from "./local-api";
 import { ControlRoutes } from "./local-api";
-import type { Role } from "./protocol/roles";
 
 export interface HostClientConfig {
   url: string;
   token: string;
-}
-
-/** One project in GET /projects: the server's list merged with the projects joined on this machine. */
-export interface ListedProject {
-  projectId: string;
-  name: string;
-  role: Role;
-  ownerId: string | null;
-  manifestDocId: string | null;
-  createdAt: string | null;
-  /** Set when the project is joined (materialized) on this machine. */
-  local: LocalProject | null;
-}
-
-export interface ProjectListing {
-  /** "local" when the server could not be asked (signed out, offline). */
-  source: "server" | "local";
-  projects: ListedProject[];
-  detail?: string;
 }
 
 export class CollabHostError extends Error {
@@ -131,6 +111,11 @@ export async function resolveSharedPath(liberaPath: string, config?: HostClientC
   return hostJson<ResolvedDoc | null>(`${ControlRoutes.resolve}?${query}`, { config });
 }
 
+/** The shared file a docId belongs to (CollabHostError 404 when unknown). */
+export function getSharedDoc(docId: string, config?: HostClientConfig | null): Promise<ResolvedDoc> {
+  return hostJson(ControlRoutes.doc(docId), { config });
+}
+
 export function getDocText(docId: string, config?: HostClientConfig | null): Promise<DocText> {
   return hostJson(ControlRoutes.docText(docId), { config });
 }
@@ -144,6 +129,7 @@ export function createSuggestions(docId: string, request: CreateSuggestionsReque
   return hostJson(ControlRoutes.docSuggestions(docId), { method: "POST", body: request, config });
 }
 
-export function listProjects(config?: HostClientConfig | null): Promise<ProjectListing> {
+/** The projects joined on this machine, refreshed from the server when it can be reached. */
+export function listProjects(config?: HostClientConfig | null): Promise<LocalProject[]> {
   return hostJson(ControlRoutes.projects, { config });
 }

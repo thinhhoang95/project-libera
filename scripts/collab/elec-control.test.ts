@@ -18,7 +18,6 @@ import { startControlApp, type ControlApp } from "../../electron/collab/control"
 import type { SecretCodec } from "../../electron/collab/control/account";
 import { Router } from "../../electron/collab/control/router";
 import { ControlError, type ControlDeps, type NotebookService } from "../../electron/collab/control/types";
-import type { ProjectListing } from "../../src/lib/collab/host-client";
 import {
   ControlRoutes,
   type ApplyEditsResponse,
@@ -26,6 +25,8 @@ import {
   type DocText,
   type HostEvent,
   type HostStatus,
+  type LocalProject,
+  type NotificationInfo,
   type ResolvedDoc,
 } from "../../src/lib/collab/local-api";
 import type { AuthResponse, Invitation, Member, ProjectSummary, UpdatesPage } from "../../src/lib/collab/protocol/api";
@@ -83,6 +84,7 @@ function fakeNotebooks(resolved: () => ResolvedDoc | null) {
       calls.push("stop");
     },
     resolvePath: (liberaPath) => (liberaPath === "Shared/notes.md" ? resolved() : null),
+    resolveDoc: (docId) => (resolved()?.docId === docId ? resolved() : null),
     async accountChanged() {
       calls.push(`accountChanged:${deps.host.api ? "api" : "none"}`);
     },
@@ -233,12 +235,18 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     const projectId = project.body.id;
     alice.app.runtime.host.store.upsertProject({ projectId, name: "Shared", localRoot: path.join(alice.dir, "library", "Shared"), role: "owner" });
 
-    const listing = await alice.call<ProjectListing>("GET", ControlRoutes.projects);
+    alice.app.runtime.host.store.upsertProject({ projectId: "prj_gone", name: "Gone", localRoot: path.join(alice.dir, "library", "Gone"), role: "editor" });
+    const listing = await alice.call<LocalProject[]>("GET", ControlRoutes.projects);
     assert.equal(listing.status, 200);
-    assert.equal(listing.body.source, "server");
-    const listed = listing.body.projects.find((item) => item.projectId === projectId);
-    assert.equal(listed?.role, "owner");
-    assert.equal(listed?.local?.notebook, "Shared");
+    assert.deepEqual(
+      listing.body.map((item) => [item.projectId, item.name, item.role, item.notebook, item.revoked]),
+      [
+        ["prj_gone", "Gone", "editor", "Shared", true],
+        [projectId, "Shared", "owner", "Shared", false],
+      ],
+      "joined projects only; one the server no longer lists is revoked",
+    );
+    alice.app.runtime.host.store.deleteProject("prj_gone");
 
     const invite = await alice.call<Invitation>("POST", ControlRoutes.invitations(projectId), { email: "bob@example.test", role: "editor" });
     assert.equal(invite.status, 201, JSON.stringify(invite.body));
@@ -264,6 +272,14 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     assert.equal(bobRegistered.status, 201, JSON.stringify(bobRegistered.body));
     const bobId = bobRegistered.body.account?.id ?? "";
 
+    // Notifications for the signed-in account.
+    const notifications = await bob.call<NotificationInfo[]>("GET", `${ControlRoutes.notifications}?unread=true&limit=50`);
+    assert.equal(notifications.status, 200, JSON.stringify(notifications.body));
+    assert.ok(Array.isArray(notifications.body));
+    assert.equal((await bob.call("POST", ControlRoutes.notificationsRead, { all: true })).status, 204);
+    assert.equal((await bob.call("POST", ControlRoutes.notificationsRead, {})).status, 400);
+    assert.equal((await bob.call("GET", `${ControlRoutes.notifications}?limit=0`)).status, 400);
+
     const members = await alice.call<Member[]>("GET", ControlRoutes.members(projectId));
     assert.deepEqual(members.body.map((member) => member.role).sort(), ["editor", "owner"]);
     const demoted = await alice.call<Member>("PATCH", ControlRoutes.member(projectId, bobId), { role: "commenter" });
@@ -284,6 +300,8 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     const resolvedDoc = await alice.call<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}?path=${encodeURIComponent("Shared/notes.md")}`);
     assert.equal(resolvedDoc.body?.docId, docId);
     assert.equal((await alice.call<ResolvedDoc | null>("GET", `${ControlRoutes.resolve}?path=Other.md`)).body, null);
+    assert.equal((await alice.call<ResolvedDoc>("GET", ControlRoutes.doc(docId))).body.path, "Shared/notes.md");
+    assert.equal((await alice.call("GET", ControlRoutes.doc("doc_unknown"))).status, 404);
 
     const empty = await alice.call<DocText>("GET", ControlRoutes.docText(docId));
     assert.equal(empty.status, 200);
