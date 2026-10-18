@@ -28,7 +28,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
-| core | `references/core` | BibTeX/BibLaTeX, RIS, CSL-JSON parse and serialize; names; normalization; identifiers; dedupe scoring | ◐ |
+| core | `references/core` | BibTeX/BibLaTeX, RIS, CSL-JSON parse and serialize; names; normalization; identifiers; dedupe scoring | ☑ merged 58eae11; 57 tests |
 | syntax | `references/syntax` | Citation grammar, scanner, serializer, trigger detection, key rewrite; micromark/mdast extension | ◐ |
 | storage | `references/storage` | Library storage and transactions; library API; attachments follow renames, moves, copies, archive, delete; re-attach by hash; client store | ☑ merged 1678274; suite 585 tests, only the baseline 4 fail + 2 cancelled |
 
