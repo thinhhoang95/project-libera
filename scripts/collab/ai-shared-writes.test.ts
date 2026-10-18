@@ -590,6 +590,43 @@ test("leave-review-comments on a shared document creates AI-authored shared thre
   });
 });
 
+test("SuggestEdit on a shared document makes AI-authored suggestions and a linked thread that Undo withdraws", async () => {
+  await withFixture(async ({ host }) => {
+    host.doc("Shared/notes.md").text = "# Notes\n\nThe budget is 40k.\n\nSecond paragraph.\n";
+    const { context, events } = makeContext("read-only");
+    await tool("Skill").run({ name: "leave-review-comments" }, context);
+    await tool("Read").run({ file_path: "Shared/notes.md" }, context);
+    const suggested = await tool("SuggestEdit").run({ path: "Shared/notes.md", before: "The budget is 40k.", after: "The budget is 35k.", reason: "Matches the summary table.", comment: "Which figure is right?" }, context);
+    assert.equal(suggested.isError, false, suggested.text);
+    const skill = AGENT_SKILLS.find((candidate) => candidate.name === "leave-review-comments")!;
+    assert.equal(await skill.finishPass!(context, { final: true }), null);
+
+    const doc = host.doc("Shared/notes.md");
+    assert.equal(doc.text, "# Notes\n\nThe budget is 40k.\n\nSecond paragraph.\n", "suggesting never changes the text");
+    assert.equal(doc.suggestions.length, 1);
+    const [suggestion] = doc.suggestions;
+    assert.equal(suggestion.status, "pending");
+    const proposed = [...suggestion.request.edits].sort((a, b) => b.start - a.start)
+      .reduce((text, edit) => text.slice(0, edit.start) + edit.text + text.slice(edit.end), suggestion.request.snapshot ?? doc.text);
+    assert.equal(proposed, "# Notes\n\nThe budget is 35k.\n\nSecond paragraph.\n");
+    assert.equal(suggestion.request.ai?.feature, "agent");
+    assert.equal(suggestion.request.ai?.runId, context.snapshots.runId);
+    assert.equal(suggestion.request.reason, "Matches the summary table.");
+    assert.equal(doc.threads.length, 1);
+    assert.equal(doc.threads[0].request.body, "Which figure is right?");
+    assert.equal(doc.threads[0].quote, "The budget is 40k.");
+    assert.deepEqual(events.filter((event) => event.type === "suggestions_added"), [{ type: "suggestions_added", path: "Shared/notes.md", count: 1 }]);
+
+    const [undone] = await undoRun(context.snapshots.runId);
+    assert.equal(undone.withdrawn, 1);
+    assert.equal(doc.suggestions[0].status, "withdrawn");
+
+    // Viewers cannot suggest.
+    await tool("Read").run({ file_path: "Shared/viewed.md" }, context);
+    await assert.rejects(tool("SuggestEdit").run({ path: "Shared/viewed.md", before: "Read only", after: "Changed", reason: "x" }, context), /role in this shared notebook \(viewer\) cannot suggest/);
+  });
+});
+
 test("document chat takes a shared document's text from the host", async () => {
   await withFixture(async ({ host }) => {
     let payload: { messages: Array<{ content: string }> } | null = null;
