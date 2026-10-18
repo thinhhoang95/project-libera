@@ -55,6 +55,8 @@ import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
+import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import {
   ensureDocumentOcrModel,
   readImageAsMarkdown,
@@ -1793,6 +1795,70 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
     return { start: insertion.start, end: insertion.end };
   }
+
+  /**
+   * Quote and cite from a PDF (references/pdf-quote-cite.tsx) into the most
+   * recently active Markdown tab, as a block after its caret's paragraph, in the source or
+   * the visual editor. With no Markdown tab open, the Markdown goes to the
+   * clipboard instead.
+   */
+  function quoteTargetTab() {
+    const open = new Map(tabsRef.current.map((tab) => [tab.id, tab]));
+    for (const id of [activeTabId, ...activeTabHistoryRef.current]) {
+      const tab = id ? open.get(id) : undefined;
+      if (tab?.file.fileType === "markdown" && !isGalleryTab(tab)) return tab;
+    }
+    return undefined;
+  }
+
+  function insertQuoteIntoTab(tabId: string, markdown: string) {
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+    if (!tab || tab.file.fileType !== "markdown") return false;
+    const visual = (tab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(tab.file.path);
+    if (visual) {
+      queueVisualInsertion(tab.id, markdown);
+      return true;
+    }
+    const draft = getTabDraft(tab);
+    const caret = tab.id === activeTabId && textareaRef.current ? textareaRef.current.selectionEnd : tab.viewState?.markdown?.selectionEnd ?? draft.length;
+    const insertion = quoteBlockInsertion(draft, caret, markdown);
+    const written = writeSharedDraft(tab.id, insertion.value, { provenance: PASTE, base: draft });
+    if (!written) rememberTabDraft(tab.id, insertion.value);
+    updateTab(tab.id, (current) => ({
+      ...current,
+      ...(written ? {} : { draft: insertion.value, status: insertion.value === current.saved ? "clean" as const : "dirty" as const, error: undefined }),
+      viewState: { ...current.viewState, markdown: { ...current.viewState?.markdown, selectionStart: insertion.caret, selectionEnd: insertion.caret } },
+    }));
+    return true;
+  }
+
+  async function quotePdfIntoNote(source: PdfQuoteSource) {
+    const target = quoteTargetTab();
+    try {
+      const resolved = await resolvePdfQuote(source, target && !target.untitled ? target.file.notebook : null);
+      if (!resolved) return;
+      if (target && insertQuoteIntoTab(target.id, resolved.markdown)) {
+        showPdfQuoteNotice(`Quoted into ${target.file.name}.`);
+        return;
+      }
+      await navigator.clipboard.writeText(resolved.markdown);
+      showPdfQuoteNotice("No note is open: the quote and citation were copied to the clipboard.");
+    } catch (error) {
+      showPdfQuoteNotice(error instanceof Error ? error.message : "Could not quote the PDF.");
+    }
+  }
+  const quotePdfIntoNoteRef = useRef(quotePdfIntoNote);
+  useLayoutEffect(() => {
+    quotePdfIntoNoteRef.current = quotePdfIntoNote;
+  });
+  useEffect(() => {
+    function handleQuote(event: Event) {
+      const source = parsePdfQuoteSource((event as CustomEvent<PdfQuoteCiteDetail>).detail);
+      if (source) void quotePdfIntoNoteRef.current(source);
+    }
+    window.addEventListener(PDF_QUOTE_CITE_EVENT, handleQuote);
+    return () => window.removeEventListener(PDF_QUOTE_CITE_EVENT, handleQuote);
+  }, []);
 
   /** Read a snip with the local model. Runs after the snip layer closes, with a Cancel button meanwhile. */
   async function readSnipAsMarkdown(session: MarkdownScreenshotSnipSession, file: File, mathMarkers?: MathMarkerSettings) {

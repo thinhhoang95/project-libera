@@ -1,12 +1,13 @@
 import { parseCitationToken, serializeCitation } from "@/lib/references/citation-syntax";
 import { libraryEntriesByKey } from "@/lib/references/format";
+import { locatorPages } from "@/lib/references/pages";
 import type { CitationItem } from "@/lib/references/types";
 import { addReviewComment } from "../skills/leave-review-comments";
 import { hashContent } from "../snapshots";
 import { suggestEditTool } from "../suggest-edit";
 import { plural, ToolError, type ToolContext } from "../tools";
 import type { ExistenceReport, ExistenceResult } from "./existence";
-import { leafBlocks, locatorPages, type CitationListing, type CitationOccurrenceInfo, type SourceSummary } from "./list-citations";
+import { leafBlocks, type CitationListing, type CitationOccurrenceInfo, type SourceSummary } from "./list-citations";
 import { VERDICT_LABELS, VERDICTS, type CheckResult, type Verdict } from "./verdicts";
 
 // The fact-check's output: a review comment on each occurrence with a

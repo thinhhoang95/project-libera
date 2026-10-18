@@ -10,6 +10,7 @@ import {
   Minus,
   MoveUpRight,
   PenLine,
+  Quote,
   Search,
   Square,
   StickyNote,
@@ -34,7 +35,8 @@ import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
-import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload } from "@/lib/types";
+import { PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail } from "@/lib/references/pdf-quote";
+import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload, PdfHighlightAnnotation } from "@/lib/types";
 
 type OutlinePanelProps = {
   activeTab?: OpenTab;
@@ -1006,6 +1008,47 @@ function PdfOutline({
   );
   const error = outlineState.path === filePath ? outlineState.error : "";
   const loading = Boolean(activeTab) && outlineState.path !== filePath;
+  // A highlight's context menu: Quote and cite.
+  const [contextMenu, setContextMenu] = useState<{ annotation: PdfHighlightAnnotation; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [contextMenu]);
+
+  function openAnnotationContextMenu(event: ReactMouseEvent<HTMLButtonElement>, annotation: PdfAnnotation) {
+    if (annotation.type !== "highlight" || !annotation.quote?.trim()) return;
+    event.preventDefault();
+    const menuWidth = 192;
+    const menuHeight = 44;
+    setContextMenu({
+      annotation,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    });
+  }
+
+  function quoteHighlight(annotation: PdfHighlightAnnotation) {
+    setContextMenu(null);
+    const quote = normalizePdfHighlightQuote(annotation.quote ?? "");
+    if (!quote || !filePath) return;
+    window.dispatchEvent(new CustomEvent<PdfQuoteCiteDetail>(PDF_QUOTE_CITE_EVENT, {
+      detail: { quote, path: filePath, page: annotation.pageNumber },
+    }));
+  }
 
   useEffect(() => {
     if (!filePath) {
@@ -1158,6 +1201,7 @@ function PdfOutline({
                 fullName={label}
                 type="button"
                 onClick={() => void navigateToAnnotation(annotation)}
+                onContextMenu={(event) => openAnnotationContextMenu(event, annotation)}
               >
                 {annotationIcon(annotation)}
                 <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
@@ -1173,6 +1217,24 @@ function PdfOutline({
           {sortedAnnotations.length ? "No matching annotations." : "No annotations in this PDF."}
         </p>
       )}
+      {contextMenu ? (
+        <div
+          className="fixed z-50 w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium hover:bg-muted"
+            type="button"
+            role="menuitem"
+            onClick={() => quoteHighlight(contextMenu.annotation)}
+          >
+            <Quote aria-hidden className="h-4 w-4" />
+            Quote and cite
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

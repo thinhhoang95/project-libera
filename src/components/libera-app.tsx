@@ -17,6 +17,7 @@ import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libe
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
@@ -688,6 +689,7 @@ export function LiberaApp({
         onConfirm={workspace.submitWorkspaceConfirmDialog}
       />
       <ReviewPopover />
+      <PdfQuoteCiteHost />
     </main>
     </CollabProvider>
     </MarkdownReviewProvider>

@@ -8,6 +8,7 @@ import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-con
 import { scanCitations } from "@/lib/references/citation-syntax";
 import { libraryEntriesByKey } from "@/lib/references/format";
 import type { CitationItem, ReferenceEntry, ReferenceLibrary } from "@/lib/references/types";
+import { locatorPages, pdfPageForPrinted, printedRange, type PrintedRange } from "@/lib/references/pages";
 import type { PdfTextPage } from "@/lib/types";
 import { lineOfOffset, missingFileError, ok, readCurrentText, requireString, resolve, ToolError, type AgentTool, type ToolContext } from "../tools";
 import { statLibraryPath } from "../library";
@@ -19,8 +20,8 @@ import { entryAuthors, entryYear, formatReferences, readNotebookLibrary } from "
 // are stable for an unchanged document, so a later CheckCitations call (or a
 // "Continue" in the next turn) can name them.
 //
-// Locators and page numbers. A citation's page locator is a printed page
-// number (CSL locators are), while a PDF attachment is read by page index
+// Locators and page numbers (helpers shared in src/lib/references/pages.ts).
+// A citation's page locator is a printed page number (CSL locators are), while a PDF attachment is read by page index
 // (1 … page count, as Read shows "--- Page N ---"). When the entry's CSL
 // `page` field gives the work's printed range (say 340–360), printed page p is
 // taken to be PDF page p − 340 + 1, assuming the PDF starts at the work's
@@ -28,6 +29,8 @@ import { entryAuthors, entryYear, formatReferences, readNotebookLibrary } from "
 // within that range or a page index of the PDF; it is flagged
 // (`locator-out-of-range`) only when it is neither. Non-page locators
 // (chapter, section, figure…) are not checked.
+
+export { locatorPages, pdfPageForPrinted, printedRange, type PrintedRange };
 
 export const CLAIM_SENTENCE_CHARS = 600;
 export const CLAIM_PARAGRAPH_CHARS = 1_500;
@@ -45,8 +48,6 @@ export type SourceFile = {
   /** PDFs with pages but no text layer (scanned). */
   noText?: boolean;
 };
-
-export type PrintedRange = { first: number; last: number };
 
 export type SourceSummary = {
   entryId: string;
@@ -186,40 +187,6 @@ export function sentenceRange(text: string, block: Range, citation: Range, citat
 // ---------------------------------------------------------------------------
 // Sources
 // ---------------------------------------------------------------------------
-
-export function printedRange(entry: ReferenceEntry): PrintedRange | undefined {
-  const page = typeof entry.csl.page === "string" ? entry.csl.page : typeof entry.csl.page === "number" ? String(entry.csl.page) : "";
-  const match = page.match(/^\s*(\d+)\s*[-–—]+\s*(\d+)\s*$/);
-  if (!match) return undefined;
-  let first = Number(match[1]);
-  let last = Number(match[2]);
-  // "345-52" style abbreviations.
-  if (last < first && match[2].length < match[1].length) last = Number(match[1].slice(0, match[1].length - match[2].length) + match[2]);
-  if (last < first) [first, last] = [last, first];
-  return { first, last };
-}
-
-/** Page numbers named by a page locator ("12", "12-14" → 12, 13, 14; "12, 15"; "12f"); empty for non-numeric or non-page locators. */
-export function locatorPages(item: Pick<CitationItem, "locator" | "label">): number[] {
-  if (!item.locator || (item.label && item.label !== "page")) return [];
-  const pages: number[] = [];
-  for (const part of item.locator.split(/[,;&]|\band\b/)) {
-    const range = part.match(/^\s*(\d+)\s*(?:f{1,2}\.?)?\s*(?:[-–—]+\s*(\d+))?\s*$/);
-    if (!range) continue;
-    const start = Number(range[1]);
-    let end = range[2] ? Number(range[2]) : start;
-    if (end < start && range[2] && range[2].length < range[1].length) end = Number(range[1].slice(0, range[1].length - range[2].length) + range[2]);
-    for (let page = start; page <= Math.min(end, start + 200); page++) pages.push(page);
-  }
-  return pages;
-}
-
-/** The PDF page index for printed page `page`, when the entry's printed range maps it inside the PDF. */
-export function pdfPageForPrinted(source: Pick<SourceSummary, "printed">, pageCount: number | undefined, page: number) {
-  if (!source.printed || page < source.printed.first || page > source.printed.last) return undefined;
-  const index = page - source.printed.first + 1;
-  return pageCount === undefined || index <= pageCount ? index : undefined;
-}
 
 /** Whether a locator page fits the source: a printed page in its range, or a page index of its PDF. */
 export function locatorPageInRange(source: SourceSummary, page: number) {

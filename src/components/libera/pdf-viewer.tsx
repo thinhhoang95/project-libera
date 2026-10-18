@@ -13,6 +13,7 @@ import {
   MousePointer2,
   MoveUpRight,
   PenLine,
+  Quote,
   Redo2,
   RotateCcw,
   Search,
@@ -103,7 +104,9 @@ import {
   rangeTextClientRects,
 } from "@/lib/pdf-annotation-style";
 import { drawingBounds, isDrawingAnnotation, type PdfDrawingAnnotation } from "@/lib/pdf-drawing";
-import { pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
+import { normalizePdfHighlightQuote, pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
+import { rememberPdfPageLabels } from "@/components/libera/references/pdf-page-labels";
+import { PDF_CITATION_MIME, PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import type {
   PdfAnnotation,
   PdfAnnotationRect,
@@ -825,6 +828,22 @@ export function PdfViewer({
       }
     };
   }, [filePath, src]);
+
+  // Quotes cite printed pages: keep the PDF's own page labels, when it has any.
+  const pageLabelsRef = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    pageLabelsRef.current = null;
+    if (!pdfDocument || typeof pdfDocument.getPageLabels !== "function") return;
+    let active = true;
+    pdfDocument.getPageLabels().then((labels) => {
+      if (!active) return;
+      pageLabelsRef.current = labels;
+      rememberPdfPageLabels(filePath, labels);
+    }, () => undefined);
+    return () => {
+      active = false;
+    };
+  }, [filePath, pdfDocument]);
 
   useLayoutEffect(() => {
     const pendingScrollRestore = pendingScrollRestoreRef.current;
@@ -1685,7 +1704,7 @@ export function PdfViewer({
         left: clamp(
           first.left - bounds.left + scrollContainer.scrollLeft,
           8,
-          Math.max(8, scrollContainer.scrollWidth - 360),
+          Math.max(8, scrollContainer.scrollWidth - 392),
         ),
         top: top + scrollContainer.scrollTop,
       });
@@ -1703,6 +1722,47 @@ export function PdfViewer({
     if (target.closest("input, textarea, [contenteditable]")) return;
     const markdown = selectionMarkdown();
     if (markdown) writeMarkdownClipboard(event.nativeEvent, markdown);
+  }
+
+  /** The current text selection as a quote: its Markdown and the pages it spans. */
+  function selectionQuoteSource(): PdfQuoteSource | null {
+    const viewer = viewerRef.current;
+    const selection = window.getSelection();
+    if (!viewer || !selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!viewer.contains(range.commonAncestorContainer)) return null;
+    const quote = selectionMarkdown() || normalizePdfHighlightQuote(selection.toString());
+    const pages = pdfRangePages(range, viewer);
+    if (!quote.trim() || !pages.length) return null;
+    const page = Math.min(...pages);
+    const endPage = Math.max(...pages);
+    const labels = pageLabelsRef.current;
+    return {
+      quote,
+      path: filePath,
+      page,
+      ...(labels?.[page - 1]?.trim() ? { pageLabel: labels[page - 1].trim() } : {}),
+      ...(endPage !== page ? { endPage, ...(labels?.[endPage - 1]?.trim() ? { endPageLabel: labels[endPage - 1].trim() } : {}) } : {}),
+    };
+  }
+
+  function quoteSelection() {
+    const source = selectionQuoteSource();
+    setSelectionMenu(null);
+    if (!source) return;
+    window.getSelection()?.removeAllRanges();
+    window.dispatchEvent(new CustomEvent<PdfQuoteCiteDetail>(PDF_QUOTE_CITE_EVENT, { detail: source }));
+  }
+
+  // Dragging selected text into an editor quotes and cites it there.
+  function handleDragStart(event: React.DragEvent<HTMLDivElement>) {
+    if ((event.target as Node).nodeType === Node.ELEMENT_NODE && (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) return;
+    const source = selectionQuoteSource();
+    if (!source) return;
+    event.dataTransfer.setData(PDF_CITATION_MIME, JSON.stringify(source));
+    event.dataTransfer.setData("text/plain", source.quote);
+    event.dataTransfer.effectAllowed = "copy";
+    setSelectionMenu(null);
   }
 
   function copySelection() {
@@ -1974,6 +2034,7 @@ export function PdfViewer({
         onScroll={handleScroll}
         onPointerDown={handleScrollPointerDown}
         onPointerUp={handleScrollPointerUp}
+        onDragStart={handleDragStart}
       >
         {selectionMenu ? (
           <div
@@ -2017,6 +2078,9 @@ export function PdfViewer({
             <span aria-hidden className="pdf-selection-menu-divider" />
             <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
               <Copy aria-hidden className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" className="pdf-selection-menu-action" aria-label="Quote and cite" title="Quote and cite in the note" onClick={quoteSelection}>
+              <Quote aria-hidden className="h-3.5 w-3.5" />
             </button>
           </div>
         ) : null}
@@ -2409,6 +2473,7 @@ function PdfPageContent({
         {selectedHighlight && tool === "select" ? (
           <PdfHighlightChip
             annotation={selectedHighlight}
+            documentPath={documentPath}
             pageSize={pageLayout}
             onDelete={onDeleteAnnotation}
             onUpdate={onUpdateAnnotation}
@@ -2588,11 +2653,13 @@ const PdfHighlightControl = memo(function PdfHighlightControl({
 
 function PdfHighlightChip({
   annotation,
+  documentPath,
   pageSize,
   onDelete,
   onUpdate,
 }: {
   annotation: PdfHighlightAnnotation;
+  documentPath: string;
   pageSize: AnnotationSurfaceSize;
   onDelete: (id: string) => void;
   onUpdate: (id: string, patch: Partial<PdfAnnotation>) => void;
@@ -2606,7 +2673,8 @@ function PdfHighlightChip({
     return null;
   }
 
-  const chipWidth = 344;
+  const chipWidth = 376;
+  const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
   const chipHeight = 36;
   const aboveTop = first.y * pageSize.height - chipHeight - 6;
   const top = aboveTop >= 4 ? aboveTop : (last.y + last.height) * pageSize.height + 6;
@@ -2654,6 +2722,19 @@ function PdfHighlightChip({
         </button>
       ))}
       <span aria-hidden className="pdf-selection-menu-divider" />
+      {quote ? (
+        <button
+          type="button"
+          className="pdf-selection-menu-action"
+          aria-label="Quote and cite"
+          title="Quote and cite in the note"
+          onClick={() => window.dispatchEvent(new CustomEvent<PdfQuoteCiteDetail>(PDF_QUOTE_CITE_EVENT, {
+            detail: { quote, path: documentPath, page: annotation.pageNumber },
+          }))}
+        >
+          <Quote aria-hidden className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
       <button
         type="button"
         className="pdf-selection-menu-action"
