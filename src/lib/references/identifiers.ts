@@ -156,7 +156,7 @@ export function normalizePmcid(text: string | undefined | null) {
     .replace(/^(?:https?:\/\/)?(?:www\.)?(?:ncbi\.nlm\.nih\.gov\/pmc\/articles|pmc\.ncbi\.nlm\.nih\.gov\/articles)\//i, "")
     .replace(/^pmcid\s*:?\s*/i, "")
     .replace(/\/$/, "");
-  const match = value.match(/^(?:pmc)?(\d{3,9})$/i);
+  const match = value.match(/^(?:pmc)?(\d{1,9})$/i);
   return match ? `PMC${match[1]}` : undefined;
 }
 

@@ -61,6 +61,7 @@ const ENTRY_START = /@[ \t\r\n]*([A-Za-z][\w-]*)[ \t\r\n]*([{(])/y;
 const LINE_START_AT = /(?:^|\n)[ \t]*@[ \t]*[A-Za-z][\w-]*[ \t\r\n]*[{(]/g;
 const FIELD_NAME = /[^\s=,{}()"#@%]+/y;
 const MACRO_NAME = /[A-Za-z_][^\s=,{}()"#%]*/y;
+const DIGITS = /\d+/y;
 
 class BibtexScanner {
   private index = 0;
@@ -225,7 +226,8 @@ class BibtexScanner {
       } else if (char === "\"") {
         value += this.readDelimited("\"");
       } else if (char !== undefined && /\d/.test(char)) {
-        const digits = text.slice(this.index).match(/^\d+/)![0];
+        DIGITS.lastIndex = this.index;
+        const digits = DIGITS.exec(text)![0];
         value += digits;
         this.index += digits.length;
       } else {
