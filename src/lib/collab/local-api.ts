@@ -12,8 +12,11 @@
 // Types only plus route constants: imported by the renderer, Next and the host.
 
 import type {
+  AuditEntry,
   Command,
   CommandKind,
+  CreateReviewRequest,
+  DecideReviewRequest,
   DecideSuggestionsRequest,
   DecideSuggestionsResponse,
   Invitation,
@@ -23,6 +26,7 @@ import type {
   RestoreRequest,
   RestoreResponse,
   RevertSuggestionResponse,
+  Review,
   Revision,
   RevisionContent,
   SuggestionInfo,
@@ -32,7 +36,7 @@ import type {
 } from "./protocol/api";
 import type { AiFeature, Provenance } from "./protocol/actor";
 import type { Role } from "./protocol/roles";
-import type { DocKind } from "./protocol/schema";
+import type { DocKind, SuggestionStatus } from "./protocol/schema";
 import type { SyncStatus } from "./protocol/local";
 
 export type HostConnection =
@@ -161,12 +165,40 @@ export interface CreateSuggestionsRequest {
   reason?: string;
   title?: string;
   threadIds?: string[];
+  /**
+   * The text the edits were computed against (an agentic-review session
+   * snapshot, the text the agent read). When set, offsets refer to it and
+   * every edit needs `before`: edits whose passage is unchanged are mapped
+   * onto the live text (collaborators' edits elsewhere only shift them), the
+   * others are created stale with `before` as their baseQuote (hard case 7).
+   * Without it, offsets refer to the live text.
+   */
+  snapshot?: string;
 }
 
 export interface CreateSuggestionsResponse {
   suggestionIds: string[];
   /** Edits whose `before` no longer matched; created as stale suggestions. */
   staleIndexes: number[];
+}
+
+/**
+ * POST /docs/:docId/suggestions/withdraw: withdraws the signed-in account's
+ * own pending or stale suggestions (directly, or made by AI on its behalf)
+ * that match any of the filters. Agent undo withdraws a run's suggestions;
+ * agentic review withdraws a proposal's group when it is revised.
+ */
+export interface WithdrawSuggestionsRequest {
+  suggestionIds?: string[];
+  /** AI suggestions whose actor has this runId. */
+  runId?: string;
+  groupId?: string;
+}
+
+export interface WithdrawSuggestionsResponse {
+  withdrawn: string[];
+  /** Matching suggestions left alone: already decided or withdrawn, or someone else's. */
+  skipped: { suggestionId: string; status: SuggestionStatus; reason: "decided" | "not-owner" }[];
 }
 
 /**
@@ -288,6 +320,38 @@ export interface DocUpdatesQuery {
   limit?: number;
 }
 
+/**
+ * POST /reviews/:reviewId/decision. `commandId` is the idempotency key, as
+ * for suggestion decisions. Online: the server's updated Review (200).
+ * Offline or unreachable: queued as a `review.decide` command (202) and
+ * replayed on reconnect; its outcome arrives as a `command-settled` host
+ * event (kind "review.decide", body the Review).
+ */
+export interface DecideReviewLocalRequest extends DecideReviewRequest {
+  commandId?: string;
+}
+
+export type DecideReviewLocalResponse =
+  | { queued: false; commandId: string; review: Review }
+  | { queued: true; commandId: string };
+
+/** Query of GET /projects/:projectId/audit. */
+export interface AuditQuery {
+  /** Entries per page (1–200, default 50). */
+  limit?: number;
+  /** Page backwards from this entry id (exclusive); `nextBefore` of the previous page. */
+  before?: string;
+  /** Only entries whose action equals this, or starts with it followed by "." ("review" matches "review.decide"). */
+  action?: string;
+}
+
+/** GET /projects/:projectId/audit (owners): newest first. */
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** Pass as `before` for the next page; null at the end of the log. */
+  nextBefore: string | null;
+}
+
 /** Events the host pushes to every window (through main and the preload). */
 export type HostEvent =
   | { t: "status"; status: HostStatus }
@@ -393,6 +457,18 @@ export const ControlRoutes = {
     `/docs/${encodeURIComponent(docId)}/suggestions/commands/${encodeURIComponent(commandId)}`,
   /** POST → RevertSuggestionResponse ("Undo acceptance"; online only). */
   suggestionRevert: (suggestionId: string) => `/suggestions/${encodeURIComponent(suggestionId)}/revert`,
+  /** POST WithdrawSuggestionsRequest → WithdrawSuggestionsResponse (your own pending suggestions). */
+  docSuggestionsWithdraw: (docId: string) => `/docs/${encodeURIComponent(docId)}/suggestions/withdraw`,
+
+  // ---- formal review (Phase 3): proxies to /v1/documents/:docId/reviews and /v1/reviews/…
+  /** GET → Review[] (open and closed); POST CreateReviewRequest → Review (editors and owners). */
+  reviews: (docId: string) => `/docs/${encodeURIComponent(docId)}/reviews`,
+  /** POST DecideReviewLocalRequest → DecideReviewLocalResponse (assignees; 200 decided, 202 queued). */
+  reviewDecision: (reviewId: string) => `/reviews/${encodeURIComponent(reviewId)}/decision`,
+  /** POST → Review (the requester, editors and owners). */
+  reviewClose: (reviewId: string) => `/reviews/${encodeURIComponent(reviewId)}/close`,
+  /** GET (AuditQuery as the query string) → AuditPage (owners). */
+  audit: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/audit`,
 } as const;
 
 /** Next routes are the control routes under this prefix. */
@@ -408,7 +484,9 @@ export interface LiberaCollabBridge {
 }
 
 export type {
+  AuditEntry,
   Command,
+  CreateReviewRequest,
   Invitation,
   MarkNotificationsReadRequest,
   Member,
@@ -416,6 +494,7 @@ export type {
   RestoreRequest,
   RestoreResponse,
   RevertSuggestionResponse,
+  Review,
   Revision,
   RevisionContent,
   SuggestionInfo,

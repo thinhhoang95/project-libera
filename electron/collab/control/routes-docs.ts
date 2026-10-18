@@ -16,8 +16,10 @@ import {
   type DocText,
   type ResolvedDoc,
   type TextEdit,
+  type WithdrawSuggestionsResponse,
 } from "../../../src/lib/collab/local-api";
-import { createSuggestion } from "../../../src/lib/collab/suggestions/model";
+import type { SuggestionRecord } from "../../../src/lib/collab/protocol/schema";
+import { createSuggestion, listSuggestions, suggestionsFromSnapshotEdits, withdrawSuggestion } from "../../../src/lib/collab/suggestions/model";
 import type { DocHub } from "../core/doc-hub";
 import type { Router } from "./router";
 import type { CollabRuntime } from "./runtime";
@@ -29,7 +31,11 @@ const pattern = {
   docText: decodeURIComponent(ControlRoutes.docText(":docId")),
   docEdits: decodeURIComponent(ControlRoutes.docEdits(":docId")),
   docSuggestions: decodeURIComponent(ControlRoutes.docSuggestions(":docId")),
+  docSuggestionsWithdraw: decodeURIComponent(ControlRoutes.docSuggestionsWithdraw(":docId")),
 };
+
+/** Same cap as the agentic-review routes put on a document snapshot. */
+const MAX_SNAPSHOT_CHARS = 2_000_000;
 
 /** How long a request waits for a doc's first server state before answering. */
 const LOAD_TIMEOUT_MS = 5_000;
@@ -201,6 +207,13 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
     const reason = optionalString(body.reason, "reason", 20_000);
     const title = optionalString(body.title, "title", 500);
     const threadIds = stringList(body.threadIds, "threadIds");
+    const snapshot = body.snapshot === undefined || body.snapshot === null ? undefined : optionalString(body.snapshot, "snapshot", MAX_SNAPSHOT_CHARS);
+    if (snapshot !== undefined) {
+      edits.forEach((edit, index) => {
+        if (edit.before === undefined) throw bad(`edits[${index}].before is required with a snapshot.`);
+        if (edit.end > snapshot.length) throw bad(`edits[${index}] is outside the snapshot.`);
+      });
+    }
     const account = runtime.accounts.account;
     if (!account) throw new ControlError(409, "signed-out", "Sign in to a collaboration account first.");
     const actor = suggestionActor(account.id, runtime.clientId, hint);
@@ -212,11 +225,34 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
       const current = ytext.toString();
       const suggestionIds: string[] = [];
       const staleIndexes: number[] = [];
+      const provenance = hint ? { source: "ai" as const, feature: hint.feature, ...(hint.model ? { model: hint.model } : {}), ...(hint.runId ? { runId: hint.runId } : {}) } : undefined;
+      const extra = { ...(groupId ? { groupId } : {}), ...(reason ? { reason } : {}), ...(title ? { title } : {}), ...(threadIds ? { threadIds } : {}) };
+      if (snapshot !== undefined) {
+        // Edits made against an older text: mapped through the diff to the
+        // live text, or stale where their passage changed meanwhile.
+        hub.applyLocalChange(
+          "annotations",
+          (doc) => {
+            const created = suggestionsFromSnapshotEdits(current, snapshot, edits.map((edit) => ({ start: edit.start, end: edit.end, before: edit.before!, after: edit.text })), {
+              ytext,
+              target: doc,
+              actor,
+              createdBy: account.id,
+              ...extra,
+            });
+            created.suggestions.forEach((record, index) => {
+              suggestionIds.push(record.id);
+              if (record.status === "stale") staleIndexes.push(index);
+            });
+          },
+          provenance,
+        );
+        return { status: 201, body: { suggestionIds, staleIndexes } };
+      }
       // The server only accepts new suggestions as "pending". A suggestion
       // whose `before` no longer matches keeps that `before` as its
       // baseQuote, so resolveSuggestion reports it stale (text-changed) to
       // every client, with what the caller saw next to what is there now.
-      const provenance = hint ? { source: "ai" as const, feature: hint.feature, ...(hint.model ? { model: hint.model } : {}), ...(hint.runId ? { runId: hint.runId } : {}) } : undefined;
       hub.applyLocalChange(
         "annotations",
         (doc) => {
@@ -234,10 +270,7 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
               actor,
               createdBy: account.id,
               baseQuote: stale ? (edit.before ?? live) : live,
-              ...(groupId ? { groupId } : {}),
-              ...(reason ? { reason } : {}),
-              ...(title ? { title } : {}),
-              ...(threadIds ? { threadIds } : {}),
+              ...extra,
             });
             suggestionIds.push(record.id);
           });
@@ -245,6 +278,36 @@ export function registerDocRoutes(router: Router, runtime: CollabRuntime, option
         provenance,
       );
       return { status: 201, body: { suggestionIds, staleIndexes } };
+    });
+  });
+
+  router.add("POST", pattern.docSuggestionsWithdraw, async (request) => {
+    const body = objectBody(request.body);
+    const ids = stringList(body.suggestionIds, "suggestionIds", 1000);
+    const runId = optionalString(body.runId, "runId", 200);
+    const groupId = optionalString(body.groupId, "groupId", 200);
+    if (!ids?.length && !runId && !groupId) throw bad("Name the suggestions to withdraw: suggestionIds, runId or groupId.");
+    const account = runtime.accounts.account;
+    if (!account) throw new ControlError(409, "signed-out", "Sign in to a collaboration account first.");
+    return withDoc(runtime, request.params.docId, timeoutMs, (hub): { body: WithdrawSuggestionsResponse } => {
+      assertFileDoc(hub);
+      assertWritable(hub, "annotations");
+      const withdrawn: string[] = [];
+      const skipped: WithdrawSuggestionsResponse["skipped"] = [];
+      const matches = (record: SuggestionRecord) => !!ids?.includes(record.id)
+        || (!!runId && record.actor.kind === "ai" && record.actor.runId === runId)
+        || (!!groupId && record.groupId === groupId);
+      const targets = listSuggestions(hub.getDoc("annotations")).filter(matches);
+      if (!targets.length) return { body: { withdrawn, skipped } };
+      hub.applyLocalChange("annotations", (doc) => {
+        for (const record of targets) {
+          if (record.createdBy !== account.id) { skipped.push({ suggestionId: record.id, status: record.status, reason: "not-owner" }); continue; }
+          const result = withdrawSuggestion(doc, record.id, account.id);
+          if (result.ok) withdrawn.push(record.id);
+          else skipped.push({ suggestionId: record.id, status: record.status, reason: "decided" });
+        }
+      });
+      return { body: { withdrawn, skipped } };
     });
   });
 }
