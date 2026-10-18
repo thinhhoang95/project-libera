@@ -25,7 +25,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
   - `test:editor`: the merge adds only the two load-sensitive tests on the watch list (PDF export readiness; the workspace-panel render count). Both pass in 3 of 3 runs alone.
   - tsc shows the 4 baseline errors.
   - A dev-server smoke test of the merged app rendered citations correctly.
-- **Not yet done:** fast-forwarding `collaboration`. The main checkout had uncommitted collab work in `globals.css`, `markdown-review-ui.tsx` and `use-libera-workspace.ts`, which this merge also changes. Once that is committed, merge `collaboration` into `references/merge-collaboration` again (expect small conflicts in those files), re-run the checks, then fast-forward.
+- **Landed (19 Oct 2026).** The main checkout's pending collab work was committed as `933c985` (shared link refresh, accent bar cleanup) and merged into the branch (`da5b5d4`). The reference rows' accent bars were dropped to match (`859cb25`). `collaboration` was then fast-forwarded to `859cb25`. Suites at that tip are identical to the collaboration baseline (test:editor 1,040 tests, test:collab, scripts/lib), and tsc shows the 4 baseline errors. The two new packages (`citeproc`, `@tiptap/suggestion`) were copied into the main checkout's `node_modules` at their locked versions. `npm run deps:setup` or a fresh install picks them up from `package.json`.
 - **Watch item for the collab team:** `workspace-panel-performance.test.ts` can count one extra render under heavy CPU load since the reference work. It is benign in the app (at most one render when a library loads), but the test is timing-sensitive.
 
 ## Status (19 Oct 2026): complete on `references/integration`
