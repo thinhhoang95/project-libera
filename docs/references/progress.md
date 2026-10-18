@@ -109,7 +109,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done and verified · ⏸ defer
 | Lane | Branch | Scope | Status |
 |---|---|---|---|
 | factcheck | `references/factcheck` | `fact-check-citations` skill: ListCitations, CheckCitations fan-out, SubmitVerdicts, SuggestEdit, evidence verification, existence check, missing references, report, budget, buttons | ☑ merged 7208feb |
-| pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ◐ |
+| pdfcite | `references/pdfcite` | Quote and cite from the PDF viewer; drag into editors; semantic `@` search through Global Search | ☑ merged 9821326; suite 981 tests, baseline failures only |
 | scholarly | `references/scholarly` | Retraction and correction checks with badges; ISO 4 abbreviations; generated `.bib` mirror and LaTeX `\cite` completion; biblatex LaTeX export | ☑ merged 03fc2dd |
 | syntax2 | `references/syntax2` | Narrative citations in every layer; per-document style override; reference-list screenshot import through local OCR | ◐ |
 
