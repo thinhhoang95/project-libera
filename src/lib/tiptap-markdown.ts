@@ -127,7 +127,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
     StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false }),
     LiberaLink.configure({ openOnClick: false }),
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
-    FrontMatterNode,
+    FrontMatterNode.configure({ documentPath }),
     LiberaBlockquote,
     Underline.extend({
       renderMarkdown: (node, h) => `<u>${h.renderChildren(node)}</u>`,

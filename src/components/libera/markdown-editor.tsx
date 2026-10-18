@@ -52,6 +52,7 @@ import {
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import {
   createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
@@ -1231,6 +1232,38 @@ export function MarkdownEditor({
       },
     });
   }
+
+  /** The Document style control's request (references/document-style.ts): one undoable edit of the front matter. */
+  function applyDocumentStyle(detail: DocumentStyleRequestDetail) {
+    const textarea = textareaRef.current;
+    if (!textarea || !activeFilePath || detail.path !== activeFilePath || detail.handled) return;
+    detail.handled = true;
+    const currentValue = editorValueRef.current;
+    const nextValue = writeDocumentStyleForPath(activeFilePath, currentValue, detail.style);
+    if (nextValue === currentValue) return;
+    const change = textChange(currentValue, nextValue);
+    const delta = change.insert.length - (change.to - change.from);
+    const shift = (offset: number) => offset <= change.from ? offset : offset >= change.to ? offset + delta : change.from + change.insert.length;
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: change.from,
+      selectionEnd: change.to,
+      replacement: change.insert,
+      nextSelectionStart: shift(textarea.selectionStart),
+      nextSelectionEnd: shift(textarea.selectionEnd),
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+    readDraft();
+  }
+  const applyDocumentStyleRef = useRef(applyDocumentStyle);
+  useLayoutEffect(() => { applyDocumentStyleRef.current = applyDocumentStyle; });
+  useEffect(() => {
+    const onRequest = (event: Event) => applyDocumentStyleRef.current((event as CustomEvent<DocumentStyleRequestDetail>).detail);
+    window.addEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+  }, []);
 
   function insertFileLink(selection: MarkdownFileLinkSelection) {
     const range = fileLinkPopup

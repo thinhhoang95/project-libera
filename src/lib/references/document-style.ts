@@ -118,3 +118,96 @@ export function writeDocumentStyle(markdown: string, style: string | null): stri
   if (!value) return markdown;
   return `${markdown.slice(0, front.closing.start)}${DOCUMENT_STYLE_FIELD}: ${yamlValue(value)}${newline}${markdown.slice(front.closing.start)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Slide decks
+// ---------------------------------------------------------------------------
+
+// A deck (`*.slides.md`) cannot have YAML front matter: `---` separates its
+// slides. Its first block holds `$key = JSON` metadata lines instead
+// (markdown-slides.ts), so a deck's style is `$citation-style = "ieee"`.
+
+const SLIDES_STYLE_LINE = new RegExp(String.raw`^\$${DOCUMENT_STYLE_FIELD}\s*=\s*(.+?)[ \t]*$`);
+const SLIDES_PATH = /\.slides\.(?:md|markdown)$/i;
+
+/** The deck's metadata lines: the blank and `$key = value` lines that start it. */
+function slidesMetadataLines(source: string) {
+  const lines: Array<{ start: number; end: number; next: number; text: string }> = [];
+  const pattern = /([^\r\n]*)(\r\n|\r|\n|$)/y;
+  for (let start = 0; start < source.length;) {
+    pattern.lastIndex = start;
+    const match = pattern.exec(source)!;
+    const text = match[1];
+    if (text.trim() && !text.trim().startsWith("$")) break;
+    const next = start + match[0].length;
+    lines.push({ start, end: start + text.length, next, text });
+    if (!match[2]) break;
+    start = next;
+  }
+  return lines;
+}
+
+/** A deck's `$citation-style` value, or null. */
+export function readSlidesDocumentStyle(source: string): string | null {
+  for (const line of slidesMetadataLines(source)) {
+    const match = SLIDES_STYLE_LINE.exec(line.text.trim());
+    if (!match) continue;
+    try {
+      const value = JSON.parse(match[1]) as unknown;
+      return typeof value === "string" && value.trim() ? value.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Set (or with null, remove) a deck's `$citation-style` line. */
+export function writeSlidesDocumentStyle(source: string, style: string | null): string {
+  const value = style?.trim() || null;
+  const line = slidesMetadataLines(source).find((candidate) => SLIDES_STYLE_LINE.test(candidate.text.trim()));
+  const text = value ? `$${DOCUMENT_STYLE_FIELD} = ${JSON.stringify(value)}` : "";
+  if (line) return value ? source.slice(0, line.start) + text + source.slice(line.end) : source.slice(0, line.start) + source.slice(line.next);
+  return value ? `${text}${lineBreakOf(source)}${source}` : source;
+}
+
+/** The style a document names for itself, by its path (decks use their metadata line). */
+export function readDocumentStyleForPath(path: string | null | undefined, text: string) {
+  return path && SLIDES_PATH.test(path) ? readSlidesDocumentStyle(text) : readDocumentStyle(text);
+}
+
+/** Write a document's own style, by its path (see writeDocumentStyle and writeSlidesDocumentStyle). */
+export function writeDocumentStyleForPath(path: string | null | undefined, text: string, style: string | null) {
+  return path && SLIDES_PATH.test(path) ? writeSlidesDocumentStyle(text, style) : writeDocumentStyle(text, style);
+}
+
+/** The smallest change from `before` to `after`: replace `before.slice(from, to)` with `insert`. */
+export function textChange(before: string, after: string) {
+  let from = 0;
+  const limit = Math.min(before.length, after.length);
+  while (from < limit && before.charCodeAt(from) === after.charCodeAt(from)) from += 1;
+  let tail = 0;
+  while (tail < limit - from && before.charCodeAt(before.length - 1 - tail) === after.charCodeAt(after.length - 1 - tail)) tail += 1;
+  return { from, to: before.length - tail, insert: after.slice(from, after.length - tail) };
+}
+
+// ---------------------------------------------------------------------------
+// Changing an open document's style
+// ---------------------------------------------------------------------------
+
+/**
+ * Asks the editor holding `path` to set (or with null, remove) its document's
+ * style, in its draft, as one undoable edit. The editor that applies it sets
+ * `handled`. Dispatched by the Document style control (document-style-picker.tsx);
+ * the Markdown textarea, CodeMirror and Visual editors listen.
+ */
+export const DOCUMENT_STYLE_REQUEST_EVENT = "libera:references-document-style";
+
+export type DocumentStyleRequestDetail = { path: string; style: string | null; handled?: boolean };
+
+/** Ask the open editor of `path` to change its document's style; true when an editor applied it. */
+export function requestDocumentStyleChange(path: string, style: string | null) {
+  const detail: DocumentStyleRequestDetail = { path, style };
+  window.dispatchEvent(new CustomEvent<DocumentStyleRequestDetail>(DOCUMENT_STYLE_REQUEST_EVENT, { detail }));
+  return Boolean(detail.handled);
+}

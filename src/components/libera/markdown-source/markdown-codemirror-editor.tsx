@@ -13,6 +13,7 @@ import {
 } from "@/lib/markdown-codemirror/commands";
 import { setFindMatches } from "@/lib/markdown-codemirror/find";
 import { citationEditorHandlers, setCitationLibrary } from "@/lib/markdown-codemirror/citations";
+import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import { citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
 import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
 import type { Citation } from "@/lib/references/types";
@@ -577,6 +578,23 @@ export function MarkdownCodeMirrorEditor({
   useEffect(() => {
     if (view) view.dispatch({ effects: mathCompartment.reconfigure(liberaMathMarkers.of(mathMarkers ?? {})) });
   }, [view, mathMarkers, mathCompartment]);
+
+  // The Document style control's request (references/document-style.ts): one undoable edit of the front matter.
+  useEffect(() => {
+    if (!view || !activeFilePath) return;
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent<DocumentStyleRequestDetail>).detail;
+      if (detail.path !== activeFilePath || detail.handled) return;
+      detail.handled = true;
+      const text = view.state.doc.toString();
+      const next = writeDocumentStyleForPath(activeFilePath, text, detail.style);
+      if (next === text) return;
+      view.dispatch({ changes: textChange(text, next), annotations: isolateHistory.of("full"), userEvent: "input" });
+      readDraft();
+    };
+    window.addEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+  }, [view, activeFilePath, readDraft]);
 
   // Citation chips mark keys the notebook's library does not know.
   const citationLibraryKeys = referenceRender?.library ? referenceRender.entriesByKey : null;
