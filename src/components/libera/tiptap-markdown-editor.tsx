@@ -352,7 +352,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
     handledInsertionRef.current = pendingInsertion.id;
-    const range = getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+    const range = pendingInsertion.inline
+      ? { from: editor.state.selection.from, to: editor.state.selection.to }
+      : getTiptapBlockInsertionRange(editor, editor.state.selection.to);
     markPaste();
     replaceTiptapRangeWithMarkdown(editor, range, pendingInsertion.markdown);
     editor.commands.focus();
