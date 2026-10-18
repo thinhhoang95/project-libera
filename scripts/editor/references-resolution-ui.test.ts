@@ -700,7 +700,7 @@ test("re-resolve shows the differences and never overwrites the user's fields si
   }]);
   const { host } = await renderPanel();
   await click(byLabel(host, "Actions for doe2001"));
-  await click(buttonByText(host.querySelector("[role=menu]")!, "Re-resolve…"));
+  await click(buttonByText(host.ownerDocument.querySelector('[role=menu][aria-label="Actions for doe2001"]')!, "Re-resolve…"));
   assert.deepEqual(server.bodies("/api/references/resolve").at(-1), { notebook: "Notes", input: "10.1/r", webSearch: false });
   const dialog = document.querySelector('[aria-label="Re-resolve"]')!;
   await waitFor(() => byLabel(dialog, "Changes") !== null, "the diff");

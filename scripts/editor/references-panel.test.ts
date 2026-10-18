@@ -401,17 +401,18 @@ test("rows open PDFs and citing documents from the actions menu, and copy format
   await click(byLabel(host, "Open PDF of godel1931"));
   assert.deepEqual(calls.opened, ["Notes/papers/godel.pdf"]);
   await click(byLabel(host, "Actions for godel1931"));
-  const menu = host.querySelector('[role=menu][aria-label="Actions for godel1931"]')!;
+  // The row's actions menu is portaled to document.body, outside the panel.
+  const menu = host.ownerDocument.querySelector('[role=menu][aria-label="Actions for godel1931"]')!;
   await click(buttonByText(menu, /Citing documents \(1\)/));
   await click(buttonByText(menu, "paper.md"));
   assert.deepEqual(calls.opened, ["Notes/papers/godel.pdf", "Notes/paper.md"]);
   await click(byLabel(host, "Actions for godel1931"));
-  await click(buttonByText(host.querySelector("[role=menu]")!, "Copy formatted reference"));
+  await click(buttonByText(host.ownerDocument.querySelector('[role=menu][aria-label="Actions for godel1931"]')!, "Copy formatted reference"));
   // Formatted with the notebook's style (APA) through citeproc; plain text where only writeText exists.
   await waitFor(() => copied.length === 1, "the formatted reference is copied");
   assert.deepEqual(copied, ["Gödel, K. (1931). On formally undecidable propositions. Monatshefte Für Mathematik."]);
   await click(byLabel(host, "Actions for godel1931"));
-  await click(buttonByText(host.querySelector("[role=menu]")!, "Copy key"));
+  await click(buttonByText(host.ownerDocument.querySelector('[role=menu][aria-label="Actions for godel1931"]')!, "Copy key"));
   assert.equal(copied.at(-1), "godel1931");
 });
 
@@ -681,7 +682,7 @@ test("deleting a cited entry asks for confirmation naming the citing documents; 
   server.citations = { byFile: { "Notes/paper.md": ["godel1931"], "Notes/thesis.md": ["godel1931"] }, byKey: { godel1931: ["Notes/paper.md", "Notes/thesis.md"] } };
   const { host } = await renderPanel();
   await click(byLabel(host, "Actions for godel1931"));
-  await click(buttonByText(host.querySelector("[role=menu]")!, "Delete…"));
+  await click(buttonByText(host.ownerDocument.querySelector('[role=menu][aria-label="Actions for godel1931"]')!, "Delete…"));
   const dialog = document.querySelector("[role=dialog]")!;
   assert.match(dialog.textContent ?? "", /Delete godel1931\?/);
   assert.match(dialog.textContent ?? "", /Notes\/paper\.md/);
@@ -691,7 +692,7 @@ test("deleting a cited entry asks for confirmation naming the citing documents; 
   assert.deepEqual(server.patches().at(-1), [{ op: "delete", id: "ref_godel" }]);
 
   await click(byLabel(host, "Actions for uncited2019"));
-  await click(buttonByText(host.querySelector("[role=menu]")!, "Delete…"));
+  await click(buttonByText(host.ownerDocument.querySelector('[role=menu][aria-label="Actions for uncited2019"]')!, "Delete…"));
   assert.equal(document.querySelector("[role=dialog]"), null, "no confirmation for an uncited entry");
   assert.deepEqual(server.patches().at(-1), [{ op: "delete", id: "ref_anon" }]);
   const deleted = sampleLibrary().entries.ref_anon;
