@@ -111,7 +111,11 @@ export const FrontMatterNode = Node.create<FrontMatterOptions, { listener: ((eve
   },
 
   renderHTML({ node }) {
-    return ["pre", { "data-front-matter": "", class: "libera-front-matter", title: "Front matter (edit it in the Source editor)" }, String(node.attrs.raw ?? "")];
+    return ["pre", {
+      "data-front-matter": "", class: "libera-front-matter", title: "Front matter (edit it in the Source editor)",
+      // The editor's prose styles would otherwise fold its lines together.
+      style: "white-space: pre-wrap",
+    }, String(node.attrs.raw ?? "")];
   },
 
   markdownTokenName: FRONT_MATTER_NODE_NAME,
