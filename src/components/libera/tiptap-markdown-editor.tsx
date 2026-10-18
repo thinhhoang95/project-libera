@@ -387,13 +387,19 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
     handledInsertionRef.current = pendingInsertion.id;
-    const range = pendingInsertion.inline
-      ? { from: editor.state.selection.from, to: editor.state.selection.to }
-      : getTiptapBlockInsertionRange(editor, editor.state.selection.to);
-    markPaste();
-    replaceTiptapRangeWithMarkdown(editor, range, pendingInsertion.markdown);
-    editor.commands.focus();
-    onPendingInsertionHandled?.(pendingInsertion.id);
+    const insertion = pendingInsertion;
+    // After this commit: inserted citations mount React node views, which
+    // React cannot flush while it is still committing this effect.
+    queueMicrotask(() => {
+      if (editor.isDestroyed) return;
+      const range = insertion.inline
+        ? { from: editor.state.selection.from, to: editor.state.selection.to }
+        : getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+      markPaste();
+      replaceTiptapRangeWithMarkdown(editor, range, insertion.markdown);
+      editor.commands.focus();
+      onPendingInsertionHandled?.(insertion.id);
+    });
   }, [editor, pendingInsertion, onPendingInsertionHandled, markPaste]);
 
   useLayoutEffect(() => {
