@@ -5,6 +5,7 @@ import { prepareLatexImages, type LatexImage } from "./latex-images";
 import os from "node:os";
 import path from "node:path";
 import { convertMarkdownToLatex } from "./latex-generation";
+import { notebookOfDocument, prepareLatexCitations } from "./references/latex-citations";
 
 export { buildLatexPrompt } from "./latex-generation";
 
@@ -60,10 +61,13 @@ export async function compileLatex(source: string, executable: string, signal: A
 export async function exportLatexPdf(markdown: string, signal: AbortSignal, progress: (message: string) => void, options: LatexOptions = DEFAULT_LATEX_OPTIONS, documentPath = "") {
   progress("Checking pdflatex…");
   const executable = await findPdfLatex(signal);
+  // Citations become placeholders the model copies; a document without any takes the plain path.
+  const citations = await prepareLatexCitations(markdown, notebookOfDocument(documentPath));
+  if (citations) progress("Formatting citations…");
   progress("Preparing document images…");
-  const prepared = await prepareLatexImages(markdown, documentPath, signal);
+  const prepared = await prepareLatexImages(citations?.markdown ?? markdown, documentPath, signal);
   const { source, pdf } = await convertMarkdownToLatex(prepared.markdown, signal, progress, {
-    options, images: prepared.images, compile: (source) => compileLatex(source, executable, signal, prepared.images),
+    options, images: prepared.images, compile: (source) => compileLatex(source, executable, signal, prepared.images), citations,
   });
   let archive: string | undefined;
   if (prepared.images.length) {
