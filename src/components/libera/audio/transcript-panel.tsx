@@ -341,18 +341,14 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
 
       <div className="space-y-2 text-xs">
         {chosen === "local" && !localReady ? (
-          models?.state === "unconfigured" ? (
-            <Notice>Choose a folder for the speech models in <button type="button" className="font-medium text-accent hover:underline" onClick={openPreferences}>Preferences → Speech</button>. Libera downloads them there (about {formatBytes(models.totalBytes)}), outside your notes.</Notice>
-          ) : downloading ? null : (
+          downloading ? null : (
             <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload()}>Download ({formatBytes(models?.totalBytes ?? 0)})</button>}>
-              Parakeet and the pyannote speaker models are not in their folder yet.
+              Parakeet and the pyannote speaker models are not downloaded yet. They run on this computer, outside your notes.
             </Notice>
           )
         ) : null}
         {status.diarization && !speakersReady && (chosen === "openrouter" || localReady) && !downloading ? (
-          models?.state === "unconfigured"
-            ? <Notice>To tell speakers apart, choose a folder for the speech models in <button type="button" className="font-medium text-accent hover:underline" onClick={openPreferences}>Preferences → Speech</button>.</Notice>
-            : <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload("diarization")}>Download (34 MB)</button>}>Speakers are told apart on this computer with pyannote.</Notice>
+          <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => onDownload("diarization")}>Download (34 MB)</button>}>Speakers are told apart on this computer with pyannote.</Notice>
         ) : null}
         {downloading && models ? (
           <div className="space-y-1.5 rounded-lg bg-muted/70 px-3 py-2">

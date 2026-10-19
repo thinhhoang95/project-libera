@@ -119,9 +119,7 @@ async function transcribe(job: JobRecord) {
 
   const asrModel = engine === "local" ? await detectAsrModel() : null;
   if (engine === "local" && !asrModel) {
-    throw new Error(preferences.modelDirectory
-      ? "The speech models are not in their folder yet. Download them first."
-      : "Choose a folder for the speech models in Preferences → Speech, or transcribe with OpenRouter.");
+    throw new Error("The speech models are not downloaded yet. Download them first, or transcribe with OpenRouter.");
   }
   const diarizationModels = preferences.diarization ? await detectDiarizationModels() : null;
 

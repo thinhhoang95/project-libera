@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getOpenRouterApiKey } from "@/lib/openrouter";
-import { getSpeechModelDownloader } from "@/lib/transcription/models";
+import { cancelSpeechModelsDownload, getSpeechModelsStatus, startSpeechModelsDownload } from "@/lib/transcription/models";
 import { findAudioDecoder, getTranscriptionPreferences } from "@/lib/transcription/settings";
 import type { TranscriptionSetupStatus } from "@/lib/transcription/types";
 
@@ -14,7 +14,7 @@ async function status() {
     engine: preferences.engine,
     openRouterModel: preferences.openRouterModel,
     diarization: preferences.diarization,
-    models: await getSpeechModelDownloader().getStatus(),
+    models: await getSpeechModelsStatus(),
     decoder: { available: decoder.kind !== "wav-only", kind: decoder.kind, path: decoder.path },
     hasApiKey: Boolean(getOpenRouterApiKey()),
   };
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
   if (authError) return authError;
   try {
     const body = (await request.json().catch(() => ({}))) as { only?: unknown };
-    getSpeechModelDownloader().start({ only: body.only === "diarization" ? "diarization" : undefined });
+    startSpeechModelsDownload({ only: body.only === "diarization" ? "diarization" : undefined });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Could not start the download.", 409);
   }
@@ -45,6 +45,6 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
-  getSpeechModelDownloader().cancel();
+  cancelSpeechModelsDownload();
   return status();
 }

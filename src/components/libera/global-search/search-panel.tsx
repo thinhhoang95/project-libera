@@ -12,6 +12,7 @@ import {
   useSearchStore,
 } from "@/components/libera/global-search/search-store";
 import { IndexMismatch, IndexSetup, canManageIndexFile, revealSearchIndex } from "@/components/libera/global-search/index-setup";
+import { openLocalModelDialog } from "@/components/libera/local-models/local-model-client";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 
 function fileName(filePath?: string) {
@@ -165,7 +166,7 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
           {!status ? null : !status.model.configured ? (
             <p className="px-1 text-xs leading-relaxed text-muted-foreground">
               Keyword search only for now.{" "}
-              {onOpenPreferences ? <button type="button" className="font-medium text-accent hover:underline" onClick={onOpenPreferences}>Choose the weights</button> : "Choose the weights in Preferences → Search"}{" "}
+              <button type="button" className="font-medium text-accent hover:underline" onClick={() => openLocalModelDialog("search")}>Download the model</button>{" "}
               to search by meaning.
             </p>
           ) : (

@@ -235,9 +235,9 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   if (!indexer.vectorsUsable) {
     warnings.push("Semantic search is off: the index's vectors were made with other settings. Re-embed them in the Search panel, or switch back. Showing keyword matches.");
   } else if (!worker.configured) {
-    warnings.push("Semantic search is off: choose the EmbeddingGemma 2 weights in Preferences → Search. Showing keyword matches.");
+    warnings.push("Semantic search is off until EmbeddingGemma 2 is downloaded. Showing keyword matches.");
   } else if (imageParts.length && !worker.visionConfigured) {
-    warnings.push("Searching with images needs the EmbeddingGemma 2 vision encoder. Choose it in Preferences → Search.");
+    warnings.push("Searching with images needs the EmbeddingGemma 2 vision encoder. Download the model again, or choose the encoder in Preferences → Search.");
   } else {
     try {
       const images = imageParts.map((part) => resolveImage(part.image));

@@ -1,3 +1,4 @@
+import { ensureLocalModel } from "@/components/libera/local-models/local-model-client";
 import { speechChunks, speechText, type SpeechFormat } from "@/lib/tts/text";
 
 /**
@@ -134,7 +135,25 @@ export function speakMarkdown(markdown: string, { sourceId = null, label = "", f
   const current: Session = { chunks, audio: new Map(), controller: new AbortController() };
   session = current;
   setState({ ...IDLE, status: "loading", sourceId, label, total: chunks.length });
-  void play(current, 0);
+  void (async () => {
+    if (!(await readAloudModelReady())) {
+      if (session === current) stopSpeech();
+      return;
+    }
+    void play(current, 0);
+  })();
+}
+
+/** False when Kokoro is not downloaded and the user closed the offer to download it. */
+async function readAloudModelReady() {
+  try {
+    const response = await fetch("/api/tts");
+    const payload = (await response.json()) as { modelMissing?: boolean };
+    return payload.modelMissing ? await ensureLocalModel("read-aloud") : true;
+  } catch {
+    // Reading reports the problem.
+    return true;
+  }
 }
 
 export function stopSpeech() {

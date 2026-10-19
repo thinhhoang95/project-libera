@@ -703,36 +703,37 @@
 
               <h3>EmbeddingGemma 2 weights</h3>
               <p class="field-help">
-                Download the ONNX model from Hugging Face (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json,
-                tokenizer_config.json, processor_config.json and preprocessor_config.json, plus the weight files below, each with
-                its .onnx_data file. Keep the weights outside Libera; choose them here. On a CPU, the 8-bit files
-                (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
+                Leave both empty and Libera offers to download the 8-bit text model and vision encoder (about 540 MB) from the
+                Search panel, into its application data. To use other weights, download the ONNX model from Hugging Face
+                (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json, tokenizer_config.json, processor_config.json
+                and preprocessor_config.json, plus the weight files below, each with its .onnx_data file, and choose them here.
+                On a CPU, the 8-bit files (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
               </p>
               <label for="search-text-weights">Text model weights</label>
               <div class="directory-row">
-                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="…/embeddinggemma-2-ONNX/onnx/model_quantized.onnx" />
+                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
                 <button id="search-text-weights-button" class="secondary" type="button">Choose</button>
               </div>
               <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p>
 
               <label for="search-vision-weights">Vision encoder weights</label>
               <div class="directory-row">
-                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Optional: …/onnx/vision_encoder_quantized.onnx" />
+                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download, with the text model" />
                 <button id="search-vision-weights-button" class="secondary" type="button">Choose</button>
               </div>
-              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; leave empty for text only.</p>
+              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; with your own text model, leave empty for text only.</p>
 
               <h3>PDF reading model</h3>
               <p class="field-help">
                 Snip as Markdown and Convert PDF to Markdown read pages with IBM’s granite-docling-258M (Apache-2.0), running
-                on this computer. Choose a folder for it outside Libera. The first time you use either feature, Libera can
-                download it there (about 600 MB). Or put the files from Hugging Face
-                (onnx-community/granite-docling-258M-ONNX) there yourself, laid out like the repository: the configs and
+                on this computer. The first time you use either feature, Libera offers to download it (about 600 MB) into the
+                folder below, or into its application data when the field is empty. Or put the files from Hugging Face
+                (onnx-community/granite-docling-258M-ONNX) in a folder yourself, laid out like the repository: the configs and
                 tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.
               </p>
               <label for="reading-model-directory">Model folder</label>
               <div class="directory-row">
-                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="…/granite-docling-258M-ONNX" />
+                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
                 <button id="reading-model-directory-button" class="secondary" type="button">Choose</button>
               </div>
 
@@ -793,11 +794,12 @@
               <h3>Models</h3>
               <label for="transcription-model-directory">Speech models folder</label>
               <div class="directory-row">
-                <input id="transcription-model-directory" autocomplete="off" spellcheck="false" placeholder="…/Models/libera-speech" />
+                <input id="transcription-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
                 <button id="transcription-model-directory-button" class="secondary" type="button">Choose</button>
               </div>
               <p class="field-help">
-                Keep the weights outside Libera. The first time you transcribe, Libera can download them here: NVIDIA Parakeet TDT
+                The first time you transcribe, Libera offers to download them here, or into its application data when the field
+                is empty: NVIDIA Parakeet TDT
                 0.6B v3 (sherpa-onnx 8-bit export, about 670 MB), and pyannote segmentation-3.0 with 3D-Speaker CAM++ to tell
                 speakers apart (34 MB together). Or put the files there yourself, in parakeet-tdt-0.6b-v3/ (encoder, decoder and
                 joiner .onnx files and tokens.txt), pyannote-segmentation-3.0/model.onnx and speaker-embedding/*.onnx.
@@ -876,14 +878,15 @@
                 <h3>Kokoro 82M on this computer</h3>
                 <label for="tts-model-directory">Kokoro model folder</label>
                 <div class="directory-row">
-                  <input id="tts-model-directory" autocomplete="off" spellcheck="false" placeholder="…/Models/kokoro-multi-lang-v1_0" />
+                  <input id="tts-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
                   <button id="tts-model-directory-button" class="secondary" type="button">Choose</button>
                 </div>
                 <p id="tts-model-status" class="field-help" role="status"></p>
                 <p class="field-help">
-                  Keep the weights outside Libera, like the EmbeddingGemma and speech models: download kokoro-multi-lang-v1_0
-                  (or kokoro-int8-multi-lang-v1_0, smaller and faster, or the English-only kokoro-en-v0_19) from sherpa-onnx’s
-                  tts-models release on GitHub, extract it, and choose the folder holding model.onnx, voices.bin, tokens.txt and espeak-ng-data/.
+                  Leave it empty and the first time you read aloud, Libera offers to download kokoro-int8-multi-lang-v1_0 (about
+                  190 MB) into its application data. To use another release, such as the full-precision kokoro-multi-lang-v1_0
+                  or the English-only kokoro-en-v0_19, download it from sherpa-onnx’s tts-models release on GitHub, extract it,
+                  and choose the folder holding model.onnx, voices.bin, tokens.txt and espeak-ng-data/.
                 </p>
                 <label for="tts-local-voice">Voice</label>
                 <select id="tts-local-voice"></select>
@@ -1179,6 +1182,8 @@
       const searchIndexFileInput = document.querySelector("#search-index-file");
       const searchIndexHelp = document.querySelector("#search-index-help");
       let searchDefaultIndexFile = "";
+      // Where Libera downloads each local model when its field is empty.
+      let modelFolders = {};
       const errorBox = document.querySelector("#error");
       const closeButton = document.querySelector("#close-button");
       const headerCloseButton = document.querySelector("#header-close-button");
@@ -1843,6 +1848,8 @@
         searchIndexFileInput.value = search.indexFile || "";
         searchDefaultIndexFile = state.searchDefaultIndexFile || "";
         if (searchDefaultIndexFile) searchIndexFileInput.placeholder = `Default: ${searchDefaultIndexFile}`;
+        modelFolders = state.modelFolders || {};
+        if (modelFolders.reading) readingModelDirectoryInput.placeholder = `Default: ${modelFolders.reading}`;
 
         const transcription = state.transcription || {};
         transcriptionInputs.engine.value = transcription.engine === "openrouter" ? "openrouter" : "local";
@@ -1851,6 +1858,7 @@
         transcriptionInputs.diarization.checked = transcription.diarization !== false;
         transcriptionInputs.speakers.value = String(transcription.speakers || 0);
         transcriptionInputs.modelDirectory.value = transcription.modelDirectory || "";
+        if (modelFolders.speech) transcriptionInputs.modelDirectory.placeholder = `Default: ${modelFolders.speech}`;
         transcriptionInputs.ffmpegPath.value = transcription.ffmpegPath || "";
         const dictation = transcription.dictation || {};
         dictationInputs.engine.value = ["local", "openrouter"].includes(dictation.engine) ? dictation.engine : "same";
@@ -2116,7 +2124,8 @@
       let ttsModelCheck = 0;
       async function updateTtsModelStatus() {
         const status = document.querySelector("#tts-model-status");
-        const folder = ttsInputs.modelDirectory.value.trim();
+        const chosen = ttsInputs.modelDirectory.value.trim();
+        const folder = chosen || modelFolders.readAloud || "";
         const check = ++ttsModelCheck;
         if (!folder) {
           status.textContent = "No folder chosen yet.";
@@ -2124,7 +2133,8 @@
         }
         const report = await window.liberaSetup?.checkTtsModel?.(folder).catch(() => null);
         if (check !== ttsModelCheck || !report) return;
-        if (!report.exists) status.textContent = "⚠ This folder does not exist.";
+        if (!chosen && !report.ok) status.textContent = "Not downloaded yet. Libera offers the download the first time you read aloud.";
+        else if (!report.exists) status.textContent = "⚠ This folder does not exist.";
         else if (!report.ok) status.textContent = `⚠ Missing ${report.missing.join(", ")}. Choose the extracted Kokoro folder.`;
         else {
           const release = report.voices === 53 ? "kokoro-multi-lang-v1_0" : report.voices === 11 ? "kokoro-en-v0_19 (choose voices by name: af, af_bella, bm_george…)" : report.voices === 103 ? "kokoro v1.1 (choose voices by speaker number)" : "an unknown release";

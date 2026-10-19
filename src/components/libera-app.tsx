@@ -35,7 +35,7 @@ import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
-import { DocumentOcrModelDialog } from "@/components/libera/document-ocr/document-ocr-model-dialog";
+import { LocalModelDialog } from "@/components/libera/local-models/local-model-dialog";
 import { SnipReadingCard } from "@/components/libera/document-ocr/snip-reading-card";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
@@ -679,7 +679,7 @@ export function LiberaApp({
         onClose={workspace.closeNotebookGroupDialog}
         onSubmit={workspace.submitNotebookGroupDialog}
       />
-      <DocumentOcrModelDialog />
+      <LocalModelDialog />
       <SnipReadingCard session={workspace.screenshotSnipSession} onCancel={workspace.cancelScreenshotSnip} />
       {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.fullTree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
       <NoteDialog

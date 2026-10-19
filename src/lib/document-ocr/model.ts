@@ -1,21 +1,15 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { defaultModelDirectory, fileSize, huggingFaceUrl, sharedModelDownloader } from "@/lib/models/downloader";
 import { getSearchPreferences } from "@/lib/search/settings";
-import { getAdminRoot } from "@/lib/storage/paths";
 
 /**
  * The PDF reading model: IBM granite-docling-258M (Apache-2.0) in the ONNX
  * build for Transformers.js. It reads a page image and writes DocTags, which
  * `doctags.ts` turns into Markdown.
  *
- * Like the EmbeddingGemma weights, the model lives in a folder the user
- * chooses in Preferences → Search, laid out like its Hugging Face repository
- * (configs at the top, weights in `onnx/`). Libera can download into that
- * folder, or the user can put the files there.
+ * Libera downloads it into its application data, or into a folder chosen in
+ * Preferences → Search, laid out like its Hugging Face repository (configs at
+ * the top, weights in `onnx/`); the user can also put the files there.
  *
  * The download is pinned to one revision and checked against file sizes and,
  * for the weights, SHA-256. It takes the full-precision vision encoder, since
@@ -62,24 +56,11 @@ const DTYPE_PREFERENCE: Record<string, string[]> = {
 
 export type DocumentOcrDtype = Record<keyof typeof DTYPE_PREFERENCE, string>;
 
-/**
- * The folder from Preferences → Search. A web deployment without the desktop
- * config falls back to the library's system folder.
- */
+/** The folder from Preferences → Search, or Libera's download folder. */
 export function documentOcrModelDirectory() {
   const chosen = getSearchPreferences().readingModelDirectory;
   if (chosen) return path.basename(chosen) === "onnx" ? path.dirname(chosen) : chosen;
-  if (process.env.LIBERA_CONFIG_PATH) return "";
-  return path.join(getAdminRoot(), ".libera", "models", DOCUMENT_OCR_MODEL.name);
-}
-
-async function fileSize(filePath: string) {
-  try {
-    const info = await stat(filePath);
-    return info.isFile() ? info.size : -1;
-  } catch {
-    return -1;
-  }
+  return defaultModelDirectory("reading");
 }
 
 /** The weight precision to load for each part, or null when the folder lacks a usable model. */
@@ -106,132 +87,35 @@ export async function detectDocumentOcrModel(directory: string): Promise<Documen
 }
 
 export type DocumentOcrModelStatus = {
-  /** "unconfigured": no folder chosen; "missing": the folder lacks the model. */
-  state: "unconfigured" | "missing" | "downloading" | "ready" | "error";
+  state: "missing" | "downloading" | "ready" | "error";
   directory: string;
   downloadedBytes: number;
   totalBytes: number;
   error: string;
 };
 
-function fileUrl(filePath: string) {
-  return `https://huggingface.co/${DOCUMENT_OCR_MODEL.repository}/resolve/${DOCUMENT_OCR_MODEL.revision}/${filePath}`;
+const downloader = () => sharedModelDownloader("reading");
+
+export async function getDocumentOcrModelStatus(): Promise<DocumentOcrModelStatus> {
+  const directory = documentOcrModelDirectory();
+  const base = { directory, downloadedBytes: 0, totalBytes: DOCUMENT_OCR_MODEL_BYTES, error: "" };
+  const download = downloader().progress(directory);
+  if (download?.running) return { ...base, state: "downloading", downloadedBytes: download.downloadedBytes };
+  if (await detectDocumentOcrModel(directory)) return { ...base, state: "ready", downloadedBytes: DOCUMENT_OCR_MODEL_BYTES };
+  if (download?.error) return { ...base, state: "error", error: download.error, downloadedBytes: download.downloadedBytes };
+  return { ...base, state: "missing" };
 }
 
-async function hashFile(filePath: string, hash: ReturnType<typeof createHash>) {
-  for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer);
+/** Download the pinned files into the model folder; an interrupted download resumes. */
+export function startDocumentOcrModelDownload() {
+  downloader().start(documentOcrModelDirectory(), DOCUMENT_OCR_MODEL.files.map((file) => ({
+    url: huggingFaceUrl(DOCUMENT_OCR_MODEL.repository, DOCUMENT_OCR_MODEL.revision, file.path),
+    target: file.path,
+    size: file.size,
+    sha256: file.sha256,
+  })));
 }
 
-/**
- * Downloads the pinned files into the chosen folder. Each file arrives as
- * `name.part` and is renamed once its size and checksum are right, so the
- * folder never holds a broken weight file. An interrupted download resumes.
- */
-class DocumentOcrModelDownloader {
-  private download: { directory: string; downloadedBytes: number; error: string; running: boolean; controller: AbortController } | null = null;
-
-  async getStatus(): Promise<DocumentOcrModelStatus> {
-    const directory = documentOcrModelDirectory();
-    const base = { directory, downloadedBytes: 0, totalBytes: DOCUMENT_OCR_MODEL_BYTES, error: "" };
-    const download = this.download?.directory === directory ? this.download : null;
-
-    if (download?.running) return { ...base, state: "downloading", downloadedBytes: download.downloadedBytes };
-    if (!directory) return { ...base, state: "unconfigured" };
-    if (await detectDocumentOcrModel(directory)) return { ...base, state: "ready", downloadedBytes: DOCUMENT_OCR_MODEL_BYTES };
-    if (download?.error) return { ...base, state: "error", error: download.error, downloadedBytes: download.downloadedBytes };
-    return { ...base, state: "missing" };
-  }
-
-  start() {
-    const directory = documentOcrModelDirectory();
-    if (!directory) throw new Error("Choose a folder for the PDF reading model in Preferences → Search.");
-    if (this.download?.running) return;
-
-    const controller = new AbortController();
-    const download = { directory, downloadedBytes: 0, error: "", running: true, controller };
-    this.download = download;
-
-    void this.run(download).catch((error: unknown) => {
-      download.error = controller.signal.aborted ? "" : error instanceof Error ? error.message : "The model download failed.";
-    }).finally(() => {
-      download.running = false;
-    });
-  }
-
-  cancel() {
-    this.download?.controller.abort();
-  }
-
-  private async run(download: NonNullable<DocumentOcrModelDownloader["download"]>) {
-    const { directory, controller: { signal } } = download;
-    let completedBytes = 0;
-
-    for (const file of DOCUMENT_OCR_MODEL.files) {
-      const target = path.join(directory, file.path);
-      const partial = `${target}.part`;
-
-      if ((await fileSize(target)) === file.size) {
-        completedBytes += file.size;
-        download.downloadedBytes = completedBytes;
-        continue;
-      }
-
-      await mkdir(path.dirname(target), { recursive: true });
-      let offset = Math.max(0, await fileSize(partial));
-      if (offset > file.size) {
-        await rm(partial, { force: true });
-        offset = 0;
-      }
-
-      const response = offset < file.size
-        ? await fetch(fileUrl(file.path), { headers: offset ? { Range: `bytes=${offset}-` } : undefined, redirect: "follow", signal })
-        : null;
-
-      if (response) {
-        if (!response.ok || !response.body) throw new Error(`Could not download ${file.path} (HTTP ${response.status}).`);
-        // A server that ignores the range sends the whole file again.
-        if (offset && response.status !== 206) offset = 0;
-        download.downloadedBytes = completedBytes + offset;
-
-        const counter = new Transform({
-          transform: (chunk: Buffer, _encoding, callback) => {
-            download.downloadedBytes += chunk.length;
-            callback(null, chunk);
-          },
-        });
-        await pipeline(
-          Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
-          counter,
-          createWriteStream(partial, { flags: offset ? "a" : "w" }),
-          { signal },
-        );
-      }
-
-      const size = await fileSize(partial);
-      if (size !== file.size) {
-        await rm(partial, { force: true });
-        throw new Error(`${file.path} arrived with the wrong size. Try the download again.`);
-      }
-      if (file.sha256) {
-        const hash = createHash("sha256");
-        await hashFile(partial, hash);
-        if (hash.digest("hex") !== file.sha256) {
-          await rm(partial, { force: true });
-          throw new Error(`${file.path} did not match its checksum. Try the download again.`);
-        }
-      }
-
-      await rename(partial, target);
-      completedBytes += file.size;
-      download.downloadedBytes = completedBytes;
-    }
-  }
-}
-
-const DOWNLOADER_KEY = Symbol.for("libera.documentOcrModelDownloader");
-
-export function getDocumentOcrModelDownloader() {
-  const store = globalThis as { [DOWNLOADER_KEY]?: DocumentOcrModelDownloader };
-  store[DOWNLOADER_KEY] ??= new DocumentOcrModelDownloader();
-  return store[DOWNLOADER_KEY];
+export function cancelDocumentOcrModelDownload() {
+  downloader().cancel();
 }

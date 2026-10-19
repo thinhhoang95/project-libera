@@ -21,7 +21,7 @@ const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
-const { INDEX_FILE_NAME, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
+const { INDEX_FILE_NAME, MODEL_FOLDERS, defaultModelsDirectory, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
 const { normalizeTranscriptionPreferences } = require("./transcription-preferences.cjs");
 const { inspectKokoroFolder, normalizeTtsPreferences } = require("./tts-preferences.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
@@ -514,6 +514,11 @@ function getConfigStatus(config = readConfig()) {
     searchDefaultIndexFile: typeof config.dataDir === "string" && config.dataDir
       ? defaultSearchIndexFile({ adminRoot: path.join(config.dataDir, "users", ADMIN_USER), configPath: getConfigPath() })
       : "",
+    // Where Libera downloads each local model when no folder is chosen.
+    modelFolders: Object.fromEntries(Object.entries(MODEL_FOLDERS).map(([key, folder]) => [
+      key,
+      path.join(defaultModelsDirectory({ adminRoot: path.join(config.dataDir || "", "users", ADMIN_USER), configPath: getConfigPath() }), folder),
+    ])),
   };
 }
 

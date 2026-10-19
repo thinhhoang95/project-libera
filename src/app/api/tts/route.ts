@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { getOpenRouterApiKey } from "@/lib/openrouter";
-import { resolveKokoroModel } from "@/lib/tts/kokoro";
+import { KokoroModelMissingError, kokoroModelDirectory, resolveKokoroModel } from "@/lib/tts/kokoro";
 import { speakWithOpenRouter } from "@/lib/tts/openrouter-tts";
 import { getTtsPreferences } from "@/lib/tts/settings";
 import { MAX_TTS_REQUEST_CHARS } from "@/lib/tts/text";
@@ -9,25 +9,30 @@ import { getTtsWorker } from "@/lib/tts/worker-client";
 
 export const runtime = "nodejs";
 
-/** Which engine reads aloud, and whether it is ready: the local folder resolves, or there is an API key. */
+/**
+ * Which engine reads aloud, and whether it is ready: the local folder resolves,
+ * or there is an API key. `modelMissing` means Kokoro can be downloaded.
+ */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   const preferences = getTtsPreferences();
   let ready = true;
   let problem = "";
+  let modelMissing = false;
   if (preferences.engine === "local") {
     try {
-      await resolveKokoroModel(preferences.modelDirectory, preferences.localVoice);
+      await resolveKokoroModel(kokoroModelDirectory(), preferences.localVoice);
     } catch (error) {
       ready = false;
+      modelMissing = error instanceof KokoroModelMissingError;
       problem = error instanceof Error ? error.message : String(error);
     }
   } else if (!getOpenRouterApiKey()) {
     ready = false;
     problem = "Add an OpenRouter API key in Preferences to read aloud with OpenRouter.";
   }
-  return NextResponse.json({ engine: preferences.engine, ready, problem });
+  return NextResponse.json({ engine: preferences.engine, ready, problem, modelMissing });
 }
 
 /**
@@ -53,7 +58,7 @@ export async function POST(request: NextRequest) {
   const preferences = getTtsPreferences();
   try {
     if (preferences.engine === "local") {
-      const model = await resolveKokoroModel(preferences.modelDirectory, preferences.localVoice);
+      const model = await resolveKokoroModel(kokoroModelDirectory(), preferences.localVoice);
       const wav = await getTtsWorker().synthesize(model.files, text, model.sid, preferences.speed, request.signal);
       return new NextResponse(new Uint8Array(wav), {
         headers: { "Content-Type": "audio/wav", "Cache-Control": "no-store" },

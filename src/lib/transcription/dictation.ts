@@ -24,9 +24,7 @@ export async function transcribeDictation(wav: Uint8Array, { signal }: { signal?
   const { engine, openRouterModel, language } = resolveDictationSettings(preferences);
   const asrModel = engine === "local" ? await detectAsrModel() : null;
   if (engine === "local" && !asrModel) {
-    throw new Error(preferences.modelDirectory
-      ? "The speech models are not in their folder yet. Download them from a voice memo's transcript panel."
-      : "Choose a folder for the speech models in Preferences → Speech, or dictate with OpenRouter.");
+    throw new Error("The speech models are not downloaded yet. Download them from a voice memo's transcript panel, or dictate with OpenRouter.");
   }
 
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-dictation-"));

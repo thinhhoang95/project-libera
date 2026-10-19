@@ -7,14 +7,27 @@ import {
   searchPreferencesFromEnvironment,
   type SearchPreferences,
 } from "../../../electron/search-preferences.cjs";
+import { downloadedSearchWeights } from "@/lib/search/model";
 import { getAdminRoot } from "@/lib/storage/paths";
 
 export type { SearchPreferences };
 
 let cached: { key: string; preferences: SearchPreferences } | null = null;
 
-/** Preferences → Search, read from the desktop config file so changes apply while the app runs. */
+/**
+ * Preferences → Search, with the weights Libera downloaded when none are
+ * chosen there. The weights are checked on every call, so a finished
+ * download applies at once.
+ */
 export function getSearchPreferences(): SearchPreferences {
+  const preferences = getChosenSearchPreferences();
+  if (preferences.textWeights) return preferences;
+  const { textWeights, visionWeights } = downloadedSearchWeights();
+  return textWeights ? { ...preferences, textWeights, visionWeights } : preferences;
+}
+
+/** Preferences → Search as saved, read from the desktop config file so changes apply while the app runs. */
+export function getChosenSearchPreferences(): SearchPreferences {
   const configPath = process.env.LIBERA_CONFIG_PATH;
   if (!configPath) return searchPreferencesFromEnvironment();
 

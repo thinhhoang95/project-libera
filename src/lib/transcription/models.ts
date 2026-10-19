@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { defaultModelDirectory, fileSize, huggingFaceUrl, sharedModelDownloader } from "@/lib/models/downloader";
 import { getTranscriptionPreferences } from "@/lib/transcription/settings";
 import type { SpeechModelsStatus } from "@/lib/transcription/types";
 
@@ -18,10 +15,10 @@ import type { SpeechModelsStatus } from "@/lib/transcription/types";
  *   speech that also tells apart voices in other languages, used to cluster
  *   pyannote's windows into speakers across the recording (28 MB).
  *
- * Like the EmbeddingGemma and granite-docling weights, they stay outside
- * Libera, in one folder chosen in Preferences → Speech, each in a subfolder.
- * Libera can download them there (pinned revisions, checked by size and
- * SHA-256), or the user can put other precisions of the same models there.
+ * Like the other local models, Libera downloads them into its application data
+ * (pinned revisions, checked by size and SHA-256), each in a subfolder, or into
+ * a folder chosen in Preferences → Speech, where the user can also put other
+ * precisions of the same models.
  */
 type ModelFile = { path: string; size: number; sha256: string | null };
 type ModelPart = { name: string; folder: string; repository: string; revision: string; license: string; files: ModelFile[] };
@@ -69,17 +66,9 @@ const DIARIZATION_PARTS: ModelPart[] = [SPEECH_MODELS.segmentation, SPEECH_MODEL
 export type AsrModelFiles = { encoder: string; decoder: string; joiner: string; tokens: string };
 export type DiarizationModelFiles = { segmentation: string; embedding: string };
 
+/** The folder from Preferences → Speech, or Libera's download folder. */
 export function speechModelsDirectory() {
-  return getTranscriptionPreferences().modelDirectory;
-}
-
-async function fileSize(filePath: string) {
-  try {
-    const info = await stat(filePath);
-    return info.isFile() ? info.size : -1;
-  } catch {
-    return -1;
-  }
+  return getTranscriptionPreferences().modelDirectory || defaultModelDirectory("speech");
 }
 
 async function listOnnx(directory: string) {
@@ -119,131 +108,42 @@ export async function detectDiarizationModels(directory = speechModelsDirectory(
   return { segmentation: path.join(segmentationFolder, segmentation), embedding: path.join(embeddingFolder, embedding) };
 }
 
-function fileUrl(part: ModelPart, file: ModelFile) {
-  return `https://huggingface.co/${part.repository}/resolve/${part.revision}/${file.path}`;
+const downloader = () => sharedModelDownloader("speech");
+
+export async function getSpeechModelsStatus(): Promise<SpeechModelsStatus> {
+  const directory = speechModelsDirectory();
+  const [asr, diarization] = await Promise.all([detectAsrModel(directory), detectDiarizationModels(directory)]);
+  const base = {
+    directory,
+    asr: Boolean(asr),
+    segmentation: Boolean(diarization),
+    embedding: Boolean(diarization),
+    downloadedBytes: 0,
+    totalBytes: SPEECH_MODELS_BYTES,
+    error: "",
+  };
+  const download = downloader().progress(directory);
+  if (download?.running) return { ...base, state: "downloading", downloadedBytes: download.downloadedBytes, totalBytes: download.totalBytes };
+  if (asr && diarization) return { ...base, state: "ready", downloadedBytes: SPEECH_MODELS_BYTES };
+  if (download?.error) return { ...base, state: "error", error: download.error, downloadedBytes: download.downloadedBytes };
+  return { ...base, state: "missing" };
 }
 
 /**
- * Downloads the pinned files into the chosen folder. Each file arrives as
- * `name.part` and is renamed once its size and checksum are right, so the
- * folder never holds a broken weight file. An interrupted download resumes.
+ * Download the pinned files; an interrupted download resumes. `only:
+ * "diarization"` fetches just the small speaker models, for transcribing with
+ * OpenRouter.
  */
-class SpeechModelDownloader {
-  private download: { directory: string; parts: ModelPart[]; totalBytes: number; downloadedBytes: number; error: string; running: boolean; controller: AbortController } | null = null;
-
-  async getStatus(): Promise<SpeechModelsStatus> {
-    const directory = speechModelsDirectory();
-    const [asr, diarization] = await Promise.all([detectAsrModel(directory), detectDiarizationModels(directory)]);
-    const base = {
-      directory,
-      asr: Boolean(asr),
-      segmentation: Boolean(diarization),
-      embedding: Boolean(diarization),
-      downloadedBytes: 0,
-      totalBytes: SPEECH_MODELS_BYTES,
-      error: "",
-    };
-    const download = this.download?.directory === directory ? this.download : null;
-    if (download?.running) return { ...base, state: "downloading", downloadedBytes: download.downloadedBytes, totalBytes: download.totalBytes };
-    if (!directory) return { ...base, state: "unconfigured" };
-    if (asr && diarization) return { ...base, state: "ready", downloadedBytes: SPEECH_MODELS_BYTES };
-    if (download?.error) return { ...base, state: "error", error: download.error, downloadedBytes: download.downloadedBytes };
-    return { ...base, state: "missing" };
-  }
-
-  /** `only: "diarization"` fetches just the small speaker models, for transcribing with OpenRouter. */
-  start({ only }: { only?: "diarization" } = {}) {
-    const directory = speechModelsDirectory();
-    if (!directory) throw new Error("Choose a folder for the speech models in Preferences → Speech.");
-    if (this.download?.running) return;
-    const parts = only === "diarization" ? DIARIZATION_PARTS : ALL_PARTS;
-    const controller = new AbortController();
-    const download = {
-      directory,
-      parts,
-      totalBytes: parts.flatMap((part) => part.files).reduce((total, file) => total + file.size, 0),
-      downloadedBytes: 0,
-      error: "",
-      running: true,
-      controller,
-    };
-    this.download = download;
-    void this.run(download).catch((error: unknown) => {
-      download.error = controller.signal.aborted ? "" : error instanceof Error ? error.message : "The model download failed.";
-    }).finally(() => {
-      download.running = false;
-    });
-  }
-
-  cancel() {
-    this.download?.controller.abort();
-  }
-
-  private async run(download: NonNullable<SpeechModelDownloader["download"]>) {
-    const { directory, controller: { signal } } = download;
-    let completedBytes = 0;
-    for (const part of download.parts) {
-      for (const file of part.files) {
-        const target = path.join(directory, part.folder, file.path);
-        const partial = `${target}.part`;
-        if ((await fileSize(target)) === file.size) {
-          completedBytes += file.size;
-          download.downloadedBytes = completedBytes;
-          continue;
-        }
-
-        await mkdir(path.dirname(target), { recursive: true });
-        let offset = Math.max(0, await fileSize(partial));
-        if (offset > file.size) {
-          await rm(partial, { force: true });
-          offset = 0;
-        }
-        const response = offset < file.size
-          ? await fetch(fileUrl(part, file), { headers: offset ? { Range: `bytes=${offset}-` } : undefined, redirect: "follow", signal })
-          : null;
-        if (response) {
-          if (!response.ok || !response.body) throw new Error(`Could not download ${file.path} (HTTP ${response.status}).`);
-          // A server that ignores the range sends the whole file again.
-          if (offset && response.status !== 206) offset = 0;
-          download.downloadedBytes = completedBytes + offset;
-          const counter = new Transform({
-            transform: (chunk: Buffer, _encoding, callback) => {
-              download.downloadedBytes += chunk.length;
-              callback(null, chunk);
-            },
-          });
-          await pipeline(
-            Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
-            counter,
-            createWriteStream(partial, { flags: offset ? "a" : "w" }),
-            { signal },
-          );
-        }
-
-        if ((await fileSize(partial)) !== file.size) {
-          await rm(partial, { force: true });
-          throw new Error(`${file.path} arrived with the wrong size. Try the download again.`);
-        }
-        if (file.sha256) {
-          const hash = createHash("sha256");
-          for await (const chunk of createReadStream(partial)) hash.update(chunk as Buffer);
-          if (hash.digest("hex") !== file.sha256) {
-            await rm(partial, { force: true });
-            throw new Error(`${file.path} did not match its checksum. Try the download again.`);
-          }
-        }
-        await rename(partial, target);
-        completedBytes += file.size;
-        download.downloadedBytes = completedBytes;
-      }
-    }
-  }
+export function startSpeechModelsDownload({ only }: { only?: "diarization" } = {}) {
+  const parts = only === "diarization" ? DIARIZATION_PARTS : ALL_PARTS;
+  downloader().start(speechModelsDirectory(), parts.flatMap((part) => part.files.map((file) => ({
+    url: huggingFaceUrl(part.repository, part.revision, file.path),
+    target: `${part.folder}/${file.path}`,
+    size: file.size,
+    sha256: file.sha256,
+  }))));
 }
 
-const DOWNLOADER_KEY = Symbol.for("libera.speechModelDownloader");
-
-export function getSpeechModelDownloader() {
-  const store = globalThis as { [DOWNLOADER_KEY]?: SpeechModelDownloader };
-  store[DOWNLOADER_KEY] ??= new SpeechModelDownloader();
-  return store[DOWNLOADER_KEY];
+export function cancelSpeechModelsDownload() {
+  downloader().cancel();
 }

@@ -79,8 +79,8 @@ export type TranscriptionSetupStatus = {
 };
 
 export type SpeechModelsStatus = {
-  /** "unconfigured": no folder chosen; "missing": the folder lacks a model. */
-  state: "unconfigured" | "missing" | "downloading" | "ready" | "error";
+  /** "missing": the folder lacks a model. */
+  state: "missing" | "downloading" | "ready" | "error";
   directory: string;
   /** Which parts are in the folder. */
   asr: boolean;

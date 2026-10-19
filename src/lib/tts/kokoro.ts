@@ -1,13 +1,65 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { defaultModelDirectory, huggingFaceFiles, sharedModelDownloader } from "@/lib/models/downloader";
+import { getTtsPreferences } from "@/lib/tts/settings";
 
 /**
  * Kokoro 82M (Apache-2.0) on this computer, from sherpa-onnx's export:
  * https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
- * (kokoro-multi-lang-v1_0, its int8 variant, or kokoro-en-v0_19). Like the
- * EmbeddingGemma weights, it stays outside Libera: the user extracts the
- * archive and chooses its folder in Preferences → Read Aloud.
+ * (kokoro-multi-lang-v1_0, its int8 variant, or kokoro-en-v0_19). Libera
+ * downloads the 8-bit multi-language release into its application data
+ * (about 190 MB, faster on a CPU); Preferences → Read Aloud can name another
+ * extracted release's folder instead.
  */
+export const KOKORO_MODEL = {
+  name: "Kokoro 82M",
+  repository: "csukuangfj/kokoro-int8-multi-lang-v1_0",
+  revision: "2a360693d79b88b49b88e29aec2b53577f41f206",
+  license: "Apache-2.0",
+  // Listed from the repository when the download starts; espeak-ng-data alone is hundreds of files.
+  estimatedBytes: 189_870_000,
+};
+
+/** The folder from Preferences → Read Aloud, or Libera's download folder. */
+export function kokoroModelDirectory() {
+  return getTtsPreferences().modelDirectory || defaultModelDirectory("readAloud");
+}
+
+// The files that make a folder usable, fetched last so a half-finished download never looks complete.
+const KOKORO_KEY_FILES = ["tokens.txt", "voices.bin", "model.int8.onnx"];
+
+export type KokoroModelStatus = {
+  state: "missing" | "downloading" | "ready" | "error";
+  directory: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string;
+};
+
+const downloader = () => sharedModelDownloader("read-aloud");
+
+export async function getKokoroModelStatus(): Promise<KokoroModelStatus> {
+  const directory = kokoroModelDirectory();
+  const download = downloader().progress(directory);
+  const totalBytes = download?.totalBytes || KOKORO_MODEL.estimatedBytes;
+  const base = { directory, downloadedBytes: 0, totalBytes, error: "" };
+  if (download?.running) return { ...base, state: "downloading", downloadedBytes: download.downloadedBytes };
+  if (!(await kokoroMissingFiles(directory)).length) return { ...base, state: "ready", downloadedBytes: totalBytes };
+  if (download?.error) return { ...base, state: "error", error: download.error, downloadedBytes: download.downloadedBytes };
+  return { ...base, state: "missing" };
+}
+
+export function startKokoroModelDownload() {
+  downloader().start(kokoroModelDirectory(), async (signal) => {
+    const files = await huggingFaceFiles(KOKORO_MODEL.repository, KOKORO_MODEL.revision, { skip: [".gitattributes", "README.md"], signal });
+    const rank = (target: string) => KOKORO_KEY_FILES.indexOf(target);
+    return files.sort((a, b) => rank(a.target) - rank(b.target));
+  }, KOKORO_MODEL.estimatedBytes);
+}
+
+export function cancelKokoroModelDownload() {
+  downloader().cancel();
+}
 export type KokoroModelFiles = {
   model: string;
   voices: string;
@@ -84,28 +136,38 @@ export type KokoroModel = { files: KokoroModelFiles; speakers: number; sid: numb
  * The model files in the chosen folder, and the speaker for `voice`. The
  * 8-bit export (model.int8.onnx) is preferred when both precisions are there.
  */
+function pickKokoroWeights(entries: string[]) {
+  const onnx = entries.filter((name) => name.toLowerCase().endsWith(".onnx"));
+  return ["model.int8.onnx", "model.onnx"].find((name) => onnx.includes(name)) ?? onnx.sort()[0];
+}
+
+/** The files sherpa-onnx needs that the folder lacks; all of them when it does not exist. */
+async function kokoroMissingFiles(directory: string) {
+  const entries = await readdir(directory).catch(() => [] as string[]);
+  return [
+    !pickKokoroWeights(entries) && "model.onnx",
+    !(await isFile(path.join(directory, "voices.bin"))) && "voices.bin",
+    !(await isFile(path.join(directory, "tokens.txt"))) && "tokens.txt",
+    !(await isDirectory(path.join(directory, "espeak-ng-data"))) && "espeak-ng-data/",
+  ].filter((name): name is string => Boolean(name));
+}
+
+/** Thrown when the Kokoro folder is incomplete, so the app can offer the download. */
+export class KokoroModelMissingError extends Error {}
+
 export async function resolveKokoroModel(directory: string, voice: string): Promise<KokoroModel> {
-  if (!directory) {
-    throw new Error("Choose the Kokoro model folder in Preferences → Read Aloud, or read aloud with OpenRouter.");
-  }
   if (!(await isDirectory(directory))) {
-    throw new Error(`The Kokoro model folder ${directory} does not exist. Choose it again in Preferences → Read Aloud.`);
+    throw new KokoroModelMissingError("Kokoro 82M is not downloaded yet. Download it, or read aloud with OpenRouter.");
+  }
+  const missing = await kokoroMissingFiles(directory);
+  if (missing.length) {
+    throw new KokoroModelMissingError(`The Kokoro model folder is missing ${missing.join(", ")}. Download Kokoro 82M again, or extract a sherpa-onnx Kokoro release (such as kokoro-multi-lang-v1_0) there.`);
   }
   const entries = await readdir(directory).catch(() => [] as string[]);
-  const onnx = entries.filter((name) => name.toLowerCase().endsWith(".onnx"));
-  const modelName = ["model.int8.onnx", "model.onnx"].find((name) => onnx.includes(name)) ?? onnx.sort()[0];
+  const modelName = pickKokoroWeights(entries);
   const voices = path.join(directory, "voices.bin");
   const tokens = path.join(directory, "tokens.txt");
   const dataDir = path.join(directory, "espeak-ng-data");
-  const missing = [
-    !modelName && "model.onnx",
-    !(await isFile(voices)) && "voices.bin",
-    !(await isFile(tokens)) && "tokens.txt",
-    !(await isDirectory(dataDir)) && "espeak-ng-data/",
-  ].filter(Boolean);
-  if (missing.length) {
-    throw new Error(`The Kokoro model folder is missing ${missing.join(", ")}. Extract a sherpa-onnx Kokoro release (such as kokoro-multi-lang-v1_0) there.`);
-  }
 
   const speakers = Math.max(1, Math.round((await stat(voices)).size / VOICE_BYTES));
   const sid = kokoroSpeakerId(voice, speakers);

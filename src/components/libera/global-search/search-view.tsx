@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   ArrowUpRight,
+  Download,
   FolderOpen,
   ImagePlus,
   Images,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { openLocalModelDialog } from "@/components/libera/local-models/local-model-client";
 import { GalleryPhotoPicker } from "@/components/libera/gallery-photo-picker";
 import { IndexMismatch, IndexSetup } from "@/components/libera/global-search/index-setup";
 import { LibraryImagePicker } from "@/components/libera/global-search/library-image-picker";
@@ -386,7 +388,9 @@ export function SearchView({
             <div role="alert" className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
               <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
               <span className="mr-auto">{error || response?.warning}</span>
-              {onOpenPreferences && (modelOff || visionOff) ? (
+              {modelOff ? (
+                <button type="button" className="shrink-0 font-medium underline" onClick={() => openLocalModelDialog("search")}>Download model</button>
+              ) : onOpenPreferences && visionOff ? (
                 <button type="button" className="shrink-0 font-medium underline" onClick={onOpenPreferences}>Open Preferences</button>
               ) : null}
             </div>
@@ -550,14 +554,19 @@ function SearchWelcome({
             <div className="min-w-0">
               <p className="font-medium">Turn on search by meaning</p>
               <p className="mt-1 leading-relaxed text-muted-foreground">
-                Keyword search already works. Choose the EmbeddingGemma 2 text and vision weights to search by meaning and with images.
-                They run on this computer; nothing is sent anywhere.
+                Keyword search already works. Download Google’s EmbeddingGemma 2 to search by meaning and with images.
+                It runs on this computer; nothing is sent anywhere.
               </p>
-              {onOpenPreferences ? (
-                <button type="button" className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" onClick={onOpenPreferences}>
-                  <Settings2 aria-hidden className="h-4 w-4" /> Open Preferences
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" onClick={() => openLocalModelDialog("search")}>
+                  <Download aria-hidden className="h-4 w-4" /> Download model
                 </button>
-              ) : null}
+                {onOpenPreferences ? (
+                  <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted" onClick={onOpenPreferences}>
+                    <Settings2 aria-hidden className="h-4 w-4" /> Choose other weights
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
         ) : status?.model.error ? (

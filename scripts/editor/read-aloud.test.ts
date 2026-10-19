@@ -122,7 +122,7 @@ test("Kokoro voices map to sherpa-onnx speaker numbers", () => {
 test("the Kokoro folder is checked and resolved", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-kokoro-"));
   try {
-    await assert.rejects(resolveKokoroModel("", "af_heart"), /Choose the Kokoro model folder/);
+    await assert.rejects(resolveKokoroModel(path.join(directory, "absent"), "af_heart"), /Kokoro 82M is not downloaded yet/);
     await assert.rejects(resolveKokoroModel(directory, "af_heart"), /missing model\.onnx, voices\.bin, tokens\.txt, espeak-ng-data/);
     await writeFile(path.join(directory, "model.onnx"), "");
     await writeFile(path.join(directory, "model.int8.onnx"), "");
@@ -190,10 +190,11 @@ test("/api/tts asks for sign-in, text, and a ready engine", async () => {
     assert.equal((await postTts(post({ text: "a".repeat(MAX_TTS_REQUEST_CHARS + 1) }))).status, 413);
     const missing = await postTts(post({ text: "Hello." }));
     assert.equal(missing.status, 502);
-    assert.match((await missing.json()).error, /Choose the Kokoro model folder/);
+    assert.match((await missing.json()).error, /Kokoro 82M is not downloaded yet/);
     const status = await (await getTtsStatus(new NextRequest("http://localhost/api/tts", { headers: { cookie } }))).json();
     assert.equal(status.engine, "local");
     assert.equal(status.ready, false);
+    assert.equal(status.modelMissing, true);
   } finally {
     for (const [name, value] of [["LIBERA_CONFIG_PATH", saved.config], ["LIBERA_TTS_ENGINE", saved.engine], ["LIBERA_TTS_MODEL_DIR", saved.dir]] as const) {
       if (value === undefined) delete process.env[name];
