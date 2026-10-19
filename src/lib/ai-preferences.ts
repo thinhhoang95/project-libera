@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { getOpenRouterModel } from "./openrouter";
 
-export type AiFunction = "formatting" | "rewrite" | "chat" | "imageToMarkdown" | "latex";
+export type AiFunction = "formatting" | "rewrite" | "chat" | "imageToMarkdown" | "latex" | "references";
 export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 const ENV_NAMES: Record<AiFunction, string> = {
@@ -10,6 +10,7 @@ const ENV_NAMES: Record<AiFunction, string> = {
   chat: "CHAT",
   imageToMarkdown: "IMAGE_TO_MARKDOWN",
   latex: "LATEX",
+  references: "REFERENCES",
 };
 
 function normalizeAlternativeModels(value: unknown, defaultModel: string) {
@@ -20,11 +21,12 @@ function normalizeAlternativeModels(value: unknown, defaultModel: string) {
     .slice(0, 50);
 }
 
-export function getAiFunctionOptions(name: AiFunction) {
+export function getAiFunctionOptions(name: AiFunction): { model: string; reasoning: { effort: AiReasoningEffort }; promptCaching: boolean } {
   const prefix = `LIBERA_AI_${ENV_NAMES[name]}`;
-  const model = process.env[`${prefix}_MODEL`]?.trim() || (name === "latex" ? "openai/gpt-5.6-luna" : getOpenRouterModel());
+  // References default to the formatting model: both turn text into structured output.
+  const model = process.env[`${prefix}_MODEL`]?.trim() || (name === "latex" ? "openai/gpt-5.6-luna" : name === "references" ? getAiFunctionOptions("formatting").model : getOpenRouterModel());
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
-  const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" ? "low" : "medium";
+  const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" || name === "references" ? "low" : "medium";
   const configuredCaching = process.env[`${prefix}_PROMPT_CACHING`];
   const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "chat";
   return { model, reasoning: { effort }, promptCaching };

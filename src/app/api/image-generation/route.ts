@@ -4,6 +4,8 @@ import { parseImageGenerationSettings } from "@/lib/image-generation";
 import { generateImages, generatedImageName, parseReferenceImages } from "@/lib/image-generation-server";
 import { getTree, StorageError, toStorageError, writeUploadedFile } from "@/lib/storage";
 import { writeGalleryPhoto } from "@/lib/storage/gallery";
+import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { writeSharedUpload } from "@/lib/collab/shared-writes";
 
 export const runtime = "nodejs";
 
@@ -11,11 +13,13 @@ const MAX_PROMPT_LENGTH = 32_000;
 
 async function writeToFolder(folderPath: string, name: string, body: Buffer, mediaType: string) {
   const [notebook] = folderPath.split("/");
+  // "Notebook folder" destinations in a shared notebook become manifest blobs through the collab host.
+  const write = isSharedNotebookPath(folderPath) ? writeSharedUpload : writeUploadedFile;
   const dot = name.lastIndexOf(".");
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const candidate = attempt ? `${name.slice(0, dot)}-${attempt}${name.slice(dot)}` : name;
     try {
-      return await writeUploadedFile(notebook, new File([new Uint8Array(body)], candidate, { type: mediaType }), folderPath);
+      return await write(notebook, new File([new Uint8Array(body)], candidate, { type: mediaType }), folderPath);
     } catch (error) {
       if (!(error instanceof StorageError && error.status === 409)) throw error;
     }

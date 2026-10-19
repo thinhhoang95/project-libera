@@ -6,6 +6,7 @@ import os from "node:os";
 import { extractNotebookLinkDestinations } from "../../src/lib/storage/notebook-links";
 import { getTree } from "../../src/lib/storage/tree";
 import { updateMarkdownFile } from "../../src/lib/storage/files";
+import { markdownLinkWorkspacePath } from "../../src/lib/markdown-file-links";
 
 test("extracts actual Markdown links, including references, but ignores code and images", () => {
   assert.deepEqual(extractNotebookLinkDestinations([
@@ -40,6 +41,11 @@ test("persists links, reuses unchanged metadata, and reconciles saves, external 
       "[missing](../../Missing/note.md)",
     ].join("\n"));
     assert.deepEqual(await related(), ["Beta space"]);
+    const sourceNode = (await getTree()).notebooks.find((notebook) => notebook.name === "Alpha")!
+      .children.flatMap((node) => node.kind === "folder" ? node.children : [node])
+      .find((node) => node.path === "Alpha/nested/note.md");
+    assert.deepEqual(sourceNode?.kind === "file" && sourceNode.linkedFilePaths, ["Beta space/target.md"],
+      "resolved, de-duplicated targets exclude self, external and missing links");
     const initial = await readFile(cache, "utf8");
     const initialMtime = (await stat(cache)).mtimeMs;
     assert.deepEqual(await related(), ["Beta space"]);
@@ -111,4 +117,58 @@ test("panel highlights related notebooks in both grouped and ungrouped sections"
   assert.ok(highlighted.some((text) => text?.includes("Beta")));
   assert.ok(highlighted.some((text) => text?.includes("Gamma")));
   assert.deepEqual(sections("Beta"), [], "changing selection clears previous related highlights");
+});
+
+test("panel highlights files that link to the open file, with counts on collapsed containers", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { JSDOM } = await import("jsdom");
+  const { NotebookPanel } = await import("../../src/components/libera/notebook-panel");
+  const { emptyTree } = await import("../../src/components/libera/api-client");
+  const timestamp = "2026-10-14T00:00:00.000Z";
+  const file = (path: string, fileType: "markdown" | "pdf" | "image", linkedFilePaths?: string[]) => ({
+    kind: "file" as const, name: path.split("/").at(-1)!, path, notebook: path.split("/")[0],
+    fileType, createdAt: timestamp, updatedAt: timestamp, size: 1, linkedFilePaths,
+  });
+  const tree = emptyTree();
+  tree.notebooks = [
+    { kind: "notebook", name: "Alpha", path: "Alpha", color: "#008888", emoji: "📓", groupId: null,
+      createdAt: timestamp, updatedAt: timestamp, children: [
+        file("Alpha/photo.png", "image"),
+        file("Alpha/paper.pdf", "pdf"),
+        file("Alpha/a.md", "markdown", ["Alpha/photo.png"]),
+        file("Alpha/b.md", "markdown", ["Alpha/paper.pdf"]),
+        { kind: "folder", name: "deep", path: "Alpha/deep", notebook: "Alpha",
+          createdAt: timestamp, updatedAt: timestamp,
+          children: [file("Alpha/deep/c.md", "markdown", ["Alpha/photo.png"])] },
+      ] },
+    { kind: "notebook", name: "Beta", path: "Beta", color: "#008888", emoji: "📓", groupId: null,
+      createdAt: timestamp, updatedAt: timestamp,
+      children: [file("Beta/d.md", "markdown", ["Alpha/photo.png", "Alpha/paper.pdf"])] },
+  ];
+  const noop = async () => {};
+  const props = {
+    tree, selectedNotebookName: "Alpha", activeTabId: "", expanded: new Set(["Alpha"]),
+    fileInteractions: {}, query: "", searchResults: [], uploadInputRef: { current: null },
+  } as unknown as import("../../src/components/libera/notebook-panel").NotebookPanelProps;
+  const render = (activeTabId: string) => new JSDOM(renderToStaticMarkup(createElement(NotebookPanel,
+    new Proxy({ ...props, activeTabId }, { get: (target, key) => key in target ? target[key as keyof typeof target] : noop }),
+  ))).window.document;
+  const highlighted = (document: Document) =>
+    [...document.querySelectorAll('[data-backlink="true"]')].map((row) => row.textContent?.trim());
+
+  let document = render("Alpha/photo.png");
+  assert.deepEqual(highlighted(document), ["a.md"], "only expanded rows are listed");
+  const counts = [...document.querySelectorAll(".libera-backlink-count")].map((badge) => badge.getAttribute("aria-label"));
+  assert.deepEqual(counts.sort(), ["1 file links to the open file", "1 file links to the open file"],
+    "collapsed folder and notebook show their counts");
+  document = render("Alpha/paper.pdf");
+  assert.deepEqual(highlighted(document), ["b.md"]);
+  assert.deepEqual(highlighted(render("Alpha/a.md")), [], "files without backlinks highlight nothing");
+});
+
+test("chat links resolve to workspace paths", () => {
+  assert.equal(markdownLinkWorkspacePath("Research/Plan%20A/./ROB-Kmin.md#libera=x"), "Research/Plan A/ROB-Kmin.md");
+  assert.equal(markdownLinkWorkspacePath("https://example.com/a.md"), null);
+  assert.equal(markdownLinkWorkspacePath("../outside.md"), null);
 });

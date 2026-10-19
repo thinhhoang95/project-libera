@@ -21,11 +21,14 @@ const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
+const { INDEX_FILE_NAME, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
+const { createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
-const { writeWorkspaceRecovery } = require("./workspace-recovery.cjs");
+const { writeWorkspaceRecovery, localWorkspaceRecoveryRoot } = require("./workspace-recovery.cjs");
+const { requestStateFlush } = require("./state-flush.cjs");
 const {
   contextStateRoot,
   findLinkedFolder,
@@ -33,10 +36,11 @@ const {
 } = require("./directory-mode.cjs");
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
+const { createCollabHost } = require("./collab-host.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
-const APP_DISPLAY_NAME = "Libera by Thinh Hoang";
+const APP_DISPLAY_NAME = "Libera for Vy Tran";
 const ADMIN_USER = "admin";
 const MARKDOWN_ASSETS_DIR = "_assets";
 const THEME_PREFERENCES = new Set(["light", "dark", "system"]);
@@ -66,16 +70,27 @@ applyApplicationIdentity();
 
 let activeSetupPromise = null;
 let activeSetupWindow = null;
+let openRouterModelCatalog = null;
 let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
+let rendererStateReady = false;
+let quitRequested = false;
 let shutdownPromise = null;
 let shutdownComplete = false;
 const updaterService = createUpdaterService({
   getMainWindow: () => mainWindow,
   onBeforeInstall: prepareToQuit,
 });
+// Collaboration host (on unless LIBERA_COLLAB=0; when off every call is a no-op).
+const collabHost = createCollabHost({
+  getMainWindow: () => mainWindow,
+  isTrustedFrame: (frame) => Boolean(nextServerUrl) && isSameOrigin(frame.url, nextServerUrl),
+  onUpdateRequired: () => void updaterService.check(),
+});
+const hasInstanceLock = collabHost.claimSingleInstance();
+if (!hasInstanceLock) app.quit();
 
 function getAppRoot() {
   return app.getAppPath();
@@ -219,6 +234,11 @@ function normalizeSmartPaste(value) {
   return value === true;
 }
 
+// The Markdown Source editor: the textarea ("classic", default) or CodeMirror (beta).
+function normalizeSourceEditor(value) {
+  return value === "codemirror" ? "codemirror" : "classic";
+}
+
 function normalizeThemePreference(themePreference) {
   return THEME_PREFERENCES.has(themePreference) ? themePreference : "system";
 }
@@ -350,6 +370,7 @@ function normalizedImportedPreferences(input) {
     themePreference: normalizeThemePreference(input.themePreference),
     yourName: normalizeYourName(input.yourName),
     smartPaste: normalizeSmartPaste(input.smartPaste),
+    sourceEditor: normalizeSourceEditor(input.sourceEditor),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -374,6 +395,7 @@ function normalizedImportedPreferences(input) {
     quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
     // Backups made before snippets existed leave the saved snippets alone.
     ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
+    ...(Object.hasOwn(input, "search") ? { search: normalizeSearchPreferences(input.search) } : {}),
     passwordHash,
   };
 }
@@ -432,7 +454,7 @@ async function importPreferences(parentWindow) {
     title: "Load Preferences Backup?",
     message: "Replace all saved Libera preferences with this backup?",
     detail:
-      "This includes the notebook directory, API key, AI and Markdown settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
+      "This includes the notebook directory, API key, AI, Markdown and Search settings, quick prompts, LaTeX snippets, theme, and master password verifier.",
   });
 
   if (confirmation.response !== 0) return { canceled: true };
@@ -457,6 +479,7 @@ function getConfigStatus(config = readConfig()) {
     themePreference: normalizeThemePreference(config.themePreference),
     yourName: normalizeYourName(config.yourName),
     smartPaste: normalizeSmartPaste(config.smartPaste),
+    sourceEditor: normalizeSourceEditor(config.sourceEditor),
     dataDir: typeof config.dataDir === "string" ? config.dataDir : "",
     hasApiKey: typeof config.openaiApiKey === "string" && config.openaiApiKey.trim().length > 0,
     hasPasswordHash:
@@ -479,6 +502,10 @@ function getConfigStatus(config = readConfig()) {
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
+    search: normalizeSearchPreferences(config.search),
+    searchDefaultIndexFile: typeof config.dataDir === "string" && config.dataDir
+      ? defaultSearchIndexFile({ adminRoot: path.join(config.dataDir, "users", ADMIN_USER), configPath: getConfigPath() })
+      : "",
   };
 }
 
@@ -535,6 +562,68 @@ async function loadAiRewriteCustomInstructionFile(parentWindow) {
     canceled: false,
     content: await fsp.readFile(result.filePaths[0], "utf8"),
   };
+}
+
+async function selectSearchWeights(parentWindow, kind) {
+  if (kind === "reading") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose the PDF reading model folder",
+      message: "Choose an empty folder for Libera to download granite-docling into, or a folder that already holds it.",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
+  const isVision = kind === "vision";
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: isVision ? "Choose the EmbeddingGemma 2 vision encoder" : "Choose the EmbeddingGemma 2 text model",
+    message: isVision
+      ? "Choose vision_encoder_*.onnx. Its .onnx_data file must be next to it."
+      : "Choose model_*.onnx. Its .onnx_data file must be next to it, and config.json and tokenizer.json next to it or one folder up.",
+    properties: ["openFile"],
+    filters: [{ name: "ONNX models", extensions: ["onnx"] }],
+  });
+
+  return result.canceled ? "" : result.filePaths[0] ?? "";
+}
+
+/** Pick an existing index file, or where a new one should be created. */
+async function selectSearchIndexFile(parentWindow, mode) {
+  if (mode === "new") {
+    const result = await dialog.showSaveDialog(parentWindow, {
+      title: "Create the search index",
+      defaultPath: path.join(app.getPath("documents"), INDEX_FILE_NAME),
+      buttonLabel: "Create Here",
+      filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+    });
+    return result.canceled ? "" : result.filePath ?? "";
+  }
+
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Use an existing search index",
+    message: "Choose a libera-search.sqlite file built by Libera, for example copied from another computer.",
+    properties: ["openFile"],
+    filters: [{ name: "Libera search index", extensions: ["sqlite"] }],
+  });
+  return result.canceled ? "" : result.filePaths[0] ?? "";
+}
+
+/** Show the index file in Finder or Explorer; only SQLite files that exist. */
+function revealSearchIndex(filePath) {
+  if (typeof filePath !== "string" || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== ".sqlite") {
+    return false;
+  }
+  if (!fs.existsSync(filePath)) return false;
+  shell.showItemInFolder(filePath);
+  return true;
+}
+
+/** Save the index file in Preferences → Search; the server picks it up on its next request. */
+async function useSearchIndexFile(filePath) {
+  const config = readConfig();
+  const search = normalizeSearchPreferences({ ...normalizeSearchPreferences(config.search), indexFile: filePath });
+  await writeConfig({ ...config, search });
+  return search.indexFile;
 }
 
 function showMessageBox(parentWindow, options) {
@@ -618,6 +707,7 @@ function validateSetupInput(input, existingConfig) {
     themePreference: normalizeThemePreference(input?.themePreference),
     yourName: normalizeYourName(input?.yourName),
     smartPaste: normalizeSmartPaste(input?.smartPaste),
+    sourceEditor: normalizeSourceEditor(input?.sourceEditor),
     dataDir,
     markdownInlineMathMarkers,
     markdownBlockMathMarkers,
@@ -632,6 +722,7 @@ function validateSetupInput(input, existingConfig) {
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
     quickPrompts,
+    search: normalizeSearchPreferences(input?.search ?? existingConfig.search),
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -639,7 +730,7 @@ function validateSetupInput(input, existingConfig) {
   };
 }
 
-async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
+async function createSetupWindow({ mode = "setup", parentWindow = null, section = "" } = {}) {
   if (activeSetupWindow && !activeSetupWindow.isDestroyed()) {
     activeSetupWindow.focus();
     return activeSetupPromise;
@@ -667,6 +758,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        // Same preload as the main window; it only needs sandbox-safe APIs.
+        sandbox: true,
         preload: path.join(__dirname, "preload.cjs"),
       },
     });
@@ -683,7 +776,22 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
 
+    ipcMain.handle("setup:select-search-weights", (_event, kind) => selectSearchWeights(setupWindow, kind));
+
+    ipcMain.handle("setup:select-search-index-file", (_event, mode) => selectSearchIndexFile(setupWindow, mode));
+
+    ipcMain.handle("setup:reveal-search-index", (_event, filePath) => revealSearchIndex(filePath));
+
     ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
+
+    ipcMain.handle("setup:list-openrouter-models", async (_event, options) => {
+      openRouterModelCatalog ??= createOpenRouterModelCatalog({ cacheDir: app.getPath("userData") });
+      try {
+        return { ok: true, ...(await openRouterModelCatalog.list({ refresh: options?.refresh === true })) };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
 
     ipcMain.handle("setup:import-preferences", async () => {
       const result = await importPreferences(setupWindow);
@@ -712,6 +820,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         themePreference: validated.themePreference,
         yourName: validated.yourName,
         smartPaste: validated.smartPaste,
+        sourceEditor: validated.sourceEditor,
         dataDir: validated.dataDir,
         markdownInlineMathMarkers: validated.markdownInlineMathMarkers,
         markdownBlockMathMarkers: validated.markdownBlockMathMarkers,
@@ -726,6 +835,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
         quickPrompts: validated.quickPrompts,
+        search: validated.search,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -743,7 +853,11 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
       ipcMain.removeHandler("setup:close");
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
+      ipcMain.removeHandler("setup:select-search-weights");
+      ipcMain.removeHandler("setup:select-search-index-file");
+      ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
+      ipcMain.removeHandler("setup:list-openrouter-models");
       ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
       ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");
@@ -765,7 +879,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null } = {}) {
     });
 
     setupHost.webContents.loadFile(path.join(__dirname, "setup.html"), {
-      query: { mode, presentation: overlay ? "overlay" : "window" },
+      query: { mode, presentation: overlay ? "overlay" : "window", section },
     }).catch((error) => {
       reject(error);
       setupHost.close();
@@ -887,6 +1001,7 @@ async function exportMarkdownPdf(event, input) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
     width: 960,
   });
@@ -968,20 +1083,22 @@ function dispatchCloseTabToFocusedWindow() {
   dispatchRendererCloseTabShortcut(focusedWindow?.webContents);
 }
 
-async function openConfigurationWindow() {
+async function openConfigurationWindow(section = "") {
   try {
     const previousConfig = readConfig();
     const updatedConfig = await createSetupWindow({
       mode: "configuration",
       parentWindow: mainWindow,
+      section: typeof section === "string" ? section : "",
     });
 
     if (!updatedConfig) {
       return;
     }
 
+    // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
-      (key) => key !== "themePreference" && (key === "aiFunctions"
+      (key) => key !== "themePreference" && key !== "search" && (key === "aiFunctions"
         ? JSON.stringify(updatedConfig.aiFunctions) !== JSON.stringify(normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)))
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
@@ -989,6 +1106,8 @@ async function openConfigurationWindow() {
           ? JSON.stringify(updatedConfig.latexSnippets) !== JSON.stringify(previousConfig.latexSnippets)
         : key === "smartPaste"
           ? updatedConfig.smartPaste !== normalizeSmartPaste(previousConfig.smartPaste)
+        : key === "sourceEditor"
+          ? updatedConfig.sourceEditor !== normalizeSourceEditor(previousConfig.sourceEditor)
         : updatedConfig[key] !== previousConfig[key]),
     );
     if (!requiresRestart) return;
@@ -1457,21 +1576,56 @@ function installFileExplorerHandlers() {
 }
 
 function installWindowControlHandlers() {
+  function checkpointRoot(event, contextRoot) {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame ||
+        new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
+      throw new Error("Workspace checkpoint sender is invalid.");
+    }
+    const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
+    if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
+    return stateRoot;
+  }
+  ipcMain.on("state:ready", (event, ready) => {
+    if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === event.sender.mainFrame) {
+      rendererStateReady = ready === true;
+    }
+  });
   ipcMain.on("workspaces:checkpoint", (event, body, contextRoot) => {
     try {
-      if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
-          new URL(event.senderFrame.url).origin !== new URL(nextServerUrl).origin) {
-        throw new Error("Workspace checkpoint sender is invalid.");
-      }
       // Notebooks and linked folders share the library session.
-      const stateRoot = contextStateRoot(getAdminRootFromConfig(), contextRoot);
-      if (!stateRoot) throw new Error("This folder is no longer open in Libera.");
-      writeWorkspaceRecovery(stateRoot, body);
+      writeWorkspaceRecovery(checkpointRoot(event, contextRoot), body);
       event.returnValue = { saved: true };
     } catch (error) {
       event.returnValue = { saved: false, error: error.message };
     }
   });
+  ipcMain.on("workspaces:remember", (event, body, contextRoot) => {
+    try {
+      const stateRoot = checkpointRoot(event, contextRoot);
+      const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), stateRoot);
+      writeWorkspaceRecovery(localRoot, body, stateRoot);
+      event.returnValue = { saved: true };
+    } catch (error) { event.returnValue = { saved: false, error: error.message }; }
+  });
+  ipcMain.handle("workspaces:read-recovery", async (event, contextRoot) => {
+    const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), checkpointRoot(event, contextRoot));
+    try { return await fsp.readFile(path.join(localRoot, ".libera-workspaces-recovery.json"), "utf8"); }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  });
+  ipcMain.handle("search:reveal-index", (_event, filePath) => revealSearchIndex(filePath));
+
+  ipcMain.handle("search:use-existing-index", async (event) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    if (parentWindow !== mainWindow) return "";
+    const filePath = await selectSearchIndexFile(parentWindow, "existing");
+    return filePath ? useSearchIndexFile(filePath) : "";
+  });
+
+  ipcMain.handle("preferences:open", (event, section) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return;
+    void openConfigurationWindow(section);
+  });
+
   ipcMain.handle("window:minimize", (event) => {
     getWindowFromIpcEvent(event)?.minimize();
   });
@@ -1565,8 +1719,12 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
+    LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
+    ...collabHost.environment(),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
+    LIBERA_SOURCE_EDITOR: normalizeSourceEditor(config.sourceEditor),
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
     LIBERA_MARKDOWN_BLOCK_MATH_MARKERS: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
@@ -1713,6 +1871,14 @@ async function createMainWindow(url) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // The renderer shows collaborators' content (security §7): keep it in
+      // Chromium's sandbox. Electron 20+ sandboxes by default, but saying so
+      // here stops a later preload change from silently turning it off. The
+      // preload uses only sandbox-safe modules (electron's contextBridge,
+      // ipcRenderer, webFrame) and process.argv/platform; workspace
+      // checkpoints keep using ipcRenderer.sendSync, which works sandboxed.
+      // scripts/collab/p4d-sandbox.test.ts loads it in a sandboxed window.
+      sandbox: true,
       preload: path.join(__dirname, "preload.cjs"),
       additionalArguments: [
         `--libera-platform=${glass.platform}`,
@@ -1733,6 +1899,31 @@ async function createMainWindow(url) {
   enableNativePinch(mainWindow.webContents);
 
   mainWindow.setMenuBarVisibility(!isWindowsGlass);
+  let closingAfterFlush = false;
+  let closeFlush = null;
+  mainWindow.on("close", (event) => {
+    if (shutdownComplete || closingAfterFlush || !rendererStateReady) return;
+    event.preventDefault();
+    if (closeFlush) return;
+    const closingWindow = mainWindow;
+    closeFlush = requestStateFlush(closingWindow.webContents, ipcMain).then(() => {
+      if (closingWindow.isDestroyed()) return;
+      closingAfterFlush = true;
+      closingWindow.close();
+      // beforeunload may cancel closing because an editor has unsaved text.
+      closingAfterFlush = false;
+    }).catch((error) => {
+      dialog.showErrorBox("Could not save session", error.message);
+    }).finally(() => { closeFlush = null; });
+  });
+  mainWindow.webContents.on("did-start-loading", () => { rendererStateReady = false; });
+  mainWindow.on("closed", () => {
+    // BrowserWindow.webContents throws after destruction, even with optional
+    // chaining. Clear both references before quit re-enters the save path.
+    rendererStateReady = false;
+    mainWindow = null;
+    if (quitRequested) app.quit();
+  });
   if (isWindowsGlass) {
     maintainWindowsBackdrop(mainWindow, nativeTheme);
     mainWindow.once("ready-to-show", () => {
@@ -1775,7 +1966,14 @@ async function createMainWindow(url) {
           transparent: false,
           titleBarStyle: "default",
           autoHideMenuBar: true,
-          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            // Overriding webPreferences drops the opener's preload. With
+            // collaboration on, pop-outs need window.liberaCollab for shared files.
+            ...(collabHost.enabled ? { preload: path.join(__dirname, "preload.cjs") } : {}),
+          },
         },
       };
     }
@@ -1817,6 +2015,7 @@ async function createMainWindow(url) {
 }
 
 async function bootstrap() {
+  if (!hasInstanceLock) return;
   try {
     applyApplicationIdentity();
 
@@ -1830,6 +2029,11 @@ async function bootstrap() {
       config = await createSetupWindow({ mode: "setup" });
     }
 
+    // Before Next, so the control API's URL and token are in Next's env.
+    await collabHost.start(config).catch((error) => {
+      console.error(`Collaboration is unavailable: ${error.message}`);
+    });
+    if (isQuitting) return;
     const url = await startNextServer(config);
     if (isQuitting) return;
     nextServerUrl = url;
@@ -1855,13 +2059,25 @@ app.on("ready", bootstrap);
 
 function prepareToQuit() {
   if (shutdownPromise) return shutdownPromise;
-  isQuitting = true;
-  updaterService.dispose();
-  shutdownPromise = stopProcessTree(nextProcess).catch((error) => {
-    console.error(`Could not stop the Next.js server: ${error.message}`);
-  }).finally(() => {
+  shutdownPromise = (async () => {
+    if (rendererStateReady && mainWindow && !mainWindow.isDestroyed()) {
+      await requestStateFlush(mainWindow.webContents, ipcMain);
+    }
+    isQuitting = true;
+    updaterService.dispose();
+    // The host flushes its SQLite work and closes before Next goes away.
+    await collabHost.stop().catch((error) => {
+      console.error(`Could not stop the collaboration host: ${error.message}`);
+    });
+    await stopProcessTree(nextProcess).catch((error) => {
+      console.error(`Could not stop the Next.js server: ${error.message}`);
+    });
     nextProcess = null;
     shutdownComplete = true;
+  })().catch((error) => {
+    shutdownPromise = null;
+    isQuitting = false;
+    throw error;
   });
   return shutdownPromise;
 }
@@ -1869,7 +2085,16 @@ function prepareToQuit() {
 app.on("before-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
-  void prepareToQuit().then(() => app.quit());
+  // Let beforeunload accept or cancel closing while the server still runs.
+  // Once the main window closes, the next quit finishes server shutdown.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    quitRequested = true;
+    mainWindow.close();
+    return;
+  }
+  void prepareToQuit().then(() => app.quit()).catch((error) => {
+    dialog.showErrorBox("Could not save session", error.message);
+  });
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

@@ -97,6 +97,24 @@ test("linked changes stay atomic and comments are addressed only after full acce
   assert.ok(applied.snapshot.includes("Improved 1.")); assert.ok(applied.snapshot.includes("Improved 2."));
   assert.equal(undoReview(applied).snapshot, source);
 });
+test("accepted changes attach their comments to the replacement instead of orphaning them", () => {
+  const doc = fixture();
+  const accepted = decideSuggestions(doc, ["s1", "s3"], "accept", "both");
+  for (const index of [0, 2]) {
+    const { anchor, status } = accepted.threads[index];
+    assert.equal(status, "addressed");
+    assert.equal(anchor.state, "attached");
+    assert.equal(accepted.snapshot.slice(anchor.start, anchor.end), `Improved ${index + 1}.`);
+  }
+  assert.deepEqual(undoReview(accepted).threads.map((t) => t.anchor), doc.threads.map((t) => t.anchor));
+  // A deletion leaves nothing to attach to; the comment is still completed.
+  const deletion = fixture();
+  deletion.session!.suggestions[0].edits[0].after = "";
+  assert.equal(decideSuggestions(deletion, ["s1"], "accept", "delete").threads[0].status, "addressed");
+  // Reopening a completed comment survives later, unrelated decisions.
+  accepted.threads[0].status = "open";
+  assert.equal(decideSuggestions(accepted, ["s2"], "reject", "unrelated").threads[0].status, "open");
+});
 test("validators reject invented IDs, missing coverage, ambiguous quotes, overlap and no-op edits", () => {
   assert.throws(() => validatePlan({ summary: "Skipped", steps: [], dispositions: [], blockingQuestions: [], revisionSummary: "" }, 1, ["c1"], reviewBlocks(source)));
   const p = { title: "Change", reason: "Reason", commentIds: ["c1"], edits: [{ targetBlockId: "b2", before: "First **paragraph**.", after: "Changed" }] };

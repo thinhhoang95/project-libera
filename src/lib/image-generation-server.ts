@@ -1,7 +1,8 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { getOpenRouterApiKey } from "./openrouter";
+import { joinPath, resolvePath, workingDirectory } from "./runtime-path";
+import { writeJsonState } from "./storage/json-state";
 import {
   DEFAULT_IMAGE_GENERATION_SETTINGS,
   DEFAULT_IMAGE_MODEL,
@@ -23,7 +24,7 @@ const MODELS_CACHE_MS = 30 * 60 * 1000;
 function settingsPath() {
   const directory = process.env.LIBERA_CONFIG_PATH
     ? path.dirname(process.env.LIBERA_CONFIG_PATH)
-    : path.resolve(process.env.LIBERA_DATA_DIR || path.join(process.cwd(), "data", "libera"), ".libera");
+    : resolvePath(process.env.LIBERA_DATA_DIR || joinPath(workingDirectory(), "data", "libera"), ".libera");
   return path.join(directory, "image-generation.json");
 }
 
@@ -43,13 +44,7 @@ export async function readImageGenerationSettings(): Promise<ImageGenerationSett
 
 export async function writeImageGenerationSettings(input: unknown) {
   const settings = parseImageGenerationSettings(input);
-  const target = settingsPath();
-  await mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
-    await rename(temporary, target);
-  } finally { await rm(temporary, { force: true }); }
+  await writeJsonState(settingsPath(), settings);
   return settings;
 }
 

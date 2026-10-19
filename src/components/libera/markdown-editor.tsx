@@ -52,6 +52,7 @@ import {
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import {
   createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
@@ -67,6 +68,18 @@ import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-
 import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
 import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
 import type { MathMarkerSettings } from "@/lib/math-markers";
+import { citationAt, citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
+import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
+import {
+  CitationPopup,
+  citationPopupPosition,
+  openCitationAttachment,
+  useEditorCitationHover,
+  type CitationPopupHandle,
+} from "@/components/libera/references/citation-popup";
+import { referenceKeyResolver, useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
+import { quoteBlockInsertion, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 
 type EditorContextMenuState = {
   hasText: boolean;
@@ -83,6 +96,18 @@ type FileLinkPopupContext = {
   query: string;
   x: number;
   y: number;
+};
+
+type CitationPopupContext = {
+  from: number;
+  to: number;
+  query: string;
+  insideCitation: boolean;
+  citedKeys: string[];
+  x: number;
+  y: number;
+  /** The character before the `@` (narrative insertion needs whitespace, `[` or `(` there). */
+  before: string;
 };
 
 type MarkdownEditorProps = {
@@ -138,7 +163,7 @@ const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
 
 /** The smallest range of `current` that must be replaced to produce `next`,
  * so whole-document edits land in the textarea as one compact undo step. */
-function getChangedTextRange(current: string, next: string) {
+export function getChangedTextRange(current: string, next: string) {
   let prefixLength = 0;
   while (
     prefixLength < current.length &&
@@ -162,7 +187,7 @@ function getChangedTextRange(current: string, next: string) {
   };
 }
 
-type HeadingLevelChangeDirection = "indent" | "unindent";
+export type HeadingLevelChangeDirection = "indent" | "unindent";
 
 type HighlightChunk = {
   className?: string;
@@ -183,19 +208,19 @@ type HeadingLevelChangeResult = {
   nextValue: string;
 };
 
-type MarkdownFormat = {
+export type MarkdownFormat = {
   after: string;
   before: string;
   placeholder?: string;
 };
 
-const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
+export const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
   b: { before: "**", after: "**" },
   i: { before: "_", after: "_" },
   u: { before: "<u>", after: "</u>" },
 };
 
-function findMarkdownImageInText(
+export function findMarkdownImageInText(
   value: string,
   start: number,
   end: number,
@@ -240,7 +265,7 @@ function isImageFile(file: File) {
   return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION_REGEX.test(file.name);
 }
 
-function hasImageDragItem(dataTransfer: DataTransfer) {
+export function hasImageDragItem(dataTransfer: DataTransfer) {
   if (dataTransfer.files.length) {
     return Array.from(dataTransfer.files).some(isImageFile);
   }
@@ -252,7 +277,7 @@ function hasImageDragItem(dataTransfer: DataTransfer) {
   );
 }
 
-function getDroppedImageFiles(dataTransfer: DataTransfer) {
+export function getDroppedImageFiles(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.files).filter(isImageFile);
 }
 
@@ -277,7 +302,7 @@ function normalizeClipboardImageFile(file: File) {
   });
 }
 
-function getClipboardImageFiles(dataTransfer: DataTransfer) {
+export function getClipboardImageFiles(dataTransfer: DataTransfer) {
   const files = Array.from(dataTransfer.files)
     .filter(isImageFile)
     .map(normalizeClipboardImageFile)
@@ -336,7 +361,7 @@ function transformSelectionOffset(
   return offset + delta;
 }
 
-function changeSelectedHeadingLevels(
+export function changeSelectedHeadingLevels(
   value: string,
   start: number,
   end: number,
@@ -661,6 +686,14 @@ export function MarkdownEditor({
   highlightIndexRef.current ??= createMarkdownEditorLineIndex();
   const fileLinkPopupFrameRef = useRef<number | null>(null);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
+  // The `@` citation popup, refreshed in the file-link popup's frame.
+  const [citationPopup, setCitationPopup] = useState<CitationPopupContext | null>(null);
+  const citationPopupRef = useRef<CitationPopupContext | null>(null);
+  /** The `@key` the popup just inserted: it must not reopen the popup. */
+  const citationInsertedRef = useRef<{ from: number; query: string } | null>(null);
+  const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
+  const referenceRender = useReferenceRender();
+  const citationHover = useEditorCitationHover();
   const publishedDraftsRef = useRef<string[]>([]);
   const composingRef = useRef(false);
   const previousActiveFilePathRef = useRef(activeFilePath);
@@ -708,7 +741,7 @@ export function MarkdownEditor({
   const reviewDocument = review?.doc;
   const reviewSelection = review?.selection;
   const reviewRanges = useMemo(() => reviewEnabled ? [
-    ...(reviewDocument?.threads.filter((t) => t.anchor.state === "attached" && t.status !== "resolved").map((t) => t.anchor) ?? []),
+    ...(reviewDocument?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => t.anchor) ?? []),
     ...(reviewDocument?.session?.suggestions.filter((s) => s.status === "pending").flatMap((s) => s.edits) ?? []),
     ...(reviewSelection ? [reviewSelection.range] : []),
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
@@ -1072,6 +1105,7 @@ export function MarkdownEditor({
       fileLinkPopupFrameRef.current = window.requestAnimationFrame(() => {
         fileLinkPopupFrameRef.current = null;
         refreshFileLinkPopup(textarea, nextValue);
+        refreshCitationPopupRef.current(textarea, nextValue);
       });
     },
     [refreshFileLinkPopup],
@@ -1085,7 +1119,154 @@ export function MarkdownEditor({
 
     fileLinkPopupRef.current = null;
     setFileLinkPopup(null);
+    closeCitationPopup();
   }
+
+  function closeCitationPopup() {
+    if (!citationPopupRef.current) return;
+    citationPopupRef.current = null;
+    setCitationPopup(null);
+  }
+
+  /** Opens, moves or closes the citation popup for the caret. `citationTriggerAt`
+   * analyses the whole document, so it only runs right after `@` and key characters. */
+  function refreshCitationPopup(textarea: HTMLTextAreaElement, nextValue = editorValueRef.current) {
+    const cursor = textarea.selectionStart;
+    const previous = citationPopupRef.current;
+    let next: CitationPopupContext | null = null;
+    if (
+      textarea.selectionStart === textarea.selectionEnd &&
+      !fileLinkPopupRef.current &&
+      mayTriggerCitation(nextValue.slice(Math.max(0, cursor - 260), cursor))
+    ) {
+      const trigger = citationTriggerAt(nextValue, cursor, { mathMarkers });
+      const dismissed = citationInsertedRef.current;
+      // The `@key` a choice just inserted is not a new query: stay closed until the caret leaves it.
+      if (!(trigger && dismissed && dismissed.from === trigger.from && dismissed.query === trigger.query)) {
+        citationInsertedRef.current = null;
+        if (trigger) {
+          const same = previous?.from === trigger.from;
+          next = {
+            from: trigger.from,
+            to: cursor,
+            query: trigger.query,
+            insideCitation: trigger.insideCitation,
+            // The trigger just analysed this text, so listing its keys reuses that analysis.
+            citedKeys: same ? previous.citedKeys : documentCitedKeys(nextValue, { mathMarkers, resolves: referenceKeyResolver(referenceRender) }),
+            ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(getTextareaClientPointForOffset(textarea, trigger.from))),
+            before: trigger.from > 0 ? nextValue[trigger.from - 1] : "",
+          };
+        }
+      }
+    } else citationInsertedRef.current = null;
+    if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
+    if (!previous && !next) return;
+    citationPopupRef.current = next;
+    setCitationPopup(next);
+  }
+  const refreshCitationPopupRef = useRef(refreshCitationPopup);
+  useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
+
+  function insertCitation(key: string, { locator, narrative, pageLocator }: { locator: boolean; narrative?: boolean; pageLocator?: string }) {
+    const textarea = textareaRef.current;
+    const popup = citationPopupRef.current;
+    if (!textarea || !popup) return;
+    // `[@key]` replaces `@query`; inside a citation, or narrative (Shift+Enter), `@key` does.
+    const insertion = citationInsertion(key, popup.insideCitation, locator, { narrative, before: popup.before, pageLocator });
+    citationInsertedRef.current = insertion.text.startsWith("@") ? { from: popup.from, query: key } : null;
+    const currentValue = editorValueRef.current;
+    const nextValue = `${currentValue.slice(0, popup.from)}${insertion.text}${currentValue.slice(popup.to)}`;
+    const caret = popup.from + insertion.caret;
+    closeCitationPopup();
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: popup.from,
+      selectionEnd: popup.to,
+      replacement: insertion.text,
+      nextSelectionStart: caret,
+      nextSelectionEnd: caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+    readDraft();
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current;
+      if (!nextTextarea) return;
+      nextTextarea.focus();
+      nextTextarea.setSelectionRange(caret, caret);
+      emitSelectionChange(nextTextarea);
+      syncHighlightLayerScroll(nextTextarea);
+    });
+  }
+
+  /** The citation under the pointer, for the hover card and Ctrl/Cmd+click. */
+  function citationAtPointer(textarea: HTMLTextAreaElement, clientX: number, clientY: number) {
+    const text = editorValueRef.current;
+    if (!text.includes("@")) return null;
+    const offset = getTextareaOffsetAtPoint(textarea, clientX, clientY);
+    const found = citationAt(text, offset, { mathMarkers });
+    // A narrative `@word` is a citation only when the library knows its key.
+    if (!found || (found.citation.narrative && !referenceKeyResolver(referenceRender)?.(found.citation.items[0].key))) return null;
+    // The offset is the nearest caret position: check the pointer is over the token on its line.
+    const start = getTextareaClientPointForOffset(textarea, found.start);
+    const end = getTextareaClientPointForOffset(textarea, found.end);
+    if (start.y === end.y && (clientX < start.x - 2 || clientX > end.x + 2)) return null;
+    return found;
+  }
+
+  function handleCitationPointer(event: MouseEvent<HTMLTextAreaElement>) {
+    const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+    if (!found) {
+      citationHover.show(null);
+      return;
+    }
+    citationHover.show({
+      citation: found.citation,
+      rect: () => {
+        const current = textareaRef.current;
+        if (!current) return null;
+        const start = getTextareaClientPointForOffset(current, found.start);
+        const end = getTextareaClientPointForOffset(current, found.end);
+        const left = start.y === end.y ? start.x : current.getBoundingClientRect().left;
+        const right = start.y === end.y ? end.x : left + 1;
+        return new DOMRect(left, start.y - lineHeightPx, Math.max(1, right - left), end.y - start.y + lineHeightPx);
+      },
+    });
+  }
+
+  /** The Document style control's request (references/document-style.ts): one undoable edit of the front matter. */
+  function applyDocumentStyle(detail: DocumentStyleRequestDetail) {
+    const textarea = textareaRef.current;
+    if (!textarea || !activeFilePath || detail.path !== activeFilePath || detail.handled) return;
+    detail.handled = true;
+    // The textarea holds the latest text, even before React has seen its last input.
+    const currentValue = textarea.value;
+    const nextValue = writeDocumentStyleForPath(activeFilePath, currentValue, detail.style);
+    if (nextValue === currentValue) return;
+    const change = textChange(currentValue, nextValue);
+    const delta = change.insert.length - (change.to - change.from);
+    const shift = (offset: number) => offset <= change.from ? offset : offset >= change.to ? offset + delta : change.from + change.insert.length;
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: change.from,
+      selectionEnd: change.to,
+      replacement: change.insert,
+      nextSelectionStart: shift(textarea.selectionStart),
+      nextSelectionEnd: shift(textarea.selectionEnd),
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, nextValue);
+    }
+    readDraft();
+  }
+  const applyDocumentStyleRef = useRef(applyDocumentStyle);
+  useLayoutEffect(() => { applyDocumentStyleRef.current = applyDocumentStyle; });
+  useEffect(() => {
+    const onRequest = (event: Event) => applyDocumentStyleRef.current((event as CustomEvent<DocumentStyleRequestDetail>).detail);
+    window.addEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
+  }, []);
 
   function insertFileLink(selection: MarkdownFileLinkSelection) {
     const range = fileLinkPopup
@@ -1298,6 +1479,12 @@ export function MarkdownEditor({
   }
 
   function handleDragOver(event: DragEvent<HTMLTextAreaElement>) {
+    if (hasPdfQuoteDrag(event.dataTransfer)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      return;
+    }
+
     if (!hasImageDragItem(event.dataTransfer)) {
       return;
     }
@@ -1311,7 +1498,36 @@ export function MarkdownEditor({
     setDraggingImage(false);
   }
 
+  /** A quote dragged from a PDF: quote and cite it as a block at the drop point. */
+  async function insertDroppedQuote(source: PdfQuoteSource, offset: number) {
+    const markdown = await droppedQuoteMarkdown(source, referenceRender?.notebook ?? null);
+    const textarea = textareaRef.current;
+    if (!markdown || !textarea) return;
+    const currentValue = editorValueRef.current;
+    const insertion = quoteBlockInsertion(currentValue, offset, markdown);
+    if (!replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: insertion.from,
+      selectionEnd: insertion.from,
+      replacement: insertion.text,
+      nextSelectionStart: insertion.caret,
+      nextSelectionEnd: insertion.caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    })) {
+      commitEditorValue(textarea, insertion.value);
+    }
+    readDraft();
+  }
+
   async function handleDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const quote = pdfQuoteFromDrop(event.dataTransfer);
+    if (quote) {
+      event.preventDefault();
+      setDraggingImage(false);
+      void insertDroppedQuote(quote, getTextareaOffsetAtPoint(event.currentTarget, event.clientX, event.clientY));
+      return;
+    }
+
     const imageFiles = getDroppedImageFiles(event.dataTransfer);
 
     if (!imageFiles.length) {
@@ -1453,6 +1669,11 @@ export function MarkdownEditor({
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (citationPopupRef.current && citationPopupHandleRef.current?.handleKey(event)) {
+      event.preventDefault();
+      return;
+    }
+
     if (fileLinkPopup) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1665,6 +1886,14 @@ export function MarkdownEditor({
           scheduleFileLinkPopupRefresh(event.currentTarget);
           scheduleSelectionChange(event.currentTarget);
         }}
+        onMouseDown={(event) => {
+          // Ctrl/Cmd+click on a citation opens its attachment at the cited page.
+          if (event.button !== 0 || !(event.metaKey || event.ctrlKey)) return;
+          const found = citationAtPointer(event.currentTarget, event.clientX, event.clientY);
+          if (found && openCitationAttachment(referenceRender, found.citation)) event.preventDefault();
+        }}
+        onMouseMove={handleCitationPointer}
+        onMouseLeave={() => citationHover.show(null)}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onKeyDown={handleEditorKeyDown}
@@ -1872,6 +2101,20 @@ export function MarkdownEditor({
           ) : null}
         </div>
       ) : null}
+
+      {citationPopup ? (
+        <CitationPopup
+          ref={citationPopupHandleRef}
+          query={citationPopup.query}
+          citedKeys={citationPopup.citedKeys}
+          x={citationPopup.x}
+          y={citationPopup.y}
+          narrativeAllowed={narrativeInsertionAllowed(citationPopup.insideCitation, citationPopup.before)}
+          onInsert={insertCitation}
+          onClose={closeCitationPopup}
+        />
+      ) : null}
+      {citationHover.element}
 
       {fileLinkPopup ? (
         <MarkdownFileLinkPopup

@@ -5,7 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { apiRequest } from "@/components/libera/api-client";
 import type { LatexTabViewState, OpenTab, OpenTabViewState } from "@/components/libera/types";
 import type { LatexDiagnostic } from "@/lib/latex/build";
-import type { LatexProjectData, LatexProjectFile } from "@/lib/latex/codemirror/editing";
+import { latexLibraryEntries, type LatexProjectData, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
+import type { BibMirrorResult } from "@/lib/references/bib-mirror";
+import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import {
   LATEX_ENGINE_LABELS, hasDocumentClass, isCompilableLatexPath, readBibEntries, readLatexBibliographyReferences, readLatexLabels,
   readLatexMagicComments, resolveLatexEngine, resolveLatexRootPath, resolveRelativeNotebookPath, type BibEntrySummary, type LatexEngineSetting,
@@ -14,6 +16,9 @@ import { usesPackage } from "@/lib/latex/snippets";
 import type { SynctexPdfLocation, SynctexSourceLocation } from "@/lib/latex/synctex";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { LiberaFileNode, LiberaFilePayload } from "@/lib/types";
+import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
+import { getSharedDocRegistry } from "@/lib/collab/client/registry";
+import { useHorizontalWheelScroll } from "../use-horizontal-wheel-scroll";
 import { latexPdfUrl, requestLatexCompile, useLatexBuild } from "./latex-build-store";
 import { LatexCacheDialog } from "./latex-cache-dialog";
 import { LatexCompileMenu, type LatexCompileTarget } from "./latex-compile-menu";
@@ -36,6 +41,8 @@ type LatexWorkspaceProps = {
   onSave: () => Promise<void>;
   onSetViewState: (patch: LatexTabViewState) => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  /** Shared tab: the editor binds the shared Y.Text and never publishes drafts. */
+  collab?: SharedCodeMirrorSource;
 };
 
 const AUTO_COMPILE_DELAY_MS = 1200;
@@ -66,16 +73,22 @@ function formatDuration(milliseconds: number) {
   return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();
-/** Main files found for chapter files, so reopening a chapter needs no lookup. */
+const bibCache = new Map<string, { key: string; entries: BibEntrySummary[] }>();/** Main files found for chapter files, so reopening a chapter needs no lookup. */
 const discoveredRoots = new Map<string, string | null>();
 
-export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile }: LatexWorkspaceProps) {
+/** The live text of another open tab for compile staging: shared tabs always (the disk copy may lag), others when edited. */
+function stagedDraft(other: OpenTab): string | null {
+  const shared = getSharedDocRegistry().readTabText(other.id);
+  if (shared !== null) return shared;
+  return other.draft === other.saved ? null : other.draft;
+}
+
+export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight, readOpenTabs, onSetDraft, onRegisterDraft, onSave, onSetViewState, onOpenFile, collab }: LatexWorkspaceProps) {
   const filePath = tab.file.path;
   const viewState = tab.viewState?.latex;
   const isTex = isCompilableLatexPath(filePath);
   const editorRef = useRef<LatexEditorHandle | null>(null);
-  const [draftForAnalysis, setDraftForAnalysis] = useState(tab.draft);
+  const [draftForAnalysis, setDraftForAnalysis] = useState(() => (collab ? getSharedDocRegistry().readTabText(tab.id) : null) ?? tab.draft);
   const knownLatexPaths = useMemo(() => new Set(files.filter((file) => file.fileType === "latex").map((file) => file.path)), [files]);
   // The file to typeset: a "% !TEX root" comment, the file itself when it is
   // a complete document, or else the main file that includes this chapter.
@@ -114,8 +127,12 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   const [cacheDialogOpen, setCacheDialogOpen] = useState(false);
   const [compileMenuOpen, setCompileMenuOpen] = useState(false);
   const compileMenuAnchorRef = useRef<HTMLDivElement>(null);
+  // The toolbar overflows sideways on narrow panes: no scrollbar, but the wheel scrolls it.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useHorizontalWheelScroll(toolbarRef);
   // The workspace renders on the client only, so storage can seed the state.
   const [splitPercent, setSplitPercent] = useState(readStoredSplit);
+  const latestSplit = useRef(splitPercent);
   const [dragging, setDragging] = useState(false);
   const [bibEntries, setBibEntries] = useState<BibEntrySummary[]>([]);
   const splitRef = useRef<HTMLDivElement>(null);
@@ -125,10 +142,14 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   useEffect(() => registerLatexEditor(tab.id, editorRef), [tab.id]);
 
+  const shared = !!collab;
   const handleChange = useCallback((value: string) => {
-    onSetDraft(value);
+    // A shared editor reports its text for analysis only; its edits are
+    // already in the Y.Text, and re-applying a snapshot could undo a
+    // collaborator's newer edit.
+    if (!shared) onSetDraft(value);
     setDraftForAnalysis(value);
-  }, [onSetDraft]);
+  }, [onSetDraft, shared]);
 
   /* ---- Compiling ------------------------------------------------------------ */
 
@@ -140,8 +161,9 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       read: () => {
         const drafts: Record<string, string> = { [filePath]: editorRef.current?.text() ?? tab.draft };
         for (const other of latest.current.readOpenTabs()) {
-          if (other.id === tab.id || other.untitled || other.file.fileType !== "latex" || other.draft === other.saved) continue;
-          drafts[other.file.path] = other.draft;
+          if (other.id === tab.id || other.untitled || other.file.fileType !== "latex") continue;
+          const staged = stagedDraft(other);
+          if (staged !== null) drafts[other.file.path] = staged;
         }
         return { engine: latest.current.engineSetting, drafts };
       },
@@ -237,7 +259,23 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       .flatMap((other) => readLatexLabels(other.draft));
   }, [build.version, readOpenTabs, tab.file.notebook, tab.id]);
 
-  const project = useMemo<LatexProjectData>(() => ({ labels: otherLabels, bibEntries, files: projectFiles }), [bibEntries, otherLabels, projectFiles]);
+  // The notebook's References: `\cite` offers their keys even before any .bib is referenced.
+  const { library: referenceLibrary } = useReferenceLibrary(isTex ? tab.file.notebook : null);
+  const libraryEntries = useMemo(() => latexLibraryEntries(referenceLibrary), [referenceLibrary]);
+  // A chapter's bibliography lives in its main file; only a main file gets the add-bibliography hint.
+  const hasBibliography = rootPath !== filePath || readLatexBibliographyReferences(draftForAnalysis).length > 0;
+  const notebook = tab.file.notebook;
+  const enableBibMirror = useCallback(() => {
+    void apiRequest<{ mirror: BibMirrorResult }>("/api/references/bib-mirror", { method: "POST", body: JSON.stringify({ notebook, enabled: true }) })
+      .then(({ mirror }) => setNotice(mirror.status === "protected"
+        ? `${mirror.editedPath} was edited outside Libera, so References are written to ${mirror.path} instead.`
+        : `${mirror.path} is now generated from this notebook's References.`))
+      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not turn on references.bib."));
+  }, [notebook]);
+  const project = useMemo<LatexProjectData>(
+    () => ({ labels: otherLabels, bibEntries, files: projectFiles, libraryEntries, hasBibliography, enableBibMirror }),
+    [bibEntries, otherLabels, projectFiles, libraryEntries, hasBibliography, enableBibMirror],
+  );
 
   /** Of packages a chapter file could not load itself, those its main file lacks too. */
   const missingInMainFile = useCallback(async (packages: string[]) => {
@@ -325,14 +363,23 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
 
   /* ---- Split ------------------------------------------------------------------ */
 
+  function setSplit(value: number, persist = false) {
+    latestSplit.current = value;
+    setSplitPercent(value);
+    if (persist) {
+      try {
+        if (window.localStorage.getItem(SPLIT_STORAGE_KEY) !== String(value)) window.localStorage.setItem(SPLIT_STORAGE_KEY, String(value));
+      } catch { /* Storage may be unavailable. */ }
+    }
+  }
+
   function updateSplit(clientX: number, clientY: number) {
     const container = splitRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
     const wide = window.matchMedia("(min-width: 1024px)").matches;
     const percent = Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, ((wide ? clientX - rect.left : clientY - rect.top) / (wide ? rect.width : rect.height)) * 100));
-    setSplitPercent(percent);
-    try { window.localStorage.setItem(SPLIT_STORAGE_KEY, String(percent)); } catch { /* Storage may be unavailable. */ }
+    setSplit(percent);
   }
 
   function startSplitDrag(event: ReactPointerEvent<HTMLDivElement>) {
@@ -389,6 +436,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
       onChange={handleChange}
       onEdit={scheduleAutoCompile}
       onRegisterDraft={onRegisterDraft}
+      collab={collab}
       onViewStateChange={onSetViewState}
       onCompile={compile}
       onForwardSync={(location) => void forwardSync(location)}
@@ -411,7 +459,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
   return (
     <div className="libera-latex-workspace flex min-h-0 flex-1 flex-col overflow-hidden" onKeyDown={handleKeyDown}>
       {/* A container, so narrow panes drop the status text and shortcut hint. */}
-      <div className="libera-latex-toolbar @container flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border bg-card px-3">
+      <div ref={toolbarRef} className="libera-latex-toolbar libera-horizontal-toolbar @container flex h-11 shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden border-b border-border bg-card px-3">
         {isTex ? (
           <>
             <div ref={compileMenuAnchorRef} className="libera-latex-compile flex shrink-0 items-stretch overflow-hidden rounded-lg">
@@ -542,12 +590,18 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
             tabIndex={0}
             onPointerDown={startSplitDrag}
             onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) updateSplit(event.clientX, event.clientY); }}
-            onPointerUp={(event) => { setDragging(false); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-            onLostPointerCapture={() => setDragging(false)}
+            onPointerUp={(event) => {
+              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+              updateSplit(event.clientX, event.clientY);
+              setSplit(latestSplit.current, true);
+              setDragging(false);
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onLostPointerCapture={() => { setDragging(false); setSplit(latestSplit.current, true); }}
             onKeyDown={(event) => {
               const step = event.shiftKey ? 10 : 5;
-              if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); setSplitPercent((value) => Math.max(MIN_SPLIT, value - step)); }
-              if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); setSplitPercent((value) => Math.min(MAX_SPLIT, value + step)); }
+              if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); setSplit(Math.max(MIN_SPLIT, latestSplit.current - step), true); }
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); setSplit(Math.min(MAX_SPLIT, latestSplit.current + step), true); }
             }}
           >
             <span className="h-1 w-10 rounded-full bg-input transition group-hover:bg-muted-foreground lg:h-10 lg:w-1" />

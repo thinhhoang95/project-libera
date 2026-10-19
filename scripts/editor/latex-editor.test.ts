@@ -4,6 +4,8 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
+import { act, createElement, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { snippet } from "@codemirror/autocomplete";
 import { history, undo, redo } from "@codemirror/commands";
@@ -23,6 +25,8 @@ import { handleLatexInput, openEnvironmentsAt, syncEnvironmentNames } from "../.
 import { applyAiProposal, decideReviewHunks, diffTexts, latexReviewExtension, reviewHunksField } from "../../src/lib/latex/codemirror/review";
 import { compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine } from "../../src/lib/latex/codemirror/sync";
 import { latexFoldRange, latexLanguage } from "../../src/lib/latex/codemirror/language";
+import type { LatexEditorHandle } from "../../src/components/libera/latex/latex-editor";
+import type { LatexTabViewState } from "../../src/components/libera/types";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "MutationObserver"] as const) Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -149,6 +153,60 @@ test("AI output loses a wrapping LaTeX code fence", () => {
 });
 
 /* ---- Editor behavior -------------------------------------------------------------- */
+
+test("returning to a scrolled LaTeX tab refreshes its viewport without a scroll event", async (context) => {
+  Object.defineProperty(globalThis, "Window", { value: dom.window.Window, configurable: true });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(dom.window.Range.prototype, {
+    getClientRects: () => [], getBoundingClientRect: () => new dom.window.DOMRect(),
+  });
+  const { LatexEditor } = await import("../../src/components/libera/latex/latex-editor");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const editorRef = { current: null as LatexEditorHandle | null };
+  const source = "A line of LaTeX source.\n".repeat(300);
+  let saved: LatexTabViewState = {};
+  const measurements: { view: EditorView; top: number; left: number }[] = [];
+  const requestMeasure = EditorView.prototype.requestMeasure;
+  context.mock.method(EditorView.prototype, "requestMeasure", function (this: EditorView, ...args: Parameters<EditorView["requestMeasure"]>) {
+    measurements.push({ view: this, top: this.scrollDOM.scrollTop, left: this.scrollDOM.scrollLeft });
+    return requestMeasure.apply(this, args);
+  });
+  async function openTab() {
+    await act(async () => root.render(createElement(StrictMode, null, createElement(LatexEditor, {
+      documentPath: "Thesis/main.tex", fileName: "main.tex", value: source,
+      fontFamily: "monospace", fontSizePx: 14, lineHeight: 1.6,
+      initialViewState: saved, diagnostics: [], project: { labels: [], bibEntries: [], files: [] }, editorRef,
+      onChange: () => {}, onEdit: () => {}, onCompile: () => {}, onForwardSync: () => {},
+      onAiError: () => {}, onAddSnippet: () => {},
+      onViewStateChange: (patch) => { saved = { ...saved, ...patch }; },
+    }))));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    assert.ok(editorRef.current);
+    return editorRef.current.view;
+  }
+  try {
+    const first = await openTab();
+    await act(async () => first.dispatch({ selection: { anchor: 2500, head: 2510 } }));
+    first.scrollDOM.scrollTop = 2400.5;
+    first.scrollDOM.scrollLeft = 18.25;
+    // Switch before a scroll event or the view-state debounce can run.
+    await act(async () => root.render(createElement("div", null, "Another tab")));
+    const restored = await openTab();
+    assert.notEqual(restored, first);
+    assert.equal(restored.scrollDOM.scrollTop, 2400.5);
+    assert.equal(restored.scrollDOM.scrollLeft, 18.25);
+    assert.equal(restored.state.selection.main.anchor, 2500);
+    assert.equal(restored.state.selection.main.head, 2510);
+    assert.equal(restored.state.doc.toString(), source);
+    assert.ok(measurements.some(({ view, top, left }) => view === restored && top === 2400.5 && left === 18.25),
+      "The virtual viewport must be measured at the restored scroll position without waiting for user input");
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
 
 test("command snippets produce valid LaTeX, including escaped braces", () => {
   for (const name of ["frac", "left\\{", "date", "includegraphics", "newcommand", "lim"]) {

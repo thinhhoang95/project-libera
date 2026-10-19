@@ -3,12 +3,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { access, copyFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { homeDirectory, joinPath } from "@/lib/runtime-path";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
-import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
+import { filePathFromParts, notebookPath as notebookFolderPath, splitFilePath } from "@/lib/storage/paths";
 import { parseBiberLog, parseBibtexLog, parseLatexLog, type LatexLogEntry, type LatexLogSeverity } from "./log-parser";
 import { isCompilableLatexPath, resolveLatexEngine, type LatexEngine, type LatexEngineSetting } from "./project";
-import { findTexToolchain, texEnvironment, texExecutable, texMissingMessage, type TexToolchain } from "./toolchain";
+import { findTexToolchain, texEnvironment, texExecutable, texLatexmkLineLengthRc, texLineLengthArguments, texMissingMessage, type TexToolchain } from "./toolchain";
 
 /* Builds run in a per-document folder under the OS temp directory, so aux
  * files survive between compiles (latexmk then only reruns what changed) and
@@ -72,7 +73,12 @@ function realTemporaryDirectory() {
   }
 }
 
-const BUILD_ROOT = path.join(realTemporaryDirectory(), "libera-latex");
+const BUILD_ROOT = joinPath(realTemporaryDirectory(), "libera-latex");
+
+/* Built through functions so the Next.js file tracer cannot read these as paths
+ * and glob the project folder at build time (see runtime-path.ts). */
+const rootTexFile = (paths: { workDirectory: string; jobName: string }) => joinPath(paths.workDirectory, `${paths.jobName}.tex`);
+const optionWithValue = (option: string, value: string) => `${option}=${value}`;
 const COMPILE_TIMEOUT_MS = 4 * 60_000;
 const MAX_SNAPSHOTS = 3;
 const MAX_LOG_CHARACTERS = 400_000;
@@ -97,6 +103,7 @@ export function latexBuildPaths(rootPath: string) {
     workDirectory: path.join(buildDirectory, "work"),
     outDirectory: path.join(buildDirectory, "out"),
     sourceDirectory: path.dirname(rootAbsolute),
+    notebookDirectory: notebookFolderPath(notebook),
     rootAbsolute,
     rootDirectoryPath: [notebook, ...pathParts.slice(0, -1)].join("/"),
     jobName,
@@ -139,7 +146,7 @@ export function notebookPathForTexFile(file: string | undefined, meta: Pick<Late
  * anywhere (sync, uploads, shared archives), so only the user's own rc file
  * is read, never one next to the document. */
 async function latexmkRcArguments() {
-  const home = os.homedir();
+  const home = homeDirectory();
   const candidates = [
     process.env.XDG_CONFIG_HOME ? path.join(process.env.XDG_CONFIG_HOME, "latexmk", "latexmkrc") : null,
     path.join(home, ".config", "latexmk", "latexmkrc"),
@@ -154,8 +161,20 @@ async function latexmkRcArguments() {
 /** latexmk runs biber from the source folder, and when its `.fdb_latexmk`
  * record is missing it passes only the job name, so biber would read a stale
  * `.bcf` that another editor left next to the document (and write its `.bbl`
- * there). Always point it at the build folder instead. */
-const LATEXMK_BIBER_RC = 'sub libera_biber { my $base = pop @_; $base = "$aux_dir/$base" unless $base =~ m{^/}; return system("biber", "--output-directory=$aux_dir", @_, $base); } $biber = "internal libera_biber %O %B";';
+ * there). Always point it at the build folder instead.
+ *
+ * The code is passed on the command line, and on Windows MiKTeX's latexmk.exe
+ * launcher drops double quotes before Perl sees them, so it uses only single
+ * quotes. File::Spec recognises absolute paths on both platforms: `C:/...` on
+ * Windows is not matched by a leading-slash test, which prefixed the build
+ * folder twice. */
+const LATEXMK_BIBER_RC = "sub libera_biber { require File::Spec; my $base = pop @_; $base = $aux_dir . '/' . $base unless File::Spec->file_name_is_absolute($base); return system('biber', '--output-directory=' . $aux_dir, @_, $base); } $biber = 'internal libera_biber %O %B';";
+
+/** `-e` arguments for MiKTeX on Windows (none elsewhere, so other platforms run exactly as before). */
+function latexmkLineLengthArguments(toolchain: TexToolchain) {
+  const rc = texLatexmkLineLengthRc(toolchain);
+  return rc ? ["-e", rc] : [];
+}
 
 function withLock<T>(key: string, task: () => Promise<T>) {
   const previous = buildLocks.get(key) ?? Promise.resolve();
@@ -243,7 +262,7 @@ async function stageSources(paths: BuildPaths, request: LatexBuildRequest) {
   const rootSource = typeof rootDraft === "string" ? rootDraft : await readFile(paths.rootAbsolute, "utf8").catch(() => {
     throw new StorageError("The main LaTeX file could not be read.", 404);
   });
-  await writeFile(path.join(paths.workDirectory, `${paths.jobName}.tex`), rootSource, "utf8");
+  await writeFile(rootTexFile(paths), rootSource, "utf8");
 
   const overrides: string[] = [];
   for (const [notebookPath, content] of Object.entries(drafts)) {
@@ -277,7 +296,7 @@ async function mirrorSourceFolders(source: string, target: string, depth = 0) {
 }
 
 async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, paths: BuildPaths, env: NodeJS.ProcessEnv, signal: AbortSignal) {
-  const engineArgs = ["-interaction=nonstopmode", "-file-line-error", "-synctex=1", `-output-directory=${paths.workDirectory}`, path.join(paths.workDirectory, `${paths.jobName}.tex`)];
+  const engineArgs = [...texLineLengthArguments(toolchain), "-interaction=nonstopmode", "-file-line-error", "-synctex=1", optionWithValue("-output-directory", paths.workDirectory), rootTexFile(paths)];
   const options = { cwd: paths.sourceDirectory, env, signal };
   let output = "";
   let result = await runProcess(texExecutable(toolchain, engine), engineArgs, options);
@@ -287,7 +306,7 @@ async function runEngineDirectly(toolchain: TexToolchain, engine: LatexEngine, p
   const aux = await readFile(path.join(paths.workDirectory, `${paths.jobName}.aux`), "utf8").catch(() => "");
   const usesBiber = await modifiedAt(path.join(paths.workDirectory, `${paths.jobName}.bcf`)) !== null;
   if (usesBiber) {
-    output += (await runProcess(texExecutable(toolchain, "biber"), [`--output-directory=${paths.workDirectory}`, path.join(paths.workDirectory, paths.jobName)], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
+    output += (await runProcess(texExecutable(toolchain, "biber"), [optionWithValue("--output-directory", paths.workDirectory), path.join(paths.workDirectory, paths.jobName)], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `biber: ${error.message}\n` }))).output;
   } else if (/\\bibdata\{/.test(aux)) {
     output += (await runProcess(texExecutable(toolchain, "bibtex"), [paths.jobName], { ...options, cwd: paths.workDirectory }).catch((error: Error) => ({ output: `bibtex: ${error.message}\n` }))).output;
   }
@@ -372,7 +391,8 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
       openin_any: "p",
       openout_any: "p",
       shell_escape: "f",
-      BIBINPUTS: `${paths.sourceDirectory}${listSeparator}`,
+      // The notebook folder too, so a document in a subfolder finds the notebook's generated references.bib.
+      BIBINPUTS: `${paths.sourceDirectory}${listSeparator}${paths.notebookDirectory !== paths.sourceDirectory ? `${paths.notebookDirectory}${listSeparator}` : ""}`,
       BSTINPUTS: `${paths.sourceDirectory}${listSeparator}`,
     });
     const pdfPath = path.join(paths.workDirectory, `${paths.jobName}.pdf`);
@@ -386,8 +406,8 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
         // or after a failed run, since latexmk tracks dependencies by path.
         const force = previousState?.signature !== signature || previousState?.status !== "success";
         result = await runProcess(texExecutable(toolchain, "latexmk"), [
-          ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
-          `-outdir=${paths.workDirectory}`, path.join(paths.workDirectory, `${paths.jobName}.tex`),
+          ...(await latexmkRcArguments()), "-e", LATEXMK_BIBER_RC, ...latexmkLineLengthArguments(toolchain), engineFlag, ...(force ? ["-g"] : []), "-interaction=nonstopmode", "-file-line-error", "-synctex=1",
+          optionWithValue("-outdir", paths.workDirectory), rootTexFile(paths),
         ], { cwd: paths.sourceDirectory, env, signal });
       } else {
         result = await runEngineDirectly(toolchain, engine, paths, env, signal);
@@ -399,7 +419,7 @@ export async function compileLatexDocument(request: LatexBuildRequest, signal: A
     }
 
     const log = await readFile(path.join(paths.workDirectory, `${paths.jobName}.log`), "utf8").catch(() => "");
-    const entries = parseLatexLog(log, path.join(paths.workDirectory, `${paths.jobName}.tex`));
+    const entries = parseLatexLog(log, rootTexFile(paths));
     const blgPath = path.join(paths.workDirectory, `${paths.jobName}.blg`);
     const blgModified = await modifiedAt(blgPath);
     if (blgModified !== null && blgModified >= compileStartedAt) {

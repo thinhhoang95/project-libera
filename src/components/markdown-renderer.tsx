@@ -2,12 +2,12 @@
 import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
 import type { CSSProperties } from "react";
-import { memo, useMemo, useLayoutEffect, useRef } from "react";
-import type { PreviewSourcePosition } from "@/lib/markdown-preview-patch";
+import { memo, useCallback, useMemo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import type { PreviewCitation, PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import type { Root } from "hast";
 import type { PluggableList } from "unified";
-import { markdownRemarkPlugins } from "@/lib/markdown-rendering";
+import { markdownRehypeOptions, markdownRemarkPlugins } from "@/lib/markdown-rendering";
 import rehypeKatex from "rehype-katex";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
@@ -20,6 +20,23 @@ import {
   isExternalMarkdownLink,
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
+import { rehypeLiberaSanitize, type ContentTrust } from "@/lib/markdown-sanitize";
+import { getCollabBridge } from "@/lib/collab/ui/bridge";
+import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
+import {
+  CitationDocumentContext,
+  REFERENCES_PENDING_ATTRIBUTE,
+  documentCitationsFromPreview,
+  documentCitationsFromSource,
+  referenceKeyResolver,
+  useCitationScope,
+  useFormattedCitations,
+  useReferenceRender,
+  type CitationDocumentValue,
+} from "@/components/libera/references/reference-render-context";
+import { CitationChip } from "@/components/libera/references/citation-chip";
+import { documentStyleOverride } from "@/lib/references/document-style";
+import { BibliographyBlock } from "@/components/libera/references/bibliography-block";
 
 type MarkdownRendererProps = {
   mathMarkers?: MathMarkerSettings;
@@ -30,13 +47,48 @@ type MarkdownRendererProps = {
   content: string;
   preparedTree?: Root;
   preparedSources?: PreviewSourcePosition[];
+  /** The prepared tree's citations, in order (from the preview worker). */
+  preparedCitations?: PreviewCitation[];
+  /** This document's index in a surrounding CitationScope (slides). */
+  citationScopeIndex?: number;
   documentPath?: string;
   fontFamily?: string;
   onOpenExternalLink?: (href: string) => void;
   onOpenFileLink?: (href: string) => Promise<boolean>;
   textScale?: number;
   renderImages?: boolean;
+  /**
+   * "shared" renders collaborator content with the strict image policy
+   * (markdown-sanitize.ts). When omitted, a document whose top-level
+   * notebook is a shared project counts as shared.
+   */
+  contentTrust?: ContentTrust;
 };
+
+const NO_SUBSCRIPTION = () => () => {};
+
+/**
+ * Whether documentPath belongs to a shared notebook, from the collaboration
+ * status the shell already keeps. Without the collaboration bridge (plain
+ * browser, collaboration off, tests) nothing is subscribed and every note is
+ * local, so non-shared rendering is untouched. While the status is still
+ * loading, a path is treated as shared: a collaborator's image must not load
+ * before the check can say no.
+ */
+function useContentTrust(documentPath: string | undefined, explicit: ContentTrust | undefined): ContentTrust {
+  const store = explicit === undefined && documentPath && getCollabBridge() ? getCollabStatusStore() : null;
+  const subscribe = useCallback((listener: () => void) => (store ? store.subscribe(listener) : () => {}), [store]);
+  const notebook = documentPath?.replace(/^\/+/, "").split("/")[0] ?? "";
+  const getSnapshot = useCallback((): ContentTrust => {
+    if (!store) return "local";
+    const snapshot = store.getSnapshot();
+    if (snapshot.phase === "disabled") return "local";
+    if (!snapshot.status) return snapshot.phase === "loading" ? "shared" : "local";
+    return snapshot.status.projects.some((project) => project.notebook === notebook) ? "shared" : "local";
+  }, [store, notebook]);
+  const detected = useSyncExternalStore(store ? subscribe : NO_SUBSCRIPTION, getSnapshot, () => "local" as ContentTrust);
+  return explicit ?? detected;
+}
 
 function resolveMarkdownImageSource(src: string | undefined, documentPath: string | undefined) {
   if (
@@ -131,8 +183,13 @@ function markdownUrlTransform(url: string, key: string) {
 
 // Separate React work units let typing interrupt a large preview update.
 // Reused worker blocks also skip conversion and reconciliation altogether.
-const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components }: { node: Root["children"][number]; components: Components }) {
-  const plugins = useMemo<PluggableList>(() => [() => () => ({ type: "root", children: [node] })], [node]);
+// The worker already sanitized the block; it is sanitized again here with
+// this document's trust (the worker does not know whether it is shared).
+const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components, trust }: { node: Root["children"][number]; components: Components; trust: ContentTrust }) {
+  const plugins = useMemo<PluggableList>(
+    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }]],
+    [node, trust],
+  );
   return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
 });
 
@@ -145,14 +202,21 @@ function MarkdownRendererContent({
   content,
   preparedTree,
   preparedSources,
+  preparedCitations,
+  citationScopeIndex,
   documentPath,
   fontFamily,
   onOpenExternalLink,
   onOpenFileLink,
   textScale = 1,
   renderImages = true,
+  contentTrust,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const trust = useContentTrust(documentPath, contentTrust);
+  const citationDocument = useCitationDocumentValue({ content, mathMarkers, preparedTree, preparedCitations, citationScopeIndex });
+  // KaTeX first: its output is part of what the sanitizer allows.
+  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }]], [trust]);
   const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
@@ -333,6 +397,9 @@ function MarkdownRendererContent({
           },
           span: ({ children, className, style, ...props }) => {
             const elementProps = markdownElementProps(props);
+            if (className?.split(" ").includes("libera-citation")) {
+              return <CitationChip {...elementProps} className={className}>{children}</CitationChip>;
+            }
             const attributes = elementProps as Record<string, unknown>;
             const fontSize = Number(attributes["data-font-size"]);
             const lineHeight = Number(attributes["data-line-height"]);
@@ -362,6 +429,13 @@ function MarkdownRendererContent({
                 {children}
               </span>
             );
+          },
+          section: ({ children, className, ...props }) => {
+            const elementProps = markdownElementProps(props);
+            if ((elementProps as Record<string, unknown>)["data-libera-bibliography"] !== undefined) {
+              return <BibliographyBlock {...elementProps} />;
+            }
+            return <section {...elementProps} className={className}>{children}</section>;
           },
           u: ({ children, className, ...props }) => (
             <u
@@ -455,11 +529,7 @@ function MarkdownRendererContent({
                   return;
                 }
 
-                if (
-                  documentPath &&
-                  onOpenFileLink &&
-                  isLikelyWorkspaceMarkdownLink(href)
-                ) {
+                if (onOpenFileLink && isLikelyWorkspaceMarkdownLink(href)) {
                   event.preventDefault();
                   void onOpenFileLink(href);
                   return;
@@ -487,19 +557,66 @@ function MarkdownRendererContent({
     }
   }, [preparedSources, preparedTree, components]);
 
+  const pendingAttribute = { [REFERENCES_PENDING_ATTRIBUTE]: citationDocument?.formatting.pending ? "true" : undefined };
   return (
     <div
-      ref={rootRef} className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined}>
-      {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} />) : <ReactMarkdown
+      ref={rootRef} className={classNames("markdown-renderer", className)} style={scaledFontStyle} data-copy-markdown={copyAsMarkdown ? "true" : undefined} {...pendingAttribute}>
+      <CitationDocumentContext.Provider value={citationDocument}>
+      {preparedTree ? preparedTree.children.map((node, index) => <PreparedMarkdownBlock key={index} node={node} components={components} trust={trust} />) : <ReactMarkdown
         urlTransform={markdownUrlTransform}
         remarkPlugins={configuredRemarkPlugins}
-        rehypePlugins={[rehypeKatex]}
+        remarkRehypeOptions={markdownRehypeOptions}
+        rehypePlugins={rehypePlugins}
         components={components}
       >
         {normalizedContent}
       </ReactMarkdown>}
+      </CitationDocumentContext.Provider>
     </div>
   );
+}
+
+const NO_PREVIEW_CITATIONS: PreviewCitation[] = [];
+
+/**
+ * This document's citations and their formatting, for the chips and the
+ * bibliography inside it; null without a reference render provider. Worker
+ * previews list citations with their source ids, so chips in reused blocks
+ * still find their place; synchronous rendering scans the source, which
+ * finds the same citations at the same offsets (citation-syntax.ts). The
+ * list only changes when citations or their blocks do, and formatting only
+ * when the citations themselves do.
+ */
+function useCitationDocumentValue({ content, mathMarkers, preparedTree, preparedCitations, citationScopeIndex }: {
+  content: string;
+  mathMarkers?: MathMarkerSettings;
+  preparedTree?: Root;
+  preparedCitations?: PreviewCitation[];
+  citationScopeIndex?: number;
+}): CitationDocumentValue | null {
+  const references = useReferenceRender();
+  const scope = useCitationScope();
+  const active = references !== null;
+  const prepared = preparedTree ? preparedCitations ?? NO_PREVIEW_CITATIONS : null;
+  const preparedKey = useMemo(() => prepared ? JSON.stringify(prepared) : null, [prepared]);
+  // Narrative candidates count once the library resolves their keys.
+  const library = references?.library ?? null;
+  const entriesByKey = references?.entriesByKey;
+  const list = useMemo(() => {
+    if (!active) return null;
+    const resolves = referenceKeyResolver(entriesByKey ? { library, entriesByKey } : null);
+    if (preparedKey !== null) return documentCitationsFromPreview(JSON.parse(preparedKey) as PreviewCitation[], resolves);
+    return documentCitationsFromSource(normalizeMarkdownHighlightDelimiters(content), mathMarkers, resolves);
+  }, [active, preparedKey, content, mathMarkers, library, entriesByKey]);
+  const scoped = scope !== null && citationScopeIndex !== undefined;
+  // `citation-style` in the document's front matter overrides the notebook's style.
+  const documentStyle = useMemo(() => documentStyleOverride(content), [content]);
+  const own = useFormattedCitations(scoped ? null : list?.citations ?? null, documentStyle);
+  return useMemo(() => {
+    if (!list) return null;
+    if (scoped) return { list, offset: scope.offsets[citationScopeIndex] ?? 0, formatting: scope.formatting, appendedBibliography: false };
+    return { list, offset: 0, formatting: own, appendedBibliography: true };
+  }, [list, scoped, scope, citationScopeIndex, own]);
 }
 
 export const MarkdownRenderer = memo(MarkdownRendererContent);

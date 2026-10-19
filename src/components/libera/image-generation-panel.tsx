@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, ImagePlus, Images, Loader2, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { applyGallery, refreshGallery, subscribeReusePrompt, subscribeReferenceRequests, useGallery } from "@/components/libera/gallery-store";
 import {
   DEFAULT_IMAGE_GENERATION_SETTINGS,
@@ -21,11 +22,10 @@ import {
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 const PROMPT_STORAGE_KEY = "libera.imageGeneration.prompt";
-const SAVE_DELAY_MS = 400;
 const NEW_ALBUM = "\u0000new-album";
-const label = "mb-1.5 block text-xs font-medium text-muted-foreground";
-const field = "h-9 w-full rounded-lg border border-input bg-card px-2.5 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:opacity-60";
-const segment = "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition aria-pressed:bg-card aria-pressed:shadow-sm aria-[pressed=false]:text-muted-foreground aria-[pressed=false]:hover:text-foreground";
+const label = "mb-1.5 block px-1 text-xs font-medium text-muted-foreground";
+const field = "libera-panel-field h-9 w-full px-2.5 text-[13px]";
+const section = "px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground";
 
 type FolderOption = { path: string; label: string };
 type ReferencePhoto = { id: string; name: string; dataUrl: string };
@@ -86,7 +86,9 @@ function readStoredPrompt() {
 }
 
 function storePrompt(prompt: string) {
-  try { window.localStorage.setItem(PROMPT_STORAGE_KEY, prompt); } catch { /* storage unavailable */ }
+  try {
+    if (readStoredPrompt() !== prompt) window.localStorage.setItem(PROMPT_STORAGE_KEY, prompt);
+  } catch { /* storage unavailable */ }
 }
 
 /** Draws a small frame in the shape of an aspect ratio such as `16:9`. */
@@ -114,7 +116,7 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
         {descriptor.values.map((ratio) => {
           const selected = value === ratio;
           return <button key={ratio} type="button" disabled={disabled} aria-pressed={selected} title={ratio === "auto" ? "Let the model decide" : ratio}
-            className={`flex h-12 flex-col items-center justify-center gap-1 rounded-lg border text-[11px] transition disabled:opacity-60 ${selected ? "border-primary bg-primary/10 font-medium text-primary ring-1 ring-primary" : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+            className="libera-panel-tile flex h-12 flex-col items-center justify-center gap-1 text-[11px]"
             onClick={() => onChange(selected ? undefined : ratio)}>
             <span className="flex h-4 items-center"><RatioGlyph ratio={ratio} /></span>
             {ratio === "auto" ? "Auto" : ratio}
@@ -140,7 +142,7 @@ function ParameterControl({ name, descriptor, value, disabled, onChange }: {
     if (name === "output_compression") {
       return <div>
         <label className={label} htmlFor={id}>{title} <span className="font-normal">{current === undefined ? "· Model default" : `· ${current}`}</span></label>
-        <input id={id} type="range" className="w-full accent-[var(--primary)]" disabled={disabled} min={descriptor.min} max={descriptor.max} value={current ?? descriptor.max}
+        <input id={id} type="range" className="libera-panel-range w-full" disabled={disabled} min={descriptor.min} max={descriptor.max} value={current ?? descriptor.max}
           onChange={(event) => onChange(Number(event.target.value))} />
       </div>;
     }
@@ -187,15 +189,30 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
-  const pendingSaveRef = useRef<ImageGenerationSettings | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const latestPreferences = useRef({ settings, prompt });
+  useLayoutEffect(() => { latestPreferences.current = { settings, prompt }; }, [settings, prompt]);
+  const settingsWriter = useMemo(() => createDeferredSave(async (body) => {
+    await apiRequest("/api/image-generation/settings", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+  }, () => setError("Image generation settings could not be saved. The next save action will retry.")), []);
+  const flushSettings = useCallback(() => {
+    const latest = latestPreferences.current;
+    storePrompt(latest.prompt);
+    if (latest.settings) settingsWriter.schedule(latest.settings);
+    return settingsWriter.flush();
+  }, [settingsWriter]);
 
   useEffect(() => {
     let disposed = false;
     void apiRequest<ImageGenerationSettings>("/api/image-generation/settings")
-      .then((loaded) => { if (!disposed) setSettings(loaded); })
-      .catch(() => { if (!disposed) setSettings(DEFAULT_IMAGE_GENERATION_SETTINGS); });
+      .then((loaded) => { if (!disposed) { settingsWriter.markSaved(loaded); setSettings(loaded); } })
+      .catch(() => {
+        if (!disposed) {
+          // Opening/closing after a failed read must not overwrite saved settings.
+          settingsWriter.markSaved(DEFAULT_IMAGE_GENERATION_SETTINGS);
+          setSettings(DEFAULT_IMAGE_GENERATION_SETTINGS);
+        }
+      });
     void apiRequest<{ models: ImageGenerationModel[] }>("/api/image-generation/models")
       .then(({ models: loaded }) => { if (!disposed) setModels([...loaded].sort((first, second) => first.name.localeCompare(second.name))); })
       .catch((failure: Error) => { if (!disposed) { setModels([]); setModelsError(failure.message); } });
@@ -237,35 +254,19 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     promptRef.current?.focus();
   }), []);
 
-  // Flush unsaved settings when the panel closes so nothing is lost on quit.
-  useEffect(() => () => {
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    if (pendingSaveRef.current) {
-      void apiRequest("/api/image-generation/settings", { method: "PUT", body: JSON.stringify(pendingSaveRef.current), keepalive: true }).catch(() => undefined);
-    }
-    abortRef.current?.abort();
-  }, []);
-
-  const dirtyRef = useRef(false);
+  // Save on field commits, generation, and close, rather than typing or timers.
+  useEffect(() => {
+    const unregister = registerStateFlusher(flushSettings);
+    return () => {
+      unregister();
+      void flushSettings().catch(() => undefined);
+      abortRef.current?.abort();
+    };
+  }, [flushSettings]);
 
   function updateSettings(change: (current: ImageGenerationSettings) => ImageGenerationSettings) {
-    dirtyRef.current = true;
     setSettings((current) => (current ? change(current) : current));
   }
-
-  // Save shortly after the last change; the unmount flush above covers the rest.
-  useEffect(() => {
-    if (!dirtyRef.current || !settings) return;
-    dirtyRef.current = false;
-    pendingSaveRef.current = settings;
-    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveTimerRef.current = null;
-      const toSave = pendingSaveRef.current;
-      pendingSaveRef.current = null;
-      if (toSave) void apiRequest("/api/image-generation/settings", { method: "PUT", body: JSON.stringify(toSave) }).catch(() => undefined);
-    }, SAVE_DELAY_MS);
-  }, [settings]);
 
   const model = models?.find((entry) => entry.id === settings?.model);
   const params = settings ? settings.paramsByModel[settings.model] ?? {} : {};
@@ -303,6 +304,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     setError("");
     setResult(null);
     try {
+      void flushSettings().catch(() => undefined);
       const response = await apiRequest<{ files?: LiberaFileNode[]; photos?: string[]; cost?: number; tree?: LiberaTree }>("/api/image-generation", {
         method: "POST",
         signal: controller.signal,
@@ -322,6 +324,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setGenerating(false);
+      void flushSettings().catch(() => undefined);
     }
   }
 
@@ -340,12 +343,16 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
   const parameterNames = model ? IMAGE_PARAMETER_ORDER.filter((name) => model.parameters[name]) : [];
 
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="flex items-center justify-between px-3 pb-2 pt-4">
-      <h2 className="text-sm font-semibold">Create images</h2>
-      <Images aria-hidden className="h-4 w-4 text-muted-foreground" />
+    <div className="libera-notebook-heading flex items-center justify-between px-3 pb-2 pt-4">
+      <h2 className="min-w-0 truncate text-sm font-semibold">Create images</h2>
+      <span className="inline-flex h-[29px] w-[29px] items-center justify-center text-muted-foreground"><Images aria-hidden className="h-4 w-4" /></span>
     </div>
-    <form className={`min-h-0 flex-1 space-y-4 overflow-auto px-3 pb-4 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-primary/60" : ""}`}
+    <form className={`min-h-0 flex-1 space-y-5 overflow-auto px-3 pb-4 pt-1 ${dragging ? "outline-2 -outline-offset-4 outline-dashed outline-[#457be6]/60" : ""}`}
       onSubmit={(event) => { event.preventDefault(); void generate(); }}
+      onBlurCapture={() => { void flushSettings().catch(() => undefined); }}
+      onPointerUp={(event) => {
+        if (event.target instanceof HTMLInputElement && event.target.type === "range") void flushSettings().catch(() => undefined);
+      }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
@@ -362,9 +369,9 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
       <div>
         <label className={label} htmlFor="image-generation-prompt">Prompt</label>
         <textarea id="image-generation-prompt" ref={promptRef} rows={5} placeholder="A quiet reading room at dusk, warm lamps, rain on tall windows…"
-          className="w-full resize-y rounded-lg border border-input bg-card px-2.5 py-2 text-sm leading-relaxed outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+          className="libera-panel-field w-full resize-y px-3 py-2.5 text-[13px] leading-relaxed"
           value={prompt}
-          onChange={(event) => { setPrompt(event.target.value); storePrompt(event.target.value); }}
+          onChange={(event) => { setPrompt(event.target.value); }}
           onPaste={(event) => {
             const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
             if (!images.length) return;
@@ -381,11 +388,11 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
 
       <div>
         <div className="mb-1.5 flex items-baseline justify-between gap-2">
-          <span className="text-xs font-medium text-muted-foreground" id="image-generation-references">Reference photos</span>
-          {model && referenceLimit.max > 0 && <span className={`text-[11px] ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{references.length}/{referenceLimit.max}{referenceLimit.min > 0 ? ` · needs ${referenceLimit.min}+` : ""}</span>}
+          <span className="px-1 text-xs font-medium text-muted-foreground" id="image-generation-references">Reference photos</span>
+          {model && referenceLimit.max > 0 && <span className={`pr-1 text-[11px] tabular-nums ${referencesFit ? "text-muted-foreground" : "text-destructive"}`}>{references.length}/{referenceLimit.max}{referenceLimit.min > 0 ? ` · needs ${referenceLimit.min}+` : ""}</span>}
         </div>
         <div className="grid grid-cols-4 gap-1.5" role="group" aria-labelledby="image-generation-references">
-          {references.map((reference) => <div key={reference.id} className="group/reference relative aspect-square overflow-hidden rounded-lg border border-border bg-muted" title={reference.name}>
+          {references.map((reference) => <div key={reference.id} className="libera-panel-tile group/reference relative aspect-square overflow-hidden" title={reference.name}>
             {/* eslint-disable-next-line @next/next/no-img-element -- local data URL preview */}
             <img src={reference.dataUrl} alt={reference.name} className="h-full w-full object-cover" />
             <button type="button" aria-label={`Remove ${reference.name}`} disabled={generating}
@@ -396,7 +403,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
           </div>)}
           {(referenceLimit.max === 0 || references.length < referenceLimit.max) && <button type="button" disabled={generating || addingReferences || (Boolean(model) && referenceLimit.max === 0)}
             title={model && referenceLimit.max === 0 ? `${model.name} does not take reference photos` : "Add photos (or drop or paste them here)"}
-            className="flex aspect-square flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border text-[11px] text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:hover:bg-transparent"
+            data-dashed="true" className="libera-panel-tile flex aspect-square flex-col items-center justify-center gap-1 text-[11px]"
             onClick={() => fileInputRef.current?.click()}>
             {addingReferences ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <ImagePlus aria-hidden className="h-4 w-4" />}
             Add
@@ -408,7 +415,7 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
             event.target.value = "";
             void addReferences(files.map((file) => ({ blob: file, name: file.name })));
           }} />
-        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{model && referenceLimit.max === 0
+        <p className="mt-1.5 px-1 text-xs leading-relaxed text-muted-foreground">{model && referenceLimit.max === 0
           ? `${model.name} works from the prompt alone. Pick another model to edit or build on photos.`
           : references.length > referenceLimit.max
             ? `This model takes up to ${referenceLimit.max}. Remove ${references.length - referenceLimit.max} to continue.`
@@ -422,15 +429,15 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
           {settings && models && !model && <option value={settings.model}>{models.length ? `${settings.model} (unavailable)` : settings.model}</option>}
           {models?.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
         </select>
-        {!models && <p className="mt-1.5 text-xs text-muted-foreground">Loading models…</p>}
-        {modelsError && <p role="alert" className="mt-1.5 text-xs text-destructive">{modelsError}</p>}
-        {model?.description && <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground" title={model.description}>{model.description}</p>}
+        {!models && <p className="mt-1.5 px-1 text-xs text-muted-foreground">Loading models…</p>}
+        {modelsError && <p role="alert" className="mt-1.5 px-1 text-xs text-destructive">{modelsError}</p>}
+        {model?.description && <p className="mt-1.5 line-clamp-2 px-1 text-xs leading-relaxed text-muted-foreground" title={model.description}>{model.description}</p>}
       </div>
 
       {parameterNames.length > 0 && <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Settings</h3>
-          {Object.keys(params).length > 0 && <button type="button" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" disabled={generating}
+          <h3 className={section}>Settings</h3>
+          {Object.keys(params).length > 0 && <button type="button" className="libera-sidebar-icon-button inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs" disabled={generating}
             onClick={() => updateSettings((current) => ({ ...current, paramsByModel: { ...current.paramsByModel, [current.model]: {} } }))}>
             <RotateCcw aria-hidden className="h-3 w-3" />Reset
           </button>}
@@ -440,10 +447,10 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
 
       <fieldset className="space-y-2">
         <legend className={label}>Save to</legend>
-        <div className="flex gap-1 rounded-lg bg-muted p-1" role="group" aria-label="Save destination">
-          <button type="button" className={segment} aria-pressed={destination.kind === "gallery"} disabled={generating}
+        <div className="libera-panel-segmented" role="group" aria-label="Save destination">
+          <button type="button" aria-pressed={destination.kind === "gallery"} disabled={generating}
             onClick={() => setDestination({ kind: "gallery", album: destination.kind === "gallery" ? destination.album : "" })}>Gallery</button>
-          <button type="button" className={segment} aria-pressed={destination.kind === "folder"} disabled={generating || !folders.length}
+          <button type="button" aria-pressed={destination.kind === "folder"} disabled={generating || !folders.length}
             onClick={() => setDestination({ kind: "folder", path: destination.kind === "folder" ? destination.path : folders[0]?.path ?? "" })}>Notebook folder</button>
         </div>
         {destination.kind === "gallery" ? <>
@@ -462,30 +469,30 @@ export function ImageGenerationPanel({ tree, onFilesSaved, onOpenFile }: {
                 if (event.key === "Enter") { event.preventDefault(); if (newAlbum.trim()) void createAlbumForDestination(newAlbum.trim()); }
                 if (event.key === "Escape") { event.preventDefault(); setNewAlbum(null); }
               }} />
-            <button type="button" className="rounded-lg border border-border px-2.5 text-xs hover:bg-muted disabled:opacity-50" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>Create</button>
+            <button type="button" className="libera-panel-button shrink-0 px-3" disabled={!newAlbum.trim()} onClick={() => void createAlbumForDestination(newAlbum.trim())}>Create</button>
           </div>}
-          {albumMissing && <p className="text-xs text-muted-foreground">That album was deleted, so images go to Photos.</p>}
+          {albumMissing && <p className="px-1 text-xs text-muted-foreground">That album was deleted, so images go to Photos.</p>}
         </> : <>
           <select aria-label="Notebook folder" className={field} disabled={generating} value={folderMissing ? "" : destination.path}
             onChange={(event) => setDestination({ kind: "folder", path: event.target.value })}>
             {folderMissing && <option value="">Choose a folder</option>}
             {folders.map((folder) => <option key={folder.path} value={folder.path}>{folder.label}</option>)}
           </select>
-          <p className="text-xs leading-relaxed text-muted-foreground">{folderMissing ? `“${destination.path}” is no longer available. Choose another folder.` : "Images saved here stay with the notebook and are not added to the gallery."}</p>
+          <p className="px-1 text-xs leading-relaxed text-muted-foreground">{folderMissing ? `“${destination.path}” is no longer available. Choose another folder.` : "Images saved here stay with the notebook and are not added to the gallery."}</p>
         </>}
       </fieldset>
 
       {error && <div role="alert" className="rounded-lg bg-destructive-muted p-3 text-xs leading-relaxed text-destructive">{error}</div>}
 
-      {generating ? <button type="button" className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2.5 text-sm font-medium hover:bg-muted" onClick={() => abortRef.current?.abort()}>
+      {generating ? <button type="button" className="libera-panel-button w-full gap-2 px-4 py-2.5 text-[13px]" onClick={() => abortRef.current?.abort()}>
         <Loader2 aria-hidden className="h-4 w-4 animate-spin" />Generating… <span className="inline-flex items-center gap-1 text-muted-foreground"><Square aria-hidden className="h-3 w-3" />Stop</span>
-      </button> : <button type="submit" disabled={!ready} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50" title="Generate (⌘↵)">
+      </button> : <button type="submit" disabled={!ready} className="libera-panel-primary w-full px-4 py-2.5" title="Generate (⌘↵)">
         <Sparkles aria-hidden className="h-4 w-4" />Generate
       </button>}
 
-      {result && <div role="status" className="rounded-lg border border-border p-3 text-xs leading-relaxed">
+      {result && <div role="status" className="libera-panel-card p-3 text-xs leading-relaxed">
         {result.photos ? <p>{result.photos.length === 1 ? "Saved to your gallery." : `${result.photos.length} images saved to your gallery.`}</p> : null}
-        {result.files?.map((file) => <button key={file.path} type="button" className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:text-primary" onClick={() => onOpenFile(file)}>
+        {result.files?.map((file) => <button key={file.path} type="button" className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:text-[#457be6]" onClick={() => onOpenFile(file)}>
           <FolderOpen aria-hidden className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 truncate">Open {file.name}</span>
         </button>)}
         {typeof result.cost === "number" && <p className="mt-1 text-muted-foreground">Cost: ${result.cost.toFixed(3)}</p>}

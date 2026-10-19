@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiRequest } from "./api-client";
+import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { DEFAULT_MARKDOWN_DISPLAY_PREFERENCES, normalizeMarkdownDisplayPreferences, type MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 const Context = createContext<{
@@ -23,40 +24,20 @@ export function MarkdownDisplayPreferencesProvider({ initialPreferences = {}, ch
   const [preferences, setPreferences] = useState(() => normalizeMarkdownDisplayPreferences(initialPreferences));
   const [error, setError] = useState("");
   const latest = useRef(preferences);
-  const dirty = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saves = useRef(Promise.resolve());
-
-  const flushPreferences = useCallback(() => {
-    if (timer.current !== null) clearTimeout(timer.current);
-    timer.current = null;
-    if (!dirty.current) return;
-    dirty.current = false;
-    const snapshot = latest.current;
-    // Serialize writes so an earlier adjustment cannot overwrite a later one.
-    saves.current = saves.current.then(async () => {
-      try {
-        await apiRequest("/api/preferences/markdown-display", {
-          method: "PUT", body: JSON.stringify(snapshot), keepalive: true,
-        });
-        setError("");
-      } catch {
-        if (latest.current === snapshot) dirty.current = true;
-        setError("Could not save Markdown display settings.");
-      }
-    });
-  }, []);
+  const writer = useMemo(() => createDeferredSave(async (body) => {
+    await apiRequest("/api/preferences/markdown-display", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+    setError("");
+  }, () => setError("Could not save Markdown display settings.")), []);
+  const flushPreferences = useCallback(() => writer.flush().catch(() => undefined), [writer]);
 
   const updatePreferences = useCallback((patch: Partial<MarkdownDisplayPreferences>) => {
     const next = normalizeMarkdownDisplayPreferences({ ...latest.current, ...patch });
     if (next.textWidth === latest.current.textWidth && next.textScale === latest.current.textScale &&
         next.outlineExpansionLevel === latest.current.outlineExpansionLevel) return;
     latest.current = next;
-    dirty.current = true;
     setPreferences(next);
-    if (timer.current !== null) clearTimeout(timer.current);
-    timer.current = setTimeout(flushPreferences, 250);
-  }, [flushPreferences]);
+    writer.schedule(next);
+  }, [writer]);
 
   const initial = useRef(initialPreferences);
   useEffect(() => {
@@ -69,12 +50,12 @@ export function MarkdownDisplayPreferencesProvider({ initialPreferences = {}, ch
         }
       } catch { /* Browser storage can be disabled. */ }
     }
-    window.addEventListener("pagehide", flushPreferences);
+    const unregister = registerStateFlusher(writer.flush);
     return () => {
-      window.removeEventListener("pagehide", flushPreferences);
-      flushPreferences();
+      unregister();
+      void flushPreferences();
     };
-  }, [flushPreferences, updatePreferences]);
+  }, [flushPreferences, updatePreferences, writer]);
 
   const context = useMemo(() => ({ preferences, updatePreferences, flushPreferences }), [preferences, updatePreferences, flushPreferences]);
   return <Context.Provider value={context}>

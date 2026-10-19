@@ -1,4 +1,6 @@
+import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
 import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
+import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -18,6 +20,7 @@ import {
   itemPath,
   legacyImageAnnotationsPath,
   legacyPdfAnnotationsPath,
+  legacyFlatPdfAnnotationsPath,
   notebookPath,
   pdfAnnotationsPath,
   relativeFilePath,
@@ -44,14 +47,26 @@ const LINKED_FOLDER_ENTRY_LIMIT = 20_000;
 export const LINKED_FOLDER_METADATA_DEFAULTS = { emoji: "📁", color: "#475569" };
 
 function shouldSkipTreeEntry(name: string, options?: TreeReadOptions) {
-  return (
+  return !isVisibleTreeEntry(name, Boolean(options?.budget)) ||
+    (name === ARCHIVE_DIR && !options?.showArchive);
+}
+
+/** Shared by the UI tree and the uncapped Search metadata walk. */
+export function isVisibleTreeEntry(name: string, linked = false) {
+  return !(
     name.startsWith(".") ||
     name.startsWith("._") ||
     name === "__MACOSX" ||
     name === MARKDOWN_ASSETS_DIR ||
-    (name === ARCHIVE_DIR && !options?.showArchive) ||
-    (Boolean(options?.budget) && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
+    (linked && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
   );
+}
+
+/** Targeted search updates use the same exclusions as a full library walk. */
+export function isVisibleTreeFile(notebook: string, pathParts: string[]) {
+  const linked = getLinkedFolders().some((folder) => folder.name === notebook);
+  return !notebook.startsWith(".") && pathParts.every((name) =>
+    isVisibleTreeEntry(name, linked));
 }
 
 function sortTreeNodes(left: LiberaTreeNode, right: LiberaTreeNode) {
@@ -82,15 +97,17 @@ async function latestExistingPathMtime(paths: string[]) {
 
 async function getFileUpdatedAt(
   notebook: string,
-  name: string,
+  pathParts: string[],
   fileType: LiberaFileNode["fileType"],
   fileUpdatedAt: string,
 ) {
+  const name = pathParts.at(-1)!;
   if (fileType === "pdf") {
     return latestIsoDate(
       fileUpdatedAt,
       ...(await latestExistingPathMtime([
-        pdfAnnotationsPath(notebook, name),
+        pdfAnnotationsPath(notebook, pathParts),
+        legacyFlatPdfAnnotationsPath(notebook, name),
         legacyPdfAnnotationsPath(notebook, name),
       ])),
     );
@@ -179,7 +196,7 @@ export async function getFileNode(
     size: stats.size,
     updatedAt: await getFileUpdatedAt(
       notebook,
-      name,
+      normalizedPathParts,
       fileType,
       stats.mtime.toISOString(),
     ),
@@ -244,8 +261,8 @@ async function getLinkedFolderNode(
   let folderStats: Stats | null = null;
 
   try {
-    folderStats = await stat(folder.path);
-    if (!folderStats.isDirectory()) folderStats = null;
+    folderStats = folder.unresolved ? null : await stat(folder.path);
+    if (!folderStats?.isDirectory()) folderStats = null;
   } catch {
     // A moved folder or an unplugged drive stays linked and shows as missing.
   }
@@ -309,6 +326,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
       notebookStats.birthtime.toISOString(),
     );
     const children = await readTreeDirectory(entry.name, [], { showArchive });
+    await prunePdfTextCaches(entry.name).catch(() => undefined);
 
     notebooks.push({
       kind: "notebook",
@@ -335,6 +353,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
 
   for (const folder of linkedFolders) {
     const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
+    if (!node.folder?.missing) await prunePdfTextCaches(folder.name).catch(() => undefined);
     notebooks.push(node);
     collectFilePaths(node.children, filePaths);
     expandablePaths.add(node.name);
@@ -342,6 +361,8 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
   }
 
   await populateRelatedNotebooks(notebooks);
+  // Re-attach reference files moved outside Libera, in the background.
+  void scheduleReferenceReattach();
 
   return {
     archiveIncluded: showArchive,

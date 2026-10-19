@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -179,6 +179,17 @@ test("settings persist and stale parameters are filtered per model", () => withD
   assert.deepEqual(saved.destination, { kind: "folder", path: "Research/figures" });
   assert.deepEqual(await readImageGenerationSettings(), saved);
   assert.match(await readFile(path.join(directory, ".libera", "image-generation.json"), "utf8"), /gpt-image-2/);
+  const target = path.join(directory, ".libera", "image-generation.json");
+  const before = await stat(target);
+  await Promise.all(Array.from({ length: 10 }, () => writeImageGenerationSettings(saved)));
+  const after = await stat(target);
+  assert.equal(after.ino, before.ino, "identical settings do not replace the file");
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  await Promise.all([
+    writeImageGenerationSettings({ ...saved, model: "test/first" }),
+    writeImageGenerationSettings({ ...saved, model: "test/latest" }),
+  ]);
+  assert.equal((await readImageGenerationSettings()).model, "test/latest", "overlapping saves retain the newest settings");
 
   await writeFile(path.join(directory, ".libera", "image-generation.json"), "{ not json");
   assert.equal((await readImageGenerationSettings()).destination.kind, "gallery");

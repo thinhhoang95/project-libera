@@ -1,0 +1,77 @@
+# Production stack for the Libera collab server on the Libera VPS.
+# Usage (from /srv/libera-collab on the server, with .env next to this file):
+#   docker compose -f docker-compose.prod.yml up -d
+# nginx on the host terminates TLS and proxies to 127.0.0.1:4400 (see nginx/).
+
+name: libera-collab
+
+# The VPS also serves other sites: cap memory and log size, and give the
+# containers no more privilege than they need.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    environment:
+      POSTGRES_DB: libera
+      POSTGRES_USER: libera
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backups/wal-archive:/wal-archive
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
+      - -c
+      - archive_timeout=300
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U libera -d libera"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  collab:
+    image: ${COLLAB_IMAGE:-libera-collab:latest}
+    restart: unless-stopped
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4400
+      DATABASE_URL: postgres://libera:${POSTGRES_PASSWORD}@postgres:5432/libera
+      BLOB_DIR: /data/blobs
+      TRUST_PROXY: "1"
+    volumes:
+      - blob-data:/data/blobs
+    ports:
+      - "127.0.0.1:4400:4400"
+
+volumes:
+  postgres-data:
+  blob-data:

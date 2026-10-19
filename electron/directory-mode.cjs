@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
+const os = require("node:os");
 
 // Linked folders sit next to the notebooks in the library. Each one is
 // addressed by a unique top-level name, exactly like a notebook, so files read
@@ -11,6 +12,63 @@ const MAX_RECENT_DIRECTORIES = 10;
 const DIRECTORY_MODE_STATE_VERSION = 2;
 const DIRECTORY_MODE_STATE_PATH = [".libera", "directory-mode.json"];
 const DIRECTORY_STATE_ROOT = [".libera", "directories"];
+const FOLDER_ID_FILE = ".libera-folder.json";
+const VALID_FOLDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function directoryMachineKey() {
+  return process.env.LIBERA_MACHINE_ID || createHash("sha256")
+    .update(JSON.stringify([os.hostname(), os.homedir(), process.platform])).digest("hex").slice(0, 24);
+}
+
+function readFolderId(directoryPath) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(directoryPath, FOLDER_ID_FILE), "utf8"));
+    return value.version === 1 && VALID_FOLDER_ID.test(value.id) ? value.id : null;
+  } catch { return null; }
+}
+
+function legacyDirectoryStateRoot(adminRoot, directoryPath) {
+  const key = createHash("sha256").update(normalizeDirectoryPath(directoryPath)).digest("hex").slice(0, 24);
+  return path.join(adminRoot, ...DIRECTORY_STATE_ROOT, key);
+}
+
+/** Only this tiny identity marker lives in the user's folder; app state stays in the library. */
+function ensureDirectoryIdentity(adminRoot, directoryPath, previousId) {
+  if (!fs.statSync(directoryPath, { throwIfNoEntry: false })?.isDirectory()) return previousId || null;
+  let id = readFolderId(directoryPath);
+  if (!id) {
+    id = VALID_FOLDER_ID.test(previousId) ? previousId : randomUUID();
+    try {
+      const temporary = path.join(directoryPath, `${FOLDER_ID_FILE}.${randomUUID()}.tmp`);
+      try {
+        fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, id })}\n`, { flag: "wx" });
+        try { fs.linkSync(temporary, path.join(directoryPath, FOLDER_ID_FILE)); } catch (error) {
+          if (!["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS"].includes(error.code)) throw error;
+          fs.copyFileSync(temporary, path.join(directoryPath, FOLDER_ID_FILE), fs.constants.COPYFILE_EXCL);
+        }
+      } finally {
+        fs.rmSync(temporary, { force: true });
+      }
+    } catch {
+      // Read-only folders remain usable with their existing local state.
+      id = readFolderId(directoryPath) || (VALID_FOLDER_ID.test(previousId) ? previousId : null);
+    }
+  }
+  if (id) {
+    const legacy = legacyDirectoryStateRoot(adminRoot, directoryPath);
+    const target = path.join(adminRoot, ...DIRECTORY_STATE_ROOT, id);
+    if (fs.existsSync(legacy)) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (!fs.existsSync(target)) fs.renameSync(legacy, target);
+      else {
+        fs.cpSync(legacy, target, { recursive: true, force: false });
+        fs.renameSync(legacy, `${legacy}.migrated-${randomUUID()}`);
+      }
+      // When merging, retain a recovery copy that will not be imported again.
+    }
+  }
+  return id;
+}
 
 function normalizeDirectoryPath(value) {
   if (typeof value !== "string" || !value.trim() || value.includes("\0")) return "";
@@ -65,10 +123,16 @@ function normalizeDirectoryModeState(value) {
   const recent = [];
 
   for (const item of Array.isArray(value?.folders) ? value.folders : []) {
-    const folderPath = normalizeDirectoryPath(item?.path);
+    const locations = Object.fromEntries(Object.entries(item?.locations && typeof item.locations === "object" ? item.locations : {})
+      .filter(([key, value]) => key && typeof value === "string" && value && !value.includes("\0")));
+    const folderPath = normalizeDirectoryPath(locations[directoryMachineKey()] || item?.path);
     if (!folderPath || !isValidFolderName(item?.name)) continue;
     if (folders.some((folder) => folder.path === folderPath || folder.name.toLowerCase() === item.name.toLowerCase())) continue;
-    folders.push({ name: item.name, path: folderPath });
+    folders.push({ name: item.name, path: folderPath,
+      ...(VALID_FOLDER_ID.test(item.id) ? { id: item.id } : {}),
+      ...(Object.keys(locations).length ? { locations } : {}),
+      ...(Object.keys(locations).length && !locations[directoryMachineKey()] ? { unresolved: true } : {}),
+    });
   }
 
   for (const item of Array.isArray(value?.recent) ? value.recent : []) {
@@ -121,7 +185,28 @@ function readDirectoryModeState(adminRoot) {
     return normalizeDirectoryModeState(null);
   }
 
-  if (value?.version === DIRECTORY_MODE_STATE_VERSION) return normalizeDirectoryModeState(value);
+  if (value?.version === DIRECTORY_MODE_STATE_VERSION) {
+    const state = normalizeDirectoryModeState(value);
+    let changed = false;
+    const folders = state.folders.map((folder) => {
+      try {
+        if (!fs.statSync(folder.path, { throwIfNoEntry: false })?.isDirectory()) return folder;
+        // A path from another computer may name an unrelated local directory.
+        // Auto-connect only if its synced marker proves the folder's identity.
+        if (folder.unresolved && (!folder.id || readFolderId(folder.path) !== folder.id)) return folder;
+        const id = ensureDirectoryIdentity(adminRoot, folder.path, folder.id);
+        const locations = { ...folder.locations, [directoryMachineKey()]: folder.path };
+        const upgraded = { ...folder, ...(id ? { id } : {}), locations };
+        delete upgraded.unresolved;
+        if (JSON.stringify(upgraded) !== JSON.stringify(folder)) changed = true;
+        return upgraded;
+      } catch { return folder; }
+    });
+    if (changed) {
+      try { return writeDirectoryModeState(adminRoot, { ...state, folders }); } catch { return { ...state, folders }; }
+    }
+    return state;
+  }
 
   const migrated = migrateDirectoryModeState(adminRoot, value);
   try {
@@ -137,9 +222,12 @@ function withRecentDirectory(recent, directoryPath) {
 }
 
 /** App-owned state for a folder (annotations, caches, metadata) lives in the data folder, not in the user's folder. */
-function directoryStateRoot(adminRoot, directoryPath) {
-  const key = createHash("sha256").update(normalizeDirectoryPath(directoryPath)).digest("hex").slice(0, 24);
-  return path.join(adminRoot, ...DIRECTORY_STATE_ROOT, key);
+function directoryStateRoot(adminRoot, directoryPath, folderId) {
+  const id = VALID_FOLDER_ID.test(folderId) ? folderId : readFolderId(directoryPath);
+  const legacy = legacyDirectoryStateRoot(adminRoot, directoryPath);
+  const target = id ? path.join(adminRoot, ...DIRECTORY_STATE_ROOT, id) : legacy;
+  // If migration could not write the Master directory, old state stays readable.
+  return !fs.existsSync(target) && fs.existsSync(legacy) ? legacy : target;
 }
 
 /** The linked folder addressed by a top-level Libera path segment, if any. */
@@ -163,6 +251,9 @@ module.exports = {
   baseFolderName,
   contextStateRoot,
   directoryModeStatePath,
+  directoryMachineKey,
+  ensureDirectoryIdentity,
+  legacyDirectoryStateRoot,
   directoryStateRoot,
   findLinkedFolder,
   libraryNotebookNames,

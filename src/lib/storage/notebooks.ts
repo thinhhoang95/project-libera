@@ -1,4 +1,5 @@
 import { moveReviewPath, deleteReviewPath } from "./markdown-reviews";
+import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { randomInt } from "node:crypto";
 import { NOTEBOOK_ILLUSTRATION_IDS } from "@/lib/notebook-illustrations";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
@@ -27,6 +28,8 @@ import {
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { assertNotSharedItem, SharedDocumentError, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 
 /** Notebooks and linked folders share one namespace of top-level names. */
 function assertNameNotUsedByFolder(name: string, except?: string) {
@@ -79,6 +82,10 @@ export async function renameNotebook(
         (await stat(currentPath)).birthtime.toISOString(),
       );
 
+  // The host knows a shared notebook by its folder; renaming it on disk would
+  // orphan the project. Changing only the color or emoji is still fine.
+  if (!linkedFolder && safeCurrentName !== safeNextName) assertNotSharedItem(safeCurrentName);
+
   if (linkedFolder) {
     // Only the folder's name in Libera changes; the folder on disk keeps its name.
     renameLinkedFolder(safeCurrentName, safeNextName);
@@ -112,7 +119,10 @@ export async function renameNotebook(
   await renameNotebookViewOption(currentName, nextName);
   await renameNotebookPanelExpandedPathPrefix(currentName, nextName);
   await moveReviewPath(currentName, nextName);
+  // The notebook's own library moves with its folder; pointers into it are renamed here.
+  await moveReferenceAttachments(currentName, nextName);
   await renameFileMetadataPathPrefix(currentName, nextName);
+  if (currentName !== nextName) notifySearchChanges();
 
   return getTree();
 }
@@ -123,12 +133,20 @@ export async function deleteNotebook(name: string) {
     throw new StorageError("Remove the folder from Libera instead. Its files stay on disk.", 409);
   }
 
+  // A shared notebook is removed by leaving the project first. Once access is
+  // revoked the folder is only a local copy, which the user may delete.
+  const marker = sharedNotebookMarker(assertSafeSegment(name, "Notebook name"));
+  if (marker && !marker.revoked) throw new SharedDocumentError(name);
+
   await ensureAdminRoot();
   await rm(notebookPath(name), { recursive: true });
   await removeNotebookViewOption(name);
   await removeNotebookPanelExpandedPathPrefix(name);
   await deleteReviewPath(name);
+  // The notebook's own library was deleted with its folder; other libraries lose pointers into it.
+  await detachReferenceAttachments(assertSafeSegment(name, "Notebook name"));
   await removeFileMetadataPathPrefix(name);
+  notifySearchChanges();
 
   return getTree();
 }

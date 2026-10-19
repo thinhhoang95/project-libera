@@ -128,6 +128,7 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
             footer: footerMode === "custom" ? String(data.get("footer") ?? "") : "",
             showAppName,
             customInstructions: String(data.get("customInstructions") ?? ""),
+            citations: data.get("citations") === "biblatex" ? "biblatex" : "formatted",
           });
           await apiRequest<LatexOptions>("/api/preferences/latex", { method: "PUT", body: JSON.stringify(selected) });
           setOptions(selected); setSettingsOpen(false);
@@ -185,7 +186,14 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
         </label>
         {footerMode === "custom" && <label className="block space-y-1 text-sm"><span>Footer text ({showAppName ? "centered" : "left-aligned"})</span><input name="footer" type="text" maxLength={500} defaultValue={options.footer} className="block w-full rounded-md border border-border bg-card px-3 py-2" /></label>}
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showAppName} onChange={(event) => setShowAppName(event.target.checked)} />Show app name</label>
-        <p className="text-xs text-muted-foreground">{showAppName ? "Libera by Thinh Hoang appears in the right footer. Footer text (or page number / total pages when blank) is centered." : "Footer text (or page number / total pages when blank) appears in the left footer."}</p>
+        <p className="text-xs text-muted-foreground">{showAppName ? "Libera for Vy Tran appears in the right footer. Footer text (or page number / total pages when blank) is centered." : "Footer text (or page number / total pages when blank) appears in the left footer."}</p>
+        <label className="block space-y-1 text-sm">
+          <span>Citations</span>
+          <select name="citations" defaultValue={options.citations} className="block w-full rounded-md border border-border bg-card px-3 py-2">
+            <option value="formatted">Formatted text</option><option value="biblatex">biblatex</option>
+          </select>
+          <span className="block text-xs text-muted-foreground">Formatted text matches the Markdown preview. biblatex writes \parencite commands and a .bib file, and needs biber.</span>
+        </label>
         <label className="block space-y-1 text-sm">
           <span>Custom instructions (optional)</span>
           <textarea name="customInstructions" rows={5} maxLength={MAX_LATEX_CUSTOM_INSTRUCTIONS_LENGTH} defaultValue={options.customInstructions} placeholder="For example: Add a table of contents, use blue section headings, and keep tables near the text that references them." className="block w-full resize-y rounded-md border border-border bg-card px-3 py-2" />
@@ -197,7 +205,7 @@ export function LatexExportButton({ getMarkdown, documentPath }: { getMarkdown: 
     </ModalDialog>
     <ModalDialog open={open} title="LaTeX PDF export" panelClassName="max-w-5xl" onClose={close}
       footer={<>
-        {result && <><a className="rounded-md border border-border px-3 py-2 text-sm" href={result.source} download={result.archive ? "document-latex.zip" : "document.tex"}>{result.archive ? "Save LaTeX + images" : "Save LaTeX"}</a><a className="rounded-md bg-foreground px-3 py-2 text-sm text-background" href={result.pdf} download="document.pdf">Save PDF</a></>}
+        {result && <><a className="rounded-md border border-border px-3 py-2 text-sm" href={result.source} download={result.archive ? "document-latex.zip" : "document.tex"}>{result.archive ? "Save LaTeX (.zip)" : "Save LaTeX"}</a><a className="rounded-md bg-foreground px-3 py-2 text-sm text-background" href={result.pdf} download="document.pdf">Save PDF</a></>}
         {error && <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={() => void start()}>Retry</button>}
         <button type="button" className="rounded-md border border-border px-3 py-2 text-sm" onClick={close}>{busy ? "Cancel" : "Close"}</button>
       </>}>

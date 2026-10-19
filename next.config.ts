@@ -38,6 +38,7 @@ const nextConfig: NextConfig = {
       "./electron/**/*",
       "./node_modules/electron/**/*",
       "./node_modules/electron-builder/**/*",
+      "./server/**/*",
     ],
   },
 };

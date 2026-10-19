@@ -7,7 +7,7 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Set Up Libera by Thinh Hoang</title>
+    <title>Set Up Libera for Vy Tran</title>
     <script>
       document.documentElement.dataset.presentation =
         new URLSearchParams(window.location.search).get("presentation") || "window";
@@ -314,6 +314,19 @@
       .libera-dialog input.switch:checked::after { transform: translateX(16px); }
       .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
       :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
+      .model-catalog-status { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 12px; }
+      .model-catalog-status .field-help { margin: 0; }
+      .model-catalog-refresh { background: none; border: 0; color: var(--accent, #2563eb); cursor: pointer; font-size: 12px; padding: 0; }
+      .model-catalog-refresh:disabled { cursor: default; opacity: 0.55; }
+      .model-picker-row { margin-top: 8px; }
+      .model-suggestions { background: var(--dialog-surface, #fff); border: 1px solid var(--input, #d4d4d8); border-radius: 10px; box-shadow: 0 12px 32px #161c3c2e; list-style: none; margin: 0; max-height: 260px; overflow-y: auto; padding: 4px; position: fixed; scrollbar-width: thin; z-index: 50; }
+      .model-suggestion { border-radius: 7px; cursor: pointer; display: grid; gap: 1px 10px; grid-template-columns: minmax(0, 1fr) auto; padding: 6px 9px; }
+      .model-suggestion[aria-selected="true"] { background: var(--muted, #f4f4f5); }
+      .model-suggestion-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-suggestion-name { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .model-suggestion-meta { color: var(--muted-foreground, #71717a); font-size: 11px; grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+      .model-suggestion mark { background: none; color: var(--accent, #2563eb); font-weight: 600; }
+      .model-suggestions-empty { color: var(--muted-foreground, #71717a); font-size: 12px; padding: 8px 9px; }
     </style>
     <link rel="stylesheet" href="modal-dialog.css" />
   </head>
@@ -322,9 +335,9 @@
       <form id="setup-form" class="libera-dialog" aria-labelledby="form-title">
         <div class="dialog-header libera-dialog-header">
           <div>
-            <h1 id="form-title" class="libera-dialog-title">Set Up Libera by Thinh Hoang</h1>
+            <h1 id="form-title" class="libera-dialog-title">Set Up Libera for Vy Tran</h1>
             <p id="form-description" class="libera-dialog-description">
-              Choose the fixed Libera by Thinh Hoang Master directory, enter the required API key,
+              Choose the fixed Libera for Vy Tran Master directory, enter the required API key,
               and create the master password used by the app login screen.
             </p>
           </div>
@@ -353,6 +366,7 @@
               Markdown
             </button>
             <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
+            <button class="nav-item" data-section-button="search" type="button" aria-selected="false">Search</button>
             <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
@@ -387,7 +401,16 @@
                 When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.
               </p>
 
-              <label for="data-dir">Libera by Thinh Hoang Master directory</label>
+              <label for="source-editor">Source editor</label>
+              <select id="source-editor" aria-describedby="source-editor-help">
+                <option value="classic">Classic</option>
+                <option value="codemirror">CodeMirror (beta)</option>
+              </select>
+              <p id="source-editor-help" class="field-help">
+                The editor used for Markdown Source mode and slide decks. CodeMirror (beta) adds syntax colours for Markdown and Libera’s highlights, boxes and math. Restart Libera after changing it.
+              </p>
+
+              <label for="data-dir">Libera for Vy Tran Master directory</label>
               <div class="directory-row">
                 <input id="data-dir" autocomplete="off" readonly />
                 <button id="browse-button" class="secondary" type="button">Choose</button>
@@ -409,7 +432,7 @@
               <div id="password-locked" class="password-locked-row hidden">
                 <div class="locked">
                   A master password is already configured. The login screen will ask for it every
-                  time Libera by Thinh Hoang starts.
+                  time Libera for Vy Tran starts.
                 </div>
                 <button id="change-password-button" class="secondary" type="button">
                   Change password
@@ -429,7 +452,7 @@
                   type="password"
                 />
                 <p class="field-help">
-                  Password changes are applied after restarting Libera by Thinh Hoang.
+                  Password changes are applied after restarting Libera for Vy Tran.
                 </p>
               </div>
             </section>
@@ -438,6 +461,10 @@
               <h2>AI</h2>
               <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
               <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically.</p>
+              <div class="model-catalog-status">
+                <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
+                <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
+              </div>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
@@ -529,7 +556,16 @@
                   rows="3"
                   spellcheck="false"
                 ></textarea>
-                <p class="field-help">Optional. Enter one OpenRouter model identifier per line. Duplicate entries and the default AI Chat model are ignored.</p>
+                <input
+                  id="ai-chat-alternative-model-picker"
+                  class="model-picker-row"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="Add an alternative model"
+                  placeholder="Search OpenRouter models to add…"
+                />
+                <p class="field-help">Optional. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored.</p>
                 <label for="ai-chat-effort">Reasoning effort</label>
                 <select id="ai-chat-effort">
                   <option value="low">Low</option>
@@ -611,8 +647,138 @@
                   <option value="true">Enabled</option>
                 </select>
               </fieldset>
-              <p class="field-help">Enter OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
+              <fieldset class="ai-function-settings" id="references-settings">
+                <legend>References</legend>
+                <label for="ai-references-model">Model</label>
+                <input id="ai-references-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as AI Formatting" />
+                <label for="ai-references-effort">Reasoning effort</label>
+                <select id="ai-references-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="ai-references-caching">Prompt caching</label>
+                <select id="ai-references-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <div class="switch-row">
+                  <label for="references-lookup-online">Look up metadata online</label>
+                  <input id="references-lookup-online" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Crossref, DataCite, arXiv, OpenAlex, PubMed and Open Library. Only identifiers, titles and author names are sent.</p>
+                <div class="switch-row">
+                  <label for="references-use-ai">Use AI when no source is found</label>
+                  <input id="references-use-ai" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Reads a PDF’s first page or a note with the model above, using your OpenRouter key.</p>
+                <div class="switch-row">
+                  <label for="references-web-search">Allow web search by default</label>
+                  <input id="references-web-search" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Lets the model search the web for reports, theses and pages no catalogue has. Every field it finds names its source page.</p>
+                <div class="switch-row">
+                  <label for="references-auto-create-pdfs">Create entries automatically for new PDFs</label>
+                  <input id="references-auto-create-pdfs" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">A notebook’s own setting overrides this.</p>
+                <label for="references-contact-email">Crossref/OpenAlex contact email</label>
+                <input id="references-contact-email" type="email" autocomplete="off" spellcheck="false" placeholder="Optional" />
+                <p class="field-help">Sent with Crossref and OpenAlex lookups so they can contact you about heavy use, which gives faster service. Leave empty to send none.</p>
+              </fieldset>
+              <p class="field-help">Enter or search OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
 
+            </section>
+
+            <section class="settings-section hidden" data-section="search">
+              <h2>Search</h2>
+              <p class="settings-section-description">
+                Global Search finds notes, PDFs, LaTeX, code and images by meaning with Google’s EmbeddingGemma 2,
+                running on this computer. Keyword search works without it. Changes apply without restarting.
+              </p>
+
+              <h3>EmbeddingGemma 2 weights</h3>
+              <p class="field-help">
+                Download the ONNX model from Hugging Face (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json,
+                tokenizer_config.json, processor_config.json and preprocessor_config.json, plus the weight files below, each with
+                its .onnx_data file. Keep the weights outside Libera; choose them here. On a CPU, the 8-bit files
+                (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
+              </p>
+              <label for="search-text-weights">Text model weights</label>
+              <div class="directory-row">
+                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="…/embeddinggemma-2-ONNX/onnx/model_quantized.onnx" />
+                <button id="search-text-weights-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p>
+
+              <label for="search-vision-weights">Vision encoder weights</label>
+              <div class="directory-row">
+                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Optional: …/onnx/vision_encoder_quantized.onnx" />
+                <button id="search-vision-weights-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; leave empty for text only.</p>
+
+              <h3>PDF reading model</h3>
+              <p class="field-help">
+                Snip as Markdown and Convert PDF to Markdown read pages with IBM’s granite-docling-258M (Apache-2.0), running
+                on this computer. Choose a folder for it outside Libera. The first time you use either feature, Libera can
+                download it there (about 600 MB). Or put the files from Hugging Face
+                (onnx-community/granite-docling-258M-ONNX) there yourself, laid out like the repository: the configs and
+                tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.
+              </p>
+              <label for="reading-model-directory">Model folder</label>
+              <div class="directory-row">
+                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="…/granite-docling-258M-ONNX" />
+                <button id="reading-model-directory-button" class="secondary" type="button">Choose</button>
+              </div>
+
+              <h3>Index</h3>
+              <label for="search-dimensions">Embedding size</label>
+              <select id="search-dimensions">
+                <option value="768">768 dimensions (best quality)</option>
+                <option value="512">512 dimensions</option>
+                <option value="256">256 dimensions (smaller index)</option>
+                <option value="128">128 dimensions (text only; images lose quality)</option>
+              </select>
+              <p class="field-help">Smaller vectors make the index smaller and searches faster. Changing the size re-embeds everything.</p>
+
+              <label for="search-vision-tokens">Image detail</label>
+              <select id="search-vision-tokens">
+                <option value="70">Low (fastest)</option>
+                <option value="140">Standard (about 2 seconds per photo on a laptop CPU)</option>
+                <option value="280">High (about twice as slow)</option>
+                <option value="560">Very high</option>
+              </select>
+
+              <div class="switch-row">
+                <label for="search-index-images">Index photos</label>
+                <input id="search-index-images" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="field-help">Notebook images and the Image Gallery, using the vision encoder.</p>
+
+              <div class="switch-row">
+                <label for="search-background-indexing">Keep the index up to date in the background</label>
+                <input id="search-background-indexing" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="field-help">When off, the index is updated when you open Search.</p>
+
+              <label for="search-index-file">Index file</label>
+              <div class="directory-row">
+                <input id="search-index-file" autocomplete="off" spellcheck="false" placeholder="Default: on this computer, in Libera’s application data" />
+                <button id="search-index-reveal-button" class="secondary" type="button">Reveal</button>
+              </div>
+              <div class="textarea-actions">
+                <button id="search-index-existing-button" class="secondary" type="button">Use existing index…</button>
+                <button id="search-index-new-button" class="secondary" type="button">New index file…</button>
+                <button id="search-index-default-button" class="secondary" type="button">Use default</button>
+              </div>
+              <p id="search-index-help" class="field-help">
+                By default the index stays on this computer, outside the Master directory, so a notes folder synced to the cloud
+                never uploads it. To skip building it again, use an index Libera built before, for example copied from another
+                computer with the same notes. Keep the index on a local disk.
+              </p>
             </section>
 
             <section class="settings-section hidden" data-section="markdown">
@@ -737,7 +903,7 @@
               <div class="io-grid">
                 <article class="io-card">
                   <h3>Export settings</h3>
-                  <p class="field-help">Save the currently stored General, Markdown, and AI preferences to a JSON file.</p>
+                  <p class="field-help">Save the currently stored General, Markdown, AI, and Search preferences to a JSON file.</p>
                   <button id="export-preferences-button" class="secondary io-button" type="button">
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
                     Export settings
@@ -766,7 +932,7 @@
 
         <div class="libera-dialog-footer">
           <button id="close-button" class="secondary hidden" type="button">Close</button>
-          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera by Thinh Hoang</button>
+          <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera for Vy Tran</button>
         </div>
       </form>
     </main>
@@ -787,6 +953,7 @@
       systemAppearance.addEventListener("change", updateAppearance);
       const yourNameInput = document.querySelector("#your-name");
       const smartPasteInput = document.querySelector("#smart-paste");
+      const sourceEditorInput = document.querySelector("#source-editor");
       const wysiwygEditorFontFamilyInput = document.querySelector(
         "#wysiwyg-editor-font-family",
       );
@@ -807,6 +974,16 @@
         effort: document.querySelector(`#ai-${name}-effort`),
         caching: document.querySelector(`#ai-${name}-caching`),
       }]));
+      const referenceInputs = {
+        model: document.querySelector("#ai-references-model"),
+        effort: document.querySelector("#ai-references-effort"),
+        caching: document.querySelector("#ai-references-caching"),
+        lookupOnline: document.querySelector("#references-lookup-online"),
+        useAi: document.querySelector("#references-use-ai"),
+        webSearch: document.querySelector("#references-web-search"),
+        autoCreateForPdfs: document.querySelector("#references-auto-create-pdfs"),
+        contactEmail: document.querySelector("#references-contact-email"),
+      };
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
@@ -849,6 +1026,16 @@
       const markdownPdfBaseLineHeightInput = document.querySelector(
         "#markdown-pdf-base-line-height",
       );
+      const searchTextWeightsInput = document.querySelector("#search-text-weights");
+      const searchVisionWeightsInput = document.querySelector("#search-vision-weights");
+      const readingModelDirectoryInput = document.querySelector("#reading-model-directory");
+      const searchDimensionsInput = document.querySelector("#search-dimensions");
+      const searchVisionTokensInput = document.querySelector("#search-vision-tokens");
+      const searchIndexImagesInput = document.querySelector("#search-index-images");
+      const searchBackgroundIndexingInput = document.querySelector("#search-background-indexing");
+      const searchIndexFileInput = document.querySelector("#search-index-file");
+      const searchIndexHelp = document.querySelector("#search-index-help");
+      let searchDefaultIndexFile = "";
       const errorBox = document.querySelector("#error");
       const closeButton = document.querySelector("#close-button");
       const headerCloseButton = document.querySelector("#header-close-button");
@@ -862,10 +1049,10 @@
       const configurationMode = setupMode === "configuration";
 
       if (configurationMode) {
-        document.title = "Libera by Thinh Hoang Preferences";
+        document.title = "Libera for Vy Tran Preferences";
         formTitle.textContent = "Preferences";
         formDescription.textContent =
-          "Change Libera by Thinh Hoang settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera by Thinh Hoang.";
+          "Change Libera for Vy Tran settings. Theme changes apply immediately when saved. Other changes apply after restarting Libera for Vy Tran.";
         closeButton.classList.remove("hidden");
         headerCloseButton.classList.remove("hidden");
         document.querySelectorAll("[data-section-button].configuration-only").forEach((element) => {
@@ -887,6 +1074,8 @@
         sections.forEach((section) => {
           section.classList.toggle("hidden", section.dataset.section !== sectionId);
         });
+        activeModelCombobox?.close();
+        if (sectionId === "ai") loadOpenRouterModels();
       }
 
       function showError(message) {
@@ -1121,6 +1310,267 @@
         }
       }
 
+      const modelCatalogStatus = document.querySelector("#model-catalog-status");
+      const modelCatalogRefreshButton = document.querySelector("#model-catalog-refresh");
+      const aiChatAlternativeModelPicker = document.querySelector("#ai-chat-alternative-model-picker");
+      let openRouterModels = [];
+      let openRouterModelsPromise = null;
+      let activeModelCombobox = null;
+
+      function formatCatalogAge(fetchedAt) {
+        const minutes = Math.round((fetchedAt - Date.now()) / 60_000);
+        const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+        if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
+        if (Math.abs(minutes) < 60 * 24) return format.format(Math.round(minutes / 60), "hour");
+        return format.format(Math.round(minutes / (60 * 24)), "day");
+      }
+
+      function formatContextLength(tokens) {
+        if (!tokens) return "";
+        return tokens >= 1_000_000 ? `${+(tokens / 1_000_000).toFixed(1)}M` : `${Math.round(tokens / 1000)}K`;
+      }
+
+      // The main process caches the OpenRouter catalog for a day (memory + disk),
+      // so this is cheap to call whenever the AI section or a model field is used.
+      function loadOpenRouterModels({ refresh = false } = {}) {
+        if (!window.liberaSetup?.listOpenRouterModels) return Promise.resolve(openRouterModels);
+        if (openRouterModelsPromise && !refresh) return openRouterModelsPromise;
+        modelCatalogRefreshButton.disabled = true;
+        modelCatalogStatus.textContent = refresh ? "Refreshing OpenRouter models…" : "Loading OpenRouter models…";
+        openRouterModelsPromise = window.liberaSetup.listOpenRouterModels({ refresh })
+          .then((result) => {
+            if (!result?.ok) throw new Error(result?.error || "Unknown error.");
+            openRouterModels = result.models;
+            modelCatalogStatus.textContent =
+              `${openRouterModels.length} OpenRouter models, updated ${formatCatalogAge(result.fetchedAt)}.` +
+              (result.stale ? " OpenRouter is unreachable, so the cached list is shown." : "");
+            return openRouterModels;
+          })
+          .catch((error) => {
+            openRouterModelsPromise = null;
+            modelCatalogStatus.textContent =
+              `Unable to load OpenRouter models. You can still type a model ID. (${error.message})`;
+            return openRouterModels;
+          })
+          .finally(() => {
+            modelCatalogRefreshButton.disabled = false;
+            activeModelCombobox?.render();
+          });
+        return openRouterModelsPromise;
+      }
+
+      function appendHighlighted(parent, text, terms) {
+        const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        const pattern = escaped.length ? new RegExp("(" + escaped.join("|") + ")", "gi") : null;
+        (pattern ? text.split(pattern) : [text]).forEach((part, index) => {
+          if (!part) return;
+          if (index % 2 === 1) {
+            const mark = document.createElement("mark");
+            mark.textContent = part;
+            parent.append(mark);
+          } else {
+            parent.append(part);
+          }
+        });
+      }
+
+      function attachModelCombobox(input, { visionOnly = false, onPick = null } = {}) {
+        const list = document.createElement("ul");
+        list.className = "model-suggestions";
+        list.id = `${input.id}-suggestions`;
+        list.setAttribute("role", "listbox");
+        list.hidden = true;
+        form.append(list);
+        input.setAttribute("role", "combobox");
+        input.setAttribute("aria-autocomplete", "list");
+        input.setAttribute("aria-controls", list.id);
+        input.setAttribute("aria-expanded", "false");
+        let isOpen = false;
+        let showAll = false;
+        let items = [];
+        let activeIndex = -1;
+
+        function matches() {
+          const query = showAll ? "" : input.value.trim().toLowerCase();
+          const terms = query.split(/\s+/).filter(Boolean);
+          const pool = visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels;
+          const rank = (model) => {
+            const id = model.id.toLowerCase();
+            if (id === query) return 0;
+            return id.startsWith(query) || id.split("/").pop().startsWith(query) ? 1 : 2;
+          };
+          const found = pool.filter((model) => {
+            const haystack = `${model.id} ${model.name}`.toLowerCase();
+            return terms.every((term) => haystack.includes(term));
+          });
+          if (query) found.sort((a, b) => rank(a) - rank(b));
+          return { terms, found: found.slice(0, 100) };
+        }
+
+        function position() {
+          const rect = input.getBoundingClientRect();
+          const below = window.innerHeight - rect.bottom;
+          list.style.left = `${rect.left}px`;
+          list.style.width = `${rect.width}px`;
+          const above = below < 220 && rect.top > below;
+          list.style.maxHeight = `${Math.max(120, Math.min(260, (above ? rect.top : below) - 12))}px`;
+          if (above) {
+            list.style.top = "";
+            list.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+          } else {
+            list.style.bottom = "";
+            list.style.top = `${rect.bottom + 4}px`;
+          }
+        }
+
+        function setActive(index) {
+          list.querySelector('[aria-selected="true"]')?.setAttribute("aria-selected", "false");
+          activeIndex = index;
+          const option = index >= 0 ? list.children[index] : null;
+          if (option) {
+            option.setAttribute("aria-selected", "true");
+            option.scrollIntoView({ block: "nearest" });
+            input.setAttribute("aria-activedescendant", option.id);
+          } else {
+            input.removeAttribute("aria-activedescendant");
+          }
+        }
+
+        function render() {
+          if (!isOpen) return;
+          const { terms, found } = matches();
+          items = found;
+          list.replaceChildren(...found.map((model, index) => {
+            const option = document.createElement("li");
+            option.className = "model-suggestion";
+            option.id = `${list.id}-${index}`;
+            option.setAttribute("role", "option");
+            option.setAttribute("aria-selected", "false");
+            const id = document.createElement("span");
+            id.className = "model-suggestion-id";
+            appendHighlighted(id, model.id, terms);
+            const name = document.createElement("span");
+            name.className = "model-suggestion-name";
+            appendHighlighted(name, model.name, terms);
+            const meta = document.createElement("span");
+            meta.className = "model-suggestion-meta";
+            meta.textContent = [formatContextLength(model.contextLength), model.vision ? "image" : ""].filter(Boolean).join(" · ");
+            option.append(id, name, meta);
+            option.addEventListener("mousedown", (event) => {
+              event.preventDefault();
+              pick(model.id);
+            });
+            option.addEventListener("mousemove", () => {
+              if (activeIndex !== index) setActive(index);
+            });
+            return option;
+          }));
+          if (!found.length) {
+            const empty = document.createElement("li");
+            empty.className = "model-suggestions-empty";
+            empty.textContent = openRouterModels.length
+              ? "No matching OpenRouter models. The typed ID will be used as entered."
+              : openRouterModelsPromise ? "Loading OpenRouter models…" : "No model suggestions are available.";
+            list.append(empty);
+          }
+          position();
+          setActive(showAll ? found.findIndex((model) => model.id === input.value.trim()) : -1);
+        }
+
+        function open() {
+          if (activeModelCombobox && activeModelCombobox !== api) activeModelCombobox.close();
+          activeModelCombobox = api;
+          isOpen = true;
+          list.hidden = false;
+          input.setAttribute("aria-expanded", "true");
+          render();
+          loadOpenRouterModels();
+        }
+
+        function close() {
+          if (!isOpen) return;
+          isOpen = false;
+          list.hidden = true;
+          input.setAttribute("aria-expanded", "false");
+          setActive(-1);
+          if (activeModelCombobox === api) activeModelCombobox = null;
+        }
+
+        function pick(modelId) {
+          if (onPick) {
+            onPick(modelId);
+          } else {
+            input.value = modelId;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          close();
+        }
+
+        input.addEventListener("focus", () => {
+          showAll = true;
+          open();
+        });
+        input.addEventListener("click", () => {
+          if (isOpen) return;
+          showAll = true;
+          open();
+        });
+        input.addEventListener("input", () => {
+          showAll = false;
+          if (isOpen) render();
+          else open();
+        });
+        input.addEventListener("blur", close);
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!isOpen) {
+              showAll = true;
+              open();
+              return;
+            }
+            if (!items.length) return;
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            setActive(activeIndex < 0 ? (step > 0 ? 0 : items.length - 1) : (activeIndex + step + items.length) % items.length);
+          } else if (event.key === "Enter") {
+            if (isOpen && activeIndex >= 0) {
+              event.preventDefault();
+              pick(items[activeIndex].id);
+            } else if (onPick && input.value.trim()) {
+              event.preventDefault();
+              pick(input.value.trim());
+            }
+          } else if (event.key === "Escape" && isOpen) {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+          } else if (event.key === "Tab") {
+            close();
+          }
+        });
+
+        const api = { close, render, position };
+        return api;
+      }
+
+      window.addEventListener("resize", () => activeModelCombobox?.position());
+      document.addEventListener("scroll", () => activeModelCombobox?.position(), true);
+      modelCatalogRefreshButton.addEventListener("click", () => loadOpenRouterModels({ refresh: true }));
+      attachModelCombobox(openRouterModelInput);
+      for (const name of aiFunctionNames) {
+        attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
+      }
+      attachModelCombobox(referenceInputs.model);
+      attachModelCombobox(aiChatAlternativeModelPicker, {
+        onPick(modelId) {
+          const models = aiChatAlternativeModelsInput.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          if (!models.includes(modelId) && modelId !== aiFunctionInputs.chat.model.value.trim()) {
+            aiChatAlternativeModelsInput.value = [...models, modelId].join("\n");
+          }
+          aiChatAlternativeModelPicker.value = "";
+        },
+      });
+
       async function loadState() {
         const state = await window.liberaSetup.getState();
 
@@ -1128,6 +1578,7 @@
         updateAppearance();
         yourNameInput.value = state.yourName || "";
         smartPasteInput.checked = state.smartPaste === true;
+        sourceEditorInput.value = state.sourceEditor === "codemirror" ? "codemirror" : "classic";
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
@@ -1140,6 +1591,15 @@
           ? state.aiFunctions.chat.alternativeModels.join("\n")
           : "";
         aiRewriteCustomInstructionInput.value = state.aiFunctions?.rewrite?.customInstruction || "";
+        const references = state.aiFunctions?.references || {};
+        referenceInputs.model.value = typeof references.model === "string" ? references.model : "";
+        referenceInputs.effort.value = references.reasoningEffort || "low";
+        referenceInputs.caching.value = String(references.promptCaching === true);
+        referenceInputs.lookupOnline.checked = references.lookupOnline !== false;
+        referenceInputs.useAi.checked = references.useAi !== false;
+        referenceInputs.webSearch.checked = references.webSearch === true;
+        referenceInputs.autoCreateForPdfs.checked = references.autoCreateForPdfs === true;
+        referenceInputs.contactEmail.value = typeof references.contactEmail === "string" ? references.contactEmail : "";
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -1181,6 +1641,18 @@
         markdownPdfBaseLineHeightInput.value = String(
           state.markdownPdfBaseLineHeight || 1.75,
         );
+
+        const search = state.search || {};
+        searchTextWeightsInput.value = search.textWeights || "";
+        searchVisionWeightsInput.value = search.visionWeights || "";
+        readingModelDirectoryInput.value = search.readingModelDirectory || "";
+        searchDimensionsInput.value = String(search.dimensions || 768);
+        searchVisionTokensInput.value = String(search.visionTokens || 140);
+        searchIndexImagesInput.checked = search.indexImages !== false;
+        searchBackgroundIndexingInput.checked = search.backgroundIndexing !== false;
+        searchIndexFileInput.value = search.indexFile || "";
+        searchDefaultIndexFile = state.searchDefaultIndexFile || "";
+        if (searchDefaultIndexFile) searchIndexFileInput.placeholder = `Default: ${searchDefaultIndexFile}`;
 
         if (state.hasApiKey) {
           apiKeyInput.placeholder = "Saved API key";
@@ -1335,6 +1807,44 @@
         }
       });
 
+      document.querySelector("#search-text-weights-button").addEventListener("click", async () => {
+        clearError();
+        const file = await window.liberaSetup.selectSearchWeights("text");
+        if (file) searchTextWeightsInput.value = file;
+      });
+
+      document.querySelector("#search-vision-weights-button").addEventListener("click", async () => {
+        clearError();
+        const file = await window.liberaSetup.selectSearchWeights("vision");
+        if (file) searchVisionWeightsInput.value = file;
+      });
+
+      document.querySelector("#reading-model-directory-button").addEventListener("click", async () => {
+        clearError();
+        const folder = await window.liberaSetup.selectSearchWeights("reading");
+        if (folder) readingModelDirectoryInput.value = folder;
+      });
+
+      for (const [id, mode] of [["#search-index-existing-button", "existing"], ["#search-index-new-button", "new"]]) {
+        document.querySelector(id).addEventListener("click", async () => {
+          clearError();
+          const file = await window.liberaSetup.selectSearchIndexFile(mode);
+          if (file) searchIndexFileInput.value = file;
+        });
+      }
+
+      document.querySelector("#search-index-default-button").addEventListener("click", () => {
+        searchIndexFileInput.value = "";
+      });
+
+      document.querySelector("#search-index-reveal-button").addEventListener("click", async () => {
+        clearError();
+        const file = searchIndexFileInput.value.trim() || searchDefaultIndexFile;
+        if (!file || !(await window.liberaSetup.revealSearchIndex(file))) {
+          searchIndexHelp.textContent = "That index file does not exist yet. Build it from the Search panel, or choose an existing one.";
+        }
+      });
+
       browseButton.addEventListener("click", async () => {
         clearError();
         const directory = await window.liberaSetup.selectDataDir();
@@ -1356,6 +1866,7 @@
             themePreference: themePreferenceInput.value,
             yourName: yourNameInput.value,
             smartPaste: smartPasteInput.checked,
+            sourceEditor: sourceEditorInput.value,
             dataDir: dataDirInput.value,
             markdownEditorFontFamily: markdownEditorFontFamilyInput.value,
             wysiwygEditorFontFamily: wysiwygEditorFontFamilyInput.value,
@@ -1377,7 +1888,26 @@
                 alternativeModels: aiChatAlternativeModelsInput.value.split(/\r?\n/),
               } : {}),
               ...(name === "rewrite" ? { customInstruction: aiRewriteCustomInstructionInput.value } : {}),
-            }])),
+            }]).concat([["references", {
+              model: referenceInputs.model.value.trim(),
+              reasoningEffort: referenceInputs.effort.value,
+              promptCaching: referenceInputs.caching.value === "true",
+              lookupOnline: referenceInputs.lookupOnline.checked,
+              useAi: referenceInputs.useAi.checked,
+              webSearch: referenceInputs.webSearch.checked,
+              autoCreateForPdfs: referenceInputs.autoCreateForPdfs.checked,
+              contactEmail: referenceInputs.contactEmail.value.trim(),
+            }]])),
+            search: {
+              textWeights: searchTextWeightsInput.value,
+              visionWeights: searchVisionWeightsInput.value,
+              dimensions: searchDimensionsInput.value,
+              visionTokens: searchVisionTokensInput.value,
+              indexImages: searchIndexImagesInput.checked,
+              backgroundIndexing: searchBackgroundIndexingInput.checked,
+              indexFile: searchIndexFileInput.value,
+              readingModelDirectory: readingModelDirectoryInput.value,
+            },
             quickPrompts: quickPromptCards().map((card) => ({
               identifier: card.querySelector(".quick-prompt-identifier").value,
               prompt: card.querySelector(".quick-prompt-text").value,
@@ -1406,6 +1936,11 @@
           saveButton.disabled = false;
         }
       });
+
+      const requestedSection = new URLSearchParams(window.location.search).get("section");
+      if (requestedSection && sections.some((section) => section.dataset.section === requestedSection)) {
+        setActiveSection(requestedSection);
+      }
 
       loadState().catch((error) => {
         showError(error.message || "Unable to load setup state.");

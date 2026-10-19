@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   baseFolderName,
+  directoryMachineKey,
+  ensureDirectoryIdentity,
   libraryNotebookNames,
   normalizeDirectoryPath,
   readDirectoryModeState,
@@ -28,6 +30,7 @@ import {
   writeWorkspaceMetadata,
 } from "@/lib/storage/workspace-metadata";
 import type { ReviewDocument } from "@/lib/markdown-review";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 
 export type DirectoryModeSummary = {
   folders: Array<{ name: string; path: string }>;
@@ -132,7 +135,8 @@ export async function openDirectory(input: unknown) {
   await ensureAdminRoot();
   const adminRoot = getAdminRoot();
   const state = readDirectoryModeState(adminRoot);
-  const existing = state.folders.find((folder) => folder.path === directoryPath);
+  const id = ensureDirectoryIdentity(adminRoot, directoryPath);
+  const existing = state.folders.find((folder) => folder.path === directoryPath || (id && folder.id === id));
   const name = existing?.name ?? uniqueFolderName(
     baseFolderName(directoryPath),
     [...libraryNotebookNames(adminRoot), ...state.folders.map((folder) => folder.name)],
@@ -140,7 +144,10 @@ export async function openDirectory(input: unknown) {
 
   writeDirectoryModeState(adminRoot, {
     ...state,
-    folders: existing ? state.folders : [...state.folders, { name, path: directoryPath }],
+    folders: existing
+      ? state.folders.map((folder) => folder === existing ? { ...folder, path: directoryPath, ...(id ? { id } : {}),
+        locations: { ...folder.locations, [directoryMachineKey()]: directoryPath } } : folder)
+      : [...state.folders, { name, path: directoryPath, ...(id ? { id } : {}), locations: { [directoryMachineKey()]: directoryPath } }],
     recent: withRecentDirectory(state.recent, directoryPath),
   });
 
@@ -150,7 +157,9 @@ export async function openDirectory(input: unknown) {
     await mergeLegacyFolderState(folder);
   }
 
-  return { ...getDirectoryModeSummary(), name, changed: !existing };
+  const changed = !existing || existing.path !== directoryPath;
+  if (changed) notifySearchChanges();
+  return { ...getDirectoryModeSummary(), name, changed };
 }
 
 /** Remove a folder from the library. Its files on disk are never touched. */
@@ -167,6 +176,7 @@ export function closeDirectory(name: unknown) {
     ...state,
     folders: state.folders.filter((folder) => folder.name !== safeName),
   });
+  notifySearchChanges();
   return getDirectoryModeSummary();
 }
 
@@ -199,6 +209,7 @@ export function renameLinkedFolder(currentName: string, nextName: string) {
     ...state,
     folders: state.folders.map((item) => item === folder ? { ...item, name: nextName } : item),
   });
+  notifySearchChanges();
 }
 
 export function clearRecentDirectories() {

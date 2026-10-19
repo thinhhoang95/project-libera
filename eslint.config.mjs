@@ -23,6 +23,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "._*",
     "**/._*",
+    "server/**",
+    "electron/collab/dist/**",
   ]),
 ]);
 

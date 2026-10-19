@@ -5,6 +5,7 @@ import { beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
 import { applyAiProposal, pendingAiField, setPendingAiRequest, type AiChangeSource } from "@/lib/latex/codemirror/review";
+import { aiSuggestionNotice, sharedSuggester } from "@/lib/collab/client/suggestions-ai";
 
 let requestCounter = 0;
 const controllers = new WeakMap<EditorView, AbortController>();
@@ -27,7 +28,12 @@ export function cancelLatexAi(view: EditorView) {
   controllers.get(view)?.abort();
 }
 
-/** Run AI Format, AI Rewrite or Write with AI and show the result for review. */
+/**
+ * Run AI Format, AI Rewrite or Write with AI and show the result for review.
+ * On a shared tab the result becomes an AI suggestion on the overlay instead
+ * of applied hunks (plan M3.4): collaborators see it, and accepting it is a
+ * server decision.
+ */
 export async function runLatexAi(view: EditorView, action: AiChangeSource, range: { from: number; to: number }, prompt: string, onError: (message: string) => void) {
   if (isLatexAiWorking(view)) return;
   const id = `latex-ai-${++requestCounter}`;
@@ -59,7 +65,10 @@ export async function runLatexAi(view: EditorView, action: AiChangeSource, range
     const pending = view.state.field(pendingAiField, false);
     if (pending?.id !== id) return;
     if (!text.trim()) throw new Error("AI returned an empty response. Please retry.");
-    if (action !== "write" && view.state.sliceDoc(pending.from, pending.to) !== original) {
+    const shared = view.state.facet(sharedSuggester);
+    // A shared document maps the result from the text the AI saw onto the
+    // live text, so a concurrent edit makes it conflicted rather than lost.
+    if (!shared && action !== "write" && view.state.sliceDoc(pending.from, pending.to) !== original) {
       throw new Error("The selected text changed while AI was working. Select it again and retry.");
     }
 
@@ -71,6 +80,13 @@ export async function runLatexAi(view: EditorView, action: AiChangeSource, range
       const leading = original.match(/^\s*\n/)?.[0] ?? "";
       const trailing = original.match(/\n\s*$/)?.[0] ?? "";
       replacement = `${leading}${text.replace(/^\s*\n/, "").replace(/\n\s*$/, "")}${trailing}`;
+    }
+    if (shared) {
+      const result = shared.suggestAi(doc, [{ start: target.from, end: target.to, before: original, after: replacement }], { feature: action });
+      const notice = aiSuggestionNotice(result);
+      if (notice) onError(notice);
+      view.focus();
+      return;
     }
     applyAiProposal(view, pending.from, pending.to, replacement, action);
     view.focus();

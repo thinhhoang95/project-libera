@@ -1,5 +1,6 @@
 import type { FormEvent, RefObject } from "react";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -7,6 +8,8 @@ import type {
   LiberaNotebookViewOptions,
   LiberaNotebookNode,
   LiberaTree,
+  PdfMarkupStyle,
+  PdfShapeKind,
   PdfTextAnnotationFont,
 } from "@/lib/types";
 
@@ -43,18 +46,29 @@ export type MarkdownTabViewState = {
   /** ProseMirror selection JSON, independent of source-text offsets. */
   visualSelection?: Record<string, unknown>;
   zoom?: number;
+  /** One-shot request (Global Search) to show and select a passage, by source offsets. */
+  reveal?: { start: number; end: number; nonce: number };
 };
 
 export type PdfTabViewState = {
   fontFamily?: PdfTextAnnotationFont;
   fontSize?: number;
   highlightColor?: string;
+  /** Ink for pen strokes and shapes. */
+  inkColor?: string;
+  /** Ink for underline, strikethrough and squiggly markup. */
+  markupColor?: string;
+  markupStyle?: PdfMarkupStyle;
   scrollLeft?: number;
   scrollTop?: number;
   selectedAnnotationId?: string;
+  shapeKind?: PdfShapeKind;
+  strokeWidth?: number;
   textColor?: string;
-  tool?: "select" | "highlight" | "text";
+  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
   zoom?: number;
+  /** One-shot request (Global Search) to show a page and find a passage on it. */
+  reveal?: { page: number; text?: string; nonce: number };
 };
 
 export type LatexTabViewState = {
@@ -94,6 +108,8 @@ export type TextTabViewState = {
   line?: number;
   selectionEnd?: number;
   selectionStart?: number;
+  /** One-shot request (Global Search) to show and select lines. */
+  reveal?: { line: number; endLine?: number; nonce: number };
 };
 
 export type OpenTabViewState = {
@@ -254,7 +270,18 @@ export type MarkdownScreenshotSnipSession = {
   selectionStart: number;
   sourceTabId: string;
   targetTabId: string;
+  /** "image" inserts the snip as a picture; "markdown" reads it into Markdown with the local model. */
+  mode: MarkdownScreenshotSnipMode;
+  /** The visual editor inserts at its own saved selection instead of the source offsets above. */
+  editor: "source" | "visual";
+  /** Set while a Markdown snip is being read. */
+  converting?: { startedAt: number };
 };
+
+export type MarkdownScreenshotSnipMode = "image" | "markdown";
+
+/** Markdown waiting for the visual editor of a tab to insert at its selection. `inline` inserts at the caret instead of as a new block. */
+export type PendingVisualInsertion = { id: string; markdown: string; inline?: boolean };
 
 export type LiberaWorkspace = {
   activeTab?: OpenTab;
@@ -309,6 +336,7 @@ export type LiberaWorkspace = {
   copyFileFromPrompt: (file: LiberaFileNode) => Promise<void>;
   deleteFileFromPrompt: (tab: OpenTab) => Promise<void>;
   deleteFolderFromPrompt: (folder: LiberaFolderNode) => Promise<void>;
+  downloadAnnotatedPdf: (tab: OpenTab, mathMarkers?: MathMarkerSettings) => Promise<void>;
   downloadFile: (file: LiberaFileNode, content?: string) => void;
   duplicateMarkdown: (file: LiberaFileNode) => void;
   downloadMarkdownPdf: (tab: OpenTab) => Promise<void>;
@@ -342,7 +370,10 @@ export type LiberaWorkspace = {
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
-  openFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
+  openFile: (
+    file: LiberaFileNode,
+    options?: { viewState?: OpenTabViewState; placement?: "tab" | "right" | "bottom" },
+  ) => Promise<void>;
   openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
   openCreateNotebookDialog: () => void;
   openCreateNotebookGroupDialog: () => void;

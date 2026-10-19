@@ -63,7 +63,12 @@ declare global {
   };
 
   interface Window {
-    liberaWorkspaces?: { checkpoint: (body: string, root: string) => { saved: boolean; error?: string } };
+    liberaPersistence?: { onFlush: (listener: () => Promise<void>) => () => void };
+    liberaWorkspaces?: {
+      checkpoint: (body: string, root: string) => { saved: boolean; error?: string };
+      remember?: (body: string, root: string) => { saved: boolean; error?: string };
+      readRecovery?: (root: string) => Promise<string | null>;
+    };
     liberaDirectory?: {
       chooseFolder: () => Promise<string | null>;
       chooseFile: () => Promise<string | null>;
@@ -87,6 +92,16 @@ declare global {
     liberaFileExplorer?: {
       revealNotebook: (notebook: string) => Promise<void>;
       revealItem: (relativePath: string) => Promise<void>;
+    };
+    liberaSearch?: {
+      /** Show the search index file in Finder or Explorer; false when it does not exist. */
+      revealIndex: (filePath: string) => Promise<boolean>;
+      /** Choose an existing index file and save it in Preferences; "" when canceled. */
+      useExistingIndex: () => Promise<string>;
+    };
+    liberaPreferences?: {
+      /** Open Preferences at a section, e.g. "search". */
+      open: (section?: string) => Promise<void>;
     };
     liberaClipboard?: {
       copyItemPath: (

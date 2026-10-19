@@ -1,3 +1,7 @@
+// The CodeMirror Source editor answers these measurements itself; it stands
+// behind the same textarea ref (see markdown-codemirror/textarea-adapter.ts).
+import { getCodeMirrorTextareaAdapter } from "./markdown-codemirror/textarea-adapter";
+
 type TextareaScrollBlock = "center" | "start";
 
 type TextareaMetrics = {
@@ -290,6 +294,8 @@ export function getTextareaOffsetAtPoint(
   clientX: number,
   clientY: number,
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.offsetAtPoint(clientX, clientY);
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {
@@ -306,6 +312,8 @@ export function getTextareaOffsetAtPoint(
 }
 
 export function getTextareaVisibleStartOffset(textarea: HTMLTextAreaElement) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.visibleStartOffset();
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {
@@ -319,6 +327,8 @@ export function getTextareaViewportAnchorOffset(
   textarea: HTMLTextAreaElement,
   viewportProgress: number,
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.viewportAnchorOffset(viewportProgress);
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {
@@ -340,6 +350,8 @@ export function getTextareaVisualProgressForRange(
   offset: number,
   range: TextareaSourceRange,
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.visualProgressForRange(offset, range);
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {
@@ -362,6 +374,8 @@ export function getTextareaOffsetAtVisualProgress(
   range: TextareaSourceRange,
   progress: number,
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.offsetAtVisualProgress(range, progress);
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {
@@ -399,6 +413,8 @@ export function getTextareaClientPointForOffset(
   textarea: HTMLTextAreaElement,
   offset: number,
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) return codeMirror.clientPointForOffset(offset);
   const measurer = createMeasurer(textarea);
   const rect = textarea.getBoundingClientRect();
 
@@ -426,6 +442,11 @@ export function scrollTextareaToOffset(
   offset: number,
   options: { block?: TextareaScrollBlock; viewportProgress?: number } = {},
 ) {
+  const codeMirror = getCodeMirrorTextareaAdapter(textarea);
+  if (codeMirror) {
+    codeMirror.scrollToOffset(offset, options);
+    return;
+  }
   const measurer = createMeasurer(textarea);
 
   if (!measurer) {

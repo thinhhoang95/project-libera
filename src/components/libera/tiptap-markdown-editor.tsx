@@ -6,26 +6,31 @@ import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { MarkdownTabViewState } from "@/components/libera/types";
+import type { MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
-import { changeTiptapHeadingLevels, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
+import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
-import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { TiptapCitationLayer, useTiptapCitations } from "@/components/libera/references/tiptap-citation-view";
+import { useReferenceRender } from "@/components/libera/references/reference-render-context";
+import { droppedQuoteMarkdown, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
+import type { PdfQuoteSource } from "@/lib/references/pdf-quote";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, markdownLineForTiptapPosition, navigateTiptapToMarkdownHeading, revealTiptapMarkdownRange, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { useMarkdownHeadingIndex } from "./use-markdown-heading-index";
 import { HighlightTool, highlightToolKey, defaultHighlightToolState } from "@/lib/tiptap-highlight-tool";
 import { TiptapFind, tiptapFindPluginKey, updateTiptapFind } from "@/lib/tiptap-find";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "@/lib/markdown-colors";
 import { apiRequest } from "@/components/libera/api-client";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
+import { FactCheckButton } from "@/components/libera/markdown-toolbar";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
@@ -35,6 +40,9 @@ import { TiptapEditorActions } from "@/components/libera/tiptap-editor-actions";
 import { MarkdownLinkInput } from "./markdown-link-input";
 import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
 import type { LiberaFileNode, MarkdownImageAssetPayload } from "@/lib/types";
+import { NoteLinksButton } from "./note-links-dialog";
+import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
+import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 
 type Props = {
   files?: LiberaFileNode[];
@@ -54,6 +62,19 @@ type Props = {
   onRegisterDraft?: (read: () => string) => () => void;
   onSave: () => Promise<void>;
   onOpenFileLink: (href: string) => Promise<boolean>;
+  /** Snip from an image or PDF tab, as a picture or read into Markdown. */
+  canStartScreenshotSnip?: boolean;
+  onStartScreenshotSnip?: (mode: "image" | "markdown") => void;
+  /** Markdown to insert at the saved selection once, e.g. a finished snip. */
+  pendingInsertion?: PendingVisualInsertion;
+  onPendingInsertionHandled?: (id: string) => void;
+  /**
+   * Shared tab: the editor starts empty and the Visual bridge builds and
+   * syncs it from the shared Y.Text (decision D1). `value` and `onChange`
+   * are unused; undo goes through the bridge. Fixed for the editor's
+   * lifetime; key the editor on its generation.
+   */
+  collab?: SharedVisualSource;
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -108,7 +129,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number } | null>(null);
   const [error, setError] = useState("");
@@ -146,10 +167,23 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     }
   }, [onViewStateChange]);
   const uploads = useRef(new Set<{ pos: number; controller: AbortController }>());
+  // The bound bridge on a shared tab (set once the editor exists).
+  const sharedRef = useRef<SharedVisualHandle | null>(null);
+  const shared = !!collab;
+  const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
+  // Citation nodes, the `@` popup and the citation popover (references lane).
+  const citations = useTiptapCitations();
+  // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
+  const referenceNotebook = useReferenceRender()?.notebook ?? null;
+  const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView }),
+    ...citations.extensions,
+    // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
+    // from recording remote edits (shared tabs only).
+    ...(shared ? [TiptapCollabHistory] : []),
     HighlightTool,
     TiptapFind,
     TiptapReview,
@@ -164,11 +198,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers]);
+  ]; }, [documentPath, mathMarkers, shared, citations]);
 
   const editor = useEditor({
     extensions,
-    content: value,
+    // A shared note starts empty: the bridge builds the document block by
+    // block, which is linear where a whole-note parse is not.
+    content: shared ? "" : value,
     contentType: "markdown",
     immediatelyRender: false,
     shouldRerenderOnTransaction: false,
@@ -185,6 +221,19 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         },
       },
       handleDrop(view, event, _slice, moved) {
+        const quote = moved ? null : pdfQuoteFromDrop(event.dataTransfer);
+        if (quote) {
+          event.preventDefault();
+          setDragging(false);
+          let pos = view.state.selection.from;
+          try {
+            pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? pos;
+          } catch {
+            // No layout (a hidden pane): the quote goes after the caret's block.
+          }
+          dropQuoteRef.current(quote, pos);
+          return true;
+        }
         if (moved || !event.dataTransfer?.files.length) return false;
         event.preventDefault();
         setDragging(false);
@@ -200,6 +249,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           return true;
         }
         if (!editor || editor.isActive("codeBlock") || editor.isActive("code")) return false;
+        // Libera's own paste handlers dispatch ordinary transactions; tag
+        // them so the shared history records a paste.
+        markPaste();
         const markdown = event.clipboardData?.getData("text/markdown");
         if (smartPaste && smartPasteClipboard(editor, view.state.selection, event.clipboardData, markdown, mathMarkers)) {
           event.preventDefault();
@@ -256,7 +308,19 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     },
   });
 
-  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft);
+  useLayoutEffect(() => {
+    if (!editor || !collab) return;
+    const handle = collab.attach(editor);
+    sharedRef.current = handle;
+    return () => {
+      if (sharedRef.current === handle) sharedRef.current = null;
+      handle.destroy();
+    };
+  }, [editor, collab]);
+  const sharedDraft = useMemo(() => (collab ? { text: () => sharedRef.current?.text() ?? lastValue.current } : null), [collab]);
+  // Shared tab: AI results and "Suggest edit" go to the document's suggestions.
+  const sharedSuggestions = useCallback(() => sharedRef.current?.suggestions ?? null, []);
+  const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft, sharedDraft);
   useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
 
   useMarkdownHeadingIndex(value, (markdown, offsets) => {
@@ -307,6 +371,38 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     });
   }
   useCanvasViewStateCapture(captureVisualState);
+
+  useLayoutEffect(() => {
+    dropQuoteRef.current = (source, pos) => {
+      void droppedQuoteMarkdown(source, referenceNotebook).then((markdown) => {
+        if (!markdown || !editor || editor.isDestroyed) return;
+        markPaste();
+        replaceTiptapRangeWithMarkdown(editor, getTiptapBlockInsertionRange(editor, Math.min(pos, editor.state.doc.content.size)), markdown);
+        editor.commands.focus();
+      });
+    };
+  }, [editor, markPaste, referenceNotebook]);
+
+  // Runs after the saved selection is restored (a layout effect below), so a
+  // snip lands where the caret was when it started.
+  const handledInsertionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !pendingInsertion || handledInsertionRef.current === pendingInsertion.id) return;
+    handledInsertionRef.current = pendingInsertion.id;
+    const insertion = pendingInsertion;
+    // After this commit: inserted citations mount React node views, which
+    // React cannot flush while it is still committing this effect.
+    queueMicrotask(() => {
+      if (editor.isDestroyed) return;
+      const range = insertion.inline
+        ? { from: editor.state.selection.from, to: editor.state.selection.to }
+        : getTiptapBlockInsertionRange(editor, editor.state.selection.to);
+      markPaste();
+      replaceTiptapRangeWithMarkdown(editor, range, insertion.markdown);
+      editor.commands.focus();
+      onPendingInsertionHandled?.(insertion.id);
+    });
+  }, [editor, pendingInsertion, onPendingInsertionHandled, markPaste]);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -371,6 +467,28 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     return () => window.removeEventListener(MARKDOWN_OUTLINE_NAVIGATE_EVENT, navigate);
   }, [documentPath, editor, readMarkdown, reportVisualPosition]);
 
+  // A one-shot request (Global Search) to select a passage, once the restored
+  // scroll position has been applied.
+  const reveal = initialViewState?.reveal;
+  useEffect(() => {
+    if (!editor || !reveal) return;
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        if (editor.isDestroyed) return;
+        const markdown = readMarkdown();
+        revealTiptapMarkdownRange(editor, markdown, reveal.start, reveal.end);
+        reportVisualPosition(editor, markdown, editor.state.selection.from);
+        const container = scrollContainerRef.current;
+        onViewStateChangeRef.current?.({
+          reveal: undefined,
+          visualSelection: editor.state.selection.toJSON(),
+          ...(container ? { visualScrollLeft: container.scrollLeft, visualScrollTop: container.scrollTop } : {}),
+        });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editor, readMarkdown, reportVisualPosition, reveal]);
+
   function scheduleVisualPosition(current: Editor) {
     if (!onViewStateChange) return;
     if (visualPositionTimerRef.current !== null) clearTimeout(visualPositionTimerRef.current);
@@ -431,6 +549,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           : await apiRequest<MarkdownImageAssetPayload>("/api/markdown-assets", { method: "POST", body: formData, signal: upload.controller.signal });
         if (editor.isDestroyed || upload.controller.signal.aborted) return;
         // The position is mapped through edits made while the upload is pending.
+        markPaste();
         editor.chain().insertContentAt(upload.pos, { type: "image", attrs: { src: payload.assetPath, alt: file.name.replace(/\.[^.]+$/, "") } }).run();
       }
     } catch (cause) {
@@ -629,7 +748,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           <option value="">Line spacing</option>
           {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{spacing}×</option>)}
         </select>
-        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} />
+        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} shared={collab ? sharedSuggestions : undefined} />
         {[
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
@@ -660,14 +779,22 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           {MARKDOWN_TEXT_COLORS.map((color) => <option key={color.value} value={color.value}>{color.label}</option>)}
         </select>
         <button type="button" aria-label="Insert or edit link" title="Insert or edit link" className={buttonClass} onClick={() => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to })}><Link2 className="h-4 w-4" /></button>
+        <NoteLinksButton className={buttonClass} documentPath={documentPath} files={files} getContent={() => editor.getMarkdown()} onOpenLink={onOpenFileLink} />
         <button type="button" aria-label="Insert image from file" title="Insert image from file (or drop/paste a photo)" className={buttonClass} onClick={() => imageInput.current?.click()}><ImagePlus className="h-4 w-4" /></button>
         <button type="button" aria-label="Insert image from gallery" title="Insert images from the photo gallery" className={buttonClass} onClick={() => setGalleryPickerOpen(true)}><Images className="h-4 w-4" /></button>
+        {onStartScreenshotSnip ? (
+          <>
+            <button type="button" aria-label="Snip from image or PDF tab" title={canStartScreenshotSnip ? "Snip from image or PDF tab" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("image"); }}><Scissors className="h-4 w-4" /></button>
+            <button type="button" aria-label="Snip as Markdown" title={canStartScreenshotSnip ? "Snip as Markdown: read a region of an image or PDF tab into text" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
+          </>
+        ) : null}
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>
         <button type="button" aria-label="Clear formatting" title="Clear formatting" className={buttonClass} onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting className="h-4 w-4" /></button>
         <button type="button" aria-label="Undo" title="Undo" disabled={!state.undo} className={buttonClass} onClick={() => editor.chain().focus().undo().run()}><Undo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Redo" title="Redo" disabled={!state.redo} className={buttonClass} onClick={() => editor.chain().focus().redo().run()}><Redo2 className="h-4 w-4" /></button>
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
+        <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
@@ -695,7 +822,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
               void insertImages(Array.from(event.dataTransfer.files), pos);
             }
           }}>
-          <EditorContent className="libera-text-width-content" editor={editor} />
+          <TiptapCitationLayer editor={editor} citations={citations}>
+            <EditorContent className="libera-text-width-content" editor={editor} />
+          </TiptapCitationLayer>
         </div>
         {findOpen ? (
           <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">

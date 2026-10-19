@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeJsonState } from "./json-state";
 import { workspaceMetadataPath } from "@/lib/storage/paths";
 import type {
   LiberaNotebookGroup,
@@ -166,11 +167,7 @@ export async function readWorkspaceMetadata(): Promise<LiberaWorkspaceMetadata> 
 }
 
 export async function writeWorkspaceMetadata(metadata: LiberaWorkspaceMetadata) {
-  await writeFile(
-    workspaceMetadataPath(),
-    `${JSON.stringify(normalizeWorkspaceMetadata(metadata), null, 2)}\n`,
-    "utf8",
-  );
+  await writeJsonState(workspaceMetadataPath(), normalizeWorkspaceMetadata(metadata));
 }
 
 export async function setNotebookPanelExpandedPaths(expandedPaths: string[]) {

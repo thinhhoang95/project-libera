@@ -4,21 +4,27 @@ import { useMarkdownReview } from "./markdown-review-context";
 import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag } from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, Search, SpellCheck, FilePlus2, Globe } from "lucide-react";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
 import { ModalDialog } from "./modal-dialog";
 import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
+import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
 import { ChatFileComposer } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
-import { readChatResponse } from "./chat-stream-client";
+import { readAgentEvents, readChatResponse } from "./chat-stream-client";
+import { AgentRunView } from "./agent-activity";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
-import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
+import { CHAT_REASONING_EFFORTS, chatHasPhotoSource, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
+import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
+import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
+import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -72,28 +78,92 @@ async function viewedPhotoDataUrl(photo: ChatViewedPhoto, signal: AbortSignal) {
   throw new Error(`${photo.name} could not be prepared for the chat.`);
 }
 
-function createChat(): DocumentChat {
-  return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [] };
+function createChat(mode: ChatMode = "chat", agentPermission?: AgentPermission): DocumentChat {
+  return { id: crypto.randomUUID(), title: "New chat", messages: [], prompt: "", selections: [], ...(mode === "agent" ? { mode, agentPermission } : {}) };
 }
 
-const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize }: {
-  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number;
+// Keep the live UI separate from the snapshot captured by a save event. Tokens
+// and composer keystrokes must neither serialize history nor schedule writes.
+function reduceChatState(state: { store: ChatStore | null; snapshot: ChatStore | null }, action: { update: SetStateAction<ChatStore | null>; persist: boolean }) {
+  const store = typeof action.update === "function" ? action.update(state.store) : action.update;
+  return { store, snapshot: action.persist ? store : state.snapshot };
+}
+
+const CHAT_MODE_STORAGE_KEY = "libera.chatMode";
+const AGENT_PERMISSION_STORAGE_KEY = "libera.agentPermission";
+const DEFAULT_AGENT_PERMISSION: AgentPermission = "open-files";
+const AGENT_WEB_SEARCH_STORAGE_KEY = "libera.agentWebSearch";
+const isStoredFlag = (value: unknown): value is "true" | "false" => value === "true" || value === "false";
+/** The agent skill a Fact-check citations request preloads (src/lib/agent/skills/fact-check-citations.ts). */
+const FACT_CHECK_SKILL = "fact-check-citations";
+
+/** The first message of a run started by a Fact-check citations button. */
+export function factCheckPrompt(path: string) {
+  return `Fact-check the citations in ${path}.`;
+}
+
+function readStoredPreference<T>(key: string, accept: (value: unknown) => value is T): T | undefined {
+  try {
+    const value = window.localStorage.getItem(key);
+    return accept(value) ? value : undefined;
+  } catch { return undefined; }
+}
+
+function storePreference(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); } catch { /* Preferences are a convenience. */ }
+}
+
+/** The visible text of an agent run, for copying, exporting and later turns. */
+function agentRunText(run: AgentRunRecord) {
+  return run.steps.flatMap((step) => step.kind === "text" && step.text.trim() ? [step.text.trim()] : []).join("\n\n");
+}
+
+function hasUnrevertedAgentChanges(messages: ChatMessage[]) {
+  return messages.some((message) => message.agent?.changes.some((change) => !change.reverted));
+}
+
+/** Earlier turns for a request: Agent replies keep their file changes but not their step log. */
+function requestMessages(messages: ChatMessage[], agent: boolean) {
+  return messages.map(({ agent: run, ...message }) => agent && run
+    ? { ...message, agent: { ...run, steps: [], tasks: [] } }
+    : message);
+}
+
+const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize, onOpenFileLink }: {
+  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean>;
 }) {
   const content = useMemo(() => message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text,
     [message.role, message.text, message.status, mathMarkers]);
   return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
-    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} />;
+    baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} onOpenFileLink={onOpenFileLink} />;
 });
 
-export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null }) {
+/** How Agent mode reads and updates the editor: live drafts in, changed files back out. */
+export type AgentWorkspaceBridge = {
+  /** Notebook selected in the sidebar, used when no file is open. */
+  notebook?: string;
+  readTabDraft: (path: string) => string | null;
+  syncTabFromDisk: (path: string, baseline?: string) => Promise<{ content: string; keptDraft: boolean } | null>;
+  restoreTabAfterUndo: (path: string, result: { status: "restored" | "deleted"; content?: string; draft?: string }) => void;
+  refreshAfterChanges: (createdPaths: string[]) => Promise<void>;
+  openFile: (path: string) => void;
+};
+
+export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], attachmentRequest, onAttachmentHandled, quickPrompts = [], activeTab, collapsed, mathMarkers, onCollapsedChange, onExportSaved, onSaveToNotebook, onCreateDraft, agentWorkspace }: { files?: LiberaFileNode[]; tabs?: OpenTab[]; attachmentRequest?: { id: string; tab: OpenTab } | null; onAttachmentHandled?: (id: string) => void; quickPrompts?: QuickPrompt[]; onCreateDraft: (snapshot: ChatExport) => void; onExportSaved?: (notebook: string) => Promise<void>; onSaveToNotebook?: (input: ChatNotebookExport) => Promise<void>; activeTab: OpenTab | null | undefined; collapsed: boolean; mathMarkers: MathMarkerSettings; onCollapsedChange: (value: boolean) => void; viewedPhoto?: ChatViewedPhoto | null; agentWorkspace?: AgentWorkspaceBridge }) {
   const review = useMarkdownReview();
+  // Agent runs finish after awaits; reach the review of whatever document is open then.
+  const reviewRef = useRef(review);
+  useEffect(() => { reviewRef.current = review; }, [review]);
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
   const [models, setModels] = useState<string[]>([]);
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
   const [fontSizeError, setFontSizeError] = useState("");
-  const [store, setStore] = useState<ChatStore | null>(null);
+  const [{ store, snapshot }, dispatchStore] = useReducer(reduceChatState, { store: null, snapshot: null });
+  const setStore = useCallback((update: SetStateAction<ChatStore | null>, persist = true) => {
+    dispatchStore({ update, persist });
+  }, []);
   const [now, setNow] = useState(() => new Date());
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
@@ -106,9 +176,27 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [pending, setPending] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const [undoingRunId, setUndoingRunId] = useState<string | null>(null);
+  const [defaultMode, setDefaultMode] = useState<ChatMode>("chat");
+  const [defaultPermission, setDefaultPermission] = useState<AgentPermission>(DEFAULT_AGENT_PERMISSION);
+  const [allowWebSearch, setAllowWebSearch] = useState(false);
+  // Agent runs call back into the workspace after awaits; always use the latest bridge.
+  const agentWorkspaceRef = useRef(agentWorkspace);
+  // Replies link files by workspace path; open them in the editor rather than navigating the window.
+  const openChatFileLink = useCallback(async (href: string) => {
+    const path = markdownLinkWorkspacePath(href);
+    if (!path) return false;
+    agentWorkspaceRef.current?.openFile(path);
+    return true;
+  }, []);
+  useEffect(() => { agentWorkspaceRef.current = agentWorkspace; }, [agentWorkspace]);
   const latestStore = useRef<ChatStore | null>(null);
-  const saveQueue = useRef(Promise.resolve());
-  const persistedStore = useRef<ChatStore | null>(null);
+  const fontSizeWrite = useRef<Promise<unknown> | null>(null);
+  const historyWriter = useMemo(() => createDeferredSave(async (body) => {
+    await apiRequest("/api/document-chat/state", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
+    setStorageError("");
+  }, () => setStorageError("Chat history could not be saved. The next conversation action will retry saving.")), []);
   const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const handledAttachmentRequest = useRef<string | null>(null);
@@ -119,7 +207,17 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const followResponseRef = useRef(true);
   const readingPositionsRef = useRef(new Map<string, { top: number; follow: boolean }>());
   const chat = store?.chats.find((item) => item.id === store.activeId);
+  const mode: ChatMode = chat?.mode ?? "chat";
+  const agentMode = mode === "agent";
+  const permission: AgentPermission = chat?.agentPermission ?? defaultPermission;
   const lastMessageText = chat?.messages.at(-1)?.text;
+  const lastMessageSteps = chat?.messages.at(-1)?.agent?.steps.length;
+  const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file : null;
+  // "Modify all files in Notebook/Folder" applies to the notebook of the file in view, else the selected one.
+  const agentNotebook = viewedFile?.notebook ?? agentWorkspace?.notebook;
+  // In a shared notebook the agent's changes are suggestions (plan M3.4).
+  const sharedAgent = useIsSharedNotebook(agentNotebook);
+  const openTextFileCount = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).length;
   // A photo being viewed covers the editors, so it replaces the document as context.
   const document = useMemo<ChatContext | null>(() => !viewedPhoto && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
 
@@ -148,41 +246,40 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       }
       if (isChatReasoningEffort(configuredEffort)) setDefaultReasoningEffort(configuredEffort);
       if (history != null && !validateChatStore(history)) throw new Error("Saved chat history is invalid.");
-      const first = createChat();
+      const storedMode = readStoredPreference(CHAT_MODE_STORAGE_KEY, isChatMode) ?? "chat";
+      const storedPermission = readStoredPreference(AGENT_PERMISSION_STORAGE_KEY, isAgentPermission) ?? DEFAULT_AGENT_PERMISSION;
+      setDefaultMode(storedMode);
+      setDefaultPermission(storedPermission);
+      setAllowWebSearch(readStoredPreference(AGENT_WEB_SEARCH_STORAGE_KEY, isStoredFlag) === "true");
+      const first = createChat(storedMode, storedPermission);
       const restored = history ?? { chats: [first], activeId: first.id };
+      if (history) historyWriter.markSaved({ kind: "history", value: history });
       restored.chats = restored.chats.map((item) => {
         item = { ...item, messages: item.messages.map((message) => message.status === "streaming" ? { ...message, status: "interrupted" as const } : message) };
         const last = item.messages.at(-1);
         return last?.role === "user" ? { ...item, messages: item.messages.slice(0, -1), prompt: item.prompt || last.text, photos: [...(last.photos ?? []), ...(item.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...(last.contexts ?? []), ...item.selections] } : item;
       });
-      setStore(restored);
+      setStore(restored, history !== null);
     }).catch(() => { if (!disposed) setStorageError("Saved chats could not be loaded. Reload the app to retry."); });
     return () => { disposed = true; requestRef.current?.abort(); };
-  }, []);
+  }, [historyWriter, setStore]);
 
-  const persistStore = useCallback((snapshot: ChatStore | null) => {
+  useLayoutEffect(() => { latestStore.current = store; }, [store]);
+
+  useEffect(() => {
     if (!snapshot) return;
-    saveQueue.current = saveQueue.current.then(async () => {
-      if (latestStore.current !== snapshot || persistedStore.current === snapshot) return;
-      try {
-        await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "history", value: snapshot }) });
-        persistedStore.current = snapshot;
-        setStorageError("");
-      } catch { setStorageError("Chat history could not be saved. Your next change will retry saving."); }
-    });
-  }, []);
+    historyWriter.schedule({ kind: "history", value: snapshot });
+    void historyWriter.flush().catch(() => undefined);
+  }, [snapshot, historyWriter]);
 
   useEffect(() => {
-    latestStore.current = store;
-    if (!pending) persistStore(store);
-  }, [store, pending, persistStore]);
-
-  useEffect(() => {
-    if (!pending) return;
-    persistStore(latestStore.current);
-    const interval = window.setInterval(() => persistStore(latestStore.current), 1000);
-    return () => window.clearInterval(interval);
-  }, [pending, persistStore]);
+    const flush = () => {
+      if (latestStore.current) historyWriter.schedule({ kind: "history", value: latestStore.current });
+      return Promise.all([historyWriter.flush(), fontSizeWrite.current]);
+    };
+    const unregister = registerStateFlusher(flush);
+    return () => { unregister(); void flush().catch(() => undefined); };
+  }, [historyWriter]);
 
   useLayoutEffect(() => {
     const id = chat?.id;
@@ -198,11 +295,11 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   useEffect(() => {
     const log = logRef.current;
     if (log && followResponseRef.current) log.scrollTop = log.scrollHeight;
-  }, [chat?.messages.length, lastMessageText, pending]);
+  }, [chat?.messages.length, lastMessageText, lastMessageSteps, pending]);
 
-  const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat) => {
-    setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }));
-  }, []);
+  const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat, persist = true) => {
+    setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }), persist);
+  }, [setStore]);
 
   useEffect(() => {
     function addSelection(event: KeyboardEvent) {
@@ -212,7 +309,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       let text = "";
       if (activeTab?.file.fileType === "markdown" && target instanceof HTMLTextAreaElement && target.classList.contains("markdown-editor-input")) {
         text = target.value.slice(target.selectionStart, target.selectionEnd);
-      } else if ((activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text") && target.closest("[data-libera-code-editor]")) {
+      } else if ((activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text" || activeTab?.file.fileType === "markdown") && target.closest("[data-libera-code-editor]")) {
+        // CodeMirror editors, including the CodeMirror Markdown Source editor.
         text = readRegisteredEditorSelection(target) ?? "";
       } else if (activeTab?.file.fileType === "markdown" && target.closest(".libera-tiptap")) {
         const selection = window.getSelection();
@@ -364,7 +462,45 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
-  async function send(retryMessageId?: string, edit?: { id: string; text: string }) {
+  // A Fact-check citations button (References panel, Markdown toolbars) asks
+  // for an Agent run: open the panel, start a new Agent chat with the request
+  // as its prompt, and send it with the fact-check skill preloaded.
+  const factCheckRequestRef = useRef<{ chatId: string; prompt: string } | null>(null);
+  const sendRef = useRef<typeof send | null>(null);
+  // Before the effect below, so it sends with this render's chat and settings.
+  useEffect(() => { sendRef.current = send; });
+  useEffect(() => {
+    function requestFactCheck(event: Event) {
+      const detail = (event as CustomEvent<FactCheckRequestDetail>).detail;
+      if (!detail?.path || !store) return;
+      onCollapsedChange(false);
+      review?.setChatReview(false);
+      if (requestRef.current) { setError("Wait for the current reply to finish, or stop it, before starting a fact-check."); return; }
+      if (typeof detail.webSearch === "boolean") setAllowWebSearch(detail.webSearch);
+      const prompt = factCheckPrompt(detail.path);
+      const active = store.chats.find((item) => item.id === store.activeId);
+      // An untouched chat is reused rather than left behind empty.
+      const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length ? active : null;
+      const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt };
+      factCheckRequestRef.current = { chatId: next.id, prompt };
+      setStore((current) => current && (reuse
+        ? { ...current, chats: current.chats.map((item) => item.id === next.id ? next : item) }
+        : { chats: [next, ...current.chats], activeId: next.id }));
+      setError("");
+      setNotice("");
+    }
+    window.addEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
+    return () => window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
+  }, [store, defaultPermission, onCollapsedChange, review]);
+
+  useEffect(() => {
+    const request = factCheckRequestRef.current;
+    if (!request || !chat || pending || chat.id !== request.chatId || chat.mode !== "agent" || chat.prompt !== request.prompt) return;
+    factCheckRequestRef.current = null;
+    void sendRef.current?.(undefined, undefined, { skill: FACT_CHECK_SKILL });
+  }, [chat, pending]);
+
+  async function send(retryMessageId?: string, edit?: { id: string; text: string }, options: { skill?: string } = {}) {
     const replay = Boolean(retryMessageId || edit);
     if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length && !pendingPhoto) || requestRef.current || loadingPhotos || loadingFiles) return;
     if (!replay && pendingPhoto && (chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) { setError(`Attach up to ${MAX_CHAT_PHOTOS} photos per message, including the one you are viewing.`); return; }
@@ -372,86 +508,266 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (retryMessageId && (retryIndex < 1 || chat.messages[retryIndex - 1].role !== "user")) return;
     const editIndex = edit ? chat.messages.findIndex((item) => item.id === edit.id && item.role === "user") : -1;
     if (edit && (editIndex < 0 || (!edit.text.trim() && !chat.messages[editIndex].photos?.length))) return;
+    if (replay && hasUnrevertedAgentChanges(chat.messages.slice(retryMessageId ? retryIndex : editIndex))) {
+      setError("Undo the agent's file changes in the replies below first, so regenerating does not lose track of them.");
+      return;
+    }
+    const agent = chat.mode === "agent";
+    if (agent && permission === "notebook" && !agentNotebook) { setError("Open a file or select a notebook first, so the agent knows which notebook it may change."); return; }
     const id = chat.id;
     const prompt = chat.prompt;
     const selections = chat.selections;
     const photos = chat.photos ?? [];
-    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument ? [includedDocument] : [])]).sort((a, b) => Number(a.kind === "selection") - Number(b.kind === "selection")) };
+    // In Agent mode the open file is passed by path; the agent reads what it needs.
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument && !agent ? [includedDocument] : [])]).sort((a, b) => Number(a.kind === "selection") - Number(b.kind === "selection")) };
     const messages = edit ? [...chat.messages.slice(0, editIndex), { ...chat.messages[editIndex], text: edit.text.trim(), createdAt: new Date().toISOString() }]
       : retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
     requestRef.current = controller;
     setPending(id);
     setError("");
+    setNotice("");
     let committed = false;
     const assistantId = crypto.randomUUID();
     let createdAt: string | undefined;
     let answer = "";
     let updateTimer: number | undefined;
+    const run: AgentRunRecord | null = agent ? { runId: "", permission, steps: [], tasks: [], changes: [] } : null;
+    let runStarted = false;
+    let syncQueue = Promise.resolve();
     function publish(status?: "streaming" | "interrupted") {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
       updateTimer = undefined;
-      const text = answer;
-      if (!text) return;
+      const text = run ? agentRunText(run) : answer;
+      if (run ? !runStarted : !text) return;
       createdAt ??= new Date().toISOString();
+      const record = run ? compactAgentRunRecord(structuredClone(run)) : undefined;
       updateChat(id, (current) => {
-        const assistant = { id: assistantId, role: "assistant" as const, text, status, createdAt };
+        const assistant: ChatMessage = { id: assistantId, role: "assistant", text, status, createdAt, ...(record ? { agent: record } : {}) };
         return { ...current, messages: current.messages.some((item) => item.id === assistantId)
           ? current.messages.map((item) => item.id === assistantId ? assistant : item)
           : [...current.messages, assistant] };
-      });
+      }, status !== "streaming");
+    }
+    function schedule() {
+      if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
     }
     try {
       if (!replay) {
         message.contexts = await Promise.all(message.contexts
           .filter((context) => context.kind !== "document" || !chat.excludedDocumentPaths?.includes(context.path))
           .map(async (context) => {
-            if (context.kind !== "document" || context.text || !/\.pdf$/i.test(context.path)) return context;
+            if (agent || context.kind !== "document" || context.text || !/\.pdf$/i.test(context.path)) return context;
             const { text } = await apiRequest<{ text: string }>(`/api/document-chat/pdf?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
             return { ...context, text };
           }));
         if (pendingPhoto) message.photos = [...photos, { id: crypto.randomUUID(), name: pendingPhoto.name, dataUrl: await viewedPhotoDataUrl(pendingPhoto, controller.signal), source: pendingPhoto.source }];
       }
       controller.signal.throwIfAborted();
-      updateChat(id, (current) => replay ? { ...current, messages } : ({ ...current,
-        title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || message.photos[0]?.name || "Photo chat").slice(0, 60), messages,
-        prompt: current.prompt === prompt ? "" : current.prompt,
-        selections: current.selections.filter((item) => !selections.includes(item)),
-        photos: current.photos?.filter((item) => !photos.includes(item)) ?? [],
-      }));
+      updateChat(id, (current) => {
+        const next = replay ? { ...current, messages } : { ...current,
+          title: current.messages.length || current.titleEdited ? current.title : (prompt.trim() || message.photos[0]?.name || "Photo chat").slice(0, 60), messages,
+          prompt: current.prompt === prompt ? "" : current.prompt,
+          selections: current.selections.filter((item) => !selections.includes(item)),
+          photos: current.photos?.filter((item) => !photos.includes(item)) ?? [],
+        };
+        // Save the sent turn and its request ledger together. Usage updates stay
+        // in memory until the response completes, fails, or is interrupted.
+        return { ...next, usageRequests: [...chatUsageRequests(current), { id: assistantId, messageId: messages.at(-1)!.id }] };
+      });
       committed = true;
-      // Keep the request ledger separate from replies so regenerations and failed
-      // attempts retain their usage even when the visible conversation changes.
-      updateChat(id, (current) => ({ ...current, usageRequests: [...chatUsageRequests(chat), { id: assistantId, messageId: messages.at(-1)!.id }] }));
-      const response = await fetch("/api/document-chat", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stream: true, sessionId: id, messages: messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), model, reasoningEffort: chat.reasoningEffort }),
-        signal: controller.signal,
-      });
-      await readChatResponse(response, controller.signal, (text) => {
-        const first = !answer;
-        answer += text;
-        if (first) publish("streaming");
-        else if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
-      }, (usage) => {
-        updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage } : request) }));
-      });
-      if (!answer.trim()) throw new Error("The model returned an empty response.");
-      publish();
+      if (run) {
+        const bridge = agentWorkspaceRef.current;
+        // The agent sees what the user sees: unsaved drafts of open files go with
+        // the request, and each tab follows the agent's edits unless the user types.
+        const openTabs = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType));
+        const baselines = new Map<string, string>();
+        const drafts: Record<string, string> = {};
+        for (const tab of openTabs) {
+          const draft = bridge?.readTabDraft(tab.file.path) ?? tab.draft;
+          baselines.set(tab.file.path, draft);
+          if (draft !== tab.saved) drafts[tab.file.path] = draft;
+        }
+        const usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+        const keptDrafts: string[] = [];
+        let failure = "";
+        let doneMessage = "";
+        const response = await fetch("/api/agent", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: id, model, reasoningEffort: chat.reasoningEffort, permission: run.permission,
+            messages: requestMessages(messages, true),
+            activeFile: activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path : undefined,
+            openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch,
+            ...(options.skill ? { skill: options.skill } : {}),
+          }),
+          signal: controller.signal,
+        });
+        await readAgentEvents(response, controller.signal, (event) => {
+          if (event.type === "run_started") { run.runId = event.runId; runStarted = true; publish("streaming"); }
+          else if (event.type === "text_delta") {
+            const last = run.steps.at(-1);
+            if (last?.kind === "text") last.text += event.text; else run.steps.push({ kind: "text", text: event.text });
+            schedule();
+          } else if (event.type === "tool_started") {
+            run.steps.push({ kind: "tool", id: event.id, name: event.name, summary: event.summary, status: "running", ...(event.diff ? { diff: event.diff } : {}) });
+            publish("streaming");
+          } else if (event.type === "tool_finished") {
+            const step = run.steps.find((item) => item.kind === "tool" && item.id === event.id);
+            if (step?.kind === "tool") Object.assign(step, { status: event.status, result: event.result, ...(event.detail ? { detail: event.detail } : {}) });
+            schedule();
+          } else if (event.type === "tasks_updated") { run.tasks = event.tasks; schedule(); }
+          else if (event.type === "file_changed") {
+            const existing = run.changes.find((change) => change.path === event.path);
+            if (existing) { existing.created ||= event.created; if (event.suggested) existing.suggested = true; }
+            else run.changes.push({ path: event.path, created: event.created, ...(event.suggested ? { suggested: true } : {}) });
+            publish("streaming");
+            // Shared files changed through the collab host: the tab's live replica already has the edit.
+            if (event.shared) return;
+            const changedPath = event.path;
+            syncQueue = syncQueue.then(async () => {
+              const synced = await agentWorkspaceRef.current?.syncTabFromDisk(changedPath, baselines.get(changedPath)).catch(() => null);
+              if (synced?.keptDraft) { if (!keptDrafts.includes(changedPath)) keptDrafts.push(changedPath); }
+              else if (synced) baselines.set(changedPath, synced.content);
+            });
+          } else if (event.type === "comments_added") {
+            if (event.count) {
+              const existing = run.comments?.find((entry) => entry.path === event.path);
+              if (existing) existing.count += event.count; else run.comments = [...(run.comments ?? []), { path: event.path, count: event.count }];
+              schedule();
+            }
+          } else if (event.type === "suggestions_added") {
+            if (event.count) {
+              const existing = run.suggestions?.find((entry) => entry.path === event.path);
+              if (existing) existing.count += event.count; else run.suggestions = [...(run.suggestions ?? []), { path: event.path, count: event.count }];
+              schedule();
+            }
+          } else if (event.type === "subagent_started") {
+            run.steps.push({ kind: "subagent", id: event.id, label: event.label, status: "running", steps: [], stepCount: 0 });
+            publish("streaming");
+          } else if (event.type === "subagent_step" || event.type === "subagent_finished") {
+            const step = run.steps.find((item) => item.kind === "subagent" && item.id === event.id);
+            if (step?.kind !== "subagent") return;
+            if (event.type === "subagent_finished") Object.assign(step, { status: "finished", outcome: event.outcome, usage: event.usage });
+            else {
+              const index = step.steps.findIndex((item) => item.id === event.step.id);
+              if (index >= 0) step.steps[index] = event.step;
+              else {
+                step.stepCount++;
+                step.steps.push(event.step);
+                if (step.steps.length > MAX_SUBAGENT_STEPS) step.steps.shift();
+              }
+            }
+            schedule();
+          } else if (event.type === "usage") {
+            usage.inputTokens += event.usage.inputTokens;
+            usage.outputTokens += event.usage.outputTokens;
+            usage.cachedTokens += event.usage.cachedTokens ?? 0;
+            const total = { ...usage };
+            updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage: total } : request) }), false);
+          } else if (event.type === "done") { run.outcome = event.outcome; doneMessage = event.message ?? ""; }
+          else if (event.type === "error") failure = event.message;
+        });
+        await syncQueue;
+        // The agent wrote threads or suggested edits into the document's review; show them if that document is open.
+        const currentReview = reviewRef.current;
+        if (currentReview?.doc && [...(run.comments ?? []), ...(run.suggestions ?? [])].some((entry) => entry.path === currentReview.doc!.key)) {
+          await currentReview.reload();
+          currentReview.showComments();
+        }
+        if (failure || (run.outcome === "error" && !run.steps.length && !run.changes.length)) {
+          if (!run.steps.length && !run.changes.length) throw new Error(failure || doneMessage || "The agent run failed.");
+          run.outcome = "error";
+        }
+        publish();
+        if (failure || run.outcome === "error") setError(failure || doneMessage || "The agent run failed.");
+        else if (doneMessage) setNotice(doneMessage);
+        if (keptDrafts.length) setNotice(`You kept typing in ${keptDrafts.join(", ")}, so your unsaved version stays in the editor. The agent's version is saved on disk; saving the tab replaces it.`);
+      } else {
+        const response = await fetch("/api/document-chat", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stream: true, sessionId: id, messages: requestMessages(messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), false), model, reasoningEffort: chat.reasoningEffort }),
+          signal: controller.signal,
+        });
+        await readChatResponse(response, controller.signal, (text) => {
+          const first = !answer;
+          answer += text;
+          if (first) publish("streaming");
+          else if (updateTimer === undefined) updateTimer = window.setTimeout(() => publish("streaming"), 50);
+        }, (usage) => {
+          updateChat(id, (current) => ({ ...current, usageRequests: current.usageRequests?.map((request) => request.id === assistantId ? { ...request, usage } : request) }), false);
+        });
+        if (!answer.trim()) throw new Error("The model returned an empty response.");
+        publish();
+      }
     } catch (cause) {
       if (deletedRequestRef.current === controller) return;
-      if (answer) {
-        publish("interrupted");
+      await syncQueue;
+      const produced = run ? runStarted && (run.steps.length > 0 || run.changes.length > 0) : !!answer;
+      if (produced) {
+        if (run) {
+          run.outcome = controller.signal.aborted ? "stopped" : "error";
+          publish();
+        } else publish("interrupted");
         setError(controller.signal.aborted ? "" : cause instanceof Error ? cause.message : "Chat failed.");
       } else {
         setError(controller.signal.aborted ? replay ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
-        if (committed) updateChat(id, (current) => replay ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
+        if (committed) updateChat(id, (current) => replay ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id && item.id !== assistantId), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
       requestRef.current = null;
       setPending(null);
+      if (run?.changes.length) await agentWorkspaceRef.current?.refreshAfterChanges(run.changes.filter((change) => change.created).map((change) => change.path));
     }
+  }
+
+  async function undoAgentChanges(messageId: string, run: AgentRunRecord, paths?: string[]) {
+    if (!chat || !run.runId || undoingRunId) return;
+    const chatId = chat.id;
+    setUndoingRunId(run.runId);
+    setError("");
+    setNotice("");
+    try {
+      const { results } = await apiRequest<{ results: UndoResult[] }>("/api/agent/undo", { method: "POST", body: JSON.stringify({ runId: run.runId, paths }) });
+      const bridge = agentWorkspaceRef.current;
+      for (const result of results) {
+        if ((result.status === "restored" || result.status === "deleted") && !result.shared) bridge?.restoreTabAfterUndo(result.path, { status: result.status, content: result.content, draft: result.draft });
+      }
+      const undone = new Set(results.filter((result) => result.status === "restored" || result.status === "deleted" || result.status === "already-reverted").map((result) => result.path));
+      updateChat(chatId, (current) => ({ ...current, messages: current.messages.map((message) => message.id === messageId && message.agent
+        ? { ...message, agent: { ...message.agent, changes: message.agent.changes.map((change) => undone.has(change.path) ? { ...change, reverted: true } : change) } }
+        : message) }));
+      const problems = results.filter((result) => result.status === "conflict" || result.status === "missing").map((result) => result.message ?? result.path);
+      if (problems.length) setError(problems.join(" "));
+      if (results.some((result) => result.status === "deleted")) await bridge?.refreshAfterChanges([]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not undo the agent's changes.");
+    } finally {
+      setUndoingRunId(null);
+    }
+  }
+
+  function changeMode(next: ChatMode) {
+    if (!chat || pending) return;
+    setDefaultMode(next);
+    storePreference(CHAT_MODE_STORAGE_KEY, next);
+    updateChat(chat.id, (current) => ({ ...current, mode: next, agentPermission: current.agentPermission ?? defaultPermission }));
+    setError("");
+    setNotice("");
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function changeWebSearch(next: boolean) {
+    setAllowWebSearch(next);
+    storePreference(AGENT_WEB_SEARCH_STORAGE_KEY, String(next));
+  }
+
+  function changePermission(next: AgentPermission) {
+    if (!chat || pending) return;
+    setDefaultPermission(next);
+    storePreference(AGENT_PERMISSION_STORAGE_KEY, next);
+    updateChat(chat.id, (current) => ({ ...current, agentPermission: next }));
   }
 
   async function handleChatAction(action: string | null, selectedChat = chat) {
@@ -463,10 +779,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       setFontSizeSaving(true);
       setFontSizeError("");
       try {
-        await apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "font-size", value: next }) });
+        const write = apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "font-size", value: next }) });
+        fontSizeWrite.current = write;
+        await write;
         setFontSize(next);
       } catch { setFontSizeError("Chat font size could not be saved. Please try again."); }
-      finally { setFontSizeSaving(false); }
+      finally { fontSizeWrite.current = null; setFontSizeSaving(false); }
       return;
     }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
@@ -517,7 +835,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       deletedRequestRef.current = requestRef.current;
       requestRef.current?.abort();
     }
-    const fallback = createChat();
+    const fallback = createChat(defaultMode, defaultPermission);
     setStore((current) => {
       if (!current) return current;
       const remaining = current.chats.filter((item) => !ids.includes(item.id));
@@ -551,10 +869,28 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </select>
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         </div>
-        <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={() => { if (!chat?.messages.length) return; const next = createChat(); setStore((current) => current && ({ chats: [next, ...current.chats], activeId: next.id })); setError(""); }}><Plus size={16} /></button>
+        <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={() => { if (!chat?.messages.length) return; const next = createChat(defaultMode, defaultPermission); setStore((current) => current && ({ chats: [next, ...current.chats], activeId: next.id })); setError(""); setNotice(""); }}><Plus size={16} /></button>
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
+      {/* Mode and permission are chosen before a conversation starts, then fixed. */}
+      {!chat?.messages.length && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
+        <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
+          <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
+          <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
+        </div>
+        {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${agentPermissionLabel(permission, sharedAgent)}`}>
+          <span className="sr-only">Agent permission</span>
+          <select value={permission} disabled={!chat || !!pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
+            {AGENT_PERMISSIONS.map((item) => <option key={item} value={item}>{agentPermissionLabel(item, sharedAgent)}</option>)}
+          </select>
+          <ChevronDown aria-hidden size={13} />
+        </label>}
+        {agentMode && <label className="libera-agent-web-search inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11.5px] text-muted-foreground" title="Let the agent search the web (through OpenRouter's web plugin) for facts that are not in your library">
+          <input type="checkbox" checked={allowWebSearch} disabled={!!pending} onChange={(event) => changeWebSearch(event.target.checked)} />
+          <Globe aria-hidden size={13} />Allow web search
+        </label>}
+      </div>}
         <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
             const log = event.currentTarget;
@@ -564,7 +900,33 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           }}
           onCopy={(event) => { copyRenderedMarkdownSelection(event.currentTarget, event, mathMarkers); }}
         >
-          {!chat?.messages.length && <div className="libera-chat-welcome">
+          {!chat?.messages.length && agentMode && <div className="libera-chat-welcome">
+            <span className="libera-ai-orb" aria-hidden><Bot size={30} strokeWidth={1.5} /></span>
+            <h2>Hand over the legwork.<br />Keep the last word.</h2>
+            <p>{permission === "read-only" ? "The agent searches your library and reads what it needs, without changing anything." : "The agent searches your library, reads what it needs, and edits files for you."}</p>
+            <div className="libera-chat-starters">
+              {(viewedFile?.fileType === "pdf" ? [
+                { icon: BookOpen, label: "Summarize this PDF", prompt: "Summarize the PDF I'm viewing, citing page numbers." },
+                { icon: Search, label: "Find notes on the same topics", prompt: "Find notes in this notebook that discuss the topics of the PDF I'm viewing, and explain how they relate." },
+              ] : viewedFile && isTextFileType(viewedFile.fileType) ? [
+                ...(permission === "read-only" ? [] : [
+                  { icon: SpellCheck, label: "Fix typos and grammar", prompt: "Fix spelling and grammar mistakes in the file I'm viewing. Keep my wording and formatting otherwise." },
+                  { icon: ListChecks, label: "Add a summary at the top", prompt: "Add a short summary section at the top of the file I'm viewing." },
+                ]),
+                { icon: Search, label: "Find related notes", prompt: "Find other notes in this notebook related to the file I'm viewing, and explain how they connect." },
+              ] : [
+                { icon: Search, label: "Find everything about a topic", prompt: "Find everything in my notes about: " },
+                { icon: ListChecks, label: "Collect open questions and TODOs", prompt: "List the open questions and TODOs across the notes in this notebook, with the file each comes from." },
+                ...(permission === "notebook" ? [{ icon: FilePlus2, label: "Create an index note", prompt: "Create a note named Index.md in this notebook that links to every note, grouped by folder, with a one-line description of each." }] : []),
+              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt }), false); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+            </div>
+            <p className="libera-chat-context-hint">{permission === "read-only" ? "Read Only: the agent will not change any file."
+              : sharedAgent ? `“${agentNotebook}” is shared: the agent suggests changes${permission === "open-files" ? " to the files open in the editor" : " to its files"}, which collaborators see and an editor accepts or rejects. Undo withdraws them.`
+              : permission === "open-files" ? (openTextFileCount ? `It can modify the ${openTextFileCount === 1 ? "file" : `${openTextFileCount} files`} open in the editor. Changes show up right away and can be undone.` : "Open the files you want it to change. It can still search and read the rest.")
+              : agentNotebook ? `It can modify and create files in “${agentNotebook}”. Changes show up right away and can be undone.` : "Open a file or select a notebook for it to work in."}</p>
+            <p className="libera-chat-context-hint">Type @ to point it at a file, or add selected text with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>
+          </div>}
+          {!chat?.messages.length && !agentMode && <div className="libera-chat-welcome">
             <span className="libera-ai-orb" aria-hidden><Sparkles size={30} strokeWidth={1.5} /></span>
             <h2>A little clarity.<br />A new possibility.</h2>
             <p>Think it through with your AI companion.</p>
@@ -580,12 +942,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               ] : [
                 { icon: Lightbulb, label: "Explore a new idea", prompt: "Help me think through an idea: " },
                 { icon: BookOpen, label: "Make sense of a topic", prompt: "Help me understand this topic: " },
-              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt })); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
+              ]).map(({icon: Icon, label, prompt}) => <button key={label} type="button" disabled={!chat} onClick={() => { if (chat) updateChat(chat.id, (current) => ({ ...current, prompt }), false); composerRef.current?.focus(); }}><Icon aria-hidden size={16} /><span>{label}</span><ArrowUp aria-hidden size={13} /></button>)}
             </div>
             <p className="libera-chat-context-hint">{includedPhoto ? "The photo you are viewing is included." : includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
             {!viewedPhoto && <p className="libera-chat-context-hint">Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</p>}
           </div>}
-          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && <Sparkles aria-hidden size={13} />}{message.role === "user" ? "You" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title="Edit message (regenerates from here)" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
+          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={!!pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
@@ -595,10 +957,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </div>)}{editing?.id === message.id ? <div className="space-y-2">
             <textarea autoFocus aria-label="Edit message" className="min-h-20 w-full resize-y rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-ring" value={editing.text} onChange={(event) => setEditing({ id: message.id, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submitEdit(); } }} />
             <div className="flex items-center justify-end gap-2"><span className="mr-auto text-xs text-muted-foreground">Later messages will be replaced.</span><button type="button" className="rounded-lg border border-border px-3 py-1 text-xs hover:bg-muted" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!editing.text.trim() && !message.photos?.length} onClick={submitEdit}>Save &amp; regenerate</button></div>
-          </div> : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
+          </div> : message.agent ? <AgentRunView run={message.agent} streaming={message.status === "streaming"} mathMarkers={mathMarkers} fontSize={fontSize}
+            undoing={undoingRunId === message.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} onOpenFileLink={openChatFileLink} />
+            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={openChatFileLink} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
           {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
             <button type="button" className={buttonClass} aria-label="Copy response as Markdown" title="Copy response as Markdown" onClick={() => void copyResponse(message)}>{copiedId === message.id ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}</button>
-            <button type="button" className={buttonClass} aria-label="Regenerate response" title="Regenerate response (replaces this response and later messages)" disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user"} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
+            <button type="button" className={buttonClass} aria-label="Regenerate response" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's file changes before regenerating" : "Regenerate response (replaces this response and later messages)"} disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user" || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
             <button type="button" className={buttonClass} aria-label="Branch conversation" title="Branch into a new chat from this response" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => branch(message.id)}><GitBranch aria-hidden size={14} /></button>
             {message.createdAt ? <time className="ml-1 text-xs tabular-nums" dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>{formatChatTimestamp(message.createdAt, now)}</time> : <span className="ml-1 text-xs">Time unavailable</span>}
           </div>}</article>)}
@@ -607,7 +971,14 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
           {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-          {includedDocument && <div className="libera-chat-context flex items-center gap-1"><BookOpen aria-hidden size={13} className="shrink-0" />
+          {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
+          {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
+              : sharedAgent ? (permission === "open-files" ? `Can suggest in ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}` : `Can suggest in ${agentNotebook}`)
+              : permission === "open-files" ? `Can modify ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}`
+              : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}${allowWebSearch ? " · Web search on" : ""}`}</p>
+          </div>}
+          {!agentMode && includedDocument && <div className="libera-chat-context flex items-center gap-1"><BookOpen aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? (activeTab?.file.fileType === "pdf" ? " (PDF text)" : " (current draft)") : " (already included)"}`}</p>
             <button type="button" className={buttonClass} aria-label="Remove document context" title="Remove document context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))}><X size={12} /></button>
           </div>}
@@ -632,7 +1003,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "document" ? context.path : context.text}>{context.kind === "document" ? `File: ${context.name}` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
           <div className="libera-chat-composer flex flex-col gap-0.5">
           <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} quickPrompts={quickPrompts}
-            onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }))}
+            {...(agentMode ? { placeholder: "Ask the agent to find, read or edit… Type @ for files" } : {})}
+            onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }), false)}
             onSend={() => void send()} onAttachFile={(file) => attachFile(file)} />
           <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><select
             aria-label="Reasoning effort" title="Reasoning effort"

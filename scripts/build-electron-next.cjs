@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { buildCollabHost } = require("./build-collab-host.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
 const nextBin = require.resolve("next/dist/bin/next");
@@ -10,7 +11,9 @@ const compatibilityPreload = path
 
 function runNextBuild() {
   const preloadOption = `--require=${JSON.stringify(compatibilityPreload)}`;
-  const nodeOptions = [process.env.NODE_OPTIONS?.trim(), preloadOption]
+  // The optimized build needs more than Node's default heap on 8 GB machines.
+  const heapOption = /--max-old-space-size/.test(process.env.NODE_OPTIONS ?? "") ? "" : "--max-old-space-size=4096";
+  const nodeOptions = [process.env.NODE_OPTIONS?.trim(), heapOption, preloadOption]
     .filter(Boolean)
     .join(" ");
 
@@ -38,7 +41,14 @@ async function main() {
   // Hidden incremental cache files cannot be reopened for writing on some
   // removable/shared Windows filesystems. Production output is disposable, so
   // start Electron builds from a clean Next directory on every platform.
-  await fs.rm(path.join(projectRoot, ".next"), { force: true, recursive: true });
+  // Windows may briefly keep directory entries open after their files are
+  // removed. Retry transient ENOTEMPTY/EPERM/EBUSY failures during cleanup.
+  const cleanupOptions = { force: true, recursive: true, maxRetries: 5, retryDelay: 200 };
+  await fs.rm(path.join(projectRoot, ".next"), cleanupOptions);
+  // The collab host ships with every build (collaboration is on unless LIBERA_COLLAB=0);
+  // prepare-dist copies electron/collab/dist into the app.
+  await fs.rm(path.join(projectRoot, "electron", "collab", "dist"), cleanupOptions);
+  await buildCollabHost();
   process.exitCode = await runNextBuild();
 }
 

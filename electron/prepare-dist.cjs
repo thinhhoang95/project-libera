@@ -1,3 +1,4 @@
+const { existsSync } = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
@@ -17,13 +18,63 @@ const requiredPackages = new Map([
 ]);
 const electronRuntimePackages = ["electron-log", "electron-updater"];
 
-async function copy(source, destination) {
+/**
+ * onnxruntime-node ships binaries for every platform (hundreds of MB). Skip the
+ * ones for other platforms while copying instead of copying and then deleting.
+ */
+function isForeignOnnxBinary(entryPath) {
+  const parts = entryPath.split(path.sep);
+  const index = parts.lastIndexOf("napi-v6");
+  if (index < 1 || parts[index - 1] !== "bin" || parts[index - 2] !== "onnxruntime-node") return false;
+
+  const [platform, arch] = parts.slice(index + 1);
+  if (platform && platform !== process.platform) return true;
+  return Boolean(platform && arch && arch !== process.arch);
+}
+
+async function copy(source, destination, filter = () => true) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.cp(source, destination, {
-    filter: (entryPath) => !path.basename(entryPath).startsWith("._"),
+    filter: (entryPath) => !path.basename(entryPath).startsWith("._") && !isForeignOnnxBinary(entryPath) && filter(entryPath),
     recursive: true,
     verbatimSymlinks: true,
   });
+}
+
+const collabSourceRoot = path.join(projectRoot, "electron", "collab");
+const collabBundleRoot = path.join(collabSourceRoot, "dist");
+
+/**
+ * electron/collab/ is TypeScript bundled into electron/collab/dist/host.cjs
+ * (scripts/build-collab-host.cjs, run by electron:build-next). Ship only the
+ * bundle and its source map, not the sources.
+ */
+function isShippedElectronEntry(entryPath) {
+  if (entryPath === collabSourceRoot || entryPath === collabBundleRoot) return true;
+  if (!entryPath.startsWith(collabSourceRoot + path.sep)) return true;
+  return entryPath.startsWith(collabBundleRoot + path.sep);
+}
+
+/**
+ * The Next standalone tree is tens of thousands of small files and is rebuilt
+ * from scratch on every build, so move it into the staged app instead of copying
+ * it. Fall back to a copy when the move is not possible (for example across
+ * volumes or when antivirus holds a file). Because the move consumes
+ * .next/standalone, re-run electron:build-next before preparing again.
+ */
+async function moveStandalone(source, destination) {
+  if (!existsSync(source)) {
+    throw new Error(`${source} was not found. Run npm run electron:build-next and electron:prepare-standalone first.`);
+  }
+
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  try {
+    await fs.rename(source, destination);
+  } catch (error) {
+    console.warn(`Could not move the standalone tree (${error.code ?? error.message}); copying instead.`);
+    await removeIfPresent(destination);
+    await copy(source, destination);
+  }
 }
 
 async function removeAppleDoubleFiles(directory) {
@@ -60,11 +111,17 @@ async function copyPackage(packageName, source, destinationNodeModules) {
 }
 
 function resolvePackageDirectory(packageName, searchDirectory) {
-  const packageJsonPath = require.resolve(`${packageName}/package.json`, {
-    paths: [searchDirectory],
-  });
-
-  return path.dirname(packageJsonPath);
+  try {
+    return path.dirname(require.resolve(`${packageName}/package.json`, { paths: [searchDirectory] }));
+  } catch (error) {
+    // Packages with an "exports" map may not export package.json; look where Node would.
+    if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
+    for (let directory = searchDirectory; ; directory = path.dirname(directory)) {
+      const candidate = path.join(directory, "node_modules", ...packageName.split("/"));
+      if (existsSync(path.join(candidate, "package.json"))) return candidate;
+      if (path.dirname(directory) === directory) throw error;
+    }
+  }
 }
 
 async function readPackageDependencies(packageDirectory) {
@@ -114,6 +171,110 @@ async function copyRuntimePackageTree(
   }
 }
 
+function sqliteVecPackageName() {
+  return `sqlite-vec-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
+}
+
+/**
+ * Global Search runs Transformers.js in a worker process (electron/search-worker.mjs)
+ * and keeps its index in SQLite with the sqlite-vec extension. Copy only what
+ * runs in Node: the Node build of Transformers.js, onnxruntime-node for this
+ * platform, and the sharp version it was built against.
+ */
+async function copySearchRuntime(distNodeModulesRoot) {
+  const transformersSource = resolvePackageDirectory("@huggingface/transformers", projectRoot);
+  const transformersDestination = path.join(distNodeModulesRoot, "@huggingface", "transformers");
+  const nested = path.join(transformersDestination, "node_modules");
+  await removeIfPresent(transformersDestination);
+
+  const transformersPackage = JSON.parse(await fs.readFile(path.join(transformersSource, "package.json"), "utf8"));
+  for (const entry of ["package.json", "LICENSE", "README.md"]) {
+    await copy(path.join(transformersSource, entry), path.join(transformersDestination, entry)).catch(() => undefined);
+  }
+  for (const entry of ["transformers.node.mjs", "transformers.node.cjs"]) {
+    await copy(path.join(transformersSource, "dist", entry), path.join(transformersDestination, "dist", entry));
+  }
+
+  // The Node build bundles the tokenizers and templates and never loads the
+  // browser runtime; it imports only these at run time.
+  const runtimeDependencies = ["onnxruntime-node", "onnxruntime-common", "sharp"];
+  for (const dependency of runtimeDependencies) {
+    await copyRuntimePackageTree(dependency, transformersSource, nested);
+  }
+  transformersPackage.dependencies = Object.fromEntries(
+    runtimeDependencies.map((dependency) => [dependency, transformersPackage.dependencies?.[dependency] ?? "*"]),
+  );
+  delete transformersPackage.devDependencies;
+  await fs.writeFile(path.join(transformersDestination, "package.json"), `${JSON.stringify(transformersPackage, null, 2)}\n`);
+
+  await completeTopLevelDuplicates(nested, distNodeModulesRoot);
+  await copyPackage(sqliteVecPackageName(), resolveSqliteVecDirectory(), distNodeModulesRoot);
+}
+
+async function listPackageDirectories(nodeModulesDirectory) {
+  const entries = await fs.readdir(nodeModulesDirectory, { withFileTypes: true }).catch(() => []);
+  const packages = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const entryPath = path.join(nodeModulesDirectory, entry.name);
+
+    if (entry.name.startsWith("@")) {
+      for (const scoped of await fs.readdir(entryPath, { withFileTypes: true })) {
+        if (scoped.isDirectory()) packages.push([`${entry.name}/${scoped.name}`, path.join(entryPath, scoped.name)]);
+      }
+    } else {
+      packages.push([entry.name, entryPath]);
+    }
+  }
+
+  return packages;
+}
+
+/**
+ * electron-builder rebuilds the node_modules tree and drops a nested package
+ * when a top-level package has the same name and version. Top-level packages
+ * from Next's standalone trace can be partial (only the traced files), so the
+ * nested dependant would then load a broken copy at run time (e.g. sharp's
+ * semver without index.js). Replace those top-level copies with the full one.
+ */
+async function completeTopLevelDuplicates(nestedNodeModules, distNodeModulesRoot) {
+  for (const [packageName, packageDirectory] of await listPackageDirectories(nestedNodeModules)) {
+    const nestedVersion = await readPackageVersion(nestedNodeModules, packageName);
+    const topLevel = path.join(distNodeModulesRoot, ...packageName.split("/"));
+
+    if (nestedVersion && nestedVersion === (await readPackageVersion(distNodeModulesRoot, packageName))) {
+      // Keep the top-level package's own node_modules; its dependants resolve through it.
+      for (const entry of await fs.readdir(topLevel)) {
+        if (entry !== "node_modules") await removeIfPresent(path.join(topLevel, entry));
+      }
+      for (const entry of await fs.readdir(packageDirectory)) {
+        if (entry !== "node_modules") await copy(path.join(packageDirectory, entry), path.join(topLevel, entry));
+      }
+    }
+
+    await completeTopLevelDuplicates(path.join(packageDirectory, "node_modules"), distNodeModulesRoot);
+  }
+}
+
+function resolveSqliteVecDirectory() {
+  const extension = process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so";
+  return path.dirname(require.resolve(`${sqliteVecPackageName()}/vec0.${extension}`, { paths: [projectRoot] }));
+}
+
+/** Load what Global Search needs from the staged app, so a broken package fails here, not for users. */
+function checkSearchRuntime() {
+  const resolveFromWorker = (request) => require.resolve(request, { paths: [path.join(distAppRoot, "electron")] });
+  resolveFromWorker("@huggingface/transformers");
+  resolveFromWorker("pdfjs-dist/legacy/build/pdf.mjs");
+  const extension = process.platform === "win32" ? "dll" : process.platform === "darwin" ? "dylib" : "so";
+  const { DatabaseSync } = require("node:sqlite");
+  const database = new DatabaseSync(":memory:", { allowExtension: true });
+  database.loadExtension(path.join(distAppRoot, "node_modules", sqliteVecPackageName(), `vec0.${extension}`));
+  database.close();
+  console.log("Packaged search runtime loaded successfully.");
+}
+
 async function readPackageVersion(nodeModulesRoot, packageName) {
   try {
     const packageJson = JSON.parse(
@@ -157,9 +318,12 @@ async function main() {
   await fs.rm(distAppRoot, { force: true, recursive: true });
   await fs.mkdir(distAppRoot, { recursive: true });
 
-  await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"));
+  if (!existsSync(path.join(collabBundleRoot, "host.cjs"))) {
+    throw new Error(`${path.join(collabBundleRoot, "host.cjs")} was not found. Run npm run electron:build-next first.`);
+  }
+  await copy(path.join(projectRoot, "electron"), path.join(distAppRoot, "electron"), isShippedElectronEntry);
   await copy(path.join(projectRoot, "assets"), path.join(distAppRoot, "assets"));
-  await copy(
+  await moveStandalone(
     path.join(projectRoot, ".next", "standalone"),
     path.join(distAppRoot, ".next", "standalone"),
   );
@@ -178,6 +342,8 @@ async function main() {
     await copyRuntimePackageTree(packageName, projectRoot, distNodeModulesRoot);
   }
 
+  await copySearchRuntime(distNodeModulesRoot);
+
   const externalPackages = JSON.parse(await fs.readFile(path.join(distAppRoot, ".next", "standalone", ".libera-external-packages.json"), "utf8"));
   const dependencies = {
     ...externalPackages,
@@ -187,6 +353,8 @@ async function main() {
     next: await readPackageVersion(distNodeModulesRoot, "next"),
     "pdfjs-dist": await readPackageVersion(distNodeModulesRoot, "pdfjs-dist"),
     react: await readPackageVersion(distNodeModulesRoot, "react"),
+    "@huggingface/transformers": await readPackageVersion(distNodeModulesRoot, "@huggingface/transformers"),
+    [sqliteVecPackageName()]: await readPackageVersion(distNodeModulesRoot, sqliteVecPackageName()),
   };
 
   if (process.platform !== "win32") {
@@ -220,6 +388,7 @@ async function main() {
   // native modules/aliases before electron-builder produces an unusable release.
   require(path.join(distAppRoot, ".next", "standalone", ".next", "server", "app", "api", "latex-export", "route.js"));
   console.log("Packaged LaTeX endpoint loaded successfully.");
+  checkSearchRuntime();
 }
 
 main().catch((error) => {

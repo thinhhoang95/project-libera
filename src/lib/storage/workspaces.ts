@@ -1,10 +1,10 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { contextStateRoot } from "../../../electron/directory-mode.cjs";
 import { ensureAdminRoot, getAdminRoot, getStateRoot } from "@/lib/storage/paths";
 import { emptyWorkspaceLibrary, parseWorkspaceLibrary } from "@/lib/workspaces";
 import { StorageError } from "@/lib/storage/errors";
+import { writeJsonState } from "./json-state";
 
 const storagePath = (stateRoot: string) => path.join(stateRoot, ".libera-workspaces.json");
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -41,15 +41,11 @@ export function writeWorkspaces(value: unknown, contextRoot?: string | null) {
   let library;
   try { library = parseWorkspaceLibrary(value); }
   catch { throw new StorageError("Invalid workspace data."); }
-  const body = JSON.stringify(library);
   const stateRoot = workspaceStateRoot(contextRoot);
   const target = storagePath(stateRoot);
   const write = writeQueue.catch(() => undefined).then(async () => {
     await ensureAdminRoot();
-    await mkdir(stateRoot, { recursive: true });
-    const temporary = `${target}.${randomUUID()}.tmp`;
-    await writeFile(temporary, body, { encoding: "utf8", mode: 0o600 });
-    await rename(temporary, target);
+    await writeJsonState(target, library);
   });
   writeQueue = write;
   return write;

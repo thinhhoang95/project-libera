@@ -27,8 +27,9 @@ import {
 import { StorageError } from "@/lib/storage/errors";
 import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import type { MarkdownImageAssetPayload } from "@/lib/types";
+import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
-function markdownImageSources(markdown: string) {
+export function markdownImageSources(markdown: string) {
   const sources = new Set<string>();
   const markdownImagePattern = /!\[[^\]]*]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/g;
   const htmlImagePattern = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/gi;
@@ -162,6 +163,8 @@ export async function writeMarkdownImageAsset(
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(documentPath);
   assertMarkdownFileName(name);
+  // _assets in a shared notebook are shared blobs; they are added through the host.
+  assertNotSharedItem(notebook, [MARKDOWN_ASSETS_DIR]);
   await stat(filePathFromParts(notebook, pathParts));
 
   const safeName = normalizeAssetFileName(ensureImageName(upload.name));
@@ -248,6 +251,7 @@ export async function pruneUnusedMarkdownImageAssets(
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(documentPath);
   assertMarkdownFileName(name);
+  assertNotSharedItem(notebook, [MARKDOWN_ASSETS_DIR]);
   await stat(filePathFromParts(notebook, pathParts));
 
   const assetDirectory = markdownAssetsDirectoryPath(notebook, name);
@@ -306,6 +310,7 @@ export async function deleteMarkdownImageSource({
 
     const { notebook, name, pathParts } = splitFilePath(rawPath);
     assertImageFileName(name);
+    assertNotSharedItem(notebook, pathParts);
     await rm(filePathFromParts(notebook, pathParts), { force: true });
     await rm(imageAnnotationsPath(notebook, name), { force: true });
     await rm(legacyImageAnnotationsPath(notebook, name), { force: true });
@@ -328,6 +333,7 @@ export async function deleteMarkdownImageSource({
 
   const { notebook } = splitFilePath(target.documentPath);
   const asset = markdownAssetPath(notebook, target.assetPath);
+  assertNotSharedItem(notebook, asset.normalized.split("/"));
 
   await rm(asset.targetPath, { force: true });
 

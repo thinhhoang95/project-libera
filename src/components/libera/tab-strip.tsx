@@ -10,6 +10,8 @@ import { FileTypeIcon } from "./file-type";
 import { isGalleryTab } from "./gallery-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
+import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
+import { RequestReviewButton } from "./collab/reviews";
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -27,6 +29,7 @@ type TabStripProps = {
   onCloseOtherTabs: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onDeleteFile: (tab: OpenTab) => Promise<void>;
+  onDownloadAnnotatedPdf: (tab: OpenTab) => Promise<void>;
   onDownloadFile: (file: OpenTab["file"], content?: string) => void;
   onDownloadMarkdownPdf: (tab: OpenTab) => Promise<void>;
   onMoveFile: (tab: OpenTab) => Promise<void>;
@@ -51,6 +54,7 @@ type ActiveFileActionsProps = Pick<
   | "markdownEditorMode"
   | "onMarkdownEditorModeChange"
   | "onDeleteFile"
+  | "onDownloadAnnotatedPdf"
   | "onDownloadFile"
   | "onDownloadMarkdownPdf"
   | "onMoveFile"
@@ -128,6 +132,7 @@ export function TabStrip({
   onCloseOtherTabs,
   onCloseTab,
   onDeleteFile,
+  onDownloadAnnotatedPdf,
   onDownloadFile,
   onDownloadMarkdownPdf,
   onMoveFile,
@@ -323,6 +328,7 @@ export function TabStrip({
           onMarkdownEditorModeChange={onMarkdownEditorModeChange}
           activeTab={activeTab}
           onDeleteFile={onDeleteFile}
+          onDownloadAnnotatedPdf={onDownloadAnnotatedPdf}
           onDownloadFile={onDownloadFile}
           onDownloadMarkdownPdf={onDownloadMarkdownPdf}
           onMoveFile={onMoveFile}
@@ -356,6 +362,7 @@ function ActiveFileActions({
   onMarkdownEditorModeChange,
   activeTab,
   onDeleteFile,
+  onDownloadAnnotatedPdf,
   onDownloadFile,
   onDownloadMarkdownPdf,
   onMoveFile,
@@ -398,6 +405,7 @@ function ActiveFileActions({
 
   const isMarkdown = activeTab.file.fileType === "markdown";
   const isLatex = activeTab.file.fileType === "latex";
+  const isPdf = activeTab.file.fileType === "pdf";
   // Gallery photos are renamed, moved and deleted from the gallery itself.
   const isGalleryPhoto = isGalleryTab(activeTab);
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
@@ -415,6 +423,8 @@ function ActiveFileActions({
     }
 
     const point = nativeMenuPointFromButton(event.currentTarget);
+    // Shared files have a version history.
+    const historyItems = historyMenuItems(activeTab.id);
 
     setActionMenuOpen(true);
 
@@ -472,11 +482,23 @@ function ActiveFileActions({
                   },
                   { id: "download-markdown", label: "Download" },
                 ]
-              : [{ id: "download-original", label: "Download" }]),
+              : isPdf
+                ? [
+                    {
+                      id: "download",
+                      label: "Download",
+                      submenu: [
+                        { id: "download-pdf-annotated", label: "PDF with Annotations" },
+                        { id: "download-original", label: "Original PDF" },
+                      ],
+                    },
+                  ]
+                : [{ id: "download-original", label: "Download" }]),
           ...(isGalleryPhoto
             ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
             : [
                 { type: "separator" as const },
+                ...(historyItems.length ? [...historyItems, { type: "separator" as const }] : []),
                 ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
                 { id: "rename", label: "Rename" },
                 { id: "move", label: "Move" },
@@ -503,6 +525,8 @@ function ActiveFileActions({
       onDownloadFile(activeTab.file, downloadContent);
     } else if (selectedItemId === "download-pdf") {
       await onDownloadMarkdownPdf(activeTab);
+    } else if (selectedItemId === "download-pdf-annotated") {
+      await onDownloadAnnotatedPdf(activeTab);
     } else if (selectedItemId === "download-original") {
       onDownloadFile(activeTab.file);
     } else if (selectedItemId === "rename") {
@@ -511,13 +535,16 @@ function ActiveFileActions({
       await onMoveFile(activeTab);
     } else if (selectedItemId === "delete") {
       await onDeleteFile(activeTab);
+    } else if (selectedItemId === HISTORY_MENU_ID) {
+      openDocumentHistory(activeTab.id);
     }
   }
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown || isLatex ? <ReviewToggle /> : null}
+      {isMarkdown || isLatex ? <><ReviewToggle /><RequestReviewButton tabId={activeTab.id} /></> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
+      <DocumentHistoryHost />
     </div>
   );
 }

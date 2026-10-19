@@ -25,7 +25,7 @@ export type MarkdownLinkViewState = {
     scrollLeft?: number;
     scrollTop?: number;
     selectedAnnotationId?: string;
-    tool?: "select" | "highlight" | "text";
+    tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
     zoom?: number;
   };
 };
@@ -200,6 +200,15 @@ export function isLikelyWorkspaceMarkdownLink(href: string | undefined) {
   }
 
   return !/^[a-z][a-z0-9+.-]*:/i.test(href);
+}
+
+/** The workspace path a root-relative link points at, e.g. one written by the AI chat. */
+export function markdownLinkWorkspacePath(href: string) {
+  if (!isLikelyWorkspaceMarkdownLink(href)) {
+    return null;
+  }
+
+  return normalizeWorkspacePath(decodeHrefPath(splitMarkdownHref(href).path));
 }
 
 export function isExternalMarkdownLink(href: string | undefined) {

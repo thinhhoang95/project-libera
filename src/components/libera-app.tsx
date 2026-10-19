@@ -9,9 +9,18 @@ import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
-import { DocumentChatPanel, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
+import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
+import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
-import { LeftPanel, type LeftPanelTab } from "@/components/libera/left-panel";
+import { SearchView } from "@/components/libera/global-search/search-view";
+import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
+import type { SearchEntry } from "@/components/libera/global-search/search-results";
+import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
+import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
+import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
+import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
+import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
+import { CollabProvider } from "@/components/libera/collab/collab-provider";
 import { LoginScreen } from "@/components/libera/login-screen";
 import { NoteDialog } from "@/components/libera/note-dialog";
 import { NotebookDialog } from "@/components/libera/notebook-dialog";
@@ -26,13 +35,16 @@ import { galleryRawUrl, type GalleryPhoto } from "@/lib/image-generation";
 import { useLiberaWorkspace } from "@/components/libera/use-libera-workspace";
 import { WorkspaceConfirmDialog } from "@/components/libera/workspace-confirm-dialog";
 import { FileTagsDialog } from "@/components/libera/file-tags-dialog";
+import { DocumentOcrModelDialog } from "@/components/libera/document-ocr/document-ocr-model-dialog";
+import { SnipReadingCard } from "@/components/libera/document-ocr/snip-reading-card";
 import { WorkspaceInputDialog } from "@/components/libera/workspace-input-dialog";
 import { WorkspacePanel } from "@/components/libera/workspace-panel";
 import { CanvasSplitView } from "@/components/libera/canvas-split-view";
 import { visibleCanvasTabIds as visibleCanvasTabIdsOf, type CanvasPaneNode } from "@/lib/canvas-layout";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
-import { isTextFileType } from "@/lib/types";
+import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
+import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -72,10 +84,13 @@ export function LiberaApp({
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
-  // Opening a gallery photo in the canvas returns to the panel used before the gallery.
-  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery">>("notebook");
+  // Opening a gallery photo or a search result in the canvas returns to the
+  // panel used before the gallery or the Search page covered it.
+  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery" | "search">>("notebook");
+  const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const changeLeftPanel = useCallback((panel: LeftPanelTab) => {
-    if (panel !== "gallery") lastCanvasPanelRef.current = panel;
+    if (panel === "search") setSearchFocusRequest((request) => request + 1);
+    else if (panel !== "gallery") lastCanvasPanelRef.current = panel;
     setActiveLeftPanel(panel);
   }, []);
   const openComments = useCallback(() => {
@@ -114,12 +129,12 @@ export function LiberaApp({
   }, []);
 
   useEffect(() => {
-    const unsavedDocumentCount = workspace.tabs.filter(
-      (tab) => isTextFileType(tab.file.fileType) && tab.draft !== tab.saved,
-    ).length;
+    // Shared tabs count as 0: their edits are already in the host's SQLite.
+    const sharedTabIds = workspace.sharedTabIds;
+    const unsavedDocumentCount = dirtyDocumentCount(workspace.tabs, (tabId) => sharedTabIds.has(tabId));
 
     void window.liberaUpdater?.setDirtyDocumentCount(unsavedDocumentCount).catch(() => undefined);
-  }, [workspace.tabs]);
+  }, [workspace.tabs, workspace.sharedTabIds]);
 
   useEffect(() => {
     const animationFrame = window.requestAnimationFrame(() => {
@@ -162,14 +177,22 @@ export function LiberaApp({
     return () => { disposed = true; };
   }, [authenticated]);
 
+  const panelWriter = useMemo(() => createDeferredSave((body) => apiRequest("/api/document-chat/state", {
+    method: "PUT", body, keepalive: !window.liberaPersistence,
+  })), []);
+  useEffect(() => {
+    const unregister = registerStateFlusher(panelWriter.flush);
+    return () => { unregister(); void panelWriter.flush().catch(() => undefined); };
+  }, [panelWriter]);
   const saveChatPanel = useCallback((width: number, collapsed: boolean) => {
-    void apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "panel", value: { width, collapsed } }), keepalive: true }).catch(() => undefined);
-  }, []);
+    panelWriter.schedule({ kind: "panel", value: { width, collapsed } });
+  }, [panelWriter]);
 
   const changeChatCollapsed = useCallback((collapsed: boolean) => {
+    if (collapsed === chatCollapsed) return;
     setChatCollapsed(collapsed);
     saveChatPanel(chatWidth, collapsed);
-  }, [chatWidth, saveChatPanel]);
+  }, [chatWidth, chatCollapsed, saveChatPanel]);
 
   // The photo open in the gallery viewer is the AI chat's context while it is on screen.
   const [galleryViewingPhoto, setGalleryViewingPhoto] = useState<GalleryPhoto | null>(null);
@@ -178,6 +201,48 @@ export function LiberaApp({
   const viewedPhotoUrl = galleryViewingPhoto ? galleryRawUrl(galleryViewingPhoto) : null;
   const chatViewedPhoto = useMemo<ChatViewedPhoto | null>(() => viewedPhotoSource && viewedPhotoName && viewedPhotoUrl ? { source: viewedPhotoSource, name: viewedPhotoName, url: viewedPhotoUrl } : null, [viewedPhotoSource, viewedPhotoName, viewedPhotoUrl]);
   const galleryChat = useMemo(() => ({ open: !chatCollapsed, onToggle: () => changeChatCollapsed(!chatCollapsed) }), [chatCollapsed, changeChatCollapsed]);
+  // Agent mode reads open drafts and puts its file changes back into the editor.
+  const agentWorkspace: AgentWorkspaceBridge = {
+    notebook: workspace.selectedNotebookName || undefined,
+    readTabDraft: workspace.readOpenTabDraft,
+    syncTabFromDisk: workspace.syncTabFromDisk,
+    restoreTabAfterUndo: workspace.restoreTabAfterUndo,
+    refreshAfterChanges: workspace.refreshAfterAgentChanges,
+    openFile: (path) => {
+      const file = workspace.files.find((item) => item.path === path);
+      if (file) { void workspace.openFile(file); return; }
+      // A file outside the active workspace's view is still opened by path.
+      void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
+        .then((payload) => workspace.openFile(payload.file)).catch(() => undefined);
+    },
+  };
+
+  // The References panel: reveal/add requests from anywhere switch the rail
+  // to it and select their notebook; it cites into the active Markdown editor.
+  const referenceRequests = useReferencesPanelRequests((notebook) => {
+    changeLeftPanel("references");
+    setNotebooksCollapsed(false);
+    if (workspace.selectedNotebookName !== notebook) workspace.selectNotebook(notebook);
+  });
+  const openReferenceDrafts = useMemo(
+    () => workspace.tabs
+      .filter((tab) => tab.file.fileType === "markdown" && !tab.untitled && tab.draft !== tab.saved)
+      .map((tab) => ({ path: tab.file.path, text: tab.draft })),
+    [workspace.tabs],
+  );
+  const references: LeftPanelReferences = {
+    activeMarkdownDraft: workspace.activeMarkdownDraft,
+    activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
+    openDrafts: openReferenceDrafts,
+    canCite: workspace.activeTab?.file.fileType === "markdown",
+    onCite: (key) => { workspace.insertCitation(key); },
+    onOpenPath: agentWorkspace.openFile,
+    onUploadFiles: workspace.uploadFiles,
+    request: referenceRequests.request,
+    onRequestHandled: referenceRequests.handled,
+    onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
+    onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
+  };
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
@@ -186,9 +251,66 @@ export function LiberaApp({
     workspace.openGalleryPhoto(photo, placement);
   }
 
+  // Global Search opens a hit at its passage: the page, section or lines.
+  function openSearchResult({ result, hit }: SearchEntry, placement: "tab" | "right") {
+    setActiveLeftPanel(lastCanvasPanelRef.current);
+    if (result.source === "gallery") {
+      if (result.photo) workspace.openGalleryPhoto(galleryPhotoFromSearch(result.photo), placement);
+      return;
+    }
+    if (result.source === "references") {
+      // A References entry opens in the References panel.
+      if (result.reference) {
+        window.dispatchEvent(new CustomEvent<ReferencesRevealDetail>(REFERENCES_REVEAL_EVENT, {
+          detail: { notebook: result.reference.notebook, entryId: result.reference.entryId },
+        }));
+      }
+      return;
+    }
+    const file = workspace.files.find((candidate) => candidate.path === result.path) ?? result.file;
+    if (!file) return;
+    const target = result.hits[hit] ?? result.hits[0];
+    void workspace.openFile(file, { viewState: searchRevealViewState(result.kind, target), placement });
+  }
+
+  // Search only what the active workspace shows. Without a workspace or hidden
+  // notebooks everything is visible, and nothing needs to be sent.
+  const searchScope = useMemo(() => {
+    const collect = (nodes: LiberaTreeNode[], into: LiberaFileNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "file") into.push(node);
+        else collect(node.children, into);
+      }
+      return into;
+    };
+    const everything = workspace.fullTree.notebooks.reduce((count, notebook) => count + collect(notebook.children, []).length, 0);
+    return workspace.files.length < everything ? workspace.files.map((file) => file.path) : undefined;
+  }, [workspace.files, workspace.fullTree]);
+  const searchIncludesArchive = Boolean(workspace.fullTree.archiveIncluded);
+
+  // Keep the search index current in the background; the server skips this
+  // when background indexing is off and limits how often it scans.
+  useEffect(() => {
+    if (!authenticated) return;
+    const update = () => {
+      void apiRequest("/api/search/index", { method: "POST", body: JSON.stringify({ action: "background" }) }).catch(() => undefined);
+    };
+    const first = window.setTimeout(update, 20_000);
+    const interval = window.setInterval(update, 10 * 60_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(interval);
+    };
+  }, [authenticated]);
+
+  // Only the desktop app has a Preferences window. The Search page renders on the client only.
+  const openSearchPreferences = typeof window !== "undefined" && window.liberaPreferences
+    ? () => void window.liberaPreferences?.open("search")
+    : undefined;
+
   // ⌘/Ctrl+\ splits the focused panel to the right, adding Shift splits it down.
-  // The gallery covers the canvas, so splitting waits until it is closed.
-  const galleryOpen = activeLeftPanel === "gallery";
+  // The gallery and the Search page cover the canvas, so splitting waits until they close.
+  const galleryOpen = activeLeftPanel === "gallery" || activeLeftPanel === "search";
   useEffect(() => {
     if (!authenticated || galleryOpen) return;
     function splitCanvas(event: KeyboardEvent) {
@@ -286,6 +408,10 @@ export function LiberaApp({
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
         onCompleteScreenshotSnip={workspace.completeScreenshotSnip}
+        pendingVisualInsertion={tab ? workspace.pendingVisualInsertions[tab.id] : undefined}
+        onFinishVisualInsertion={workspace.finishVisualInsertion}
+        onCreateMarkdownBesidePdf={workspace.createMarkdownBesidePdf}
+        onWriteConvertedMarkdown={workspace.writeConvertedMarkdown}
         onInsertExistingImage={workspace.insertExistingMarkdownImage}
         onInsertFileLink={workspace.insertMarkdownFileLink}
         onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
@@ -298,8 +424,8 @@ export function LiberaApp({
         onSaveEditedImageCopy={workspace.saveEditedImageCopy}
         onOpenMarkdownFileLink={workspace.openMarkdownFileLink}
         onSave={workspace.saveActiveTab}
-        onSetDraft={(value) => {
-          if (tab) workspace.setTabDraft(tab.id, value);
+        onSetDraft={(value, options) => {
+          if (tab) workspace.setTabDraft(tab.id, value, options);
         }}
         onRegisterEditorDraft={workspace.registerEditorDraft}
         onSetViewState={workspace.setActiveTabViewState}
@@ -326,6 +452,14 @@ export function LiberaApp({
     <QuickPromptsContext.Provider value={quickPrompts}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
+    <CollabProvider
+      onNotebookJoined={async (notebook) => {
+        await workspace.refreshTree(notebook).catch(() => undefined);
+        workspace.selectNotebook(notebook);
+        changeLeftPanel("notebook");
+      }}
+      onOpenPath={agentWorkspace.openFile}
+    >
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
         inert={workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready)}
@@ -389,6 +523,8 @@ export function LiberaApp({
             void workspace.refreshTree(files[0]?.notebook).catch(() => undefined);
           }}
           onToggleNotebook={workspace.toggleNotebook}
+          onOpenSearchPreferences={openSearchPreferences}
+          references={references}
           onUploadChange={workspace.handleUploadChange}
           onUploadFiles={workspace.uploadFilesToNotebook}
           onUpdateNotebookViewOptions={workspace.updateNotebookViewOptions}
@@ -399,14 +535,28 @@ export function LiberaApp({
 
         <section className="libera-workspace-region relative flex min-h-0 min-w-0 flex-col overflow-hidden" data-ai-active={aiActive}>
           <div aria-hidden className="libera-ai-glow" />
-          {/* The gallery covers the canvas instead of replacing it, so open
-              editors keep their state while the Image Gallery tab is active. */}
+          {/* The gallery and the Search page cover the canvas instead of
+              replacing it, so open editors keep their state. They sit above
+              the editors' sticky toolbars (up to z-40) and below menus (z-50). */}
           {activeLeftPanel === "gallery" ? (
-            <div className="absolute inset-0 z-20 flex min-h-0 flex-col">
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
               <ImageGalleryView onOpenInCanvas={openGalleryPhoto} chat={galleryChat} onViewingPhotoChange={setGalleryViewingPhoto} />
             </div>
+          ) : activeLeftPanel === "search" ? (
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
+              <SearchView
+                files={workspace.files}
+                scope={searchScope}
+                includeArchive={searchIncludesArchive}
+                mathMarkers={markdownPreferences}
+                focusRequest={searchFocusRequest}
+                onOpenResult={openSearchResult}
+                onClose={() => setActiveLeftPanel(lastCanvasPanelRef.current)}
+                onOpenPreferences={openSearchPreferences}
+              />
+            </div>
           ) : null}
-          <div className="contents" inert={activeLeftPanel === "gallery"}>
+          <div className="contents" inert={galleryOpen}>
           <TabStrip
             chatOpen={!chatCollapsed}
             onToggleChat={() => changeChatCollapsed(!chatCollapsed)}
@@ -428,6 +578,7 @@ export function LiberaApp({
             onCloseOtherTabs={workspace.closeOtherTabs}
             onCloseTab={workspace.closeTab}
             onDeleteFile={workspace.deleteFileFromPrompt}
+            onDownloadAnnotatedPdf={(tab) => workspace.downloadAnnotatedPdf(tab, markdownPreferences)}
             onDownloadFile={workspace.downloadFile}
             onDuplicateMarkdown={workspace.duplicateMarkdown}
             onDownloadMarkdownPdf={workspace.downloadMarkdownPdf}
@@ -463,7 +614,7 @@ export function LiberaApp({
           </div>
         </section>
 
-        <DocumentChatPanel viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
+        <DocumentChatPanel agentWorkspace={agentWorkspace} viewedPhoto={chatViewedPhoto} files={workspace.files} tabs={workspace.tabs} attachmentRequest={chatAttachmentRequest} onAttachmentHandled={(id) => setChatAttachmentRequest((current) => current?.id === id ? null : current)} quickPrompts={quickPrompts} onCreateDraft={(snapshot) => workspace.createUntitledFile("", undefined, snapshot)} onSaveToNotebook={workspace.saveChatToNotebook} activeTab={workspace.activeTab} collapsed={chatCollapsed} mathMarkers={markdownPreferences} onCollapsedChange={changeChatCollapsed} />
         {!chatCollapsed && <div
           role="separator" aria-label="Resize document chat" aria-orientation="vertical"
           aria-valuemin={280} aria-valuemax={560} aria-valuenow={chatWidth} tabIndex={0}
@@ -508,6 +659,7 @@ export function LiberaApp({
       </div>
 
       {workspace.workspaceManager.loadError && <div role="alert" className="border-t border-destructive/30 bg-card px-4 py-2 text-sm text-destructive">{workspace.workspaceManager.loadError} <button className="underline" onClick={workspace.workspaceManager.retry}>Retry loading workspaces</button></div>}
+      <ReferenceMoveNotice key={workspace.referenceMoveNotice?.id} notice={workspace.referenceMoveNotice} onDismiss={workspace.dismissReferenceMoveNotice} />
       {(workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready && !workspace.workspaceManager.loadError)) && <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-full border border-border bg-card px-5 py-2 text-sm shadow-lg">{workspace.workspaceManager.switching ? "Saving your place…" : "Opening your workspace…"}</div>}
       <NotebookDialog
         dialog={workspace.notebookDialog}
@@ -523,6 +675,8 @@ export function LiberaApp({
         onClose={workspace.closeNotebookGroupDialog}
         onSubmit={workspace.submitNotebookGroupDialog}
       />
+      <DocumentOcrModelDialog />
+      <SnipReadingCard session={workspace.screenshotSnipSession} onCancel={workspace.cancelScreenshotSnip} />
       {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.fullTree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
       <NoteDialog
         dialog={workspace.noteDialog}
@@ -549,7 +703,9 @@ export function LiberaApp({
         onConfirm={workspace.submitWorkspaceConfirmDialog}
       />
       <ReviewPopover />
+      <PdfQuoteCiteHost />
     </main>
+    </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
     </QuickPromptsContext.Provider>

@@ -1,3 +1,4 @@
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
   BookPlus,
   CalendarPlus,
@@ -21,6 +22,7 @@ import {
   useLayoutEffect,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,14 +32,27 @@ import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
-import { encodeFilePath } from "@/components/libera/api-client";
+import { apiRequest, encodeFilePath } from "@/components/libera/api-client";
+import {
+  ReferenceRenderProvider,
+  referenceNotebookForPath,
+  type ReferenceAttachmentLocator,
+} from "@/components/libera/references/reference-render-context";
+import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
+import { MarkdownSourceEditor } from "@/components/libera/markdown-source/markdown-source-editor";
 import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
+import { sharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
+import { SharedMarkdownSourceEditor } from "@/lib/collab/bindings/react-markdown-source";
+import { SharedTabChrome } from "@/lib/collab/bindings/react-shared-chrome";
+import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
+import { sharedVisualSource } from "@/lib/collab/bindings/react-visual";
+import type { DraftWriteOptions } from "@/lib/collab/client/workspace";
 import {
   MarkdownSlidesPresenter,
   MarkdownSlidesPreview,
@@ -57,7 +72,9 @@ import type {
   MarkdownFileLinkSelection,
   MarkdownEditorMode,
   MarkdownTabViewState,
+  MarkdownScreenshotSnipMode,
   MarkdownScreenshotSnipSession,
+  PendingVisualInsertion,
   OpenTab,
   OpenTabViewState,
   PdfTabViewState,
@@ -90,7 +107,7 @@ import {
   getTextareaVisualProgressForRange,
   scrollTextareaToOffset,
 } from "@/lib/textarea-position";
-import type { LiberaFileNode, LiberaNotebookNode } from "@/lib/types";
+import type { LiberaFileNode, LiberaFilePayload, LiberaNotebookNode } from "@/lib/types";
 
 type WorkspacePanelProps = {
   // False for background panes of a split canvas: they render their tab but
@@ -132,7 +149,13 @@ type WorkspacePanelProps = {
   onCreateLatex?: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
-  onCompleteScreenshotSnip: (file: File) => Promise<void>;
+  onCompleteScreenshotSnip: (file: File, mathMarkers?: MathMarkerSettings) => Promise<void>;
+  /** Markdown the visual editor of this tab should insert at its selection. */
+  pendingVisualInsertion?: PendingVisualInsertion;
+  onFinishVisualInsertion: (tabId: string, id: string) => void;
+  /** Convert PDF to Markdown: create the file beside the PDF, then save pages into it. */
+  onCreateMarkdownBesidePdf: (pdfPath: string) => Promise<LiberaFileNode>;
+  onWriteConvertedMarkdown: (path: string, content: string) => Promise<void>;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
@@ -146,11 +169,12 @@ type WorkspacePanelProps = {
   onShowImage?: (file: LiberaFileNode) => void;
   onSaveEditedImageCopy?: (sourcePath: string, edits: PhotoEdits) => Promise<void>;
   onSave: () => Promise<void>;
-  onSetDraft: (value: string) => void;
+  /** `options` describes programmatic writes for shared tabs (provenance, the text they started from). */
+  onSetDraft: (value: string, options?: DraftWriteOptions) => void;
   onRegisterEditorDraft?: RegisterEditorDraft;
   onSetViewState: (viewState: OpenTabViewState, tabId?: string) => void;
   onOpenMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
-  onStartScreenshotSnip: () => void;
+  onStartScreenshotSnip: (mode?: MarkdownScreenshotSnipMode, editor?: "source" | "visual") => void;
 };
 
 // CodeMirror and the PDF pane load only when a LaTeX file is opened.
@@ -527,6 +551,9 @@ const PANEL_CALLBACKS = [
   "onEditFileTags",
   "onCancelScreenshotSnip",
   "onCompleteScreenshotSnip",
+  "onFinishVisualInsertion",
+  "onCreateMarkdownBesidePdf",
+  "onWriteConvertedMarkdown",
   "onInsertExistingImage",
   "onInsertFileLink",
   "onInsertFileLinkPlaceholder",
@@ -590,6 +617,9 @@ function WorkspacePanelScope(props: WorkspacePanelProps) {
 
 const MemoizedWorkspacePanelContent = memo(WorkspacePanelContent);
 
+// Shared editors publish nothing: the workspace reads the Y.Text itself.
+const ignoreSharedDraft = () => {};
+
 function WorkspacePanelContent({
   focused = true,
   markdownEditorMode,
@@ -621,6 +651,10 @@ function WorkspacePanelContent({
   onCreateNotebook,
   onCancelScreenshotSnip,
   onCompleteScreenshotSnip,
+  pendingVisualInsertion,
+  onFinishVisualInsertion,
+  onCreateMarkdownBesidePdf,
+  onWriteConvertedMarkdown,
   onInsertExistingImage,
   onInsertFileLink,
   onInsertImage,
@@ -642,6 +676,8 @@ function WorkspacePanelContent({
     DEFAULT_MARKDOWN_SPLIT_PERCENT,
   );
   const markdownSplitContainerRef = useRef<HTMLDivElement | null>(null);
+  const latestMarkdownSplit = useRef(markdownSplitPercent);
+  useLayoutEffect(() => { latestMarkdownSplit.current = markdownSplitPercent; }, [markdownSplitPercent]);
   const stopMarkdownSplitDragRef = useRef<(() => void) | null>(null);
   const markdownPreviewRef = useRef<HTMLElement | null>(null);
   const activeMarkdownPathRef = useRef<string | undefined>(undefined);
@@ -740,6 +776,27 @@ function WorkspacePanelContent({
     return (activeTabId && onRegisterEditorDraft?.(activeTabId, read)) || (() => {});
   }, [activeTabId, onRegisterEditorDraft]);
 
+  // Shared tabs (plan M1.4): the editor binds the tab's replica, which lives
+  // in the registry; this panel holds it while it shows the tab.
+  const panelHolder = useId();
+  const sharedTab = useSharedTab(activeTabId, panelHolder);
+  const sharedSession = sharedTab.session;
+  const sharedAttached = !!sharedTab.snapshot?.attached;
+  const sharedGeneration = sharedTab.snapshot?.generation ?? 0;
+  const sharedPending = sharedTab.state.kind === "pending" || (sharedTab.state.kind === "shared" && !sharedAttached);
+  const sharedCodeMirror = useMemo(
+    () => (sharedSession && sharedAttached ? sharedCodeMirrorSource(sharedSession) : null),
+    // A rebuilt content document needs a new source (and a remount, by key).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sharedSession, sharedAttached, sharedGeneration],
+  );
+  const sharedVisual = useMemo(
+    () => (sharedSession && sharedAttached ? sharedVisualSource(sharedSession) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sharedSession, sharedAttached, sharedGeneration],
+  );
+  const editorKey = sharedCodeMirror ? `${activeTabId}:shared:${sharedGeneration}` : activeTabId;
+
   const updateMarkdownViewState = useCallback(
     (patch: MarkdownTabViewState) => {
       if (!activeTabId) {
@@ -750,6 +807,29 @@ function WorkspacePanelContent({
     },
     [activeTabId, onSetViewState],
   );
+
+  // A one-shot request (Global Search) to select a passage. The visual editor
+  // handles its own; in the source editor, select the passage in the textarea
+  // after the tab's scroll and selection are restored.
+  const markdownReveal = activeMarkdownViewState?.reveal;
+  const markdownUsesSourceEditor = markdownEditorMode !== "visual" || activeMarkdownIsSlides;
+  useEffect(() => {
+    if (!markdownReveal || !markdownUsesSourceEditor) return;
+    let frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          const start = Math.min(markdownReveal.start, textarea.value.length);
+          const end = Math.min(markdownReveal.end, textarea.value.length);
+          textarea.focus({ preventScroll: true });
+          textarea.setSelectionRange(start, end);
+          scrollTextareaToOffset(textarea, start, { block: "center" });
+        }
+        updateMarkdownViewState({ reveal: undefined, selectionStart: markdownReveal.start, selectionEnd: markdownReveal.end });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [markdownReveal, markdownUsesSourceEditor, textareaRef, updateMarkdownViewState]);
 
   const updateLatexViewState = useCallback(
     (patch: LatexTabViewState) => {
@@ -851,6 +931,24 @@ function WorkspacePanelContent({
     }
 
     return openMarkdownFileLinkRef.current(sourcePath, href);
+  }, []);
+
+  // Citation hover cards open an entry's attachment: a PDF at the cited page
+  // (the viewState.pdf.reveal request Global Search uses), or the file.
+  const openFileRef = useRef(onOpenFile);
+  useEffect(() => {
+    openFileRef.current = onOpenFile;
+  }, [onOpenFile]);
+  const openReferenceAttachment = useCallback((attachment: ReferenceAttachment, locator?: ReferenceAttachmentLocator) => {
+    if (attachment.kind === "url") {
+      window.open(attachment.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(attachment.path)}`)
+      .then(({ file }) => openFileRef.current(file, attachment.kind === "pdf" && locator?.page
+        ? { viewState: { pdf: { reveal: { page: locator.page, nonce: Date.now() } } } }
+        : undefined))
+      .catch(() => undefined);
   }, []);
 
   useLayoutEffect(() => {
@@ -1264,11 +1362,18 @@ function WorkspacePanelContent({
     };
   }, [activeFileType, activeTabId, activeTabStatus, focused, onSave]);
 
-  function saveMarkdownSplitPercent(value: number) {
+  function saveMarkdownSplitPercent(value: number, persist = true) {
     const clampedValue = clampMarkdownSplitPercent(value);
 
+    latestMarkdownSplit.current = clampedValue;
     setMarkdownSplitPercent(clampedValue);
-    window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+    if (persist) {
+      try {
+        if (window.localStorage.getItem(MARKDOWN_SPLIT_STORAGE_KEY) !== String(clampedValue)) {
+          window.localStorage.setItem(MARKDOWN_SPLIT_STORAGE_KEY, String(clampedValue));
+        }
+      } catch { /* Storage may be unavailable. */ }
+    }
   }
 
   function handleMarkdownZoomChange(value: number) {
@@ -1328,7 +1433,7 @@ function WorkspacePanelContent({
     }
 
     const offset = isDesktopSplit ? clientX - rect.left : clientY - rect.top;
-    saveMarkdownSplitPercent((offset / size) * 100);
+    saveMarkdownSplitPercent((offset / size) * 100, false);
   }
 
   function handleMarkdownSplitPointerDown(
@@ -1347,6 +1452,7 @@ function WorkspacePanelContent({
     function stopDragging() {
       stopMarkdownSplitDragRef.current = null;
       setMarkdownSplitDragging(false);
+      saveMarkdownSplitPercent(latestMarkdownSplit.current);
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
       window.removeEventListener("pointercancel", stopDragging);
@@ -1390,7 +1496,7 @@ function WorkspacePanelContent({
     const selectionStart = textarea?.selectionStart ?? 0;
     const selectionEnd = textarea?.selectionEnd ?? selectionStart;
 
-    onSetDraft(normalizeChatGptCopiedMarkdown(draft, markdownPreferences));
+    onSetDraft(normalizeChatGptCopiedMarkdown(draft, markdownPreferences), { base: draft });
 
     window.requestAnimationFrame(() => {
       const nextTextarea = textareaRef.current;
@@ -1441,7 +1547,7 @@ function WorkspacePanelContent({
       return;
     }
 
-    onSetDraft(nextDraft);
+    onSetDraft(nextDraft, { base: draft });
 
     const nextSelectionStart = Math.min(selectionStart, nextDraft.length);
     const nextSelectionEnd = Math.min(selectionEnd, nextDraft.length);
@@ -1514,6 +1620,9 @@ function WorkspacePanelContent({
     scrollTextareaToOffset(textarea, clampedOffset);
   }
 
+  const SourceEditor = markdownPreferences.sourceEditor === "codemirror" ? MarkdownSourceEditor : MarkdownEditor;
+  const isTextTab = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text";
+
   if (!activeTab) {
     if (selectedNotebook) {
       return (
@@ -1579,25 +1688,44 @@ function WorkspacePanelContent({
           {activeTab.error}
         </div>
       ) : null}
+      {sharedTab.state.kind === "error" && isTextTab ? (
+        <div className="border-b border-destructive/40 bg-destructive-muted px-4 py-2 text-sm text-destructive">
+          This file is in a shared notebook, but its live copy could not be opened: {sharedTab.state.message}
+        </div>
+      ) : null}
+      {sharedSession && sharedAttached && isTextTab ? (
+        <SharedTabChrome
+          tabId={activeTab.id}
+          fileName={activeTab.file.name}
+          session={sharedSession}
+          snapshot={sharedTab.snapshot}
+        />
+      ) : null}
 
-      {activeTab.file.fileType === "latex" ? (
+      {sharedPending && isTextTab ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-card text-sm text-muted-foreground" role="status">
+          Opening shared document…
+        </div>
+      ) : activeTab.file.fileType === "latex" ? (
         <LatexWorkspace
-          key={activeTab.id}
+          key={editorKey}
           tab={activeTab}
+          collab={sharedCodeMirror ?? undefined}
           files={files}
           fontFamily={markdownEditorFontFamily}
           fontSizePx={markdownFontSizePx}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}
           onSetDraft={onSetDraft}
-          onRegisterDraft={registerMarkdownDraft}
+          onRegisterDraft={sharedCodeMirror ? undefined : registerMarkdownDraft}
           onSave={onSave}
           onSetViewState={updateLatexViewState}
           onOpenFile={onOpenFile}
         />
       ) : activeTab.file.fileType === "text" ? (
         <CodeEditor
-          key={activeTab.id}
+          key={editorKey}
+          collab={sharedCodeMirror ?? undefined}
           fileName={activeTab.file.name}
           value={activeTab.draft}
           fontFamily={markdownEditorFontFamily}
@@ -1605,33 +1733,44 @@ function WorkspacePanelContent({
           lineHeight={markdownPreferences.baseLineHeight}
           initialViewState={activeTab.viewState?.text}
           saving={activeTab.status === "saving"}
-          onChange={onSetDraft}
-          onRegisterDraft={registerMarkdownDraft}
+          onChange={sharedCodeMirror ? ignoreSharedDraft : onSetDraft}
+          onRegisterDraft={sharedCodeMirror ? undefined : registerMarkdownDraft}
           onViewStateChange={updateTextViewState}
           onSave={() => void onSave()}
         />
       ) : activeTab.file.fileType === "markdown" ? (
-        <>
+        <ReferenceRenderProvider
+          notebook={activeTab.untitled
+            ? referenceNotebookForPath(activeTab.saveDirectory) ?? selectedNotebook?.name ?? null
+            : referenceNotebookForPath(activeTab.file.path)}
+          onOpenAttachment={openReferenceAttachment}
+        >
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
+              collab={sharedVisual ?? undefined}
               files={files}
               mathMarkers={markdownPreferences}
               smartPaste={markdownPreferences.smartPaste}
-                untitled={activeTab.untitled} key={activeTab.id} documentPath={activeTab.file.path}
+                untitled={activeTab.untitled} key={editorKey} documentPath={activeTab.file.path}
               value={activeTab.draft} fontSizePx={markdownFontSizePx}
               fontFamily={wysiwygEditorFontFamily}
               lineHeight={markdownPreferences.baseLineHeight}
               markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange}
               initialViewState={activeMarkdownViewState}
               onViewStateChange={updateMarkdownViewState}
-              onChange={handleMarkdownDraftChange} onSave={onSave}
-              onRegisterDraft={registerMarkdownDraft}
-              onOpenFileLink={handleOpenMarkdownFileLink} />
+              onChange={sharedVisual ? ignoreSharedDraft : handleMarkdownDraftChange} onSave={onSave}
+              onRegisterDraft={sharedVisual ? undefined : registerMarkdownDraft}
+              onOpenFileLink={handleOpenMarkdownFileLink}
+              canStartScreenshotSnip={canStartScreenshotSnip}
+              onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "visual")}
+              pendingInsertion={pendingVisualInsertion}
+              onPendingInsertionHandled={(id) => onFinishVisualInsertion(activeTab.id, id)} />
           ) : <>
           <MarkdownToolbar
             key={`${activeTab.id}-toolbar`}
             files={files}
             documentPath={activeTab.file.path}
+            untitled={activeTab.untitled}
             canStartScreenshotSnip={canStartScreenshotSnip}
             isSlideDeck={activeMarkdownIsSlides}
             markdownBaseFontSize={markdownPreferences.baseFontSize}
@@ -1644,7 +1783,8 @@ function WorkspacePanelContent({
             onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
             onMarkdownZoomChange={handleMarkdownZoomChange}
-            onStartScreenshotSnip={onStartScreenshotSnip}
+            onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "source")}
+            onOpenFileLink={handleOpenMarkdownFileLink}
             onTogglePreviewFullscreen={() =>
               setActivePreviewTabId((current) =>
                 current === activeTab.id ? null : activeTab.id,
@@ -1693,7 +1833,34 @@ function WorkspacePanelContent({
                 } as CSSProperties
               }
             >
-              <MarkdownEditor
+              {/* Preferences → Source editor: the textarea (default) or CodeMirror (beta, D8).
+                  Shared tabs always use CodeMirror: the textarea cannot carry a binding. */}
+              {sharedCodeMirror ? (
+                <SharedMarkdownSourceEditor
+                  key={editorKey}
+                  collab={sharedCodeMirror}
+                  activeFilePath={activeTab.file.path}
+                  files={files}
+                  formatting={aiFormatting}
+                  imageConverting={imageMarkdownConverting}
+                  readOpenTabs={readOpenTabs}
+                  recentFiles={recentFiles}
+                  fontFamily={markdownEditorFontFamily}
+                  fontSizePx={markdownFontSizePx}
+                  lineHeightPx={markdownLineHeightPx}
+                  mathMarkers={markdownPreferences}
+                  smartPaste={markdownPreferences.smartPaste}
+                  textareaRef={textareaRef}
+                  onAiFormatSelection={onAiFormatSelection}
+                  onAiImageToMarkdown={onAiImageToMarkdown}
+                  onAiRewriteSelection={onAiRewriteSelection}
+                  onAiWriteAt={onAiWriteAt}
+                  onInsertFileLink={onInsertFileLink}
+                  onInsertImageFile={onInsertImage}
+                  onSelectionChange={handleMarkdownSelectionChange}
+                />
+              ) : (
+              <SourceEditor
                 key={activeTab.id}
                 activeFilePath={activeTab.file.path}
                 files={files}
@@ -1718,6 +1885,7 @@ function WorkspacePanelContent({
                 onInsertImageFile={onInsertImage}
                 onSelectionChange={handleMarkdownSelectionChange}
               />
+              )}
               <div
                 aria-label="Resize Markdown editor and preview"
                 aria-orientation="vertical"
@@ -1829,7 +1997,7 @@ function WorkspacePanelContent({
             }}
           />
           </>}
-        </>
+        </ReferenceRenderProvider>
       ) : activeTab.file.fileType === "image" ? (
         <NoteMathMarkersProvider value={markdownPreferences}>
           <ImageViewer
@@ -1853,10 +2021,10 @@ function WorkspacePanelContent({
             }}
             onSaveEditedCopy={isGalleryTab(activeTab) ? undefined : async (edits) => { await onSaveEditedImageCopy?.(activeTab.file.path, edits); }}
             initialViewState={activeImageViewState}
-            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id && !screenshotSnipSession.converting}
             onViewStateChange={updateImageViewState}
             onCancelScreenshotSnip={onCancelScreenshotSnip}
-            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+            onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
       ) : activeTab.file.fileType === "pdf" ? (
@@ -1866,10 +2034,17 @@ function WorkspacePanelContent({
             src={activeTab.rawUrl}
             filePath={activeTab.file.path}
             initialViewState={activePdfViewState}
-            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id}
+            screenshotSnipping={screenshotSnipSession?.sourceTabId === activeTab.id && !screenshotSnipSession.converting}
+            screenshotSnipMode={screenshotSnipSession?.mode}
+            mathMarkers={markdownPreferences}
+            markdownConversion={isGalleryTab(activeTab) ? undefined : {
+              createFile: onCreateMarkdownBesidePdf,
+              writeFile: onWriteConvertedMarkdown,
+              openFile: (file) => void onOpenFile(file),
+            }}
             onViewStateChange={updatePdfViewState}
             onCancelScreenshotSnip={onCancelScreenshotSnip}
-            onCompleteScreenshotSnip={onCompleteScreenshotSnip}
+            onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
       ) : (

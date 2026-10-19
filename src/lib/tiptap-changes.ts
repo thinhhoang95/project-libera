@@ -22,15 +22,31 @@ export type TrackedChange = {
   mode: "applied" | "preview"; block: boolean;
   from: number; to: number; other: Fragment;
   showActions: boolean;
+  /** Who proposed the change (shared documents); rendered as a coloured label. */
+  author?: ChangeAuthor;
+  /** When the change was proposed, in milliseconds since the epoch. */
+  createdAt?: number;
+  /**
+   * The preview owner, when several show previews at once (agentic review
+   * uses the default channel, shared-document suggestions their own), so one
+   * owner's update never clears the other's previews.
+   */
+  channel?: string;
+  /** False when the viewer may not decide it (a commenter looking at suggestions): label only, no buttons. */
+  decidable?: boolean;
 };
+/** `kind: "ai"` marks AI acting for `name` ("AI · on behalf of name"). */
+export type ChangeAuthor = { name: string; color?: string; kind?: "user" | "ai" };
 export type ChangeDecider = (groups: string[], decision: ChangeDecision) => void;
-export type TiptapChangesState = { changes: TrackedChange[]; decide?: ChangeDecider; decorations: DecorationSet };
+export type TiptapChangesState = { changes: TrackedChange[]; decide?: ChangeDecider; deciders?: Readonly<Record<string, ChangeDecider>>; decorations: DecorationSet };
 export type TiptapChangesMeta =
   | { type: "track"; source: ChangeSource }
   | { type: "resolve"; ids: string[] }
-  | { type: "preview"; changes: TrackedChange[]; decide?: ChangeDecider };
+  | { type: "preview"; changes: TrackedChange[]; decide?: ChangeDecider; channel?: string };
 
 export const tiptapChangesKey = new PluginKey<TiptapChangesState>("liberaChanges");
+/** Preview channel of overlay suggestions on shared documents. */
+export const SUGGESTIONS_CHANNEL = "collab-suggestions";
 
 // Containers whose children can be diffed (and rendered) individually. Tables
 // and other structured nodes are compared as a whole.
@@ -229,11 +245,12 @@ function mapChanges(changes: TrackedChange[], tr: Transaction) {
 
 /** Decision units: applied hunks individually, previews per suggestion. */
 export function tiptapChangeUnits(changes: readonly TrackedChange[]) {
-  const units = new Map<string, { group: string; ids: string[]; from: number; source: ChangeSource; label?: string }>();
+  const units = new Map<string, { group: string; ids: string[]; from: number; source: ChangeSource; label?: string; author?: ChangeAuthor; channel?: string; decidable: boolean }>();
   for (const change of changes) {
-    const unit = units.get(change.group);
+    const key = change.channel ? `${change.channel} ${change.group}` : change.group;
+    const unit = units.get(key);
     if (unit) { unit.ids.push(change.id); unit.from = Math.min(unit.from, change.from); }
-    else units.set(change.group, { group: change.group, ids: [change.id], from: change.from, source: change.source, label: change.label });
+    else units.set(key, { group: change.group, ids: [change.id], from: change.from, source: change.source, label: change.label, ...(change.author ? { author: change.author } : {}), ...(change.channel ? { channel: change.channel } : {}), decidable: change.decidable !== false });
   }
   return [...units.values()].sort((a, b) => a.from - b.from);
 }
@@ -242,7 +259,7 @@ export function tiptapChangeUnits(changes: readonly TrackedChange[]) {
  * suggestions are forwarded to their owner as whole groups. */
 export function decideTiptapChanges(view: EditorView, ids: readonly string[] | "all", decision: ChangeDecision) {
   const state = tiptapChangesKey.getState(view.state);
-  const chosen = state?.changes.filter((change) => ids === "all" || ids.includes(change.id)) ?? [];
+  const chosen = state?.changes.filter((change) => change.decidable !== false && (ids === "all" || ids.includes(change.id))) ?? [];
   if (!chosen.length) return false;
   const applied = chosen.filter((change) => change.mode === "applied");
   if (applied.length) {
@@ -254,8 +271,12 @@ export function decideTiptapChanges(view: EditorView, ids: readonly string[] | "
     } else tr.setMeta("addToHistory", false);
     view.dispatch(tr);
   }
-  const groups = [...new Set(chosen.filter((change) => change.mode === "preview").map((change) => change.group))];
-  if (groups.length) state!.decide?.(groups, decision);
+  const previews = chosen.filter((change) => change.mode === "preview");
+  for (const channel of new Set(previews.map((change) => change.channel))) {
+    const groups = [...new Set(previews.filter((change) => change.channel === channel).map((change) => change.group))];
+    const decide = channel === undefined ? state!.decide : state!.deciders?.[channel];
+    if (groups.length) decide?.(groups, decision);
+  }
   return true;
 }
 
@@ -299,6 +320,13 @@ function contentWidget(pos: number, side: number, key: string, className: string
   }, { side, key, marks: [], ignoreSelection: true, stopEvent: () => true });
 }
 
+// Author colours come from collaborators, so only plain colour values reach a style attribute.
+const SAFE_COLOR = /^(#[0-9a-f]{3,8}|(rgb|hsl)a?\([\d\s.,%]+\)|[a-z]{3,20})$/i;
+const authorColor = (author?: ChangeAuthor) => (author?.color && SAFE_COLOR.test(author.color) ? author.color : undefined);
+export function changeAuthorLabel(author: ChangeAuthor) {
+  return author.kind === "ai" ? `AI · on behalf of ${author.name}` : author.name;
+}
+
 function actionsWidget(change: TrackedChange, ids: string[]) {
   return Decoration.widget(change.to, (view) => {
     const root = document.createElement(change.block ? "div" : "span");
@@ -306,13 +334,27 @@ function actionsWidget(change: TrackedChange, ids: string[]) {
     root.contentEditable = "false";
     root.setAttribute("role", "group");
     root.setAttribute("aria-label", change.label ? `${change.label} actions` : "Proposed change actions");
+    if (change.author) {
+      const author = document.createElement("span");
+      author.className = "libera-change-author";
+      const color = authorColor(change.author);
+      if (color) author.style.setProperty("--libera-change-author", color);
+      const dot = document.createElement("span");
+      dot.className = "libera-change-author-dot";
+      dot.setAttribute("aria-hidden", "true");
+      // Inline styles: the shared stylesheet has no rules for author labels yet.
+      Object.assign(dot.style, { display: "inline-block", width: "0.55em", height: "0.55em", borderRadius: "50%", marginInlineEnd: "4px", backgroundColor: color ?? "currentColor" });
+      author.style.paddingInline = "6px 2px";
+      author.append(dot, changeAuthorLabel(change.author));
+      root.append(author);
+    }
     if (change.label) {
       const label = document.createElement("span");
       label.className = "libera-change-actions-label";
       label.textContent = change.label;
       root.append(label);
     }
-    for (const decision of ["reject", "accept"] as const) {
+    for (const decision of change.decidable === false ? [] : (["reject", "accept"] as const)) {
       const button = document.createElement("button");
       const title = decision === "accept" ? "Accept change" : "Reject change";
       button.type = "button";
@@ -326,24 +368,27 @@ function actionsWidget(change: TrackedChange, ids: string[]) {
       root.append(button);
     }
     return root;
-  }, { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}`, marks: [], ignoreSelection: true, stopEvent: () => true });
+  }, { side: 1000, key: `${change.id}:actions:${change.label ?? ""}:${ids.length}:${change.decidable === false ? "view" : "decide"}:${change.author ? `${change.author.kind ?? ""}:${change.author.name}:${change.author.color ?? ""}` : ""}`, marks: [], ignoreSelection: true, stopEvent: () => true });
 }
 
 function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], documentPath: string) {
-  const groups = new Map(tiptapChangeUnits(changes).map((unit) => [unit.group, unit.ids]));
+  const groups = new Map(tiptapChangeUnits(changes).map((unit) => [unit.channel ? `${unit.channel} ${unit.group}` : unit.group, unit.ids]));
   const decorations: Decoration[] = [];
   for (const change of changes) {
     const inDocument = change.mode === "applied" ? "inserted" : "deleted";
     const shown = change.mode === "applied" ? "deleted" : "inserted";
+    const color = authorColor(change.author);
+    // Authored changes expose their author's colour to CSS as --libera-change-author.
+    const authored = color ? { style: `--libera-change-author: ${color}` } : {};
     if (change.from < change.to) {
       if (change.block) {
         for (let pos = change.from; pos < change.to;) {
           const node = doc.nodeAt(pos);
           if (!node) break;
-          decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: `libera-change libera-change-${inDocument}-block` }));
+          decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: `libera-change libera-change-${inDocument}-block`, ...authored }));
           pos += node.nodeSize;
         }
-      } else decorations.push(Decoration.inline(change.from, change.to, { class: `libera-change libera-change-${inDocument}` }));
+      } else decorations.push(Decoration.inline(change.from, change.to, { class: `libera-change libera-change-${inDocument}`, ...authored }));
     }
     if (change.other.size) {
       // Originals precede the proposal they were replaced by; previewed
@@ -354,7 +399,7 @@ function changeDecorations(doc: ProseMirrorNode, changes: TrackedChange[], docum
         childNodes(change.other).forEach((node, index) => decorations.push(contentWidget(pos, side(index), `${change.id}:${shown}:${index}`, `libera-change-${shown}-block`, (serializer) => serializer.serializeNode(node), documentPath)));
       } else decorations.push(contentWidget(pos, side(0), `${change.id}:${shown}`, `libera-change-${shown}`, (serializer) => serializer.serializeFragment(change.other), documentPath));
     }
-    if (change.showActions) decorations.push(actionsWidget(change, groups.get(change.group) ?? [change.id]));
+    if (change.showActions) decorations.push(actionsWidget(change, groups.get(change.channel ? `${change.channel} ${change.group}` : change.group) ?? [change.id]));
   }
   return DecorationSet.create(doc, decorations);
 }
@@ -370,18 +415,21 @@ export const TiptapChanges = Extension.create<{ documentPath: string }>({
         init: () => ({ changes: [], decorations: DecorationSet.empty }),
         apply(tr, value, oldState, newState) {
           const meta = tr.getMeta(tiptapChangesKey) as TiptapChangesMeta | undefined;
-          let { changes, decide } = value;
+          let { changes, decide, deciders } = value;
           if (tr.docChanged) changes = mapChanges(changes, tr);
           if (meta?.type === "track") changes = [...changes, ...trackChanges(oldState.doc, newState.doc, meta.source)];
           else if (meta?.type === "resolve") changes = changes.filter((change) => !meta.ids.includes(change.id));
           else if (meta?.type === "preview") {
             const size = newState.doc.content.size;
-            changes = [...changes.filter((change) => change.mode !== "preview"), ...meta.changes.filter((change) => change.from >= 0 && change.from <= change.to && change.to <= size)];
-            decide = meta.decide;
+            const channel = meta.channel;
+            const incoming = meta.changes.filter((change) => change.from >= 0 && change.from <= change.to && change.to <= size).map((change) => (channel ? { ...change, channel } : change));
+            changes = [...changes.filter((change) => change.mode !== "preview" || change.channel !== channel), ...incoming];
+            if (channel === undefined) decide = meta.decide;
+            else deciders = { ...deciders, [channel]: meta.decide ?? (() => {}) };
           }
-          if (changes === value.changes && decide === value.decide) return value;
+          if (changes === value.changes && decide === value.decide && deciders === value.deciders) return value;
           changes = [...changes].sort((a, b) => a.from - b.from || a.to - b.to);
-          return { changes, decide, decorations: changes.length ? changeDecorations(newState.doc, changes, documentPath) : DecorationSet.empty };
+          return { changes, decide, ...(deciders ? { deciders } : {}), decorations: changes.length ? changeDecorations(newState.doc, changes, documentPath) : DecorationSet.empty };
         },
       },
       props: {

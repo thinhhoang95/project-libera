@@ -1,3 +1,5 @@
+import type { ReferenceMoveResult } from "@/lib/references/moves";
+
 export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
 
 /** File types whose content is edited as text in a tab. */
@@ -12,6 +14,9 @@ export type PdfAnnotationRect = {
   height: number;
 };
 
+/** How a text markup is drawn over its quote. */
+export type PdfMarkupStyle = "highlight" | "underline" | "strikethrough" | "squiggly";
+
 export type PdfHighlightAnnotation = {
   id: string;
   type: "highlight";
@@ -19,6 +24,43 @@ export type PdfHighlightAnnotation = {
   color: string;
   rects: PdfAnnotationRect[];
   quote?: string;
+  /** Older annotations, and plain highlights, have none. */
+  markup?: Exclude<PdfMarkupStyle, "highlight">;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A point as fractions of the page. */
+export type PdfAnnotationPoint = {
+  x: number;
+  y: number;
+};
+
+export type PdfShapeKind = "rectangle" | "ellipse" | "line" | "arrow";
+
+export type PdfShapeAnnotation = {
+  id: string;
+  type: "shape";
+  pageNumber: number;
+  shape: PdfShapeKind;
+  color: string;
+  /** Stroke width in PDF points; it scales with zoom. */
+  strokeWidth: number;
+  /** Line endpoints, or opposite corners of a rectangle or ellipse's box. */
+  from: PdfAnnotationPoint;
+  to: PdfAnnotationPoint;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** One freehand pen stroke. */
+export type PdfInkAnnotation = {
+  id: string;
+  type: "ink";
+  pageNumber: number;
+  color: string;
+  strokeWidth: number;
+  points: PdfAnnotationPoint[];
   createdAt: string;
   updatedAt: string;
 };
@@ -40,7 +82,11 @@ export type PdfTextAnnotation = {
   updatedAt: string;
 };
 
-export type PdfAnnotation = PdfHighlightAnnotation | PdfTextAnnotation;
+export type PdfAnnotation =
+  | PdfHighlightAnnotation
+  | PdfTextAnnotation
+  | PdfShapeAnnotation
+  | PdfInkAnnotation;
 
 export type LiberaFileNode = {
   kind: "file";
@@ -51,6 +97,8 @@ export type LiberaFileNode = {
   createdAt: string;
   size: number;
   updatedAt: string;
+  /** Files this saved Markdown file links to, resolved against the tree. */
+  linkedFilePaths?: string[];
 };
 
 export type LiberaFolderNode = {
@@ -129,6 +177,14 @@ export type LiberaFilePayload = {
   file: LiberaFileNode;
   content?: string;
   rawUrl?: string;
+};
+
+/**
+ * PATCH /api/files after a move or rename. Markdown moved to another notebook
+ * also reports the references copied along (src/lib/references/moves.ts).
+ */
+export type LiberaFileMovePayload = LiberaFilePayload & {
+  references?: ReferenceMoveResult;
 };
 
 export type PdfAnnotationsPayload = {

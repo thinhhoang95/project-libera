@@ -26,6 +26,13 @@
 # local app data
 /data
 
+# collaboration
+/electron/collab/dist/
+/server/node_modules/
+/server/dist/
+/server/data/
+/server/.env
+
 # misc
 .DS_Store
 ._*
@@ -42,6 +49,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!/server/.env.example
+!/ops/collab/.env.example
 
 # vercel
 .vercel

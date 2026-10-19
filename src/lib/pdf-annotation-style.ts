@@ -1,4 +1,4 @@
-import type { PdfAnnotationRect, PdfTextAnnotationFont } from "@/lib/types";
+import type { PdfAnnotationRect, PdfMarkupStyle, PdfTextAnnotationFont } from "@/lib/types";
 
 export type AnnotationSwatch = {
   label: string;
@@ -29,9 +29,36 @@ export const PDF_TEXT_COLORS = [
   { label: "Orange ink", value: "#c2410c" },
 ] as const satisfies readonly AnnotationSwatch[];
 
+/**
+ * Pen inks for underlines, strikethroughs, pen strokes and shapes: thin lines
+ * need strong colors, so these lead with red rather than the note blue.
+ */
+export const PDF_INK_COLORS = [
+  { label: "Red", value: "#d92d20" },
+  { label: "Blue", value: "#1d4ed8" },
+  { label: "Black", value: "#1f2328" },
+  { label: "Green", value: "#17753a" },
+  { label: "Purple", value: "#6d28d9" },
+  { label: "Orange", value: "#e8590c" },
+] as const satisfies readonly AnnotationSwatch[];
+
+/** Stroke widths in PDF points; they scale with zoom like the page does. */
+export const PDF_STROKE_WIDTHS = [
+  { label: "Thin", value: 1 },
+  { label: "Medium", value: 2 },
+  { label: "Thick", value: 4 },
+] as const;
+
 export const DEFAULT_PDF_HIGHLIGHT_COLOR = PDF_HIGHLIGHT_COLORS[0].value;
 export const DEFAULT_PDF_TEXT_COLOR = PDF_TEXT_COLORS[0].value;
 export const DEFAULT_PDF_TEXT_FONT: PdfTextAnnotationFont = "sans";
+export const DEFAULT_PDF_INK_COLOR = PDF_INK_COLORS[0].value;
+export const DEFAULT_PDF_STROKE_WIDTH = 2;
+
+/** Highlights take the pastel highlighter inks; line markup takes pen inks. */
+export function markupPalette(markup: PdfMarkupStyle | undefined): readonly AnnotationSwatch[] {
+  return !markup || markup === "highlight" ? PDF_HIGHLIGHT_COLORS : PDF_INK_COLORS;
+}
 
 export const PDF_TEXT_FONTS: readonly {
   label: string;

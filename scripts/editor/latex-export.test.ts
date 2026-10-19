@@ -74,7 +74,7 @@ test("export sends compiler failures back to the same thread and returns a valid
     assert.ok(body.messages[0].content.includes(String.raw`\author{A\&B}`));
     assert.ok(body.messages[0].content.includes(String.raw`\date{2026-09-09}`));
     assert.ok(body.messages[0].content.includes("\\fancyfoot[C]{Custom footer}"));
-    assert.ok(body.messages[0].content.includes("Libera by Thinh Hoang"));
+    assert.ok(body.messages[0].content.includes("Libera for Vy Tran"));
     assert.equal(body.messages[0].role, "system");
     assert.ok(body.messages[0].content.includes("Use blue section headings.\nKeep tables near their references."));
     sessions.add(body.session_id);
@@ -140,7 +140,7 @@ test("preamble clears default marks, escapes custom text and positions footer ma
   const branded = latexLayoutPrompt({ ...DEFAULT_LATEX_OPTIONS, header: "Title", footer: "Note", showAppName: true });
   assert.ok(branded.includes(String.raw`\fancyhead[C]{Title}`));
   assert.ok(branded.includes(String.raw`\fancyfoot[C]{Note}`));
-  assert.ok(branded.includes(String.raw`\fancyfoot[R]{Libera by Thinh Hoang}`));
+  assert.ok(branded.includes(String.raw`\fancyfoot[R]{Libera for Vy Tran}`));
   assert.ok(branded.includes(String.raw`\fancypagestyle{plain}`));
 });
 

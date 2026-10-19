@@ -1,0 +1,43 @@
+# Optional development services. The collab server runs fine without any of
+# them (PGlite database, disk blobs, emails in the log); start these when you
+# want to test against real Postgres, SMTP or a flaky network. (For the S3
+# blob driver, point BLOB_S3_* at any S3-compatible service; see SETUP.md.)
+#   docker compose -f ops/collab/docker-compose.dev.yml up -d
+# Then in server/.env:
+#   DATABASE_URL=postgres://libera:libera@127.0.0.1:55432/libera
+#   SMTP_URL=smtp://127.0.0.1:51025
+# Point the desktop app at the Toxiproxy port (54401) to inject latency/loss.
+
+name: libera-collab-dev
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: libera
+      POSTGRES_USER: libera
+      POSTGRES_PASSWORD: libera
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - dev-postgres:/var/lib/postgresql/data
+
+  mailpit:
+    image: axllent/mailpit:v1.24
+    ports:
+      - "127.0.0.1:51025:1025"
+      - "127.0.0.1:58025:8025"
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    command: -host 0.0.0.0 -config /config/toxiproxy.json
+    volumes:
+      - ./toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      - "127.0.0.1:58474:8474"
+      - "127.0.0.1:54401:4401"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  dev-postgres:

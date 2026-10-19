@@ -1,7 +1,7 @@
 "use client";
 
 import { useWorkspaceView } from "./workspace-view-context";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, useContext, useMemo, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, DragEvent, MouseEvent, RefObject } from "react";
 import {
   ArrowDownUp,
@@ -17,7 +17,15 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
+import { useCollabShell } from "@/components/libera/collab/collab-provider";
+import {
+  CollabJoinButton,
+  SharedNotebookBadge,
+  collabNotebookMenuItems,
+  runCollabNotebookMenuItem,
+} from "@/components/libera/collab/collab-shell";
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
+import { importReferenceFile, isReferenceImportPath, referenceImportSummary } from "@/lib/references/import";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -391,6 +399,45 @@ function collectStarredFilesForPanel(tree: LiberaTree) {
     .filter((file): file is LiberaFileNode => Boolean(file));
 }
 
+type Backlinks = {
+  /** Files whose saved Markdown links to the open file. */
+  sources: Set<string>;
+  /** Backlink counts per notebook and folder path, shown while collapsed. */
+  counts: Map<string, number>;
+};
+
+const BacklinksContext = createContext<Backlinks>({ sources: new Set(), counts: new Map() });
+
+function collectBacklinks(tree: LiberaTree, targetPath: string): Backlinks {
+  const sources = new Set<string>();
+  const counts = new Map<string, number>();
+  const filesByPath = new Map<string, LiberaFileNode>();
+  if (!targetPath) return { sources, counts };
+  for (const notebook of tree.notebooks) collectFilesByPath(notebook.children, filesByPath);
+  for (const file of filesByPath.values()) {
+    if (file.path === targetPath || !file.linkedFilePaths?.includes(targetPath)) continue;
+    sources.add(file.path);
+    const parts = file.path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      const containerPath = parts.slice(0, index).join("/");
+      counts.set(containerPath, (counts.get(containerPath) ?? 0) + 1);
+    }
+  }
+  return { sources, counts };
+}
+
+function BacklinkCount({ path }: { path: string }) {
+  const count = useContext(BacklinksContext).counts.get(path);
+  if (!count) return null;
+  const label = `${count} ${count === 1 ? "file links" : "files link"} to the open file`;
+  return (
+    <span className="libera-backlink-count" title={label} aria-label={label}>
+      <Link2 aria-hidden className="h-3 w-3" />
+      {count}
+    </span>
+  );
+}
+
 function parentPathForSidebarFile(file: LiberaFileNode) {
   const parts = file.path.split("/");
   return parts.slice(0, -1).join("/") || file.notebook;
@@ -510,6 +557,7 @@ export function NotebookPanel({
   const [dragOverPath, setDragOverPath] = useState("");
   const [deepSearchQuery, setDeepSearchQuery] = useState("");
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
+  const [referenceImportNotice, setReferenceImportNotice] = useState<{ tone: "status" | "alert"; message: string; details: string[] } | null>(null);
   const workspaceView = useWorkspaceView();
   const librarySortToken = useSyncExternalStore(
     subscribeSidebarSortPreference,
@@ -529,6 +577,7 @@ export function NotebookPanel({
     () => new Set(tree.notebooks.find((notebook) => notebook.name === selectedNotebookName)?.relatedNotebookNames ?? []),
     [tree.notebooks, selectedNotebookName],
   );
+  const backlinks = useMemo(() => collectBacklinks(tree, activeTabId), [tree, activeTabId]);
   const sortedTree = useMemo(
     () => sortTreeForSidebar(tree, sortPreference, fileInteractions),
     [fileInteractions, sortPreference, tree],
@@ -611,6 +660,23 @@ export function NotebookPanel({
     });
   }
 
+  async function importIntoReferences(file: LiberaFileNode) {
+    setReferenceImportNotice({ tone: "status", message: `Importing ${file.name} into References…`, details: [] });
+    try {
+      const result = await importReferenceFile(file.notebook, file.path);
+      setReferenceImportNotice({
+        tone: "status",
+        message: referenceImportSummary(result),
+        details: [
+          ...result.renamedKeys.map(({ sourceKey, key }) => `Key ${sourceKey} is now ${key}`),
+          ...result.errors.map(({ line, message }) => `Line ${line}: ${message}`),
+        ].slice(0, 8),
+      });
+    } catch (error) {
+      setReferenceImportNotice({ tone: "alert", message: error instanceof Error ? error.message : "Could not import the references.", details: [] });
+    }
+  }
+
   async function openSidebarNativeMenu(
     target: SidebarMenuTarget,
     point: NativeMenuPoint,
@@ -635,6 +701,7 @@ export function NotebookPanel({
             { id: "download", label: "Download" },
             { id: "copy", label: "Copy" },
             { id: "duplicate-markdown", label: "Duplicate Tab in new Window" },
+            ...(isReferenceImportPath(target.file.path) ? [{ id: "import-references", label: "Import into References" }] : []),
             { type: "separator" },
             {
               id: "copy-relative-path",
@@ -690,6 +757,8 @@ export function NotebookPanel({
         onDownloadFile(target.file);
       } else if (selectedItemId === "copy") {
         await onCopyFile(target.file);
+      } else if (selectedItemId === "import-references") {
+        await importIntoReferences(target.file);
       } else if (selectedItemId === "copy-relative-path") {
         await copyItemPath(target.file.path, "relative");
       } else if (selectedItemId === "copy-absolute-path") {
@@ -800,6 +869,7 @@ export function NotebookPanel({
               <FolderOpen aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
+          <CollabJoinButton className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg" />
           <button
             aria-label="New group"
             className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
@@ -842,6 +912,7 @@ export function NotebookPanel({
           </div>
         ) : null}
 
+        <BacklinksContext.Provider value={backlinks}>
         <div className="space-y-2">
           <StarredFilesSection
             activeTabId={activeTabId}
@@ -932,6 +1003,7 @@ export function NotebookPanel({
             />
           ))}
         </div>
+        </BacklinksContext.Provider>
       </div>
 
       {deepSearchOpen ? (
@@ -941,6 +1013,22 @@ export function NotebookPanel({
           onClose={() => setDeepSearchOpen(false)}
           onOpenFile={onOpenFile}
         />
+      ) : null}
+      {referenceImportNotice ? (
+        <div
+          role={referenceImportNotice.tone}
+          className={`fixed bottom-4 left-1/2 z-50 max-w-md -translate-x-1/2 rounded-2xl border bg-card px-5 py-2 text-sm shadow-lg ${referenceImportNotice.tone === "alert" ? "border-destructive/30 text-destructive" : "border-border"}`}
+        >
+          <div className="flex items-start gap-3">
+            <span className="min-w-0 flex-1">{referenceImportNotice.message}</span>
+            <button className="text-muted-foreground underline" type="button" onClick={() => setReferenceImportNotice(null)}>Dismiss</button>
+          </div>
+          {referenceImportNotice.details.length ? (
+            <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+              {referenceImportNotice.details.map((detail) => <li key={detail}>{detail}</li>)}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {viewOptionsOpen ? (
         <NotebookViewOptionsDialog
@@ -1128,6 +1216,7 @@ function NotebookSection({
   visibleNodeLimitForPath: (path: string) => number;
 }) {
   const linkedFolder = notebook.folder;
+  const collabShell = useCollabShell();
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1145,6 +1234,7 @@ function NotebookSection({
         { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
         { id: "new-folder", label: "New folder", enabled: available },
         { id: "upload", label: "Upload", enabled: available },
+        ...collabNotebookMenuItems(collabShell, notebook),
         { type: "separator" },
         {
           id: "show-archive",
@@ -1179,7 +1269,7 @@ function NotebookSection({
       point,
     );
 
-    if (!selectedItemId) {
+    if (!selectedItemId || runCollabNotebookMenuItem(collabShell, selectedItemId, notebook.name)) {
       return;
     }
 
@@ -1304,6 +1394,8 @@ function NotebookSection({
               {linkedFolder ? (
                 <FolderOpen aria-label="Linked folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               ) : null}
+              <SharedNotebookBadge notebook={notebook.name} />
+              {isExpanded ? null : <BacklinkCount path={notebook.path} />}
             </span>
             <span className="block truncate text-xs font-normal text-muted-foreground">
               {linkedFolder?.missing
@@ -1588,6 +1680,8 @@ function TreeNodeRow({
   showNotebookName?: boolean;
   visibleNodeLimitForPath: (path: string) => number;
 }) {
+  const backlinks = useContext(BacklinksContext);
+
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
     const isDragTarget = draggingFile && dragOverPath === node.path;
@@ -1640,7 +1734,8 @@ function TreeNodeRow({
             <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
           )}
           <Folder aria-hidden className="libera-folder-icon h-4 w-4 shrink-0" />
-          <span className="min-w-0 truncate">{node.name}</span>
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+          {isExpanded ? null : <BacklinkCount path={node.path} />}
         </SidebarNameTooltipButton>
 
         {isExpanded ? (
@@ -1705,12 +1800,14 @@ function TreeNodeRow({
   }
 
   const isStarred = starredFilePaths.has(node.path);
+  const isBacklink = backlinks.sources.has(node.path);
 
   return (
     <SidebarNameTooltipButton
       className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
         activeTabId === node.path ? "bg-muted" : ""
       }`}
+      data-backlink={isBacklink || undefined}
       draggable
       fullName={node.name}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
@@ -1746,6 +1843,11 @@ function TreeNodeRow({
       {showNotebookName ? (
         <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
           {node.notebook}
+        </span>
+      ) : null}
+      {isBacklink ? (
+        <span className="shrink-0 text-accent" title="Links to the open file" aria-label="Links to the open file">
+          <Link2 aria-hidden className="h-3.5 w-3.5" />
         </span>
       ) : null}
       {isStarred ? (

@@ -128,7 +128,7 @@ test("source toolbar exposes all highlight colors and inserts the chosen box mar
       files: [], documentPath: "note.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 100,
       onEnumerateHeadings: noop, onFixChatGptEquations: noop, onInsert: (before) => { calls.push(before); },
       onInsertExistingImage: noop, onInsertImage: async () => {}, onMarkdownZoomChange: noop,
-      onStartScreenshotSnip: noop, onTogglePreviewFullscreen: noop, previewFullscreen: false,
+      onStartScreenshotSnip: noop, onTogglePreviewFullscreen: noop, onOpenFileLink: async () => false, previewFullscreen: false,
     })));
     const select = host.querySelector<HTMLSelectElement>('select[aria-label="Box color"]')!;
     for (const color of MARKDOWN_HIGHLIGHT_COLORS) {

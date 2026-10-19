@@ -1,0 +1,34 @@
+# Alertmanager routing for the Libera collab alerts (alerts.yml). Copy to
+# /srv/libera-collab/monitoring/alertmanager.yml (mode 0600) and fill in the
+# SMTP account and the on-call address; never commit the real file.
+# Alertmanager does not expand environment variables in this file.
+
+global:
+  smtp_smarthost: smtp.example.com:587
+  smtp_from: Libera alerts <alerts@libera.intuelle.com>
+  smtp_auth_username: alerts@libera.intuelle.com
+  smtp_auth_password: change-me
+  smtp_require_tls: true
+
+route:
+  receiver: on-call
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Informational alerts (quarantine records) go out once a day.
+    - matchers: ['severity="info"']
+      receiver: on-call
+      repeat_interval: 24h
+
+receivers:
+  - name: on-call
+    email_configs:
+      - to: oncall@libera.intuelle.com
+        send_resolved: true
+
+inhibit_rules:
+  # While the server is down, the other alerts are noise.
+  - source_matchers: ['alertname="LiberaCollabDown"']
+    target_matchers: ['severity=~"warning|info"']

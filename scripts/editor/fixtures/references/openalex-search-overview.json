@@ -1,0 +1,1678 @@
+{
+ "meta": {
+  "notice": "No API key, so this request shares one free daily budget ($0.10) with everyone on your network's IP address. Get a free key with its own $1/day at https://openalex.org/settings/api and add api_key=YOUR_KEY to your requests. An AI agent can get one for its user in one call: POST https://api.openalex.org/api-keys with {\"email\": \"<your user's email>\"}; we email them a link, and the key works once they click it. Docs for agents: https://help.openalex.org/llms.txt",
+  "count": 661554,
+  "db_response_time_ms": 200,
+  "page": 1,
+  "per_page": 5,
+  "groups_count": null,
+  "x_query": {
+   "oql": "get works where full text has (Deep learning in neural networks: An overview)",
+   "x_new_oql": "get works with (Deep learning in neural networks: An overview) in the full text",
+   "oqo": {
+    "get_rows": "works",
+    "filter_rows": [
+     {
+      "column_id": "fulltext.search",
+      "value": "Deep learning in neural networks: An overview",
+      "operator": "has"
+     }
+    ]
+   },
+   "url": "/works?filter=fulltext.search:Deep learning in neural networks: An overview&per_page=5"
+  },
+  "cost_usd": 0.001
+ },
+ "results": [
+  {
+   "id": "https://openalex.org/W2076063813",
+   "doi": "https://doi.org/10.1016/j.neunet.2014.09.003",
+   "title": "Deep learning in neural networks: An overview",
+   "display_name": "Deep learning in neural networks: An overview",
+   "ids": {
+    "openalex": "https://openalex.org/W2076063813",
+    "doi": "https://doi.org/10.1016/j.neunet.2014.09.003",
+    "mag": "2076063813",
+    "pmid": "https://pubmed.ncbi.nlm.nih.gov/25462637"
+   },
+   "type": "article",
+   "publication_year": 2014,
+   "publication_date": "2014-10-13",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5071172037",
+      "display_name": "Jürgen Schmidhuber",
+      "orcid": "https://orcid.org/0000-0002-1468-6758"
+     },
+     "raw_author_name": "Jürgen Schmidhuber"
+    }
+   ],
+   "locations": [
+    {
+     "id": "doi:10.1016/j.neunet.2014.09.003",
+     "doi": "https://doi.org/10.1016/j.neunet.2014.09.003",
+     "is_oa": false,
+     "landing_page_url": "https://doi.org/10.1016/j.neunet.2014.09.003",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S123019304",
+      "display_name": "Neural Networks",
+      "issn_l": "0893-6080",
+      "type": "journal"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "publishedVersion",
+     "is_accepted": true,
+     "is_published": true,
+     "raw_source_name": "Neural Networks",
+     "raw_type": "journal-article"
+    },
+    {
+     "id": "pmid:25462637",
+     "doi": null,
+     "is_oa": false,
+     "landing_page_url": "https://pubmed.ncbi.nlm.nih.gov/25462637",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S4306525036",
+      "display_name": "PubMed",
+      "issn_l": null,
+      "type": "repository"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "publishedVersion",
+     "is_accepted": true,
+     "is_published": true,
+     "raw_source_name": "Neural networks : the official journal of the International Neural Network Society",
+     "raw_type": "Journal Article"
+    },
+    {
+     "id": "pmh:oai:arXiv.org:1404.7828",
+     "doi": null,
+     "is_oa": true,
+     "landing_page_url": "http://arxiv.org/abs/1404.7828",
+     "pdf_url": "https://arxiv.org/pdf/1404.7828",
+     "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "type": "repository"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "submittedVersion",
+     "is_accepted": false,
+     "is_published": false,
+     "raw_source_name": null,
+     "raw_type": "text"
+    },
+    {
+     "id": "doi:10.48550/arxiv.1404.7828",
+     "doi": "https://doi.org/10.48550/arxiv.1404.7828",
+     "is_oa": true,
+     "landing_page_url": "https://doi.org/10.48550/arxiv.1404.7828",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "type": "repository"
+     },
+     "license": null,
+     "license_id": null,
+     "version": null,
+     "is_accepted": false,
+     "is_published": null,
+     "raw_source_name": null,
+     "raw_type": "article-journal"
+    }
+   ],
+   "primary_location": {
+    "id": "doi:10.1016/j.neunet.2014.09.003",
+    "doi": "https://doi.org/10.1016/j.neunet.2014.09.003",
+    "is_oa": false,
+    "landing_page_url": "https://doi.org/10.1016/j.neunet.2014.09.003",
+    "pdf_url": null,
+    "source": {
+     "id": "https://openalex.org/S123019304",
+     "display_name": "Neural Networks",
+     "issn_l": "0893-6080",
+     "type": "journal"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "publishedVersion",
+    "is_accepted": true,
+    "is_published": true,
+    "raw_source_name": "Neural Networks",
+    "raw_type": "journal-article"
+   },
+   "biblio": {
+    "volume": "61",
+    "issue": null,
+    "first_page": "85",
+    "last_page": "117"
+   },
+   "abstract_inverted_index": null
+  },
+  {
+   "id": "https://openalex.org/W4291786841",
+   "doi": "https://doi.org/10.1201/9781003277224-2",
+   "title": "Deep Learning in Neural Networks: An Overview",
+   "display_name": "Deep Learning in Neural Networks: An Overview",
+   "ids": {
+    "openalex": "https://openalex.org/W4291786841",
+    "doi": "https://doi.org/10.1201/9781003277224-2"
+   },
+   "type": "book-chapter",
+   "publication_year": 2022,
+   "publication_date": "2022-08-15",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5031038449",
+      "display_name": "Vidit Shukla",
+      "orcid": null
+     },
+     "raw_author_name": "Vidit Shukla"
+    },
+    {
+     "author_position": "last",
+     "author": {
+      "id": "https://openalex.org/A5103026526",
+      "display_name": "Shilpa Choudhary",
+      "orcid": "https://orcid.org/0000-0003-2024-8057"
+     },
+     "raw_author_name": "Shilpa Choudhary"
+    }
+   ],
+   "locations": [
+    {
+     "id": "doi:10.1201/9781003277224-2",
+     "doi": "https://doi.org/10.1201/9781003277224-2",
+     "is_oa": false,
+     "landing_page_url": "https://doi.org/10.1201/9781003277224-2",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S4306462842",
+      "display_name": "Apple Academic Press eBooks",
+      "issn_l": null,
+      "type": "ebook platform"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "publishedVersion",
+     "is_accepted": true,
+     "is_published": true,
+     "raw_source_name": "Deep Learning in Visual Computing and Signal Processing",
+     "raw_type": "book-chapter"
+    }
+   ],
+   "primary_location": {
+    "id": "doi:10.1201/9781003277224-2",
+    "doi": "https://doi.org/10.1201/9781003277224-2",
+    "is_oa": false,
+    "landing_page_url": "https://doi.org/10.1201/9781003277224-2",
+    "pdf_url": null,
+    "source": {
+     "id": "https://openalex.org/S4306462842",
+     "display_name": "Apple Academic Press eBooks",
+     "issn_l": null,
+     "type": "ebook platform"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "publishedVersion",
+    "is_accepted": true,
+    "is_published": true,
+    "raw_source_name": "Deep Learning in Visual Computing and Signal Processing",
+    "raw_type": "book-chapter"
+   },
+   "biblio": {
+    "volume": null,
+    "issue": null,
+    "first_page": "29",
+    "last_page": "53"
+   },
+   "abstract_inverted_index": {
+    "30": [
+     138
+    ],
+    "It": [
+     0,
+     263
+    ],
+    "was": [
+     1
+    ],
+    "only": [
+     2
+    ],
+    "up": [
+     3
+    ],
+    "till": [
+     4
+    ],
+    "recent": [
+     5
+    ],
+    "times": [
+     6
+    ],
+    "that": [
+     7,
+     123,
+     266
+    ],
+    "computer": [
+     8
+    ],
+    "science": [
+     9
+    ],
+    "and": [
+     10,
+     36,
+     114,
+     158,
+     233,
+     258,
+     269,
+     276,
+     290
+    ],
+    "its": [
+     11,
+     278
+    ],
+    "were": [
+     12
+    ],
+    "sufficient": [
+     13
+    ],
+    "for": [
+     14,
+     69,
+     167,
+     174,
+     198,
+     208,
+     217,
+     238,
+     284
+    ],
+    "the": [
+     15,
+     21,
+     23,
+     28,
+     64,
+     79,
+     118,
+     124,
+     131,
+     199,
+     202,
+     218,
+     239,
+     253,
+     256,
+     261,
+     267,
+     310
+    ],
+    "application": [
+     16
+    ],
+    "in": [
+     17,
+     22,
+     72,
+     76,
+     89,
+     110,
+     177,
+     214,
+     248
+    ],
+    "basic": [
+     18
+    ],
+    "principles.": [
+     19
+    ],
+    "With": [
+     20
+    ],
+    "field": [
+     24,
+     282
+    ],
+    "of": [
+     25,
+     78,
+     80,
+     93,
+     105,
+     120,
+     130,
+     172,
+     201,
+     221,
+     255,
+     271
+    ],
+    "artificial": [
+     26
+    ],
+    "intelligence,": [
+     27
+    ],
+    "subset": [
+     29
+    ],
+    "Deep": [
+     30,
+     154,
+     324
+    ],
+    "learning": [
+     31,
+     44,
+     74,
+     107,
+     121,
+     176,
+     204,
+     210,
+     273,
+     288
+    ],
+    "is": [
+     32,
+     51,
+     126,
+     180,
+     247,
+     264,
+     274
+    ],
+    "towards": [
+     33
+    ],
+    "substantial": [
+     34
+    ],
+    "research": [
+     35
+    ],
+    "advances,": [
+     37
+    ],
+    "creating": [
+     38
+    ],
+    "diverse": [
+     39
+    ],
+    "We": [
+     40
+    ],
+    "cannot": [
+     41
+    ],
+    "consider": [
+     42
+    ],
+    "deep": [
+     43,
+     73,
+     81,
+     106,
+     159,
+     168,
+     175,
+     203,
+     209,
+     272,
+     287
+    ],
+    "to": [
+     45,
+     60,
+     241,
+     280
+    ],
+    "be": [
+     46,
+     61,
+     86,
+     194,
+     212,
+     242,
+     293,
+     303,
+     333
+    ],
+    "an": [
+     47,
+     227
+    ],
+    "individual": [
+     48
+    ],
+    "approach;": [
+     49
+    ],
+    "it": [
+     50
+    ],
+    "a": [
+     52,
+     195,
+     230
+    ],
+    "collective": [
+     53
+    ],
+    "term": [
+     54,
+     319
+    ],
+    "which": [
+     55
+    ],
+    "comprises": [
+     56
+    ],
+    "fields": [
+     57,
+     90
+    ],
+    "from": [
+     58
+    ],
+    "contrasting": [
+     59
+    ],
+    "associated": [
+     62
+    ],
+    "with": [
+     63,
+     295
+    ],
+    "common": [
+     65
+    ],
+    "spine—Deep": [
+     66
+    ],
+    "learning.": [
+     67,
+     82,
+     169
+    ],
+    "Basis": [
+     68
+    ],
+    "strong": [
+     70
+    ],
+    "approach": [
+     71
+    ],
+    "lies": [
+     75
+    ],
+    "cognizance": [
+     77
+    ],
+    "The": [
+     83,
+     103,
+     170,
+     206,
+     224,
+     244,
+     300
+    ],
+    "implementations": [
+     84
+    ],
+    "can": [
+     85,
+     193,
+     211
+    ],
+    "performed": [
+     87
+    ],
+    "vastly": [
+     88
+    ],
+    "through": [
+     91
+    ],
+    "implication": [
+     92
+    ],
+    "not": [
+     94
+    ],
+    "just": [
+     95
+    ],
+    "one": [
+     96
+    ],
+    "but": [
+     97
+    ],
+    "numerous": [
+     98
+    ],
+    "algorithms": [
+     99
+    ],
+    "achieving": [
+     100
+    ],
+    "our": [
+     101
+    ],
+    "goal.": [
+     102
+    ],
+    "architecture": [
+     104,
+     125,
+     268,
+     289,
+     301,
+     312
+    ],
+    "has": [
+     108
+    ],
+    "enhanced": [
+     109
+    ],
+    "previous": [
+     111
+    ],
+    "years": [
+     112
+    ],
+    "exponentially,": [
+     113
+    ],
+    "as": [
+     115,
+     188,
+     190,
+     305,
+     307,
+     327,
+     329,
+     335,
+     337
+    ],
+    "per": [
+     116
+    ],
+    "demand,": [
+     117
+    ],
+    "refinement": [
+     119
+    ],
+    "implying": [
+     122
+    ],
+    "dynamic.": [
+     127
+    ],
+    "A": [
+     128
+    ],
+    "few": [
+     129
+    ],
+    "most": [
+     132
+    ],
+    "improvised": [
+     133
+    ],
+    "architectures": [
+     134
+    ],
+    "are": [
+     135,
+     185
+    ],
+    "mentioned": [
+     136
+    ],
+    "below:": [
+     137
+    ],
+    "Recurrent": [
+     139,
+     314
+    ],
+    "neural": [
+     140,
+     151,
+     222,
+     315
+    ],
+    "networks": [
+     141,
+     152,
+     156,
+     161,
+     184,
+     192
+    ],
+    "(RNNs)": [
+     142
+    ],
+    "Long": [
+     143,
+     317
+    ],
+    "short-term": [
+     144
+    ],
+    "memory": [
+     145
+    ],
+    "(LSTM)/gated": [
+     146
+    ],
+    "recurrent": [
+     147,
+     191,
+     321
+    ],
+    "unit": [
+     148
+    ],
+    "(GRU)": [
+     149
+    ],
+    "Convolutional": [
+     150
+    ],
+    "(CNNs)": [
+     153
+    ],
+    "belief": [
+     155
+    ],
+    "(DBN)": [
+     157
+    ],
+    "stacking": [
+     160
+    ],
+    "(DSNs)": [
+     162
+    ],
+    "Open": [
+     163
+    ],
+    "source": [
+     164,
+     197,
+     331
+    ],
+    "software": [
+     165,
+     215
+    ],
+    "options": [
+     166
+    ],
+    "area": [
+     171
+    ],
+    "implementation": [
+     173,
+     228
+    ],
+    "problem": [
+     178,
+     257
+    ],
+    "solving": [
+     179
+    ],
+    "vast.": [
+     181
+    ],
+    "Feed": [
+     182
+    ],
+    "forward": [
+     183
+    ],
+    "very": [
+     186
+    ],
+    "effective": [
+     187
+    ],
+    "well": [
+     189,
+     306,
+     328,
+     336
+    ],
+    "good": [
+     196
+    ],
+    "solution": [
+     200
+    ],
+    "problems.": [
+     205
+    ],
+    "Framework": [
+     207
+    ],
+    "implemented": [
+     213
+    ],
+    "packages": [
+     216
+    ],
+    "useful": [
+     219
+    ],
+    "creation": [
+     220
+    ],
+    "network.": [
+     223
+    ],
+    "framework": [
+     225,
+     240,
+     246,
+     270,
+     291
+    ],
+    "needs": [
+     226,
+     235
+    ],
+    "on": [
+     229,
+     252
+    ],
+    "standardized": [
+     231
+    ],
+    "scale": [
+     232
+    ],
+    "hence": [
+     234
+    ],
+    "industrial": [
+     236
+    ],
+    "experts": [
+     237
+    ],
+    "implemented.": [
+     243
+    ],
+    "entire": [
+     245
+    ],
+    "simple": [
+     249
+    ],
+    "terms": [
+     250
+    ],
+    "based": [
+     251
+    ],
+    "Diagnosis": [
+     254
+    ],
+    "further,": [
+     259
+    ],
+    "evaluating": [
+     260
+    ],
+    "problem.": [
+     262
+    ],
+    "evident": [
+     265
+    ],
+    "vast": [
+     275
+    ],
+    "expanding": [
+     277
+    ],
+    "horizons": [
+     279
+    ],
+    "every": [
+     281
+    ],
+    "possible": [
+     283
+    ],
+    "implementation.": [
+     285
+    ],
+    "Therefore": [
+     286
+    ],
+    "would": [
+     292,
+     302,
+     332
+    ],
+    "vitalized,": [
+     294
+    ],
+    "step": [
+     296,
+     298
+    ],
+    "by": [
+     297
+    ],
+    "conception.": [
+     299
+    ],
+    "simplified": [
+     304,
+     334
+    ],
+    "illustrated.": [
+     308,
+     338
+    ],
+    "All": [
+     309
+    ],
+    "aforesaid": [
+     311
+    ],
+    "like": [
+     313
+    ],
+    "network,": [
+     316
+    ],
+    "short": [
+     318
+    ],
+    "memory/gated": [
+     320
+    ],
+    "unit,": [
+     322
+    ],
+    "convolutional,": [
+     323
+    ],
+    "belief—deep": [
+     325
+    ],
+    "stack": [
+     326
+    ],
+    "open": [
+     330
+    ]
+   }
+  },
+  {
+   "id": "https://openalex.org/W2329416482",
+   "doi": null,
+   "title": "Draft: Deep Learning in Neural Networks: An Overview",
+   "display_name": "Draft: Deep Learning in Neural Networks: An Overview",
+   "ids": {
+    "openalex": "https://openalex.org/W2329416482",
+    "mag": "2329416482"
+   },
+   "type": "article",
+   "publication_year": 2014,
+   "publication_date": "2014-01-01",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5061757264",
+      "display_name": "Lab Idsia",
+      "orcid": null
+     },
+     "raw_author_name": "Lab Idsia"
+    }
+   ],
+   "locations": [
+    {
+     "id": "mag:2329416482",
+     "doi": null,
+     "is_oa": false,
+     "landing_page_url": "http://people.idsia.ch/~juergen/DeepLearning15May2014.pdf",
+     "pdf_url": null,
+     "source": null,
+     "license": null,
+     "license_id": null,
+     "version": null,
+     "is_accepted": false,
+     "is_published": null,
+     "raw_source_name": null,
+     "raw_type": null
+    }
+   ],
+   "primary_location": {
+    "id": "mag:2329416482",
+    "doi": null,
+    "is_oa": false,
+    "landing_page_url": "http://people.idsia.ch/~juergen/DeepLearning15May2014.pdf",
+    "pdf_url": null,
+    "source": null,
+    "license": null,
+    "license_id": null,
+    "version": null,
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": null
+   },
+   "biblio": {
+    "volume": null,
+    "issue": null,
+    "first_page": null,
+    "last_page": null
+   },
+   "abstract_inverted_index": {
+    "In": [
+     0
+    ],
+    "recent": [
+     1
+    ],
+    "years,": [
+     2
+    ],
+    "deep": [
+     3,
+     36,
+     62,
+     85
+    ],
+    "artificial": [
+     4
+    ],
+    "neural": [
+     5
+    ],
+    "networks": [
+     6
+    ],
+    "(including": [
+     7
+    ],
+    "recurrent": [
+     8
+    ],
+    "ones)": [
+     9
+    ],
+    "have": [
+     10
+    ],
+    "won": [
+     11
+    ],
+    "numerous": [
+     12
+    ],
+    "contests": [
+     13
+    ],
+    "in": [
+     14
+    ],
+    "pattern": [
+     15
+    ],
+    "recognition": [
+     16
+    ],
+    "and": [
+     17,
+     35,
+     58,
+     78,
+     86
+    ],
+    "machine": [
+     18
+    ],
+    "learning.": [
+     19
+    ],
+    "This": [
+     20
+    ],
+    "historical": [
+     21
+    ],
+    "survey": [
+     22
+    ],
+    "compactly": [
+     23
+    ],
+    "summarises": [
+     24
+    ],
+    "relevant": [
+     25
+    ],
+    "work,": [
+     26
+    ],
+    "much": [
+     27
+    ],
+    "of": [
+     28,
+     43,
+     51,
+     69
+    ],
+    "it": [
+     29
+    ],
+    "from": [
+     30
+    ],
+    "the": [
+     31,
+     41,
+     67
+    ],
+    "previous": [
+     32
+    ],
+    "millennium.": [
+     33
+    ],
+    "Shallow": [
+     34
+    ],
+    "learners": [
+     37
+    ],
+    "are": [
+     38,
+     49
+    ],
+    "distinguished": [
+     39
+    ],
+    "by": [
+     40
+    ],
+    "depth": [
+     42
+    ],
+    "their": [
+     44
+    ],
+    "credit": [
+     45
+    ],
+    "assignment": [
+     46
+    ],
+    "paths,": [
+     47
+    ],
+    "which": [
+     48
+    ],
+    "chains": [
+     50
+    ],
+    "possibly": [
+     52
+    ],
+    "learnable,": [
+     53
+    ],
+    "causal": [
+     54
+    ],
+    "links": [
+     55
+    ],
+    "between": [
+     56
+    ],
+    "actions": [
+     57
+    ],
+    "effects.": [
+     59
+    ],
+    "I": [
+     60
+    ],
+    "review": [
+     61
+    ],
+    "supervised": [
+     63
+    ],
+    "learning": [
+     64,
+     74
+    ],
+    "(also": [
+     65
+    ],
+    "recapitulating": [
+     66
+    ],
+    "history": [
+     68
+    ],
+    "backpropagation),": [
+     70
+    ],
+    "unsupervised": [
+     71
+    ],
+    "learning,": [
+     72
+    ],
+    "reinforcement": [
+     73
+    ],
+    "&": [
+     75
+    ],
+    "evolutionary": [
+     76
+    ],
+    "computation,": [
+     77
+    ],
+    "indirect": [
+     79
+    ],
+    "search": [
+     80
+    ],
+    "for": [
+     81
+    ],
+    "short": [
+     82
+    ],
+    "programs": [
+     83
+    ],
+    "encoding": [
+     84
+    ],
+    "large": [
+     87
+    ],
+    "networks.": [
+     88
+    ]
+   }
+  },
+  {
+   "id": "https://openalex.org/W2624871570",
+   "doi": "https://doi.org/10.48550/arxiv.1706.05098",
+   "title": "An Overview of Multi-Task Learning in Deep Neural Networks",
+   "display_name": "An Overview of Multi-Task Learning in Deep Neural Networks",
+   "ids": {
+    "openalex": "https://openalex.org/W2624871570",
+    "doi": "https://doi.org/10.48550/arxiv.1706.05098",
+    "mag": "2624871570"
+   },
+   "type": "preprint",
+   "publication_year": 2017,
+   "publication_date": "2017-06-15",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5037310413",
+      "display_name": "Sebastian Ruder",
+      "orcid": null
+     },
+     "raw_author_name": "Ruder, Sebastian"
+    }
+   ],
+   "locations": [
+    {
+     "id": "pmh:oai:arXiv.org:1706.05098",
+     "doi": null,
+     "is_oa": true,
+     "landing_page_url": "http://arxiv.org/abs/1706.05098",
+     "pdf_url": "https://arxiv.org/pdf/1706.05098",
+     "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "type": "repository"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "submittedVersion",
+     "is_accepted": false,
+     "is_published": false,
+     "raw_source_name": null,
+     "raw_type": "text"
+    },
+    {
+     "id": "doi:10.48550/arxiv.1706.05098",
+     "doi": "https://doi.org/10.48550/arxiv.1706.05098",
+     "is_oa": true,
+     "landing_page_url": "https://doi.org/10.48550/arxiv.1706.05098",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S4306400194",
+      "display_name": "arXiv (Cornell University)",
+      "issn_l": "2331-8422",
+      "type": "repository"
+     },
+     "license": null,
+     "license_id": null,
+     "version": null,
+     "is_accepted": false,
+     "is_published": null,
+     "raw_source_name": null,
+     "raw_type": "Preprint"
+    }
+   ],
+   "primary_location": {
+    "id": "pmh:oai:arXiv.org:1706.05098",
+    "doi": null,
+    "is_oa": true,
+    "landing_page_url": "http://arxiv.org/abs/1706.05098",
+    "pdf_url": "https://arxiv.org/pdf/1706.05098",
+    "source": {
+     "id": "https://openalex.org/S4306400194",
+     "display_name": "arXiv (Cornell University)",
+     "issn_l": "2331-8422",
+     "type": "repository"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "submittedVersion",
+    "is_accepted": false,
+    "is_published": false,
+    "raw_source_name": null,
+    "raw_type": "text"
+   },
+   "biblio": {
+    "volume": null,
+    "issue": null,
+    "first_page": null,
+    "last_page": null
+   },
+   "abstract_inverted_index": {
+    "Multi-task": [
+     0
+    ],
+    "learning": [
+     1
+    ],
+    "(MTL)": [
+     2
+    ],
+    "has": [
+     3
+    ],
+    "led": [
+     4
+    ],
+    "to": [
+     5,
+     20,
+     29,
+     67
+    ],
+    "successes": [
+     6
+    ],
+    "in": [
+     7,
+     37,
+     50
+    ],
+    "many": [
+     8
+    ],
+    "applications": [
+     9
+    ],
+    "of": [
+     10,
+     34,
+     56
+    ],
+    "machine": [
+     11
+    ],
+    "learning,": [
+     12
+    ],
+    "from": [
+     13
+    ],
+    "natural": [
+     14
+    ],
+    "language": [
+     15
+    ],
+    "processing": [
+     16
+    ],
+    "and": [
+     17,
+     23,
+     59,
+     80
+    ],
+    "speech": [
+     18
+    ],
+    "recognition": [
+     19
+    ],
+    "computer": [
+     21
+    ],
+    "vision": [
+     22
+    ],
+    "drug": [
+     24
+    ],
+    "discovery.": [
+     25
+    ],
+    "This": [
+     26
+    ],
+    "article": [
+     27
+    ],
+    "aims": [
+     28
+    ],
+    "give": [
+     30
+    ],
+    "a": [
+     31
+    ],
+    "general": [
+     32
+    ],
+    "overview": [
+     33,
+     55
+    ],
+    "MTL,": [
+     35
+    ],
+    "particularly": [
+     36
+    ],
+    "deep": [
+     38
+    ],
+    "neural": [
+     39
+    ],
+    "networks.": [
+     40
+    ],
+    "It": [
+     41
+    ],
+    "introduces": [
+     42
+    ],
+    "the": [
+     43,
+     57
+    ],
+    "two": [
+     44
+    ],
+    "most": [
+     45
+    ],
+    "common": [
+     46
+    ],
+    "methods": [
+     47
+    ],
+    "for": [
+     48,
+     83
+    ],
+    "MTL": [
+     49,
+     72,
+     78
+    ],
+    "Deep": [
+     51
+    ],
+    "Learning,": [
+     52
+    ],
+    "gives": [
+     53
+    ],
+    "an": [
+     54
+    ],
+    "literature,": [
+     58
+    ],
+    "discusses": [
+     60
+    ],
+    "recent": [
+     61
+    ],
+    "advances.": [
+     62
+    ],
+    "In": [
+     63
+    ],
+    "particular,": [
+     64
+    ],
+    "it": [
+     65
+    ],
+    "seeks": [
+     66
+    ],
+    "help": [
+     68
+    ],
+    "ML": [
+     69
+    ],
+    "practitioners": [
+     70
+    ],
+    "apply": [
+     71
+    ],
+    "by": [
+     73
+    ],
+    "shedding": [
+     74
+    ],
+    "light": [
+     75
+    ],
+    "on": [
+     76
+    ],
+    "how": [
+     77
+    ],
+    "works": [
+     79
+    ],
+    "providing": [
+     81
+    ],
+    "guidelines": [
+     82
+    ],
+    "choosing": [
+     84
+    ],
+    "appropriate": [
+     85
+    ],
+    "auxiliary": [
+     86
+    ],
+    "tasks.": [
+     87
+    ]
+   }
+  },
+  {
+   "id": "https://openalex.org/W3139008799",
+   "doi": "https://doi.org/10.1007/s42979-021-00535-6",
+   "title": "Deep Cybersecurity: A Comprehensive Overview from Neural Network and Deep Learning Perspective",
+   "display_name": "Deep Cybersecurity: A Comprehensive Overview from Neural Network and Deep Learning Perspective",
+   "ids": {
+    "openalex": "https://openalex.org/W3139008799",
+    "doi": "https://doi.org/10.1007/s42979-021-00535-6",
+    "mag": "3139008799"
+   },
+   "type": "article",
+   "publication_year": 2021,
+   "publication_date": "2021-03-20",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5055312229",
+      "display_name": "Iqbal Hasan Sarker",
+      "orcid": "https://orcid.org/0000-0003-1740-5517"
+     },
+     "raw_author_name": "Iqbal H. Sarker"
+    }
+   ],
+   "locations": [
+    {
+     "id": "doi:10.1007/s42979-021-00535-6",
+     "doi": "https://doi.org/10.1007/s42979-021-00535-6",
+     "is_oa": false,
+     "landing_page_url": "https://doi.org/10.1007/s42979-021-00535-6",
+     "pdf_url": null,
+     "source": {
+      "id": "https://openalex.org/S4210174798",
+      "display_name": "SN Computer Science",
+      "issn_l": "2661-8907",
+      "type": "journal"
+     },
+     "license": null,
+     "license_id": null,
+     "version": "publishedVersion",
+     "is_accepted": true,
+     "is_published": true,
+     "raw_source_name": "SN Computer Science",
+     "raw_type": "journal-article"
+    },
+    {
+     "id": "doi:10.20944/preprints202102.0340.v1",
+     "doi": "https://doi.org/10.20944/preprints202102.0340.v1",
+     "is_oa": true,
+     "landing_page_url": "https://doi.org/10.20944/preprints202102.0340.v1",
+     "pdf_url": "https://www.preprints.org/manuscript/202102.0340/v1/download",
+     "source": {
+      "id": "https://openalex.org/S6309402219",
+      "display_name": "Preprints.org",
+      "issn_l": null,
+      "type": "repository"
+     },
+     "license": "cc-by",
+     "license_id": "https://openalex.org/licenses/cc-by",
+     "version": "acceptedVersion",
+     "is_accepted": true,
+     "is_published": false,
+     "raw_source_name": null,
+     "raw_type": "posted-content"
+    }
+   ],
+   "primary_location": {
+    "id": "doi:10.1007/s42979-021-00535-6",
+    "doi": "https://doi.org/10.1007/s42979-021-00535-6",
+    "is_oa": false,
+    "landing_page_url": "https://doi.org/10.1007/s42979-021-00535-6",
+    "pdf_url": null,
+    "source": {
+     "id": "https://openalex.org/S4210174798",
+     "display_name": "SN Computer Science",
+     "issn_l": "2661-8907",
+     "type": "journal"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "publishedVersion",
+    "is_accepted": true,
+    "is_published": true,
+    "raw_source_name": "SN Computer Science",
+    "raw_type": "journal-article"
+   },
+   "biblio": {
+    "volume": "2",
+    "issue": "3",
+    "first_page": null,
+    "last_page": null
+   },
+   "abstract_inverted_index": null
+  }
+ ],
+ "group_by": []
+}

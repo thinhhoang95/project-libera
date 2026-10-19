@@ -47,6 +47,7 @@ type OpenRouterResponse = {
     finish_reason?: string;
     message?: {
       content?: OpenRouterMessageContent;
+      annotations?: Array<{ type?: string; url_citation?: { url?: string; title?: string; content?: string } }>;
     };
   }>;
   error?: {
@@ -111,7 +112,14 @@ async function readOpenRouterError(response: Response) {
   return response.statusText || "OpenRouter request failed.";
 }
 
-type CompletionOptions = { model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void };
+/** A web page the model consulted through OpenRouter's web plugin. */
+export type WebCitation = { url: string; title?: string; content?: string };
+
+type CompletionOptions = {
+  model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage) => void;
+  /** Let the model search the web through OpenRouter's web plugin. Results come back as `webCitations`. */
+  webSearch?: { maxResults?: number };
+};
 
 async function requestOpenRouterCompletion(
   messages: OpenRouterMessage[], options: CompletionOptions, stream = false,
@@ -143,6 +151,7 @@ async function requestOpenRouterCompletion(
       ...(caching ? { provider: caching.provider } : {}),
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+      ...(options.webSearch ? { plugins: [{ id: "web", ...(options.webSearch.maxResults ? { max_results: options.webSearch.maxResults } : {}) }] } : {}),
       messages: caching?.breakpoints === "gemini" ? withGeminiPromptCacheBreakpoint(messages)
         : caching?.breakpoints === "rolling" ? withPromptCacheBreakpoints(messages) : messages,
       temperature: 0,
@@ -157,14 +166,20 @@ async function requestOpenRouterCompletion(
   return response;
 }
 
-export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage }> {
+export async function createOpenRouterCompletion(messages: OpenRouterMessage[], options: CompletionOptions = {}): Promise<{ content: string; finishReason?: string; usage?: TokenUsage; webCitations?: WebCitation[] }> {
   const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
+  const message = payload.choices?.[0]?.message;
+  const webCitations = (message?.annotations ?? []).flatMap((annotation) => {
+    const citation = annotation.type === "url_citation" ? annotation.url_citation : undefined;
+    return citation?.url ? [{ url: citation.url, ...(citation.title ? { title: citation.title } : {}), ...(citation.content ? { content: citation.content } : {}) }] : [];
+  });
   return {
-    content: extractMessageContent(payload.choices?.[0]?.message?.content),
+    content: extractMessageContent(message?.content),
     finishReason: payload.choices?.[0]?.finish_reason,
     usage: parseOpenRouterUsage(payload.usage),
+    ...(webCitations.length ? { webCitations } : {}),
   };
 }
 

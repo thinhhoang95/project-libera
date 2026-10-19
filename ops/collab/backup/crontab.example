@@ -1,0 +1,5 @@
+# Alternative to the systemd timers (SETUP.md §8.2). Install with: crontab -e (as root)
+# Nightly backup at 03:15 UTC; the log keeps the last run's output.
+15 3 * * * LIBERA_COLLAB_ROOT=/srv/libera-collab /srv/libera-collab/backup/backup.sh >/var/log/libera-collab-backup.log 2>&1
+# Restore drill at 05:00 UTC on the 1st of January, April, July and October.
+0 5 1 1,4,7,10 * LIBERA_COLLAB_ROOT=/srv/libera-collab /srv/libera-collab/backup/restore-drill.sh >/var/log/libera-collab-drill.log 2>&1

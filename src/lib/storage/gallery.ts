@@ -9,6 +9,7 @@ import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import { StorageError } from "@/lib/storage/errors";
 import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@/lib/storage/fs-utils";
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
+import { notifySearchChanges } from "@/lib/storage/search-updates";
 
 /**
  * The gallery is a plain folder of images, one level deep. A hidden index
@@ -265,9 +266,13 @@ function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promis
   const next = queue.then(async () => {
     const index = await loadIndex();
     const before = JSON.stringify(index);
+    const searchablePhotos = () => JSON.stringify(Object.entries(index.photos).map(([id, photo]) =>
+      [id, photo.path, photo.size, photo.mtimeMs, photo.prompt]));
+    const photosBefore = searchablePhotos();
     await reconcile(index);
     const result = await change(index);
     if (JSON.stringify(index) !== before) await saveIndex(index);
+    if (searchablePhotos() !== photosBefore) notifySearchChanges(undefined, true);
     return result;
   });
   queue = next.catch(() => undefined);

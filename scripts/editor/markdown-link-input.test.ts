@@ -97,7 +97,7 @@ test("source toolbar inserts the chosen notebook link only after confirmation", 
       markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 1, previewFullscreen: false,
       onEnumerateHeadings() {}, onFixChatGptEquations() {}, onInsert: (...args) => { insertions.push(args); },
       onInsertExistingImage() {}, onInsertImage: async () => {}, onMarkdownZoomChange() {},
-      onStartScreenshotSnip() {}, onTogglePreviewFullscreen() {},
+      onStartScreenshotSnip() {}, onTogglePreviewFullscreen() {}, onOpenFileLink: async () => false,
     })));
     await act(async () => { (host.querySelector('[aria-label="Link"]') as HTMLButtonElement).click(); });
     assert.equal(insertions.length, 0);
