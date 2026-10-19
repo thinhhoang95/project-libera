@@ -30,6 +30,8 @@ import type {
   DecideSuggestionsResponse,
   DocumentInfo,
   EditMessageRequest,
+  FolderLease,
+  FolderLeaseRequest,
   Invitation,
   InvitationPreview,
   LoginRequest,
@@ -249,6 +251,16 @@ export class ApiClient {
 
   deleteProject(projectId: string): Promise<void> {
     return this.request("DELETE", ApiRoutes.project(projectId));
+  }
+
+  /** Takes or renews the writer lease of a synced folder (granted: false when another installation holds it). */
+  acquireFolderLease(projectId: string, body: FolderLeaseRequest): Promise<FolderLease> {
+    return this.request("POST", ApiRoutes.folderLease(projectId), { body });
+  }
+
+  /** Gives the lease up, if `holder` still holds it. */
+  releaseFolderLease(projectId: string, folderId: string, holder: string): Promise<void> {
+    return this.request("DELETE", ApiRoutes.folderLease(projectId), { query: { folderId, holder } });
   }
 
   listMembers(projectId: string): Promise<Member[]> {

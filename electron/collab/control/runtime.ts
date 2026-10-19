@@ -127,6 +127,7 @@ export class CollabRuntime {
   /** Signs in with a fresh AuthResponse; switches to the account's database first. */
   signedIn(serverUrl: string, auth: AuthResponse): Promise<void> {
     return this.serial(async () => {
+      if (this.accounts.account) await this.notebooks.beforeAccountChange?.();
       await this.open(databaseKey(auth.account.id));
       await this.accounts.signIn(serverUrl, auth);
       this.applyAccount();
@@ -141,6 +142,7 @@ export class CollabRuntime {
    */
   signOut(): Promise<void> {
     return this.serial(async () => {
+      await this.notebooks.beforeAccountChange?.();
       await this.accounts.signOut();
       this.applyAccount();
       await this.notebooks.accountChanged();

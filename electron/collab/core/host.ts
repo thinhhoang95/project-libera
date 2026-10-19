@@ -284,6 +284,10 @@ export class CollabHost {
     return this.options.dbPath;
   }
 
+  get installationId(): string {
+    return this.options.installationId;
+  }
+
   /** The signed-in account id, or null. */
   get accountId(): string | null {
     return this.account?.accountId ?? null;

@@ -43,7 +43,7 @@ import {
   type WalkEntry,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
-import { readBase, readState, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
+import { emptyState, isStaleCopy, readBase, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 
 export interface Timings {
@@ -84,6 +84,13 @@ export interface ProjectInfo {
   root: string;
   role: Role;
   manifestDocId: string;
+  /**
+   * Another installation writes this folder (it reaches this device through
+   * OneDrive or the like). The project still syncs, so the app, the agent
+   * and file operations work, but this host never writes the working copy,
+   * state.json, base/ or the marker, and it does not import disk changes.
+   */
+  follower?: boolean;
 }
 
 export interface ProjectContext {
@@ -154,7 +161,13 @@ export class SharedProject {
   }
 
   static async open(ctx: ProjectContext, info: ProjectInfo): Promise<SharedProject> {
-    return new SharedProject(ctx, info, await readState(info.root));
+    // A follower's layout comes from the manifest alone; state.json and its
+    // reconciliations belong to the writer.
+    return new SharedProject(ctx, info, info.follower ? emptyState() : await readState(info.root));
+  }
+
+  get follower(): boolean {
+    return this.info.follower === true;
   }
 
   get role(): Role {
@@ -196,11 +209,14 @@ export class SharedProject {
       if (record.kind === "doc" && record.docId) this.ensureDoc(record.docId, fileId);
     }
     this.scheduleManifest(0);
-    this.startWatching();
+    if (!this.follower) this.startWatching();
   }
 
-  /** Stops syncing and watching. Files stay where they are. */
-  async stop(): Promise<void> {
+  /**
+   * Stops syncing and watching. Files stay where they are. `persist: false`
+   * skips the final state.json write (the folder has another writer now).
+   */
+  async stop(options: { persist?: boolean } = {}): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     this.watcher?.close();
@@ -214,7 +230,7 @@ export class SharedProject {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    await writeState(this.info.root, this.state).catch(() => undefined);
+    if (!this.follower && options.persist !== false) await writeState(this.info.root, this.state).catch(() => undefined);
     for (const unsubscribe of this.unsubscribe) unsubscribe();
     this.unsubscribe.length = 0;
     for (const doc of [...this.docs.values()]) this.releaseDoc(doc.docId);
@@ -235,6 +251,7 @@ export class SharedProject {
   /** True once every manifest entry has been placed on disk (join waits on this). */
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
+    if (this.follower) return true;
     const layout = computeLayout(readManifest(this.manifestDoc()).values());
     for (const fileId of layout.paths.keys()) {
       const record = this.state.layout[fileId];
@@ -308,6 +325,10 @@ export class SharedProject {
   private async applyManifest(): Promise<void> {
     if (!this.manifestReady()) return;
     this.manifestWasReady = true;
+    if (this.follower) {
+      this.followManifest();
+      return;
+    }
     this.entries = readManifest(this.manifestDoc());
     const layout = computeLayout(this.entries.values());
     for (const refused of layout.refused) {
@@ -431,6 +452,29 @@ export class SharedProject {
     if (needsRetry) this.scheduleRetry();
   }
 
+  /**
+   * A follower's pass: the layout and document hubs follow the manifest, and
+   * the disk is left to the writer (its files arrive through the sync client).
+   */
+  private followManifest(): void {
+    this.entries = readManifest(this.manifestDoc());
+    const layout = computeLayout(this.entries.values());
+    const previous = this.state.layout;
+    const next: Record<string, LayoutRecord> = {};
+    for (const [fileId, desired] of layout.paths) {
+      const entry = this.entries.get(fileId) as ManifestEntry;
+      next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
+    }
+    for (const [fileId, record] of Object.entries(previous)) {
+      if (record.docId && next[fileId]?.docId !== record.docId) this.releaseDoc(record.docId);
+    }
+    for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
+    if (JSON.stringify(previous) === JSON.stringify(next)) return;
+    this.state.layout = next;
+    this.ctx.layoutChanged(this.info.projectId);
+    this.treeChanged(previous, next);
+  }
+
   private scheduleRetry(): void {
     if (this.retryTimer || this.stopped) return;
     this.retryTimer = setTimeout(() => {
@@ -456,17 +500,21 @@ export class SharedProject {
       const existingHash = sha256(existing);
       if (existingHash === hash) {
         const stats = await statIfExists(target);
-        Object.assign(record, { hash, size: stats?.size, mtimeMs: stats?.mtimeMs });
+        setMaterialized(record, hash, stats?.size, stats?.mtimeMs);
         return true;
       }
       // The local copy changed and the shared file was replaced too: keep the
-      // local bytes in the archive rather than overwrite them silently.
-      if (record.hash && existingHash !== record.hash) await this.archive(record.path);
+      // local bytes in the archive rather than overwrite them silently. An
+      // older copy we wrote ourselves is not worth keeping.
+      const existingStats = await statIfExists(target);
+      if (record.hash && existingHash !== record.hash && !(existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
+        await this.archive(record.path);
+      }
     }
     const bytes = await this.blobBytes(hash);
     if (!bytes) return false;
     const stats = await writeFileAtomic(target, bytes);
-    Object.assign(record, { hash, size: stats.size, mtimeMs: stats.mtimeMs });
+    setMaterialized(record, hash, stats.size, stats.mtimeMs);
     this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
     return true;
   }
@@ -564,7 +612,7 @@ export class SharedProject {
   }
 
   private scheduleWrite(runtime: DocRuntime): void {
-    if (this.stopped) return;
+    if (this.stopped || this.follower) return;
     if (runtime.writeTimer) clearTimeout(runtime.writeTimer);
     const now = Date.now();
     runtime.pendingSince ??= now;
@@ -586,6 +634,7 @@ export class SharedProject {
 
   /** Writes a document's text to its file, unless the file holds an edit not yet taken in. */
   private async materializeDoc(docId: string): Promise<void> {
+    if (this.follower) return;
     const runtime = this.docs.get(docId);
     const found = this.recordFor(docId);
     if (!runtime || !found || this.reconciliationFor(docId) || !this.docReady(runtime)) return;
@@ -598,8 +647,7 @@ export class SharedProject {
       return;
     }
     const text = runtime.hub.getText("content");
-    const bytes = encodeText(text);
-    const hash = sha256(bytes);
+    const hash = sha256(encodeText(text));
     const disk = await readIfExists(target);
     if (disk) {
       const diskHash = sha256(disk);
@@ -620,12 +668,7 @@ export class SharedProject {
       this.scheduleScan(this.ctx.timings.settleMs);
       return;
     }
-    const stats = await writeFileAtomic(target, bytes);
-    Object.assign(record, { hash, size: stats.size, mtimeMs: stats.mtimeMs });
-    await writeBase(this.info.root, docId, text);
-    this.ctx.host.store.upsertDoc({ docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: hash });
-    this.saveSoon();
-    this.filesChanged([record.path]);
+    await this.writeDoc(runtime, record, target, text);
     // A collaborator's new document exists on disk only now; the tree-changed
     // sent when its manifest entry arrived came before the file did.
     if (!disk) {
@@ -633,11 +676,23 @@ export class SharedProject {
     }
   }
 
+  /** Writes `text` as the document's file and records it as materialized. */
+  private async writeDoc(runtime: DocRuntime, record: LayoutRecord, target: string, text: string): Promise<void> {
+    const bytes = encodeText(text);
+    const hash = sha256(bytes);
+    const stats = await writeFileAtomic(target, bytes);
+    setMaterialized(record, hash, stats.size, stats.mtimeMs);
+    await writeBase(this.info.root, runtime.docId, text);
+    this.ctx.host.store.upsertDoc({ docId: runtime.docId, projectId: this.info.projectId, fileId: runtime.fileId, path: record.path, materializedHash: hash });
+    this.saveSoon();
+    this.filesChanged([record.path]);
+  }
+
   /** Records bytes already on disk as the materialized state of a document. */
   private async adopt(fileId: string, record: LayoutRecord, hash: string, text: string, target: string): Promise<void> {
     const stats = await statIfExists(target);
     const changed = record.hash !== hash;
-    Object.assign(record, { hash, size: stats?.size, mtimeMs: stats?.mtimeMs });
+    setMaterialized(record, hash, stats?.size, stats?.mtimeMs);
     if (record.docId) {
       if (changed) await writeBase(this.info.root, record.docId, text);
       this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: hash });
@@ -651,19 +706,27 @@ export class SharedProject {
    * Otherwise both sides moved: open a reconciliation and touch neither.
    */
   private async takeExternalEdit(runtime: DocRuntime, record: LayoutRecord, disk: Uint8Array, diskHash: string): Promise<void> {
+    if (!this.docReady(runtime)) return;
+    const target = await resolveInside(this.info.root, record.path);
+    const shared = runtime.hub.getText("content");
+    const diskStats = await statIfExists(target);
+    if (diskStats && isStaleCopy(record, diskHash, diskStats.mtimeMs)) {
+      // An older version we wrote came back (a sync client restoring or
+      // delivering a stale copy). Taking it in would undo newer edits.
+      this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} was replaced by an older copy; the current text was written again.`);
+      await this.writeDoc(runtime, record, target, shared);
+      return;
+    }
     if (!this.canEdit) {
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} changed on disk, but this role cannot edit; the change stays local.`);
       return;
     }
-    if (!this.docReady(runtime)) return;
     const diskText = decodeText(disk);
     if (diskText === null) {
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} is no longer UTF-8 text; it was not synced.`);
       return;
     }
     const fileId = runtime.fileId;
-    const target = await resolveInside(this.info.root, record.path);
-    const shared = runtime.hub.getText("content");
     if (shared === diskText) {
       await this.adopt(fileId, record, diskHash, diskText, target);
       return;
@@ -766,7 +829,7 @@ export class SharedProject {
       const bytes = encodeText(text);
       const stats = await writeFileAtomic(target, bytes);
       const hash = sha256(bytes);
-      Object.assign(found.record, { hash, size: stats.size, mtimeMs: stats.mtimeMs });
+      setMaterialized(found.record, hash, stats.size, stats.mtimeMs);
       await writeBase(this.info.root, item.docId, text);
       this.ctx.host.store.upsertDoc({ docId: item.docId, projectId: this.info.projectId, fileId: found.fileId, path: found.record.path, materializedHash: hash });
       this.dropReconciliations(item.docId);
@@ -804,7 +867,7 @@ export class SharedProject {
   }
 
   private scheduleScan(delay: number): void {
-    if (this.stopped) return;
+    if (this.stopped || this.follower) return;
     if (this.scanTimer) clearTimeout(this.scanTimer);
     this.scanTimer = setTimeout(() => {
       this.scanTimer = null;
@@ -864,10 +927,17 @@ export class SharedProject {
         if (runtime && !this.reconciliationFor(record.docId)) await this.takeExternalEdit(runtime, record, bytes, hash);
         continue;
       }
+      const entry = this.entries.get(fileId);
+      if (entry?.blobHash === record.hash && isStaleCopy(record, hash, seen.mtimeMs)) {
+        // An older version we wrote came back; put the current one back.
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} was replaced by an older copy; the current file was written again.`);
+        if (await this.placeBlob(entry, record)) touched.add(record.path);
+        else needsRetry = true;
+        continue;
+      }
       // A replaced binary: a new blob and a manifest update.
       if (!this.canEdit) continue;
       const api = this.ctx.host.api;
-      const entry = this.entries.get(fileId);
       if (!api || !entry) continue;
       try {
         await api.uploadBlob(this.info.projectId, bytes, entry.mime ?? mimeForPath(record.path));
@@ -878,7 +948,7 @@ export class SharedProject {
       }
       const updated: ManifestEntry = { ...entry, blobHash: hash, size: bytes.byteLength, updatedAt: now };
       operations.push((map) => map.set(fileId, entryRecord(updated)));
-      Object.assign(record, { hash, size: seen.size, mtimeMs: seen.mtimeMs });
+      setMaterialized(record, hash, seen.size, seen.mtimeMs);
       this.ctx.host.store.putBlob({ hash, localPath: absolute, size: bytes.byteLength });
       touched.add(record.path);
     }
@@ -1045,12 +1115,14 @@ export class SharedProject {
           const hash = sha256(bytes);
           // Upload first: a manifest entry must never name a blob the server lacks.
           await api.uploadBlob(this.info.projectId, bytes, existing.mime ?? mimeForPath(existing.path));
-          const target = await this.resolveOrRefuse(existing.path);
-          const stats = await writeFileAtomic(target, bytes);
-          // Record the hash before the manifest changes, so neither the
-          // materializer nor the watcher treats our own write as remote or external.
-          this.state.layout[existing.fileId] = { path: existing.path, kind: "blob", hash, size: stats.size, mtimeMs: stats.mtimeMs };
-          this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
+          if (!this.follower) {
+            const target = await this.resolveOrRefuse(existing.path);
+            const stats = await writeFileAtomic(target, bytes);
+            // Record the hash before the manifest changes, so neither the
+            // materializer nor the watcher treats our own write as remote or external.
+            this.state.layout[existing.fileId] = { path: existing.path, kind: "blob", hash, size: stats.size, mtimeMs: stats.mtimeMs };
+            this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
+          }
           const updated: ManifestEntry = { ...existing, blobHash: hash, size: bytes.byteLength, updatedAt: now };
           await this.writeManifest((map) => map.set(existing.fileId, entryRecord(updated)), { source: "typing" });
           paths.push(existing.path);
@@ -1135,6 +1207,8 @@ export class SharedProject {
       await api.uploadBlob(this.info.projectId, bytes, mime);
       created = { fileId, path: relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
     }
+    // A follower leaves the file to the writer.
+    if (this.follower) return created;
     // The bytes are known, so write the file now instead of waiting for the server echo.
     const stats = await writeFileAtomic(target, bytes);
     this.state.layout[fileId] = {
@@ -1228,7 +1302,7 @@ export class SharedProject {
   }
 
   private saveSoon(): void {
-    if (this.saveTimer || this.stopped) return;
+    if (this.saveTimer || this.stopped || this.follower) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       void this.enqueue(() => writeState(this.info.root, this.state));

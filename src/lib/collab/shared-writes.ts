@@ -42,11 +42,11 @@ import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, listAnchoredThreads, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
-import { isSharedNotebookPath, sharedManifestPath } from "./shared-notebook";
+import { isSharedNotebookPath, sharedManifestPath, sharedNotebookMarker } from "./shared-notebook";
 
 /** A refused or failed shared write. `code` is the host's error code (or one of ours). */
 export class SharedWriteError extends StorageError {
@@ -84,9 +84,39 @@ function hostConfig(liberaPath: string, options: SharedWriteOptions): HostClient
   return config;
 }
 
+/** The host's code for a project it has not joined (NotebookServiceImpl.runningProject). */
+const HOST_NOT_JOINED = "not-joined";
+export const NOT_JOINED_ERROR = "notebook-not-joined";
+
+/**
+ * A shared notebook whose folder is here (synced by OneDrive or the like
+ * from another device or Libera profile) but which this Libera has not
+ * joined. 409, not 404: nothing was written, and callers that ignore a
+ * missing file must not mistake this for one.
+ */
+function notJoinedError(liberaPath: string): SharedWriteError {
+  const notebook = liberaPath.replace(/\\/g, "/").split("/").filter(Boolean)[0] ?? liberaPath;
+  return new SharedWriteError(
+    409,
+    NOT_JOINED_ERROR,
+    `${notebook} is a shared notebook synced to this computer from another device or Libera profile, but this Libera has not joined it, so ${liberaPath} cannot be changed here. Nothing was written. Sign in to the collaboration account that shares it (it is joined automatically), or open its invitation link.`,
+  );
+}
+
+/** notJoinedError when the path's notebook has a marker whose project the host does not run; null otherwise. */
+async function notJoined(liberaPath: string, config: HostClientConfig): Promise<SharedWriteError | null> {
+  const notebook = liberaPath.replace(/\\/g, "/").split("/").filter(Boolean)[0];
+  const marker = notebook ? sharedNotebookMarker(notebook) : null;
+  if (!marker || marker.revoked) return null;
+  const projects = await listProjects(config).catch(() => null);
+  if (!projects || projects.some((project) => project.projectId === marker.projectId)) return null;
+  return notJoinedError(liberaPath);
+}
+
 /** Host errors as SharedWriteErrors that name the file; anything else is rethrown. */
 function asSharedWriteError(liberaPath: string, error: unknown): never {
   if (error instanceof SharedWriteError) throw error;
+  if (error instanceof CollabHostError && error.code === HOST_NOT_JOINED) throw notJoinedError(liberaPath);
   if (error instanceof CollabHostError) {
     const message = error.code === "collab-unavailable" || error.code === "collab-disabled"
       ? `${liberaPath} is in a shared notebook, and the collaboration service is not running, so it cannot be changed now. Nothing was written. ${error.message}`
@@ -114,6 +144,8 @@ export async function requireSharedDoc(liberaPath: string, options: SharedWriteO
   const config = hostConfig(liberaPath, options);
   const doc = await host(liberaPath, () => resolveSharedPath(liberaPath, config));
   if (!doc) {
+    const unjoined = await notJoined(liberaPath, config);
+    if (unjoined) throw unjoined;
     throw new SharedWriteError(
       404,
       "not-shared-document",

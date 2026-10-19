@@ -120,6 +120,32 @@ export interface ProjectSummary {
   createdAt: string;
 }
 
+/**
+ * Which installation writes a shared-notebook folder that several of one
+ * account's installations see (a folder synced by OneDrive and the like).
+ * Acquiring or renewing is a compare-and-set: it succeeds when the lease is
+ * free, expired, or already the caller's.
+ */
+export interface FolderLeaseRequest {
+  /** The folder's identity (from its marker), the same on every device. */
+  folderId: string;
+  /** The calling installation. */
+  holder: string;
+  /** How long the lease lasts unless renewed (the server clamps it). */
+  ttlMs: number;
+}
+
+export interface FolderLease {
+  folderId: string;
+  /** The installation holding the lease, or null when it is free. */
+  holder: string | null;
+  /** Whether the caller holds the lease now. */
+  granted: boolean;
+  expiresAt: string | null;
+  /** Another installation has asked for this lease while it was held: the folder is seen by more than one. */
+  contended: boolean;
+}
+
 export interface CreateProjectRequest {
   name: string;
 }
@@ -630,6 +656,7 @@ export const ApiRoutes = {
   notifications: "/v1/notifications",
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
+  folderLease: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/folder-lease`,
   commands: "/v1/commands",
   documentDigest: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/digest`,
   telemetry: "/v1/telemetry",

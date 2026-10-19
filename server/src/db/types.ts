@@ -249,6 +249,17 @@ export interface RegistrationCodesTable {
   revoked_at: NullableTime;
 }
 
+/** migrations/004_folder_leases.sql: which installation writes a synced notebook folder. */
+export interface FolderLeasesTable {
+  project_id: string;
+  account_id: string;
+  folder_id: string;
+  holder: string;
+  expires_at: ColumnType<Date, Date | string, Date | string>;
+  contended_at: NullableTime;
+  updated_at: CreatedAt;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   applied_at: CreatedAt;
@@ -275,6 +286,7 @@ export interface DB {
   audit_log: AuditLogTable;
   quarantined_updates: QuarantinedUpdatesTable;
   registration_codes: RegistrationCodesTable;
+  folder_leases: FolderLeasesTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

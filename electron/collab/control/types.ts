@@ -72,6 +72,11 @@ export interface NotebookService {
    * answers 404 without it.
    */
   resolveDoc?(docId: string): ResolvedDoc | null;
+  /**
+   * Called before sign-out or switching accounts, while the current account
+   * can still reach the server (gives up synced-folder writer leases).
+   */
+  beforeAccountChange?(): Promise<void>;
   /** Called after sign-in/sign-out so the service can (re)attach projects. */
   accountChanged(): Promise<void>;
   registerRoutes(router: ControlRouter): void;
