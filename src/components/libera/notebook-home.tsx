@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   List,
+  Mic,
   Plus,
   Sparkles,
   Tag,
@@ -61,6 +62,7 @@ import {
 } from "./notebook-home-preferences";
 
 import { useWorkspaceView } from "./workspace-view-context";
+import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -132,6 +134,7 @@ export function NotebookHome({
   onCreateLatex,
   onOpenFile,
 }: NotebookHomeProps) {
+  const recorder = useRecorderLauncher();
   const { files, notes, images, folders } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
@@ -225,6 +228,7 @@ export function NotebookHome({
                   { label: "Note", icon: <FileText aria-hidden size={16} />, onSelect: () => onCreateMarkdown(notebook.name) },
                   ...(onCreateLatex ? [{ label: "LaTeX document", icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
                   { label: "Slides", icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
+                  ...(recorder && !recorder.busy ? [{ label: "Audio recording", icon: <Mic aria-hidden size={16} />, onSelect: () => recorder.startRecording(notebook.name) }] : []),
                 ]}
               />
             </div>

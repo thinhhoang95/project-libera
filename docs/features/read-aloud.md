@@ -24,7 +24,7 @@ Preferences → **Read Aloud**:
 - **Read with**: OpenRouter (the default, since it needs only the API key) or this computer.
 - **OpenRouter text-to-speech model**: any model listed with speech output; the field suggests them. The default `hexgrad/kokoro-82m` is the same Kokoro model as on this computer, at well under a dollar per million characters. Others, such as `openai/gpt-4o-mini-tts` or `google/gemini-3.8-flash-lite-tts`, are more expressive and cost more.
 - **OpenRouter voice**: suggestions come from the chosen model's voice list. Empty uses the provider's default, where it has one.
-- **Kokoro model folder**: checked as soon as it is chosen; the line under it says what is missing, or how many voices the model has.
+- **Kokoro model folder**: optional. Empty uses Libera’s own download (below). A chosen folder is checked as soon as it is picked; the line under it says what is missing, or how many voices the model has.
 - **Voice** (Kokoro): a list grouped by accent and gender (American English · female, British English · male, …), with `af_heart` as the default.
 - **Speed**: 0.75×–2×. Kokoro on this computer always follows it; on OpenRouter only some providers do.
 
@@ -32,7 +32,11 @@ Only the chosen engine's settings are shown. Changes apply without restarting. W
 
 ### Kokoro 82M on this computer
 
-[Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) runs on the CPU through sherpa-onnx, the same runtime as voice memo transcription. Nothing leaves the computer. Like the EmbeddingGemma and Parakeet weights, the model stays outside Libera:
+[Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) runs on the CPU through sherpa-onnx, the same runtime as voice memo transcription. Nothing leaves the computer. Like the EmbeddingGemma and Parakeet weights, the model stays outside the notes.
+
+**Download it from Libera.** With the folder field empty, the first time you read aloud Libera offers to download sherpa-onnx's 8-bit `kokoro-int8-multi-lang-v1_0` (53 voices, about 190 MB) from Hugging Face, at a pinned revision checked by size and SHA-256. It goes into Libera's application data on this computer (`models/kokoro-int8-multi-lang-v1_0`, beside the search index and outside the Master directory), shows its progress, and can be cancelled. Reading starts once it arrives. Closing the offer stops reading; switching Read Aloud to OpenRouter avoids the download.
+
+**Or use a release you downloaded:**
 
 1. Download a Kokoro release from sherpa-onnx's [tts-models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models) release: `kokoro-multi-lang-v1_0.tar.bz2` (53 voices, 8 languages, about 340 MB), `kokoro-int8-multi-lang-v1_0.tar.bz2` (8-bit, smaller and faster), or `kokoro-en-v0_19.tar.bz2` (English only, 11 voices).
 2. Extract it and choose the folder in Preferences. It must hold:

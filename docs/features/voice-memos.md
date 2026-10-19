@@ -2,6 +2,8 @@
 
 Recordings live in notebooks like any other file: upload or drop `.m4a`, `.mp3`, `.wav`, `.aac`, `.ogg`, `.opus`, `.flac` or `.webm` files into a notebook. Opening one shows a player with its waveform and, beside it, its transcript: timestamped, with who said what.
 
+To record a meeting straight into a notebook, with a live transcript and a live recap, see [Recording meetings](meeting-recorder.md).
+
 ## The player
 
 - **Transport.** Play/pause (Space or K), back and forward 15 s, previous and next recording in the folder (`[` and `]`), stop, playback speed (0.75×–2×, `<` and `>`), volume and mute (M). ← and → step 5 s, J and L 10 s; Shift+← and Shift+→ go to the previous or next passage of the transcript.
@@ -70,7 +72,7 @@ Recordings in a shared notebook sync like other binaries: as blobs in the notebo
 Preferences → **Speech** (its own section, next to Search and Read Aloud):
 
 - **Models**
-  - **Speech models folder** — like the EmbeddingGemma weights, the models stay outside Libera; voice memos and dictation share them. The first time you transcribe, the panel offers to download them there: Parakeet (about 670 MB) and the two speaker models (34 MB), pinned revisions checked by size and SHA-256, resumable. With OpenRouter only the speaker models are needed. Or put the files there yourself:
+  - **Speech models folder** — like the EmbeddingGemma weights, the models stay outside your notes; voice memos and dictation share them. Empty uses `models/speech` in Libera's application data (next to the search index; `users/admin/.libera/models/speech` for a web deployment); choose another folder to keep them elsewhere. The first time you transcribe, the panel offers to download them there: Parakeet (about 670 MB) and the two speaker models (34 MB), pinned revisions checked by size and SHA-256, resumable. With OpenRouter only the speaker models are needed. Or put the files there yourself:
 
     ```
     <folder>/parakeet-tdt-0.6b-v3/encoder.int8.onnx, decoder.int8.onnx, joiner.int8.onnx, tokens.txt

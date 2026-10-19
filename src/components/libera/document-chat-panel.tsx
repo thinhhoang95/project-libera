@@ -232,8 +232,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const openTextFileCount = tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).length;
   // A photo being viewed covers the editors, so it replaces the document as context.
   // PDFs and recordings go as their text and transcript, read when the message is sent.
-  const document = useMemo<ChatContext | null>(() => !viewedPhoto && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
-  const viewingRecording = activeTab?.file.fileType === "audio";
+  const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
+  const viewingRecording = activeTab?.file.fileType === "audio" && !activeTab.recording;
   const viewedPath = document?.path;
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;

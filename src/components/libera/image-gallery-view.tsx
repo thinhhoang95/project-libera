@@ -849,7 +849,7 @@ function PhotoMenu({ state, archived, onOpenInCanvas, onArchive, onRestore, onDe
   </PopupMenu>;
 }
 
-function AlbumNameDialog({ title, initialName = "", submitLabel, note, busy, error, onClose, onSubmit }: {
+export function AlbumNameDialog({ title, initialName = "", submitLabel, note, busy, error, onClose, onSubmit }: {
   title: string;
   initialName?: string;
   submitLabel: string;

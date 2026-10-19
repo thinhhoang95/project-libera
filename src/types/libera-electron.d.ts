@@ -2,6 +2,8 @@ type LiberaMarkdownPdfExportInput = {
   content: string;
   documentPath: string;
   fileName: string;
+  /** "slides" prints a Markdown Slides deck, one slide per page. */
+  kind?: "document" | "slides";
   title?: string;
 };
 
@@ -13,6 +15,7 @@ type LiberaMarkdownPdfExportResult = {
 type LiberaMarkdownPdfRenderInput = {
   content: string;
   documentPath?: string;
+  kind?: "document" | "slides";
   title?: string;
 };
 

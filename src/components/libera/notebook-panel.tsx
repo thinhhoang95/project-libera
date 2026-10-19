@@ -53,6 +53,7 @@ import {
   type SidebarSortKey,
   type SidebarSortPreference,
 } from "./sidebar-sort-preference";
+import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
 
 const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_EXTENSIONS].join(",");
 
@@ -594,6 +595,7 @@ export function NotebookPanel({
   const [deepSearchOpen, setDeepSearchOpen] = useState(false);
   const [referenceImportNotice, setReferenceImportNotice] = useState<{ tone: "status" | "alert"; message: string; details: string[] } | null>(null);
   const workspaceView = useWorkspaceView();
+  const recorder = useRecorderLauncher();
   const librarySortToken = useSyncExternalStore(
     subscribeSidebarSortPreference,
     readSidebarSortToken,
@@ -762,6 +764,7 @@ export function NotebookPanel({
         : [
             { id: "add-note", label: "Add Note" },
             { id: "add-latex", label: "Add LaTeX Document", enabled: Boolean(onCreateLatex) },
+            { id: "add-recording", label: "Add Audio Recording", enabled: Boolean(recorder && !recorder.busy) },
             { id: "new-folder", label: "New folder" },
             { type: "separator" },
             { id: "rename", label: "Rename" },
@@ -815,6 +818,8 @@ export function NotebookPanel({
       await onCreateMarkdown(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "add-latex") {
       await onCreateLatex?.(target.folder.notebook, target.folder.path);
+    } else if (selectedItemId === "add-recording") {
+      recorder?.startRecording(target.folder.notebook, target.folder.path);
     } else if (selectedItemId === "new-folder") {
       await onCreateFolder(target.folder.path);
     } else if (selectedItemId === "rename") {
@@ -1252,6 +1257,7 @@ function NotebookSection({
 }) {
   const linkedFolder = notebook.folder;
   const collabShell = useCollabShell();
+  const recorder = useRecorderLauncher();
   const isDragTarget = draggingFile && dragOverPath === notebook.path;
   const isUploadTarget = !draggingFile && dragOverPath === notebook.path;
   const visibleChildren = notebook.children.slice(
@@ -1267,6 +1273,7 @@ function NotebookSection({
         { id: "new-note", label: "New note", enabled: available },
         { id: "new-slides", label: "New slides", enabled: available },
         { id: "new-latex", label: "New LaTeX document", enabled: available && Boolean(onCreateLatex) },
+        { id: "new-recording", label: "New audio recording", enabled: available && Boolean(recorder && !recorder.busy) },
         { id: "new-folder", label: "New folder", enabled: available },
         { id: "upload", label: "Upload", enabled: available },
         ...collabNotebookMenuItems(collabShell, notebook),
@@ -1314,6 +1321,8 @@ function NotebookSection({
       await onCreateSlides(notebook.name);
     } else if (selectedItemId === "new-latex") {
       await onCreateLatex?.(notebook.name);
+    } else if (selectedItemId === "new-recording") {
+      recorder?.startRecording(notebook.name);
     } else if (selectedItemId === "new-folder") {
       await onCreateFolder(notebook.path);
     } else if (selectedItemId === "upload") {

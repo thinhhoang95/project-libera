@@ -1005,6 +1005,7 @@ function normalizeMarkdownPdfExportInput(input) {
     content: typeof input.content === "string" ? input.content : "",
     documentPath: typeof input.documentPath === "string" ? input.documentPath : "",
     fileName: sanitizePdfFileName(input.fileName),
+    kind: input.kind === "slides" ? "slides" : "document",
     title: typeof input.title === "string" ? input.title : "",
   };
 }
@@ -1091,17 +1092,29 @@ async function exportMarkdownPdf(event, input) {
     await renderMarkdownPdfExportPage(exportWindow.webContents, {
       content: payload.content,
       documentPath: payload.documentPath,
+      kind: payload.kind,
       title: payload.title,
     });
 
-    const pdf = await exportWindow.webContents.printToPDF({
-      displayHeaderFooter: true,
-      footerTemplate: MARKDOWN_PDF_FOOTER_TEMPLATE,
-      headerTemplate: "<span></span>",
-      pageSize: "A4",
-      preferCSSPageSize: true,
-      printBackground: true,
-    });
+    // A deck's page size comes from its slides (@page in the export page);
+    // slides carry their own numbers, so no footer.
+    const pdf = await exportWindow.webContents.printToPDF(
+      payload.kind === "slides"
+        ? {
+            displayHeaderFooter: false,
+            margins: { bottom: 0, left: 0, right: 0, top: 0 },
+            preferCSSPageSize: true,
+            printBackground: true,
+          }
+        : {
+            displayHeaderFooter: true,
+            footerTemplate: MARKDOWN_PDF_FOOTER_TEMPLATE,
+            headerTemplate: "<span></span>",
+            pageSize: "A4",
+            preferCSSPageSize: true,
+            printBackground: true,
+          },
+    );
 
     await fsp.writeFile(outputPath, pdf);
 

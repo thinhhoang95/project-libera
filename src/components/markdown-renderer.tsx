@@ -1,7 +1,7 @@
 "use client";
 import { markdownBoxStyle } from "@/lib/markdown-boxes";
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useMemo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { PreviewCitation, PreviewSourcePosition } from "@/lib/markdown-preview-patch";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
@@ -52,6 +52,11 @@ type MarkdownRendererProps = {
   preparedCitations?: PreviewCitation[];
   /** This document's index in a surrounding CitationScope (slides). */
   citationScopeIndex?: number;
+  /**
+   * Renders a fenced code block itself (slides: charts, live HTML), or
+   * returns null for the usual code block.
+   */
+  renderCodeBlock?: (block: MarkdownCodeBlock) => ReactNode;
   documentPath?: string;
   fontFamily?: string;
   onOpenExternalLink?: (href: string) => void;
@@ -66,6 +71,37 @@ type MarkdownRendererProps = {
   contentTrust?: ContentTrust;
 };
 
+export type MarkdownCodeBlock = {
+  code: string;
+  language?: string;
+  /** The info string after the language: `html live` has meta "live". */
+  meta?: string;
+};
+
+function hastText(node: unknown): string {
+  if (!node || typeof node !== "object") return "";
+  const value = node as { children?: unknown[]; type?: string; value?: unknown };
+  if (value.type === "text" && typeof value.value === "string") return value.value;
+  return (value.children ?? []).map(hastText).join("");
+}
+
+/** The fenced code block a `pre` element holds, if it holds one. */
+function fencedCodeBlock(node: unknown): MarkdownCodeBlock | null {
+  const code = (node as { children?: unknown[] } | undefined)?.children?.[0] as
+    | { data?: { meta?: unknown }; properties?: { className?: unknown }; tagName?: string; type?: string }
+    | undefined;
+
+  if (code?.type !== "element" || code.tagName !== "code") {
+    return null;
+  }
+
+  const classes = Array.isArray(code.properties?.className) ? code.properties.className.map(String) : [];
+  const language = classes.find((name) => name.startsWith("language-"))?.slice("language-".length);
+  const meta = typeof code.data?.meta === "string" ? code.data.meta : undefined;
+
+  return { code: hastText(code).replace(/\n$/, ""), language, meta };
+}
+
 const NO_SUBSCRIPTION = () => () => {};
 
 /**
@@ -76,7 +112,7 @@ const NO_SUBSCRIPTION = () => () => {};
  * loading, a path is treated as shared: a collaborator's image must not load
  * before the check can say no.
  */
-function useContentTrust(documentPath: string | undefined, explicit: ContentTrust | undefined): ContentTrust {
+export function useContentTrust(documentPath: string | undefined, explicit?: ContentTrust): ContentTrust {
   const store = explicit === undefined && documentPath && getCollabBridge() ? getCollabStatusStore() : null;
   const subscribe = useCallback((listener: () => void) => (store ? store.subscribe(listener) : () => {}), [store]);
   const notebook = documentPath?.replace(/^\/+/, "").split("/")[0] ?? "";
@@ -220,6 +256,7 @@ function MarkdownRendererContent({
   textScale = 1,
   renderImages = true,
   contentTrust,
+  renderCodeBlock,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trust = useContentTrust(documentPath, contentTrust);
@@ -361,6 +398,12 @@ function MarkdownRendererContent({
               {children}
             </ol>
           ),
+          pre: ({ children, node, ...props }) => {
+            const block = renderCodeBlock ? fencedCodeBlock(node) : null;
+            const rendered = block ? renderCodeBlock?.(block) : null;
+
+            return rendered ? <>{rendered}</> : <pre {...props}>{children}</pre>;
+          },
           code: ({ children, className, ...props }) => (
             <code
               {...markdownElementProps(props)}
@@ -563,7 +606,7 @@ function MarkdownRendererContent({
               {children}
             </a>
           ),
-  }), [documentPath, onOpenFileLink, onOpenExternalLink, renderImages, textScale]);
+  }), [documentPath, onOpenFileLink, onOpenExternalLink, renderCodeBlock, renderImages, textScale]);
 
   useLayoutEffect(() => {
     if (!preparedSources || !rootRef.current) return;

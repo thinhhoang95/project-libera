@@ -6,6 +6,7 @@ import { ImageViewer } from "@/components/libera/image-viewer";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
+import { SaveImageToNewAlbumDialog } from "@/components/libera/save-image-to-new-album-dialog";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
 // A PDF or image tab duplicated into its own window. The viewer is fully
@@ -40,7 +41,7 @@ export function FileWindowPage({
           {fileType === "pdf" ? (
             <PdfViewer src={src} filePath={filePath} />
           ) : fileType === "image" ? (
-            <ImageViewer src={src} alt={fileName} filePath={filePath} />
+            <><ImageViewer src={src} alt={fileName} filePath={filePath} saveDestination="gallery" /><SaveImageToNewAlbumDialog /></>
           ) : (
             <p role="alert" className="p-6 text-sm text-destructive">
               This file can&apos;t be opened in its own window.

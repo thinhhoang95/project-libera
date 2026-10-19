@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { beginAiActivity } from "@/lib/ai-activity";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload } from "@/lib/transcription/types";
 
@@ -48,6 +49,8 @@ export function useTranscript(path: string) {
   }), [path, refresh]);
 
   const active = isJobActive(payload?.job);
+  // Light the workspace glow for as long as this recording is being transcribed.
+  useEffect(() => (active ? beginAiActivity() : undefined), [active]);
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => void refresh(), 1000);

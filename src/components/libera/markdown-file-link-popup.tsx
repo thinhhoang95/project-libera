@@ -99,7 +99,7 @@ export function buildMarkdownFileLinkSections({
   });
   const tabOptions = openTabs
     // Gallery photos live outside notebooks, so a note cannot link to them.
-    .filter((tab) => tab.file.path !== activeFilePath && !tab.gallery)
+    .filter((tab) => tab.file.path !== activeFilePath && !tab.gallery && !tab.recording)
     .map((tab) => ({
       file: tab.file,
       id: `tab:${tab.id}`,

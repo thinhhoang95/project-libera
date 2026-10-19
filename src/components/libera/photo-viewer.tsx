@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
+import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
@@ -277,6 +278,10 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  // Saving to a notebook folder finishes in the app's folder picker, which reports back here.
+  const photoUrl = photo ? rawUrl(photo) : "";
+  useEffect(() => subscribeImageSaved((saved) => { if (saved.src === photoUrl) setNotice(saved.message); }), [photoUrl]);
+
   function toggleFullscreen() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void rootRef.current?.requestFullscreen().catch(() => undefined);
@@ -357,7 +362,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         {actions.onOpenInCanvas && <button className={toolButton} aria-label="Open in tab" aria-haspopup="menu" title="Open in an editor tab, or beside the current one"
           onClick={(event) => { setPlaying(false); actions.onOpenInCanvas?.(photo, event.currentTarget); }}><AppWindow className="h-4 w-4" /></button>}
         <button className={toolButton} aria-label={playing ? "Pause slideshow" : "Play slideshow"} title={playing ? "Pause slideshow (Space)" : "Slideshow (Space)"} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>
-        <a className={toolButton} aria-label="Download" title="Download" href={rawUrl(photo)} download={photo.name}><Download className="h-4 w-4" /></a>
+        <button className={toolButton} aria-label="Save photo" aria-haspopup="menu" title="Save to computer or a notebook folder"
+          onClick={(event) => { setPlaying(false); void openImageSaveMenu(event.currentTarget, "notebook", { name: photo.name, src: rawUrl(photo) }); }}><Download className="h-4 w-4" /></button>
         <button className={toolButton} aria-label="Copy image" title="Copy image" onClick={() => copyImage(rawUrl(photo)).then(() => setNotice("Copied to the clipboard"), () => setNotice("Could not copy this photo"))}><Copy className="h-4 w-4" /></button>
         <button className={toolButton} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title="Full screen (F)" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</button>
         {chat && <button className={toolButton} aria-label="Ask AI about this photo" aria-pressed={chat.open} title="Ask AI about this photo (⌘/Ctrl+Shift+B)" onClick={toggleChat}><Sparkles className={`h-4 w-4 ${chat.open ? "text-white" : ""}`} /></button>}

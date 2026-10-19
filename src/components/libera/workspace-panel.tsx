@@ -42,6 +42,7 @@ import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { VoiceMemoViewer } from "@/components/libera/audio/voice-memo-viewer";
+import { RecordingTabView } from "@/components/libera/recording/recording-tab-view";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
@@ -96,7 +97,9 @@ import {
 } from "@/lib/markdown-source-map";
 import {
   isMarkdownSlidesPath,
+  markdownSlideIndexAtOffset,
   parseMarkdownSlides,
+  type MarkdownSlide,
 } from "@/lib/markdown-slides";
 import {
   getMarkdownEditorFontStack,
@@ -759,7 +762,7 @@ function WorkspacePanelContent({
     [files],
   );
   // The recordings beside this one in its folder, for previous and next.
-  const activeAudioFile = activeTab?.file.fileType === "audio" ? activeTab.file : undefined;
+  const activeAudioFile = activeTab?.file.fileType === "audio" && !activeTab.recording ? activeTab.file : undefined;
   const audioSiblings = useMemo(() => {
     if (!activeAudioFile) return [];
     const folder = activeAudioFile.path.slice(0, activeAudioFile.path.lastIndexOf("/"));
@@ -1425,7 +1428,44 @@ function WorkspacePanelContent({
       linkSelection: selection.end > selection.start ? selection : undefined,
       selectionEnd: selection.end,
       selectionStart: selection.start,
+      // The slide preview follows the caret.
+      ...(activeMarkdownSlidesDeck
+        ? { slideIndex: markdownSlideIndexAtOffset(activeMarkdownSlidesDeck, selection.start) }
+        : {}),
     });
+  }
+
+  /** A slide clicked in the preview: put the caret at the start of its body. */
+  function handleSelectMarkdownSlide(slide: MarkdownSlide) {
+    const textarea = textareaRef.current;
+    const markdownDraft = textarea?.value ?? activeMarkdownDraft;
+    const offset = Math.max(0, Math.min(slide.bodyStart, markdownDraft.length));
+
+    updateMarkdownViewState({
+      line: getMarkdownLineForOffset(markdownDraft, offset),
+      linkSelection: undefined,
+      selectionEnd: offset,
+      selectionStart: offset,
+      slideIndex: slide.index,
+    });
+
+    if (!textarea) {
+      return;
+    }
+
+    markProgrammaticEditorScroll();
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(offset, offset);
+    scrollTextareaToOffset(textarea, offset, { block: "start" });
+  }
+
+  function handlePresentMarkdownSlidesFrom(slideIndex: number) {
+    if (!activeTabId) {
+      return;
+    }
+
+    updateMarkdownViewState({ slideIndex });
+    setActivePreviewTabId(activeTabId);
   }
 
   function handleMarkdownDraftChange(value: string) {
@@ -1974,10 +2014,13 @@ function WorkspacePanelContent({
                       baseLineHeight={markdownPreferences.baseLineHeight}
                       deck={activeMarkdownSlidesDeck}
                       documentPath={activeTab.file.path}
+                      fontFamily={renderedMarkdownFontFamily}
+                      mathMarkers={markdownPreferences}
                       onOpenFileLink={(href) =>
                         onOpenMarkdownFileLink(activeTab.file.path, href)
                       }
-                      textScale={markdownZoomScale}
+                      onPresentFrom={handlePresentMarkdownSlidesFrom}
+                      onSelectSlide={handleSelectMarkdownSlide}
                     />
                   ) : (
                     <div className="libera-text-width-content">
@@ -2006,7 +2049,9 @@ function WorkspacePanelContent({
               baseLineHeight={markdownPreferences.baseLineHeight}
               deck={activeMarkdownSlidesDeck}
               documentPath={activeTab.file.path}
+              fontFamily={renderedMarkdownFontFamily}
               initialSlideIndex={markdownSlideIndex}
+              mathMarkers={markdownPreferences}
               onExit={() => setActivePreviewTabId(null)}
               onOpenFileLink={(href) =>
                 onOpenMarkdownFileLink(activeTab.file.path, href)
@@ -2014,7 +2059,6 @@ function WorkspacePanelContent({
               onSlideIndexChange={(slideIndex) =>
                 updateMarkdownViewState({ slideIndex })
               }
-              textScale={markdownZoomScale}
             />
           ) : null}
           <GalleryPhotoPicker
@@ -2056,6 +2100,7 @@ function WorkspacePanelContent({
               updatedAt: activeTab.file.updatedAt,
             }}
             siblings={imageSiblings}
+            saveDestination={isGalleryTab(activeTab) ? "notebook" : "gallery"}
             onShowSibling={(path) => {
               const file = imageFileByPath.get(path);
               if (file) onShowImage?.(file);
@@ -2088,6 +2133,8 @@ function WorkspacePanelContent({
             onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
+      ) : activeTab.recording ? (
+        <RecordingTabView key={activeTab.id} recordingId={activeTab.recording.id} />
       ) : activeTab.file.fileType === "audio" ? (
         <VoiceMemoViewer
           key={activeTab.id}

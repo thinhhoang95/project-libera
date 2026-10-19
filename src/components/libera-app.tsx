@@ -27,6 +27,8 @@ import { NotebookDialog } from "@/components/libera/notebook-dialog";
 import { WorkspaceViewContext } from "@/components/libera/workspace-view-context";
 import { NotebookGroupDialog } from "@/components/libera/notebook-group-dialog";
 import { SaveDraftDialog } from "@/components/libera/save-draft-dialog";
+import { SaveImageToNewAlbumDialog } from "@/components/libera/save-image-to-new-album-dialog";
+import { SaveImageToNotebookDialog } from "@/components/libera/save-image-to-notebook-dialog";
 import { useAiActivity } from "@/lib/ai-activity";
 import { TabStrip } from "@/components/libera/tab-strip";
 import type { OpenTab } from "@/components/libera/types";
@@ -46,6 +48,7 @@ import type { QuickPrompt } from "@/lib/quick-prompts";
 import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
+import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -464,6 +467,22 @@ export function LiberaApp({
       }}
       onOpenPath={agentWorkspace.openFile}
     >
+    <MeetingRecorderProvider
+      visibleTabIds={visibleCanvasTabIds}
+      tabs={{
+        open: workspace.openRecordingTab,
+        rename: workspace.renameRecordingTab,
+        close: workspace.closeRecordingTab,
+        // The recording's tab becomes the saved voice memo; the recap note opens beside it.
+        saved: (recordingId, { path, recapPath }, notebook) => {
+          void (async () => {
+            await workspace.refreshTree(notebook).catch(() => undefined);
+            await workspace.replaceRecordingTab(recordingId, path).catch(() => agentWorkspace.openFile(path));
+            if (recapPath) agentWorkspace.openFile(recapPath);
+          })();
+        },
+      }}
+    >
     <main className="libera-app-shell flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
       <div
         inert={workspace.workspaceManager.switching || (Boolean(workspace.fullTree.root) && !workspace.workspaceManager.ready)}
@@ -682,6 +701,8 @@ export function LiberaApp({
       <LocalModelDialog />
       <SnipReadingCard session={workspace.screenshotSnipSession} onCancel={workspace.cancelScreenshotSnip} />
       {workspace.saveDraftTab ? <SaveDraftDialog key={workspace.saveDraftTab.id} tab={workspace.saveDraftTab} tree={workspace.fullTree} error={workspace.saveDraftError} submitting={workspace.saveDraftSubmitting} onClose={workspace.closeSaveDraftDialog} onSubmit={workspace.submitSaveDraft} /> : null}
+      <SaveImageToNotebookDialog tree={workspace.fullTree} onUpload={workspace.uploadFiles} />
+      <SaveImageToNewAlbumDialog />
       <NoteDialog
         dialog={workspace.noteDialog}
         submitting={workspace.noteDialogSubmitting}
@@ -710,6 +731,7 @@ export function LiberaApp({
       <PdfQuoteCiteHost />
       <ReadAloudBar />
     </main>
+    </MeetingRecorderProvider>
     </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>

@@ -11,6 +11,7 @@ import {
   SkipBack,
   SkipForward,
   Square,
+  Zap,
   Volume1,
   Volume2,
   VolumeX,
@@ -27,6 +28,8 @@ import type { LiberaFileNode } from "@/lib/types";
 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SKIP_SECONDS = 15;
+const BOOST_MAX = 4;
+const BOOST_DEFAULT = 2;
 const PANEL_MIN = 300;
 const PANEL_MAX = 720;
 const PANEL_DEFAULT = 400;
@@ -76,6 +79,9 @@ export function VoiceMemoViewer({
   const [rate, setRate] = useState(initialViewState?.playbackRate ?? 1);
   const [volume, setVolume] = useState(initialViewState?.volume ?? 1);
   const [muted, setMuted] = useState(false);
+  const [boost, setBoost] = useState(initialViewState?.boost ?? 1);
+  const boostGain = useRef<GainNode | null>(null);
+  const boostContext = useRef<AudioContext | null>(null);
   const [panelOpen, setPanelOpen] = useState(initialViewState?.transcriptOpen ?? true);
   const [panelWidth, setPanelWidth] = useState(initialViewState?.transcriptWidth ?? PANEL_DEFAULT);
   const [follow, setFollow] = useState(initialViewState?.followPlayback ?? true);
@@ -136,6 +142,47 @@ export function VoiceMemoViewer({
     audio.volume = volume;
     audio.muted = muted;
   }, [muted, rate, volume]);
+
+  // Audio Boost: route the element through a gain stage above 100%, with a
+  // compressor behind it so a boosted peak squashes instead of clipping. The graph
+  // is built only once boost is first used; a media element can be wired up just once.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!boostGain.current) {
+      if (boost <= 1) return;
+      try {
+        const context = new AudioContext();
+        const gain = context.createGain();
+        const limiter = context.createDynamicsCompressor();
+        limiter.threshold.value = -12;
+        limiter.knee.value = 12;
+        limiter.ratio.value = 6;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.25;
+        context.createMediaElementSource(audio).connect(gain).connect(limiter).connect(context.destination);
+        boostGain.current = gain;
+        boostContext.current = context;
+      } catch {
+        return;
+      }
+    }
+    const gain = boostGain.current;
+    gain.gain.value = boost;
+    const context = boostContext.current;
+    if (context?.state === "suspended") void context.resume();
+  }, [boost, playing]);
+
+  useEffect(() => () => {
+    void boostContext.current?.close().catch(() => undefined);
+    boostGain.current = null;
+    boostContext.current = null;
+  }, []);
+
+  const changeBoost = useCallback((value: number) => {
+    setBoost(value);
+    viewStateRef.current({ boost: value });
+  }, []);
 
   const seek = useCallback((time: number, play = false) => {
     const audio = audioRef.current;
@@ -426,6 +473,28 @@ export function VoiceMemoViewer({
                 <button type="button" className={`${controlButton} h-8 w-8`} aria-label="Stop" title="Stop" disabled={!playing && currentTime === 0} onClick={stop}>
                   <Square aria-hidden className="h-3.5 w-3.5" fill="currentColor" />
                 </button>
+                <div className="group flex items-center">
+                  <input
+                    type="range"
+                    aria-label="Audio Boost"
+                    min={1}
+                    max={BOOST_MAX}
+                    step={0.25}
+                    value={boost}
+                    className="h-1 w-0 cursor-pointer opacity-0 transition-all duration-200 accent-[var(--foreground)] group-focus-within:w-20 group-focus-within:opacity-100 group-hover:w-20 group-hover:opacity-100"
+                    onChange={(event) => changeBoost(Number(event.target.value))}
+                  />
+                  <button
+                    type="button"
+                    aria-pressed={boost > 1}
+                    className={`${controlButton} h-8 gap-0.5 px-2 text-xs font-semibold tabular-nums ${boost > 1 ? "bg-foreground text-background hover:bg-foreground/90 hover:text-background" : ""}`}
+                    aria-label={boost > 1 ? `Audio Boost ${Math.round(boost * 100)}%` : "Audio Boost off"}
+                    title="Audio Boost: play louder than 100%, for quiet recordings"
+                    onClick={() => changeBoost(boost > 1 ? 1 : BOOST_DEFAULT)}
+                  >
+                    <Zap aria-hidden className="h-3.5 w-3.5" />{boost > 1 ? `${Math.round(boost * 100)}%` : null}
+                  </button>
+                </div>
                 <div className="group flex items-center">
                   <button type="button" className={`${controlButton} h-8 w-8`} aria-label={muted ? "Unmute" : "Mute"} title="Mute (M)" onClick={() => setMuted((value) => !value)}>
                     <VolumeIcon aria-hidden className="h-4 w-4" />

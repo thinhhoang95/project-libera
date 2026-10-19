@@ -2,12 +2,13 @@
 
 How read aloud (text-to-speech) is built, where each piece lives, and how to extend it. The user guide is [docs/features/read-aloud.md](../features/read-aloud.md).
 
-Status: implemented on `collaboration` (October 2026). Typecheck, lint and `scripts/editor/read-aloud.test.ts` pass. Not yet checked by hand: audio from Kokoro on this computer and from OpenRouter, the menus in the running app, and the Preferences section. See [Open items](#open-items).
+Status: implemented on `collaboration` (October 2026), including a one-click Kokoro download. Typecheck, lint, `scripts/editor/read-aloud.test.ts`, `scripts/editor/local-models.test.ts` and `scripts/lib/tts-preferences.test.cjs` pass. Not yet checked by hand: audio from Kokoro on this computer and from OpenRouter, the menus in the running app, and the Preferences section. See [Open items](#open-items).
 
 ## Overview
 
 ```
  editor / PDF / chat ──speakMarkdown(text, { format, sourceId, label })──▶ src/lib/tts/player.ts
+                                                                            │  GET /api/tts: modelMissing → ensureLocalModel("read-aloud") (download offer)
                                                                             │  speechText()   → clean text      (src/lib/tts/text.ts)
                                                                             │  speechChunks() → passages ≤ ~320 chars
                                                                             │  POST /api/tts per passage, 2 prepared ahead
@@ -34,7 +35,10 @@ The pieces follow the voice memo transcription design (`src/lib/transcription`, 
 | | `electron/openrouter-models.cjs` | `OPENROUTER_SPEECH_MODELS_URL` (`?output_modalities=speech`); keeps each model's `supported_voices` as `voices`. |
 | | `electron/setup.html` | Preferences → **Read Aloud** section (`data-section="read-aloud"`, nav button, `ttsInputs`): engine and speed, then `#tts-local-fields` (folder with a live check via `checkTtsModel`, grouped voice `<select>` built from `KOKORO_VOICES`/`KOKORO_ACCENTS`, `setLocalVoice` keeps unknown saved voices) or `#tts-openrouter-fields` (model combobox with `speech: true`, voice input with the model's voices as a datalist). |
 | Server | `src/lib/tts/settings.ts` | `getTtsPreferences()` (re-reads the config file when it changes), `ttsWorkerPath()`, `ttsThreads()`. |
-| | `src/lib/tts/kokoro.ts` | `resolveKokoroModel(dir, voice)`: checks the folder, picks `model.int8.onnx` over `model.onnx`, counts voices from `voices.bin`, maps the voice name to a speaker id, picks the lexicons and espeak language. |
+| | `src/lib/tts/kokoro.ts` | `KOKORO_MODEL` (the pinned Hugging Face download), `kokoroModelDirectory()` (Preferences folder, else `defaultModelDirectory("readAloud")`), `getKokoroModelStatus`/`startKokoroModelDownload`/`cancelKokoroModelDownload`, and `resolveKokoroModel(dir, voice)`: checks the folder (throwing `KokoroModelMissingError` when files are missing, so the app can offer the download), picks `model.int8.onnx` over `model.onnx`, counts voices from `voices.bin`, maps the voice name to a speaker id, picks the lexicons and espeak language. |
+| Download | `src/lib/models/downloader.ts`, `src/lib/models/local-models.ts` | Shared with the Search and PDF reading models: `sharedModelDownloader("read-aloud")` (resumable, size and SHA-256 checked), `huggingFaceFiles()` lists the pinned repository, `defaultModelDirectory()` resolves `<app data>/models/<folder>` (`MODEL_FOLDERS.readAloud` in `electron/search-preferences.cjs`). `local-models.ts` registers `"read-aloud"`. |
+| | `src/app/api/local-models/[model]/route.ts` | Status, start and cancel of a local model download, for the dialog. |
+| | `src/components/libera/local-models/local-model-dialog.tsx` (+ `local-model-client.ts`) | The "Read Aloud voice" download offer and progress, mounted once in `libera-app.tsx`; `ensureLocalModel("read-aloud")` resolves true once the model is ready, false if the user closes it. |
 | | `src/lib/tts/worker-client.ts` | `getTtsWorker().synthesize(files, text, sid, speed, signal)`. Forks the worker on first use, cancels on abort, exits after 2 idle minutes. |
 | | `src/lib/tts/openrouter-tts.ts` | `speakWithOpenRouter()` and `speechRequestBody()`. |
 | | `src/app/api/tts/route.ts` | `GET` reports `{ engine, ready, problem }`; `POST { text }` returns `audio/wav` or `audio/mpeg`. Requires sign-in. |
@@ -75,7 +79,7 @@ Adding a preference: add it to `DEFAULT_TTS_PREFERENCES`, `normalizeTtsPreferenc
 ### `/api/tts`
 
 - `POST` body `{ text: string }`, trimmed, 1 to `MAX_TTS_REQUEST_CHARS` (1200) characters. Responses: 200 audio, 400 no text, 413 too long, 401 signed out, 502 `{ error }` with a message meant for the user, 499 when the browser aborted.
-- `GET` returns `{ engine, ready, problem }`. Nothing calls it yet; it is there for a future "set up read aloud" prompt.
+- `GET` returns `{ engine, ready, problem, modelMissing }`. The player calls it before each reading; `modelMissing` (the Kokoro folder is empty or incomplete) opens the download offer.
 - The route never splits text. Splitting is the browser's job, so the server stays stateless and each request is short.
 
 ### Worker protocol (`electron/tts-worker.mjs`)
@@ -140,9 +144,11 @@ Add a cleaner to `src/lib/tts/text.ts`, a value to `SpeechFormat`, a branch to `
 
 The browser plays whatever the browser can decode (WAV, MP3, OGG, AAC), so the player needs no change.
 
-### Add a downloader for Kokoro
+### The Kokoro download
 
-Transcription has a resumable, SHA-256-checked downloader (`getSpeechModelDownloader` in `src/lib/transcription/models.ts`, `/api/transcripts/setup`). A Kokoro equivalent would pin a Hugging Face mirror of the sherpa export, since the GitHub release is a `.tar.bz2` that would need extracting. Then add a "Download Kokoro" prompt that uses `GET /api/tts`'s `ready`/`problem`.
+Implemented with the shared local-model downloader rather than the transcription one. The download is the Hugging Face mirror `csukuangfj/kokoro-int8-multi-lang-v1_0` at a pinned revision (`KOKORO_MODEL` in `kokoro.ts`): the GitHub release is a `.tar.bz2`, so the mirror avoids extracting. Its file list (espeak-ng-data alone is hundreds of files) comes from the Hugging Face tree API when the download starts, with LFS files checked by SHA-256. `tokens.txt`, `voices.bin` and `model.int8.onnx` are fetched last, so an interrupted download never looks complete. A folder chosen in Preferences always wins over the download.
+
+To offer another release (full precision, v1.1), add a second `KOKORO_MODEL`-style entry and a choice in Preferences, and give `MODEL_FOLDERS` its own folder name so the two never mix.
 
 ## Open items
 
@@ -157,6 +163,7 @@ Known gaps and ideas, roughly in order of value:
 - **One playback per window.** Starting speech in a file window does not stop speech in the main window.
 - **Packaging:** `prepare-dist` copies sherpa-onnx only for this platform's build. Check a packaged build runs the TTS worker (the transcription worker proves the runtime, not this file).
 - **Voice preview.** Preferences cannot play a sample voice yet: the page is not served by the Next server, so it would need an IPC call that synthesizes through it.
+- **One download size.** Only the 8-bit multi-language release can be downloaded from Libera; others are installed by hand.
 - **Pre-existing test failures** unrelated to read aloud, seen while testing: four in `scripts/lib/session-shutdown.test.cjs` (`collabHost is not defined`), `document-chat-panel.test.ts` (file mentions after remount, line 349) and two tests in `markdown-codemirror-editor.test.ts` (Cmd/Ctrl+B and wildcard find).
 
 ## Checks
@@ -164,6 +171,7 @@ Known gaps and ideas, roughly in order of value:
 ```bash
 node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/read-aloud.test.ts
 node --test scripts/lib/tts-preferences.test.cjs
+node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/local-models.test.ts
 ```
 
 Related suites that touch the same files: `document-chat-panel.test.ts`, `markdown-codemirror-editor.test.ts`, `markdown.test.ts`, `references-pdfcite-viewer.test.ts`, and `scripts/lib/{preferences-io,openrouter-models}.test.cjs`.

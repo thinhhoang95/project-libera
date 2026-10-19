@@ -60,6 +60,7 @@ import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { useGallery } from "./gallery-store";
 import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
+import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
 import type { GalleryPhoto } from "@/lib/image-generation";
 import type { PhotoEdits } from "@/lib/photo-edits";
@@ -207,12 +208,18 @@ function createMarkdownSlidesContent(name: string) {
     "$author = []",
     "$affiliation = []",
     "$date = \"\"",
-    "$template = \"default\"",
-    "$fontsize = 21",
+    "$theme = \"light\"",
     "---",
-    "$title = \"First Slide\"",
+    "## First slide",
     "",
     "Start your slide content here.",
+    "",
+    "--",
+    "",
+    "- A line with only -- reveals what follows on the next click",
+    "",
+    "???",
+    "Speaker notes: only you see these, in speaker view (press S while presenting).",
     "",
   ].join("\n");
 }
@@ -326,6 +333,8 @@ function setsEqual(left: Set<string>, right: Set<string>) {
 }
 
 const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
+// Switching windows back and forth should not walk the whole library each time.
+const FOCUS_TREE_REFRESH_INTERVAL_MS = 5000;
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
@@ -336,6 +345,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [tree, setTree] = useState<LiberaTree>(emptyTree);
+  const appliedTreeRef = useRef<LiberaTree | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   // The latest tabs, for work that finishes after a render, like reading a snip.
@@ -561,11 +571,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
       catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh archived files."); }
     }
+    appliedTreeRef.current = nextTree;
     setTree(nextTree);
   }
 
-  async function refreshTree(expandNotebook?: string) {
+  /** `onlyIfChanged` drops a result that matches the shown tree or lost a race with a newer one. */
+  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean }) {
+    const treeAtStart = appliedTreeRef.current;
     const nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    if (options?.onlyIfChanged && (appliedTreeRef.current !== treeAtStart ||
+        JSON.stringify(nextTree) === JSON.stringify(treeAtStart))) {
+      return appliedTreeRef.current ?? nextTree;
+    }
     await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
       if (current && nextTree.notebooks.some((notebook) => notebook.name === current)) {
@@ -588,6 +605,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     refreshTree().catch((error: Error) => setWorkspaceError(error.message));
+  }, [authenticated]);
+
+  // Files added in Finder or another app raise no event here (only shared
+  // notebooks are watched), so read the library again when the window returns.
+  const latestFocusRefresh = useRef(refreshTree);
+  useLayoutEffect(() => {
+    latestFocusRefresh.current = refreshTree;
+  });
+  useEffect(() => {
+    if (!authenticated) return;
+    let running = false;
+    let lastStartedAt = Date.now();
+    const onReturn = () => {
+      if (document.visibilityState !== "visible" || running ||
+          Date.now() - lastStartedAt < FOCUS_TREE_REFRESH_INTERVAL_MS) return;
+      running = true;
+      lastStartedAt = Date.now();
+      // A failed background check is not worth an error banner; the next one retries.
+      void latestFocusRefresh.current(undefined, { onlyIfChanged: true })
+        .catch(() => undefined)
+        .finally(() => { running = false; });
+    };
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+    return () => {
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
+    };
   }, [authenticated]);
 
   useEffect(() => {
@@ -1006,6 +1051,33 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
+  }
+
+  /** Opens the tab of a recording in progress, or brings it to the front. */
+  function openRecordingTab(recordingId: string, name: string, notebook: string) {
+    setWorkspaceError("");
+    const tab = createRecordingTab(recordingId, name, notebook);
+    setTabs((currentTabs) => currentTabs.some((currentTab) => currentTab.id === tab.id) ? currentTabs : [...currentTabs, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function renameRecordingTab(recordingId: string, name: string) {
+    const tabId = recordingTabId(recordingId);
+    if (!tabs.some((tab) => tab.id === tabId && tab.file.name !== name)) return;
+    updateTab(tabId, (tab) => ({ ...tab, file: { ...tab.file, name } }));
+  }
+
+  /** The recording was saved: its tab becomes the saved voice memo, in place. */
+  async function replaceRecordingTab(recordingId: string, path: string) {
+    const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`);
+    const tabId = recordingTabId(recordingId);
+    if (tabs.some((tab) => tab.id === tabId)) showImageInTab(tabId, payload.file);
+    else await openFile(payload.file);
+  }
+
+  function closeRecordingTab(recordingId: string) {
+    const tabId = recordingTabId(recordingId);
+    if (tabs.some((tab) => tab.id === tabId)) closeTabWithoutConfirm(tabId);
   }
 
   // Steps an image or recording tab to another one in its folder, in place: the
@@ -3144,6 +3216,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         content: getTabDraft(tab),
         documentPath: tab.file.path,
         fileName: markdownPdfFileName(tab.file.name),
+        kind: isMarkdownSlidesPath(tab.file.path) ? "slides" : "document",
         title: markdownExportBaseName(tab.file.name),
       });
     } catch (error) {
@@ -3836,6 +3909,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     notebook: string,
     files: File[],
     destinationPath?: string,
+    options?: { throwOnError?: boolean },
   ): Promise<LiberaFileNode[]> {
     if (!files.length) {
       return [];
@@ -3869,6 +3943,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (payload.error) setWorkspaceError(payload.error);
       return payload.uploaded;
     } catch (error) {
+      if (options?.throwOnError) throw error;
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
       return [];
     }
@@ -3943,8 +4018,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (tabId !== activeTabId) captureCanvasViewState();
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    // Gallery photos belong to no notebook and stay out of recent files.
-    if (tab && !isGalleryTab(tab)) {
+    // Gallery photos and recordings in progress belong to no notebook file and stay out of recent files.
+    if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
       setSelectedNotebookName(tab.file.notebook);
       recordFileInteraction(tab.file);
     }
@@ -3973,7 +4048,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     function activateShortcutTab(tabId: string) {
       const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-      if (tab && !isGalleryTab(tab)) {
+      if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
         const interactedAt = new Date().toISOString();
 
         setSelectedNotebookName(tab.file.notebook);
@@ -4182,6 +4257,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       moveFileToFolder,
       openFile,
       openGalleryPhoto,
+      openRecordingTab,
+      renameRecordingTab,
+      replaceRecordingTab,
+      closeRecordingTab,
       showImageInTab,
       saveEditedImageCopy,
       openMarkdownFileLink,

@@ -24,6 +24,7 @@ import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { PhotoEditor } from "@/components/libera/photo-editor";
+import { downloadImage, openImageSaveMenu, subscribeImageSaved, type ImageSaveDestination } from "@/components/libera/image-save";
 import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
@@ -85,6 +86,8 @@ type ImageViewerProps = {
   /** Shows a sibling in place of this image. The viewer remounts for it. */
   onShowSibling?: (path: string) => void;
   onViewStateChange?: (viewState: ImageTabViewState) => void;
+  /** Adds a Save menu to the Download button, offering the Gallery or a notebook folder too. */
+  saveDestination?: ImageSaveDestination;
 };
 
 // Stepping to a sibling remounts the viewer for the next file. The slideshow
@@ -135,6 +138,7 @@ export function ImageViewer({
   onSaveEditedCopy,
   onShowSibling,
   onViewStateChange,
+  saveDestination,
 }: ImageViewerProps) {
   const paneFocused = useCanvasPaneFocused();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -729,16 +733,32 @@ export function ImageViewer({
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  function downloadImage() {
+  function saveImage(button: HTMLElement) {
     if (!src) {
       return;
     }
 
-    const link = document.createElement("a");
-    link.href = src;
-    link.download = fileName;
-    link.click();
+    if (!saveDestination) {
+      downloadImage({ name: fileName, src });
+      return;
+    }
+
+    setPlaying(false);
+    void openImageSaveMenu(button, saveDestination, { name: fileName, src }).then((message) => {
+      if (message) {
+        setNotice(message);
+      }
+    });
   }
+
+  // Saves from the tab's ⋯ menu report here.
+  useEffect(() => {
+    return subscribeImageSaved((saved) => {
+      if (saved.src === src) {
+        setNotice(saved.message);
+      }
+    });
+  }, [src]);
 
   function copyToClipboard() {
     if (!src) {
@@ -983,7 +1003,15 @@ export function ImageViewer({
           <button aria-label="Copy image" className={iconButton} type="button" title="Copy image" disabled={!src} onClick={copyToClipboard}>
             <Copy aria-hidden className="h-4 w-4" />
           </button>
-          <button aria-label="Download image" className={iconButton} type="button" title="Download" disabled={!src} onClick={downloadImage}>
+          <button
+            aria-label={saveDestination ? "Save image" : "Download image"}
+            aria-haspopup={saveDestination ? "menu" : undefined}
+            className={iconButton}
+            type="button"
+            title={saveDestination === "gallery" ? "Save to computer, the Gallery or an album" : saveDestination === "notebook" ? "Save to computer or a notebook folder" : "Download"}
+            disabled={!src}
+            onClick={(event) => saveImage(event.currentTarget)}
+          >
             <Download aria-hidden className="h-4 w-4" />
           </button>
           <button

@@ -23,6 +23,8 @@ export type OpenTab = {
   rawUrl?: string;
   /** Set on read-only tabs that show a gallery photo instead of a notebook file. */
   gallery?: { photoId: string };
+  /** Set on the tab of a recording in progress, which is not a notebook file yet. */
+  recording?: { id: string };
   untitled?: boolean;
   standaloneSaveId?: string;
   saveDirectory?: string;
@@ -124,6 +126,8 @@ export type AudioTabViewState = {
   currentTime?: number;
   playbackRate?: number;
   volume?: number;
+  /** Audio Boost gain above 100%: 1 is off, up to 4. */
+  boost?: number;
   transcriptOpen?: boolean;
   /** Width of the transcript panel in pixels. */
   transcriptWidth?: number;

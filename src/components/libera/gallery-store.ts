@@ -40,6 +40,11 @@ export function refreshGallery() {
   return pendingRefresh;
 }
 
+/** The gallery as loaded, loading it first if nothing has asked for it yet. */
+export async function loadedGallery() {
+  return state.contents ?? await refreshGallery();
+}
+
 export function useGallery() {
   return useSyncExternalStore(subscribe, () => state, () => state);
 }
