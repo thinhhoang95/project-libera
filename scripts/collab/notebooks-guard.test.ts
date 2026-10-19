@@ -297,27 +297,38 @@ test("an agent run made before the notebook was shared is not undone into it", a
   }
 });
 
-test("the guard notices a new or removed marker without an explicit invalidation", async () => {
+test("the guard notices a new or removed marker even when the folder mtime is unchanged", async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "libera-guard-cache-"));
   const previous = process.env.LIBERA_DATA_DIR;
   process.env.LIBERA_DATA_DIR = dataDir;
   try {
     const library = path.join(dataDir, "users", "admin");
     seedNotebook(library, "Later");
+    writeFileSync(path.join(library, "Later", "vulnerability-regime-analysis.pdf"), "%PDF-1.7\nlocal copy\n");
     invalidateSharedNotebookCache();
     assert.equal(isSharedNotebookPath("Later/a.md"), false);
+    const folder = path.join(library, "Later");
+    const original = statSync(folder);
     const markerPath = path.join(library, "Later", ".libera-shared.json");
     writeFileSync(markerPath, marker());
-    // Folder mtimes can be coarse; push it forward like a later write would.
-    const later = new Date(Date.now() + 5000);
-    utimesSync(path.join(library, "Later"), later, later);
+    // Sharing and takedown can fall within the same timestamp tick (ExFAT).
+    utimesSync(folder, original.atime, original.mtime);
     assert.equal(isSharedNotebookPath("Later/a.md"), true);
     assert.deepEqual(sharedManifestPath("Later/sub/b.md"), { notebook: "Later", projectId: "prj_test", path: "sub/b.md" });
     assert.equal(sharedManifestPath("Later/_archive/x.md"), null);
     rmSync(markerPath);
-    const evenLater = new Date(Date.now() + 10000);
-    utimesSync(path.join(library, "Later"), evenLater, evenLater);
+    utimesSync(folder, original.atime, original.mtime);
     assert.equal(isSharedNotebookPath("Later/a.md"), false);
+    // Immediately after takedown, file routes and direct writers must use
+    // local storage rather than asking the host for a now-removed project.
+    const renamed = await FILES_PATCH(authed("/api/files", { method: "PATCH", json: { path: "Later/vulnerability-regime-analysis.pdf", destinationNotebook: "Later", destinationName: "renamed.pdf" } }));
+    assert.equal(renamed.status, 200, JSON.stringify(await renamed.json()));
+    assert.equal(readFileSync(path.join(folder, "renamed.pdf"), "utf8"), "%PDF-1.7\nlocal copy\n");
+    const removed = await FILES_DELETE(authed("/api/files?path=Later%2Frenamed.pdf", { method: "DELETE" }));
+    assert.equal(removed.status, 200, JSON.stringify(await removed.json()));
+    assert.equal(existsSync(path.join(folder, "renamed.pdf")), false);
+    await updateMarkdownFile("Later/sub/b.md", "editable after takedown\n");
+    assert.equal(readFileSync(path.join(folder, "sub/b.md"), "utf8"), "editable after takedown\n");
   } finally {
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR;
     else process.env.LIBERA_DATA_DIR = previous;
