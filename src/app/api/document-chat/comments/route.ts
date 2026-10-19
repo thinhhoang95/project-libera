@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { requireSharedDoc } from "@/lib/collab/shared-writes";
+// tools and read-comments import each other; tools must load first so ALL_TOOLS sees readCommentsTool.
+import "@/lib/agent/tools";
 import { localThreads, pdfThreads, sharedThreads, threadLocation, type CommentThread } from "@/lib/agent/read-comments";
 import { resolveLibraryPath, statLibraryPath } from "@/lib/agent/library";
 import { commentsContext, type ChatCommentThread } from "@/lib/chat-comments";
