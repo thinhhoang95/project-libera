@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, Search, SpellCheck, FilePlus2, Globe, Volume2 } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2 } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
@@ -14,7 +14,7 @@ import { DocumentChatSettingsDialog } from "./document-chat-settings-dialog";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { copyRenderedMarkdownSelection } from "@/lib/markdown-clipboard";
 import { markdownLinkWorkspacePath } from "@/lib/markdown-file-links";
-import { ChatFileComposer } from "./chat-file-composer";
+import { ChatFileComposer, type ChatCommentTarget } from "./chat-file-composer";
 import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/lib/types";
 import type { OpenTab } from "./types";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
@@ -35,9 +35,13 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 import { transcriptContextText } from "@/lib/transcription/format";
 import type { TranscriptPayload } from "@/lib/transcription/types";
-import { refreshPdfComments } from "./pdf-comments-store";
+import { loadPdfComments, pdfCommentsState, refreshPdfComments, usePdfComments } from "./pdf-comments-store";
+import { commentsContext, commentsContextSummary, pdfCommentChatThreads, reviewCommentThreads } from "@/lib/chat-comments";
 
 const AUDIO_FILE = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
+
+/** Files first, then their review comments, then selected passages. */
+const CONTEXT_ORDER: Record<ChatContext["kind"], number> = { document: 0, comments: 1, selection: 2 };
 
 const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full disabled:opacity-40";
 function selectionExcerpt(text: string) {
@@ -247,6 +251,18 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const viewedPath = document?.path;
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
+  // The review comments on the document in view, live from the Comments panel's state.
+  const viewedPdfPath = !viewedPhoto && activeTab?.file.fileType === "pdf" && !activeTab.untitled ? activeTab.file.path : null;
+  const pdfComments = usePdfComments(viewedPdfPath);
+  const reviewDoc = review?.doc;
+  const viewedComments = useMemo<ChatContext | null>(() => {
+    if (!document) return null;
+    if (viewedPdfPath) return commentsContext(document.path, document.name, pdfCommentChatThreads(pdfComments.threads));
+    return reviewDoc ? commentsContext(document.path, document.name, reviewCommentThreads(reviewDoc.threads, reviewDoc.snapshot)) : null;
+  }, [document, viewedPdfPath, pdfComments.threads, reviewDoc]);
+  const commentsExcluded = !!viewedComments && !!chat?.excludedCommentPaths?.includes(viewedComments.path);
+  const includedComments = viewedComments && !commentsExcluded ? viewedComments : null;
+  const commentsAlreadySent = !!includedComments && !newChatContexts(chat?.messages ?? [], [includedComments]).length;
   const viewedGalleryId = galleryPhotoIdFromSource(viewedPhoto?.source);
   const includedPhoto = viewedPhoto && (!viewedGalleryId || keepGalleryChatPhoto(viewedGalleryId)) && !chat?.excludedPhotoSources?.includes(viewedPhoto.source) ? viewedPhoto : null;
   // Sent once per conversation; a copy waiting in the composer (a restored unsent message) counts too.
@@ -484,6 +500,48 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     }
   }, [chat, loadingFiles, tabs, updateChat]);
 
+  // @Comments: the document in view and the other open Markdown, LaTeX and PDF files.
+  const commentTargets = useMemo<ChatCommentTarget[]>(() => {
+    const targets: ChatCommentTarget[] = document && (viewedPdfPath || reviewDoc) ? [{ path: document.path, name: document.name, current: true }] : [];
+    for (const tab of tabs) {
+      if (tab.untitled || tab.gallery || tab.recording || (tab.file.fileType !== "markdown" && tab.file.fileType !== "latex" && tab.file.fileType !== "pdf")) continue;
+      if (!targets.some((target) => target.path === tab.file.path)) targets.push({ path: tab.file.path, name: tab.file.name, current: false });
+    }
+    return targets;
+  }, [document, viewedPdfPath, reviewDoc, tabs]);
+
+  const attachComments = useCallback(async (target: ChatCommentTarget): Promise<boolean> => {
+    if (!chat || loadingFiles) return false;
+    const chatId = chat.id;
+    setLoadingFiles(true);
+    setError("");
+    try {
+      let context: ChatContext | null;
+      if (target.current) context = viewedComments?.path === target.path ? viewedComments : null;
+      else if (/\.pdf$/i.test(target.path)) {
+        if (!pdfCommentsState(target.path).loaded) await loadPdfComments(target.path);
+        const state = pdfCommentsState(target.path);
+        if (state.error) throw new Error(state.error);
+        context = commentsContext(target.path, target.name, pdfCommentChatThreads(state.threads));
+      } else {
+        const tab = tabs.find((item) => !item.untitled && item.file.path === target.path);
+        ({ context } = await apiRequest<{ context: ChatContext | null }>("/api/document-chat/comments", { method: "POST", body: JSON.stringify({ path: target.path, ...(tab ? { text: tab.draft } : {}) }) }));
+      }
+      if (!context) throw new Error(`${target.name} has no review comments.`);
+      const attached = context;
+      updateChat(chatId, (current) => ({ ...current,
+        selections: [...current.selections.filter((item) => item.kind !== "comments" || item.path !== attached.path), attached],
+        excludedCommentPaths: current.excludedCommentPaths?.filter((path) => path !== attached.path),
+      }));
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not attach the comments.");
+      return false;
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, [chat, loadingFiles, tabs, updateChat, viewedComments]);
+
   useEffect(() => {
     if (!attachmentRequest || !chat || loadingFiles || handledAttachmentRequest.current === attachmentRequest.id) return;
     handledAttachmentRequest.current = attachmentRequest.id;
@@ -579,7 +637,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     const selections = chat.selections;
     const photos = chat.photos ?? [];
     // In Agent mode the open file is passed by path; the agent reads what it needs.
-    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument && !agent ? [includedDocument] : [])]).sort((a, b) => Number(a.kind === "selection") - Number(b.kind === "selection")) };
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: prompt.trim(), createdAt: new Date().toISOString(), photos, contexts: newChatContexts(chat.messages, [...selections, ...(includedDocument && !agent ? [includedDocument] : []), ...(includedComments ? [includedComments] : [])]).sort((a, b) => CONTEXT_ORDER[a.kind] - CONTEXT_ORDER[b.kind]) };
     const messages = edit ? [...chat.messages.slice(0, editIndex), { ...chat.messages[editIndex], text: edit.text.trim(), createdAt: new Date().toISOString() }]
       : retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
@@ -616,7 +674,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     try {
       if (!replay) {
         message.contexts = await Promise.all(message.contexts
-          .filter((context) => context.kind !== "document" || !chat.excludedDocumentPaths?.includes(context.path))
+          .filter((context) => context.kind === "document" ? !chat.excludedDocumentPaths?.includes(context.path) : context.kind !== "comments" || !chat.excludedCommentPaths?.includes(context.path))
           .map(async (context) => {
             if (agent || context.kind !== "document" || context.text) return context;
             if (AUDIO_FILE.test(context.path)) {
@@ -664,7 +722,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionId: id, model, reasoningEffort: chat.reasoningEffort, permission: run.permission,
-            messages: requestMessages(messages, true),
+            messages: requestMessages(messagesWithoutExcludedDocuments(messages, [], chat.excludedCommentPaths), true),
             activeFile: activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path : undefined,
             openFiles: openTabs.map((tab) => tab.file.path), drafts, notebook: bridge?.notebook, webSearch: allowWebSearch,
             ...(options.skill ? { skill: options.skill } : {}),
@@ -757,7 +815,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       } else {
         const response = await fetch("/api/document-chat", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stream: true, sessionId: id, messages: requestMessages(messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths), false), model, reasoningEffort: chat.reasoningEffort }),
+          body: JSON.stringify({ stream: true, sessionId: id, messages: requestMessages(messagesWithoutExcludedDocuments(messages, chat.excludedDocumentPaths, chat.excludedCommentPaths), false), model, reasoningEffort: chat.reasoningEffort }),
           signal: controller.signal,
         });
         await readChatResponse(response, controller.signal, (text) => {
@@ -1033,9 +1091,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             {!viewedPhoto && <p className="libera-chat-context-hint">{viewingRecording ? <>Quote lines from the transcript with <kbd>⌘/Ctrl + Shift + L</kbd> or its quote button.</> : <>Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</>}</p>}
           </div>}
           {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={!!pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
-            const label = context.kind === "document" ? context.name : selectionExcerpt(context.text);
-            const ContextIcon = context.kind === "document" ? FileText : TextSelect;
-            return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
+            const label = context.kind === "document" ? context.name : context.kind === "comments" ? `Comments on ${context.name} (${commentsContextSummary(context)})` : selectionExcerpt(context.text);
+            const ContextIcon = context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect;
+            return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : context.kind === "comments" ? "Review comments" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
           })}{message.photos?.map((photo) => <div key={photo.id}>
             {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
             <img src={photo.dataUrl} alt={photo.name} className="max-h-48 max-w-full rounded-lg object-contain" />
@@ -1074,6 +1132,14 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? (activeTab?.file.fileType === "pdf" ? " (PDF text)" : viewingRecording ? " (transcript)" : " (current draft)") : " (already included)"}`}</p>
             <button type="button" className={buttonClass} aria-label="Remove document context" title="Remove document context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))}><X size={12} /></button>
           </div>}
+          {includedComments && !chat?.selections.some((item) => item.kind === "comments" && item.path === includedComments.path) && <div className="libera-chat-context flex items-center gap-1"><MessageSquareText aria-hidden size={13} className="shrink-0" />
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={`Review comments on ${includedComments.path}`}>{`Comments: ${commentsContextSummary(includedComments)} on ${includedComments.name}${commentsAlreadySent ? " (already included)" : ""}`}</p>
+            <button type="button" className={buttonClass} aria-label="Remove review comments" title="Remove review comments" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedCommentPaths: [...(current.excludedCommentPaths ?? []), includedComments.path] }))}><X size={12} /></button>
+          </div>}
+          {viewedComments && commentsExcluded && <div className="libera-chat-context flex items-center gap-1"><MessageSquareText aria-hidden size={13} className="shrink-0" />
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{`Comments on ${viewedComments.name} are not included`}</p>
+            <button type="button" className="libera-window-no-drag rounded-full px-2 py-1 text-xs font-medium hover:bg-muted" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedCommentPaths: current.excludedCommentPaths?.filter((path) => path !== viewedComments.path) }))}>Include</button>
+          </div>}
           {viewedPhoto && (includedPhoto ? <div className="libera-chat-context flex items-center gap-1">
             {/* eslint-disable-next-line @next/next/no-img-element -- Thumbnail of the photo being viewed. */}
             <img src={includedPhoto.url} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
@@ -1092,11 +1158,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </div>}
           <input ref={photoInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" aria-label="Attach photos" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attachPhotos(files); }} />
 
-          {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "document" ? context.path : context.text}>{context.kind === "document" ? `File: ${context.name}` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
+          {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "selection" ? context.text : context.path}>{context.kind === "document" ? `File: ${context.name}` : context.kind === "comments" ? `Comments: ${context.name} (${commentsContextSummary(context)})` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : context.kind === "comments" ? `Remove comments: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
           <div className="libera-chat-composer flex flex-col gap-0.5">
           <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} quickPrompts={quickPrompts}
             {...(agentMode ? { placeholder: "Ask the agent to find, read or edit… Type @ for files" } : {})}
             onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }), false)}
+            commentTargets={commentTargets} onAttachComments={attachComments}
             onSend={() => void send()} onAttachFile={(file) => attachFile(file)} />
           <div className="libera-chat-composer-actions flex items-center justify-end"><div className="flex w-full items-center gap-1"><select
             aria-label="Reasoning effort" title="Reasoning effort"

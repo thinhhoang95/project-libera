@@ -17,6 +17,11 @@ function clip(text: string, limit: number) {
 }
 
 function describeContext(context: ChatContext, isLibraryFile: (path: string) => boolean) {
+  if (context.kind === "comments") {
+    return `<review_comments on="${escapeAttribute(context.path)}">
+${clip(context.text, MAX_SELECTION_CHARS)}
+</review_comments>`;
+  }
   if (context.kind === "selection") {
     return `<selection from="${escapeAttribute(context.path)}">\n${clip(context.text, MAX_SELECTION_CHARS)}\n</selection>`;
   }
