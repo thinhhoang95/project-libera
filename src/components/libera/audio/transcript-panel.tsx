@@ -6,6 +6,7 @@ import {
   ArrowUp,
   AudioLines,
   Check,
+  ChevronRight,
   ChevronsDown,
   Copy,
   Cpu,
@@ -457,6 +458,8 @@ export function TranscriptPanel({
   const [query, setQuery] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
   const [speakerFilter, setSpeakerFilter] = useState<number | null>(null);
+  // Speaker chips start folded away when there are many, so they don't push the transcript out of view.
+  const [speakersOpenChoice, setSpeakersOpenChoice] = useState<boolean | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
@@ -768,9 +771,23 @@ export function TranscriptPanel({
                 ))}
               </div>
             ) : null}
-            {transcript.speakers.length ? (
-              <div className="flex flex-wrap gap-1.5">
-                {transcript.speakers.map((_, index) => (
+            {transcript.speakers.length ? (() => {
+              const speakersOpen = speakersOpenChoice ?? transcript.speakers.length <= 4;
+              const shown = speakersOpen ? transcript.speakers.map((_, index) => index) : speakerFilter !== null ? [speakerFilter] : [];
+              return (
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                  aria-expanded={speakersOpen}
+                  onClick={() => setSpeakersOpenChoice(!speakersOpen)}
+                >
+                  <ChevronRight aria-hidden className={`h-3 w-3 transition-transform ${speakersOpen ? "rotate-90" : ""}`} />
+                  <Users aria-hidden className="h-3 w-3" /> {transcript.speakers.length} {transcript.speakers.length === 1 ? "speaker" : "speakers"}
+                </button>
+                {shown.length ? (
+              <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+                {shown.map((index) => (
                   <SpeakerChip
                     key={`${index}:${transcript.speakers[index].name}`}
                     index={index}
@@ -784,7 +801,10 @@ export function TranscriptPanel({
                   />
                 ))}
               </div>
-            ) : null}
+                ) : null}
+              </div>
+              );
+            })() : null}
             {payload.stale ? (
               <Notice action={<button type="button" className="font-medium text-accent hover:underline" onClick={() => setAgain(true)}>Transcribe again</button>}>
                 The recording changed after it was transcribed.
