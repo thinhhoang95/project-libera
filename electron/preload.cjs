@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
   selectSearchWeights: (kind) => ipcRenderer.invoke("setup:select-search-weights", kind),
+  checkTtsModel: (directory) => ipcRenderer.invoke("setup:check-tts-model", directory),
   selectSearchIndexFile: (mode) => ipcRenderer.invoke("setup:select-search-index-file", mode),
   revealSearchIndex: (filePath) => ipcRenderer.invoke("setup:reveal-search-index", filePath),
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
@@ -45,6 +46,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
 
 contextBridge.exposeInMainWorld("liberaExport", {
   saveMarkdownFile: (input) => ipcRenderer.invoke("export:markdown-file", input),
+  saveTextFile: (input) => ipcRenderer.invoke("export:text-file", input),
   exportMarkdownPdf: (input) => ipcRenderer.invoke("export:markdown-pdf", input),
 });
 

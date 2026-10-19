@@ -32,6 +32,13 @@ export function formatChatTimestamp(createdAt: string, now = new Date()) {
   return date.toDateString() === now.toDateString() ? time : `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
 }
 
+/**
+ * Asks the chat panel to quote a passage, with where it comes from: the
+ * transcript panel sends lines of a recording ("[3:05] Vy: …") this way.
+ */
+export const CHAT_QUOTE_EVENT = "libera:chat-quote";
+export type ChatQuoteDetail = { path: string; name: string; text: string };
+
 export function newDocumentContext(messages: ChatMessage[], document: ChatContext | null): ChatContext[] {
   return newChatContexts(messages, document ? [document] : []);
 }

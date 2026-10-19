@@ -235,6 +235,9 @@ function mergeOpenTabViewState(
 ): OpenTabViewState {
   return {
     ...currentViewState,
+    audio: patchViewState.audio
+      ? { ...currentViewState?.audio, ...patchViewState.audio }
+      : currentViewState?.audio,
     image: patchViewState.image
       ? { ...currentViewState?.image, ...patchViewState.image }
       : currentViewState?.image,
@@ -993,10 +996,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
   }
 
-  // Steps an image tab to another image in its folder, in place: the tab keeps
-  // its position and panel instead of a new tab opening for every photo.
+  // Steps an image or recording tab to another one in its folder, in place: the
+  // tab keeps its position and panel instead of a new tab opening for each.
   function showImageInTab(tabId: string, file: LiberaFileNode) {
-    if (file.fileType !== "image" || tabId === file.path) {
+    if ((file.fileType !== "image" && file.fileType !== "audio") || tabId === file.path) {
       return;
     }
 
@@ -1036,8 +1039,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return false;
     }
 
+    const time = resolvedLink.file.fileType === "audio" ? resolvedLink.metadata?.viewState?.audio?.currentTime : undefined;
     await openFile(resolvedLink.file, {
-      viewState: resolvedLink.metadata?.viewState,
+      // A link to a moment in a recording plays it from there.
+      viewState: time !== undefined
+        ? { audio: { currentTime: time, reveal: { seconds: time, nonce: Date.now() } } }
+        : resolvedLink.metadata?.viewState,
     });
     return true;
   }
@@ -1503,6 +1510,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       line,
       v: 1,
       viewState: {
+        audio:
+          selection.file.fileType === "audio"
+            ? { currentTime: viewState.audio?.currentTime }
+            : undefined,
         image:
           selection.file.fileType === "image"
             ? {
@@ -2330,11 +2341,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!savingDraftRef.current) setSaveDraftTabId(null);
   }
 
-  /** A new, empty Markdown file next to a PDF, named after it ("Paper.md", then "Paper (2).md", …). */
+  /** A new, empty Markdown file next to a PDF or recording, named after it ("Paper.md", then "Paper (2).md", …). */
   async function createMarkdownBesidePdf(pdfPath: string): Promise<LiberaFileNode> {
     const parts = pdfPath.split("/");
     const directory = parts.slice(0, -1).join("/");
-    const stem = (parts.at(-1) ?? "Document").replace(/\.pdf$/i, "") || "Document";
+    const stem = (parts.at(-1) ?? "Document").replace(/\.[^./]+$/, "") || "Document";
 
     for (let copy = 1; copy <= 50; copy += 1) {
       const name = copy === 1 ? `${stem}.md` : `${stem} (${copy}).md`;

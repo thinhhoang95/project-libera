@@ -9,7 +9,7 @@ export function pdfFindPhrase(text: string) {
 }
 
 /** How a file should open to show a search hit: the editor's one-shot reveal request. */
-export function searchRevealViewState(kind: SearchFileKind, hit: SearchHit): OpenTabViewState | undefined {
+export function searchRevealViewState(kind: SearchFileKind, hit: SearchHit, terms: string[] = []): OpenTabViewState | undefined {
   const nonce = Date.now();
   const { start, end, line, endLine, page } = hit.location;
 
@@ -24,6 +24,10 @@ export function searchRevealViewState(kind: SearchFileKind, hit: SearchHit): Ope
   }
   if (kind === "pdf" && page) {
     return { pdf: { reveal: { page, text: pdfFindPhrase(hit.text), nonce } } };
+  }
+  if (kind === "audio" && start !== undefined) {
+    // The passage can span minutes; the player goes on to the line that matched.
+    return { audio: { reveal: { seconds: start / 1000, end: end !== undefined ? end / 1000 : undefined, terms, nonce } } };
   }
   return undefined;
 }

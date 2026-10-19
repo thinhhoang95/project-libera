@@ -850,3 +850,58 @@ test("insertCitation puts [@key] at the caret in the source editor and queues an
   assert.equal(workspace.activeTab!.draft, "Hello[@smith2020] world");
   textarea.remove();
 });
+
+test("References uses native row menus for right-click and more actions", async () => {
+  const server = fakeServer(sampleLibrary());
+  server.citations = { byFile: { "Notes/paper.md": ["godel1931"] }, byKey: { godel1931: ["Notes/paper.md"] } };
+  type Input = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0];
+  const menus: Input[] = [];
+  let selection: string | null = "citing:0";
+  window.liberaMenu = { popup: async (input) => { menus.push(input); return selection; } };
+  try {
+    const { host, calls } = await renderPanel({ canCite: false });
+    const row = host.querySelector('[data-entry-id="ref_godel"]')!;
+    await act(async () => { row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 42, clientY: 80 })); });
+    await settle();
+    assert.deepEqual(calls.opened, ["Notes/paper.md"]);
+    assert.equal(menus[0].x, 42);
+    assert.equal(menus[0].y, 80);
+    const cite = menus[0].items.find((item) => "id" in item && item.id === "cite");
+    assert.ok(cite && "enabled" in cite && cite.enabled === false);
+    assert.equal(document.querySelector('[role="menu"]'), null);
+    selection = "open-pdf";
+    await click(byLabel(host, "Actions for godel1931"));
+    assert.deepEqual(calls.opened, ["Notes/paper.md", "Notes/papers/godel.pdf"]);
+    selection = null;
+    await click(byLabel(host, "Actions for godel1931"));
+    assert.equal(document.querySelector('[role="menu"]'), null, "dismissal does not open a web menu");
+    assert.equal(menus.length, 3);
+  } finally { delete window.liberaMenu; }
+});
+
+test("References native panel menu preserves styles, export choices and disabled actions", async () => {
+  const server = fakeServer(sampleLibrary());
+  type Input = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0];
+  const menus: Input[] = [];
+  let selection: string | null = null;
+  window.liberaMenu = { popup: async (input) => { menus.push(input); return selection; } };
+  try {
+    const { host } = await renderPanel();
+    await click(byLabel(host, "References menu"));
+    assert.equal(document.querySelector('[role="menu"]'), null);
+    const items = menus[0].items;
+    const styles = items.find((item) => "id" in item && item.id === "style");
+    assert.ok(styles && "submenu" in styles && styles.submenu?.some((item) => "checked" in item && item.checked));
+    const exports = items.find((item) => "id" in item && item.id === "export-document");
+    assert.ok(exports && "enabled" in exports && exports.enabled === false && exports.submenu!.length > 0);
+    selection = "auto-create:true";
+    await click(byLabel(host, "References menu"));
+    assert.equal(server.library.settings?.autoCreateForPdfs, true);
+    selection = "import";
+    await click(byLabel(host, "References menu"));
+    assert.ok(byLabel(host, "Add references"));
+    window.liberaMenu.popup = async () => { throw new Error("IPC unavailable"); };
+    await click(byLabel(host, "References menu"));
+    assert.ok(document.querySelector('[role="menu"][aria-label="References menu"]'), "IPC failure falls back to the web menu");
+  } finally { delete window.liberaMenu; }
+});

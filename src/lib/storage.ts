@@ -11,6 +11,7 @@ export {
   deleteFile,
   deleteFolder,
   getRawFile,
+  locateRawFile,
   moveFile,
   moveFileToDirectory,
   readLiberaFile,

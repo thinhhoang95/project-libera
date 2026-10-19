@@ -41,6 +41,7 @@ import {
 import type { ReferenceAttachment } from "@/lib/references/types";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
+import { VoiceMemoViewer } from "@/components/libera/audio/voice-memo-viewer";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
@@ -66,6 +67,7 @@ import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
 import type { PhotoEdits } from "@/lib/photo-edits";
 import type {
+  AudioTabViewState,
   ImageTabViewState,
   LatexTabViewState,
   MarkdownFileLinkRange,
@@ -156,6 +158,8 @@ type WorkspacePanelProps = {
   /** Convert PDF to Markdown: create the file beside the PDF, then save pages into it. */
   onCreateMarkdownBesidePdf: (pdfPath: string) => Promise<LiberaFileNode>;
   onWriteConvertedMarkdown: (path: string, content: string) => Promise<void>;
+  /** An unsaved Markdown tab with this content, saved into `directory` by default. */
+  onCreateUntitledMarkdown?: (fileName: string, content: string, directory: string) => void;
   onInsertExistingImage: (file: LiberaFileNode) => Promise<void>;
   onInsertFileLink: (
     selection: MarkdownFileLinkSelection,
@@ -554,6 +558,7 @@ const PANEL_CALLBACKS = [
   "onFinishVisualInsertion",
   "onCreateMarkdownBesidePdf",
   "onWriteConvertedMarkdown",
+  "onCreateUntitledMarkdown",
   "onInsertExistingImage",
   "onInsertFileLink",
   "onInsertFileLinkPlaceholder",
@@ -655,6 +660,7 @@ function WorkspacePanelContent({
   onFinishVisualInsertion,
   onCreateMarkdownBesidePdf,
   onWriteConvertedMarkdown,
+  onCreateUntitledMarkdown,
   onInsertExistingImage,
   onInsertFileLink,
   onInsertImage,
@@ -744,6 +750,15 @@ function WorkspacePanelContent({
     () => new Map(files.map((file) => [file.path, file])),
     [files],
   );
+  // The recordings beside this one in its folder, for previous and next.
+  const activeAudioFile = activeTab?.file.fileType === "audio" ? activeTab.file : undefined;
+  const audioSiblings = useMemo(() => {
+    if (!activeAudioFile) return [];
+    const folder = activeAudioFile.path.slice(0, activeAudioFile.path.lastIndexOf("/"));
+    return files
+      .filter((file) => file.fileType === "audio" && file.path.slice(0, file.path.lastIndexOf("/")) === folder)
+      .sort((first, second) => first.name.localeCompare(second.name, undefined, { numeric: true, sensitivity: "base" }));
+  }, [activeAudioFile, files]);
   const previewMarkdownDraft = useDebouncedPreviewContent(
     activeMarkdownDraft,
     activeTabId,
@@ -871,6 +886,17 @@ function WorkspacePanelContent({
       }
 
       onSetViewState({ image: patch }, activeTabId);
+    },
+    [activeTabId, onSetViewState],
+  );
+
+  const updateAudioViewState = useCallback(
+    (patch: AudioTabViewState) => {
+      if (!activeTabId) {
+        return;
+      }
+
+      onSetViewState({ audio: patch }, activeTabId);
     },
     [activeTabId, onSetViewState],
   );
@@ -2047,6 +2073,25 @@ function WorkspacePanelContent({
             onCompleteScreenshotSnip={(file) => onCompleteScreenshotSnip(file, markdownPreferences)}
           />
         </NoteMathMarkersProvider>
+      ) : activeTab.file.fileType === "audio" ? (
+        <VoiceMemoViewer
+          key={activeTab.id}
+          file={activeTab.file}
+          src={activeTab.rawUrl}
+          siblings={audioSiblings}
+          // Steps the tab to the other recording in place, as images do.
+          onShowSibling={(file) => onShowImage?.(file)}
+          initialViewState={activeTab.viewState?.audio}
+          onViewStateChange={updateAudioViewState}
+          notes={{
+            openUnsaved: (fileName, content) => onCreateUntitledMarkdown?.(fileName, content, activeTab.file.path.slice(0, activeTab.file.path.lastIndexOf("/"))),
+            saveBeside: async (content) => {
+              const file = await onCreateMarkdownBesidePdf(activeTab.file.path);
+              await onWriteConvertedMarkdown(file.path, content);
+              await onOpenFile({ ...file, size: content.length });
+            },
+          }}
+        />
       ) : (
         <iframe
           className="min-h-0 flex-1 bg-card"

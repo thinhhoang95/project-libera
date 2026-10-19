@@ -1,6 +1,10 @@
 import type { LiberaFileNode, LiberaFileType } from "@/lib/types";
 
 export type MarkdownLinkViewState = {
+  /** A moment in a recording, in seconds. */
+  audio?: {
+    currentTime?: number;
+  };
   image?: {
     fontSize?: number;
     panX?: number;
@@ -152,8 +156,20 @@ function splitMarkdownHref(href: string) {
   };
 }
 
+/** `t=73`, `t=73.5`, `t=1:13` or `t=1:02:03` (a media fragment) as seconds. */
+export function parseMediaTime(value: string | null) {
+  if (!value) return undefined;
+  const parts = value.split(",")[0].split(":").map(Number);
+  if (!parts.length || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) return undefined;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
 function parseMarkdownFileLinkMetadata(hash: string) {
   const params = new URLSearchParams(hash);
+  const time = parseMediaTime(params.get("t"));
+  if (time !== undefined && !params.has(LIBERA_LINK_HASH_KEY)) {
+    return { fileType: "audio", v: 1, viewState: { audio: { currentTime: time } } } satisfies MarkdownFileLinkMetadata;
+  }
   const encodedMetadata = params.get(LIBERA_LINK_HASH_KEY);
 
   if (!encodedMetadata) {
@@ -187,6 +203,12 @@ export function createMarkdownFileLinkDestination({
 
   if (!metadata) {
     return encodedPath;
+  }
+
+  // A moment in a recording reads as itself, like a media fragment: "memo.m4a#t=73".
+  if (metadata.fileType === "audio") {
+    const time = metadata.viewState?.audio?.currentTime;
+    return time !== undefined && time > 0 ? `${encodedPath}#t=${Math.floor(time)}` : encodedPath;
   }
 
   return `${encodedPath}#${LIBERA_LINK_HASH_KEY}=${base64UrlEncode(

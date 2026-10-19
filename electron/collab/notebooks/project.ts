@@ -29,6 +29,7 @@ import {
   availableName,
   decodeText,
   encodeText,
+  isNotFound,
   isShareablePath,
   movePath,
   pruneEmptyDirectories,
@@ -1024,7 +1025,7 @@ export class SharedProject {
           break;
         }
         case "write-blob": {
-          const bytes = base64Bytes(request.contentBase64);
+          const bytes = request.stagedFile !== undefined ? await this.takeStaged(request.stagedFile) : base64Bytes(request.contentBase64);
           const key = manifestPathKey(relative);
           const existing = [...this.entries.values()].find((entry) => manifestPathKey(entry.path) === key);
           if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
@@ -1094,6 +1095,26 @@ export class SharedProject {
       this.ctx.layoutChanged(this.info.projectId);
       return { paths: paths.map((item) => this.liberaPath(item)) };
     });
+  }
+
+  /**
+   * The bytes of a write-blob staged in `.libera/collab/incoming/` by Libera
+   * (files too large for a request body). Only a plain name inside that folder
+   * is accepted, and the file is removed once read.
+   */
+  private async takeStaged(name: unknown): Promise<Uint8Array> {
+    if (typeof name !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(name)) {
+      throw new ControlError(400, "bad-request", "write-blob needs the staged file's name in stagedFile.");
+    }
+    const file = path.join(this.info.root, ...STATE_DIRECTORY, "incoming", name);
+    try {
+      return new Uint8Array(await fs.readFile(file));
+    } catch (error) {
+      if (isNotFound(error)) throw new ControlError(404, "not-found", "The staged file is gone.");
+      throw error;
+    } finally {
+      await fs.rm(file, { force: true }).catch(() => undefined);
+    }
   }
 
   /** A new file (document or blob) on the server and on disk; the caller adds its manifest entry. */

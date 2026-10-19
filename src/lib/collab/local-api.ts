@@ -245,6 +245,12 @@ export interface FileOpRequest {
   content?: string;
   /** For write-blob: the file's bytes, base64. */
   contentBase64?: string;
+  /**
+   * For write-blob, instead of contentBase64 (for files too large for a
+   * request): the name of a file the caller wrote in the notebook's
+   * `.libera/collab/incoming/` folder. The host reads it and removes it.
+   */
+  stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
 }

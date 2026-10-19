@@ -23,6 +23,7 @@ import {
   Type,
   Underline,
   Undo2,
+  Volume2,
   Waves,
   ZoomIn,
   ZoomOut,
@@ -105,6 +106,7 @@ import {
 } from "@/lib/pdf-annotation-style";
 import { drawingBounds, isDrawingAnnotation, type PdfDrawingAnnotation } from "@/lib/pdf-drawing";
 import { normalizePdfHighlightQuote, pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
+import { speakMarkdown } from "@/lib/tts/player";
 import { rememberPdfPageLabels } from "@/components/libera/references/pdf-page-labels";
 import { PDF_CITATION_MIME, PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import type {
@@ -1704,7 +1706,7 @@ export function PdfViewer({
         left: clamp(
           first.left - bounds.left + scrollContainer.scrollLeft,
           8,
-          Math.max(8, scrollContainer.scrollWidth - 392),
+          Math.max(8, scrollContainer.scrollWidth - 424),
         ),
         top: top + scrollContainer.scrollTop,
       });
@@ -1744,6 +1746,15 @@ export function PdfViewer({
       ...(labels?.[page - 1]?.trim() ? { pageLabel: labels[page - 1].trim() } : {}),
       ...(endPage !== page ? { endPage, ...(labels?.[endPage - 1]?.trim() ? { endPageLabel: labels[endPage - 1].trim() } : {}) } : {}),
     };
+  }
+
+  function readSelectionAloud() {
+    const viewer = viewerRef.current;
+    const selection = window.getSelection();
+    const inViewer = !!viewer && !!selection && !selection.isCollapsed && !!selection.rangeCount && viewer.contains(selection.getRangeAt(0).commonAncestorContainer);
+    const text = inViewer ? selectionMarkdown() || normalizePdfHighlightQuote(selection!.toString()) : "";
+    setSelectionMenu(null);
+    if (text.trim()) speakMarkdown(text, { label: "PDF selection" });
   }
 
   function quoteSelection() {
@@ -2081,6 +2092,9 @@ export function PdfViewer({
             </button>
             <button type="button" className="pdf-selection-menu-action" aria-label="Quote and cite" title="Quote and cite in the note" onClick={quoteSelection}>
               <Quote aria-hidden className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" className="pdf-selection-menu-action" aria-label="Read out loud" title="Read out loud" onClick={readSelectionAloud}>
+              <Volume2 aria-hidden className="h-3.5 w-3.5" />
             </button>
           </div>
         ) : null}

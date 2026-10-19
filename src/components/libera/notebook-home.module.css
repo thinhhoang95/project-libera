@@ -120,6 +120,7 @@
 .kindChip[data-kind=text] { --kind: #4b6a88; }
 .kindChip[data-kind=image] { --kind: #29966c; }
 .kindChip[data-kind=pdf] { --kind: #d16d54; }
+.kindChip[data-kind=audio] { --kind: #c2477a; }
 .fileTags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
 /* Above the stretched open button so it takes its own clicks. */
 .editTags { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; font-size: 11px; color: var(--home-muted); opacity: 0; transition: opacity 120ms, background 120ms; }

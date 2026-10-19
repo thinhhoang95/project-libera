@@ -8,6 +8,7 @@ import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 // edits until its next full scan. Forward the host's files-changed paths to the
 // indexer, batched: the host already coalesces writes, and the indexer dedupes.
 const FORWARD_DELAY_MS = 1_000;
+const AUDIO_PATH = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
 
 export function useForwardSharedFileChanges(): void {
   useEffect(() => {
@@ -28,6 +29,18 @@ export function useForwardSharedFileChanges(): void {
     };
     const stop = subscribeHostEvents((event) => {
       if (event.t !== "files-changed" && event.t !== "tree-changed") return;
+      // Recordings' local sidecars (waveform, unshared transcript) follow renames and deletions.
+      if (event.t === "tree-changed") {
+        const moves = event.moves.filter((move) => AUDIO_PATH.test(move.from));
+        const removed = event.removed.filter((path) => AUDIO_PATH.test(path));
+        if (moves.length || removed.length) {
+          void fetch("/api/transcripts/sidecars", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ moves, removed }),
+          }).catch(() => undefined);
+        }
+      }
       const paths = event.t === "files-changed" ? event.paths : [...event.added, ...event.moves.flatMap((move) => [move.from, move.to]), ...event.removed];
       for (const path of paths) pending.add(path);
       timer ??= setTimeout(flush, FORWARD_DELAY_MS);

@@ -50,18 +50,23 @@ type LeftPanelProps = NotebookPanelProps & {
   references?: LeftPanelReferences;
 };
 
-const LEFT_PANEL_TABS: Array<{
+type LeftPanelRailTab = {
   icon: LucideIcon;
   id: LeftPanelTab;
   label: string;
-}> = [
-  { id: "workspaces", label: "Workspaces", icon: Layers3 },
+};
+
+const TOP_PANEL_TABS: LeftPanelRailTab[] = [
   { id: "notebook", label: "Notebook", icon: BookOpen },
   { id: "outlines", label: "Outlines", icon: ListTree },
   { id: "comments", label: "Comments", icon: MessageSquare },
-  { id: "gallery", label: "Image Gallery", icon: Images },
-  { id: "search", label: "Search", icon: ScanSearch },
   { id: "references", label: "References", icon: BookMarked },
+  { id: "gallery", label: "Image Gallery", icon: Images },
+];
+
+const BOTTOM_PANEL_TABS: LeftPanelRailTab[] = [
+  { id: "search", label: "Search", icon: ScanSearch },
+  { id: "workspaces", label: "Workspaces", icon: Layers3 },
 ];
 
 export function LeftPanel({
@@ -255,6 +260,29 @@ function LeftPanelRail({
   onSelectPanel: (panel: LeftPanelTab) => void;
   onToggleCollapsed: () => void;
 }) {
+  function renderTab(tab: LeftPanelRailTab) {
+    const Icon = tab.icon;
+    const label = tab.label;
+    const selected = activePanel === tab.id;
+
+    return (
+      <button
+        key={tab.id}
+        id={`left-panel-tab-${tab.id}`}
+        aria-controls={`left-panel-${tab.id}`}
+        aria-label={`${label} tab`}
+        aria-selected={selected}
+        className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
+        role="tab"
+        title={label}
+        type="button"
+        onClick={() => onSelectPanel(tab.id)}
+      >
+        <Icon aria-hidden className="h-4 w-4" />
+      </button>
+    );
+  }
+
   return (
     <div className="libera-glass-chrome flex w-12 shrink-0 flex-col bg-card">
       <div className="flex justify-center py-2">
@@ -275,34 +303,18 @@ function LeftPanelRail({
 
       <div
         aria-label="Left panel tabs"
-        className="flex flex-col items-center gap-1 py-2"
+        className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
         role="tablist"
       >
-        {LEFT_PANEL_TABS.map((tab) => {
-          const Icon = tab.icon;
-          const label = tab.label;
-          const selected = activePanel === tab.id;
-
-          return (
-            <button
-              key={tab.id}
-              id={`left-panel-tab-${tab.id}`}
-              aria-controls={`left-panel-${tab.id}`}
-              aria-label={`${label} tab`}
-              aria-selected={selected}
-              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              role="tab"
-              title={label}
-              type="button"
-              onClick={() => onSelectPanel(tab.id)}
-            >
-              <Icon aria-hidden className="h-4 w-4" />
-            </button>
-          );
-        })}
+        <div className="flex flex-col items-center gap-1">
+          {TOP_PANEL_TABS.map(renderTab)}
+        </div>
+        <div className="min-h-0 flex-1" />
+        <div className="flex flex-col items-center gap-1">
+          {BOTTOM_PANEL_TABS.map(renderTab)}
+        </div>
       </div>
 
-      <div className="min-h-0 flex-1" />
       <CollabRailButtons />
       <SidebarAppMenu collapsed onLogout={onLogout} />
     </div>

@@ -191,7 +191,7 @@ export function parseWorkspaceLibrary(value: unknown): WorkspaceLibrary {
   }
   function validSession(session: WorkspaceSession) {
     return session && typeof session.activeTabId === "string" && typeof session.selectedNotebookName === "string" && strings(session.expandedPaths) && Array.isArray(session.tabs) && session.tabs.every((tab) =>
-      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "latex", "text", "pdf", "image"].includes(tab.file.fileType) &&
+      tab && typeof tab.id === "string" && typeof tab.draft === "string" && typeof tab.saved === "string" && tab.file && typeof tab.file.path === "string" && typeof tab.file.name === "string" && typeof tab.file.notebook === "string" && ["markdown", "latex", "text", "pdf", "image", "audio"].includes(tab.file.fileType) &&
       (tab.gallery === undefined || (Boolean(tab.gallery) && typeof tab.gallery.photoId === "string")));
   }
   if (!library || library.version !== 1 || !Number.isFinite(library.updatedAt) || !Array.isArray(library.workspaces) ||

@@ -23,7 +23,7 @@ export function TagChip({ tag, onRemove }: { tag: string; onRemove?: () => void 
   );
 }
 
-export type FileKind = "markdown" | "slides" | "latex" | "bibtex" | "text" | "image" | "pdf";
+export type FileKind = "markdown" | "slides" | "latex" | "bibtex" | "text" | "image" | "pdf" | "audio";
 
 export function fileKind(file: Pick<LiberaFileNode, "fileType" | "name">): FileKind {
   if (file.fileType === "markdown") return isMarkdownSlidesPath(file.name) ? "slides" : "markdown";
@@ -39,6 +39,7 @@ export const FILE_KIND_LABELS: Record<FileKind, string> = {
   text: "Text file",
   image: "Image",
   pdf: "PDF document",
+  audio: "Voice memo",
 };
 
 /** Every tag in use, sorted, keeping the first spelling seen. */

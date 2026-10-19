@@ -13,8 +13,10 @@ import {
   PenLine,
   Search,
   Sparkles,
+  Volume2,
   X,
 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -1346,7 +1348,7 @@ export function MarkdownEditor({
     // Without a selection the menu offers Write with AI at the caret.
     event.preventDefault();
     const menuWidth = 288;
-    const menuHeight = (hasText ? 340 : 114) + (image ? 44 : 0);
+    const menuHeight = (hasText ? 384 : 114) + (image ? 44 : 0);
     setRewritePrompt("");
     setWritePrompt("");
 
@@ -1968,6 +1970,18 @@ export function MarkdownEditor({
         >
           {contextMenu.hasText ? (
             <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: "Selection" });
+                  setContextMenu(null);
+                }}
+              >
+                <Volume2 aria-hidden className="h-4 w-4" />
+                Read Out Loud
+              </button>
               <button
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 type="button"

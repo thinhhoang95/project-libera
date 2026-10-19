@@ -22,6 +22,8 @@ const PREFERENCE_KEYS = Object.freeze([
   "quickPrompts",
   "latexSnippets",
   "search",
+  "transcription",
+  "tts",
   "passwordHash",
 ]);
 

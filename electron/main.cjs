@@ -22,10 +22,12 @@ const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-prefe
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
 const { INDEX_FILE_NAME, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
+const { normalizeTranscriptionPreferences } = require("./transcription-preferences.cjs");
+const { inspectKokoroFolder, normalizeTtsPreferences } = require("./tts-preferences.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
-const { createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
+const { OPENROUTER_SPEECH_MODELS_URL, OPENROUTER_TRANSCRIPTION_MODELS_URL, createOpenRouterModelCatalog } = require("./openrouter-models.cjs");
 const { clearLoginCookie } = require("./login-cookies.cjs");
 const { writeWorkspaceRecovery, localWorkspaceRecoveryRoot } = require("./workspace-recovery.cjs");
 const { requestStateFlush } = require("./state-flush.cjs");
@@ -71,6 +73,8 @@ applyApplicationIdentity();
 let activeSetupPromise = null;
 let activeSetupWindow = null;
 let openRouterModelCatalog = null;
+let openRouterTranscriptionModelCatalog = null;
+let openRouterSpeechModelCatalog = null;
 let nextProcess = null;
 let mainWindow = null;
 let nextServerUrl = "";
@@ -396,6 +400,8 @@ function normalizedImportedPreferences(input) {
     // Backups made before snippets existed leave the saved snippets alone.
     ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
     ...(Object.hasOwn(input, "search") ? { search: normalizeSearchPreferences(input.search) } : {}),
+    ...(Object.hasOwn(input, "transcription") ? { transcription: normalizeTranscriptionPreferences(input.transcription) } : {}),
+    ...(Object.hasOwn(input, "tts") ? { tts: normalizeTtsPreferences(input.tts) } : {}),
     passwordHash,
   };
 }
@@ -503,6 +509,8 @@ function getConfigStatus(config = readConfig()) {
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
     search: normalizeSearchPreferences(config.search),
+    transcription: normalizeTranscriptionPreferences(config.transcription),
+    tts: normalizeTtsPreferences(config.tts),
     searchDefaultIndexFile: typeof config.dataDir === "string" && config.dataDir
       ? defaultSearchIndexFile({ adminRoot: path.join(config.dataDir, "users", ADMIN_USER), configPath: getConfigPath() })
       : "",
@@ -565,6 +573,34 @@ async function loadAiRewriteCustomInstructionFile(parentWindow) {
 }
 
 async function selectSearchWeights(parentWindow, kind) {
+  if (kind === "speech-models") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose the speech models folder",
+      message: "Choose an empty folder for Libera to download Parakeet and the pyannote speaker models into, or a folder that already holds them.",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
+  if (kind === "tts-model") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose the Kokoro model folder",
+      message: "Choose the extracted sherpa-onnx Kokoro folder, with model.onnx, voices.bin, tokens.txt and espeak-ng-data.",
+      properties: ["openDirectory"],
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
+  if (kind === "ffmpeg") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose ffmpeg",
+      message: "Choose the ffmpeg program, used to read voice memos in formats such as M4A and MP3.",
+      properties: ["openFile"],
+      ...(process.platform === "win32" ? { filters: [{ name: "Programs", extensions: ["exe"] }] } : {}),
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
   if (kind === "reading") {
     const result = await dialog.showOpenDialog(parentWindow, {
       title: "Choose the PDF reading model folder",
@@ -723,6 +759,8 @@ function validateSetupInput(input, existingConfig) {
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
     quickPrompts,
     search: normalizeSearchPreferences(input?.search ?? existingConfig.search),
+    transcription: normalizeTranscriptionPreferences(input?.transcription ?? existingConfig.transcription),
+    tts: normalizeTtsPreferences(input?.tts ?? existingConfig.tts),
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -778,6 +816,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:select-search-weights", (_event, kind) => selectSearchWeights(setupWindow, kind));
 
+    ipcMain.handle("setup:check-tts-model", (_event, directory) => inspectKokoroFolder(directory));
+
     ipcMain.handle("setup:select-search-index-file", (_event, mode) => selectSearchIndexFile(setupWindow, mode));
 
     ipcMain.handle("setup:reveal-search-index", (_event, filePath) => revealSearchIndex(filePath));
@@ -785,9 +825,22 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
     ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
 
     ipcMain.handle("setup:list-openrouter-models", async (_event, options) => {
-      openRouterModelCatalog ??= createOpenRouterModelCatalog({ cacheDir: app.getPath("userData") });
+      // Speech-to-text and text-to-speech models are listed apart from the chat models.
+      const catalog = options?.kind === "speech"
+        ? (openRouterSpeechModelCatalog ??= createOpenRouterModelCatalog({
+          cacheDir: app.getPath("userData"),
+          url: OPENROUTER_SPEECH_MODELS_URL,
+          cacheFileName: "openrouter-speech-models-cache.json",
+        }))
+        : options?.kind === "transcription"
+        ? (openRouterTranscriptionModelCatalog ??= createOpenRouterModelCatalog({
+          cacheDir: app.getPath("userData"),
+          url: OPENROUTER_TRANSCRIPTION_MODELS_URL,
+          cacheFileName: "openrouter-transcription-models-cache.json",
+        }))
+        : (openRouterModelCatalog ??= createOpenRouterModelCatalog({ cacheDir: app.getPath("userData") }));
       try {
-        return { ok: true, ...(await openRouterModelCatalog.list({ refresh: options?.refresh === true })) };
+        return { ok: true, ...(await catalog.list({ refresh: options?.refresh === true })) };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -836,6 +889,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         aiFunctions: validated.aiFunctions,
         quickPrompts: validated.quickPrompts,
         search: validated.search,
+        transcription: validated.transcription,
+        tts: validated.tts,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -855,6 +910,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:select-data-dir");
       ipcMain.removeHandler("setup:select-search-weights");
       ipcMain.removeHandler("setup:select-search-index-file");
+      ipcMain.removeHandler("setup:check-tts-model");
       ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
       ipcMain.removeHandler("setup:list-openrouter-models");
@@ -1403,6 +1459,23 @@ function installExportHandlers() {
     return { canceled: false, saveId, fileName: path.basename(result.filePath) };
   });
   ipcMain.handle("export:markdown-pdf", exportMarkdownPdf);
+  ipcMain.handle("export:text-file", async (event, input) => {
+    if (!input || typeof input.content !== "string" || typeof input.fileName !== "string" || input.content.length > 50 * 1024 * 1024) {
+      throw new Error("Invalid text file.");
+    }
+    const extensions = Array.isArray(input.extensions)
+      ? input.extensions.filter((extension) => typeof extension === "string" && /^[a-z0-9]{1,8}$/i.test(extension)).slice(0, 4)
+      : [];
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    const result = await dialog.showSaveDialog(parentWindow, {
+      defaultPath: path.join(app.getPath("documents"), path.basename(input.fileName)),
+      filters: extensions.length ? [{ name: typeof input.filterName === "string" ? input.filterName.slice(0, 60) : "Text", extensions }] : [],
+      title: "Save As",
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    await fsp.writeFile(result.filePath, input.content, "utf8");
+    return { canceled: false, fileName: path.basename(result.filePath) };
+  });
 }
 
 function getWindowFromIpcEvent(event) {
@@ -1721,6 +1794,8 @@ async function startNextServer(config) {
     LIBERA_ELECTRON: "1",
     LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
     LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
+    LIBERA_TRANSCRIPTION_WORKER_PATH: path.join(__dirname, "transcription-worker.mjs"),
+    LIBERA_TTS_WORKER_PATH: path.join(__dirname, "tts-worker.mjs"),
     ...collabHost.environment(),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",

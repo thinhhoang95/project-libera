@@ -1,6 +1,6 @@
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 
-export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
+export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf" | "audio";
 
 /** File types whose content is edited as text in a tab. */
 export function isTextFileType(fileType: LiberaFileType | undefined): fileType is "markdown" | "latex" | "text" {

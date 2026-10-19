@@ -1,16 +1,19 @@
 "use client";
 
-import { useMemo, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { FileText, Image as ImageIcon, ScrollText, Sparkles } from "lucide-react";
 import { findFileSuggestions, indexFileSuggestions } from "@/lib/file-suggestions";
 import type { LiberaFileNode } from "@/lib/types";
 import { insertQuickPrompt, matchingQuickPrompts, type QuickPrompt } from "@/lib/quick-prompts";
+import { DictationButton, DictationStatus, useDictation } from "@/components/libera/audio/dictation";
 
 type ComposerInvocation = { kind: "file" | "quick-prompt"; start: number; end: number; query: string };
 
-export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ for files or / for prompts", disabled, files, quickPrompts = [], composerRef, onChange, onAttachFile, onSend }: {
+export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up… Type @ for files or / for prompts", disabled, files, quickPrompts = [], composerRef, onChange, onAttachFile, onSend, dictation: canDictate = true }: {
   chatId: string; value: string; placeholder?: string; disabled: boolean; files: LiberaFileNode[];
   quickPrompts?: QuickPrompt[];
+  /** A microphone button that types what is said, transcribed like voice memos. */
+  dictation?: boolean;
   composerRef: RefObject<HTMLTextAreaElement | null>; onChange: (value: string) => void;
   onAttachFile: (file: LiberaFileNode) => Promise<boolean>; onSend: () => void;
 }) {
@@ -27,6 +30,23 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
   const matchCount = invocation?.kind === "file" ? fileMatches.length : promptMatches.length;
   const index = Math.min(selected, Math.max(0, matchCount - 1));
   const listId = `chat-suggestions-${chatId}`;
+  // Spoken text goes in at the caret, separated from the text around it by spaces.
+  const latest = useRef({ value, onChange });
+  useLayoutEffect(() => {
+    latest.current = { value, onChange };
+  }, [value, onChange]);
+  const dictation = useDictation((spoken) => {
+    const { value: current, onChange: change } = latest.current;
+    const input = composerRef.current;
+    const start = input && document.activeElement === input ? input.selectionStart : current.length;
+    const end = input && document.activeElement === input ? input.selectionEnd : current.length;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const inserted = `${before && !/\s$/.test(before) ? " " : ""}${spoken}${after && !/^\s/.test(after) ? " " : ""}`;
+    change(before + inserted + after);
+    const caret = before.length + inserted.length;
+    requestAnimationFrame(() => { composerRef.current?.focus(); composerRef.current?.setSelectionRange(caret, caret); });
+  });
 
   function locate(input: HTMLTextAreaElement) {
     const prefix = input.value.slice(0, input.selectionStart);
@@ -85,8 +105,10 @@ export function ChatFileComposer({ chatId, value, placeholder = "Ask a follow-up
         ><Sparkles aria-hidden className="mt-0.5 shrink-0 text-accent" size={14} /><span className="min-w-0"><span className="block truncate font-medium">/{quickPrompt.identifier}</span><span className="block truncate text-muted-foreground">{quickPrompt.prompt.replace(/\s+/g, " ").trim()}</span></span></button>) : <p className="p-2 text-xs text-muted-foreground">No matching quick prompts</p>}
       {invocation.kind === "file" && suggestions?.hasMore && <p className="p-2 text-xs text-muted-foreground">Showing the first 50 matches. Keep typing to narrow the results.</p>}
     </div>}
+    {canDictate && <DictationStatus dictation={dictation} />}
+    {canDictate && <span className="absolute bottom-2 right-2 z-10"><DictationButton dictation={dictation} disabled={disabled || loading} /></span>}
     <textarea ref={composerRef} aria-label="Chat prompt" aria-autocomplete="list" aria-controls={invocation ? listId : undefined} aria-activedescendant={invocation && matchCount ? `${listId}-${index}` : undefined}
-      placeholder={placeholder} rows={1} className="block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent"
+      placeholder={placeholder} rows={1} className={`block w-full resize-none rounded-lg border border-border bg-muted p-3 text-sm outline-none focus:border-accent ${canDictate ? "pr-10" : ""}`}
       value={value} disabled={disabled || loading} onChange={(event) => { onChange(event.target.value); locate(event.currentTarget); }}
       onSelect={(event) => locate(event.currentTarget)} onBlur={() => setInvocation(null)}
       onKeyDown={(event) => {

@@ -112,7 +112,24 @@ export type TextTabViewState = {
   reveal?: { line: number; endLine?: number; nonce: number };
 };
 
+export type AudioTabViewState = {
+  /** Where playback was, in seconds. */
+  currentTime?: number;
+  playbackRate?: number;
+  volume?: number;
+  transcriptOpen?: boolean;
+  /** Width of the transcript panel in pixels. */
+  transcriptWidth?: number;
+  followPlayback?: boolean;
+  /**
+   * One-shot request (Global Search) to play a passage: from the first of its
+   * segments with one of `terms`, or from `seconds` when none has.
+   */
+  reveal?: { seconds: number; end?: number; terms?: string[]; nonce: number };
+};
+
 export type OpenTabViewState = {
+  audio?: AudioTabViewState;
   image?: ImageTabViewState;
   latex?: LatexTabViewState;
   markdown?: MarkdownTabViewState;

@@ -6,7 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, MessageSquarePlus, PenLine, Rows3, Sparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, MessageSquarePlus, PenLine, Rows3, Sparkles, Volume2 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
@@ -309,6 +310,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
         }}>
         {writeOnly ? writeForm : null}
         {popup.kind === "context" && !writeOnly ? <>
+          <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => { speakMarkdown(getTiptapSelectionMarkdown(editor, popup), { label: "Selection" }); setPopup(null); }}><Volume2 aria-hidden className="h-4 w-4" />Read Out Loud</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!!working || !hasText} onClick={() => void runAi("format")}><Sparkles aria-hidden className="h-4 w-4" />AI Format</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canIndent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "indent"); setPopup(null); editor.commands.focus(); }}><ListIndentIncrease aria-hidden className="h-4 w-4" />Indent Headings</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canUnindent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "unindent"); setPopup(null); editor.commands.focus(); }}><ListIndentDecrease aria-hidden className="h-4 w-4" />Unindent Headings</button>

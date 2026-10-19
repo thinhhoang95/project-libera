@@ -1,10 +1,11 @@
+import { formatClock } from "@/lib/transcription/format";
 import type { LiberaFileNode, LiberaFileType } from "@/lib/types";
 
 /** Shared by the Global Search API and its client. Nothing here may touch the server. */
 
 /** A library file type, or "reference": an entry of a notebook's References library. */
 export type SearchFileKind = LiberaFileType | "reference";
-export const SEARCH_FILE_KINDS: SearchFileKind[] = ["markdown", "pdf", "latex", "text", "image", "reference"];
+export const SEARCH_FILE_KINDS: SearchFileKind[] = ["markdown", "pdf", "latex", "text", "image", "audio", "reference"];
 
 /** Where an indexed record comes from: library files, gallery photos, or References entries. */
 export type SearchSource = "library" | "gallery" | "references";
@@ -36,7 +37,10 @@ export type SearchRequest = {
   limit?: number;
 };
 
-/** Where a hit is inside its file. Offsets and lines refer to the file's source text. */
+/**
+ * Where a hit is inside its file. Offsets and lines refer to the file's source
+ * text; for a recording, `start` and `end` are milliseconds into it.
+ */
 export type SearchLocation = {
   page?: number;
   line?: number;
@@ -209,6 +213,8 @@ export function searchKindLabel(kind: SearchFileKind) {
       return "Text & code";
     case "image":
       return "Image";
+    case "audio":
+      return "Voice memo";
     case "reference":
       return "Reference";
   }
@@ -216,6 +222,11 @@ export function searchKindLabel(kind: SearchFileKind) {
 
 export function searchLocationLabel(kind: SearchFileKind, location: SearchLocation) {
   const parts: string[] = [];
+  if (kind === "audio") {
+    if (location.start !== undefined) parts.push(formatClock(location.start / 1000));
+    if (location.section) parts.push(location.section);
+    return parts.join(" · ");
+  }
   if (location.page) parts.push(`Page ${location.page}`);
   if (location.section) parts.push(location.section);
   if (!location.page && location.line && kind !== "markdown") {
@@ -289,4 +300,33 @@ export function snippetWindow(text: string, terms: string[], length = 280) {
     if (space > start + length / 2) end = space;
   }
   return { text: compact.slice(start, end), clippedStart: start > 0, clippedEnd: end < compact.length };
+}
+
+/**
+ * `speaker:Name` filters in a search (`budget speaker:Vy`, `speaker:"Speaker 2"`):
+ * they limit it to voice memos, to passages where that speaker talks. Returns
+ * the names and the query without them.
+ */
+export function extractSpeakerFilters(parts: SearchQueryPart[]): { parts: SearchQueryPart[]; speakers: string[] } {
+  const speakers: string[] = [];
+  const stripped = parts.map((part) => part.type !== "text" ? part : {
+    ...part,
+    text: part.text.replace(/(?:^|\s)speaker:(?:"([^"]*)"?|(\S+))/gi, (_match, quoted: string | undefined, bare: string | undefined) => {
+      const name = (quoted ?? bare ?? "").trim();
+      if (name) speakers.push(name);
+      return " ";
+    }),
+  });
+  return { parts: stripped, speakers };
+}
+
+/** Whether a voice memo passage ("Vy: …" lines) has a line by one of these speakers, by the start of their name. */
+export function passageHasSpeaker(text: string, speakers: string[]) {
+  const wanted = speakers.map((speaker) => foldText(speaker).folded.trim()).filter(Boolean);
+  return text.split("\n").some((line) => {
+    const colon = line.indexOf(": ");
+    if (colon <= 0) return false;
+    const name = foldText(line.slice(0, colon)).folded;
+    return wanted.some((speaker) => name.startsWith(speaker));
+  });
 }

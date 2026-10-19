@@ -1,11 +1,12 @@
 "use client";
 
-import { FileText, Image as ImageIcon, PanelTop, ScrollText } from "lucide-react";
+import { FileAudio, FileText, Image as ImageIcon, PanelTop, ScrollText } from "lucide-react";
 import type {
   MarkdownFileLinkSelection,
   OpenTab,
   OpenTabViewState,
 } from "@/components/libera/types";
+import { formatClock } from "@/lib/transcription/format";
 import type { LiberaFileNode } from "@/lib/types";
 
 export type MarkdownFileLinkPopupOption = {
@@ -37,6 +38,10 @@ function fileIcon(file: LiberaFileNode) {
 
   if (file.fileType === "pdf") {
     return <ScrollText aria-hidden className="h-4 w-4" />;
+  }
+
+  if (file.fileType === "audio") {
+    return <FileAudio aria-hidden className="h-4 w-4" />;
   }
 
   return <FileText aria-hidden className="h-4 w-4" />;
@@ -151,6 +156,10 @@ function currentViewSubtitle(tab: OpenTab) {
     const zoom = Math.round((tab.viewState?.image?.zoom ?? 1) * 100);
 
     return `Current image view · ${zoom}%`;
+  }
+
+  if (tab.file.fileType === "audio") {
+    return `Current position · ${formatClock(tab.viewState?.audio?.currentTime ?? 0)}`;
   }
 
   const line = tab.viewState?.markdown?.line;

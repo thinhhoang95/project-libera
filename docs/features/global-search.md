@@ -9,7 +9,7 @@ Open **Search** in the left rail (⌘/Ctrl+6), or press ⌘/Ctrl+Shift+F anywher
 - Type what you are looking for in your own words. Results appear as you type; Enter also saves the search under **Recent** in the left panel.
 - Put words in quotes to require the exact phrase.
 - Add an image to search with it: paste or drop one into the box, or use the image button (from your computer, the Image Gallery, or your notebooks). Images sit in the text as chips, so a query reads in order: “photos like [image] but at night”. A result's **Find similar images** starts such a search.
-- Filter by kind: Notes, PDFs, LaTeX, Text & code, Images. With **Images** the photos show as a grid; otherwise matching photos show in a strip above the documents.
+- Filter by kind: Notes, PDFs, LaTeX, Text & code, Images, Voice memos, References. Voice memos are indexed through their transcripts, never their audio; see [Voice memos](voice-memos.md). With **Images** the photos show as a grid; otherwise matching photos show in a strip above the documents.
 - ↑ ↓ move through the passages, Enter opens one, ⌘/Ctrl+Enter opens it to the right, Esc returns to the box (Esc in an empty box closes Search).
 
 Each result is a file with its best passages, their location (page, section, lines) and how close they are to the query. The preview shows the passage in context: rendered Markdown with the passage marked, LaTeX and code with line numbers, the PDF page with the passage boxed, or the photo with its prompt.

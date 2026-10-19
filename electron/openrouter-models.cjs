@@ -2,10 +2,20 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+// The default listing leaves out speech-to-text models.
+const OPENROUTER_TRANSCRIPTION_MODELS_URL = "https://openrouter.ai/api/v1/models?output_modalities=transcription";
+// Text-to-speech models, for Read aloud.
+const OPENROUTER_SPEECH_MODELS_URL = "https://openrouter.ai/api/v1/models?output_modalities=speech";
 const OPENROUTER_MODELS_CACHE_FILE_NAME = "openrouter-models-cache.json";
 const OPENROUTER_MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const OPENROUTER_MODELS_FETCH_TIMEOUT_MS = 15_000;
 const MAX_OPENROUTER_MODELS = 2000;
+
+function voiceList(input) {
+  return Array.isArray(input)
+    ? input.filter((voice) => typeof voice === "string" && voice.trim() && voice.length <= 120).map((voice) => voice.trim()).slice(0, 500)
+    : [];
+}
 
 function normalizeOpenRouterModels(input) {
   const entries = Array.isArray(input?.data) ? input.data : Array.isArray(input) ? input : [];
@@ -25,6 +35,8 @@ function normalizeOpenRouterModels(input) {
         ? Number(entry.context_length ?? entry.contextLength)
         : 0,
       vision: Array.isArray(inputModalities) ? inputModalities.includes("image") : entry.vision === true,
+      // Text-to-speech models name their voices, for Read aloud's voice suggestions.
+      ...(voiceList(entry.supported_voices ?? entry.voices).length ? { voices: voiceList(entry.supported_voices ?? entry.voices) } : {}),
     });
     if (models.length >= MAX_OPENROUTER_MODELS) break;
   }
@@ -37,8 +49,14 @@ function normalizeOpenRouterModels(input) {
  * memory and on disk for a day; when OpenRouter is unreachable the last cached
  * list is returned (marked stale) so suggestions keep working offline.
  */
-function createOpenRouterModelCatalog({ cacheDir, fetchImpl = globalThis.fetch, now = Date.now }) {
-  const cacheFile = path.join(cacheDir, OPENROUTER_MODELS_CACHE_FILE_NAME);
+function createOpenRouterModelCatalog({
+  cacheDir,
+  fetchImpl = globalThis.fetch,
+  now = Date.now,
+  url = OPENROUTER_MODELS_URL,
+  cacheFileName = OPENROUTER_MODELS_CACHE_FILE_NAME,
+}) {
+  const cacheFile = path.join(cacheDir, cacheFileName);
   let memory = null;
   let inflight = null;
 
@@ -53,7 +71,7 @@ function createOpenRouterModelCatalog({ cacheDir, fetchImpl = globalThis.fetch, 
   }
 
   async function fetchRemote() {
-    const response = await fetchImpl(OPENROUTER_MODELS_URL, {
+    const response = await fetchImpl(url, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(OPENROUTER_MODELS_FETCH_TIMEOUT_MS),
     });
@@ -86,6 +104,8 @@ function createOpenRouterModelCatalog({ cacheDir, fetchImpl = globalThis.fetch, 
 
 module.exports = {
   OPENROUTER_MODELS_CACHE_FILE_NAME,
+  OPENROUTER_SPEECH_MODELS_URL,
+  OPENROUTER_TRANSCRIPTION_MODELS_URL,
   OPENROUTER_MODELS_CACHE_TTL_MS,
   normalizeOpenRouterModels,
   createOpenRouterModelCatalog,

@@ -1,4 +1,4 @@
-import { LogOut } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { MouseEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
@@ -72,6 +72,12 @@ export function SidebarAppMenu({
         ...point,
         items: [
           {
+            id: "preferences",
+            label: "Preferences…",
+            enabled: Boolean(window.liberaPreferences),
+          },
+          { type: "separator" },
+          {
             id: "toggle-dark-mode",
             label: "Dark Mode",
             type: "checkbox",
@@ -85,7 +91,9 @@ export function SidebarAppMenu({
 
     setMenuOpen(false);
 
-    if (selectedItemId === "toggle-dark-mode") {
+    if (selectedItemId === "preferences") {
+      void window.liberaPreferences?.open();
+    } else if (selectedItemId === "toggle-dark-mode") {
       toggleDarkMode();
     } else if (selectedItemId === "about") {
       openAboutDialog();
@@ -110,7 +118,7 @@ export function SidebarAppMenu({
               type="button"
               onClick={(event) => void openMenu(event)}
             >
-              L
+              <Settings aria-hidden className="h-4 w-4" />
             </button>
             <button
               aria-label="Logout"

@@ -45,6 +45,7 @@ import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
+import { ReadAloudBar } from "@/components/libera/read-aloud";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -252,7 +253,7 @@ export function LiberaApp({
   }
 
   // Global Search opens a hit at its passage: the page, section or lines.
-  function openSearchResult({ result, hit }: SearchEntry, placement: "tab" | "right") {
+  function openSearchResult({ result, hit, terms }: SearchEntry, placement: "tab" | "right") {
     setActiveLeftPanel(lastCanvasPanelRef.current);
     if (result.source === "gallery") {
       if (result.photo) workspace.openGalleryPhoto(galleryPhotoFromSearch(result.photo), placement);
@@ -270,7 +271,7 @@ export function LiberaApp({
     const file = workspace.files.find((candidate) => candidate.path === result.path) ?? result.file;
     if (!file) return;
     const target = result.hits[hit] ?? result.hits[0];
-    void workspace.openFile(file, { viewState: searchRevealViewState(result.kind, target), placement });
+    void workspace.openFile(file, { viewState: searchRevealViewState(result.kind, target, terms), placement });
   }
 
   // Search only what the active workspace shows. Without a workspace or hidden
@@ -412,6 +413,7 @@ export function LiberaApp({
         onFinishVisualInsertion={workspace.finishVisualInsertion}
         onCreateMarkdownBesidePdf={workspace.createMarkdownBesidePdf}
         onWriteConvertedMarkdown={workspace.writeConvertedMarkdown}
+        onCreateUntitledMarkdown={(fileName, content, directory) => workspace.createUntitledFile(directory.split("/")[0], directory, { fileName, content })}
         onInsertExistingImage={workspace.insertExistingMarkdownImage}
         onInsertFileLink={workspace.insertMarkdownFileLink}
         onInsertFileLinkPlaceholder={workspace.insertMarkdownFileLinkPlaceholder}
@@ -704,6 +706,7 @@ export function LiberaApp({
       />
       <ReviewPopover />
       <PdfQuoteCiteHost />
+      <ReadAloudBar />
     </main>
     </CollabProvider>
     </MarkdownReviewProvider>

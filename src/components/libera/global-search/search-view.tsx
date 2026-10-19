@@ -59,6 +59,7 @@ const KIND_FILTERS: Array<{ id: KindFilter; label: string }> = [
   { id: "latex", label: "LaTeX" },
   { id: "text", label: "Text & code" },
   { id: "image", label: "Images" },
+  { id: "audio", label: "Voice memos" },
   { id: "reference", label: "References" },
 ];
 
@@ -255,7 +256,7 @@ export function SearchView({
   function openSelected(placement: "tab" | "right") {
     if (selectedEntry) {
       rememberSearch(parts);
-      onOpenResult(selectedEntry, placement);
+      onOpenResult({ ...selectedEntry, terms: response?.terms }, placement);
     }
   }
 
@@ -428,7 +429,7 @@ export function SearchView({
                 }}
                 onOpen={(entry, placement) => {
                   rememberSearch(parts);
-                  onOpenResult(entry, placement);
+                  onOpenResult({ ...entry, terms: response.terms }, placement);
                 }}
               />
             </div>
@@ -439,7 +440,7 @@ export function SearchView({
                 mathMarkers={mathMarkers}
                 onOpen={(entry, placement) => {
                   rememberSearch(parts);
-                  onOpenResult(entry, placement);
+                  onOpenResult({ ...entry, terms: response.terms }, placement);
                 }}
                 onFindSimilar={findSimilar}
               />

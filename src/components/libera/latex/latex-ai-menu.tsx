@@ -2,7 +2,8 @@
 
 import { toggleComment } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
-import { BookmarkPlus, ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareText, PenLine, Scissors, Sparkles, Wand2 } from "lucide-react";
+import { BookmarkPlus, ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareText, PenLine, Scissors, Sparkles, Volume2, Wand2 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { IncludeDocumentContextCheckbox } from "@/components/libera/ai-document-context-preference";
@@ -143,6 +144,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
           <MessageSquareText aria-hidden className="h-4 w-4" />Toggle Comment
           <kbd className="ml-auto text-xs font-normal text-muted-foreground">⌘/</kbd>
         </button>
+        <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => { onClose(); speakMarkdown(view.state.sliceDoc(menu.from, menu.to), { label: "Selection", format: /\.(?:tex|sty|cls|ltx)$/i.test(documentPath) ? "latex" : "plain" }); }}><Volume2 aria-hidden className="h-4 w-4" />Read Out Loud</button>
         <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => void clipboard("cut")}><Scissors aria-hidden className="h-4 w-4" />Cut</button>
         <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => void clipboard("copy")}><Copy aria-hidden className="h-4 w-4" />Copy</button>
         <button type="button" role="menuitem" className={itemClass} onClick={() => void clipboard("paste")}><ClipboardPaste aria-hidden className="h-4 w-4" />Paste</button>

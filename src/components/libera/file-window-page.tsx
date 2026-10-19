@@ -5,6 +5,7 @@ import { encodeFilePath } from "@/components/libera/api-client";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
+import { ReadAloudBar } from "@/components/libera/read-aloud";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
 // A PDF or image tab duplicated into its own window. The viewer is fully
@@ -47,6 +48,7 @@ export function FileWindowPage({
           )}
         </NoteMathMarkersProvider>
       </div>
+      <ReadAloudBar />
     </main>
   );
 }

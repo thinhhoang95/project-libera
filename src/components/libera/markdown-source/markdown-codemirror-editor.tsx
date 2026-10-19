@@ -43,6 +43,7 @@ import { referenceKeyResolver, useReferenceRender } from "../references/referenc
 import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "../references/pdf-quote-cite";
 import { quoteBlockInsertion } from "@/lib/references/pdf-quote";
 import type { MarkdownSourceEditorProps } from "./types";
+import { speakMarkdown } from "@/lib/tts/player";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
  * textarea editor's props, keyboard shortcuts, menus and draft flow, and
@@ -860,6 +861,10 @@ export function MarkdownCodeMirrorEditor({
           onRewrite={(prompt) => runMenuAction((menu) => { void onAiRewriteSelection({ start: menu.start, end: menu.end }, prompt); })}
           onWrite={(prompt) => runMenuAction((menu) => { void onAiWriteAt(menu.end, prompt); })}
           onImageToMarkdown={() => runMenuAction((menu) => { if (menu.image && !aiWorking) void onAiImageToMarkdown(menu.image); })}
+          onReadAloud={() => runMenuAction((menu) => {
+            const text = viewRef.current?.state.sliceDoc(menu.start, menu.end) ?? "";
+            if (text.trim()) speakMarkdown(text, { label: "Selection" });
+          })}
         />
       ) : null}
 

@@ -352,6 +352,31 @@ Search combines meaning and exact words. Meaning comes from Google's EmbeddingGe
 
 See [docs/features/global-search.md](docs/features/global-search.md) for details and measured speeds.
 
+## Voice memos
+
+Upload recordings (M4A, MP3, WAV, OGG, FLAC, …) to a notebook and open them in a player with a waveform, transport controls and, beside it, a timestamped transcript with who said what. Transcribe on this computer with NVIDIA Parakeet TDT 0.6B v3, or with an OpenRouter speech-to-text model such as `openai/whisper-large-v3`; speakers are told apart on this computer with pyannote either way. Long recordings are cut at quiet moments into pieces and joined back on one timeline. Transcripts are sidecars that follow their recording, are found by Global Search (the audio itself is never indexed) and can be searched within the panel. Like the other models, the speech models stay outside the app, in a folder chosen in Preferences → Speech, which also sets the voice memo and dictation engines.
+
+AI Chat reads the transcript of the memo you are playing; quote lines from the transcript with ⌘/Ctrl+Shift+L. Search within a transcript or in Global Search with `speaker:Name`. Export transcripts as Markdown (a new note, a note beside the recording, or a file), plain text, SRT or WebVTT, and link a note to a moment (`memo.m4a#t=185`). In shared notebooks, recordings sync as blobs and transcripts as companion files every member sees. AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite also take dictated prompts through the same speech-to-text engines, and the agent finds memos by searching their transcripts.
+
+See [docs/features/voice-memos.md](docs/features/voice-memos.md) for details.
+
+## Read aloud
+
+Have Libera read text out loud: a selection in any editor or PDF, or the AI's replies. Markup is cleaned up first, so headings, emphasis, list bullets, link URLs and citations are not spoken, code blocks are said as "code omitted" and math as "equation".
+
+- **Editors.** Select text and choose **Read Out Loud** from the right-click menu in the Visual (TipTap) editor, both Markdown Source editors (textarea and CodeMirror), the LaTeX editor, and the code editor used for every other text file. In `.tex` files, comments, `\cite`/`\ref`/`\label` and markup commands are dropped and wrapped source lines are read as one paragraph; code and plain text are read as written. The code editor's right-click menu also has Cut, Copy and Paste.
+- **PDFs.** Select text and press the speaker button (**Read out loud**) in the selection toolbar, next to Copy and Quote and cite. The selection is read as the same clean text that Copy produces.
+- **AI Chat and Agent.** Each finished reply has a speaker button beside Copy, which becomes a stop button while that reply is read. **Auto Read** in the chat's ⋯ menu reads every reply aloud as soon as the model finishes; stopped or failed replies are skipped. The setting is remembered on this computer.
+- **Playback bar.** While something is read, a bar at the bottom of the window shows progress with **Pause** and **Stop**, and explains any failure (no API key, missing model folder, provider error). Starting something new stops what was playing. Speech starts after the first sentence: the text is read in short passages while the next ones are prepared.
+
+Choose the engine in Preferences → **Read Aloud**:
+
+- **OpenRouter** (default). Any OpenRouter text-to-speech model; the default `hexgrad/kokoro-82m` costs well under a dollar per million characters. The voice field suggests the chosen model's voices (`af_heart` by default).
+- **This computer.** Kokoro 82M (Apache-2.0) through sherpa-onnx, the runtime voice memos already use; nothing leaves the computer. Like the other models, the weights stay outside the app: extract a sherpa-onnx Kokoro release (`kokoro-multi-lang-v1_0`, its int8 variant, or `kokoro-en-v0_19`) and choose the folder. 53 voices across American and British English, Spanish, French, Hindi, Italian, Japanese, Portuguese and Chinese.
+- **Speed** from 0.75× to 2×. Changes apply without restarting. Web deployments use the `LIBERA_TTS_*` variables instead.
+
+See [docs/features/read-aloud.md](docs/features/read-aloud.md) for the user guide and [docs/read-aloud/implementation.md](docs/read-aloud/implementation.md) for how it is built and how to extend it.
+
 ## PDF to Markdown
 
 Read PDF pages, scanned books, and images into Markdown on this computer, with no cloud service. Line breaks, page numbers, running headers, and words hyphenated across lines or pages are cleaned up. Tables, formulas (with your math markers), lists, code, and figures come out as Markdown.

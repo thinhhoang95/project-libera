@@ -32,6 +32,9 @@ import {
 import { pruneUnusedMarkdownImageAssets } from "@/lib/storage/markdown-assets";
 import {
   assertSafeSegment,
+  audioSidecarDirectories,
+  audioPeaksPath,
+  audioSidecarPaths,
   ensureAdminRoot,
   filePathFromParts,
   imageAnnotationsPath,
@@ -59,6 +62,7 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { copyTranscript } from "@/lib/storage/transcripts";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
@@ -270,6 +274,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, nextPath);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
@@ -341,6 +346,7 @@ export async function archiveFolder(relativePath: string) {
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, available.path);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(
     markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
@@ -370,6 +376,9 @@ export async function deleteFolder(relativePath: string) {
   await rm(targetPath, { recursive: true });
   await deletePdfAnnotationDirectory(current.notebook, current.pathParts);
   await deletePdfTextCacheDirectory(current.notebook, current.pathParts);
+  for (const directory of audioSidecarDirectories(current.notebook, current.pathParts)) {
+    await rm(directory, { force: true, recursive: true });
+  }
   await rm(markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts), {
     force: true,
     recursive: true,
@@ -541,6 +550,10 @@ export async function deleteFile(relativePath: string) {
     await rm(legacyImageAnnotationsPath(notebook, name), { force: true });
   }
 
+  if (fileType === "audio") {
+    for (const sidecar of audioSidecarPaths(notebook, pathParts)) await rm(sidecar, { force: true });
+  }
+
   if (fileType === "markdown") {
     await rm(markdownAssetsDirectoryPathFromParts(notebook, pathParts), {
       force: true,
@@ -641,6 +654,23 @@ export async function getRawFile(relativePath: string) {
   };
 }
 
+/** Transcripts and waveforms of the recordings in a renamed or archived folder. */
+/** Where a raw file is, without reading it, so large recordings can be streamed in ranges. */
+export async function locateRawFile(relativePath: string) {
+  await ensureAdminRoot();
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+  const fileType = assertSupportedFileName(name);
+  const node = await getFileNode(notebook, pathParts);
+  return { absolutePath: filePathFromParts(notebook, pathParts), contentType: getContentType(name, fileType), fileType, node };
+}
+
+async function moveAudioSidecarDirectories(notebook: string, currentParts: string[], nextParts: string[]) {
+  const next = audioSidecarDirectories(notebook, nextParts);
+  for (const [index, directory] of audioSidecarDirectories(notebook, currentParts).entries()) {
+    await moveFileIfExists(directory, next[index]);
+  }
+}
+
 async function moveRelatedMetadata(
   currentNotebook: string,
   currentName: string,
@@ -679,6 +709,15 @@ async function moveRelatedMetadata(
   } else if (currentFileType === "image") {
     await rm(imageAnnotationsPath(currentNotebook, currentName), { force: true });
     await rm(legacyImageAnnotationsPath(currentNotebook, currentName), { force: true });
+  }
+
+  if (currentFileType === "audio") {
+    const current = audioSidecarPaths(currentNotebook, currentPathParts);
+    const next = audioSidecarPaths(nextNotebook, nextPathParts);
+    for (const [index, sidecar] of current.entries()) {
+      if (nextFileType === "audio") await moveFileIfExists(sidecar, next[index]);
+      else await rm(sidecar, { force: true });
+    }
   }
 
   if (currentFileType === "markdown" && nextFileType === "markdown") {
@@ -735,6 +774,12 @@ async function copyRelatedMetadata(
       imageAnnotationsPath(currentNotebook, currentName),
       imageAnnotationsPath(nextNotebook, nextName),
     );
+  }
+
+  if (currentFileType === "audio") {
+    // The waveform is a local cache; the transcript may be a shared notebook's companion.
+    await copyFileIfExists(audioPeaksPath(currentNotebook, currentPathParts), audioPeaksPath(nextNotebook, nextPathParts));
+    await copyTranscript(relativeFilePath(currentNotebook, currentPathParts), relativeFilePath(nextNotebook, nextPathParts));
   }
 
   if (currentFileType === "markdown") {

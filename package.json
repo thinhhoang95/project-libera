@@ -1,7 +1,7 @@
 {
   "name": "project-libera",
   "productName": "Libera for Vy Tran",
-  "version": "6.5.0",
+  "version": "7.0.0",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -84,6 +84,7 @@
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "sharp": "^0.34.5",
+    "sherpa-onnx-node": "1.13.8",
     "sqlite-vec": "^0.1.9",
     "unified": "^11.0.5",
     "y-codemirror.next": "^0.3.6",

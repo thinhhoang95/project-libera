@@ -15,13 +15,14 @@
 // and the agent's tool loop report the message as it is.
 
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { diffText } from "../../../electron/collab/notebooks/text-diff";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
-import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, normalizeAssetFileName } from "@/lib/storage/file-types";
+import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
+import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
 import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
@@ -30,6 +31,7 @@ import {
   itemPath,
   markdownAssetsDirectoryPathFromParts,
   markdownAssetsPathPrefix,
+  notebookPath,
   relativeFilePath,
   splitDirectoryPath,
   splitFilePath,
@@ -58,10 +60,12 @@ export class SharedWriteError extends StorageError {
 }
 
 /**
- * The control API caps request bodies at 16 MB, and base64 adds a third.
- * Larger files cannot be added to a shared notebook through the host yet.
+ * The control API caps request bodies at 16 MB, and base64 adds a third, so
+ * larger files (recordings, mostly) are staged on disk for the host instead.
  */
 export const MAX_SHARED_BLOB_BYTES = 11 * 1024 * 1024;
+/** The collaboration server's default blob limit (server MAX_BLOB_BYTES). */
+export const MAX_STAGED_BLOB_BYTES = 100 * 1024 * 1024;
 
 export interface SharedWriteOptions {
   /** Defaults to the host this launch was given (LIBERA_COLLAB_HOST_URL/TOKEN). */
@@ -282,7 +286,7 @@ export async function readSharedThreads(liberaPath: string, options: SharedWrite
   }
 }
 
-function manifestTarget(liberaPath: string): { projectId: string; path: string } {
+function manifestTarget(liberaPath: string): { notebook: string; projectId: string; path: string } {
   const target = sharedManifestPath(liberaPath);
   if (!target) throw new SharedWriteError(400, "not-shared", `${liberaPath} is not in a shared notebook.`);
   return target;
@@ -302,16 +306,61 @@ export async function createSharedFile(liberaPath: string, content: string, opti
  */
 export async function writeSharedBlob(liberaPath: string, bytes: Uint8Array, options: SharedWriteOptions & { createOnly?: boolean } = {}): Promise<{ paths: string[] }> {
   const target = manifestTarget(liberaPath);
-  if (bytes.byteLength > MAX_SHARED_BLOB_BYTES) {
+  if (bytes.byteLength > MAX_STAGED_BLOB_BYTES) {
     throw new SharedWriteError(
       413,
       "too-large",
-      `${liberaPath} is too large to add to a shared notebook (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; the limit is ${MAX_SHARED_BLOB_BYTES / 1024 / 1024} MB).`,
+      `${liberaPath} is too large to add to a shared notebook (${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB; the limit is ${MAX_STAGED_BLOB_BYTES / 1024 / 1024} MB).`,
     );
   }
   const config = hostConfig(liberaPath, options);
-  const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-  return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...(options.createOnly ? { createOnly: true } : {}) }, config));
+  const createOnly = options.createOnly ? { createOnly: true } : {};
+  if (bytes.byteLength <= MAX_SHARED_BLOB_BYTES) {
+    const contentBase64 = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    return host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, contentBase64, ...createOnly }, config));
+  }
+  // Too large for a request: hand the host a file in the notebook's own
+  // collaboration folder, which it reads and removes.
+  const staged = randomUUID();
+  const file = path.join(sharedIncomingDirectory(target.notebook), staged);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, bytes);
+  try {
+    return await host(liberaPath, () => fileOp(target.projectId, { op: "write-blob", path: target.path, stagedFile: staged, ...createOnly }, config));
+  } finally {
+    await rm(file, { force: true });
+  }
+}
+
+/** Where large blobs wait for the collab host: `<notebook>/.libera/collab/incoming` (fs-ops STATE_DIRECTORY). */
+export function sharedIncomingDirectory(notebook: string) {
+  return path.join(notebookPath(notebook), ".libera", "collab", "incoming");
+}
+
+/**
+ * Deletes a manifest entry by path, for files Libera does not list (a
+ * recording's companion transcript). Nothing happens when it is not shared.
+ */
+export async function deleteSharedEntry(liberaPath: string, options: SharedWriteOptions = {}): Promise<void> {
+  const target = manifestTarget(liberaPath);
+  const config = hostConfig(liberaPath, options);
+  await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config)).catch((error: unknown) => {
+    if (error instanceof SharedWriteError && error.status === 404) return;
+    throw error;
+  });
+}
+
+/** A recording's companion transcript follows it; a missing one is fine. */
+async function moveCompanionTranscript(fromPath: string, toPath: string, config: HostClientConfig) {
+  const from = transcriptCompanionPath(fromPath);
+  const source = sharedManifestPath(from);
+  const destination = sharedManifestPath(transcriptCompanionPath(toPath));
+  if (!source || !destination) return;
+  const [notebook, ...parts] = from.split("/");
+  if (!(await pathExists(filePathFromParts(notebook, parts)))) return;
+  await host(from, () => fileOp(source.projectId, { op: "rename", path: source.path, to: destination.path }, config)).catch((error: unknown) => {
+    console.warn(`The transcript of ${fromPath} did not follow it: ${error instanceof Error ? error.message : error}`);
+  });
 }
 
 // ------------------------------------------------------------ Libera's file writers, for shared targets
@@ -376,6 +425,11 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   }
   const config = hostConfig(sourcePath, options);
   await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: nextParts.join("/") }, config));
+  if (getFileType(current.name) === "audio" && sourcePath !== nextPath) {
+    if (getFileType(safeName) === "audio") await moveCompanionTranscript(sourcePath, nextPath, config);
+    else await deleteSharedEntry(transcriptCompanionPath(sourcePath), { config }).catch(() => undefined);
+    await followSharedAudioChanges([{ from: sourcePath, to: nextPath }], []);
+  }
   await renameFileMetadataPath(sourcePath, nextPath);
   notifySearchChanges([sourcePath, nextPath]);
   return readLiberaFile(nextPath);
@@ -390,6 +444,10 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
   const target = manifestTarget(liberaPath);
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  if (getFileType(current.name) === "audio") {
+    await deleteSharedEntry(transcriptCompanionPath(liberaPath), { config }).catch(() => undefined);
+    await followSharedAudioChanges([], [liberaPath]);
+  }
   await removeFileMetadataPath(liberaPath);
   notifySearchChanges([liberaPath]);
   return getTree();
@@ -469,6 +527,7 @@ export async function copyFileIntoSharedDirectory(relativePath: string, destinat
     await createSharedFile(liberaPath, content, options);
   } else {
     await writeSharedBlob(liberaPath, new Uint8Array(await readFile(filePathFromParts(current.notebook, current.pathParts))), { ...options, createOnly: true });
+    if (node.fileType === "audio") await copyTranscript(relativePath, liberaPath);
   }
   notifySearchChanges([liberaPath]);
   return readLiberaFile(liberaPath);

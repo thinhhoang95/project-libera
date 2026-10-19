@@ -554,3 +554,39 @@ test("a retired model load cannot overwrite a new load after settings switch awa
     assert.equal(worker.modelState, "ready");
   } finally { worker.stop(); }
 });
+
+test("a recording is indexed through its transcript, never its audio, and reindexed when the transcript changes", async () => {
+  await withIndexer(async (indexer) => {
+    const target = filePathFromParts("Notes", ["interview.m4a"]);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, "ftypM4A binary audio words");
+    await indexer.requestScan({ force: true, build: true });
+    const db = indexer.database()!;
+    assert.equal(db.listFiles()[0].kind, "audio");
+    assert.equal(db.keyword('"interview"', 10).length, 1, "without a transcript it is found by name");
+    assert.equal(db.keyword('"binary"', 10).length, 0, "the audio bytes are never read as text");
+
+    const { writeTranscript, renameTranscriptSpeakers } = await import("../../src/lib/storage/transcripts");
+    await writeTranscript("Notes/interview.m4a", {
+      version: 1,
+      createdAt: "2026-10-19T10:00:00.000Z",
+      audio: { size: 26, modifiedAt: "", duration: 70 },
+      engine: { kind: "local", model: "Parakeet TDT 0.6B v3" },
+      language: "en",
+      diarization: null,
+      speakers: [{ name: "Speaker 1", talkSeconds: 60, share: 1, segments: 1 }],
+      segments: [{ start: 62.5, end: 68, speaker: 0, text: "Sparse attention scales to long documents." }],
+      stats: { words: 6, chunks: 1, elapsedMs: 10 },
+    });
+    await indexer.requestScan({ force: true });
+    const hits = db.keyword('"sparse" AND "attention"', 10);
+    assert.equal(hits.length, 1);
+    const [row] = db.chunkRows([hits[0].id]);
+    assert.equal(row.start, 62500, "the passage starts where it is said, in milliseconds");
+    assert.equal(db.keyword('"interview"', 10).length, 1, "the file name stays searchable");
+
+    await renameTranscriptSpeakers("Notes/interview.m4a", { 0: "Vy" });
+    await indexer.requestScan({ force: true });
+    assert.equal(db.keyword('"Vy"', 10).length, 1, "a renamed speaker is found by name");
+  });
+});
