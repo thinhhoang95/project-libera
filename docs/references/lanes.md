@@ -121,7 +121,7 @@ Components that render citations call `useReferenceRender()`. Without a provider
 
 ### Citation index (interop lane)
 
-- `src/lib/storage/reference-citations.ts` builds a per-notebook index at `<notebook system dir>/references/citations.json`. It holds the keys cited by each Markdown file, keyed by mtime and size like `notebook-links.json`, and is rebuilt incrementally on request.
+- `src/lib/storage/reference-citations.ts` builds a per-notebook index at `<notebook system dir>/references/citations.json`. It holds the keys cited by each Markdown file, checks content hashes alongside metadata like `notebook-links.json`, and reparses only changed content on request. Preserved timestamps do not retain stale citations.
 - `GET /api/references/citations?notebook=N` → `{ byFile: Record<path, string[]>, byKey: Record<key, path[]> }`. Paths are library-relative. Only saved files count; the client merges in open drafts itself.
 
 ### Import and export (interop lane)

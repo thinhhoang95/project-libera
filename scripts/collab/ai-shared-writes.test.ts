@@ -41,7 +41,7 @@ import type { Role } from "../../src/lib/collab/protocol/roles";
 import { invalidateSharedNotebookCache } from "../../src/lib/collab/shared-notebook";
 import { NO_EDITS } from "../../src/lib/photo-edits";
 import { sharedTextEdits } from "../../src/lib/collab/shared-writes";
-import type { ThreadMessage, ThreadStatus } from "../../src/lib/collab/protocol/api";
+import type { Command, CreateMessageRequest, ThreadMessage, ThreadStatus } from "../../src/lib/collab/protocol/api";
 import { addReviewThreads, findReview, updateReview } from "../../src/lib/storage/markdown-reviews";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -62,6 +62,11 @@ class FakeHost {
   beforeFileOp: ((op: FileOpRequest) => void) | null = null;
   /** Requests seen, as "METHOD /path". */
   readonly requests: string[] = [];
+  /** Replies posted to threads, and comment commands queued for later. */
+  readonly replies: Array<{ threadId: string; body: CreateMessageRequest }> = [];
+  readonly queued: Command[] = [];
+  /** When set, replies fail with this status and code (the server unreachable, say). */
+  replyFailure: { status: number; code: string } | null = null;
   /** Runs before an edits request is applied: a collaborator's edit landing first. */
   beforeEdits: ((doc: FakeDoc) => void) | null = null;
   /** Runs before suggestions are created, likewise. */
@@ -123,6 +128,17 @@ class FakeHost {
       const doc = byId(segments[1]);
       if (!doc) return this.send(response, 404, { error: { code: "unknown-doc", message: "Unknown document." } });
       return this.send(response, 200, { text: doc.text, accountId: "acc_me", threads: doc.comments } satisfies AnchoredThreadsResponse);
+    }
+    if (request.method === "POST" && segments[0] === "threads" && segments[2] === "messages") {
+      if (this.replyFailure) return this.send(response, this.replyFailure.status, { error: { code: this.replyFailure.code, message: "The collaboration server cannot be reached." } });
+      const thread = [...this.docs.values()].flatMap((doc) => doc.comments).find((candidate) => candidate.id === segments[1]);
+      if (!thread) return this.send(response, 404, { error: { code: "not-found", message: "Thread not found." } });
+      this.replies.push({ threadId: segments[1], body });
+      return this.send(response, 201, { id: body.id, threadId: segments[1], body: body.body });
+    }
+    if (request.method === "POST" && url.pathname === ControlRoutes.commands) {
+      this.queued.push(body);
+      return this.send(response, 202, { id: body.id, queued: true });
     }
     if (segments[0] === "docs" && segments.length === 4 && request.method === "POST") {
       const doc = byId(segments[1]);
@@ -653,6 +669,79 @@ test("ReadComments reads a local document's threads, mapped onto its current tex
     assert.match(result.text, /line 3, on “# Plan”\n {2}- AI \(Agent mode, for the user\), comment/);
     assert.doesNotMatch(result.text, /shared notebook/);
     await assert.rejects(tool("ReadComments").run({ file_path: "Local/other.md" }, context), /No file at Local\/other\.md/);
+  });
+});
+
+test("ReplyToComment replies in a shared thread as AI for the user, queues offline and explains refusals", async () => {
+  await withFixture(async ({ host }) => {
+    const doc = host.doc("Shared/notes.md");
+    doc.text = "# Notes\n\nHello world.\n";
+    const bob = { id: "acc_bob", displayName: "Bob", color: "#111" };
+    const hello = doc.text.indexOf("Hello world.");
+    const thread = (id: string, status: ThreadStatus, body: string): AnchoredThreadsResponse["threads"][number] => ({
+      id, docId: doc.docId, anchorId: `anc_${id}`, quote: "Hello world.", status, actor: { kind: "user", userId: bob.id }, createdBy: bob, createdAt: "2026-10-18T10:00:00.000Z", updatedAt: "2026-10-18T10:00:00.000Z", resolvedBy: null, resolvedAt: null, suggestionIds: [],
+      messages: [{ id: `m_${id}`, threadId: id, actor: { kind: "user", userId: bob.id }, author: bob, body, mentions: [], createdAt: "2026-10-18T10:00:00.000Z", editedAt: null, deletedAt: null }],
+      range: { start: hello, end: hello + 12 },
+    });
+    doc.comments = [thread("thr_hello", "open", "Who is greeted?"), thread("thr_done", "resolved", "Fixed.")];
+    const { context, events } = makeContext("read-only");
+    const reply = tool("ReplyToComment");
+
+    const posted = await reply.run({ file_path: "Shared/notes.md", thread_id: "thr_hello", text: "The readers of the newsletter." }, context);
+    assert.equal(posted.isError, false, posted.text);
+    assert.equal(posted.result, "Replied");
+    assert.match(posted.text, /^Replied in thread thr_hello on Shared\/notes\.md \(Bob: “Who is greeted\?”\), at line 3, on “Hello world\.”/);
+    assert.equal(host.replies.length, 1);
+    assert.equal(host.replies[0].threadId, "thr_hello");
+    assert.equal(host.replies[0].body.body, "The readers of the newsletter.");
+    assert.match(host.replies[0].body.id, /^msg-[0-9a-f-]{36}$/);
+    assert.deepEqual(host.replies[0].body.ai, { feature: "review-comments", model: "test/agent-model", runId: context.snapshots.runId });
+    assert.deepEqual(events.filter((event) => event.type === "comments_added"), [{ type: "comments_added", path: "Shared/notes.md", count: 1 }]);
+
+    // The same reply again, a resolved thread, an unknown thread, comment syntax: refused, nothing posted.
+    await assert.rejects(reply.run({ file_path: "Shared/notes.md", thread_id: "thr_hello", text: "The readers of the  newsletter." }, context), /already ends with this reply/);
+    await assert.rejects(reply.run({ file_path: "Shared/notes.md", thread_id: "thr_done", text: "Still broken." }, context), /thr_done on Shared\/notes\.md is resolved/);
+    await assert.rejects(reply.run({ file_path: "Shared/notes.md", thread_id: "thr_nope", text: "x" }, context), /There is no thread thr_nope on Shared\/notes\.md\.[\s\S]*Unresolved threads:\n- thr_hello: line 3/);
+    await assert.rejects(reply.run({ file_path: "Shared/notes.md", thread_id: "thr_hello", text: ":::comment\nx\n:::" }, context), /without ":::comment" or ":::" lines/);
+    assert.equal(host.replies.length, 1);
+
+    // The server cannot be reached: the reply waits in the host's queue.
+    host.replyFailure = { status: 503, code: "network" };
+    const queued = await reply.run({ file_path: "Shared/notes.md", thread_id: "thr_hello", text: "Also the board." }, context);
+    assert.equal(queued.result, "Reply queued");
+    assert.match(queued.text, /is queued: the collaboration server cannot be reached now[\s\S]*Do not post it again\./);
+    assert.equal(host.queued.length, 1);
+    const command = host.queued[0];
+    assert.ok(command.kind === "message.create" && command.threadId === "thr_hello" && command.body.body === "Also the board.");
+    // A refusal is not queued.
+    host.replyFailure = { status: 403, code: "forbidden" };
+    await assert.rejects(reply.run({ file_path: "Shared/notes.md", thread_id: "thr_hello", text: "Third." }, context), /Nothing was posted\./);
+    assert.equal(host.queued.length, 1);
+    host.replyFailure = null;
+
+    // Viewers cannot reply.
+    await assert.rejects(reply.run({ file_path: "Shared/viewed.md", thread_id: "thr_hello", text: "x" }, context), /role in this shared notebook \(viewer\) cannot comment/);
+  });
+});
+
+test("ReplyToComment adds an agent reply to a local thread", async () => {
+  await withFixture(async ({ root }) => {
+    const text = "# Plan\n\nThe budget is 40k.\n";
+    writeFileSync(path.join(root, "Local", "plan.md"), text);
+    await addReviewThreads("Local/plan.md", text, [{ range: { start: 8, end: 26 }, text: "Which year?" }]);
+    const [stored] = (await findReview("Local/plan.md"))!.threads;
+    const { context, events } = makeContext("read-only", { notebook: "Local" });
+    const result = await tool("ReplyToComment").run({ file_path: "Local/plan.md", thread_id: stored.id, text: "  2027, per the table.  " }, context);
+    assert.equal(result.isError, false, result.text);
+    assert.match(result.text, /at line 3, on “The budget is 40k\.”\. It is in the Comments panel now\./);
+    const [thread] = (await findReview("Local/plan.md"))!.threads;
+    assert.deepEqual(thread.messages.map((message) => [message.text, message.author]), [["Which year?", undefined], ["2027, per the table.", "agent"]]);
+    assert.equal(thread.status, "open");
+    assert.ok(events.some((event) => event.type === "comments_added" && event.path === "Local/plan.md"));
+    // ReadComments now shows the reply as the agent's.
+    assert.match((await tool("ReadComments").run({ file_path: "Local/plan.md" }, context)).text, /- AI \(Agent mode, for the user\), reply, \d{4}-\d\d-\d\d:\n {4}2027, per the table\./);
+    await assert.rejects(tool("ReplyToComment").run({ file_path: "Local/plan.md", thread_id: stored.id, text: "2027, per the table." }, context), /already ends with this reply/);
+    await assert.rejects(tool("ReplyToComment").run({ file_path: "Local/other.md", thread_id: stored.id, text: "x" }, context), /No file at Local\/other\.md/);
   });
 });
 

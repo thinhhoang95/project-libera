@@ -92,6 +92,7 @@ function assertFileDoc(hub: DocHub): void {
 
 function assertWritable(hub: DocHub, subdoc: Subdoc): void {
   const meta = hub.getMeta();
+  if (meta.readOnlyReason === "document-deleted") throw new ControlError(410, "document-deleted", "This file was deleted. Its local text is kept for export.");
   if (meta.readOnlyReason === "access-revoked") throw new ControlError(403, "access-changed", "Access to this document was revoked.");
   if (meta.readOnlyReason === "schema-newer") throw new ControlError(403, "update-required", "This document needs a newer Libera.");
   if (!canWriteSubdoc(meta.role, subdoc)) {

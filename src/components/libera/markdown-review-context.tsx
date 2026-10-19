@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { syncReview, paragraphRange, plainParagraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
+import { syncReview, commentRange, paragraphRange, plainParagraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
@@ -358,7 +358,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   } : null, [sharedProjection]);
   const select = useCallback((range: ReviewRange, x: number, y: number) => {
     try {
-      const expanded = (current.current.activeTab?.file.fileType === "latex" ? plainParagraphRange : paragraphRange)(snapshot(), range);
+      // A selection is commented on exactly; a bare caret takes its paragraph.
+      const expanded = commentRange(snapshot(), range, current.current.activeTab?.file.fileType === "latex" ? plainParagraphRange : paragraphRange);
       if (!expanded) return;
       const replica = sharedStore.current ? sharedReplica : null;
       setSelection({ range: expanded, x, y, ...(replica && expanded.end <= replica.ytext.length ? { anchor: relativeRange(replica.ytext, expanded.start, expanded.end) } : {}) });

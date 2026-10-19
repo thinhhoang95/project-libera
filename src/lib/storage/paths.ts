@@ -306,10 +306,21 @@ export function pdfTextCacheDirectoryPath(notebook: string, pathParts: string[])
   return notebookSystemPath(safeNotebook, PDF_TEXT_CACHE_DIR, ...safePathParts);
 }
 
-export function imageAnnotationsPath(notebook: string, name: string) {
-  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
-  const safeName = assertSafeSegment(name, "File name");
-  return notebookSystemPath(safeNotebook, ANNOTATIONS_DIR, "image", `${safeName}.json`);
+export function imageAnnotationsDirectoryPath(notebook: string, parts: string[] = []) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "image", "by-path",
+    ...parts.map((part) => assertSafeUserSegment(part, "Folder path segment")));
+}
+
+export function imageAnnotationsPath(notebook: string, nameOrParts: string | string[]) {
+  const parts = Array.isArray(nameOrParts) ? nameOrParts : [nameOrParts];
+  if (!parts.length) throw new StorageError("Image annotation path is invalid.");
+  const safeParts = parts.map((part) => assertSafeUserSegment(part, "File path segment"));
+  return path.join(imageAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
+}
+
+export function legacyFlatImageAnnotationsPath(notebook: string, name: string) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "image",
+    `${assertSafeSegment(name, "File name")}.json`);
 }
 
 export function legacyImageAnnotationsPath(notebook: string, name: string) {

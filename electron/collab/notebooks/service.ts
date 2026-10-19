@@ -302,6 +302,7 @@ export class NotebookServiceImpl implements NotebookService {
       root: handle.root,
       role: handle.role,
       manifestDocId: handle.manifestDocId,
+      folderId: handle.folderId ?? undefined,
       follower: !handle.writer,
     });
     handle.runtime = runtime;

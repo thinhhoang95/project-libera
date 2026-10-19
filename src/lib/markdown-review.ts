@@ -104,6 +104,19 @@ export function plainParagraphRange(text: string, selection: ReviewRange): Revie
   const hit = blocks.filter((b) => selection.start === selection.end ? b.start <= selection.start && b.end >= selection.start : b.start < selection.end && b.end > selection.start);
   return hit.length ? { start: hit[0].start, end: hit.at(-1)!.end } : null;
 }
+/**
+ * The passage a comment attaches to: exactly the selected text (without the
+ * whitespace around it), or the whole paragraph under a bare caret (or a
+ * selection of only whitespace, taken at its start).
+ */
+export function commentRange(text: string, selection: ReviewRange, expand: (text: string, selection: ReviewRange) => ReviewRange | null = paragraphRange): ReviewRange | null {
+  let { start, end } = selection;
+  if (start > end) [start, end] = [end, start];
+  start = Math.max(0, start); end = Math.min(text.length, end);
+  while (start < end && /\s/.test(text[start])) start++;
+  while (end > start && /\s/.test(text[end - 1])) end--;
+  return end > start ? { start, end } : expand(text, { start: selection.start, end: selection.start });
+}
 export function anchorAt(text: string, range: ReviewRange): ReviewAnchor {
   if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end <= range.start || range.end > text.length) throw new Error("Select a passage to comment on.");
   return { ...range, quote: text.slice(range.start, range.end), prefix: text.slice(Math.max(0, range.start - 80), range.start), suffix: text.slice(range.end, range.end + 80), state: "attached" };

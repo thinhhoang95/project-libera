@@ -43,7 +43,7 @@ import {
   type WalkEntry,
 } from "./fs-ops";
 import { computeLayout, entriesUnder, entryRecord, readManifest } from "./layout";
-import { emptyState, isStaleCopy, readBase, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
+import { emptyState, isStaleCopy, readBase, readMarker, readState, setMaterialized, writeBase, writeState, deleteBase, type LayoutRecord, type ProjectState } from "./state";
 import { diffText } from "./text-diff";
 
 export interface Timings {
@@ -84,6 +84,8 @@ export interface ProjectInfo {
   root: string;
   role: Role;
   manifestDocId: string;
+  /** Identity of the working copy; a replacement folder must never be imported. */
+  folderId?: string;
   /**
    * Another installation writes this folder (it reaches this device through
    * OneDrive or the like). The project still syncs, so the app, the agent
@@ -153,6 +155,7 @@ export class SharedProject {
   private readonly refusedLogged = new Set<string>();
   private stopped = false;
   private started = false;
+  private rootUnavailable = false;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
     this.ctx = ctx;
@@ -180,6 +183,21 @@ export class SharedProject {
 
   private get canEdit(): boolean {
     return roleAtLeast(this.info.role, "editor");
+  }
+
+  /** A missing/moved/replaced notebook is not a notebook with every file deleted. */
+  private async rootAvailable(): Promise<boolean> {
+    let available = false;
+    try {
+      const stats = await fs.lstat(this.info.root);
+      if (stats.isDirectory() && !stats.isSymbolicLink()) {
+        const marker = await readMarker(this.info.root);
+        available = marker !== null && !marker.revoked && marker.projectId === this.info.projectId &&
+          marker.manifestDocId === this.info.manifestDocId && (!this.info.folderId || marker.folderId === this.info.folderId);
+      }
+    } catch { /* Unavailable roots must never be recreated by the materializer. */ }
+    if (!available) this.rootUnavailable = true;
+    return available;
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -230,7 +248,7 @@ export class SharedProject {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    if (!this.follower && options.persist !== false) await writeState(this.info.root, this.state).catch(() => undefined);
+    if (!this.follower && options.persist !== false && await this.rootAvailable()) await writeState(this.info.root, this.state).catch(() => undefined);
     for (const unsubscribe of this.unsubscribe) unsubscribe();
     this.unsubscribe.length = 0;
     for (const doc of [...this.docs.values()]) this.releaseDoc(doc.docId);
@@ -329,6 +347,10 @@ export class SharedProject {
       this.followManifest();
       return;
     }
+    if (!(await this.rootAvailable())) {
+      this.scheduleRetry();
+      return;
+    }
     this.entries = readManifest(this.manifestDoc());
     const layout = computeLayout(this.entries.values());
     for (const refused of layout.refused) {
@@ -347,7 +369,8 @@ export class SharedProject {
       if (layout.paths.has(fileId)) continue;
       touched.add(record.path);
       vacated.add(record.kind === "folder" ? record.path : path.posix.dirname(record.path));
-      if (record.kind !== "folder") await this.archive(record.path);
+      if (record.docId) this.docs.get(record.docId)?.hub.markDeleted();
+      if (record.kind !== "folder") await this.archiveRemoved(record);
       if (record.docId) {
         this.releaseDoc(record.docId);
         this.dropReconciliations(record.docId);
@@ -444,11 +467,12 @@ export class SharedProject {
     if (touched.size > 0) this.filesChanged([...touched]);
     // Documents whose file is missing or new get written now that their place exists.
     for (const [fileId, record] of Object.entries(next)) {
-      if (record.kind === "doc" && record.docId && !record.hash) {
+      if (record.kind === "doc" && record.docId && (!record.hash || this.rootUnavailable)) {
         const runtime = this.docs.get(record.docId);
         if (runtime && runtime.fileId === fileId && this.docReady(runtime)) await this.materializeDoc(record.docId);
       }
     }
+    this.rootUnavailable = false;
     if (needsRetry) this.scheduleRetry();
   }
 
@@ -466,7 +490,10 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
-      if (record.docId && next[fileId]?.docId !== record.docId) this.releaseDoc(record.docId);
+      if (record.docId && next[fileId]?.docId !== record.docId) {
+        this.docs.get(record.docId)?.hub.markDeleted();
+        this.releaseDoc(record.docId);
+      }
     }
     for (const [fileId, record] of Object.entries(next)) if (record.docId) this.ensureDoc(record.docId, fileId);
     if (JSON.stringify(previous) === JSON.stringify(next)) return;
@@ -547,6 +574,27 @@ export class SharedProject {
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
     const name = await availableName(archiveRoot, path.posix.basename(relative));
     await movePath(source, path.join(archiveRoot, name));
+  }
+
+  /** Keep the latest CRDT text as well as any distinct on-disk version. */
+  private async archiveRemoved(record: LayoutRecord): Promise<void> {
+    if (!(await this.rootAvailable())) return;
+    const runtime = record.docId ? this.docs.get(record.docId) : undefined;
+    if (!runtime || !this.docReady(runtime)) {
+      await this.archive(record.path);
+      return;
+    }
+    const text = runtime.hub.getText("content");
+    let target: string;
+    try { target = await resolveInside(this.info.root, record.path); }
+    catch (error) { this.refuse(record.path, error); return; }
+    const stats = await statIfExists(target);
+    if (stats && !stats.isFile()) await this.archive(record.path);
+    const disk = stats?.isFile() ? await readIfExists(target) : null;
+    // If disk holds a separate external edit, preserve it under another archive name.
+    if (disk && sha256(disk) !== sha256(encodeText(text)) && sha256(disk) !== record.hash) await this.archive(record.path);
+    await writeFileAtomic(target, encodeText(text));
+    await this.archive(record.path);
   }
 
   private refuse(relative: string, error: unknown): void {
@@ -635,6 +683,10 @@ export class SharedProject {
   /** Writes a document's text to its file, unless the file holds an edit not yet taken in. */
   private async materializeDoc(docId: string): Promise<void> {
     if (this.follower) return;
+    if (!(await this.rootAvailable())) {
+      this.scheduleRetry();
+      return;
+    }
     const runtime = this.docs.get(docId);
     const found = this.recordFor(docId);
     if (!runtime || !found || this.reconciliationFor(docId) || !this.docReady(runtime)) return;
@@ -879,7 +931,17 @@ export class SharedProject {
   /** Turns differences between the folder and the layout into document edits and manifest operations. */
   private async scan(): Promise<void> {
     if (!this.manifestReady()) return;
+    if (!(await this.rootAvailable())) {
+      this.missingSince.clear();
+      return;
+    }
     const { entries: walked } = await walkNotebook(this.info.root);
+    // The folder can disappear while the asynchronous walk is running.
+    if (!(await this.rootAvailable())) {
+      this.missingSince.clear();
+      return;
+    }
+    const previous = structuredClone(this.state.layout);
     const files = new Map<string, WalkEntry>();
     const directories = new Map<string, WalkEntry>();
     for (const entry of walked) (entry.kind === "file" ? files : directories).set(entry.relative, entry);
@@ -892,6 +954,7 @@ export class SharedProject {
     }
     const now = Date.now();
     const missing: string[] = [];
+    const removedRecords: LayoutRecord[] = [];
     const operations: Array<(files: Y.Map<unknown>) => void> = [];
     const touched = new Set<string>();
     const accountId = this.canEdit ? await this.ctx.accountId().catch(() => "") : "";
@@ -997,10 +1060,7 @@ export class SharedProject {
       const record = this.state.layout[fileId];
       operations.push((map) => map.delete(fileId));
       touched.add(record.path);
-      if (record.docId) {
-        this.releaseDoc(record.docId);
-        this.dropReconciliations(record.docId);
-      }
+      if (record.docId) removedRecords.push(record);
       delete this.state.layout[fileId];
       this.missingSince.delete(fileId);
     }
@@ -1026,9 +1086,19 @@ export class SharedProject {
     }
 
     if (operations.length > 0) {
+      if (!(await this.rootAvailable())) {
+        this.state.layout = previous;
+        this.missingSince.clear();
+        return;
+      }
       await this.writeManifest((map) => {
         for (const operation of operations) operation(map);
       }, EXTERNAL);
+      for (const record of removedRecords) {
+        this.docs.get(record.docId!)?.hub.markDeleted();
+        try { await this.archiveRemoved(record); }
+        finally { this.releaseDoc(record.docId!); this.dropReconciliations(record.docId!); }
+      }
       for (const [fileId, record] of Object.entries(this.state.layout)) {
         if (record.kind === "doc" && record.docId && !this.docs.has(record.docId)) this.ensureDoc(record.docId, fileId);
       }
@@ -1036,6 +1106,7 @@ export class SharedProject {
     if (touched.size > 0 || operations.length > 0) {
       this.saveSoon();
       this.ctx.layoutChanged(this.info.projectId);
+      this.treeChanged(previous, this.state.layout);
       this.filesChanged([...touched]);
     }
     if (needsRetry) this.scheduleRetry();
@@ -1074,6 +1145,7 @@ export class SharedProject {
     return this.enqueue(async () => {
       if (!this.canEdit) throw new ControlError(403, "forbidden", "Your role cannot add, rename or delete files.");
       if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
+      if (!this.follower && !(await this.rootAvailable())) throw new ControlError(503, "notebook-unavailable", "The shared notebook folder is missing or has changed. Restore it before changing its files.");
       this.entries = readManifest(this.manifestDoc());
       const relative = normalizeRelative(request.path);
       const now = Date.now();
@@ -1305,7 +1377,9 @@ export class SharedProject {
     if (this.saveTimer || this.stopped || this.follower) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void this.enqueue(() => writeState(this.info.root, this.state));
+      void this.enqueue(async () => {
+        if (await this.rootAvailable()) await writeState(this.info.root, this.state);
+      });
     }, 100);
     this.saveTimer.unref?.();
   }

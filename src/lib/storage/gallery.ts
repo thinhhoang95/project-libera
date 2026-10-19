@@ -10,6 +10,12 @@ import { StorageError } from "@/lib/storage/errors";
 import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@/lib/storage/fs-utils";
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { pruneGalleryChatPhotos } from "@/lib/storage/document-chat";
+
+// libvips can keep source files open after metadata/thumbnail reads. Windows
+// then rejects deletes, moves and replacements of those photos with EBUSY.
+// Keep the memory/operation caches, but release file handles after each read.
+if (process.platform === "win32") sharp.cache({ files: 0 });
 
 /**
  * The gallery is a plain folder of images, one level deep. A hidden index
@@ -260,18 +266,54 @@ async function reconcile(index: GalleryIndex) {
 }
 
 let queue: Promise<unknown> = Promise.resolve();
+const thumbnailReads = new Set<Promise<unknown>>();
+// Snapshots share this transient array so cleanup can append notices before returning.
+const deletionNotices = new WeakMap<GalleryIndex, string[]>();
+
+function queuedThumbnail<T>(read: () => Promise<T>): Promise<T> {
+  // Readers can run together. Mutations wait for earlier readers, and new
+  // readers wait for mutations, so a late render cannot recreate a swept file.
+  const task = queue.then(read);
+  thumbnailReads.add(task);
+  void task.finally(() => thumbnailReads.delete(task)).catch(() => undefined);
+  return task;
+}
+
+function thumbnailName(relative: string, stats: Pick<PhotoRecord, "size" | "mtimeMs">) {
+  return `${createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex")}.webp`;
+}
+
+/** Cached previews are disposable; sweep old versions and pre-existing orphaned files. */
+async function pruneThumbnails(records: Record<string, PhotoRecord>, root: string) {
+  const directory = path.join(root, THUMBNAILS_DIR);
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  const current = new Set(Object.values(records).map((record) => thumbnailName(record.path, record)));
+  await Promise.all(entries.filter((entry) => entry.isFile() && /^[a-f0-9]{40}\.webp$/.test(entry.name) && !current.has(entry.name))
+    .map((entry) => rm(path.join(directory, entry.name), { force: true })));
+}
 
 /** Run one gallery change at a time against a freshly reconciled index. */
 function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promise<T> {
-  const next = queue.then(async () => {
+  const reads = [...thumbnailReads];
+  const next = queue.then(() => Promise.allSettled(reads)).then(async () => {
     const index = await loadIndex();
+    const notices: string[] = [];
+    deletionNotices.set(index, notices);
+    const idsBefore = [...Object.keys(index.photos), ...Object.keys(index.archive)];
     const before = JSON.stringify(index);
     const searchablePhotos = () => JSON.stringify(Object.entries(index.photos).map(([id, photo]) =>
       [id, photo.path, photo.size, photo.mtimeMs, photo.prompt]));
     const photosBefore = searchablePhotos();
     await reconcile(index);
+    await reconcileArchive(index);
     const result = await change(index);
+    await pruneThumbnails(index.photos, getGalleryRoot());
+    await pruneThumbnails(index.archive, protectedRoot());
     if (JSON.stringify(index) !== before) await saveIndex(index);
+    const remaining = new Set([...Object.keys(index.photos), ...Object.keys(index.archive)]);
+    notices.push(...new Set([...idsBefore.filter((id) => !remaining.has(id)), ...await pruneGalleryChatPhotos(remaining)]));
     if (searchablePhotos() !== photosBefore) notifySearchChanges(undefined, true);
     return result;
   });
@@ -311,7 +353,7 @@ function toContents(index: GalleryIndex): GalleryContents {
     return { id: album.id, name: album.name, folder: album.folder, count: album.photoIds.length, coverId: cover?.id, createdAt: album.createdAt };
   });
   albums.sort((first, second) => first.name.localeCompare(second.name, undefined, { sensitivity: "base", numeric: true }));
-  return { root: getGalleryRoot(), albums, photos };
+  return { root: getGalleryRoot(), albums, photos, deletedPhotoIds: deletionNotices.get(index) };
 }
 
 function findAlbum(index: GalleryIndex, id: string) {
@@ -423,8 +465,7 @@ export function setPhotosStarred(ids: string[], starred: boolean) {
 /** Thumbnails are keyed by the file's identity, inside `root` (the gallery or the archive). */
 async function thumbnailPathFor(relative: string, root = getGalleryRoot()) {
   const stats = await stat(path.join(root, ...relative.split("/")));
-  const key = createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex");
-  return path.join(root, THUMBNAILS_DIR, `${key}.webp`);
+  return path.join(root, THUMBNAILS_DIR, thumbnailName(relative, stats));
 }
 
 export function deletePhotos(ids: string[]) {
@@ -433,9 +474,7 @@ export function deletePhotos(ids: string[]) {
     for (const id of new Set(ids)) {
       const record = index.photos[id];
       if (!record) continue;
-      const thumbnail = await thumbnailPathFor(record.path).catch(() => null);
       await rm(absolutePath(record.path), { force: true });
-      if (thumbnail) await rm(thumbnail, { force: true });
       await removeOriginal(record);
       delete index.photos[id];
       deleted += 1;
@@ -455,7 +494,7 @@ function toArchiveContents(index: GalleryIndex): ArchiveContents {
     folder: record.folder,
     archivedAt: record.archivedAt,
   }));
-  return { photos };
+  return { photos, deletedPhotoIds: deletionNotices.get(index) };
 }
 
 /** Move an unedited original between the gallery's and the archive's backup folders. */
@@ -470,7 +509,10 @@ async function moveOriginal(name: string, fromRoot: string, toRoot: string) {
 /** Drop archive entries whose files were removed by hand, and notice files changed by hand. */
 async function reconcileArchive(index: GalleryIndex) {
   for (const [id, record] of Object.entries(index.archive)) {
-    const stats = await stat(path.join(protectedRoot(), record.path)).catch(() => null);
+    const stats = await stat(path.join(protectedRoot(), record.path)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
     if (!stats?.isFile()) {
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
       delete index.archive[id];
@@ -491,10 +533,8 @@ export function archivePhotos(ids: string[]) {
       const record = index.photos[id];
       if (!record) continue;
       await mkdir(protectedRoot(), { recursive: true });
-      const thumbnail = await thumbnailPathFor(record.path).catch(() => null);
       const destination = await findAvailableFilePath(protectedRoot(), path.posix.basename(record.path));
       await movePath(absolutePath(record.path), destination.path);
-      if (thumbnail) await rm(thumbnail, { force: true });
       const original = record.original ? await moveOriginal(record.original, getGalleryRoot(), protectedRoot()) : undefined;
       index.archive[id] = {
         ...record,
@@ -513,25 +553,19 @@ export function archivePhotos(ids: string[]) {
 }
 
 export function getArchive() {
-  return withGallery(async (index) => {
-    await reconcileArchive(index);
-    return toArchiveContents(index);
-  });
+  return withGallery(toArchiveContents);
 }
 
 /** Put archived photos back in the folder and albums they came from, where those still exist. */
 export function restoreArchivedPhotos(ids: string[]) {
   return withGallery(async (index) => {
-    await reconcileArchive(index);
     let restored = 0;
     for (const id of new Set(ids)) {
       const record = index.archive[id];
       if (!record) continue;
       const folder = record.folder && isVisibleEntry(record.folder) && await pathExists(path.join(getGalleryRoot(), record.folder)) ? record.folder : "";
-      const thumbnail = await thumbnailPathFor(record.path, protectedRoot()).catch(() => null);
       const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), record.path);
       await movePath(path.join(protectedRoot(), record.path), destination.path);
-      if (thumbnail) await rm(thumbnail, { force: true });
       const restoredRecord: PhotoRecord & Partial<ArchivedRecord> = {
         ...record,
         path: folder ? `${folder}/${destination.name}` : destination.name,
@@ -556,9 +590,7 @@ export function deleteArchivedPhotos(ids: string[]) {
     for (const id of new Set(ids)) {
       const record = index.archive[id];
       if (!record) continue;
-      const thumbnail = await thumbnailPathFor(record.path, protectedRoot()).catch(() => null);
       await rm(path.join(protectedRoot(), record.path), { force: true });
-      if (thumbnail) await rm(thumbnail, { force: true });
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
       delete index.archive[id];
       deleted += 1;
@@ -735,7 +767,9 @@ export async function readGalleryPhoto(photoPath: string) {
 
 /** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
 export async function readGalleryThumbnail(photoPath: string) {
-  return readThumbnail(resolvePhotoPath(photoPath), getGalleryRoot());
+  const photo = resolvePhotoPath(photoPath);
+  const root = getGalleryRoot();
+  return queuedThumbnail(() => readThumbnail(photo, root));
 }
 
 /** Validate an archived photo's file name from a request. */
@@ -753,5 +787,7 @@ export async function readArchivedPhoto(name: string) {
 
 /** Archive thumbnails are cached inside the archive folder, never beside the gallery's. */
 export async function readArchivedThumbnail(name: string) {
-  return readThumbnail(resolveArchivedPath(name), protectedRoot());
+  const photo = resolveArchivedPath(name);
+  const root = protectedRoot();
+  return queuedThumbnail(() => readThumbnail(photo, root));
 }

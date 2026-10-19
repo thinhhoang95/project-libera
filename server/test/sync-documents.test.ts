@@ -67,6 +67,45 @@ describe("sync documents", () => {
   });
   after(() => env.close());
 
+  test("manifest deletion tombstones the document and closes editors, including a later reconnect", async () => {
+    const docId = await createDocument(env.db, env.project.id);
+    const row = await env.db.selectFrom("documents").select("file_id").where("id", "=", docId).executeTakeFirstOrThrow();
+    const writer = await env.connect();
+    const reader = await env.connect();
+    try {
+      await writer.open(env.project.manifestDocId);
+      await writer.open(docId);
+      await reader.open(docId);
+      await writer.acked(writer.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.files, row.file_id!, {
+        fileId: row.file_id, path: "removed.md", kind: "doc", docKind: "markdown", docId,
+      })));
+      await writer.acked(writer.edit(docId, "content", insert("recover this")));
+      // A rename keeps the same document alive.
+      await writer.acked(writer.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.files, row.file_id!, {
+        fileId: row.file_id, path: "renamed.md", kind: "doc", docKind: "markdown", docId,
+      })));
+      assert.equal((await env.db.selectFrom("documents").select("deleted_at").where("id", "=", docId).executeTakeFirstOrThrow()).deleted_at, null);
+      await writer.acked(writer.edit(env.project.manifestDocId, "manifest", (doc) => doc.getMap(ManifestKeys.files).delete(row.file_id!)));
+      const closed = await reader.waitFor((m) => m.type === MessageType.Closed && m.docId === docId);
+      assert.equal(closed.type === MessageType.Closed && closed.reason, "document-deleted");
+      const rejected = await reader.rejected(reader.edit(docId, "content", insert("orphan edit")));
+      assert.equal(rejected.reason, "not-open");
+      const deleted = await env.db.selectFrom("documents").select(["deleted_at", "last_server_seq"]).where("id", "=", docId).executeTakeFirstOrThrow();
+      assert.ok(deleted.deleted_at);
+      assert.equal(deleted.last_server_seq, 1, "edits after deletion are never acknowledged");
+      const returning = await env.connect();
+      try {
+        returning.send({ type: MessageType.Open, docId, subdocs: [] });
+        const denied = await returning.waitFor((m) => m.type === MessageType.Closed && m.docId === docId);
+        assert.equal(denied.type === MessageType.Closed && denied.reason, "document-deleted", "deletion is not notebook revocation");
+      } finally { await returning.close(); }
+      const staleRename = await writer.rejected(writer.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.files, row.file_id!, {
+        fileId: row.file_id, path: "late-rename.md", kind: "doc", docKind: "markdown", docId,
+      })));
+      assert.equal(staleRename.reason, "invalid-update", "a stale rename cannot resurrect a deleted document");
+    } finally { await writer.close(); await reader.close(); }
+  });
+
   test("opened carries only what the client's state vector lacks", async () => {
     const docId = await createDocument(env.db, env.project.id);
     const writer = await env.connect();

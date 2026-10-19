@@ -81,6 +81,8 @@ interface TabBinding {
   token: number;
   /** A bindTab call for this binding is still resolving or attaching. */
   inflight: boolean;
+  /** The path was removed while this tab was resolving or attached. */
+  deleted: boolean;
 }
 
 const DEFAULT_USER: CollabUser = { name: "Me", color: "#30bced" };
@@ -182,7 +184,15 @@ export class SharedDocRegistry {
   }
 
   private handleHostEvent(event: HostEvent) {
-    if (event.t === "files-changed") this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId });
+    if (event.t === "tree-changed") {
+      const removed = new Set(event.removed);
+      for (const binding of this.tabs.values()) {
+        if (!removed.has(binding.path)) continue;
+        binding.deleted = true;
+        if (binding.state.kind === "shared") binding.state.session.replica.markDeleted();
+      }
+      this.invalidate({ paths: [...event.added, ...event.removed, ...event.moves.flatMap((move) => [move.from, move.to])] });
+    } else if (event.t === "files-changed") this.invalidate({ paths: event.paths, projectId: event.paths.length ? undefined : event.projectId });
     else if (event.t === "project-changed") this.invalidate({ projectId: event.projectId });
   }
 
@@ -284,6 +294,9 @@ export class SharedDocRegistry {
    */
   async bindTab(tabId: string, path: string): Promise<SharedTabState> {
     const existing = this.tabs.get(tabId);
+    // A deleted tab remains a recovery view, even if another file reuses its path.
+    if (existing?.path === path && existing.state.kind === "shared" &&
+        (existing.state.session.replica.getSnapshot().closed === "document-deleted" || existing.state.session.replica.getSnapshot().meta?.readOnlyReason === "document-deleted")) return existing.state;
     const cached = this.cachedResolution(path);
     if (existing && existing.path === path) {
       if (existing.inflight) return existing.state;
@@ -295,6 +308,7 @@ export class SharedDocRegistry {
       path,
       token,
       inflight: true,
+      deleted: existing?.path === path && existing.deleted,
       lease: existing?.path === path ? existing.lease : null,
       state: existing?.path === path && existing.state.kind === "shared" ? existing.state : { kind: "pending", path },
     };
@@ -322,6 +336,7 @@ export class SharedDocRegistry {
     if (!resolved) {
       binding.lease?.release();
       binding.lease = null;
+      if (binding.deleted) return settle({ kind: "error", path, message: "This shared file was deleted." });
       return settle({ kind: "none" });
     }
     if (binding.lease?.docId !== resolved.docId) {
@@ -330,6 +345,7 @@ export class SharedDocRegistry {
     }
     try {
       const session = await binding.lease.ready;
+      if (binding.deleted) session.replica.markDeleted();
       return settle({ kind: "shared", path, session });
     } catch (error) {
       return settle({ kind: "error", path, message: error instanceof Error ? error.message : "Could not open the shared document." });
@@ -341,7 +357,7 @@ export class SharedDocRegistry {
     const existing = this.tabs.get(tabId);
     if (existing && existing.path === path) return;
     existing?.lease?.release();
-    this.tabs.set(tabId, { path, token: (existing?.token ?? 0) + 1, inflight: false, lease: null, state: { kind: "pending", path } });
+    this.tabs.set(tabId, { path, token: (existing?.token ?? 0) + 1, inflight: false, deleted: false, lease: null, state: { kind: "pending", path } });
     this.emit();
   }
 

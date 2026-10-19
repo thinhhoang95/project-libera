@@ -110,8 +110,8 @@ test("skills are listed by name and loaded on demand, and their tools appear onc
     assert.ok(!activeTools(toolsForPermission("read-only"), context).some((tool) => tool.name === "LeaveComment"));
     assert.match((await call(context, "Skill", { name: "review" })).text, /There is no skill named "review"\. Available skills: leave-review-comments, fact-check-citations./);
     const loaded = await call(context, "Skill", { name: "leave-review-comments" });
-    assert.match(loaded.text, /^<skill name="leave-review-comments">\n# Leaving review comments[\s\S]*<\/skill>\n\n\(Tools now available: LeaveComment, SuggestEdit\.\)$/);
-    assert.deepEqual(activeTools(toolsForPermission("read-only"), context).map((tool) => tool.name), ["Glob", "Grep", "Read", "ReadComments", "TaskCreate", "TaskUpdate", "Skill", "References", "LeaveComment", "SuggestEdit"]);
+    assert.match(loaded.text, /^<skill name="leave-review-comments">\n# Leaving review comments[\s\S]*<\/skill>\n\n\(Tools now available: LeaveComment, ReplyToComment, SuggestEdit\.\)$/);
+    assert.deepEqual(activeTools(toolsForPermission("read-only"), context).map((tool) => tool.name), ["Glob", "Grep", "Read", "ReadComments", "TaskCreate", "TaskUpdate", "Skill", "References", "LeaveComment", "ReplyToComment", "SuggestEdit"]);
     assert.equal((await call(context, "Skill", { name: "leave-review-comments" })).result, "Already loaded");
   });
 });

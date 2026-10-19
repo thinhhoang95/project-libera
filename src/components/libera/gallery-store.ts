@@ -15,8 +15,28 @@ let pendingRefresh: Promise<GalleryContents | null> | null = null;
 const listeners = new Set<() => void>();
 const promptListeners = new Set<(prompt: string) => void>();
 const referenceListeners = new Set<(photos: Array<{ name: string; url: string }>) => void>();
+const deletedPhotos = new Set<string>();
+const deletionListeners = new Set<() => void>();
+
+/** Also used for archive deletions, which do not update the gallery contents. */
+export function notifyDeletedGalleryPhotos(ids: string[] = []) {
+  const added = ids.filter((id) => !deletedPhotos.has(id));
+  if (!added.length) return;
+  added.forEach((id) => deletedPhotos.add(id));
+  deletionListeners.forEach((listener) => listener());
+}
+
+export function keepGalleryChatPhoto(id: string) {
+  return !deletedPhotos.has(id);
+}
+
+export function subscribeGalleryPhotoDeletions(listener: () => void) {
+  deletionListeners.add(listener);
+  return () => { deletionListeners.delete(listener); };
+}
 
 function setState(next: Partial<GalleryState>) {
+  notifyDeletedGalleryPhotos(next.contents?.deletedPhotoIds);
   state = { ...state, ...next };
   listeners.forEach((listener) => listener());
 }

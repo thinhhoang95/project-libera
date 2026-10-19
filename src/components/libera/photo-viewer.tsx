@@ -329,7 +329,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   const percent = Math.round(transform.scale * fitScale * 100);
   const editable = !photo.name.toLowerCase().endsWith(".svg");
 
-  const viewer = <div ref={rootRef} role="dialog" aria-modal={!chatOpen} aria-label={photo.name} className="fixed inset-0 z-40 flex flex-col bg-neutral-950 text-white">
+  const viewer = <div ref={rootRef} role="dialog" aria-modal={!chatOpen} aria-label={photo.name} data-command-scope="3" className="fixed inset-0 z-40 flex flex-col bg-neutral-950 text-white">
     {editing ? <PhotoEditor src={galleryRawUrl(photo)} onCancel={() => setEditing(false)} onSave={async (edits, mode) => {
       const result = await apiRequest<{ id: string; gallery: GalleryContents }>("/api/gallery/photos/edit", { method: "POST", body: JSON.stringify({ id: photo.id, edits, mode }) });
       setEditing(false);
@@ -337,7 +337,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
       actions.onEdited?.(result);
       setNotice(mode === "copy" ? "Saved as a copy" : "Saved. You can revert to the original from Info.");
     }} /> : <>
-      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2">
+      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2" data-command-toolbar="Photo">
         <button className={toolButton} aria-label="Back to gallery" title="Back (Esc)" onClick={onClose}><ArrowLeft className="h-5 w-5" /></button>
         <div className="mr-auto min-w-0 px-2">
           <p className="truncate text-sm font-medium">{new Date(photo.createdAt).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" })}</p>

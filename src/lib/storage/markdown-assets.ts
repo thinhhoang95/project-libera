@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   assertImageFileName,
@@ -12,11 +12,8 @@ import { findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   ensureAdminRoot,
   filePathFromParts,
-  imageAnnotationsPath,
-  legacyImageAnnotationsPath,
   markdownAssetPath,
   markdownAssetsDirectoryName,
-  markdownAssetsDirectoryPath,
   markdownAssetsDirectoryPathFromParts,
   markdownAssetsPathPrefix,
   notebookPath,
@@ -25,26 +22,12 @@ import {
   splitFilePath,
 } from "@/lib/storage/paths";
 import { StorageError } from "@/lib/storage/errors";
-import { MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
+import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constants";
 import type { MarkdownImageAssetPayload } from "@/lib/types";
-import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
+import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
+import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 
-export function markdownImageSources(markdown: string) {
-  const sources = new Set<string>();
-  const markdownImagePattern = /!\[[^\]]*]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/g;
-  const htmlImagePattern = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/gi;
-
-  for (const match of markdown.matchAll(markdownImagePattern)) {
-    const source = match[1]?.trim() ?? "";
-    sources.add(source.startsWith("<") && source.endsWith(">") ? source.slice(1, -1) : source);
-  }
-
-  for (const match of markdown.matchAll(htmlImagePattern)) {
-    sources.add(match[2]?.trim() ?? "");
-  }
-
-  return [...sources].filter(Boolean);
-}
+export { markdownImageSources } from "@/lib/markdown-image-sources";
 
 function markdownAssetSourceTarget(documentPath: string, source: string) {
   if (source.startsWith("/api/markdown-assets/raw")) {
@@ -65,7 +48,7 @@ function markdownAssetSourceTarget(documentPath: string, source: string) {
 
   return {
     documentPath,
-    assetPath: normalizeMarkdownAssetPath(source),
+    assetPath: normalizeMarkdownAssetPath(source.split(/[?#]/, 1)[0]),
   };
 }
 
@@ -74,7 +57,7 @@ function rawFileSourcePath(source: string) {
     return null;
   }
 
-  return source
+  return new URL(source, "http://libera.local").pathname
     .slice("/api/files/raw/".length)
     .split("/")
     .map(decodeURIComponent)
@@ -88,7 +71,7 @@ function referencedMarkdownAssetPaths(documentPath: string, markdown: string) {
     try {
       const target = markdownAssetSourceTarget(documentPath, source);
 
-      if (target?.documentPath === documentPath) {
+      if (target && splitFilePath(target.documentPath).notebook === splitFilePath(documentPath).notebook) {
         assetPaths.add(target.assetPath);
       }
     } catch {
@@ -103,7 +86,8 @@ function referencedRawFilePaths(markdown: string) {
   const rawPaths = new Set<string>();
 
   for (const source of markdownImageSources(markdown)) {
-    const rawPath = rawFileSourcePath(source);
+    let rawPath: string | null;
+    try { rawPath = rawFileSourcePath(source); } catch { continue; }
 
     if (rawPath) {
       rawPaths.add(rawPath);
@@ -115,44 +99,192 @@ function referencedRawFilePaths(markdown: string) {
 
 async function removeEmptyDirectory(targetPath: string) {
   try {
-    await rm(targetPath, { recursive: false });
+    await rmdir(targetPath);
+    return true;
   } catch {
     // The directory is either absent or still contains referenced assets.
+    return !(await pathExists(targetPath));
   }
 }
 
-async function pruneAssetDirectory({
-  assetDirectory,
-  assetPathPrefix,
-  referencedAssets,
-}: {
-  assetDirectory: string;
-  assetPathPrefix: string;
-  referencedAssets: Set<string>;
-}) {
-  if (!(await pathExists(assetDirectory))) {
-    return;
+async function removeEmptyAssetParents(notebook: string, start: string) {
+  const root = path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR);
+  let directory = start;
+  // Only derived asset folders may be removed; never ascend into the notebook.
+  while (directory === root || directory.startsWith(`${root}${path.sep}`)) {
+    if (!(await removeEmptyDirectory(directory)) || directory === root) break;
+    directory = path.dirname(directory);
   }
+}
 
-  const entries = await readdir(assetDirectory, { withFileTypes: true });
+type MarkdownDocument = { documentPath: string; content: string };
 
-  for (const entry of entries) {
-    const targetPath = path.join(assetDirectory, entry.name);
-    const assetPath = `${assetPathPrefix}/${entry.name}`;
-
-    if (entry.isDirectory()) {
-      await pruneAssetDirectory({
-        assetDirectory: targetPath,
-        assetPathPrefix: assetPath,
-        referencedAssets,
-      });
-      await removeEmptyDirectory(targetPath);
-      continue;
+/** Include archived notes, but never descend into assets, dependencies or symlinks. */
+export async function readMarkdownAssetDocuments(notebook: string) {
+  const documents: MarkdownDocument[] = [];
+  let remaining = 20_000;
+  let complete = true;
+  async function visit(parts: string[]) {
+    try {
+      for (const entry of await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true })) {
+        if (--remaining < 0) { complete = false; return; }
+        if (entry.name.startsWith(".") || [MARKDOWN_ASSETS_DIR, "node_modules", "__pycache__", "bower_components"].includes(entry.name)) continue;
+        const next = [...parts, entry.name];
+        if (entry.isDirectory()) await visit(next);
+        else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+          documents.push({ documentPath: relativeFilePath(notebook, next), content: await readFile(filePathFromParts(notebook, next), "utf8") });
+        }
+      }
+    } catch {
+      // An incomplete scan cannot establish that an image is unused.
+      complete = false;
     }
+  }
+  await visit([]);
+  return { documents, complete };
+}
 
-    if (entry.isFile() && !referencedAssets.has(assetPath)) {
-      await rm(targetPath, { force: true });
+function ownedPrefixes(documentPath: string) {
+  const { pathParts, name } = splitFilePath(documentPath);
+  return new Set([markdownAssetsPathPrefix(pathParts), `${MARKDOWN_ASSETS_DIR}/${markdownAssetsDirectoryName(name)}`]);
+}
+
+/** Remove only affected assets, keeping every image referenced by another saved note. */
+export async function cleanupMarkdownImageAssets(notebook: string, previous: MarkdownDocument[], overrides: MarkdownDocument[] = []) {
+  // The local archive remains writable inside a shared notebook, but its
+  // shared assets belong to the host and cannot be collected by local deletes.
+  if (isSharedNotebookPath(`${notebook}/${MARKDOWN_ASSETS_DIR}`)) return;
+  const { documents, complete } = await readMarkdownAssetDocuments(notebook);
+  if (!complete) return;
+  const references = new Set<string>();
+  // A save can be superseded while this scan runs. Keep both the text on disk
+  // and the caller's references; an older request must not prune a newer save.
+  for (const document of [...documents, ...overrides]) {
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) references.add(asset.toLowerCase());
+  }
+  const candidates = new Set<string>();
+  const directories = new Set<string>();
+  for (const document of previous) {
+    for (const asset of referencedMarkdownAssetPaths(document.documentPath, document.content)) candidates.add(asset);
+    for (const prefix of ownedPrefixes(document.documentPath)) {
+      // Sanitized note names can collide. Never bulk-prune another note's
+      // uploads, including uploads that have not yet reached its saved text.
+      const ambiguous = documents.some((other) => other.documentPath !== document.documentPath &&
+        [...ownedPrefixes(other.documentPath)].some((owned) => owned.toLowerCase() === prefix.toLowerCase()));
+      if (ambiguous) continue;
+      const directory = markdownAssetPath(notebook, `${prefix}/placeholder`).targetPath;
+      const assetDirectory = path.dirname(directory);
+      directories.add(assetDirectory);
+      if (!(await pathExists(assetDirectory))) continue;
+      for (const entry of await readdir(assetDirectory, { withFileTypes: true })) {
+        // Child folders may belong to other notes with the same stem.
+        if (entry.isFile()) candidates.add(`${prefix}/${entry.name}`);
+      }
     }
+  }
+  for (const candidate of candidates) {
+    if (references.has(candidate.toLowerCase())) continue;
+    const asset = markdownAssetPath(notebook, candidate);
+    await rm(asset.targetPath, { force: true });
+    directories.add(path.dirname(asset.targetPath));
+  }
+  for (const directory of directories) await removeEmptyAssetParents(notebook, directory);
+}
+
+async function writeAvailableAsset(directory: string, name: string, body: Buffer, verify?: () => Promise<void>) {
+  const createdRoot = await mkdir(directory, { recursive: true });
+  try {
+    await verify?.();
+    for (;;) {
+      const available = await findAvailableFilePath(directory, name);
+      let handle;
+      try { handle = await open(available.path, "wx"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      try {
+        await handle.writeFile(body);
+        await handle.close();
+        await verify?.();
+        return available;
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await rm(available.path, { force: true });
+        throw error;
+      }
+    }
+  } catch (error) {
+    // A deleted notebook may race mkdir. Remove only empty folders this write
+    // created, including the notebook itself if this call recreated it.
+    if (createdRoot) {
+      const root = path.toNamespacedPath(createdRoot);
+      let current = path.toNamespacedPath(directory);
+      while (current === root || current.startsWith(`${root}${path.sep}`)) {
+        if (!(await removeEmptyDirectory(current)) || current === root) break;
+        current = path.dirname(current);
+      }
+    }
+    throw error;
+  }
+}
+
+/** Copies have independent image files and destinations never overwrite existing images. */
+export async function copyMarkdownImageAssets(from: string, to: string, markdown: string, includeOwnedUploads = false) {
+  const destination = splitFilePath(to);
+  assertNotSharedItem(destination.notebook, [MARKDOWN_ASSETS_DIR]);
+  const imageSources: Record<string, string> = {};
+  const created: string[] = [];
+  const sources = new Set(markdownImageSources(markdown));
+  // A moved editor can have images in an unsaved draft. Carry its uploads too
+  // and return their URL map so the draft follows the move without being saved.
+  if (includeOwnedUploads) {
+    for (const prefix of ownedPrefixes(from)) {
+      const directory = path.dirname(markdownAssetPath(splitFilePath(from).notebook, `${prefix}/placeholder`).targetPath);
+      if (!(await pathExists(directory))) continue;
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (entry.isFile()) sources.add(`${prefix}/${entry.name}`);
+      }
+    }
+  }
+  const discard = async () => {
+    for (const target of created) await rm(target, { force: true });
+    await removeEmptyAssetParents(destination.notebook, markdownAssetsDirectoryPathFromParts(destination.notebook, destination.pathParts));
+  };
+  try {
+    const copied = new Map<string, string>();
+    for (const source of sources) {
+      if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(source)) continue;
+      if (source.startsWith("/") && !source.startsWith("/api/markdown-assets/raw") && !source.startsWith("/api/files/raw/")) continue;
+      let asset;
+      try { asset = await getMarkdownImageAssetBySource(from, source); }
+      catch (error) {
+        // An already missing image must not prevent moving the note itself.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          const target = markdownAssetSourceTarget(from, source);
+          // Keep its original namespace so an unrelated destination image at
+          // the same relative path cannot silently replace the missing image.
+          if (target) imageSources[source] = `/api/markdown-assets/raw?document=${encodeURIComponent(target.documentPath)}&asset=${encodeURIComponent(target.assetPath)}`;
+          continue;
+        }
+        if (error instanceof StorageError) continue;
+        throw error;
+      }
+      const target = markdownAssetSourceTarget(from, source);
+      const key = source.startsWith("/api/files/raw/") ? `raw:${asset.assetPath}`
+        : `asset:${splitFilePath(target?.documentPath ?? from).notebook}/${asset.assetPath}`;
+      const existing = copied.get(key);
+      if (existing) { imageSources[source] = existing; continue; }
+      const available = await writeAvailableAsset(markdownAssetsDirectoryPathFromParts(destination.notebook, destination.pathParts),
+        normalizeAssetFileName(asset.fileName), asset.body);
+      created.push(available.path);
+      imageSources[source] = `${markdownAssetsPathPrefix(destination.pathParts)}/${available.name}`;
+      copied.set(key, imageSources[source]);
+    }
+    return { content: rewriteMarkdownImageSources(markdown, imageSources), imageSources, discard };
+  } catch (error) {
+    await discard();
+    throw error;
   }
 }
 
@@ -165,14 +297,20 @@ export async function writeMarkdownImageAsset(
   assertMarkdownFileName(name);
   // _assets in a shared notebook are shared blobs; they are added through the host.
   assertNotSharedItem(notebook, [MARKDOWN_ASSETS_DIR]);
-  await stat(filePathFromParts(notebook, pathParts));
+  const sourcePath = filePathFromParts(notebook, pathParts);
+  const original = await stat(sourcePath, { bigint: true });
+  async function assertSourceExists() {
+    const current = await stat(sourcePath, { bigint: true });
+    if (current.dev !== original.dev || current.ino !== original.ino || current.birthtimeNs !== original.birthtimeNs) {
+      throw new StorageError("The image's document has changed.", 409);
+    }
+  }
 
   const safeName = normalizeAssetFileName(ensureImageName(upload.name));
   const assetDirectory = markdownAssetsDirectoryPathFromParts(notebook, pathParts);
-  await mkdir(assetDirectory, { recursive: true });
-
-  const available = await findAvailableFilePath(assetDirectory, safeName);
-  await writeFile(available.path, Buffer.from(await upload.arrayBuffer()));
+  const body = Buffer.from(await upload.arrayBuffer());
+  await assertSourceExists();
+  const available = await writeAvailableAsset(assetDirectory, safeName, body, assertSourceExists);
 
   const assetPath = `${markdownAssetsPathPrefix(pathParts)}/${available.name}`;
 
@@ -187,9 +325,10 @@ export async function writeMarkdownImageAsset(
 
 export async function getMarkdownImageAsset(documentPath: string, assetPath: string) {
   await ensureAdminRoot();
-  const { notebook, name, pathParts } = splitFilePath(documentPath);
+  const { notebook, name } = splitFilePath(documentPath);
   assertMarkdownFileName(name);
-  await stat(filePathFromParts(notebook, pathParts));
+  // The document selects the notebook namespace. An image may still be used
+  // by another note after the original document has moved or been deleted.
 
   const asset = markdownAssetPath(notebook, assetPath);
   const fileName = path.basename(asset.normalized);
@@ -241,12 +380,13 @@ export async function getMarkdownImageAssetBySource(
     throw new StorageError("Only local Markdown images can be converted.");
   }
 
-  return getMarkdownImageAsset(documentPath, source);
+  return getMarkdownImageAsset(documentPath, markdownAssetSourceTarget(documentPath, source)?.assetPath ?? source);
 }
 
 export async function pruneUnusedMarkdownImageAssets(
   documentPath: string,
   markdown: string,
+  previousMarkdown = markdown,
 ) {
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(documentPath);
@@ -254,34 +394,7 @@ export async function pruneUnusedMarkdownImageAssets(
   assertNotSharedItem(notebook, [MARKDOWN_ASSETS_DIR]);
   await stat(filePathFromParts(notebook, pathParts));
 
-  const assetDirectory = markdownAssetsDirectoryPath(notebook, name);
-  const currentAssetDirectory = markdownAssetsDirectoryPathFromParts(notebook, pathParts);
-  const currentAssetPathPrefix = markdownAssetsPathPrefix(pathParts);
-  const legacyAssetPathPrefix = `${MARKDOWN_ASSETS_DIR}/${markdownAssetsDirectoryName(
-    name,
-  )}`;
-  const referencedAssets = referencedMarkdownAssetPaths(
-    relativeFilePath(notebook, pathParts),
-    markdown,
-  );
-
-  await pruneAssetDirectory({
-    assetDirectory: currentAssetDirectory,
-    assetPathPrefix: currentAssetPathPrefix,
-    referencedAssets,
-  });
-
-  if (currentAssetDirectory !== assetDirectory) {
-    await pruneAssetDirectory({
-      assetDirectory,
-      assetPathPrefix: legacyAssetPathPrefix,
-      referencedAssets,
-    });
-  }
-
-  await removeEmptyDirectory(currentAssetDirectory);
-  await removeEmptyDirectory(assetDirectory);
-  await removeEmptyDirectory(path.join(notebookPath(notebook), MARKDOWN_ASSETS_DIR));
+  await cleanupMarkdownImageAssets(notebook, [{ documentPath, content: previousMarkdown }], [{ documentPath, content: markdown }]);
 }
 
 export async function deleteMarkdownImageSource({
@@ -311,9 +424,13 @@ export async function deleteMarkdownImageSource({
     const { notebook, name, pathParts } = splitFilePath(rawPath);
     assertImageFileName(name);
     assertNotSharedItem(notebook, pathParts);
-    await rm(filePathFromParts(notebook, pathParts), { force: true });
-    await rm(imageAnnotationsPath(notebook, name), { force: true });
-    await rm(legacyImageAnnotationsPath(notebook, name), { force: true });
+    const scan = await readMarkdownAssetDocuments(notebook);
+    if (!scan.complete || scan.documents.some((document) => document.documentPath !== documentPath &&
+      referencedRawFilePaths(document.content).has(rawPath))) return { deleted: false };
+    // Use the file lifecycle so annotations, references, tags and search follow
+    // this deletion too. Loaded lazily because file saves also prune assets.
+    const { deleteFile } = await import("@/lib/storage/files");
+    if (await pathExists(filePathFromParts(notebook, pathParts))) await deleteFile(rawPath);
     return { deleted: true };
   }
 
@@ -334,8 +451,14 @@ export async function deleteMarkdownImageSource({
   const { notebook } = splitFilePath(target.documentPath);
   const asset = markdownAssetPath(notebook, target.assetPath);
   assertNotSharedItem(notebook, asset.normalized.split("/"));
+  const scan = await readMarkdownAssetDocuments(notebook);
+  if (!scan.complete || scan.documents.some((document) => document.documentPath !== documentPath &&
+    [...referencedMarkdownAssetPaths(document.documentPath, document.content)].some((reference) => reference.toLowerCase() === asset.normalized.toLowerCase()))) {
+    return { deleted: false };
+  }
 
   await rm(asset.targetPath, { force: true });
+  await removeEmptyAssetParents(notebook, path.dirname(asset.targetPath));
 
   return { deleted: true };
 }

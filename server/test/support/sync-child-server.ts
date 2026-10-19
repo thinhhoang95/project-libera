@@ -17,7 +17,7 @@ const config = loadConfig({
 });
 const server = await buildServer({ config, jobs: false });
 const { db } = server.context;
-await createAccount(db, config, { id: fixture.accountId });
+await createAccount(db, config, { id: fixture.accountId, familyId: "fam_killtest" });
 await createProject(db, fixture.accountId, { id: fixture.projectId });
 await createDocument(db, fixture.projectId, { id: fixture.docId });
 const url = await server.listen();

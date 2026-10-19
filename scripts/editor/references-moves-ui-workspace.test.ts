@@ -187,3 +187,23 @@ test("move notice texts", () => {
   const renamed = [1, 2, 3, 4].map((index) => ({ from: `k${index}`, to: `k${index}a`, files: [] }));
   assert.equal(m.referenceMoveSummary(moveResult({ renamed }), "Beta")?.text, "4 keys renamed (k1 → k1a, k2 → k2a, k3 → k3a, +1 more)");
 });
+
+test("image URL changes reach saved and dirty tabs even when a move has no citation map", async () => {
+  const before = "![photo](_assets/note/photo.png)\n";
+  const after = "![photo](_assets/moved/photo.png)\n";
+  const harness = await mountWorkspace({ "ImageSource/images.md": before }, () => ({
+    file: fileNode("ImageTarget/images.md"), content: after,
+    imageSources: { "_assets/note/photo.png": "_assets/moved/photo.png", "_assets/note/draft.png": "_assets/moved/draft.png" },
+  }));
+  try {
+    await act(async () => { await harness.workspace.openFile(fileNode("ImageSource/images.md")); });
+    await act(async () => { harness.workspace.setActiveDraft(`${before}Unsaved ![draft](_assets/note/draft.png)\n`); });
+    await act(async () => { await harness.workspace.moveFileToFolder(fileNode("ImageSource/images.md"), "ImageTarget"); });
+    await act(async () => { await harness.workspace.submitWorkspaceConfirmDialog(); });
+    const moved = tab(harness.workspace, "ImageTarget/images.md")!;
+    assert.equal(moved.saved, after);
+    assert.equal(moved.draft, `${after}Unsaved ![draft](_assets/moved/draft.png)\n`);
+    assert.equal(moved.status, "dirty");
+    assert.equal(harness.workspace.readOpenTabDraft("ImageTarget/images.md"), moved.draft);
+  } finally { await harness.cleanup(); }
+});

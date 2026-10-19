@@ -1,15 +1,21 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   assertImageFileName,
   assertPdfFileName,
+  getFileType,
 } from "@/lib/storage/file-types";
-import { copyFileIfExists, ensureParentDirectory, pathExists, writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { copyFileIfExists, ensureParentDirectory, pathExists, writeJsonForSource } from "@/lib/storage/fs-utils";
+import { readFileSignature } from "@/lib/storage/file-signature";
 import {
   ensureAdminRoot,
   filePathFromParts,
+  getStateRoot,
   imageAnnotationsPath,
+  imageAnnotationsDirectoryPath,
+  legacyFlatImageAnnotationsPath,
   legacyImageAnnotationsPath,
   legacyPdfAnnotationsPath,
   legacyFlatPdfAnnotationsPath,
@@ -19,15 +25,18 @@ import {
   relativeFilePath,
   splitFilePath,
 } from "@/lib/storage/paths";
-import { toStorageError } from "@/lib/storage/errors";
+import { StorageError, toStorageError } from "@/lib/storage/errors";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
+import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
   PdfAnnotationPoint,
   PdfAnnotationRect,
   PdfAnnotationsPayload,
+  PdfCommentThread,
+  PdfCommentsPayload,
   PdfHighlightAnnotation,
   PdfInkAnnotation,
   PdfShapeAnnotation,
@@ -210,15 +219,15 @@ function normalizeImageAnnotations(input: unknown): PdfTextAnnotation[] {
   );
 }
 
-/** Enumerate real PDFs without following symlinks or entering app/dependency state. */
-async function pdfPaths(notebook: string, parts: string[] = []): Promise<string[][]> {
+/** Enumerate annotated files without following symlinks or entering app/dependency state. */
+async function annotationFilePaths(notebook: string, parts: string[] = [], kind: "pdf" | "image" = "pdf"): Promise<string[][]> {
   const entries = await readdir(path.join(notebookPath(notebook), ...parts), { withFileTypes: true });
   const found: string[][] = [];
   for (const entry of entries) {
     if (entry.name.startsWith(".") || ["node_modules", "__pycache__", "bower_components", "_assets"].includes(entry.name)) continue;
     const child = [...parts, entry.name];
-    if (entry.isDirectory()) found.push(...await pdfPaths(notebook, child));
-    else if (entry.isFile() && /\.pdf$/i.test(entry.name)) found.push(child);
+    if (entry.isDirectory()) found.push(...await annotationFilePaths(notebook, child, kind));
+    else if (entry.isFile() && getFileType(entry.name) === kind) found.push(child);
   }
   return found;
 }
@@ -228,7 +237,7 @@ export async function migratePdfAnnotations(notebook: string, parts: string[]) {
   const key = pdfAnnotationsPath(notebook, parts);
   const pending = pendingMigrations.get(key);
   if (pending) return pending;
-  const work = migrateLegacyPdfAnnotations(notebook, parts);
+  const work = migrateLegacyAnnotations(notebook, parts, "pdf");
   pendingMigrations.set(key, work);
   try { await work; } finally { if (pendingMigrations.get(key) === work) pendingMigrations.delete(key); }
 }
@@ -239,15 +248,17 @@ async function archiveLegacyAnnotations(target: string, reason: string) {
   }
 }
 
-async function migrateLegacyPdfAnnotations(notebook: string, parts: string[]) {
-  const target = pdfAnnotationsPath(notebook, parts);
+async function migrateLegacyAnnotations(notebook: string, parts: string[], kind: "pdf" | "image") {
+  const target = kind === "pdf" ? pdfAnnotationsPath(notebook, parts) : imageAnnotationsPath(notebook, parts);
   const name = parts.at(-1)!;
-  const legacy = [legacyFlatPdfAnnotationsPath(notebook, name), legacyPdfAnnotationsPath(notebook, name)];
+  const legacy = kind === "pdf"
+    ? [legacyFlatPdfAnnotationsPath(notebook, name), legacyPdfAnnotationsPath(notebook, name)]
+    : [legacyFlatImageAnnotationsPath(notebook, name), legacyImageAnnotationsPath(notebook, name)];
   if (!(await pathExists(legacy[0])) && !(await pathExists(legacy[1]))) return;
-  const matches = (await pdfPaths(notebook)).filter((file) => file.at(-1) === name);
+  const matches = (await annotationFilePaths(notebook, [], kind)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1 || matches[0].join("/") !== parts.join("/")) {
     // Quarantine ambiguous notes so a later deletion cannot make their owner
-    // appear unambiguous and attach them to an unrelated surviving PDF.
+    // appear unambiguous and attach them to an unrelated surviving file.
     for (const old of legacy) {
       if (await pathExists(old)) await archiveLegacyAnnotations(old, "ambiguous");
     }
@@ -265,11 +276,120 @@ async function migrateLegacyPdfAnnotations(notebook: string, parts: string[]) {
 }
 
 export async function migratePdfAnnotationDirectory(notebook: string, parts: string[]) {
-  for (const file of await pdfPaths(notebook, parts)) await migratePdfAnnotations(notebook, file);
+  for (const file of await annotationFilePaths(notebook, parts)) await migratePdfAnnotations(notebook, file);
+}
+
+export async function migrateImageAnnotations(notebook: string, parts: string[]) {
+  const key = imageAnnotationsPath(notebook, parts);
+  const pending = pendingMigrations.get(key);
+  if (pending) return pending;
+  const work = migrateLegacyAnnotations(notebook, parts, "image");
+  pendingMigrations.set(key, work);
+  try { await work; } finally { if (pendingMigrations.get(key) === work) pendingMigrations.delete(key); }
+}
+
+export async function migrateImageAnnotationDirectory(notebook: string, parts: string[]) {
+  for (const file of await annotationFilePaths(notebook, parts, "image")) await migrateImageAnnotations(notebook, file);
+}
+
+export async function deleteImageAnnotationDirectory(notebook: string, parts: string[]) {
+  await rm(imageAnnotationsDirectoryPath(notebook, parts), { force: true, recursive: true });
 }
 
 export async function deletePdfAnnotationDirectory(notebook: string, parts: string[]) {
   await rm(pdfAnnotationsDirectoryPath(notebook, parts), { force: true, recursive: true });
+}
+
+/** Where a PDF's sidecar is read from: a read-only library can still read uniquely owned old notes. */
+async function pdfSidecarForRead(notebook: string, name: string, pathParts: string[]) {
+  const annotationsPath = pdfAnnotationsPath(notebook, pathParts);
+  try {
+    await migratePdfAnnotations(notebook, pathParts);
+  } catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    // Without claiming that their migration or a write succeeded.
+    if (!(await pathExists(annotationsPath))) {
+      const matches = (await annotationFilePaths(notebook)).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
+      if (matches.length === 1 && matches[0].join("/") === pathParts.join("/")) {
+        const flat = legacyFlatPdfAnnotationsPath(notebook, name);
+        return await pathExists(flat) ? flat : legacyPdfAnnotationsPath(notebook, name);
+      }
+    }
+  }
+  return annotationsPath;
+}
+
+type PdfSidecar = { annotations?: unknown; comments?: unknown };
+
+/** The sidecar's JSON, or an empty one when the PDF has none yet. */
+async function readPdfSidecar(annotationsPath: string): Promise<PdfSidecar> {
+  try {
+    const payload = JSON.parse(await readFile(annotationsPath, "utf8")) as PdfSidecar;
+    return payload && typeof payload === "object" ? payload : {};
+  } catch (error) {
+    if (toStorageError(error).status === 404) return {};
+    throw error;
+  }
+}
+
+const PDF_SIDECAR_LOCKS = Symbol.for("libera.pdfSidecarLocks");
+const lockState = globalThis as { [PDF_SIDECAR_LOCKS]?: Map<string, Promise<unknown>> };
+const sidecarLocks = lockState[PDF_SIDECAR_LOCKS] ??= new Map<string, Promise<unknown>>();
+
+/**
+ * The sidecar holds a PDF's markup and its comment threads, written by
+ * different hands (the viewer saves whole markup lists; comments change one
+ * thread at a time, also from the agent). Each write reads the sidecar and
+ * keeps the other half, one writer at a time: queued in this process, and an
+ * OS lock file across Next workers. The lock lives in the library's state
+ * folder, not beside the sidecar, so a folder move never carries a held lock.
+ */
+async function withPdfSidecar<T>(annotationsPath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = sidecarLocks.get(annotationsPath) ?? Promise.resolve();
+  const task = previous.catch(() => undefined).then(() => withSidecarFileLock(annotationsPath, fn));
+  sidecarLocks.set(annotationsPath, task);
+  try { return await task; } finally { if (sidecarLocks.get(annotationsPath) === task) sidecarLocks.delete(annotationsPath); }
+}
+
+async function withSidecarFileLock<T>(annotationsPath: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = path.join(getStateRoot(), ".libera", "locks", `pdf-sidecar-${createHash("sha256").update(annotationsPath).digest("hex").slice(0, 32)}.lock`);
+  await mkdir(path.dirname(lockPath), { recursive: true });
+  let lock;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { lock = await open(lockPath, "wx", 0o600); await lock.writeFile(String(process.pid)); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Recover a lock left by a dead worker. Never steal from a live owner.
+      try {
+        const owner = Number(await readFile(lockPath, "utf8"));
+        if (Number.isInteger(owner) && owner > 0) {
+          try { process.kill(owner, 0); }
+          catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ESRCH") await rm(lockPath, { force: true }); }
+        } else if (Date.now() - (await stat(lockPath)).mtimeMs > 30_000) await rm(lockPath, { force: true });
+      } catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause; }
+      await delay(50);
+    }
+  }
+  if (!lock) throw new StorageError("The PDF's notes are busy. Retry; if the app crashed, restart it.", 409);
+  try { return await fn(); } finally { await lock.close(); await rm(lockPath, { force: true }); }
+}
+
+/** Rewrites one half of a PDF's sidecar, keeping the other as it is on disk. */
+async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSidecar) => { sidecar: PdfSidecar; result: T }): Promise<T> {
+  await ensureAdminRoot();
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+  assertPdfFileName(name);
+  const sourcePath = filePathFromParts(notebook, pathParts);
+  const signature = await readFileSignature(sourcePath);
+
+  await migratePdfAnnotations(notebook, pathParts);
+  const annotationsPath = pdfAnnotationsPath(notebook, pathParts);
+  return withPdfSidecar(annotationsPath, async () => {
+    const { sidecar, result } = change(await readPdfSidecar(annotationsPath));
+    const comments = Array.isArray(sidecar.comments) && sidecar.comments.length ? { comments: sidecar.comments } : {};
+    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments }, sourcePath, signature);
+    return result;
+  });
 }
 
 export async function readPdfAnnotations(
@@ -280,59 +400,20 @@ export async function readPdfAnnotations(
   assertPdfFileName(name);
   await stat(filePathFromParts(notebook, pathParts));
 
-  let annotationsPath = pdfAnnotationsPath(notebook, pathParts);
-  try {
-    await migratePdfAnnotations(notebook, pathParts);
-  } catch (error) {
-    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-    // A read-only library can still read uniquely owned old notes without
-    // claiming that their migration or a write succeeded.
-    if (!(await pathExists(annotationsPath))) {
-      const matches = (await pdfPaths(notebook)).filter((file) => file.at(-1) === name);
-      if (matches.length === 1 && matches[0].join("/") === pathParts.join("/")) {
-        const flat = legacyFlatPdfAnnotationsPath(notebook, name);
-        annotationsPath = await pathExists(flat) ? flat : legacyPdfAnnotationsPath(notebook, name);
-      }
-    }
-  }
-
-  try {
-    const payload = JSON.parse(await readFile(annotationsPath, "utf8")) as {
-      annotations?: unknown;
-    };
-
-    return {
-      path: relativeFilePath(notebook, pathParts),
-      annotations: normalizePdfAnnotations(payload.annotations),
-    };
-  } catch (error) {
-    const storageError = toStorageError(error);
-
-    if (storageError.status === 404) {
-      return {
-        path: relativeFilePath(notebook, pathParts),
-        annotations: [],
-      };
-    }
-
-    throw error;
-  }
+  const sidecar = await readPdfSidecar(await pdfSidecarForRead(notebook, name, pathParts));
+  return {
+    path: relativeFilePath(notebook, pathParts),
+    annotations: normalizePdfAnnotations(sidecar.annotations),
+  };
 }
 
 export async function writePdfAnnotations(
   relativePath: string,
   annotations: unknown,
 ): Promise<PdfAnnotationsPayload> {
-  await ensureAdminRoot();
-  const { notebook, name, pathParts } = splitFilePath(relativePath);
-  assertPdfFileName(name);
-  await stat(filePathFromParts(notebook, pathParts));
-
-  await migratePdfAnnotations(notebook, pathParts);
+  const { notebook, pathParts } = splitFilePath(relativePath);
   const normalizedAnnotations = normalizePdfAnnotations(annotations);
-  const annotationsPath = pdfAnnotationsPath(notebook, pathParts);
-
-  await writeJsonAtomically(annotationsPath, { annotations: normalizedAnnotations });
+  await updatePdfSidecar(relativePath, (sidecar) => ({ sidecar: { ...sidecar, annotations: normalizedAnnotations }, result: undefined }));
   // Highlight quotes are Global Search passages of the PDF.
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 
@@ -340,6 +421,32 @@ export async function writePdfAnnotations(
     path: relativeFilePath(notebook, pathParts),
     annotations: normalizedAnnotations,
   };
+}
+
+/** A PDF's review comment threads, in the order they were added. */
+export async function readPdfCommentThreads(relativePath: string): Promise<PdfCommentsPayload> {
+  await ensureAdminRoot();
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+  assertPdfFileName(name);
+  await stat(filePathFromParts(notebook, pathParts));
+
+  const sidecar = await readPdfSidecar(await pdfSidecarForRead(notebook, name, pathParts));
+  return { path: relativeFilePath(notebook, pathParts), threads: normalizePdfCommentThreads(sidecar.comments, randomUUID) };
+}
+
+/**
+ * Changes a PDF's comment threads under the sidecar lock. `change` gets the
+ * threads on disk and returns the new list (it may throw to change nothing).
+ */
+export async function updatePdfCommentThreads<T>(
+  relativePath: string,
+  change: (threads: PdfCommentThread[]) => { threads: PdfCommentThread[]; result: T },
+): Promise<{ payload: PdfCommentsPayload; result: T }> {
+  const { notebook, pathParts } = splitFilePath(relativePath);
+  return updatePdfSidecar(relativePath, (sidecar) => {
+    const { threads, result } = change(normalizePdfCommentThreads(sidecar.comments, randomUUID));
+    return { sidecar: { ...sidecar, comments: threads }, result: { payload: { path: relativeFilePath(notebook, pathParts), threads }, result } };
+  });
 }
 
 export async function readImageAnnotations(
@@ -350,14 +457,22 @@ export async function readImageAnnotations(
   assertImageFileName(name);
   await stat(filePathFromParts(notebook, pathParts));
 
+  let annotationsPath = imageAnnotationsPath(notebook, pathParts);
+  try { await migrateImageAnnotations(notebook, pathParts); }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    if (!(await pathExists(annotationsPath))) {
+      const matches = (await annotationFilePaths(notebook, [], "image")).filter((file) => file.at(-1)?.toLowerCase() === name.toLowerCase());
+      if (matches.length === 1 && matches[0].join("/") === pathParts.join("/")) {
+        const flat = legacyFlatImageAnnotationsPath(notebook, name);
+        annotationsPath = await pathExists(flat) ? flat : legacyImageAnnotationsPath(notebook, name);
+      }
+    }
+  }
+
   try {
     const payload = JSON.parse(
-      await readFile(
-        (await pathExists(imageAnnotationsPath(notebook, name)))
-          ? imageAnnotationsPath(notebook, name)
-          : legacyImageAnnotationsPath(notebook, name),
-        "utf8",
-      ),
+      await readFile(annotationsPath, "utf8"),
     ) as {
       annotations?: unknown;
     };
@@ -387,18 +502,14 @@ export async function writeImageAnnotations(
   await ensureAdminRoot();
   const { notebook, name, pathParts } = splitFilePath(relativePath);
   assertImageFileName(name);
-  await stat(filePathFromParts(notebook, pathParts));
+  const sourcePath = filePathFromParts(notebook, pathParts);
+  const signature = await readFileSignature(sourcePath);
 
+  await migrateImageAnnotations(notebook, pathParts);
   const normalizedAnnotations = normalizeImageAnnotations(annotations);
-  const annotationsPath = imageAnnotationsPath(notebook, name);
+  const annotationsPath = imageAnnotationsPath(notebook, pathParts);
 
-  await ensureParentDirectory(annotationsPath);
-  await writeFile(
-    annotationsPath,
-    `${JSON.stringify({ annotations: normalizedAnnotations }, null, 2)}\n`,
-    "utf8",
-  );
-  await rm(legacyImageAnnotationsPath(notebook, name), { force: true });
+  await writeJsonForSource(annotationsPath, { annotations: normalizedAnnotations }, sourcePath, signature);
 
   return {
     path: relativeFilePath(notebook, pathParts),

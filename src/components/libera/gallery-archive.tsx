@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Lock } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
-import { applyGallery } from "@/components/libera/gallery-store";
+import { applyGallery, notifyDeletedGalleryPhotos } from "@/components/libera/gallery-store";
 import type { ArchiveContents, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
 
 /**
@@ -66,6 +66,7 @@ export function useProtectedArchive(open: boolean) {
   const load = useCallback(async () => {
     try {
       const next = await archiveRequest<ArchiveContents>("/api/gallery/archive");
+      notifyDeletedGalleryPhotos(next.deletedPhotoIds);
       renewedAtRef.current = Date.now();
       setContents(next);
     } catch (error) {
@@ -86,6 +87,7 @@ export function useProtectedArchive(open: boolean) {
       const result = await archiveRequest<{ archive: ArchiveContents; gallery?: GalleryContents }>(url, { method, body: JSON.stringify({ ids }) });
       renewedAtRef.current = Date.now();
       setContents(result.archive);
+      notifyDeletedGalleryPhotos(result.archive.deletedPhotoIds);
       applyGallery(result.gallery);
     } catch (error) {
       if (error instanceof ArchiveLockedError) setContents(null);

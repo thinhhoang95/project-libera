@@ -701,7 +701,9 @@ export class SearchIndexer {
     const signature = await readFileSignature(libraryAbsolutePath(relativePath));
     if (fileType === "audio") {
       const transcript = await transcriptSignature(relativePath);
-      return transcript ? `${signature}|${transcript}` : signature;
+      if (!transcript) return signature;
+      const { stale } = await readTranscript(relativePath);
+      return `${signature}|${transcript}|${stale ? "stale" : "current"}`;
     }
     if (fileType !== "pdf") return signature;
     const highlights = await pdfHighlightSignature(relativePath);
@@ -727,10 +729,10 @@ export class SearchIndexer {
       return chunks.length ? chunks : nameOnlyChunk(file.name);
     }
 
-    // A recording is found through its transcript; its audio is never read here.
+    // A recording is found through its current transcript, without decoding audio.
     if (file.fileType === "audio") {
-      const { transcript } = await readTranscript(file.path);
-      const passages = transcript ? transcriptPassages(transcript) : [];
+      const { transcript, stale } = await readTranscript(file.path);
+      const passages = transcript && !stale ? transcriptPassages(transcript) : [];
       return passages.length ? passages : nameOnlyChunk(file.name);
     }
 

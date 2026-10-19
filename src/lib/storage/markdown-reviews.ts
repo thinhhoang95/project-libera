@@ -85,6 +85,18 @@ export async function addReviewThreads(key: string, snapshot: string, threads: {
     return doc;
   });
 }
+/** Add a reply to one of a document's review threads. StorageError 404 when the review or thread is gone. */
+export async function addReviewReply(key: string, threadId: string, text: string, author?: "agent") {
+  return transaction((db) => {
+    const doc = db.documents.find((d) => d.key === key);
+    const thread = doc?.threads.find((t) => t.id === threadId);
+    if (!doc || !thread) throw new StorageError("Comment thread was not found.", 404);
+    const message = { id: randomUUID(), text, createdAt: new Date().toISOString(), ...(author ? { author } : {}) };
+    thread.messages.push(message);
+    doc.revision++;
+    return { doc, thread, message };
+  });
+}
 export type AgentSuggestionInput = {
   /** The passage to replace, in `snapshot`. */
   range: ReviewRange;

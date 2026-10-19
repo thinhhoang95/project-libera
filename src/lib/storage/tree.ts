@@ -1,4 +1,5 @@
 import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
+import { pruneAudioSidecars } from "@/lib/storage/transcripts";
 import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
 import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
@@ -117,7 +118,7 @@ async function getFileUpdatedAt(
     return latestIsoDate(
       fileUpdatedAt,
       ...(await latestExistingPathMtime([
-        imageAnnotationsPath(notebook, name),
+        imageAnnotationsPath(notebook, pathParts),
         legacyImageAnnotationsPath(notebook, name),
       ])),
     );
@@ -327,6 +328,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     );
     const children = await readTreeDirectory(entry.name, [], { showArchive });
     await prunePdfTextCaches(entry.name).catch(() => undefined);
+    await pruneAudioSidecars(entry.name).catch(() => undefined);
 
     notebooks.push({
       kind: "notebook",
@@ -353,7 +355,10 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
 
   for (const folder of linkedFolders) {
     const node = await getLinkedFolderNode(folder, { showArchive, validGroupIds });
-    if (!node.folder?.missing) await prunePdfTextCaches(folder.name).catch(() => undefined);
+    if (!node.folder?.missing) {
+      await prunePdfTextCaches(folder.name).catch(() => undefined);
+      await pruneAudioSidecars(folder.name).catch(() => undefined);
+    }
     notebooks.push(node);
     collectFilePaths(node.children, filePaths);
     expandablePaths.add(node.name);

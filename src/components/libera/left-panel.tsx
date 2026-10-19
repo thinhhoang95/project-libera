@@ -22,6 +22,7 @@ import { ImageGenerationPanel } from "@/components/libera/image-generation-panel
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
 import { ReviewComments } from "@/components/libera/markdown-review-ui";
+import { PdfReviewComments } from "@/components/libera/pdf-comments-panel";
 import { ReferencesPanel, type ReferencesPanelProps } from "@/components/libera/references/references-panel";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
@@ -215,7 +216,11 @@ export function LeftPanel({
                 onRevertCitationRewrite={references?.onRevertCitationRewrite}
               />
             ) : activePanel === "comments" ? (
-              <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
+              activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
+                <PdfReviewComments key={activeTab.file.path} path={activeTab.file.path} />
+              ) : (
+                <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
+              )
             ) : (
               <OutlinePanel
                 activeTab={activeTab}

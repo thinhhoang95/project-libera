@@ -92,6 +92,7 @@ describe("auth routes", () => {
     assert.equal(rotated.body.account.id, user.id);
     const me = await json(h.url, "/v1/me", { token: rotated.body.accessToken });
     assert.equal(me.status, 200);
+    assert.equal((await request(h, "GET", "/v1/me", user)).status, 200, "rotation keeps earlier access tokens in the active family valid");
 
     const oldRow = await h.context.db
       .selectFrom("refresh_tokens")
@@ -114,6 +115,7 @@ describe("auth routes", () => {
     // The newest token of the family is dead too.
     const after = await json(h.url, "/v1/auth/refresh", { body: { refreshToken: second.body.refreshToken } });
     assert.equal(after.status, 401);
+    assert.equal((await json(h.url, "/v1/me", { token: second.body.accessToken })).status, 401, "reuse revokes access tokens too");
     const live = await h.context.db
       .selectFrom("refresh_tokens")
       .select("id")
@@ -130,6 +132,7 @@ describe("auth routes", () => {
 
   test("logout revokes the session's family", async () => {
     const user = await register(h, "out");
+    const other = await json<AuthResponse>(h.url, "/v1/auth/login", { body: { email: user.email, password: "correct horse battery" } });
     h.rooms.calls.length = 0;
     const out = await json(h.url, "/v1/auth/logout", { body: { refreshToken: user.auth.refreshToken } });
     assert.equal(out.status, 204);
@@ -137,6 +140,9 @@ describe("auth routes", () => {
     assert.equal(h.rooms.calls[0]?.args[0], user.id);
     const refresh = await json(h.url, "/v1/auth/refresh", { body: { refreshToken: user.auth.refreshToken } });
     assert.equal(refresh.status, 401);
+    assert.equal((await request(h, "GET", "/v1/me", user)).status, 401, "a logged-out access token cannot authenticate");
+    assert.equal((await request(h, "POST", "/v1/projects", user, { name: "After logout" })).status, 401);
+    assert.equal((await json(h.url, "/v1/me", { token: other.body.accessToken })).status, 200, "another session is still active");
     const again = await json(h.url, "/v1/auth/logout", { body: { refreshToken: user.auth.refreshToken } });
     assert.equal(again.status, 204);
   });
@@ -157,6 +163,7 @@ describe("auth routes", () => {
     assert.equal(changed.status, 204);
     const otherRefresh = await json(h.url, "/v1/auth/refresh", { body: { refreshToken: other.body.refreshToken } });
     assert.equal(otherRefresh.status, 401, "other session ended");
+    assert.equal((await json(h.url, "/v1/me", { token: other.body.accessToken })).status, 401, "password change revokes the other access token");
     const ownRefresh = await json(h.url, "/v1/auth/refresh", { body: { refreshToken: user.auth.refreshToken } });
     assert.equal(ownRefresh.status, 200, "current session kept");
     const login = await json(h.url, "/v1/auth/login", { body: { email: user.email, password: "new password 1" } });

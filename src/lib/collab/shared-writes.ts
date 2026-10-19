@@ -42,7 +42,7 @@ import { readLiberaFile } from "@/lib/storage/files";
 import { removeFileMetadataPath, renameFileMetadataPath, removeFileMetadataPathPrefix, renameFileMetadataPathPrefix, removeNotebookPanelExpandedPathPrefix, renameNotebookPanelExpandedPathPrefix } from "@/lib/storage/workspace-metadata";
 import { getMarkdownImageAssetBySource, markdownImageSources } from "@/lib/storage/markdown-assets";
 import { isTextFileType, type LiberaFileNode, type LiberaTree, type MarkdownImageAssetPayload } from "@/lib/types";
-import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
+import { CollabHostError, applyEdits, collabHostConfig, createSuggestions, createThreadAtRange, createThreadMessage, enqueueCommand, fileOp, getDocText, listAnchoredThreads, listProjects, resolveSharedPath, withdrawSuggestions, type HostClientConfig } from "./host-client";
 import type { AnchoredThreadsResponse, CreateThreadAtRangeResponse, DocText, ResolvedDoc, TextEdit, WithdrawSuggestionsResponse } from "./local-api";
 import type { AiActorHint, Provenance } from "./protocol/actor";
 import { canWriteSubdoc } from "./protocol/roles";
@@ -304,6 +304,43 @@ export async function commentOnSharedText(
     throw new SharedWriteError(403, "forbidden", isRevoked(doc) ? `${liberaPath} is read-only: access to its shared notebook was revoked.` : `Your role in this shared notebook (${doc.role}) cannot comment on ${liberaPath}.`);
   }
   return host(liberaPath, () => createThreadAtRange(doc.docId, { range: input.range, snapshot: input.snapshot, body: input.body, ...(input.ai ? { ai: input.ai } : {}) }, config));
+}
+
+/** Failures worth queuing a reply for: the server is unreachable or busy, not a refusal. */
+function queueable(error: unknown) {
+  if (!(error instanceof CollabHostError)) return false;
+  if (error.code === "collab-unavailable" || error.code === "collab-disabled" || error.code === "host-unavailable" || error.code === "collab-host-auth") return false;
+  if (error.code === "network" || error.code === "offline" || error.code === "needs-sign-in") return true;
+  return [0, 408, 429, 500, 502, 503, 504].includes(error.status);
+}
+
+export type SharedReplyResult = { queued: false; messageId: string } | { queued: true; messageId: string; commandId: string };
+
+/**
+ * A reply in a shared comment thread, as the user (an AI actor when `ai` is
+ * given). Sent to the server at once; when it cannot be reached, queued in
+ * the host's command queue like a reply typed in the Comments panel offline.
+ */
+export async function replyToSharedThread(
+  liberaPath: string,
+  input: { threadId: string; body: string; ai?: AiActorHint; doc?: ResolvedDoc },
+  options: SharedWriteOptions = {},
+): Promise<SharedReplyResult> {
+  const config = hostConfig(liberaPath, options);
+  const doc = input.doc ?? (await requireSharedDoc(liberaPath, { config }));
+  if (!canSuggestShared(doc)) {
+    throw new SharedWriteError(403, "forbidden", isRevoked(doc) ? `${liberaPath} is read-only: access to its shared notebook was revoked.` : `Your role in this shared notebook (${doc.role}) cannot comment on ${liberaPath}.`);
+  }
+  const request = { id: `msg-${randomUUID()}`, body: input.body, ...(input.ai ? { ai: input.ai } : {}) };
+  try {
+    await createThreadMessage(input.threadId, request, config);
+    return { queued: false, messageId: request.id };
+  } catch (error) {
+    if (!queueable(error)) return asSharedWriteError(liberaPath, error);
+  }
+  const commandId = `cmd-${randomUUID()}`;
+  await host(liberaPath, () => enqueueCommand({ id: commandId, kind: "message.create", threadId: input.threadId, body: request }, config));
+  return { queued: true, messageId: request.id, commandId };
 }
 
 /** A shared document's comment threads and replies, anchored in the live text the response carries. */

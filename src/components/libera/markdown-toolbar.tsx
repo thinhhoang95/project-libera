@@ -35,6 +35,9 @@ import {
   type MarkdownTextColor,
 } from "@/lib/markdown-colors";
 import type { MarkdownHeadingEnumerationScope } from "@/lib/markdown-heading-enumeration";
+import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering";
+import { HeadingNumberingControl } from "./heading-numbering-control";
+import { saveDocumentHeadingNumbering, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
 
 import { ModalDialog } from "./modal-dialog";
 import { MarkdownLinkInput } from "./markdown-link-input";
@@ -43,6 +46,7 @@ import { TableInsertButton } from "./table-grid-picker";
 import type { MarkdownSelectionLinkOption } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
+import { usePaletteCommands } from "./command-palette/commands";
 
 type MarkdownToolbarProps = {
   files: LiberaFileNode[];
@@ -56,6 +60,9 @@ type MarkdownToolbarProps = {
     scope: MarkdownHeadingEnumerationScope,
     startAt?: number,
   ) => void;
+  /** Number every heading now, following the structural numbering rules. */
+  onNumberHeadings?: () => void;
+  onRemoveHeadingNumbers?: () => void;
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertTable: (rows: number, columns: number) => void;
@@ -73,7 +80,6 @@ type MarkdownToolbarProps = {
   readSelectionLinks?: () => MarkdownSelectionLinkOption[];
 };
 
-const ENUMERATE_HEADINGS_MENU_WIDTH = 288;
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
@@ -133,6 +139,8 @@ export function MarkdownToolbar({
   markdownContent,
   markdownZoom,
   onEnumerateHeadings,
+  onNumberHeadings = () => undefined,
+  onRemoveHeadingNumbers = () => undefined,
   onFixChatGptEquations,
   onInsert,
   onInsertTable,
@@ -148,6 +156,7 @@ export function MarkdownToolbar({
   readSelectionLinks,
 }: MarkdownToolbarProps) {
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
+  const toolbarRootRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const toolbarMeasureRef = useRef<HTMLDivElement>(null);
   const toolbarRowRef = useRef<HTMLDivElement>(null);
@@ -164,8 +173,6 @@ export function MarkdownToolbar({
   const highlightMenuRef = useRef<HTMLDivElement>(null);
   const textColorButtonRef = useRef<HTMLButtonElement>(null);
   const textColorMenuRef = useRef<HTMLDivElement>(null);
-  const enumerateButtonRef = useRef<HTMLButtonElement>(null);
-  const enumerateMenuRef = useRef<HTMLDivElement>(null);
   const [highlightMenuOpen, setHighlightMenuOpen] = useState(false);
   const [highlightMenuPosition, setHighlightMenuPosition] = useState({
     left: 0,
@@ -176,21 +183,9 @@ export function MarkdownToolbar({
     left: 0,
     top: 0,
   });
-  const [enumerateMenuOpen, setEnumerateMenuOpen] = useState(false);
-  const [enumerateMenuPosition, setEnumerateMenuPosition] = useState({
-    left: 0,
-    top: 0,
-  });
-  const [selectedHeadingStart, setSelectedHeadingStart] = useState("1");
+  const headingNumbering = useHeadingNumbering(documentPath, () => detectMarkdownHeadingNumbering(markdownContent));
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [toolbarExpanded, setToolbarExpanded] = useState(false);
-
-  const getEnumerateMenuPosition = useCallback(() => {
-    return getFloatingMenuPosition(
-      enumerateButtonRef.current,
-      ENUMERATE_HEADINGS_MENU_WIDTH,
-    );
-  }, []);
 
   const getHighlightMenuPosition = useCallback(() => {
     return getFloatingMenuPosition(highlightButtonRef.current, HIGHLIGHT_MENU_WIDTH);
@@ -249,7 +244,7 @@ export function MarkdownToolbar({
   }, []);
 
   useEffect(() => {
-    if (!highlightMenuOpen && !textColorMenuOpen && !enumerateMenuOpen) {
+    if (!highlightMenuOpen && !textColorMenuOpen) {
       return;
     }
 
@@ -261,23 +256,19 @@ export function MarkdownToolbar({
         (highlightButtonRef.current?.contains(target) ||
           highlightMenuRef.current?.contains(target) ||
           textColorButtonRef.current?.contains(target) ||
-          textColorMenuRef.current?.contains(target) ||
-          enumerateButtonRef.current?.contains(target) ||
-          enumerateMenuRef.current?.contains(target))
+          textColorMenuRef.current?.contains(target))
       ) {
         return;
       }
 
       setHighlightMenuOpen(false);
       setTextColorMenuOpen(false);
-      setEnumerateMenuOpen(false);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setHighlightMenuOpen(false);
         setTextColorMenuOpen(false);
-        setEnumerateMenuOpen(false);
       }
     }
 
@@ -297,14 +288,6 @@ export function MarkdownToolbar({
           setTextColorMenuPosition(nextPosition);
         }
       }
-
-      if (enumerateMenuOpen) {
-        const nextPosition = getEnumerateMenuPosition();
-
-        if (nextPosition) {
-          setEnumerateMenuPosition(nextPosition);
-        }
-      }
     }
 
     window.addEventListener("pointerdown", closeOpenMenus);
@@ -319,12 +302,36 @@ export function MarkdownToolbar({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
-    enumerateMenuOpen,
-    getEnumerateMenuPosition,
     getHighlightMenuPosition,
     getTextColorMenuPosition,
     highlightMenuOpen,
     textColorMenuOpen,
+  ]);
+
+  // Choices inside the toolbar's menus, for the command palette; its buttons are read from the page.
+  usePaletteCommands(toolbarRootRef, () => [
+    ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({
+      id: `markdown:highlight:${color.shortcut}`,
+      title: `Highlight: ${color.label}`,
+      group: "Markdown formatting",
+      icon: Highlighter,
+      run: () => insertHighlight(color),
+    })),
+    ...MARKDOWN_TEXT_COLORS.map((color) => ({
+      id: `markdown:text-color:${color.value}`,
+      title: `Text color: ${color.label}`,
+      group: "Markdown formatting",
+      icon: Palette,
+      run: () => insertTextColor(color),
+    })),
+    {
+      id: "markdown:enumerate-all-headings",
+      title: "Enumerate all headings",
+      group: "Markdown formatting",
+      icon: ListOrdered,
+      keywords: "number headings",
+      run: onNumberHeadings,
+    },
   ]);
 
   function toggleHighlightMenu() {
@@ -340,7 +347,6 @@ export function MarkdownToolbar({
     }
 
     setTextColorMenuOpen(false);
-    setEnumerateMenuOpen(false);
     setHighlightMenuOpen(true);
   }
 
@@ -357,50 +363,13 @@ export function MarkdownToolbar({
     }
 
     setHighlightMenuOpen(false);
-    setEnumerateMenuOpen(false);
     setTextColorMenuOpen(true);
-  }
-
-  function toggleEnumerateMenu() {
-    if (enumerateMenuOpen) {
-      setEnumerateMenuOpen(false);
-      return;
-    }
-
-    const nextPosition = getEnumerateMenuPosition();
-
-    if (nextPosition) {
-      setEnumerateMenuPosition(nextPosition);
-    }
-
-    setHighlightMenuOpen(false);
-    setTextColorMenuOpen(false);
-    setEnumerateMenuOpen(true);
   }
 
   function toggleToolbarExpanded() {
     setHighlightMenuOpen(false);
     setTextColorMenuOpen(false);
-    setEnumerateMenuOpen(false);
     setToolbarExpanded((current) => !current);
-  }
-
-  function selectedHeadingStartValue() {
-    const parsed = Number(selectedHeadingStart);
-
-    if (!Number.isFinite(parsed)) {
-      return 1;
-    }
-
-    return Math.max(1, Math.floor(parsed));
-  }
-
-  function enumerateHeadings(
-    scope: MarkdownHeadingEnumerationScope,
-    startAt?: number,
-  ) {
-    setEnumerateMenuOpen(false);
-    onEnumerateHeadings(scope, startAt);
   }
 
   function insertHighlight(color: MarkdownHighlightColor) {
@@ -536,18 +505,19 @@ export function MarkdownToolbar({
         >
           <Sparkles aria-hidden className="h-4 w-4" />
         </button>
-        <button
-          ref={enumerateButtonRef}
-          aria-expanded={enumerateMenuOpen}
-          aria-haspopup="menu"
-          aria-label="Enumerate Headings"
-          className="toolbar-button"
-          title="Enumerate Headings"
-          type="button"
-          onClick={toggleEnumerateMenu}
-        >
-          <ListOrdered aria-hidden className="h-4 w-4" />
-        </button>
+        <HeadingNumberingControl
+          buttonClassName="toolbar-button"
+          enabled={headingNumbering.enabled}
+          skipTitle={headingNumbering.skipTitle}
+          onEnumerateSelected={(startAt) => onEnumerateHeadings("selected", startAt)}
+          onNumberAll={onNumberHeadings}
+          onRemoveAll={() => {
+            saveDocumentHeadingNumbering(documentPath, false);
+            onRemoveHeadingNumbers();
+          }}
+          onSkipTitleChange={saveHeadingNumberingSkipTitle}
+          onToggle={(enabled) => saveDocumentHeadingNumbering(documentPath, enabled)}
+        />
         <MarkdownDisplayZoom markdownBaseFontSize={markdownBaseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
       </>
     );
@@ -573,7 +543,7 @@ export function MarkdownToolbar({
   }
 
   return (
-    <div className="libera-editor-toolbar relative z-40 border-b border-border bg-card px-4 py-2">
+    <div ref={toolbarRootRef} className="libera-editor-toolbar relative z-40 border-b border-border bg-card px-4 py-2">
       <ModalDialog open={!!linkDraft} title="Insert link" onClose={() => setLinkDraft(null)} footer={
         <button type="button" className="rounded-md border border-border bg-card px-3 py-2 text-sm disabled:opacity-40" disabled={!linkDraft?.href.trim()} onClick={() => {
           if (!linkDraft?.href.trim()) return;
@@ -744,6 +714,7 @@ export function MarkdownToolbar({
             aria-expanded={toolbarExpanded}
             aria-label={toolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
             className="toolbar-button"
+            data-command-reveal-button=""
             title={toolbarExpanded ? "Collapse toolbar" : "Expand toolbar"}
             type="button"
             onClick={toggleToolbarExpanded}
@@ -765,65 +736,10 @@ export function MarkdownToolbar({
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
           {renderSecondaryControls()}
         </div>
-      ) : null}
-      {enumerateMenuOpen ? (
-        <div
-          ref={enumerateMenuRef}
-          className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-card p-1 text-sm shadow-lg"
-          role="menu"
-          style={{
-            left: enumerateMenuPosition.left,
-            top: enumerateMenuPosition.top,
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <button
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left font-medium text-foreground hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => enumerateHeadings("all", 1)}
-          >
-            <ListOrdered aria-hidden className="h-4 w-4 text-muted-foreground" />
-            Enumerate All Headings
-          </button>
-          <form
-            className="mt-1 border-t border-border px-2 py-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              enumerateHeadings("selected", selectedHeadingStartValue());
-            }}
-          >
-            <label
-              className="block text-xs font-medium text-muted-foreground"
-              htmlFor="enumerate-selected-headings-start"
-            >
-              Enumerate Selected Headings
-            </label>
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                id="enumerate-selected-headings-start"
-                className="h-8 min-w-0 flex-1 rounded-xl border border-border bg-card px-2 text-sm outline-none focus:border-input"
-                type="number"
-                min="1"
-                step="1"
-                value={selectedHeadingStart}
-                aria-label="Selected heading start value"
-                onChange={(event) => setSelectedHeadingStart(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setEnumerateMenuOpen(false);
-                  }
-                }}
-              />
-              <button
-                className="inline-flex h-8 shrink-0 items-center rounded bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                type="submit"
-              >
-                Apply
-              </button>
-            </div>
-          </form>
+      ) : toolbarCollapsed ? (
+        // Offstage, so the command palette still lists the tools that did not fit.
+        <div hidden data-command-toolbar="Markdown formatting" data-command-reveal="">
+          {renderSecondaryControls()}
         </div>
       ) : null}
     </div>

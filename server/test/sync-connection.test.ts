@@ -131,6 +131,18 @@ describe("sync connection", () => {
     assert.equal(bystander.closeCode, undefined);
     await bystander.close();
   });
+
+  test("a revoked session cannot reconnect or refresh a socket with an unexpired access token", async () => {
+    const account = await createAccount(env.db, env.config);
+    const live = await env.connect(account);
+    assert.ok(live.welcome);
+    await env.db.updateTable("refresh_tokens").set({ revoked_at: new Date() }).where("family_id", "=", account.familyId).execute();
+    live.send({ type: MessageType.RefreshToken, token: account.token });
+    assert.equal((await live.closed).code, CloseCode.AuthRevoked);
+    const reconnected = await env.connect(account);
+    assert.equal(reconnected.welcome, undefined);
+    assert.equal((await reconnected.closed).code, CloseCode.AuthRevoked);
+  });
 });
 
 describe("sync admission control", () => {

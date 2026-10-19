@@ -22,6 +22,8 @@ import { AgentRunView } from "./agent-activity";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
+import { keepGalleryChatPhoto, subscribeGalleryPhotoDeletions } from "./gallery-store";
+import { filterGalleryChatPhotos, galleryPhotoIdFromSource } from "@/lib/document-chat";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
@@ -33,6 +35,7 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { QuickPrompt } from "@/lib/quick-prompts";
 import { transcriptContextText } from "@/lib/transcription/format";
 import type { TranscriptPayload } from "@/lib/transcription/types";
+import { refreshPdfComments } from "./pdf-comments-store";
 
 const AUDIO_FILE = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
 
@@ -132,9 +135,13 @@ function hasUnrevertedAgentChanges(messages: ChatMessage[]) {
 
 /** Earlier turns for a request: Agent replies keep their file changes but not their step log. */
 function requestMessages(messages: ChatMessage[], agent: boolean) {
-  return messages.map(({ agent: run, ...message }) => agent && run
-    ? { ...message, agent: { ...run, steps: [], tasks: [] } }
-    : message);
+  return messages.map(({ agent: run, ...message }) => {
+    const photos = message.photos?.filter((photo) => {
+      const id = galleryPhotoIdFromSource(photo.source);
+      return !id || keepGalleryChatPhoto(id);
+    });
+    return { ...message, photos, ...(agent && run ? { agent: { ...run, steps: [], tasks: [] } } : {}) };
+  });
 }
 
 const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize, onOpenFileLink }: {
@@ -170,7 +177,10 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [fontSizeError, setFontSizeError] = useState("");
   const [{ store, snapshot }, dispatchStore] = useReducer(reduceChatState, { store: null, snapshot: null });
   const setStore = useCallback((update: SetStateAction<ChatStore | null>, persist = true) => {
-    dispatchStore({ update, persist });
+    dispatchStore({ update: (current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      return next && filterGalleryChatPhotos(next, keepGalleryChatPhoto);
+    }, persist });
   }, []);
   const [now, setNow] = useState(() => new Date());
   const [error, setError] = useState("");
@@ -237,7 +247,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const viewedPath = document?.path;
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
-  const includedPhoto = viewedPhoto && !chat?.excludedPhotoSources?.includes(viewedPhoto.source) ? viewedPhoto : null;
+  const viewedGalleryId = galleryPhotoIdFromSource(viewedPhoto?.source);
+  const includedPhoto = viewedPhoto && (!viewedGalleryId || keepGalleryChatPhoto(viewedGalleryId)) && !chat?.excludedPhotoSources?.includes(viewedPhoto.source) ? viewedPhoto : null;
   // Sent once per conversation; a copy waiting in the composer (a restored unsent message) counts too.
   const photoAlreadyIncluded = !!includedPhoto && !!chat && (chatHasPhotoSource(chat.messages, includedPhoto.source) || !!chat.photos?.some((photo) => photo.source === includedPhoto.source));
   const pendingPhoto = photoAlreadyIncluded ? null : includedPhoto;
@@ -281,6 +292,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }, [historyWriter, setStore]);
 
   useLayoutEffect(() => { latestStore.current = store; }, [store]);
+
+  useEffect(() => subscribeGalleryPhotoDeletions(() => {
+    // Async replies and rollback snapshots also pass through setStore's filter.
+    setStore((current) => current);
+    setExportSnapshot(null);
+  }), [setStore]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -603,8 +620,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           .map(async (context) => {
             if (agent || context.kind !== "document" || context.text) return context;
             if (AUDIO_FILE.test(context.path)) {
-              const { transcript } = await apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
+              const { transcript, stale } = await apiRequest<TranscriptPayload>(`/api/transcripts?path=${encodeURIComponent(context.path)}`, { signal: controller.signal });
               if (!transcript) throw new Error(`${context.name} has no transcript yet. Transcribe it first, or remove it from the context.`);
+              if (stale) throw new Error(`${context.name} changed after it was transcribed. Transcribe it again, or remove it from the context.`);
               return { ...context, text: transcriptContextText(transcript, context.name, context.path) };
             }
             if (!/\.pdf$/i.test(context.path)) return context;
@@ -684,6 +702,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             if (event.count) {
               const existing = run.comments?.find((entry) => entry.path === event.path);
               if (existing) existing.count += event.count; else run.comments = [...(run.comments ?? []), { path: event.path, count: event.count }];
+              // Replies on a PDF are saved at once; show them where its comments are open.
+              if (/\.pdf$/i.test(event.path)) refreshPdfComments(event.path);
               schedule();
             }
           } else if (event.type === "suggestions_added") {

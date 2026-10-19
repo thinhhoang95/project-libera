@@ -87,6 +87,14 @@ test("a photo viewed in the gallery is attached once per chat and replaces the d
     // Leaving the viewer brings the document back as context.
     await render(null);
     assert.match(host.textContent ?? "", /Context: a\.md/);
+
+    const { applyGallery } = await import("../../src/components/libera/gallery-store");
+    await act(async () => { applyGallery({ root: "gallery", albums: [], photos: [], deletedPhotoIds: ["p1"] }); });
+    await send("Continue without the deleted sunset");
+    const remainingSources = requests.at(-1)!.messages.flatMap((message) => message.photos?.map((photo) => photo.source) ?? []);
+    assert.ok(remainingSources.includes(beach.source), "unrelated photo attachments are retained");
+    assert.ok(!remainingSources.includes(sunset.source) && !remainingSources.includes(edited.source), "every deleted version leaves the live chat and future requests");
+    assert.ok(!savedHistory!.chats.some((chat) => chat.messages.some((message) => message.photos?.some((photo) => photo.source?.startsWith("gallery:p1:")))), "the open panel cannot save its old copies again");
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

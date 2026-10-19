@@ -25,6 +25,34 @@ export function isChatMode(value: unknown): value is ChatMode {
 export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
 
+/** Versions share a gallery id; uploaded chat attachments have no gallery source. */
+export function galleryPhotoIdFromSource(source: string | undefined) {
+  return source?.match(/^gallery:([^:]+)(?::|$)/)?.[1];
+}
+
+export function filterGalleryChatPhotos(store: ChatStore, keep: (id: string) => boolean): ChatStore {
+  const keepSource = (source: string | undefined) => {
+    const id = galleryPhotoIdFromSource(source);
+    return !id || keep(id);
+  };
+  const filterPhotos = (photos: ChatPhoto[] | undefined) => {
+    const filtered = photos?.filter((photo) => keepSource(photo.source));
+    return filtered?.length === photos?.length ? photos : filtered;
+  };
+  const chats = store.chats.map((chat) => {
+    const photos = filterPhotos(chat.photos);
+    const excluded = chat.excludedPhotoSources?.filter(keepSource);
+    const messages = chat.messages.map((message) => {
+      const kept = filterPhotos(message.photos);
+      return kept === message.photos ? message : { ...message, photos: kept };
+    });
+    if (photos === chat.photos && excluded?.length === chat.excludedPhotoSources?.length && messages.every((message, i) => message === chat.messages[i])) return chat;
+    return { ...chat, ...(photos !== chat.photos ? { photos } : {}),
+      ...(excluded?.length !== chat.excludedPhotoSources?.length ? { excludedPhotoSources: excluded } : {}), messages };
+  });
+  return chats.every((chat, i) => chat === store.chats[i]) ? store : { ...store, chats };
+}
+
 export function formatChatTimestamp(createdAt: string, now = new Date()) {
   const date = new Date(createdAt);
   const pad = (value: number) => String(value).padStart(2, "0");

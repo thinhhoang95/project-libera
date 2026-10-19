@@ -1,11 +1,12 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
-import { moveFileIfExists } from "@/lib/storage/fs-utils";
-import { audioSidecarPaths, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
+import { moveFileIfExists, writeJsonForSource } from "@/lib/storage/fs-utils";
+import { assertFileSignature, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
+import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
 import { TRANSCRIPT_VERSION, type Transcript, type TranscriptSegment, type TranscriptSpeaker } from "@/lib/transcription/types";
 
 // Where a voice memo's transcript lives. The recording is the document, and
@@ -76,6 +77,7 @@ export function parseTranscript(value: unknown): Transcript | null {
       size: finite(input.audio?.size),
       modifiedAt: typeof input.audio?.modifiedAt === "string" ? input.audio.modifiedAt : "",
       duration: finite(input.audio?.duration),
+      ...(typeof input.audio?.contentHash === "string" && /^[a-f0-9]{64}$/.test(input.audio.contentHash) ? { contentHash: input.audio.contentHash } : {}),
     },
     engine: {
       kind: input.engine?.kind === "openrouter" ? "openrouter" : "local",
@@ -105,21 +107,22 @@ async function readTranscriptFile(file: string) {
 /** The transcript, and whether the audio changed since it was made. */
 export async function readTranscript(relativePath: string): Promise<{ transcript: Transcript | null; stale: boolean; shared: boolean }> {
   const { audio, sidecar, companion } = locate(relativePath);
+  const stats = await stat(audio).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stats?.isFile()) return { transcript: null, stale: false, shared: false };
   const fromCompanion = companion ? await readTranscriptFile(companion) : null;
   const transcript = fromCompanion ?? await readTranscriptFile(sidecar);
   if (!transcript) return { transcript: null, stale: false, shared: false };
-  // By size: a copy has a new modification time but the same recording, while
-  // a trimmed or re-recorded file all but always changes size.
-  const stats = await stat(audio).catch(() => null);
-  const stale = Boolean(stats && stats.size !== transcript.audio.size);
+  // Older transcripts only stored size. New transcripts use portable content
+  // identity, detecting same-size replacements without penalizing copies/sync.
+  const stale = stats.size !== transcript.audio.size || Boolean(transcript.audio.contentHash && await readFileContentHash(audio) !== transcript.audio.contentHash);
   return { transcript, stale, shared: Boolean(fromCompanion) };
 }
 
-async function writeLocal(file: string, transcript: Transcript) {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify(transcript));
-  await rename(temporary, file);
+async function writeLocal(file: string, transcript: Transcript, audio: string, signature: string, contentHash?: string) {
+  await writeJsonForSource(file, transcript, audio, signature, contentHash);
 }
 
 /**
@@ -127,8 +130,18 @@ async function writeLocal(file: string, transcript: Transcript) {
  * Search index it. In a shared notebook it goes to the members through the
  * collab host; when that is refused, it is kept on this computer.
  */
-export async function writeTranscript(relativePath: string, transcript: Transcript): Promise<{ shared: boolean }> {
-  const { sidecar, companion } = locate(relativePath);
+export async function writeTranscript(relativePath: string, transcript: Transcript, options: { expectedSignature?: string; expectedContentHash?: string } = {}): Promise<{ shared: boolean }> {
+  const { audio, sidecar, companion } = locate(relativePath);
+  const signature = options.expectedSignature ?? await readFileSignature(audio);
+  await assertFileSignature(audio, signature);
+  if (options.expectedContentHash && await readFileContentHash(audio) !== options.expectedContentHash) {
+    throw new StorageError("The recording changed during transcription. Transcribe it again.", 409);
+  }
+  // Preserve the original identity when editing a stale transcript's speaker names.
+  if (!transcript.audio.contentHash && (await stat(audio)).size === transcript.audio.size) {
+    transcript = { ...transcript, audio: { ...transcript.audio, contentHash: await readFileContentHash(audio) } };
+  }
+  await assertFileSignature(audio, signature);
   let shared = false;
   if (companion) {
     try {
@@ -141,7 +154,8 @@ export async function writeTranscript(relativePath: string, transcript: Transcri
       console.warn(`The transcript of ${relativePath} is kept on this computer: ${error instanceof Error ? error.message : error}`);
     }
   }
-  if (!shared) await writeLocal(sidecar, transcript);
+  if (!shared) await writeLocal(sidecar, transcript, audio, signature, options.expectedContentHash);
+  await assertFileSignature(audio, signature);
   notifySearchChanges([relativePath]);
   return { shared };
 }
@@ -191,14 +205,33 @@ export async function copyTranscript(fromPath: string, toPath: string) {
   const { transcript } = await readTranscript(fromPath);
   if (!transcript) return;
   const destination = locate(toPath);
+  const signature = await readFileSignature(destination.audio);
   if (destination.companion) {
     const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
     await writeSharedBlob(transcriptCompanionPath(toPath), new TextEncoder().encode(JSON.stringify(transcript)), { createOnly: true }).catch(async () => {
-      await writeLocal(destination.sidecar, transcript);
+      await writeLocal(destination.sidecar, transcript, destination.audio, signature);
     });
   } else {
-    await writeLocal(destination.sidecar, transcript);
+    await writeLocal(destination.sidecar, transcript, destination.audio, signature);
   }
+}
+
+/** Discard local sidecars of externally deleted recordings, retaining offline files. */
+export async function pruneAudioSidecars(notebook: string) {
+  async function visit(directory: string, parts: string[] = []) {
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    for (const entry of entries) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(target, [...parts, entry.name]);
+      else if (entry.isFile() && entry.name.endsWith(".json") && getFileType(entry.name.slice(0, -5)) === "audio") {
+        try { await stat(filePathFromParts(notebook, [...parts, entry.name.slice(0, -5)])); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") await rm(target, { force: true }); else throw error; }
+      }
+    }
+  }
+  for (const directory of audioSidecarDirectories(notebook, [])) await visit(directory);
 }
 
 /**

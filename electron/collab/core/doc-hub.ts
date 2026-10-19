@@ -293,6 +293,7 @@ export class DocHub implements CompactionTarget {
    */
   applyLocalChange(subdoc: Subdoc, fn: (doc: Y.Doc) => void, provenance?: Provenance): Uint8Array | null {
     this.assertOpen();
+    if (this.meta.readOnlyReason === "document-deleted") throw new Error("This file was deleted. Its local text is kept for export.");
     const doc = this.getDoc(subdoc);
     const origin: Origin = provenance ? { kind: "local", provenance } : { kind: "local" };
     this.lastLocalUpdate = null;
@@ -380,7 +381,7 @@ export class DocHub implements CompactionTarget {
 
   /** Clears an access-revoked or schema read-only state (access restored, app updated). */
   clearReadOnly(): void {
-    if (this.meta.readOnlyReason === null) return;
+    if (this.meta.readOnlyReason === null || this.meta.readOnlyReason === "document-deleted") return;
     this.store.updateDocMeta(this.docId, { readOnlyReason: null });
     this.refreshMeta();
     this.link?.reopen();
@@ -620,7 +621,7 @@ export class DocHub implements CompactionTarget {
 
   /** False once access was revoked: the doc is never opened again until cleared. */
   canSync(): boolean {
-    return !this.closed && this.meta.readOnlyReason !== "access-revoked";
+    return !this.closed && this.meta.readOnlyReason !== "access-revoked" && this.meta.readOnlyReason !== "document-deleted";
   }
 
   /** The socket finished hello/welcome (transport) or dropped (null). */
@@ -643,6 +644,7 @@ export class DocHub implements CompactionTarget {
 
   handleOpened(message: OpenedMessage): void {
     if (this.closed) return;
+    if (this.meta.readOnlyReason === "document-deleted") return;
     const schemaNewer = message.schemaVersion > DOC_SCHEMA_VERSION;
     const reason: ReadOnlyReason | null = schemaNewer
       ? "schema-newer"
@@ -779,11 +781,11 @@ export class DocHub implements CompactionTarget {
         this.refreshMeta();
         break;
       case "document-deleted":
-        this.stopSyncing();
-        this.broadcast({ t: "closed", docId: this.docId, reason: message.reason });
+        this.markDeleted();
         break;
       case "not-found":
         this.stopSyncing();
+        if (this.meta.readOnlyReason === "document-deleted") break;
         if (this.meta.lastSeenServerSeq > 0 || this.hasData) {
           // The server knew this document before. "Not found" now means the
           // account lost access (for example while offline) or the project
@@ -799,6 +801,16 @@ export class DocHub implements CompactionTarget {
         return;
     }
     this.status.changed();
+  }
+
+  /** Stops a removed file without discarding its text or unacknowledged local edits. */
+  markDeleted(): void {
+    if (this.closed || this.meta.readOnlyReason === "document-deleted") return;
+    this.store.updateDocMeta(this.docId, { readOnlyReason: "document-deleted" });
+    this.stopSyncing();
+    this.refreshMeta();
+    this.broadcast({ t: "closed", docId: this.docId, reason: "document-deleted" });
+    this.status.changed(true);
   }
 
   handleError(message: ErrorMessage): void {
@@ -843,7 +855,7 @@ export class DocHub implements CompactionTarget {
     // Only this machine's presence goes to the server: remote states and
     // local timeouts of remote states are the server's business.
     const ours = origin instanceof ReplicaConnection || origin === "local";
-    if (ours && this.transport && this.meta.readOnlyReason !== "access-revoked") this.transport.sendAwareness(update);
+    if (ours && this.transport && this.canSync()) this.transport.sendAwareness(update);
   };
 
   private dropRemoteAwareness(): void {

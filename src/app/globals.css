@@ -1828,6 +1828,83 @@ button.border[class*="border-white"]:hover {
 
 .pdf-selection-menu-action:hover { background: var(--muted); color: var(--foreground); }
 
+/* Review comments: a faint amber wash with a dotted rule under the passage,
+ * stronger while its card is open, and a numbered badge at its end. The
+ * layer sits under the text layer like highlights, so text stays selectable. */
+.pdf-comment-layer {
+  inset: 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  position: absolute;
+  z-index: 6;
+}
+
+.pdf-comment-mark {
+  background: rgb(245 158 11 / 0.12);
+  border-bottom: 1.5px dotted rgb(217 119 6 / 0.85);
+  border-radius: 2px;
+  position: absolute;
+}
+
+.pdf-comment-mark[data-selected] {
+  background: rgb(245 158 11 / 0.3);
+  border-bottom-style: solid;
+}
+
+.pdf-comment-badge {
+  align-items: center;
+  background: #fffbeb;
+  border: 1px solid rgb(217 119 6 / 0.6);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.15);
+  color: #92400e;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  gap: 2px;
+  height: 18px;
+  line-height: 1;
+  padding: 0 5px 0 4px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 1;
+}
+
+.pdf-comment-badge:hover,
+.pdf-comment-badge[data-selected] {
+  background: #f59e0b;
+  border-color: #b45309;
+  color: #fff;
+}
+
+.pdf-comment-composer {
+  animation: pdf-pop-in 120ms ease-out;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 0.18), 0 1px 3px rgb(15 23 42 / 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 50;
+}
+
+.pdf-comment-composer-quote {
+  border-left: 2px solid rgb(217 119 6 / 0.7);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-style: italic;
+  max-height: 4.5em;
+  overflow: auto;
+  padding-left: 8px;
+  white-space: pre-wrap;
+}
+
 /* Text notes: ink set straight on the paper — no fill, no frame at rest. */
 .pdf-note {
   --pdf-note-accent: #3b82f6;

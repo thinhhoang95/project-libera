@@ -92,37 +92,15 @@ import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 import { subscribeSharedTreeChanges } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
+import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
+import { searchNotebookTree } from "./notebook-search";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
 const isSharedRegistryTab = (tabId: string) => getSharedDocRegistry().isSharedTab(tabId);
 const PASTE: Provenance = { source: "paste" };
-
-function collectFileSearchResults(
-  nodes: LiberaTreeNode[],
-  notebook: string,
-  normalizedQuery: string,
-  results: SearchResult[],
-) {
-  for (const node of nodes) {
-    if (node.kind === "folder") {
-      collectFileSearchResults(node.children, notebook, normalizedQuery, results);
-      continue;
-    }
-
-    if (node.name.toLowerCase().includes(normalizedQuery)) {
-      results.push({
-        type: "file",
-        notebook,
-        file: node,
-        label: node.path,
-      });
-    }
-  }
-}
-
 
 function subscribeToNothing() {
   return () => undefined;
@@ -486,29 +464,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
 
-  const searchResults = useMemo<SearchResult[]>(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    if (!normalizedQuery) {
-      return [];
-    }
-
-    const results: SearchResult[] = [];
-
-    for (const notebook of visibleTree.notebooks) {
-      if (notebook.name.toLowerCase().includes(normalizedQuery)) {
-        results.push({
-          type: "notebook",
-          notebook: notebook.name,
-          label: notebook.name,
-        });
-      }
-
-      collectFileSearchResults(notebook.children, notebook.name, normalizedQuery, results);
-    }
-
-    return results.slice(0, 12);
-  }, [query, visibleTree]);
+  const searchResults = useMemo<SearchResult[]>(
+    () => searchNotebookTree(visibleTree, query, { includeNotebooks: true, limit: 12 }),
+    [query, visibleTree],
+  );
 
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
     if (workspaceManager.activeWorkspace) return;
@@ -1444,16 +1403,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   /**
    * The text of a tab whose Markdown moved to another notebook, where the
-   * server may have renamed citation keys (src/lib/references/moves.ts): the
-   * saved copy is the server's content, and the draft gets the same key map,
+   * server may have renamed citation keys or image URLs: the
+   * saved copy is the server's content, and the draft gets the same rewrites,
    * or shows the new content when it had no unsaved changes.
    */
   function movedTabText(tab: OpenTab, draft: string, payload: LiberaFileMovePayload) {
     const map = payload.references?.drafts.find((item) => item.path === payload.file.path)?.map;
-    if (!map || !Object.keys(map).length || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
-    const keys = new Map(Object.entries(map));
-    const saved = payload.content ?? rewriteCitationKeys(tab.saved, keys).text;
-    return { saved, draft: draft === tab.saved ? saved : rewriteCitationKeys(draft, keys).text };
+    if ((!map && !payload.imageSources) || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
+    const rewrite = (text: string) => rewriteMarkdownImageSources(
+      rewriteCitationKeys(text, new Map(Object.entries(map ?? {}))).text,
+      payload.imageSources ?? {},
+    );
+    const saved = payload.content ?? rewrite(tab.saved);
+    return { saved, draft: draft === tab.saved ? saved : rewrite(draft) };
   }
 
   /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
@@ -3417,7 +3379,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     let moved: ReturnType<typeof movedTabText> = null;
     if (openTab) {
       const draft = getTabDraft(openTab);
-      moved = "references" in payload ? movedTabText(openTab, draft, payload) : null;
+      moved = movedTabText(openTab, draft, payload);
 
       forgetTabDraft(openTab.id);
       rememberTabDraft(nextId, moved?.draft ?? draft);

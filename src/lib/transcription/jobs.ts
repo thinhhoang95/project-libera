@@ -3,6 +3,7 @@ import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
 import { assertSupportedFileName } from "@/lib/storage/file-types";
 import { StorageError } from "@/lib/storage/errors";
 import { writeTranscript } from "@/lib/storage/transcripts";
+import { readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { detectAsrModel, detectDiarizationModels, SPEECH_MODELS } from "@/lib/transcription/models";
 import { transcribeWithOpenRouter } from "@/lib/transcription/openrouter-stt";
 import {
@@ -115,7 +116,9 @@ async function transcribe(job: JobRecord) {
   const requestedSpeakers = job.options.speakers ?? preferences.speakers;
   const { notebook, pathParts } = splitFilePath(job.path);
   const audioPath = filePathFromParts(notebook, pathParts);
+  const signature = await readFileSignature(audioPath);
   const audioStats = await stat(audioPath);
+  const contentHash = await readFileContentHash(audioPath);
 
   const asrModel = engine === "local" ? await detectAsrModel() : null;
   if (engine === "local" && !asrModel) {
@@ -195,7 +198,7 @@ async function transcribe(job: JobRecord) {
     const transcript: Transcript = {
       version: TRANSCRIPT_VERSION,
       createdAt: new Date().toISOString(),
-      audio: { size: audioStats.size, modifiedAt: audioStats.mtime.toISOString(), duration: Math.round(opened.duration * 100) / 100 },
+      audio: { size: audioStats.size, modifiedAt: audioStats.mtime.toISOString(), duration: Math.round(opened.duration * 100) / 100, contentHash },
       engine: { kind: engine, model: engine === "local" ? SPEECH_MODELS.asr.name : preferences.openRouterModel },
       language: detectedLanguage,
       diarization: diarizationModels ? diarizationSummary(ordered.turns, ordered.speakers.length, requestedSpeakers, {
@@ -206,7 +209,7 @@ async function transcribe(job: JobRecord) {
       segments: ordered.segments,
       stats: { words: words.length, chunks: pieces.length, elapsedMs: Date.now() - started },
     };
-    await writeTranscript(job.path, transcript);
+    await writeTranscript(job.path, transcript, { expectedSignature: signature, expectedContentHash: contentHash });
     job.progress = 1;
   } finally {
     await worker.close(opened.handle);

@@ -104,6 +104,8 @@ export interface PersistInput {
   actor: Actor;
   provenance: Provenance | undefined;
   update: Uint8Array;
+  /** File documents removed by this manifest update, tombstoned in the same transaction. */
+  removedDocIds?: string[];
 }
 
 /**
@@ -119,7 +121,7 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
       .set((eb) => ({ last_server_seq: eb("last_server_seq", "+", 1) }))
       .where("id", "=", input.docId)
       .where("deleted_at", "is", null)
-      .returning("last_server_seq")
+      .returning(["last_server_seq", "project_id"])
       .executeTakeFirst();
     if (!row) return null;
     const serverSeq = row.last_server_seq;
@@ -138,6 +140,14 @@ export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promis
         size: input.update.length,
       })
       .execute();
+    if (input.subdoc === "manifest" && input.removedDocIds?.length) {
+      await trx.updateTable("documents").set({ deleted_at: new Date() })
+        .where("project_id", "=", row.project_id)
+        .where("kind", "!=", "manifest")
+        .where("id", "in", input.removedDocIds)
+        .where("deleted_at", "is", null)
+        .execute();
+    }
     return serverSeq;
   });
 }

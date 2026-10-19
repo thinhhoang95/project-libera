@@ -677,8 +677,8 @@ Usage:
       }
       // A recording is searched through its transcript, never its audio.
       if (entry.fileType === "audio") {
-        const { transcript } = await readTranscript(entry.path).catch(() => ({ transcript: null }));
-        if (!transcript) { untranscribed++; continue; }
+        const { transcript, stale } = await readTranscript(entry.path).catch(() => ({ transcript: null, stale: false }));
+        if (!transcript || stale) { untranscribed++; continue; }
         const text = transcript.segments.map((segment) => transcriptLine(transcript, segment)).join("\n");
         const result = grepText(text, entry.path, { ...options, lineNumbers: false });
         if (result.count) hits.push({ path: entry.path, mtimeMs: entry.mtimeMs, count: result.count, lines: result.lines });

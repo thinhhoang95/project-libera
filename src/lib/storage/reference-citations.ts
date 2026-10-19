@@ -6,6 +6,7 @@ import { ARCHIVE_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { getFileType } from "@/lib/storage/file-types";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
+import { assertDirectorySignature, readDirectorySignature, readTextSnapshot } from "@/lib/storage/file-signature";
 import { assertSafeSegment, getLinkedFolder, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
 import { isVisibleTreeEntry } from "@/lib/storage/tree";
 import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
@@ -13,16 +14,15 @@ import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 // The citation index (the "Citation index" contract in
 // docs/references/lanes.md): the keys each saved Markdown file in a notebook
 // cites, kept at `<notebook system dir>/references/citations.json` and keyed
-// by mtime and size like notebook-links.json. A rebuild stats every Markdown
-// file but reads only new or changed ones, drops deleted ones, and writes the
-// index only when it changed, so an unchanged notebook costs one stat walk.
+// by content identity. A rebuild checks saved bytes, parses only new or changed
+// files, drops deleted ones, and writes the index only when it changed.
 // Keys are stored as written (aliases and unknown keys included); the client
 // resolves them against the library and merges in its open drafts.
 
-// Version 2: narrative `@key` candidates are indexed too (consumers look keys up in the library).
-export const CITATION_INDEX_VERSION = 2;
+// Version 3 verifies content identity; version 2 added narrative `@key` candidates.
+export const CITATION_INDEX_VERSION = 3;
 
-type CitationIndexFile = { mtimeMs: number; size: number; keys: string[] };
+type CitationIndexFile = { mtimeMs: number; size: number; contentHash: string; keys: string[] };
 type CitationIndex = { version: typeof CITATION_INDEX_VERSION; files: Record<string, CitationIndexFile> };
 
 export type NotebookCitations = {
@@ -32,6 +32,7 @@ export type NotebookCitations = {
   byKey: Record<string, string[]>;
 };
 
+/** `read` counts files parsed for citations, excluding byte checks of cached entries. */
 export type CitationIndexStats = { files: number; read: number; written: boolean };
 
 /** The tree's cap for linked folders, which may be large projects rather than notebooks. */
@@ -46,7 +47,7 @@ export function citationIndexPath(notebook: string) {
 function isIndexFile(value: unknown): value is CitationIndexFile {
   const file = value as CitationIndexFile;
   return Boolean(file) && typeof file === "object" && typeof file.mtimeMs === "number" && typeof file.size === "number" &&
-    Array.isArray(file.keys) && file.keys.every((key) => typeof key === "string");
+    typeof file.contentHash === "string" && Array.isArray(file.keys) && file.keys.every((key) => typeof key === "string");
 }
 
 async function readCitationIndex(indexPath: string): Promise<CitationIndex> {
@@ -104,6 +105,8 @@ async function forEachLimited<T>(items: T[], fn: (item: T) => Promise<void>) {
 
 async function rebuild(notebook: string, includeArchive: boolean) {
   const indexPath = citationIndexPath(notebook);
+  const root = notebookPath(notebook);
+  const identity = await readDirectorySignature(root);
   const previous = await readCitationIndex(indexPath);
   const files = await markdownFiles(notebook, includeArchive);
   const next: CitationIndex = { version: CITATION_INDEX_VERSION, files: {} };
@@ -115,20 +118,20 @@ async function rebuild(notebook: string, includeArchive: boolean) {
   await forEachLimited(files, async ({ relativePath, absolutePath }) => {
     let stats;
     try { stats = await stat(absolutePath); } catch { return; }
+    let snapshot;
+    try { snapshot = await readTextSnapshot(absolutePath); } catch { return; }
     const cached = previous.files[relativePath];
-    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
-      next.files[relativePath] = cached;
+    if (cached && cached.contentHash === snapshot.contentHash) {
+      next.files[relativePath] = { ...cached, mtimeMs: stats.mtimeMs, size: stats.size };
       return;
     }
-    let content: string;
-    try { content = await readFile(absolutePath, "utf8"); } catch { return; }
     read += 1;
-    next.files[relativePath] = { mtimeMs: stats.mtimeMs, size: stats.size, keys: citedKeys(content, { allNarrative: true }) };
+    next.files[relativePath] = { mtimeMs: stats.mtimeMs, size: stats.size, contentHash: snapshot.contentHash, keys: citedKeys(snapshot.content, { allNarrative: true }) };
   });
   // Stable order keeps the comparison and the file independent of stat timing.
   next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const changed = JSON.stringify(previous.files) !== JSON.stringify(next.files);
-  if (changed) await writeJsonAtomically(indexPath, next);
+  if (changed) await writeJsonAtomically(indexPath, next, () => assertDirectorySignature(root, identity));
   const visible = Object.entries(next.files).filter(([file]) => includeArchive || !isArchived(file));
   return { visible, stats: { files: files.length, read, written: changed } satisfies CitationIndexStats };
 }

@@ -85,6 +85,12 @@ import type {
   TextTabViewState,
 } from "@/components/libera/types";
 import { enumerateMarkdownHeadings } from "@/lib/markdown-heading-enumeration";
+import {
+  applyTextChanges,
+  getMarkdownHeadingNumberingChanges,
+  getMarkdownHeadingNumberRemovalChanges,
+} from "@/lib/markdown-heading-numbering";
+import { readHeadingNumberingSkipTitle } from "./heading-numbering-state";
 import type {
   MarkdownHeadingEnumerationScope,
 } from "@/lib/markdown-heading-enumeration";
@@ -1597,6 +1603,27 @@ function WorkspacePanelContent({
     scope: MarkdownHeadingEnumerationScope,
     startAt = 1,
   ) {
+    transformActiveMarkdownHeadings((draft, selection) => enumerateMarkdownHeadings(draft, {
+      scope,
+      selection,
+      startAt,
+    }));
+  }
+
+  function numberActiveMarkdownHeadings() {
+    transformActiveMarkdownHeadings((draft) => applyTextChanges(
+      draft,
+      getMarkdownHeadingNumberingChanges(draft, { skipTitle: readHeadingNumberingSkipTitle() }),
+    ));
+  }
+
+  function removeActiveMarkdownHeadingNumbers() {
+    transformActiveMarkdownHeadings((draft) => applyTextChanges(draft, getMarkdownHeadingNumberRemovalChanges(draft)));
+  }
+
+  function transformActiveMarkdownHeadings(
+    transform: (draft: string, selection: { end: number; start: number }) => string,
+  ) {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
     }
@@ -1609,13 +1636,9 @@ function WorkspacePanelContent({
       textarea?.selectionStart ?? activeMarkdownViewState?.selectionStart ?? 0;
     const selectionEnd =
       textarea?.selectionEnd ?? activeMarkdownViewState?.selectionEnd ?? selectionStart;
-    const nextDraft = enumerateMarkdownHeadings(draft, {
-      scope,
-      selection: {
-        end: selectionEnd,
-        start: selectionStart,
-      },
-      startAt,
+    const nextDraft = transform(draft, {
+      end: selectionEnd,
+      start: selectionStart,
     });
 
     if (nextDraft === draft) {
@@ -1857,6 +1880,8 @@ function WorkspacePanelContent({
             markdownZoom={markdownZoom}
             readSelectionLinks={() => onReadMarkdownSelectionLinks?.(activeTab.file.path) ?? []}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
+            onNumberHeadings={numberActiveMarkdownHeadings}
+            onRemoveHeadingNumbers={removeActiveMarkdownHeadingNumbers}
             onFixChatGptEquations={fixActiveChatGptEquations}
             onInsert={onInsertMarkdown}
             onInsertTable={onInsertMarkdownTable}

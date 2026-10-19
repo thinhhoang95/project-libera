@@ -16,6 +16,7 @@ import { reviewIntent } from "@/lib/markdown-review";
 import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
+import { usePaletteCommands } from "./command-palette/commands";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
@@ -25,6 +26,41 @@ export function ReviewToggle() {
   const review = useMarkdownReview();
   if (!review) return null;
   return <button type="button" className="review-toggle inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-accent" aria-label="Review mode" title="Review mode" aria-pressed={review.enabled} disabled={!!review.busy || !review.doc} onClick={() => void review.action("toggle", { enabled: !review.enabled })}><MessageSquarePlus size={16} /></button>;
+}
+/** Comment commands for the command palette; renders nothing. */
+export function ReviewPaletteCommands() {
+  const review = useMarkdownReview();
+  usePaletteCommands(null, () => {
+    if (!review?.doc) return [];
+    const group = "Comments";
+    return [
+      {
+        id: "review:add-comment",
+        title: "Add comment on selection",
+        group,
+        icon: MessageSquarePlus,
+        shortcut: "Ctrl/⌘+Alt+M",
+        keywords: "review note annotate",
+        disabled: !review.enabled || !!review.busy,
+        run: () => {
+          const range = review.editorSelection();
+          if (range) review.select(range, window.innerWidth / 2, 160);
+          else review.reportError("Select a passage in the editor to comment on.");
+        },
+      },
+      {
+        id: "review:toggle-mode",
+        title: review.enabled ? "Turn off Review mode" : "Turn on Review mode",
+        group,
+        icon: MessageSquarePlus,
+        keywords: "comments suggestions",
+        disabled: !!review.busy,
+        run: () => void review.action("toggle", { enabled: !review.enabled }),
+      },
+      { id: "review:show-comments", title: "Open comments panel", group, icon: MessageSquarePlus, shortcut: "Ctrl/⌘+3", run: review.showComments },
+    ];
+  });
+  return null;
 }
 export function ReviewComments() {
   const r = useMarkdownReview();
@@ -92,7 +128,7 @@ export function ReviewComments() {
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
       {shownSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
         {pendingSuggestions.length > 1 && <div className="flex flex-wrap items-center gap-1">
           <span className="min-w-0 flex-1 text-xs font-semibold">Suggested edits</span>
@@ -323,7 +359,8 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
 // ---- Shared documents (plan M2.1–M2.3, M2.6): authors, pending chips,
 // detached anchors and the one-time move of local comments.
 
-function useNow(intervalMs = 60_000) {
+/** The time, refreshed every minute, for "5 min ago" labels. */
+export function useNow(intervalMs = 60_000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), intervalMs);

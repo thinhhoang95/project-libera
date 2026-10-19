@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, applyReviewEdits, commentsKey, decideSuggestions, mapAnchor, newReview, paragraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
+import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
 
 const source = "# Title\r\n\r\nFirst **paragraph**.\r\n\r\nSecond paragraph.\r\n\r\nThird paragraph.";
 function fixture(): ReviewDocument {
@@ -19,6 +19,24 @@ test("paragraph selections use exact UTF-16 Markdown block ranges including CRLF
       assert.deepEqual(paragraphRange(value, { start: block.start + 1, end: block.start + 1 }), { start: block.start, end: block.end });
     }
   }
+});
+test("comments attach to the selected text, or to the caret's paragraph", () => {
+  const word = source.indexOf("Second");
+  assert.deepEqual(commentRange(source, { start: word, end: word + 6 }), { start: word, end: word + 6 });
+  // Whitespace around the selection stays outside the anchor; backwards selections are normalized.
+  assert.deepEqual(commentRange(source, { start: word + 6 + 1, end: word - 2 }), { start: word, end: word + 6 });
+  const block = reviewBlocks(source)[2];
+  assert.deepEqual(commentRange(source, { start: word + 2, end: word + 2 }), { start: block.start, end: block.end });
+  assert.deepEqual(commentRange(source, { start: block.end, end: block.end + 4 }), { start: block.start, end: block.end });
+  const tex = "Intro text.\n\nSecond line here.";
+  assert.deepEqual(commentRange(tex, { start: 14, end: 14 }, plainParagraphRange), { start: 13, end: tex.length });
+});
+test("an anchor on part of a paragraph follows edits elsewhere in it", () => {
+  const word = source.indexOf("Second"), anchor = anchorAt(source, { start: word, end: word + 6 });
+  const edited = source.replace("Second paragraph.", "Second paragraph, revised.");
+  assert.deepEqual([mapAnchor(anchor, source, edited).quote, mapAnchor(anchor, source, edited).state], ["Second", "attached"]);
+  const before = source.replace("Second paragraph.", "The Second paragraph.");
+  assert.equal(mapAnchor(anchor, source, before).start, word + 4);
 });
 test("anchors follow insertions and edits but orphan deleted text and refuse ambiguous duplicates", () => {
   const block = reviewBlocks(source)[2], anchor = anchorAt(source, block);

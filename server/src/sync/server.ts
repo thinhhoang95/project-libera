@@ -16,6 +16,7 @@ import {
   encodeMessage,
   EventKind,
   MessageType,
+  ManifestKeys,
   SyncLimits,
   type Actor,
   type Provenance,
@@ -33,6 +34,14 @@ import { actorForUpdate, annotationViolation, manifestViolation, sanitizeProvena
 
 const SYNC_PATH = "/sync";
 const CLOSE_WAIT_MS = 1000;
+
+function manifestDocIds(doc: Y.Doc): Set<string> {
+  const ids = new Set<string>();
+  for (const value of doc.getMap<unknown>(ManifestKeys.files).values()) {
+    if (value && typeof value === "object" && "kind" in value && value.kind === "doc" && "docId" in value && typeof value.docId === "string") ids.add(value.docId);
+  }
+  return ids;
+}
 
 export class SyncServer {
   readonly metrics: SyncMetrics;
@@ -265,6 +274,21 @@ export class SyncServer {
         room.discardShadow(subdoc);
         return session.sendReject(message, "invalid-update", violation);
       }
+      // A stale offline rename must not resurrect a document already deleted by another member.
+      const previous = manifestDocIds(room.live(subdoc));
+      const added = [...manifestDocIds(room.shadow(subdoc))].filter((id) => !previous.has(id));
+      if (added.length) {
+        const deleted = await this.context.db.selectFrom("documents").select("id")
+          .where("project_id", "=", room.projectId).where("id", "in", added)
+          .where("deleted_at", "is not", null).executeTakeFirst().catch((error: unknown) => {
+            room.discardShadow(subdoc);
+            throw error;
+          });
+        if (deleted) {
+          room.discardShadow(subdoc);
+          return session.sendReject(message, "invalid-update", "A deleted document cannot be added back. Create a new file to restore its text.");
+        }
+      }
     }
 
     const provenance = sanitizeProvenance(message.provenance);
@@ -316,8 +340,15 @@ export class SyncServer {
   ): Promise<number | null> {
     const stop = this.metrics.persistSeconds.startTimer();
     let serverSeq: number | null;
+    let removedDocIds: string[] = [];
     try {
-      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input });
+      const remaining = subdoc === "manifest" ? manifestDocIds(room.shadow(subdoc)) : null;
+      const removed = remaining ? [...manifestDocIds(room.live(subdoc))].filter((id) => !remaining.has(id)) : [];
+      // Manifest values are client supplied: only close documents belonging to this project.
+      removedDocIds = removed.length ? (await this.context.db.selectFrom("documents").select("id")
+        .where("project_id", "=", room.projectId).where("kind", "!=", "manifest")
+        .where("id", "in", removed).execute()).map((row) => row.id) : [];
+      serverSeq = await persistUpdate(this.context.db, { docId: room.docId, subdoc, ...input, removedDocIds });
     } catch (error) {
       room.discardShadow(subdoc);
       throw error;
@@ -329,6 +360,7 @@ export class SyncServer {
       return null;
     }
     if (!room.disposed) room.commit(subdoc, input.update, serverSeq);
+    for (const docId of removedDocIds) this.documentDeleted(docId);
     this.firePersisted({ docId: room.docId, subdoc, serverSeq, actor: input.actor, provenance: input.provenance });
     return serverSeq;
   }

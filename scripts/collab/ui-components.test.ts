@@ -12,7 +12,7 @@ function status(state: SyncState, overrides: Partial<SyncStatus> = {}): SyncStat
   return { state, pending: 0, oldestPendingAgeMs: 0, lastAckAt: null, connected: true, ...overrides };
 }
 
-test("pill wording for each of the seven states", () => {
+test("pill wording for each sync state", () => {
   const cases: Array<[SyncState, Partial<SyncStatus>, string, RegExp]> = [
     ["loading", {}, "Loading…", /Opening the shared document/],
     ["saved-local", { pending: 2, oldestPendingAgeMs: 4000 }, "Saved on this device", /not yet in the shared workspace\. 2 changes waiting, oldest 4 s\./],
@@ -21,6 +21,7 @@ test("pill wording for each of the seven states", () => {
     ["offline", { pending: 1, connected: false, oldestPendingAgeMs: 7_200_000 }, "Offline — 1 change on this device", /^Offline — changes are saved on this device.*oldest 2 h/],
     ["read-only", {}, "Read-only — update required", /newer version of Libera/],
     ["access-changed", {}, "Access changed", /access to this notebook changed/],
+    ["deleted", {}, "File deleted", /local text is kept; copy or export/],
   ];
   for (const [state, overrides, label, detail] of cases) {
     const wording = syncWording(status(state, overrides), NOW);
@@ -45,10 +46,33 @@ test("helpers: ages, initials and readable text colours", () => {
   assert.equal(readableTextColor("not a colour"), "#ffffff");
 });
 
+test("a deleted shared tab explains recovery and offers export", async () => {
+  const { createElement } = await import("react");
+  const { SharedTabChrome, sharedBannerKind } = await import("../../src/lib/collab/bindings/react-shared-chrome");
+  const { createHarness } = await import("./support/wire-harness");
+  const harness = createHarness({ text: "recover my text" });
+  try {
+    const { registry } = harness.registry();
+    await registry.bindTab("Shared/note.md", "Shared/note.md");
+    const session = registry.sessionForTab("Shared/note.md")!;
+    await session.replica.whenAttached();
+    harness.hub.markDeleted();
+    await flush();
+    const snapshot = session.replica.getSnapshot();
+    assert.equal(sharedBannerKind(snapshot), "deleted");
+    assert.equal(session.replica.canEditContent(), false);
+    const view = await render(createElement(SharedTabChrome, { tabId: "Shared/note.md", fileName: "note.md", session, snapshot }));
+    assert.match(view.host.querySelector('[role="alert"]')!.textContent!, /file was deleted.*local text is kept/i);
+    assert.ok([...view.host.querySelectorAll("button")].some((item) => item.textContent === "Export text"));
+    assert.equal(session.replica.text(), "recover my text");
+    await view.unmount();
+  } finally { harness.close(); }
+});
+
 test("CollabStatusPill renders icon, label, tone and a tooltip with pending details", async () => {
   const { createElement } = await import("react");
   const { CollabStatusPill } = await import("../../src/components/libera/collab/collab-status-pill");
-  const states: SyncState[] = ["loading", "saved-local", "syncing", "saved-remote", "offline", "read-only", "access-changed"];
+  const states: SyncState[] = ["loading", "saved-local", "syncing", "saved-remote", "offline", "read-only", "access-changed", "deleted"];
   const view = await render(createElement("div", null, states.map((state) => createElement(CollabStatusPill, { key: state, status: status(state, { pending: state === "syncing" ? 4 : 0, oldestPendingAgeMs: 61_000 }), now: NOW }))));
   const pills = [...view.host.querySelectorAll<HTMLElement>("[data-state]")];
   assert.deepEqual(pills.map((pill) => pill.dataset.state), states);

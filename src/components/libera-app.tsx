@@ -1,12 +1,13 @@
 "use client";
 
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
-import { ReviewPopover } from "@/components/libera/markdown-review-ui";
+import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BookMarked, BookOpen, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
@@ -49,6 +50,8 @@ import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
+import { CommandPalette } from "@/components/libera/command-palette/command-palette";
+import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -377,6 +380,32 @@ export function LiberaApp({
 
   const visibleCanvasTabIds = visibleCanvasTabIdsOf(canvas.layout);
 
+  // App-wide commands in the command palette (⌘/Ctrl+Shift+P), beside the focused editor's tools.
+  usePaletteCommands(null, () => {
+    const general = "General";
+    const showPanel = (panel: LeftPanelTab) => () => {
+      changeLeftPanel(panel);
+      setNotebooksCollapsed(false);
+    };
+    return [
+      { id: "app:go-to-file", title: "Go to file…", group: general, icon: FileSearch, shortcut: "Ctrl/⌘+P", run: () => openCommandPalette("files") },
+      { id: "app:search", title: "Search everything", group: general, icon: ScanSearch, shortcut: "Ctrl/⌘+Shift+F", keywords: "find content global", run: showPanel("search") },
+      { id: "app:new-note", title: "New untitled note", group: general, icon: FilePlus2, keywords: "create markdown draft", run: () => workspace.createUntitledFile() },
+      { id: "app:save", title: "Save", group: general, icon: Save, shortcut: "Ctrl/⌘+S", disabled: !workspace.activeTab, run: () => void workspace.saveActiveTab() },
+      { id: "app:close-tab", title: "Close tab", group: general, icon: X, shortcut: "Ctrl/⌘+W", disabled: !workspace.activeTabId, run: () => workspace.closeTab(workspace.activeTabId) },
+      { id: "app:toggle-chat", title: chatCollapsed ? "Show AI chat" : "Hide AI chat", group: general, icon: MessageSquareText, shortcut: "Ctrl/⌘+Shift+B", run: () => changeChatCollapsed(!chatCollapsed) },
+      { id: "app:toggle-sidebar", title: notebooksCollapsed ? "Show sidebar" : "Hide sidebar", group: general, icon: PanelLeft, run: () => setNotebooksCollapsed((current) => !current) },
+      { id: "app:split-right", title: "Split panel right", group: general, icon: Columns2, shortcut: "Ctrl/⌘+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "right") },
+      { id: "app:split-down", title: "Split panel down", group: general, icon: Rows2, shortcut: "Ctrl/⌘+Shift+\\", disabled: galleryOpen, run: () => canvas.splitPane(canvas.layout.focusedPaneId, "bottom") },
+      { id: "app:panel-notebook", title: "Show notebooks", group: general, icon: BookOpen, shortcut: "Ctrl/⌘+1", run: showPanel("notebook") },
+      { id: "app:panel-outlines", title: "Show outlines", group: general, icon: ListTree, shortcut: "Ctrl/⌘+2", run: showPanel("outlines") },
+      { id: "app:panel-comments", title: "Show comments", group: general, icon: MessageSquare, shortcut: "Ctrl/⌘+3", run: showPanel("comments") },
+      { id: "app:panel-workspaces", title: "Show workspaces", group: general, icon: Layers3, shortcut: "Ctrl/⌘+4", run: showPanel("workspaces") },
+      { id: "app:panel-gallery", title: "Show image gallery", group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
+      { id: "app:panel-references", title: "Show references", group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
+    ];
+  });
+
   function renderCanvasPane(pane: CanvasPaneNode, focused: boolean) {
     const tab = workspace.tabs.find((currentTab) => currentTab.id === pane.tabId);
 
@@ -459,6 +488,7 @@ export function LiberaApp({
     <QuickPromptsContext.Provider value={quickPrompts}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
+    <ReviewPaletteCommands />
     <CollabProvider
       onNotebookJoined={async (notebook) => {
         await workspace.refreshTree(notebook).catch(() => undefined);
@@ -562,11 +592,11 @@ export function LiberaApp({
               replacing it, so open editors keep their state. They sit above
               the editors' sticky toolbars (up to z-40) and below menus (z-50). */}
           {activeLeftPanel === "gallery" ? (
-            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col" data-command-scope="2">
               <ImageGalleryView onOpenInCanvas={openGalleryPhoto} chat={galleryChat} onViewingPhotoChange={setGalleryViewingPhoto} />
             </div>
           ) : activeLeftPanel === "search" ? (
-            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col">
+            <div className="absolute inset-0 z-[45] flex min-h-0 flex-col" data-command-scope="2">
               <SearchView
                 files={workspace.files}
                 scope={searchScope}
@@ -726,6 +756,16 @@ export function LiberaApp({
         submitting={workspace.workspaceConfirmDialogSubmitting}
         onClose={workspace.closeWorkspaceConfirmDialog}
         onConfirm={workspace.submitWorkspaceConfirmDialog}
+      />
+      <CommandPalette
+        tree={workspace.tree}
+        recentFiles={workspace.recentFiles}
+        selectedNotebookName={workspace.selectedNotebook?.name}
+        onOpenFile={(file, placement) => {
+          // The gallery and the Search page cover the canvas; uncover it so the file is seen.
+          if (galleryOpen) setActiveLeftPanel(lastCanvasPanelRef.current);
+          void workspace.openFile(file, { placement });
+        }}
       />
       <ReviewPopover />
       <PdfQuoteCiteHost />

@@ -44,6 +44,12 @@ import { NoteLinksButton } from "./note-links-dialog";
 import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
 import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import { TableInsertButton } from "./table-grid-picker";
+import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "@/lib/tiptap-heading-numbering";
+import type { EditorRange } from "@/lib/tiptap-editor-actions";
+import { detectMarkdownHeadingNumbering, type HeadingNumberingSettings } from "@/lib/markdown-heading-numbering";
+import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
+import { useHeadingNumbering } from "./heading-numbering-state";
+import type { ClipboardText, MenuPasteMode } from "./paste-menu-items";
 
 type Props = {
   files?: LiberaFileNode[];
@@ -81,7 +87,7 @@ type Props = {
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
  * is read through the editor's Markdown schema to find them. */
-function smartPasteClipboard(editor: Editor, range: { from: number; to: number }, clipboard: DataTransfer | null, markdown: string | undefined, mathMarkers?: MathMarkerSettings) {
+function smartPasteClipboard(editor: Editor, range: { from: number; to: number }, clipboard: DataTransfer | null, markdown: string | undefined, mathMarkers?: MathMarkerSettings, mode: SmartPasteMode = "child") {
   let text = markdown;
   if (!text) {
     const html = clipboard?.getData("text/html");
@@ -91,7 +97,7 @@ function smartPasteClipboard(editor: Editor, range: { from: number; to: number }
       return false;
     }
   }
-  return Boolean(text?.trim()) && smartPasteTiptapMarkdown(editor, range, text!);
+  return Boolean(text?.trim()) && smartPasteTiptapMarkdown(editor, range, text!, mode);
 }
 
 type MathDraft = { latex: string; display: boolean; from: number; to: number; existing: boolean };
@@ -184,6 +190,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const sharedRef = useRef<SharedVisualHandle | null>(null);
   const shared = !!collab;
   const markPaste = useCallback(() => sharedRef.current?.setNextProvenance({ source: "paste" }), []);
+  // Structural heading numbering, handed to the TiptapHeadingNumbering plugin.
+  const headingNumbering = useHeadingNumbering(documentPath, () => shared ? null : detectMarkdownHeadingNumbering(value));
+  const appliedNumberingRef = useRef<{ editor: Editor; settings: HeadingNumberingSettings } | null>(null);
   // Citation nodes, the `@` popup and the citation popover (references lane).
   const citations = useTiptapCitations();
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
@@ -201,6 +210,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     TiptapFind,
     TiptapReview,
     TiptapChanges.configure({ documentPath }),
+    TiptapHeadingNumbering,
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -396,6 +406,41 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       });
     };
   }, [editor, markPaste, referenceNotebook]);
+
+  // Switching numbering on (or changing its title setting) renumbers now;
+  // opening a document never edits it.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const previous = appliedNumberingRef.current;
+    appliedNumberingRef.current = { editor, settings: headingNumbering };
+    if (previous?.editor === editor && previous.settings === headingNumbering) return;
+    setTiptapHeadingNumbering(editor, headingNumbering, previous?.editor === editor);
+  }, [editor, headingNumbering]);
+
+  /** Paste or Paste with Peer Heading Level from the right-click menu: the
+   * clipboard as Markdown, with Smart Paste placing its headings. */
+  function pasteFromMenu(range: EditorRange, clipboard: ClipboardText, mode: MenuPasteMode) {
+    if (!editor || editor.isDestroyed) return;
+    markPaste();
+    if (editor.isActive("codeBlock") || editor.isActive("code")) {
+      if (clipboard.plain) editor.view.dispatch(editor.state.tr.insertText(clipboard.plain, range.from, range.to).scrollIntoView());
+      return;
+    }
+    let text = clipboard.markdown;
+    if (!text && clipboard.html) {
+      try {
+        text = convertClipboardHtmlToMarkdown(clipboard.html, mathMarkers);
+      } catch {
+        text = "";
+      }
+    }
+    text ||= clipboard.plain;
+    if (!text.trim()) return;
+    const smartMode: SmartPasteMode | null = mode === "peer" ? "peer" : smartPaste ? "child" : null;
+    if (smartMode && smartPasteTiptapMarkdown(editor, range, text, smartMode)) return;
+    if (pasteMarkdownTableIntoCells(editor, text)) return;
+    replaceTiptapRangeWithMarkdown(editor, range, text);
+  }
 
   // Runs after the saved selection is restored (a layout effect below), so a
   // snip lands where the caret was when it started.
@@ -772,7 +817,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           <option value="">Line spacing</option>
           {[1, 1.15, 1.5, 1.75, 2, 2.5, 3].map((spacing) => <option key={spacing} value={spacing}>{spacing}×</option>)}
         </select>
-        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} shared={collab ? sharedSuggestions : undefined} />
+        <TiptapEditorActions editor={editor} documentPath={documentPath} onError={setError} onPaste={pasteFromMenu} shared={collab ? sharedSuggestions : undefined} />
         {[
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },

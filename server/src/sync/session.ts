@@ -7,7 +7,7 @@ import type { RawData, WebSocket } from "ws";
 import * as Y from "yjs";
 
 import { minProtocolVersion } from "../api/system.js";
-import { documentAccess } from "../auth/access.js";
+import { documentAccess, hasActiveSession, projectRole } from "../auth/access.js";
 import { TokenError, verifyAccessToken } from "../auth/tokens.js";
 import { isClientId } from "../ids.js";
 import {
@@ -192,6 +192,10 @@ export class Session implements RoomMember {
       this.close(CloseCode.AuthRevoked, "Account disabled");
       return null;
     }
+    if (!(await hasActiveSession(context.db, claims.accountId, claims.familyId))) {
+      this.close(CloseCode.AuthRevoked, "Session ended");
+      return null;
+    }
     return claims;
   }
 
@@ -251,7 +255,12 @@ export class Session implements RoomMember {
     const access = await documentAccess(this.server.context.db, docId, this.accountId);
     if (this.closed) return;
     if (!access) {
-      this.send({ type: MessageType.Closed, docId, reason: "not-found" });
+      // A returning member may have missed the manifest deletion while offline.
+      // Distinguish that from losing notebook access, without exposing other projects.
+      const deleted = await this.server.context.db.selectFrom("documents").select("project_id")
+        .where("id", "=", docId).where("deleted_at", "is not", null).executeTakeFirst();
+      const member = deleted && await projectRole(this.server.context.db, deleted.project_id, this.accountId);
+      this.send({ type: MessageType.Closed, docId, reason: member ? "document-deleted" : "not-found" });
       return;
     }
     const existing = this.docs.get(docId);

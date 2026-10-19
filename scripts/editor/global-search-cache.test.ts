@@ -588,5 +588,12 @@ test("a recording is indexed through its transcript, never its audio, and reinde
     await renameTranscriptSpeakers("Notes/interview.m4a", { 0: "Vy" });
     await indexer.requestScan({ force: true });
     assert.equal(db.keyword('"Vy"', 10).length, 1, "a renamed speaker is found by name");
+    const { stat: statAudio, utimes: preserveAudioTimes } = await import("node:fs/promises");
+    const beforeReplacement = await statAudio(target);
+    await writeFile(target, Buffer.alloc(26, "x"));
+    await preserveAudioTimes(target, beforeReplacement.atime, beforeReplacement.mtime);
+    await indexer.requestScan({ force: true });
+    assert.equal(db.keyword('"sparse"', 10).length, 0, "a replaced recording cannot be found through its old transcript");
+    assert.equal(db.keyword('"interview"', 10).length, 1, "the replacement is still found by name");
   });
 });

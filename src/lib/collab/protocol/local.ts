@@ -23,7 +23,9 @@ export type SyncState =
   /** The document's schema is newer than this client. */
   | "read-only"
   /** Access was revoked or reduced; local work is preserved. */
-  | "access-changed";
+  | "access-changed"
+  /** Deleted from the shared notebook; the local text remains available for recovery. */
+  | "deleted";
 
 export interface SyncStatus {
   state: SyncState;
@@ -43,7 +45,7 @@ export interface DocMetaState {
   role: Role;
   schemaVersion: number;
   readOnly: boolean;
-  readOnlyReason?: "schema-newer" | "role" | "access-revoked";
+  readOnlyReason?: "schema-newer" | "role" | "access-revoked" | "document-deleted";
 }
 
 export type ReplicaToHub =

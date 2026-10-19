@@ -40,8 +40,8 @@ export type TranscriptDiarization = {
 export type Transcript = {
   version: typeof TRANSCRIPT_VERSION;
   createdAt: string;
-  /** Size and modification time of the audio it was made from, to tell when the audio changed. */
-  audio: { size: number; modifiedAt: string; duration: number };
+  /** Original audio identity; the portable hash detects replacements even with unchanged size and timestamps. */
+  audio: { size: number; modifiedAt: string; duration: number; contentHash?: string };
   engine: { kind: "local" | "openrouter"; model: string };
   /** The language asked for or detected; empty when unknown. */
   language: string;

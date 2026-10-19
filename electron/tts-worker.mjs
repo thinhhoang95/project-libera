@@ -84,7 +84,9 @@ async function synthesize(message) {
   if (typeof instance.generateAsync === "function") {
     try {
       // Asynchronous, so a cancel can arrive and stop it between sentences.
-      audio = await instance.generateAsync({ ...request, onProgress: () => !cancelled.has(message.id) });
+      // enableExternalBuffer is off because Electron's V8 refuses external
+      // ArrayBuffers, which fails the call with "TTS settlement failed".
+      audio = await instance.generateAsync({ ...request, enableExternalBuffer: false, onProgress: () => !cancelled.has(message.id) });
     } catch (error) {
       // A build whose asynchronous call takes other arguments: run it here instead.
       if (!(error instanceof TypeError)) throw error;

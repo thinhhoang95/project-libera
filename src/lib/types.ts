@@ -185,11 +185,52 @@ export type LiberaFilePayload = {
  */
 export type LiberaFileMovePayload = LiberaFilePayload & {
   references?: ReferenceMoveResult;
+  /** Image URLs rewritten when moving Markdown into another notebook. */
+  imageSources?: Record<string, string>;
 };
 
 export type PdfAnnotationsPayload = {
   path: string;
   annotations: PdfAnnotation[];
+};
+
+/** Where a PDF comment is: the selected text's boxes on each page it spans, in page fractions. */
+export type PdfCommentSegment = {
+  pageNumber: number;
+  rects: PdfAnnotationRect[];
+};
+
+export type PdfCommentAnchor = {
+  segments: PdfCommentSegment[];
+  quote: string;
+};
+
+/** `author` is "agent" for replies the AI agent posted; the user's own have none. */
+export type PdfCommentMessage = {
+  id: string;
+  text: string;
+  createdAt: string;
+  editedAt?: string;
+  author?: "agent";
+};
+
+/**
+ * A review comment thread on a PDF passage, kept in the PDF's annotation
+ * sidecar beside its markup (src/lib/storage/pdf-comments.ts). PDFs do not
+ * change, so anchors never need remapping the way Markdown ones do.
+ */
+export type PdfCommentThread = {
+  id: string;
+  anchor: PdfCommentAnchor;
+  status: "open" | "resolved";
+  messages: PdfCommentMessage[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PdfCommentsPayload = {
+  path: string;
+  threads: PdfCommentThread[];
 };
 
 export type ImageAnnotationsPayload = {

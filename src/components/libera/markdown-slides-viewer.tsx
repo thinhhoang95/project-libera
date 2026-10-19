@@ -572,7 +572,8 @@ export function MarkdownSlidesPresenter({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey) {
+      // Keys typed into an overlay above the slides (the command palette) are its own.
+      if (event.metaKey || event.ctrlKey || event.altKey || (event.target instanceof Element && event.target.closest("[data-libera-overlay]"))) {
         return;
       }
 

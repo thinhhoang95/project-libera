@@ -376,6 +376,12 @@ Libera remembers the last selected notebook in the workspace data and reopens it
 
 Work on several files side by side by splitting the editor area into panels. Choose **Split Right** or **Split Down** in the file actions menu (Cmd/Ctrl+\ and Cmd/Ctrl+Shift+\), or right-click a tab and choose **Open to the Right** or **Open Below**. You can also drag a tab onto a panel: the highlighted zone shows whether it will split left, right, up, or down, or replace the panel's file. Panels can be split again in either direction. Drag a divider to resize panels, or double-click it to even them out. **Close Panel** and **Close Other Panels** are in the same menu. Each file shows in one panel at a time, so two editors never change the same draft. The layout is saved with the workspace.
 
+## Command palette
+
+Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
+
+Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+
 ## Links between notes
 
 Libera follows the Markdown links between your files, so you can see how notes, PDFs, and photos connect.

@@ -39,7 +39,10 @@ export function computeStatus(inputs: StatusInputs, now: number): SyncStatus {
   };
   let state: SyncState;
   let detail: string | undefined;
-  if (inputs.readOnlyReason === "access-revoked") {
+  if (inputs.readOnlyReason === "document-deleted") {
+    state = "deleted";
+    detail = "This file was deleted. Your local text is kept for export.";
+  } else if (inputs.readOnlyReason === "access-revoked") {
     state = "access-changed";
     detail = inputs.pending > 0 ? `Access changed. ${inputs.pending} changes kept on this device.` : "Access changed.";
   } else if (inputs.readOnlyReason === "schema-newer") {

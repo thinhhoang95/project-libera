@@ -384,7 +384,7 @@ export class SuggestionsController {
   private writable(): boolean {
     const { meta, status, closed } = this.replica.getSnapshot();
     if (closed || this.replica.isDestroyed) return false;
-    if (meta?.readOnlyReason === "access-revoked" || meta?.readOnlyReason === "schema-newer") return false;
+    if (meta?.readOnlyReason === "access-revoked" || meta?.readOnlyReason === "schema-newer" || meta?.readOnlyReason === "document-deleted") return false;
     return status?.state !== "read-only" && status?.state !== "access-changed";
   }
 

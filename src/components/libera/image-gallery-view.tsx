@@ -510,7 +510,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
         event.target.value = "";
         void uploadPhotos(files, uploadTargetAlbum?.id);
       }} />
-    <header className="libera-window-drag-region flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
+    <header className="libera-window-drag-region flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-4 py-2" data-command-toolbar="Gallery">
       {selecting ? <>
         <button className={iconButton} aria-label="Clear selection" title="Clear selection (Esc)" onClick={() => setSelected(new Set())}><X className="h-4 w-4" /></button>
         <h2 className="mr-auto text-sm font-semibold">{selected.size} selected</h2>
