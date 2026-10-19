@@ -13,6 +13,7 @@ import {
   Pause,
   Pencil,
   Play,
+  ScanSearch,
   Trash2,
   Type,
   ZoomIn,
@@ -21,6 +22,7 @@ import {
 import { MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
+import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
@@ -171,6 +173,7 @@ export function ImageViewer({
   const [fullscreen, setFullscreen] = useState(() => carriedOver(filePath)?.fullscreen ?? false);
   const fullscreenRef = useRef(fullscreen);
   const [editing, setEditing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -767,7 +770,7 @@ export function ImageViewer({
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
-        document.querySelector(".libera-dialog") ||
+        document.querySelector(".libera-dialog, [data-libera-overlay]") ||
         (target instanceof HTMLElement &&
           (target.isContentEditable || target.closest("input, textarea, select, [role=menu]")))
       ) {
@@ -952,6 +955,20 @@ export function ImageViewer({
               <Pencil aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
+          <button
+            aria-label="Detection and Segmentation"
+            className={iconButton}
+            type="button"
+            title="Detection and Segmentation: find, outline and count objects"
+            disabled={!src}
+            onClick={() => {
+              setPlaying(false);
+              if (fullscreen) toggleFullscreen();
+              setDetecting(true);
+            }}
+          >
+            <ScanSearch aria-hidden className="h-4 w-4" />
+          </button>
           {siblingCount > 1 ? (
             <button
               aria-label={playing ? "Pause slideshow" : "Play slideshow"}
@@ -1124,6 +1141,7 @@ export function ImageViewer({
   return (
     <>
       {fullscreen ? createPortal(viewer, document.body) : viewer}
+      {detecting && src ? <DetectionTool src={src} name={fileName} source={filePath} onClose={() => setDetecting(false)} /> : null}
       {editing && src && onSaveEditedCopy
         ? createPortal(
             <div role="dialog" aria-modal="true" aria-label={`Edit ${fileName}`} className="fixed inset-0 z-[60] flex flex-col bg-neutral-950 text-white">

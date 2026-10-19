@@ -23,6 +23,8 @@ const MODEL_FOLDERS = Object.freeze({
   reading: "granite-docling-258M",
   readAloud: "kokoro-int8-multi-lang-v1_0",
   speech: "speech",
+  // YOLOE-26 weights and the Python runtime that runs them.
+  detection: "yoloe-26",
 });
 
 function normalizePath(value) {

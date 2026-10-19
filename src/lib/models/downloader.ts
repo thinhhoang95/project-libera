@@ -80,9 +80,13 @@ export class ModelDownloader {
     return Boolean(this.download?.running);
   }
 
-  /** `files` may be listed once the download starts; `estimatedBytes` shows until then. */
-  start(directory: string, files: ModelDownloadFile[] | ((signal: AbortSignal) => Promise<ModelDownloadFile[]>), estimatedBytes = 0) {
-    if (this.download?.running) return;
+  /**
+   * `files` may be listed once the download starts; `estimatedBytes` shows
+   * until then. The promise settles when the download ends, never rejecting:
+   * `progress()` holds its error.
+   */
+  start(directory: string, files: ModelDownloadFile[] | ((signal: AbortSignal) => Promise<ModelDownloadFile[]>), estimatedBytes = 0): Promise<void> {
+    if (this.download?.running) return Promise.resolve();
     const controller = new AbortController();
     const download: Download = {
       directory,
@@ -93,7 +97,7 @@ export class ModelDownloader {
       controller,
     };
     this.download = download;
-    void (async () => {
+    return (async () => {
       const list = Array.isArray(files) ? files : await files(controller.signal);
       download.totalBytes = list.reduce((total, file) => total + file.size, 0);
       await this.run(download, list);

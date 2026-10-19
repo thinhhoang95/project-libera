@@ -13,7 +13,7 @@ export type SearchPreferences = {
 
 export const DEFAULT_SEARCH_PREFERENCES: Readonly<SearchPreferences>;
 export const INDEX_FILE_NAME: string;
-export const MODEL_FOLDERS: Readonly<{ search: string; reading: string; readAloud: string; speech: string }>;
+export const MODEL_FOLDERS: Readonly<{ search: string; reading: string; readAloud: string; speech: string; detection: string }>;
 export const SEARCH_DIMENSIONS: SearchPreferences["dimensions"][];
 export const SEARCH_VISION_TOKENS: SearchPreferences["visionTokens"][];
 export function defaultModelsDirectory(options: { adminRoot: string; configPath?: string; platform?: string; localAppData?: string }): string;

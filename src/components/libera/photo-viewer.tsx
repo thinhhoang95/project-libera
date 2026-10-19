@@ -23,11 +23,13 @@ import {
   Play,
   Plus,
   RotateCcw,
+  ScanSearch,
   Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
@@ -223,6 +225,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   const [fitScale, setFitScale] = useState(1);
   const [infoOpen, setInfoOpen] = useState(initialViewState?.infoOpen ?? true);
   const [editing, setEditing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -294,7 +297,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   useEffect(() => {
     if (editing) return;
     function handleKey(event: KeyboardEvent) {
-      if (document.querySelector(".libera-dialog") || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (document.querySelector(".libera-dialog, [data-libera-overlay]") || event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [role=menu], #document-chat-panel")) return;
       const key = event.key;
       if (key === "Escape") { if (!document.fullscreenElement) onClose(); }
@@ -346,6 +349,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
           <Star className={`h-5 w-5 ${photo.starred ? "fill-amber-400 text-amber-400" : ""}`} />
         </button>}
         {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={() => { setPlaying(false); setEditing(true); }}><Pencil className="h-4 w-4" /></button>}
+        <button className={toolButton} aria-label="Detection and Segmentation" title="Detection and Segmentation: find, outline and count objects"
+          onClick={() => { setPlaying(false); if (document.fullscreenElement) void document.exitFullscreen(); setDetecting(true); }}><ScanSearch className="h-4 w-4" /></button>
         {actions.onAddToAlbum && <button className={toolButton} aria-label="Add to album" title="Add to album" onClick={(event) => actions.onAddToAlbum?.(photo, event.currentTarget)}><FolderInput className="h-4 w-4" /></button>}
         {actions.onArchive && <button className={toolButton} aria-label="Move to Protected Archive" title="Move to Protected Archive" onClick={() => { setPlaying(false); actions.onArchive?.(photo); }}><Lock className="h-4 w-4" /></button>}
         {actions.onRestore && <button className={toolButton} aria-label="Restore to gallery" title="Restore to gallery" onClick={() => { setPlaying(false); actions.onRestore?.(photo); }}><ArchiveRestore className="h-4 w-4" /></button>}
@@ -391,6 +396,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         </aside>}
       </div>
     </>}
+    {detecting && <DetectionTool src={rawUrl(photo)} name={photo.name} source={`gallery/${photo.path}`} onClose={() => setDetecting(false)} />}
   </div>;
   return createPortal(viewer, document.body);
 }

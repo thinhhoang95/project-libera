@@ -24,6 +24,7 @@ const PREFERENCE_KEYS = Object.freeze([
   "search",
   "transcription",
   "tts",
+  "detection",
   "passwordHash",
 ]);
 

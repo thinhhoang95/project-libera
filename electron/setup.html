@@ -369,6 +369,7 @@
             <button class="nav-item" data-section-button="search" type="button" aria-selected="false">Search</button>
             <button class="nav-item" data-section-button="speech" type="button" aria-selected="false">Speech</button>
             <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false">Read Aloud</button>
+            <button class="nav-item" data-section-button="detection" type="button" aria-selected="false">Detection and Segmentation</button>
             <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
@@ -905,6 +906,64 @@
               </div>
             </section>
 
+            <section class="settings-section hidden" data-section="detection">
+              <h2>Detection and Segmentation</h2>
+              <p class="settings-section-description">
+                Finds, outlines and counts objects in photos with Ultralytics’ YOLOE-26, on this computer. Describe what to find in
+                words, or draw examples on the photo or on a reference image. Open it with the scan button in the photo viewer and
+                the Image Gallery. Changes apply to the next run, without restarting.
+              </p>
+
+              <h3>Model</h3>
+              <label for="detection-variant">Default variant</label>
+              <select id="detection-variant">
+                <option value="n">YOLOE-26n: fastest (12 MB, text/visual mAP 24.7/21.9)</option>
+                <option value="s">YOLOE-26s: balanced (31 MB, 30.8/28.6)</option>
+                <option value="m">YOLOE-26m (70 MB, 35.4/33.9)</option>
+                <option value="l">YOLOE-26l (79 MB, 37.8/36.3)</option>
+                <option value="x">YOLOE-26x: most accurate (172 MB, 40.6/38.5)</option>
+              </select>
+              <p class="field-help">The prompt models (text and visual prompts). mAP50-95 on LVIS minival, from Ultralytics. The tool can switch variants for a run; each downloads the first time it is used.</p>
+
+              <label for="detection-device">Run on</label>
+              <select id="detection-device">
+                <option value="cpu">CPU</option>
+                <option value="mps">Apple GPU (Metal)</option>
+                <option value="cuda">NVIDIA GPU (CUDA)</option>
+              </select>
+              <p class="field-help">The CPU works everywhere and takes well under a second per photo for the smaller variants. The GPUs are faster for the larger variants, where PyTorch supports them.</p>
+
+              <h3>Inference</h3>
+              <label for="detection-confidence">Confidence threshold</label>
+              <input id="detection-confidence" type="number" min="0.01" max="0.99" step="0.01" />
+              <p class="field-help">Detections scoring below it are dropped (default 0.25). The tool can raise the threshold afterwards without running again.</p>
+              <label for="detection-iou">IoU threshold</label>
+              <input id="detection-iou" type="number" min="0.05" max="0.95" step="0.05" />
+              <p class="field-help">How much two boxes may overlap before the weaker is suppressed (default 0.7).</p>
+              <label for="detection-max-detections">Maximum detections per photo</label>
+              <input id="detection-max-detections" type="number" min="1" max="3000" step="1" />
+              <label for="detection-image-size">Inference size</label>
+              <select id="detection-image-size">
+                <option value="640">640 px (the model’s training size)</option>
+                <option value="960">960 px (small objects)</option>
+                <option value="1280">1280 px (very small objects; slower)</option>
+              </select>
+              <p class="field-help">The photo’s longer side is resized to this before detection; larger sizes find smaller objects such as cells or seeds.</p>
+
+              <h3>Downloads</h3>
+              <label for="detection-model-directory">Model folder</label>
+              <div class="directory-row">
+                <input id="detection-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
+                <button id="detection-model-directory-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p id="detection-model-status" class="field-help" role="status"></p>
+              <p class="field-help">
+                The first time you detect, Libera offers to download a private Python runtime with PyTorch and Ultralytics (about
+                1 GB, installed by uv into this folder, nothing system-wide), MobileCLIP2-B for text prompts (254 MB) and the chosen
+                variant’s weights from Ultralytics’ GitHub releases. Ultralytics and the YOLOE-26 weights are licensed AGPL-3.0.
+              </p>
+            </section>
+
             <section class="settings-section hidden" data-section="markdown">
               <h2>Markdown</h2>
               <p class="settings-section-description">
@@ -1164,6 +1223,15 @@
         engine: document.querySelector("#dictation-engine"),
         openRouterModel: document.querySelector("#dictation-openrouter-model"),
         language: document.querySelector("#dictation-language"),
+      };
+      const detectionInputs = {
+        variant: document.querySelector("#detection-variant"),
+        device: document.querySelector("#detection-device"),
+        confidence: document.querySelector("#detection-confidence"),
+        iou: document.querySelector("#detection-iou"),
+        maxDetections: document.querySelector("#detection-max-detections"),
+        imageSize: document.querySelector("#detection-image-size"),
+        modelDirectory: document.querySelector("#detection-model-directory"),
       };
       const ttsInputs = {
         engine: document.querySelector("#tts-engine"),
@@ -1874,6 +1942,16 @@
         const speedOption = String(tts.speed || 1);
         ttsInputs.speed.value = [...ttsInputs.speed.options].some((option) => option.value === speedOption) ? speedOption : "1";
         updateTtsFields();
+        const detection = state.detection || {};
+        detectionInputs.variant.value = ["n", "s", "m", "l", "x"].includes(detection.variant) ? detection.variant : "s";
+        detectionInputs.device.value = ["cpu", "mps", "cuda"].includes(detection.device) ? detection.device : "cpu";
+        detectionInputs.confidence.value = String(detection.confidence ?? 0.25);
+        detectionInputs.iou.value = String(detection.iou ?? 0.7);
+        detectionInputs.maxDetections.value = String(detection.maxDetections ?? 300);
+        detectionInputs.imageSize.value = String(detection.imageSize ?? 640);
+        detectionInputs.modelDirectory.value = detection.modelDirectory || "";
+        if (modelFolders.detection) detectionInputs.modelDirectory.placeholder = `Default: ${modelFolders.detection}`;
+        void updateDetectionModelStatus();
 
         if (state.hasApiKey) {
           apiKeyInput.placeholder = "Saved API key";
@@ -2142,6 +2220,37 @@
         }
       }
 
+      let detectionModelCheck = 0;
+      async function updateDetectionModelStatus() {
+        const status = document.querySelector("#detection-model-status");
+        const folder = detectionInputs.modelDirectory.value.trim() || modelFolders.detection || "";
+        const check = ++detectionModelCheck;
+        if (!folder) {
+          status.textContent = "";
+          return;
+        }
+        const report = await window.liberaSetup?.checkDetectionModel?.(folder).catch(() => null);
+        if (check !== detectionModelCheck || !report) return;
+        const variants = Object.entries(report.variants).filter(([, ready]) => ready).map(([id]) => `YOLOE-26${id}`);
+        if (!report.runtime && !variants.length) {
+          status.textContent = "Nothing downloaded yet. Libera offers the download the first time you detect.";
+          return;
+        }
+        status.textContent = [
+          report.runtime ? "✓ Python runtime installed" : "Python runtime not installed",
+          report.textEncoder ? "text encoder ready" : "text encoder not downloaded",
+          variants.length ? `weights: ${variants.join(", ")}` : "no weights yet",
+        ].join(" · ");
+      }
+      detectionInputs.modelDirectory.addEventListener("change", () => void updateDetectionModelStatus());
+      document.querySelector("#detection-model-directory-button").addEventListener("click", async () => {
+        const folder = await window.liberaSetup.selectSearchWeights("detection-model");
+        if (folder) {
+          detectionInputs.modelDirectory.value = folder;
+          void updateDetectionModelStatus();
+        }
+      });
+
       function updateTtsFields() {
         const local = ttsInputs.engine.value === "local";
         document.querySelector("#tts-local-fields").hidden = !local;
@@ -2279,6 +2388,15 @@
               modelDirectory: ttsInputs.modelDirectory.value,
               localVoice: ttsInputs.localVoice.value,
               speed: ttsInputs.speed.value,
+            },
+            detection: {
+              variant: detectionInputs.variant.value,
+              device: detectionInputs.device.value,
+              confidence: detectionInputs.confidence.value,
+              iou: detectionInputs.iou.value,
+              maxDetections: detectionInputs.maxDetections.value,
+              imageSize: detectionInputs.imageSize.value,
+              modelDirectory: detectionInputs.modelDirectory.value,
             },
             quickPrompts: quickPromptCards().map((card) => ({
               identifier: card.querySelector(".quick-prompt-identifier").value,

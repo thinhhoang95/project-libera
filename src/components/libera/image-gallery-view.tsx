@@ -486,7 +486,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   // Esc clears the selection, ⌘A selects all, and + / − change the thumbnail size.
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
-      if (viewingId || dialog || albumMenu || openMenu || photoMenu || !showGrid || document.querySelector(".libera-dialog")) return;
+      if (viewingId || dialog || albumMenu || openMenu || photoMenu || !showGrid || document.querySelector(".libera-dialog, [data-libera-overlay]")) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable=true]")) return;
       const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
       if (event.key === "Escape" && selecting) setSelected(new Set());

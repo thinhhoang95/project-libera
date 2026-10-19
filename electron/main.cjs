@@ -24,6 +24,7 @@ const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
 const { INDEX_FILE_NAME, MODEL_FOLDERS, defaultModelsDirectory, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
 const { normalizeTranscriptionPreferences } = require("./transcription-preferences.cjs");
 const { inspectKokoroFolder, normalizeTtsPreferences } = require("./tts-preferences.cjs");
+const { inspectDetectionFolder, normalizeDetectionPreferences } = require("./detection-preferences.cjs");
 const { createPreferencesBackup, parsePreferencesBackup } = require("./preferences-io.cjs");
 const { createUpdaterService } = require("./updater.cjs");
 const { createPreferencesOverlay } = require("./preferences-overlay.cjs");
@@ -402,6 +403,7 @@ function normalizedImportedPreferences(input) {
     ...(Object.hasOwn(input, "search") ? { search: normalizeSearchPreferences(input.search) } : {}),
     ...(Object.hasOwn(input, "transcription") ? { transcription: normalizeTranscriptionPreferences(input.transcription) } : {}),
     ...(Object.hasOwn(input, "tts") ? { tts: normalizeTtsPreferences(input.tts) } : {}),
+    ...(Object.hasOwn(input, "detection") ? { detection: normalizeDetectionPreferences(input.detection) } : {}),
     passwordHash,
   };
 }
@@ -511,6 +513,7 @@ function getConfigStatus(config = readConfig()) {
     search: normalizeSearchPreferences(config.search),
     transcription: normalizeTranscriptionPreferences(config.transcription),
     tts: normalizeTtsPreferences(config.tts),
+    detection: normalizeDetectionPreferences(config.detection),
     searchDefaultIndexFile: typeof config.dataDir === "string" && config.dataDir
       ? defaultSearchIndexFile({ adminRoot: path.join(config.dataDir, "users", ADMIN_USER), configPath: getConfigPath() })
       : "",
@@ -582,6 +585,15 @@ async function selectSearchWeights(parentWindow, kind) {
     const result = await dialog.showOpenDialog(parentWindow, {
       title: "Choose the speech models folder",
       message: "Choose an empty folder for Libera to download Parakeet and the pyannote speaker models into, or a folder that already holds them.",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    return result.canceled ? "" : result.filePaths[0] ?? "";
+  }
+
+  if (kind === "detection-model") {
+    const result = await dialog.showOpenDialog(parentWindow, {
+      title: "Choose the detection model folder",
+      message: "Choose an empty folder for Libera to download YOLOE-26 and its Python runtime into, or a folder that already holds them.",
       properties: ["openDirectory", "createDirectory"],
     });
     return result.canceled ? "" : result.filePaths[0] ?? "";
@@ -766,6 +778,7 @@ function validateSetupInput(input, existingConfig) {
     search: normalizeSearchPreferences(input?.search ?? existingConfig.search),
     transcription: normalizeTranscriptionPreferences(input?.transcription ?? existingConfig.transcription),
     tts: normalizeTtsPreferences(input?.tts ?? existingConfig.tts),
+    detection: normalizeDetectionPreferences(input?.detection ?? existingConfig.detection),
     passwordHash:
       existingConfig.passwordHash && !changingPassword
         ? existingConfig.passwordHash
@@ -822,6 +835,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
     ipcMain.handle("setup:select-search-weights", (_event, kind) => selectSearchWeights(setupWindow, kind));
 
     ipcMain.handle("setup:check-tts-model", (_event, directory) => inspectKokoroFolder(directory));
+    ipcMain.handle("setup:check-detection-model", (_event, directory) => inspectDetectionFolder(directory));
 
     ipcMain.handle("setup:select-search-index-file", (_event, mode) => selectSearchIndexFile(setupWindow, mode));
 
@@ -896,6 +910,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         search: validated.search,
         transcription: validated.transcription,
         tts: validated.tts,
+        detection: validated.detection,
         passwordHash: validated.passwordHash,
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
@@ -916,6 +931,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:select-search-weights");
       ipcMain.removeHandler("setup:select-search-index-file");
       ipcMain.removeHandler("setup:check-tts-model");
+      ipcMain.removeHandler("setup:check-detection-model");
       ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
       ipcMain.removeHandler("setup:list-openrouter-models");
@@ -1801,6 +1817,7 @@ async function startNextServer(config) {
     LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
     LIBERA_TRANSCRIPTION_WORKER_PATH: path.join(__dirname, "transcription-worker.mjs"),
     LIBERA_TTS_WORKER_PATH: path.join(__dirname, "tts-worker.mjs"),
+    LIBERA_DETECTION_WORKER_PATH: path.join(__dirname, "detection-worker.py"),
     ...collabHost.environment(),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
