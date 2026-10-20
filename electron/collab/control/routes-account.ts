@@ -2,6 +2,7 @@
 
 import { ControlRoutes, type LocalAccount } from "../../../src/lib/collab/local-api";
 import { normalizeServerUrl } from "./account";
+import { SharedSignInError, type SharedOffer } from "./shared-sign-in";
 import type { Router } from "./router";
 import type { CollabRuntime } from "./runtime";
 import { ControlError } from "./types";
@@ -86,17 +87,36 @@ export function registerAccountRoutes(router: Router, runtime: CollabRuntime): v
     return { body: runtime.status() };
   });
 
-  // Not proxied to windows: only Next's login route calls it, after checking the password.
+  // Not proxied to windows: only Next's auth routes call it, after checking the password.
   router.add("POST", ControlRoutes.unlock, async (request) => {
     const body = objectBody(request.body);
     const password = requiredString(body.password, "password", 1024);
     const changed = body.changed === true;
     const previousPassword = optionalString(body.previousPassword, "previousPassword", 1024);
-    // Key derivation and the network take a moment; the login does not wait.
-    void (changed ? runtime.sharedSignIn.masterPasswordChanged(password, previousPassword) : runtime.sharedSignIn.unlock(password)).catch((error) =>
-      runtime.logger.warn("Automatic collaboration sign-in failed", error),
-    );
+    const work = changed ? runtime.sharedSignIn.masterPasswordChanged(password, previousPassword) : runtime.sharedSignIn.unlock(password);
+    // The sign-in form waits so it can show "Continue as ..." right away; a
+    // login does not (key derivation and the network take a moment).
+    if (body.wait === true) {
+      await work;
+      return { body: { ok: true } };
+    }
+    void work.catch((error) => runtime.logger.warn("Automatic collaboration sign-in failed", error));
     return { status: 202, body: { ok: true } };
+  });
+
+  // What the synced folder offers a computer that is not signed in. No secrets.
+  router.add("GET", ControlRoutes.sharedSignIn, async (): Promise<{ body: SharedOffer }> => ({ body: await runtime.sharedSignIn.offer() }));
+
+  // "Continue as ...": the person chose the account from their other computer.
+  router.add("POST", ControlRoutes.sharedSignIn, async () => {
+    try {
+      await runtime.sharedSignIn.continueFromOtherComputer();
+    } catch (error) {
+      if (!(error instanceof SharedSignInError)) throw error;
+      const status = error.code === "nothing-shared" ? 404 : error.code === "refused" ? 403 : 409;
+      throw new ControlError(status, error.code, error.message);
+    }
+    return { body: runtime.status() };
   });
 
   router.add("GET", ControlRoutes.account, () => ({ body: runtime.accounts.account }));

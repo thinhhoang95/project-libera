@@ -12,10 +12,10 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
-import type { HostConnection, HostStatus, LocalAccount } from "@/lib/collab/local-api";
+import type { HostConnection, HostStatus, LocalAccount, SharedSignInOffer } from "@/lib/collab/local-api";
 import { nudgeHost } from "@/lib/collab/ui/bridge";
 import { collabClient, describeError } from "@/lib/collab/ui/client";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
@@ -100,7 +100,11 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
           <>
             {status?.account ? <ConnectionSection status={status} /> : null}
             {showSignIn ? (
-              <section className="libera-dialog-section">
+              <section className="libera-dialog-section space-y-4">
+                <ContinueFromOtherComputer
+                  account={status?.account ?? null}
+                  onSignedIn={(next) => (next ? collab.setStatus(next) : void collab.refresh())}
+                />
                 <SignInForm
                   key={status?.account?.id ?? "new"}
                   account={status?.account ?? null}
@@ -208,6 +212,112 @@ function UpdateAction() {
         {state === "checking" ? "Checking…" : "Check for updates"}
       </button>
       {message ? <p className="text-xs text-muted-foreground" role="status">{message}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * "Continue as ...": the account another computer shares through the synced
+ * data folder. Also the way back after signing out of this computer, which
+ * turns automatic sign-in off here.
+ */
+function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAccount | null; onSignedIn: (status: HostStatus | undefined) => void }) {
+  const id = useId();
+  const [offer, setOffer] = useState<SharedSignInOffer | null>(null);
+  const [masterPassword, setMasterPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    collabClient
+      .sharedSignIn()
+      .then((next) => live && setOffer(next))
+      .catch(() => live && setOffer({ state: "none" }));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!offer || offer.state === "none") return null;
+
+  async function unlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!masterPassword) {
+      setError("Enter your Libera master password.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await collabClient.unlockSharedSignIn(masterPassword);
+      setMasterPassword("");
+      const next = await collabClient.sharedSignIn();
+      // Unlocking may already have signed in (automatic sign-in was on here).
+      if (next.state === "none") onSignedIn(undefined);
+      else if (next.state === "locked") setError("Your other computer used a different master password. Sign in with your email and password instead.");
+      setOffer(next.state === "locked" ? { state: "none" } : next);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueAs() {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await collabClient.continueSharedSignIn();
+      onSignedIn(next && typeof next === "object" && "connection" in next ? next : undefined);
+    } catch (caught) {
+      setError(describeError(caught));
+      setOffer({ state: "none" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const replaces = offer.state === "available" && account && account.id !== offer.accountId;
+  return (
+    <div aria-label="Sign in from your other computer" className="space-y-2 rounded-xl border border-input p-3" role="group">
+      {offer.state === "available" ? (
+        <>
+          <p className="text-sm">You are signed in to collaboration on another computer.</p>
+          <button className={PRIMARY_BUTTON} disabled={busy} type="button" onClick={() => void continueAs()}>
+            {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <LogIn aria-hidden className="h-3.5 w-3.5" />}
+            Continue as {offer.email}
+          </button>
+          <p className="text-xs text-muted-foreground">
+            {offer.serverUrl}
+            {replaces ? ` · Replaces ${account.email} on this computer.` : ""} This computer will sign in automatically again.
+          </p>
+        </>
+      ) : (
+        <form className="space-y-2" onSubmit={(event) => void unlock(event)}>
+          <p className="text-sm">Another computer shares its collaboration sign-in. Enter your Libera master password to use it here.</p>
+          <label className={LABEL} htmlFor={`${id}-master`}>
+            Libera master password
+          </label>
+          <input
+            autoComplete="current-password"
+            className={FIELD}
+            id={`${id}-master`}
+            type="password"
+            value={masterPassword}
+            onChange={(event) => setMasterPassword(event.target.value)}
+          />
+          <button className={SECONDARY_BUTTON} disabled={busy} type="submit">
+            {busy ? "Checking…" : "Unlock"}
+          </button>
+        </form>
+      )}
+      {error ? (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <p className="text-xs text-muted-foreground">Or sign in with your email and password below.</p>
     </div>
   );
 }

@@ -95,6 +95,16 @@ export function unlockCollabHost(password: string): void {
     .catch(() => undefined);
 }
 
+/**
+ * Unlocks the shared sign-in and waits until the host has read the file, so
+ * the sign-in form can offer "Continue as ..." straight away.
+ */
+export async function unlockCollabHostAndWait(password: string): Promise<void> {
+  const response = await fetchCollabHost(ControlRoutes.unlock, { method: "POST", body: { password, wait: true } });
+  await response.body?.cancel();
+  if (!response.ok) throw new CollabHostError(response.status, "collab-error", "The collaboration service could not read the shared sign-in.");
+}
+
 async function hostJson<T>(pathAndQuery: string, options: HostFetchOptions = {}): Promise<T> {
   const response = await fetchCollabHost(pathAndQuery, options);
   const text = await response.text();

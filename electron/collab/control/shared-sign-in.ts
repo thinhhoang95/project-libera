@@ -22,8 +22,10 @@
 //   server and leaves a tombstone, so signed-in computers do not mint a new
 //   grant behind the person's back. Only a sign-in by hand replaces it.
 // - Signing out by hand turns automatic sign-in off on this computer until the
-//   person signs in by hand again (userData/collab/auto-sign-in.json; not
-//   synced).
+//   person signs in by hand again, or chooses "Continue as ..." for the account
+//   the file offers (userData/collab/auto-sign-in.json; not synced).
+// - A sign-in by hand is remembered on disk (userData/collab/share-intent.json)
+//   until the file reflects it, so a restart before the next unlock keeps it.
 // - A file that exists but cannot be read right now (an online-only placeholder
 //   while offline, a sync lock) is left alone; only a missing file is created.
 //
@@ -35,6 +37,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { SharedSignInOffer } from "../../../src/lib/collab/local-api";
 import type { AuthResponse } from "../../../src/lib/collab/protocol/api";
 import { ApiClientError, type ApiClient } from "../core/api-client";
 import type { Clock, Logger, TimerHandle } from "../core/clock";
@@ -43,6 +46,7 @@ import { normalizeServerUrl, type AccountManager } from "./account";
 
 export const SHARED_SIGN_IN_FILE = path.join(".libera", "collab-sign-in.json");
 const OPT_OUT_FILE = "auto-sign-in.json";
+const INTENT_FILE = "share-intent.json";
 const FORMAT = "libera-collab-sign-in";
 
 /** ~0.3 s and 128 MiB per derivation: slows guessing of a stolen file. */
@@ -95,6 +99,21 @@ type ReadResult = { source?: string } & (
   /** Readable JSON this key cannot open (another master password, or damaged). */
   | { kind: "foreign"; file: SharedFile }
   | { kind: "ok"; file: SharedFile; payload: SharedPayload });
+
+/** What the file offers a computer that is not signed in (the sign-in form shows it). */
+export type SharedOffer = SharedSignInOffer;
+
+export type SharedSignInErrorCode = "locked" | "nothing-shared" | "already-signed-in" | "refused";
+
+export class SharedSignInError extends Error {
+  constructor(
+    readonly code: SharedSignInErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SharedSignInError";
+  }
+}
 
 interface DerivedKey {
   salt: string;
@@ -264,6 +283,7 @@ export interface SharedSignInOptions {
 export class SharedSignIn {
   private readonly file: string;
   private readonly optOutFile: string;
+  private readonly intentFile: string;
   private readonly options: SharedSignInOptions;
   private readonly clock: Clock;
   private readonly logger: Logger;
@@ -284,6 +304,7 @@ export class SharedSignIn {
     this.options = options;
     this.file = path.join(options.libraryRoot, SHARED_SIGN_IN_FILE);
     this.optOutFile = path.join(options.collabDir, OPT_OUT_FILE);
+    this.intentFile = path.join(options.collabDir, INTENT_FILE);
     this.clock = options.clock ?? systemClock;
     this.logger = options.logger ?? consoleLogger;
   }
@@ -341,6 +362,14 @@ export class SharedSignIn {
       await rm(this.optOutFile, { force: true });
       this.refused.clear();
       this.pendingReplace = true;
+      const account = this.options.accounts.account;
+      if (account) {
+        try {
+          await writeAtomic(this.intentFile, `${JSON.stringify({ version: 1, accountId: account.id, serverUrl: account.serverUrl }, null, 2)}\n`);
+        } catch (error) {
+          this.logger.warn("Could not remember the collaboration sign-in for your other computers", error);
+        }
+      }
       await this.reconcile();
     });
   }
@@ -362,7 +391,68 @@ export class SharedSignIn {
         if (current.kind !== "unavailable") await this.writeTombstone(current.kind === "missing" ? null : current.file);
       }
       await writeAtomic(this.optOutFile, `${JSON.stringify({ version: 1, disabled: true }, null, 2)}\n`);
-      this.pendingReplace = false;
+      await this.clearReplace();
+    });
+  }
+
+  /** For the sign-in form: whether "Continue as ..." can be offered. Never exposes the grant. */
+  offer(): Promise<SharedOffer> {
+    return this.serial(async (): Promise<SharedOffer> => {
+      if (this.stopped || this.options.accounts.session) return { state: "none" };
+      if (!this.password) {
+        let text: string;
+        try {
+          text = await readSharedFile(this.file);
+        } catch {
+          return { state: "none" };
+        }
+        const file = parseFile(text);
+        return file && !file.disabledAt ? { state: "locked" } : { state: "none" };
+      }
+      const current = await this.read();
+      if (current.kind !== "ok") return { state: "none" };
+      const { payload } = current;
+      if (this.refused.has(payload.grant) || Date.parse(payload.expiresAt) <= this.clock.now()) return { state: "none" };
+      return { state: "available", accountId: payload.accountId, email: payload.email, serverUrl: payload.serverUrl };
+    });
+  }
+
+  /**
+   * The person chose "Continue as ...": sign in with the account the file offers.
+   * An explicit choice, so it lifts this computer's opt-out and may replace a
+   * remembered account. Throws SharedSignInError, or ApiClientError when the
+   * server cannot be reached.
+   */
+  continueFromOtherComputer(): Promise<void> {
+    const intent = ++this.accountIntent;
+    return this.serial(async () => {
+      const accounts = this.options.accounts;
+      if (this.stopped) throw new SharedSignInError("nothing-shared", "Libera is closing.");
+      if (accounts.session) throw new SharedSignInError("already-signed-in", "This computer is already signed in to collaboration.");
+      if (!this.password) throw new SharedSignInError("locked", "Enter your Libera master password to use the sign-in from your other computer.");
+      const current = await this.read();
+      if (current.kind !== "ok" || Date.parse(current.payload.expiresAt) <= this.clock.now()) {
+        throw new SharedSignInError("nothing-shared", "Your other computer is not offering a sign-in any more. Sign in with your email and password.");
+      }
+      const { payload } = current;
+      let auth: AuthResponse;
+      try {
+        auth = await accounts.exchangeDeviceGrant(payload.serverUrl, payload.grant);
+      } catch (error) {
+        if (error instanceof ApiClientError && !error.transient) {
+          this.refused.add(payload.grant);
+          throw new SharedSignInError("refused", "The sign-in from your other computer is no longer valid. Sign in with your email and password.");
+        }
+        throw error;
+      }
+      if (auth.account.id !== payload.accountId) throw new SharedSignInError("refused", "The sign-in from your other computer belongs to another account.");
+      const canAdopt = () => !this.stopped && this.accountIntent === intent && !accounts.session;
+      await this.options.signedIn(payload.serverUrl, auth, canAdopt);
+      // Lift the opt-out only once the session is really in place.
+      if (accounts.session && accounts.account?.id === payload.accountId) {
+        await rm(this.optOutFile, { force: true });
+        await this.clearReplace();
+      }
     });
   }
 
@@ -386,6 +476,26 @@ export class SharedSignIn {
         .catch((error) => this.logger.warn("Could not reconcile the shared collaboration sign-in", error))
         .finally(() => this.schedule());
     }, this.options.pollMs ?? POLL_MS);
+  }
+
+  /** A sign-in by hand that the file does not reflect yet (survives restarts). */
+  private async replaceWanted(account: { id: string; serverUrl: string }): Promise<boolean> {
+    if (this.pendingReplace) return true;
+    try {
+      const stored = JSON.parse(await readFile(this.intentFile, "utf8")) as { version?: unknown; accountId?: unknown; serverUrl?: unknown } | null;
+      return stored?.version === 1 && stored.accountId === account.id && stored.serverUrl === account.serverUrl;
+    } catch {
+      return false;
+    }
+  }
+
+  private async clearReplace(): Promise<void> {
+    this.pendingReplace = false;
+    try {
+      await rm(this.intentFile, { force: true });
+    } catch (error) {
+      this.logger.warn("Could not clear the remembered collaboration sign-in", error);
+    }
   }
 
   private async optedOut(): Promise<boolean> {
@@ -492,17 +602,14 @@ export class SharedSignIn {
   private async share(current: ReadResult): Promise<void> {
     const account = this.options.accounts.account!;
     const session = this.options.accounts.session;
-    const byHand = this.pendingReplace;
+    const byHand = await this.replaceWanted(account);
     if (current.kind === "unavailable") return;
     if (current.kind === "ok") {
       const same = current.payload.accountId === account.id && current.payload.serverUrl === account.serverUrl;
       const fresh = Date.parse(current.payload.expiresAt) - this.clock.now() > RENEW_BEFORE_MS;
       // A sign-in by hand always mints: the file's grant may have been revoked
       // on the server (a password change) without this computer knowing.
-      if (same && fresh && !byHand && !this.refused.has(current.payload.grant)) {
-        this.pendingReplace = false;
-        return;
-      }
+      if (same && fresh && !byHand && !this.refused.has(current.payload.grant)) return;
       // Another account's file stays unless the person chose this one by hand.
       if (!same && !byHand) return;
     } else if (current.kind !== "missing" && !byHand) {
@@ -515,7 +622,7 @@ export class SharedSignIn {
     if (!key || this.options.accounts.account !== account || this.options.accounts.session !== session) return;
     // A newer synced choice supersedes our earlier manual sign-in. An I/O
     // failure keeps that intent so the next poll can retry the write.
-    if (await this.write(encryptPayload(key, payload), current) !== "failed") this.pendingReplace = false;
+    if (await this.write(encryptPayload(key, payload), current) !== "failed") await this.clearReplace();
   }
 
   /** Not signed in here: start a session from the file when it offers one. */

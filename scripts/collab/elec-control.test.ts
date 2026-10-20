@@ -430,7 +430,18 @@ test("two hosts share an encrypted grant and keep independent sessions against t
     assert.equal((await b.call("POST", ControlRoutes.signOut)).status, 200);
     await b.app.runtime.sharedSignIn.unlock("master password");
     assert.equal(b.app.runtime.accounts.session, null, "explicit sign-out suppresses adoption");
+    // ... but the person can choose the other computer's account again.
+    const offer = await b.call<{ state: string; email?: string }>("GET", ControlRoutes.sharedSignIn);
+    assert.deepEqual([offer.status, offer.body.state, offer.body.email], [200, "available", "shared@example.test"]);
+    const continued = await b.call<HostStatus>("POST", ControlRoutes.sharedSignIn);
+    assert.equal(continued.status, 200, JSON.stringify(continued.body));
+    assert.equal(continued.body.account?.id, registered.body.account?.id);
+    assert.notEqual(b.app.runtime.accounts.session, null, "continued with a session of its own");
+    assert.equal((await b.call<{ state: string }>("GET", ControlRoutes.sharedSignIn)).body.state, "none", "nothing to offer once signed in");
+    assert.equal((await b.call("POST", ControlRoutes.signOut)).status, 200);
     assert.equal((await a.call("POST", ControlRoutes.signOut, { everywhere: true })).status, 200);
+    const refused = await b.call<{ error: { code: string } }>("POST", ControlRoutes.sharedSignIn);
+    assert.deepEqual([refused.status, refused.body.error.code], [404, "nothing-shared"], "a tombstone offers nothing to continue with");
     assert.match(readFileSync(file, "utf8"), /disabledAt/);
     const c = await startClient(path.join(root, "c"), library);
     clients.push(c);

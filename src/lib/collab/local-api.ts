@@ -71,6 +71,13 @@ export interface LocalProject {
   reconcilePending: number;
 }
 
+/** GET ControlRoutes.sharedSignIn: what the synced data folder offers this computer. */
+export type SharedSignInOffer =
+  | { state: "none" }
+  /** A sign-in is there, but Libera must be unlocked with the master password to read it. */
+  | { state: "locked" }
+  | { state: "available"; accountId: string; email: string; serverUrl: string };
+
 export interface HostStatus {
   hostVersion: number;
   connection: HostConnection;
@@ -452,6 +459,8 @@ export const ControlRoutes = {
   signOut: "/account/sign-out",
   /** Next's login route hands the master password over (shared sign-in); never proxied. */
   unlock: "/account/unlock",
+  /** GET: what the synced folder offers (SharedOffer); POST: continue with it. */
+  sharedSignIn: "/account/shared-sign-in",
   account: "/account",
   projects: "/projects",
   project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,

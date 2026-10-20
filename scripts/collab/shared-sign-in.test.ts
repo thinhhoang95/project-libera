@@ -8,7 +8,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import type { AccountManager } from "../../electron/collab/control/account";
-import { deriveKey, encryptPayload, decryptPayload, SHARED_SIGN_IN_FILE, SharedSignIn, type SharedSignInOptions } from "../../electron/collab/control/shared-sign-in";
+import { deriveKey, encryptPayload, decryptPayload, SHARED_SIGN_IN_FILE, SharedSignIn, SharedSignInError, type SharedSignInOptions } from "../../electron/collab/control/shared-sign-in";
 import type { Clock } from "../../electron/collab/core/clock";
 import { ApiClientError, type ApiClient } from "../../electron/collab/core/api-client";
 import type { AuthResponse } from "../../src/lib/collab/protocol/api";
@@ -480,6 +480,107 @@ describe("shared collaboration sign-in", () => {
     await a.signInByHand("acc_1");
     assert.equal(await readFile(file, "utf8"), oversized);
     assert.equal(server.minted, 1);
+  });
+
+  test("after signing out, Continue as ... signs in with the other computer's account and turns automatic sign-in back on", async () => {
+    const { server, make } = setup();
+    const a = make("a");
+    const b = make("b");
+    await b.signInByHand("acc_1");
+    await b.shared.unlock("pw-12345678");
+    await a.shared.unlock("pw-12345678");
+    assert.equal(a.signedInFlag, true);
+
+    await a.signOut();
+    await a.shared.unlock("pw-12345678");
+    assert.equal(a.signedInFlag, false, "opted out: nothing happens on its own");
+    assert.deepEqual(await a.shared.offer(), { state: "available", accountId: "acc_1", email: "acc_1@example.test", serverUrl: SERVER });
+
+    await a.shared.continueFromOtherComputer();
+    assert.equal(a.signedInFlag, true);
+    assert.equal(a.account?.id, "acc_1");
+    assert.deepEqual(await a.shared.offer(), { state: "none" }, "nothing to offer once signed in");
+    assert.equal(server.minted, 1, "continuing adopts the file; it does not replace it");
+
+    // The opt-out is gone: after an unrelated loss of session, unlock recovers again.
+    a.signedInFlag = false;
+    await a.shared.unlock("pw-12345678");
+    assert.equal(a.signedInFlag, true);
+  });
+
+  test("the offer is 'locked' until the master password is entered, and 'none' for a tombstone", async () => {
+    const { make } = setup();
+    const b = make("b");
+    await b.signInByHand("acc_1");
+    await b.shared.unlock("pw-12345678");
+    const a = make("a");
+    assert.deepEqual(await a.shared.offer(), { state: "locked" });
+    await assert.rejects(a.shared.continueFromOtherComputer(), (error) => error instanceof SharedSignInError && error.code === "locked");
+
+    await a.shared.unlock("wrong password");
+    assert.deepEqual(await a.shared.offer(), { state: "none" }, "another master password cannot read it");
+
+    await b.signOut(true);
+    const c = make("c");
+    assert.deepEqual(await c.shared.offer(), { state: "none" }, "a tombstone offers nothing");
+  });
+
+  test("Continue as ... may replace a remembered account, because the person chose it", async () => {
+    const { make } = setup();
+    const b = make("b");
+    await b.signInByHand("acc_1");
+    await b.shared.unlock("pw-12345678");
+    const a = make("a");
+    a.account = { id: "acc_2", email: "other@example.test", displayName: "O", color: "#000000", serverUrl: SERVER };
+    await a.shared.unlock("pw-12345678");
+    assert.equal(a.signedInFlag, false, "automatic sign-in never switches accounts");
+    await a.shared.continueFromOtherComputer();
+    assert.equal(a.account?.id, "acc_1");
+    assert.equal(a.signedInFlag, true);
+  });
+
+  test("a refused grant is reported and no longer offered", async () => {
+    const { server, make } = setup();
+    const b = make("b");
+    await b.signInByHand("acc_1");
+    await b.shared.unlock("pw-12345678");
+    server.revokeAll("acc_1");
+    const a = make("a");
+    await a.signOut();
+    await a.shared.unlock("pw-12345678");
+    await assert.rejects(a.shared.continueFromOtherComputer(), (error) => error instanceof SharedSignInError && error.code === "refused");
+    assert.deepEqual(await a.shared.offer(), { state: "none" });
+    assert.equal(a.signedInFlag, false);
+  });
+
+  test("a sign-in by hand survives a restart before the next unlock", async () => {
+    const { server, file, make } = setup();
+    const a = make("a");
+    await a.signInByHand("acc_1");
+    await a.shared.unlock("pw-12345678");
+    await a.signOut(true);
+    assert.match(await readFile(file, "utf8"), /disabledAt/);
+
+    // B signs in by hand on a launch that opened on a still-valid Libera login (locked) ...
+    const b = make("b");
+    await b.signInByHand("acc_1");
+    b.shared.stop();
+    // ... and Libera restarts before the master password is typed.
+    const restarted = new Computer(server, path.dirname(path.dirname(file)), b.collabDir, { kdf: { N: 2 ** 14, r: 8, p: 1 } });
+    computers.push(restarted);
+    restarted.account = b.account;
+    restarted.signedInFlag = true;
+    await restarted.shared.unlock("pw-12345678");
+    assert.doesNotMatch(await readFile(file, "utf8"), /disabledAt/, "the tombstone was replaced");
+
+    const c = make("c");
+    await c.shared.unlock("pw-12345678");
+    assert.equal(c.signedInFlag, true);
+
+    // Once the file reflects it, the remembered intent is gone: no extra grants per unlock.
+    const minted = server.minted;
+    await restarted.shared.unlock("pw-12345678");
+    assert.equal(server.minted, minted);
   });
 
   test("password rewrapping retries after a temporary file write failure", async () => {

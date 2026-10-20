@@ -250,6 +250,42 @@ test("sign in, profile colour and sign out go through the client", async () => {
   await view.unmount();
 });
 
+test("signed out: unlock with the master password, then Continue as … the other computer's account", async () => {
+  const { createElement } = await import("react");
+  const support = await import("./ui-support");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let status = hostStatus({ connection: "signed-out", account: null });
+  let offer: unknown = { state: "locked" };
+  const { calls } = installFakeFetch({
+    "GET /status": () => ({ body: status }),
+    "GET /account/shared-sign-in": () => ({ body: offer }),
+    "POST /api/auth/collab-unlock": (call) => {
+      if ((call.body as { password: string }).password !== "master") return { status: 403, body: { error: "That is not your Libera master password." } };
+      offer = { state: "available", accountId: "acc_owner", email: "owner@example.com", serverUrl: "https://collab.test" };
+      return { body: { ok: true } };
+    },
+    "POST /account/shared-sign-in": () => {
+      status = hostStatus();
+      return { body: status };
+    },
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  await flush();
+  const group = () => document.querySelector('[aria-label="Sign in from your other computer"]');
+  assert.ok(group(), "the shared sign-in is offered above the form");
+  await support.typeInto(document.querySelector<HTMLInputElement>('input[id$="-master"]'), "nope");
+  await support.submit(group()!.querySelector("form"));
+  assert.match(group()!.textContent!, /not your Libera master password/);
+
+  await support.typeInto(document.querySelector<HTMLInputElement>('input[id$="-master"]'), "master");
+  await support.submit(group()!.querySelector("form"));
+  await support.click(button(/Continue as owner@example\.com/));
+  assert.ok(calls.some((call) => call.method === "POST" && call.path === "/account/shared-sign-in"));
+  assert.match(document.querySelector('[role="dialog"]')!.textContent!, /Connected/);
+  assert.equal(group(), null, "nothing to offer once signed in");
+  await view.unmount();
+});
+
 test("create account sends the optional invitation", async () => {
   const { createElement } = await import("react");
   const support = await import("./ui-support");
