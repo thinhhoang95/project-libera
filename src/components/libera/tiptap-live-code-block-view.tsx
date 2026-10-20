@@ -4,7 +4,7 @@ import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNode
 import { useEffect, useState } from "react";
 import { NotebookLiveBlock, isLiveCodeBlock } from "./slide-live-blocks";
 
-// The Visual editor's code blocks. A ```chart or ```html live block keeps
+// The Visual editor's code blocks. A ```chart, ```mermaid or ```html live block keeps
 // its code editable and shows what it draws underneath, as the preview does;
 // every other code block renders as the plain <pre><code> it always was.
 
@@ -50,8 +50,15 @@ function codeBlockContent(language: string, code: string) {
   return { type: "codeBlock", attrs: { language }, content: [{ type: "text", text: code }] };
 }
 
-/** Starting points for the toolbar's Insert chart and Insert interactive HTML. */
+/** Starting points for the toolbar's Insert chart, Insert diagram and Insert interactive HTML. */
 export const LIVE_BLOCK_TEMPLATES = {
+  diagram: codeBlockContent("mermaid", [
+    "flowchart LR",
+    "  idea[Idea] --> draft[Draft]",
+    "  draft --> review{Review}",
+    "  review -->|Changes| draft",
+    "  review -->|Approved| publish[Publish]",
+  ].join("\n")),
   chart: codeBlockContent("chart", [
     "type: bar",
     "title: Revenue by quarter",

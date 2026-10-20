@@ -121,7 +121,7 @@ const LiberaLink = Link.extend({
 export type MarkdownExtensionOptions = {
   /** The Visual editor's citation node view (references/tiptap-citation-view.tsx). */
   citationNodeView?: NodeViewRenderer;
-  /** The Visual editor's code block view, which draws ```chart and ```html live blocks (tiptap-live-code-block-view.tsx). */
+  /** The Visual editor's code block view, which draws ```chart, ```mermaid and ```html live blocks (tiptap-live-code-block-view.tsx). */
   codeBlockNodeView?: NodeViewRenderer;
 };
 

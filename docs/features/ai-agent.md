@@ -132,6 +132,18 @@ Loaded when you ask the agent to fact-check a document, verify its citations or 
 
 The modules are `src/lib/agent/skills/fact-check-citations.ts`, `src/lib/agent/fact-check/` (`list-citations.ts`, `check-citations.ts`, `read-scope.ts`, `verdicts.ts`, `evidence.ts`, `existence.ts`, `report.ts`) and `src/lib/agent/references-tool.ts`.
 
+### slide-deck
+
+Loaded when you ask for a presentation, slides or a deck, to turn a note into slides, or to change a `.slides.md` file. Its instructions teach the agent the [Markdown Slides](../markdown_slides.md) format (settings, layouts, columns, build steps, speaker notes) and the three live blocks it can put on slides: ```` ```chart ```` charts, ```` ```mermaid ```` diagrams and ```` ```html live ```` interactive HTML (see [Charts, diagrams and live HTML](charts-and-live-html.md)). The agent writes the deck with Edit and Write, so it needs a permission that can change files; in Read Only it puts the slides in its answer.
+
+The skill has no tools of its own. Its finish pass is described under the next skill, which shares it.
+
+### visualization-interactivity-in-markdown
+
+Loaded when you ask the agent to visualize data, make or change a chart, graph or diagram, draw a process or structure, or build a small interactive widget, calculator or applet. Its instructions cover when to use each live block (a chart for numbers, a Mermaid diagram for processes and structures, live HTML only for something interactive), how to write them, where they render, and the sandbox rules for live HTML (`Chart`, `libera.colors` and `libera.theme`, https only in your own notebooks, no network in shared ones). The agent reads the data it charts from your files and never makes up numbers. It puts the block in a note, the open one or a new one, because the AI chat shows these blocks as code. For a slide deck it loads slide-deck as well.
+
+Both skills take the live-block reference and the finish pass from `src/lib/agent/skills/live-blocks.ts`. When the agent finishes a reply, the pass parses every Markdown file it changed in the run. It sends back any ```` ```chart ```` block whose settings do not parse and, for decks, the deck's warnings (an unknown theme, layout or aspect, a malformed setting), with line numbers, for the agent to fix. Each version of a file is checked once, even when both skills are loaded, so a problem the agent cannot fix is not reported again. The check cannot see the page: Mermaid syntax errors, script errors in live HTML and overfull slides show in the preview instead. The module is `src/lib/agent/skills/visualization-interactivity-in-markdown.ts`.
+
 ## Child runs
 
 A tool can hand self-contained jobs to child runs of the agent loop (`runSubagents` in `src/lib/agent/subagents.ts`), for example to check several sources at once. Each child has its own system prompt, prompt, tools and limits (by default 15 turns, 5 minutes and 1 million input tokens), and up to four run at a time.
@@ -192,6 +204,6 @@ Agent mode uses the chat model picker and reasoning effort. The model must suppo
 
 ## Checks
 
-`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts scripts/editor/references-agent-*.test.ts scripts/editor/references-factcheck*.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/agent-tools.test.ts scripts/editor/agent-route.test.ts scripts/editor/agent-chat-panel.test.ts scripts/editor/agent-skills.test.ts scripts/editor/agent-live-block-skills.test.ts scripts/editor/references-agent-*.test.ts scripts/editor/references-factcheck*.test.ts`
 
 These cover skills (loading on demand, comment syntax and placement, feedback to the model, saving review threads), the path sandbox, every tool and its error messages, PDF reading and search, permissions, undo with drafts and conflicts, the loop's handling of malformed and cut-off tool calls, repeated calls, open tasks and stopping, parameter routing, and the panel's requests, activity view, tab syncing and undo. The `references-agent-*` tests cover child runs (isolation, concurrency, structured results, budget, stop, events and usage), WebSearch (mocked completions, fallback, when it is offered, the route and the panel toggle), and suggested edits (matching, the finish pass, remapping, decisions, the review route, and both editors and the Comments panel). The `references-factcheck*` tests cover the References tool, ListCitations, batching, the read scope, SubmitVerdicts, evidence verification, the existence check, budget exhaustion and Continue, missing references, an end-to-end Read Only run over a document with planted errors, the route's skill preload, the panel's fact-check request and the toolbar button.

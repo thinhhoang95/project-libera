@@ -279,7 +279,7 @@ Run the editor's Markdown round-trip regression tests with `npm run test:editor`
 
 ### Charts and live HTML in notes
 
-Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
+Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, one tagged `mermaid` draws a Mermaid diagram (flowcharts, sequence diagrams, Gantt charts, mind maps and more), and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart**, **Insert diagram** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
 
 ````markdown
 ```chart
@@ -372,6 +372,8 @@ A responsive Chart.js canvas is half as tall as it is wide, so a full-width one 
 </script>
 ```
 ````
+
+A fenced block tagged `mermaid` draws a [Mermaid](https://mermaid.js.org/intro/) diagram in the slide's theme: flowcharts, sequence, class, state and ER diagrams, Gantt charts, pies, mind maps, timelines and more. Mermaid runs in strict mode (no scripted clicks or HTML labels), so diagrams render in every notebook, shared ones included.
 
 In a shared notebook, a live block shows a **Run** button instead of running on its own. Once run, it still has no network access. Charts and live blocks print in PDF exports; Libera waits for them to finish drawing first. The same blocks work in notes (see [Charts and live HTML in notes](#charts-and-live-html-in-notes) and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md)).
 

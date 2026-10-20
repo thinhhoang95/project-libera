@@ -1335,6 +1335,23 @@ button.border[class*="border-white"]:hover {
   margin: 0.25em 0 0.75em;
 }
 
+/* Mermaid sets the SVG's max-width to its natural size; narrower blocks scale it down. */
+.markdown-slide-diagram {
+  margin: 0.25em auto 0.75em;
+  min-height: 1em;
+}
+
+.markdown-slide-diagram svg {
+  display: block;
+  height: auto;
+  margin-inline: auto;
+}
+
+/* On a slide, at most as tall as the body (markdown-slide-templates.tsx sets it). */
+.markdown-slide-fit-frame .markdown-slide-diagram svg {
+  max-height: calc(var(--markdown-slide-body-height, 100vh) - 1em);
+}
+
 /* The frame's color-scheme matches the slide's (inherited), so it stays
    transparent instead of getting an opaque backdrop. */
 .markdown-slide-live-frame {
