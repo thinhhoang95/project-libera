@@ -118,6 +118,7 @@ declare global {
       close: () => Promise<void>;
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<void>;
+      setButtonsVisible: (visible: boolean) => Promise<void>;
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
     };

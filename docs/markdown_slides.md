@@ -204,6 +204,8 @@ Slide body content uses the same renderer as regular Markdown notes:
 - Images
 - Workspace-relative Markdown links
 - External links
+- ```` ```chart ```` and ```` ```html live ```` blocks, which draw charts and
+  interactive HTML (see [Charts and live HTML](features/charts-and-live-html.md))
 
 Example with math and an image:
 

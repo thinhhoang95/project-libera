@@ -36,6 +36,9 @@ import type {
   InvitationPreview,
   LoginRequest,
   LogoutRequest,
+  DeviceGrantRequest,
+  DeviceGrantResponse,
+  DeviceGrantSignInRequest,
   MarkNotificationsReadRequest,
   Member,
   NotificationInfo,
@@ -217,6 +220,20 @@ export class ApiClient {
 
   logout(body: LogoutRequest): Promise<void> {
     return this.request("POST", ApiRoutes.logout, { body, anonymous: true });
+  }
+
+  /** A grant that lets the person's other computers sign in (DeviceGrantRequest). */
+  createDeviceGrant(body: DeviceGrantRequest = {}): Promise<DeviceGrantResponse> {
+    return this.request("POST", ApiRoutes.deviceGrants, { body });
+  }
+
+  /** Revokes every device grant of the account; signed-in computers stay signed in. */
+  revokeDeviceGrants(): Promise<void> {
+    return this.request("DELETE", ApiRoutes.deviceGrants);
+  }
+
+  deviceGrantSignIn(body: DeviceGrantSignInRequest): Promise<AuthResponse> {
+    return this.request("POST", ApiRoutes.deviceGrantSignIn, { body, anonymous: true });
   }
 
   me(): Promise<Account> {

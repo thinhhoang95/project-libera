@@ -9,12 +9,13 @@ import type { Kysely, Selectable } from "kysely";
 import { z } from "zod";
 
 import { burnPasswordCheck, hashPassword, verifyPassword } from "../auth/passwords.js";
+import { hasActiveSession } from "../auth/access.js";
 import { signAccessToken } from "../auth/tokens.js";
 import type { ServerContext } from "../context.js";
 import type { AccountsTable, DB } from "../db/types.js";
 import { HttpError } from "../http/errors.js";
 import { newId, newSecret, sha256Hex } from "../ids.js";
-import { ApiRoutes, type Account, type AuthResponse } from "../protocol.js";
+import { ApiRoutes, type Account, type AuthResponse, type DeviceGrantResponse } from "../protocol.js";
 import { emailSchema, hexColorSchema, iso, isUniqueViolation, notifyRooms, requireAccount } from "./common.js";
 import { acceptInvitationRecord, assertInvitedEmail, findInvitation } from "./invitations.js";
 import { announceMembership } from "./projects.js";
@@ -37,6 +38,11 @@ const loginBody = z.object({ email: emailSchema, password: z.string().max(200), 
 const refreshBody = z.object({ refreshToken: z.string().min(1).max(200) });
 const updateMeBody = z.object({ displayName: displayName.optional(), color: hexColorSchema.optional() });
 const changePasswordBody = z.object({ currentPassword: z.string().max(200), newPassword: password });
+const deviceGrantBody = z.object({ deviceName, automatic: z.boolean().optional(), previousGrant: z.string().min(1).max(200).optional() }).optional();
+const deviceGrantSignInBody = z.object({ grant: z.string().min(1).max(200), deviceName });
+
+/** Active grants kept per account; creating one more revokes the oldest. */
+const MAX_DEVICE_GRANTS = 10;
 
 /** Readable on light and dark backgrounds, and distinct from each other. */
 export const DEFAULT_COLORS = [
@@ -138,6 +144,10 @@ async function revokeFamily(context: ServerContext, accountId: string, familyId:
     .where("revoked_at", "is", null)
     .execute();
   notifyRooms(context, "accountRevoked", (rooms) => rooms.accountRevoked(accountId, familyId));
+}
+
+export async function revokeDeviceGrants(db: Kysely<DB>, accountId: string): Promise<void> {
+  await db.updateTable("device_grants").set({ revoked_at: new Date() }).where("account_id", "=", accountId).where("revoked_at", "is", null).execute();
 }
 
 export function registerAuthRoutes(app: FastifyInstance, context: ServerContext): void {
@@ -242,6 +252,84 @@ export function registerAuthRoutes(app: FastifyInstance, context: ServerContext)
     return reply.status(204).send();
   });
 
+  // A grant for the signed-in account, to hand to the person's other computers.
+  app.post(ApiRoutes.deviceGrants, async (request): Promise<DeviceGrantResponse> => {
+    const { accountId, familyId } = await requireAccount(context, request);
+    const body = deviceGrantBody.parse(request.body ?? undefined);
+    const grant = newSecret();
+    const expiresAt = new Date(Date.now() + config.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+    await db.transaction().execute(async (trx) => {
+      // Serialize grant creation, exchange and revocation for this account.
+      const account = await trx.selectFrom("accounts").select("disabled_at").where("id", "=", accountId).forUpdate().executeTakeFirst();
+      if (!account || account.disabled_at || !(await hasActiveSession(trx, accountId, familyId))) {
+        throw new HttpError("unauthorized", "Session ended. Sign in again.");
+      }
+      if (body?.automatic) {
+        const denied = new HttpError("forbidden", "Automatic sign-in was stopped. Sign in by hand to share it again.");
+        if (body.previousGrant) {
+          const previous = await trx.selectFrom("device_grants").select("id")
+            .where("account_id", "=", accountId).where("token_hash", "=", sha256Hex(body.previousGrant))
+            .where("revoked_at", "is", null).where("expires_at", ">", new Date()).executeTakeFirst();
+          if (!previous) throw denied;
+        } else {
+          // A restored device may see no file yet. It may bootstrap sharing
+          // for a new account, but cannot undo an account's revoked grants.
+          const history = await trx.selectFrom("device_grants").select("id").where("account_id", "=", accountId).executeTakeFirst();
+          const active = await trx.selectFrom("device_grants").select("id").where("account_id", "=", accountId)
+            .where("revoked_at", "is", null).where("expires_at", ">", new Date()).executeTakeFirst();
+          if (history && !active) throw denied;
+        }
+      }
+      await trx
+        .insertInto("device_grants")
+        .values({ id: newId("dgr"), account_id: accountId, token_hash: sha256Hex(grant), device_name: body?.deviceName ?? null, expires_at: expiresAt })
+        .execute();
+      const extra = await trx
+        .selectFrom("device_grants")
+        .select("id")
+        .where("account_id", "=", accountId)
+        .where("revoked_at", "is", null)
+        .orderBy("created_at", "desc")
+        .orderBy("id", "desc")
+        .offset(MAX_DEVICE_GRANTS)
+        .limit(1000)
+        .execute();
+      if (extra.length > 0) {
+        await trx.updateTable("device_grants").set({ revoked_at: new Date() }).where("id", "in", extra.map((row) => row.id)).execute();
+      }
+    });
+    return { grant, expiresAt: expiresAt.toISOString() };
+  });
+
+  // Stops automatic sign-in on other computers; their current sessions stay.
+  app.delete(ApiRoutes.deviceGrants, async (request, reply) => {
+    const { accountId } = await requireAccount(context, request);
+    await db.transaction().execute(async (trx) => {
+      await trx.selectFrom("accounts").select("id").where("id", "=", accountId).forUpdate().executeTakeFirstOrThrow();
+      await revokeDeviceGrants(trx, accountId);
+    });
+    return reply.status(204).send();
+  });
+
+  app.post(ApiRoutes.deviceGrantSignIn, async (request, reply): Promise<AuthResponse> => {
+    const body = deviceGrantSignInBody.parse(request.body);
+    enforce(reply, [[authLimits(context).deviceGrantPerIp, request.ip]]);
+    const invalid = new HttpError("unauthorized", "This sign-in from another computer is no longer valid. Sign in again.");
+    const row = await db.selectFrom("device_grants").selectAll().where("token_hash", "=", sha256Hex(body.grant)).executeTakeFirst();
+    if (!row || row.revoked_at || new Date(row.expires_at).getTime() <= Date.now()) throw invalid;
+    return db.transaction().execute(async (trx) => {
+      const account = await trx.selectFrom("accounts").selectAll().where("id", "=", row.account_id).forUpdate().executeTakeFirst();
+      if (!account || account.disabled_at) throw invalid;
+      // Re-check after taking the account lock: a revocation may have won it.
+      const current = await trx.selectFrom("device_grants").selectAll().where("id", "=", row.id).executeTakeFirst();
+      if (!current || current.revoked_at || new Date(current.expires_at).getTime() <= Date.now()) throw invalid;
+      await trx.updateTable("device_grants").set({ last_used_at: new Date() }).where("id", "=", row.id).execute();
+      const familyId = newId("fam");
+      const refresh = await issueRefreshToken(context, trx, account.id, familyId, body.deviceName ?? null);
+      return authResponse(context, account, refresh, familyId);
+    });
+  });
+
   app.get(ApiRoutes.me, async (request): Promise<Account> => {
     const { accountId } = await requireAccount(context, request);
     const account = await db.selectFrom("accounts").selectAll().where("id", "=", accountId).executeTakeFirstOrThrow();
@@ -266,17 +354,26 @@ export function registerAuthRoutes(app: FastifyInstance, context: ServerContext)
     if (!(await verifyPassword(body.currentPassword, account.password_hash))) {
       throw new HttpError("forbidden", "The current password is incorrect.");
     }
-    await db.updateTable("accounts").set({ password_hash: await hashPassword(body.newPassword) }).where("id", "=", accountId).execute();
+    const passwordHash = await hashPassword(body.newPassword);
     // Other sessions may belong to whoever learned the old password.
-    const others = await db
-      .selectFrom("refresh_tokens")
-      .select("family_id")
-      .distinct()
-      .where("account_id", "=", accountId)
-      .where("family_id", "!=", familyId)
-      .where("revoked_at", "is", null)
-      .execute();
-    for (const other of others) await revokeFamily(context, accountId, other.family_id);
+    const others = await db.transaction().execute(async (trx) => {
+      const current = await trx.selectFrom("accounts").select(["password_hash", "disabled_at"]).where("id", "=", accountId).forUpdate().executeTakeFirst();
+      if (!current || current.disabled_at || !(await hasActiveSession(trx, accountId, familyId))) throw new HttpError("unauthorized", "Session ended. Sign in again.");
+      if (current.password_hash !== account.password_hash) throw new HttpError("forbidden", "The password changed. Try again with the current password.");
+      await trx.updateTable("accounts").set({ password_hash: passwordHash }).where("id", "=", accountId).execute();
+      const families = await trx
+        .selectFrom("refresh_tokens")
+        .select("family_id")
+        .distinct()
+        .where("account_id", "=", accountId)
+        .where("family_id", "!=", familyId)
+        .where("revoked_at", "is", null)
+        .execute();
+      await trx.updateTable("refresh_tokens").set({ revoked_at: new Date() }).where("account_id", "=", accountId).where("family_id", "!=", familyId).where("revoked_at", "is", null).execute();
+      await revokeDeviceGrants(trx, accountId);
+      return families;
+    });
+    for (const other of others) notifyRooms(context, "accountRevoked", (rooms) => rooms.accountRevoked(accountId, other.family_id));
     return reply.status(204).send();
   });
 }

@@ -30,6 +30,7 @@ import {
 import dynamic from "next/dynamic";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
+import { useNotebookCodeBlockRenderer } from "./slide-live-blocks";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
 import { GalleryPhotoPicker, galleryPhotoFile } from "@/components/libera/gallery-photo-picker";
 import { apiRequest, encodeFilePath } from "@/components/libera/api-client";
@@ -740,6 +741,11 @@ function WorkspacePanelContent({
   );
   const renderedMarkdownFontFamily = getRenderedMarkdownFontStack(
     markdownPreferences.renderedMarkdownFontFamily,
+  );
+  // ```chart and ```html live blocks render in the note's preview, as in slides.
+  const renderMarkdownCodeBlock = useNotebookCodeBlockRenderer(
+    activeTab?.file.fileType === "markdown" ? activeTab.file.path : undefined,
+    renderedMarkdownFontFamily,
   );
   const markdownLineHeightPx =
     markdownPreferences.baseFontSize *
@@ -1922,6 +1928,7 @@ function WorkspacePanelContent({
                     documentPath={activeTab.file.path}
                     fontFamily={renderedMarkdownFontFamily}
                     onOpenFileLink={handleOpenMarkdownFileLink}
+                    renderCodeBlock={renderMarkdownCodeBlock}
                     textScale={markdownZoomScale}
                   />
                 </div>
@@ -2060,6 +2067,7 @@ function WorkspacePanelContent({
                         documentPath={activeTab.file.path}
                         fontFamily={renderedMarkdownFontFamily}
                         onOpenFileLink={handleOpenMarkdownFileLink}
+                        renderCodeBlock={renderMarkdownCodeBlock}
                         textScale={markdownZoomScale}
                       />
                     </div>

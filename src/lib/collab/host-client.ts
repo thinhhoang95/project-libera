@@ -83,6 +83,18 @@ export async function fetchCollabHost(pathAndQuery: string, options: HostFetchOp
   }
 }
 
+/**
+ * Hands the master password to the host after a successful local login, for
+ * automatic collaboration sign-in through the synced data folder. Never
+ * throws and never delays the login: collaboration may be off or restarting.
+ */
+export function unlockCollabHost(password: string): void {
+  if (!collabHostConfig()) return;
+  void fetchCollabHost(ControlRoutes.unlock, { method: "POST", body: { password } })
+    .then((response) => response.body?.cancel())
+    .catch(() => undefined);
+}
+
 async function hostJson<T>(pathAndQuery: string, options: HostFetchOptions = {}): Promise<T> {
   const response = await fetchCollabHost(pathAndQuery, options);
   const text = await response.text();

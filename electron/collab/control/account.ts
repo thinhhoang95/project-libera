@@ -258,6 +258,11 @@ export class AccountManager {
     });
   }
 
+  /** Starts a new session with a device grant from the person's other computer. */
+  exchangeDeviceGrant(serverUrl: string, grant: string): Promise<AuthResponse> {
+    return this.apiFor(serverUrl).deviceGrantSignIn({ grant, deviceName: "Libera desktop" });
+  }
+
   /** Ends the session on the server (best effort) and forgets the account on this machine. */
   async signOut(): Promise<void> {
     const session = this.sessionValue;

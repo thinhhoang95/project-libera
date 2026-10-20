@@ -25,7 +25,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer, type MarkdownCodeBlock } from "@/components/markdown-renderer";
-import { SlideChart, SlideLiveHtml } from "@/components/libera/slide-live-blocks";
+import { SlideChart, SlideLiveHtml, isLiveCodeBlock } from "@/components/libera/slide-live-blocks";
 import {
   CitationScope,
   ReferenceRenderProvider,
@@ -161,9 +161,8 @@ export function MarkdownSlideSheet({
   const renderCodeBlock = useCallback(
     ({ code, language, meta }: MarkdownCodeBlock) => {
       const props = { documentPath, fontFamily, mode, source: code, theme };
-      if (language === "chart") return <SlideChart {...props} />;
-      if (language === "html" && /(?:^|\s)live(?:\s|$)/.test(meta ?? "")) return <SlideLiveHtml {...props} meta={meta} />;
-      return null;
+      if (!isLiveCodeBlock(language, meta)) return null;
+      return language === "chart" ? <SlideChart {...props} /> : <SlideLiveHtml {...props} meta={meta} />;
     },
     [documentPath, fontFamily, mode, theme],
   );

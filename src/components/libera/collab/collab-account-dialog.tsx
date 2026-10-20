@@ -467,6 +467,7 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
 
 function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
   const [confirming, setConfirming] = useState(false);
+  const [everywhere, setEverywhere] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
@@ -474,6 +475,16 @@ function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
       {confirming ? (
         <>
           <p className="text-sm">Shared notebooks stay on this device but stop syncing until you sign in again.</p>
+          <p className="text-xs text-muted-foreground">
+            This computer will not sign in automatically again until you sign in here yourself.
+          </p>
+          <label className="flex items-start gap-2 text-sm">
+            <input checked={everywhere} className="mt-0.5" disabled={busy} type="checkbox" onChange={(event) => setEverywhere(event.target.checked)} />
+            <span>
+              Also stop automatic sign-in on my other computers
+              <span className="block text-xs text-muted-foreground">Computers that are already signed in stay signed in.</span>
+            </span>
+          </label>
           <div className="flex gap-2">
             <button
               className="inline-flex items-center rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
@@ -483,7 +494,7 @@ function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
                 setBusy(true);
                 setError("");
                 collabClient
-                  .signOut()
+                  .signOut({ everywhere })
                   .then(() => {
                     setConfirming(false);
                     onSignedOut();

@@ -4,11 +4,13 @@ import { after, before, describe, test } from "node:test";
 import { DEFAULT_COLORS } from "../src/api/auth.js";
 import { hashRegistrationCode } from "../src/api/registration-codes.js";
 import { newRegistrationCode } from "../src/admin/signup-codes.js";
+import { buildServer } from "../src/app.js";
+import { openDatabase } from "../src/db/database.js";
 import { loadConfig } from "../src/config.js";
 import { hashPassword, verifyPassword } from "../src/auth/passwords.js";
 import { signAccessToken } from "../src/auth/tokens.js";
 import type { Account, AuthResponse } from "../src/protocol.js";
-import { json } from "./helpers.js";
+import { json, type TestServer } from "./helpers.js";
 import { errorCode, register, request, startApi, type ApiHarness } from "./support/api-harness.js";
 
 describe("passwords", () => {
@@ -170,6 +172,65 @@ describe("auth routes", () => {
     assert.equal(login.status, 200);
   });
 
+  test("device grants start independent sessions and are revoked by sign-out-everywhere and password changes", async () => {
+    const user = await register(h, "grant");
+    const anonymous = await request(h, "POST", "/v1/auth/device-grants", null, {});
+    assert.equal(anonymous.status, 401);
+
+    const created = await request(h, "POST", "/v1/auth/device-grants", user, { deviceName: "Laptop" });
+    assert.equal(created.status, 200);
+    const grant = created.body.grant as string;
+    assert.ok(grant.length > 20);
+    assert.ok(Date.parse(created.body.expiresAt) > Date.now());
+    assert.equal((await request(h, "POST", "/v1/auth/device-grants", user, { automatic: true, previousGrant: grant })).status, 200);
+
+    // Two computers use the same copy: each gets its own refresh family, so
+    // rotating one never trips reuse detection on the other.
+    const first = await json<AuthResponse>(h.url, "/v1/auth/device-grants/sign-in", { body: { grant, deviceName: "A" } });
+    const second = await json<AuthResponse>(h.url, "/v1/auth/device-grants/sign-in", { body: { grant, deviceName: "B" } });
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(first.body.account.id, user.id);
+    assert.equal((await json(h.url, "/v1/auth/refresh", { body: { refreshToken: first.body.refreshToken } })).status, 200);
+    assert.equal((await json(h.url, "/v1/auth/refresh", { body: { refreshToken: second.body.refreshToken } })).status, 200);
+
+    const bogus = await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant: "not-a-grant" } });
+    assert.equal(bogus.status, 401);
+
+    // Logging one computer out leaves the grant usable.
+    assert.equal((await json(h.url, "/v1/auth/logout", { body: { refreshToken: first.body.refreshToken } })).status, 204);
+    assert.equal((await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant } })).status, 200);
+
+    const revoked = await request(h, "DELETE", "/v1/auth/device-grants", user);
+    assert.equal(revoked.status, 204);
+    assert.equal((await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant } })).status, 401);
+    assert.equal((await json(h.url, "/v1/me", { token: second.body.accessToken })).status, 200, "existing sessions stay");
+    assert.equal((await request(h, "POST", "/v1/auth/device-grants", user, { automatic: true, previousGrant: grant })).status, 403, "a stale file cannot renew a revoked grant");
+    assert.equal((await request(h, "POST", "/v1/auth/device-grants", user, { automatic: true })).status, 403, "a missing file cannot undo global revocation");
+
+    const again = await request(h, "POST", "/v1/auth/device-grants", user, {});
+    assert.equal(again.status, 200);
+    const changed = await request(h, "POST", "/v1/me/password", user, { currentPassword: "correct horse battery", newPassword: "new password 2" });
+    assert.equal(changed.status, 204);
+    assert.equal((await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant: again.body.grant } })).status, 401, "password change revokes grants");
+  });
+
+  test("device grants store hashes, reject expiry and disabled accounts, and cap concurrent creation", async () => {
+    const user = await register(h, "grant-cap");
+    const created = await Promise.all(Array.from({ length: 14 }, () => request(h, "POST", "/v1/auth/device-grants", user, {})));
+    assert.ok(created.every((result) => result.status === 200));
+    const rows = await h.context.db.selectFrom("device_grants").selectAll().where("account_id", "=", user.id).execute();
+    const active = rows.filter((row) => !row.revoked_at);
+    assert.equal(active.length, 10);
+    assert.ok(rows.every((row) => !created.some((result) => result.body.grant === row.token_hash)), "only hashes are persisted");
+    const live = created.at(-1)!.body.grant;
+    await h.context.db.updateTable("device_grants").set({ expires_at: new Date(0) }).where("account_id", "=", user.id).execute();
+    assert.equal((await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant: live } })).status, 401);
+    const next = await request(h, "POST", "/v1/auth/device-grants", user, {});
+    await h.context.db.updateTable("accounts").set({ disabled_at: new Date() }).where("id", "=", user.id).execute();
+    assert.equal((await json(h.url, "/v1/auth/device-grants/sign-in", { body: { grant: next.body.grant } })).status, 401);
+  });
+
   test("login is rate limited per email", async () => {
     const user = await register(h, "rl");
     let last = 0;
@@ -193,6 +254,55 @@ describe("auth routes", () => {
     assert.equal(response.status, 400);
     assert.equal(errorCode(response), "bad-request");
   });
+});
+
+test("revocation wins over a grant exchange paused after its initial lookup", { timeout: 20_000 }, async () => {
+  const database = await openDatabase("pglite://memory");
+  let pause: { started(): void; release: Promise<void> } | undefined;
+  // Pause after the nontransactional lookup has released its connection,
+  // allowing DELETE or a password change to commit before exchange resumes.
+  database.db = database.db.withPlugin({
+    transformQuery: ({ node }) => node,
+    async transformResult({ result }) {
+      if (pause && result.rows.some((row) => typeof row.id === "string" && row.id.startsWith("dgr_") && "token_hash" in row)) {
+        const gate = pause;
+        pause = undefined;
+        gate.started();
+        await gate.release;
+      }
+      return result;
+    },
+  });
+  const server = await buildServer({ database, config: loadConfig({ NODE_ENV: "test", DATABASE_URL: "pglite://memory", PORT: "0", ALLOW_OPEN_SIGNUP: "1" }), jobs: false });
+  const url = await server.listen();
+  const harness: TestServer = { server, url, wsUrl: `${url.replace(/^http/, "ws")}/sync`, close: () => server.close() };
+  let release = () => {};
+  try {
+    const user = await register(harness, "grant-race");
+    for (const action of ["revoke", "password"] as const) {
+      const created = await request(harness, "POST", "/v1/auth/device-grants", user, {});
+      let started!: () => void;
+      const waiting = new Promise<void>((resolve) => { started = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      pause = { started, release: gate };
+      const exchanging = json<AuthResponse>(url, "/v1/auth/device-grants/sign-in", { body: { grant: created.body.grant } });
+      await waiting;
+      try {
+        const revoked = action === "revoke"
+          ? await request(harness, "DELETE", "/v1/auth/device-grants", user)
+          : await request(harness, "POST", "/v1/me/password", user, { currentPassword: "correct horse battery", newPassword: "replacement password" });
+        assert.equal(revoked.status, 204);
+      } finally {
+        release();
+      }
+      assert.equal((await exchanging).status, 401, "a stale lookup cannot create a session after revocation");
+      const sessions = await database.db.selectFrom("refresh_tokens").selectAll().where("account_id", "=", user.id).execute();
+      assert.equal(sessions.length, 1, "only the original session exists");
+    }
+  } finally {
+    release();
+    await server.close();
+  }
 });
 
 describe("invitation-only sign-up", () => {

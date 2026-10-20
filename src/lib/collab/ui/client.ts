@@ -184,7 +184,8 @@ export function createCollabClient(options: CollabClientOptions = {}) {
     status: () => request<HostStatus>("GET", ControlRoutes.status),
     signIn: (body: SignInRequest) => request<HostStatus | undefined>("POST", ControlRoutes.signIn, body),
     register: (body: RegisterLocalRequest) => request<HostStatus | undefined>("POST", ControlRoutes.register, body),
-    signOut: () => request<void>("POST", ControlRoutes.signOut),
+    /** `everywhere` also stops automatic sign-in on the person's other computers. */
+    signOut: (options: { everywhere?: boolean } = {}) => request<void>("POST", ControlRoutes.signOut, { everywhere: options.everywhere === true }),
     account: () => request<LocalAccount | null>("GET", ControlRoutes.account),
     updateAccount: (body: UpdateAccountRequest) => request<LocalAccount | undefined>("PATCH", ControlRoutes.account, body),
 

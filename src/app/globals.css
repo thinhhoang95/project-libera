@@ -1386,6 +1386,17 @@ button.border[class*="border-white"]:hover {
   padding: 6px 12px;
 }
 
+/* The same blocks in a note (preview, Visual editor, PDF export): the
+   slide colors come from the app theme. */
+.markdown-notebook-block {
+  --slide-bg: var(--background);
+  --slide-fg: var(--foreground);
+  --slide-muted: var(--muted-foreground);
+  --slide-subtle: var(--muted);
+  --slide-rule: var(--border);
+  margin: 1em 0;
+}
+
 /* A title or subtitle: one line of Markdown that takes the surrounding type. */
 .markdown-slide-inline.markdown-renderer,
 .markdown-slide-inline :where(p, div[role="heading"]) {
@@ -2204,6 +2215,9 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap pre { overflow-x: auto; background: var(--muted); border-radius: .5rem; padding: 1rem; margin: 1em 0; }
 .libera-tiptap code { background: var(--muted); border-radius: .2em; padding: .1em .25em; font-size: .9em; }
 .libera-tiptap pre code { padding: 0; }
+/* A ```chart or ```html live block's output, under its code (tiptap-live-code-block-view.tsx). */
+.libera-tiptap-live-block { margin: -0.5em 0 1em; user-select: none; white-space: normal; }
+.libera-tiptap-live-block .markdown-notebook-block { margin: 0; }
 .libera-tiptap a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 .libera-tiptap img { display: block; max-width: 100%; max-height: 560px; object-fit: contain; border-radius: .5rem; margin: 1em 0; }
 .libera-tiptap hr { border-color: var(--border); margin: 1.5em 0; }
@@ -2248,6 +2262,16 @@ button.border[class*="border-white"]:hover {
   .libera-main-layout { grid-template-columns: minmax(0, 1fr) min(var(--libera-chat-width), 45vw); grid-template-rows: auto minmax(0, 1fr); }
   .libera-main-layout > .libera-left-panel { grid-column: 1 / -1; }
   .libera-main-layout > .libera-chat-panel { grid-column: 2; grid-row: 2; }
+}
+
+/* A message opened from chat search briefly glows so it is easy to spot. */
+@keyframes libera-chat-search-hit {
+  from { background-color: color-mix(in oklab, var(--primary) 18%, transparent); }
+  to { background-color: transparent; }
+}
+.libera-chat-message.libera-chat-search-hit {
+  border-radius: 0.5rem;
+  animation: libera-chat-search-hit 2s ease-out;
 }
 
 @keyframes libera-chat-shimmer {

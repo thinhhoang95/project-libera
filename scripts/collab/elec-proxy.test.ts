@@ -115,6 +115,14 @@ test("proxy route forwards method, path, query and body with the bearer token", 
     assert.deepEqual(await status.json(), { echo: { method: "GET", url: "/status", body: null } });
     assert.equal(fake.seen.at(-1)?.authorization, `Bearer ${token}`);
 
+    // A renderer cannot choose a wrapping password or claim it was changed.
+    const beforeUnlock = fake.seen.length;
+    for (const unlock of [ControlRoutes.unlock, "/account/%75nlock", "/ACCOUNT/UNLOCK?changed=1"]) {
+      const denied = await POST(nextRequest(unlock, { method: "POST", body: { password: "unverified", changed: true } }), context(unlock));
+      assert.equal(denied.status, 404);
+    }
+    assert.equal(fake.seen.length, beforeUnlock, "unlock never reaches the control server");
+
     // Ids with reserved characters stay one segment; the query passes through.
     const route = `${ControlRoutes.docText("a/b c")}?x=1&y=two`;
     const text = await GET(nextRequest(route), context(route));

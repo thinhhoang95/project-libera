@@ -91,6 +91,30 @@ export interface LogoutRequest {
   refreshToken: string;
 }
 
+/**
+ * A device sign-in grant lets another computer of the same person start its
+ * own session (POST deviceGrantSignIn). It never rotates, so copies can sit
+ * on several computers; changing the password revokes every grant.
+ */
+export interface DeviceGrantRequest {
+  deviceName?: string;
+  /** Background sharing must not undo server-side revocation. */
+  automatic?: boolean;
+  /** The grant being renewed; background renewal requires it to remain valid. */
+  previousGrant?: string;
+}
+
+export interface DeviceGrantResponse {
+  grant: string;
+  /** ISO time. */
+  expiresAt: string;
+}
+
+export interface DeviceGrantSignInRequest {
+  grant: string;
+  deviceName?: string;
+}
+
 export interface UpdateMeRequest {
   displayName?: string;
   color?: string;
@@ -621,6 +645,9 @@ export const ApiRoutes = {
   login: "/v1/auth/login",
   refresh: "/v1/auth/refresh",
   logout: "/v1/auth/logout",
+  /** POST creates a grant; DELETE revokes all of the account's grants. */
+  deviceGrants: "/v1/auth/device-grants",
+  deviceGrantSignIn: "/v1/auth/device-grants/sign-in",
   me: "/v1/me",
   password: "/v1/me/password",
   projects: "/v1/projects",

@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
   close: () => ipcRenderer.invoke("window:close"),
+  setButtonsVisible: (visible) => ipcRenderer.invoke("window:set-buttons-visible", visible),
   // Keep the native window appearance (and therefore the vibrancy material) in
   // sync with the in-app theme so the glass renders dark in dark mode.
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),

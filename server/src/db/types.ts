@@ -260,6 +260,18 @@ export interface FolderLeasesTable {
   updated_at: CreatedAt;
 }
 
+/** migrations/005_device_grants.sql: sign-in grants shared between one person's computers. */
+export interface DeviceGrantsTable {
+  id: string;
+  account_id: string;
+  token_hash: string;
+  device_name: string | null;
+  created_at: CreatedAt;
+  expires_at: ColumnType<Date, Date | string, Date | string>;
+  last_used_at: NullableTime;
+  revoked_at: NullableTime;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   applied_at: CreatedAt;
@@ -287,6 +299,7 @@ export interface DB {
   quarantined_updates: QuarantinedUpdatesTable;
   registration_codes: RegistrationCodesTable;
   folder_leases: FolderLeasesTable;
+  device_grants: DeviceGrantsTable;
   schema_migrations: SchemaMigrationsTable;
 }
 

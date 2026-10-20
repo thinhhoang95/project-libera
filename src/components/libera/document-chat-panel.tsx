@@ -133,6 +133,29 @@ function agentRunText(run: AgentRunRecord) {
   return run.steps.flatMap((step) => step.kind === "text" && step.text.trim() ? [step.text.trim()] : []).join("\n\n");
 }
 
+const MAX_CHAT_SEARCH_RESULTS = 100;
+type ChatSearchResult = { chatId: string; chatTitle: string; messageId: string; role: ChatMessage["role"]; agent: boolean; createdAt?: string; before: string; match: string; after: string };
+
+// Case-insensitive search over every saved chat's messages, newest chats first.
+function searchChatMessages(chats: DocumentChat[], query: string): ChatSearchResult[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const results: ChatSearchResult[] = [];
+  for (const item of chats) {
+    for (const message of item.messages) {
+      const text = message.text.replace(/\s+/g, " ");
+      const index = text.toLowerCase().indexOf(needle);
+      if (index < 0) continue;
+      const start = Math.max(0, index - 40);
+      const end = Math.min(text.length, index + needle.length + 80);
+      results.push({ chatId: item.id, chatTitle: item.title, messageId: message.id, role: message.role, agent: !!message.agent, createdAt: message.createdAt,
+        before: (start > 0 ? "…" : "") + text.slice(start, index), match: text.slice(index, index + needle.length), after: text.slice(index + needle.length, end) + (end < text.length ? "…" : "") });
+      if (results.length >= MAX_CHAT_SEARCH_RESULTS) return results;
+    }
+  }
+  return results;
+}
+
 function hasUnrevertedAgentChanges(messages: ChatMessage[]) {
   return messages.some((message) => message.agent?.changes.some((change) => !change.reverted));
 }
@@ -193,6 +216,10 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [exportSnapshot, setExportSnapshot] = useState<ChatExport | null>(null);
   const [exporting, setExporting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchJumpRef = useRef<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const deletedRequestRef = useRef<AbortController | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -345,6 +372,50 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     const log = logRef.current;
     if (log && followResponseRef.current) log.scrollTop = log.scrollHeight;
   }, [chat?.messages.length, lastMessageText, lastMessageSteps, pending]);
+
+  const searchResults = useMemo(() => searchOpen && store ? searchChatMessages(store.chats, searchQuery) : [], [searchOpen, searchQuery, store]);
+  const showingSearchResults = searchOpen && !!searchQuery.trim();
+
+  useEffect(() => { if (searchOpen) searchInputRef.current?.focus(); }, [searchOpen]);
+
+  // The log is hidden while results show; on return, jump to the picked message or restore the reading position.
+  const wasShowingSearchResults = useRef(false);
+  const chatId = chat?.id;
+  useLayoutEffect(() => {
+    const wasShowing = wasShowingSearchResults.current;
+    wasShowingSearchResults.current = showingSearchResults;
+    const log = logRef.current;
+    if (showingSearchResults || !log || !chatId) return;
+    const searchJump = searchJumpRef.current;
+    if (searchJump) {
+      const target = Array.from(log.querySelectorAll<HTMLElement>("[data-message-id]")).find((element) => element.dataset.messageId === searchJump);
+      searchJumpRef.current = null;
+      if (!target) return;
+      target.scrollIntoView({ block: "center" });
+      followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
+      readingPositionsRef.current.set(chatId, { top: log.scrollTop, follow: followResponseRef.current });
+      target.classList.remove("libera-chat-search-hit");
+      void target.offsetWidth;
+      target.classList.add("libera-chat-search-hit");
+      return;
+    }
+    if (!wasShowing) return;
+    const saved = readingPositionsRef.current.get(chatId);
+    log.scrollTop = saved && !saved.follow ? saved.top : log.scrollHeight;
+  }, [showingSearchResults, chatId]);
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchQuery("");
+    settingsButtonRef.current?.focus();
+  }
+
+  function openSearchResult(result: ChatSearchResult) {
+    setStore((current) => current && ({ ...current, activeId: result.chatId }));
+    searchJumpRef.current = result.messageId;
+    setSearchQuery("");
+    setError("");
+  }
 
   const updateChat = useCallback((id: string, update: (current: DocumentChat) => DocumentChat, persist = true) => {
     setStore((current) => current && ({ ...current, chats: current.chats.map((item) => item.id === id ? update(item) : item) }), persist);
@@ -926,6 +997,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       return;
     }
     if (action === "manage-chats") { setSettingsOpen(true); return; }
+    if (action === "search") { setSearchOpen(true); searchInputRef.current?.focus(); return; }
     if (action === "auto-read") { changeAutoRead(!autoRead); return; }
     if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook" && action !== "create-draft")) return;
     const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat, mathMarkers) };
@@ -954,6 +1026,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       const action = await window.liberaMenu.popup({
         x: Math.round(bounds.left), y: Math.round(bounds.bottom),
         items: [
+          { id: "search", label: "Search" },
           { id: "manage-chats", label: "Manage Chats" },
           { id: "export-chat", label: "Export Chat", enabled: !!chat?.messages.length, submenu: [
             { id: "create-draft", label: "Create a new draft" },
@@ -1014,8 +1087,31 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
+      {searchOpen && <div role="search" className="libera-chat-search libera-window-no-drag flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
+        <Search aria-hidden size={14} className="shrink-0 text-muted-foreground" />
+        <input ref={searchInputRef} type="search" aria-label="Search chat history" placeholder="Search all chats…" value={searchQuery}
+          className="min-w-0 flex-1 border-0 bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground"
+          onChange={(event) => setSearchQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") { event.preventDefault(); if (searchQuery) setSearchQuery(""); else closeSearch(); }
+            else if (event.key === "Enter" && searchResults[0]) { event.preventDefault(); openSearchResult(searchResults[0]); }
+          }} />
+        {showingSearchResults && <span className="shrink-0 text-xs tabular-nums text-muted-foreground" aria-live="polite">{searchResults.length >= MAX_CHAT_SEARCH_RESULTS ? `${MAX_CHAT_SEARCH_RESULTS}+` : searchResults.length} found</span>}
+        <button type="button" className={buttonClass} aria-label="Close search" title="Close search" onClick={closeSearch}><X size={14} /></button>
+      </div>}
+      {showingSearchResults && <div role="list" aria-label="Search results" className="libera-chat-search-results min-h-0 min-w-0 flex-1 overflow-auto p-2">
+        {!searchResults.length && <p className="p-3 text-sm text-muted-foreground">No messages match “{searchQuery.trim()}”.</p>}
+        {searchResults.map((result) => <button key={`${result.chatId}:${result.messageId}`} type="button" role="listitem"
+          className="block w-full min-w-0 rounded-lg p-2 text-left hover:bg-muted focus-visible:bg-muted focus-visible:outline-none" onClick={() => openSearchResult(result)}>
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate font-semibold">{result.chatTitle}</span>
+            <span className="shrink-0">{result.role === "user" ? "You" : result.agent ? "Libera Agent" : "Libera AI"}{result.createdAt ? ` · ${formatChatTimestamp(result.createdAt, now)}` : ""}</span>
+          </span>
+          <span className="mt-1 block break-words text-sm">{result.before}<mark className="rounded-sm bg-primary/20 text-foreground">{result.match}</mark>{result.after}</span>
+        </button>)}
+      </div>}
       {/* Mode and permission are chosen before a conversation starts, then fixed. */}
-      {!chat?.messages.length && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
+      {!chat?.messages.length && !showingSearchResults && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
         <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
           <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
           <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
@@ -1030,7 +1126,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search ${allowWebSearch ? "bg-accent text-foreground" : "text-muted-foreground"}`} aria-pressed={allowWebSearch} aria-label="Allow web search" disabled={!!pending} onClick={() => changeWebSearch(!allowWebSearch)}
           title={allowWebSearch ? "Web search on: the agent can search the web (through OpenRouter's web plugin). Click to turn off" : "Web search off: click to let the agent search the web for facts that are not in your library"}><Globe aria-hidden size={14} /></button>}
       </div>}
-        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${!chat?.messages.length ? "flex flex-col" : ""}`}
+        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${showingSearchResults ? "hidden" : !chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
             const log = event.currentTarget;
             followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
@@ -1090,7 +1186,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             <p className="libera-chat-context-hint">{includedPhoto ? "The photo you are viewing is included." : includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : viewingRecording ? "The transcript of the recording you are playing is included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
             {!viewedPhoto && <p className="libera-chat-context-hint">{viewingRecording ? <>Quote lines from the transcript with <kbd>⌘/Ctrl + Shift + L</kbd> or its quote button.</> : <>Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</>}</p>}
           </div>}
-          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={!!pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
+          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} data-message-id={message.id} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={!!pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : context.kind === "comments" ? `Comments on ${context.name} (${commentsContextSummary(context)})` : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : context.kind === "comments" ? "Review comments" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
@@ -1177,6 +1273,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     </div>
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>
       <div className="flex flex-col gap-2">
+        <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("search")}>Search</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("manage-chats")}>Manage Chats</button>
         <button type="button" role="menuitemcheckbox" aria-checked={autoRead} className="flex items-center justify-between rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("auto-read")}>Auto Read{autoRead ? <Check aria-hidden size={14} /> : null}</button>
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted disabled:opacity-40" disabled={fontSizeSaving || fontSize >= MAX_CHAT_FONT_SIZE} onClick={() => void handleChatAction("increase-font-size")}>Increase Font Size</button>

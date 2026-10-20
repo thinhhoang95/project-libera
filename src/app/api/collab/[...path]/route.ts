@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api";
 import { CollabHostError, collabHostConfig, fetchCollabHost } from "@/lib/collab/host-client";
+import { ControlRoutes } from "@/lib/collab/local-api";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,10 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     return collabError(404, "not-found", "Unknown collaboration route.");
   }
   const target = `/${path.map(encodeURIComponent).join("/")}${request.nextUrl.search}`;
+  // Only the login route hands the (verified) master password to the host.
+  if (target.split("?")[0].toLowerCase() === ControlRoutes.unlock) {
+    return collabError(404, "not-found", "Unknown collaboration route.");
+  }
 
   let bodyText: string | undefined;
   if (request.method !== "GET" && request.method !== "DELETE") {

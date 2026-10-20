@@ -7,7 +7,7 @@ import { sql, type Kysely } from "kysely";
 
 import { writeAudit } from "../auth/access.js";
 import { hashPassword } from "../auth/passwords.js";
-import { insertAccount } from "../api/auth.js";
+import { insertAccount, revokeDeviceGrants } from "../api/auth.js";
 import { HttpError } from "../http/errors.js";
 import type { AccountRow, DB } from "../db/types.js";
 import type { Actor } from "../protocol.js";
@@ -85,8 +85,12 @@ export async function accountsList(ctx: AdminContext): Promise<CommandResult> {
 export async function accountDisable(ctx: AdminContext): Promise<CommandResult> {
   const email = ctx.args.positional(2, "email");
   const account = await findAccount(ctx.db, email);
-  await ctx.db.updateTable("accounts").set({ disabled_at: account.disabled_at ?? new Date() }).where("id", "=", account.id).execute();
-  const revoked = await revokeRefreshTokens(ctx.db, account.id);
+  const revoked = await ctx.db.transaction().execute(async (trx) => {
+    await trx.selectFrom("accounts").select("id").where("id", "=", account.id).forUpdate().executeTakeFirstOrThrow();
+    await trx.updateTable("accounts").set({ disabled_at: account.disabled_at ?? new Date() }).where("id", "=", account.id).execute();
+    await revokeDeviceGrants(trx, account.id);
+    return revokeRefreshTokens(trx, account.id);
+  });
   await writeAudit(ctx.db, { projectId: null, actor: ADMIN_ACTOR, accountId: null, action: "admin.account.disable", target: account.id, details: { revokedSessions: revoked } });
   const closed = await revokeLiveSessions(liveServer(ctx.config, ctx.args.string("server")), account.id);
   const text = [`Disabled ${account.email} (${account.id}); revoked ${revoked} sessions.`];
@@ -157,8 +161,13 @@ export async function accountResetPassword(ctx: AdminContext): Promise<CommandRe
   const email = ctx.args.positional(2, "email");
   const account = await findAccount(ctx.db, email);
   const password = temporaryPassword();
-  await ctx.db.updateTable("accounts").set({ password_hash: await hashPassword(password) }).where("id", "=", account.id).execute();
-  const revoked = await revokeRefreshTokens(ctx.db, account.id);
+  const passwordHash = await hashPassword(password);
+  const revoked = await ctx.db.transaction().execute(async (trx) => {
+    await trx.selectFrom("accounts").select("id").where("id", "=", account.id).forUpdate().executeTakeFirstOrThrow();
+    await trx.updateTable("accounts").set({ password_hash: passwordHash }).where("id", "=", account.id).execute();
+    await revokeDeviceGrants(trx, account.id);
+    return revokeRefreshTokens(trx, account.id);
+  });
   await writeAudit(ctx.db, { projectId: null, actor: ADMIN_ACTOR, accountId: null, action: "admin.account.reset-password", target: account.id, details: { revokedSessions: revoked } });
   await revokeLiveSessions(liveServer(ctx.config, ctx.args.string("server")), account.id);
   return {

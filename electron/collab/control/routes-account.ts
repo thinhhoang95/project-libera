@@ -34,6 +34,11 @@ export function invitationToken(value: string): string {
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 
+/** Signing in by hand makes this account the one offered to the person's other computers. */
+function shareSignIn(runtime: CollabRuntime): void {
+  void runtime.sharedSignIn.signedInByHand().catch((error) => runtime.logger.warn("Could not share the collaboration sign-in", error));
+}
+
 export function registerAccountRoutes(router: Router, runtime: CollabRuntime): void {
   router.add("GET", ControlRoutes.status, () => ({ body: runtime.status() }));
 
@@ -44,6 +49,7 @@ export function registerAccountRoutes(router: Router, runtime: CollabRuntime): v
     const password = requiredString(body.password, "password", 200);
     const auth = await runtime.accounts.login({ serverUrl, email, password });
     await runtime.signedIn(serverUrl, auth);
+    shareSignIn(runtime);
     return { body: runtime.status() };
   });
 
@@ -64,12 +70,33 @@ export function registerAccountRoutes(router: Router, runtime: CollabRuntime): v
       ...(registrationCode?.trim() ? { registrationCode: registrationCode.trim() } : {}),
     });
     await runtime.signedIn(serverUrl, auth);
+    shareSignIn(runtime);
     return { status: 201, body: runtime.status() };
   });
 
-  router.add("POST", ControlRoutes.signOut, async () => {
+  router.add("POST", ControlRoutes.signOut, async (request) => {
+    const body = request.body === undefined || request.body === null ? {} : objectBody(request.body);
+    const everywhere = body.everywhere === true;
+    if (everywhere && !runtime.accounts.session) {
+      throw new ControlError(409, "needs-sign-in", "Sign in again to stop automatic sign-in on your other computers.");
+    }
+    // Revokes the grants first: when the server cannot be reached nothing changes.
+    await runtime.sharedSignIn.beforeSignOut(everywhere);
     await runtime.signOut();
     return { body: runtime.status() };
+  });
+
+  // Not proxied to windows: only Next's login route calls it, after checking the password.
+  router.add("POST", ControlRoutes.unlock, async (request) => {
+    const body = objectBody(request.body);
+    const password = requiredString(body.password, "password", 1024);
+    const changed = body.changed === true;
+    const previousPassword = optionalString(body.previousPassword, "previousPassword", 1024);
+    // Key derivation and the network take a moment; the login does not wait.
+    void (changed ? runtime.sharedSignIn.masterPasswordChanged(password, previousPassword) : runtime.sharedSignIn.unlock(password)).catch((error) =>
+      runtime.logger.warn("Automatic collaboration sign-in failed", error),
+    );
+    return { status: 202, body: { ok: true } };
   });
 
   router.add("GET", ControlRoutes.account, () => ({ body: runtime.accounts.account }));

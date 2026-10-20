@@ -450,6 +450,8 @@ export const ControlRoutes = {
   signIn: "/account/sign-in",
   register: "/account/register",
   signOut: "/account/sign-out",
+  /** Next's login route hands the master password over (shared sign-in); never proxied. */
+  unlock: "/account/unlock",
   account: "/account",
   projects: "/projects",
   project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,

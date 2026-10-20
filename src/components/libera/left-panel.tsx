@@ -94,6 +94,16 @@ export function LeftPanel({
     }
   }
 
+  // macOS frameless window: the collapsed rail is too narrow for the traffic
+  // lights, so hide them until the panel expands again. No-op elsewhere.
+  useEffect(() => {
+    void window.liberaWindow?.setButtonsVisible(!collapsed);
+  }, [collapsed]);
+
+  useEffect(() => () => {
+    void window.liberaWindow?.setButtonsVisible(true);
+  }, []);
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (

@@ -1,6 +1,7 @@
 import { Extension, mergeAttributes, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
+import CodeBlock from "@tiptap/extension-code-block";
 import Highlight from "@tiptap/extension-highlight";
 import Underline from "@tiptap/extension-underline";
 import Image from "@tiptap/extension-image";
@@ -120,11 +121,15 @@ const LiberaLink = Link.extend({
 export type MarkdownExtensionOptions = {
   /** The Visual editor's citation node view (references/tiptap-citation-view.tsx). */
   citationNodeView?: NodeViewRenderer;
+  /** The Visual editor's code block view, which draws ```chart and ```html live blocks (tiptap-live-code-block-view.tsx). */
+  codeBlockNodeView?: NodeViewRenderer;
 };
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
   return [
-    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false }),
+    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, codeBlock: false }),
+    // The language attribute keeps the whole info string (`html live`), so it round-trips.
+    options.codeBlockNodeView ? CodeBlock.extend({ addNodeView: () => options.codeBlockNodeView! }) : CodeBlock,
     LiberaLink.configure({ openOnClick: false }),
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
     FrontMatterNode.configure({ documentPath }),

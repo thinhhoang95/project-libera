@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { MarkdownSlidesPrintDocument } from "@/components/libera/markdown-slides-viewer";
-import { waitForSlideBlocksReady } from "@/components/libera/slide-live-blocks";
+import { useNotebookCodeBlockRenderer, waitForSlideBlocksReady } from "@/components/libera/slide-live-blocks";
 import { parseMarkdownSlides } from "@/lib/markdown-slides";
 import {
   ReferenceRenderProvider,
@@ -117,6 +117,8 @@ export function MarkdownPdfExportPage({
     () => (payload?.kind === "slides" ? parseMarkdownSlides(payload.content) : null),
     [payload],
   );
+  const documentFontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
+  const renderCodeBlock = useNotebookCodeBlockRenderer(payload?.documentPath, documentFontFamily, "export");
 
   useEffect(() => {
     const { documentElement } = document;
@@ -210,9 +212,8 @@ export function MarkdownPdfExportPage({
               baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
               content={payload.content}
               documentPath={payload.documentPath}
-              fontFamily={getRenderedMarkdownFontStack(
-                markdownPreferences.renderedMarkdownFontFamily,
-              )}
+              fontFamily={documentFontFamily}
+              renderCodeBlock={renderCodeBlock}
             />
           </ReferenceRenderProvider>
         ) : (

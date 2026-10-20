@@ -13,7 +13,7 @@ import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
+import { Bold, Italic, Underline, List, ListOrdered, Code2, ChartColumn, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -49,6 +49,7 @@ import type { EditorRange } from "@/lib/tiptap-editor-actions";
 import { detectMarkdownHeadingNumbering, type HeadingNumberingSettings } from "@/lib/markdown-heading-numbering";
 import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import { useHeadingNumbering } from "./heading-numbering-state";
+import { LIVE_BLOCK_TEMPLATES, createLiveCodeBlockNodeView } from "./tiptap-live-code-block-view";
 import type { ClipboardText, MenuPasteMode } from "./paste-menu-items";
 
 type Props = {
@@ -195,13 +196,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const appliedNumberingRef = useRef<{ editor: Editor; settings: HeadingNumberingSettings } | null>(null);
   // Citation nodes, the `@` popup and the citation popover (references lane).
   const citations = useTiptapCitations();
+  // ```chart and ```html live blocks draw under their code, as in the preview.
+  const codeBlockNodeView = useMemo(() => createLiveCodeBlockNodeView(documentPath), [documentPath]);
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
   const referenceNotebook = useReferenceRender()?.notebook ?? null;
   const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView }),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
@@ -221,7 +224,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared, citations]);
+  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView]);
 
   const editor = useEditor({
     extensions,
@@ -832,6 +835,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
           { title: "Quote", icon: Quote, active: state.blockquote, run: () => editor.chain().focus().toggleBlockquote().run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
+          { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
+          { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
           const chain = editor.chain().focus();

@@ -275,6 +275,21 @@ Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`
 
 Run the editor's Markdown round-trip regression tests with `npm run test:editor`.
 
+### Charts and live HTML in notes
+
+Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
+
+````markdown
+```chart
+type: line
+title: Weekly sign-ups
+labels: [W1, W2, W3, W4]
+series: [32, 41, 38, 57]
+```
+````
+
+See [Charts and live HTML in slides](#charts-and-live-html-in-slides) for the settings, and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md) for the full guide.
+
 ## Markdown Slides
 
 A file named `*.slides.md` is a slide deck. **New slides** in a notebook's menu creates one. Decks open in the source editor with the slides beside it. The preview follows the caret, and clicking a slide puts the caret on it. Each slide is laid out on a fixed 16:9 canvas and scaled to fit, so the preview, the presentation, and the PDF all show the same slide. When a slide has too much content, its body shrinks to fit, down to about half size. Past that, the preview flags the slide. Slides render math, citations, highlights, and links like notes do, using the same inline and display math markers as your notes.
@@ -356,7 +371,7 @@ A responsive Chart.js canvas is half as tall as it is wide, so a full-width one 
 ```
 ````
 
-In a shared notebook, a live block shows a **Run** button instead of running on its own. Once run, it still has no network access. Charts and live blocks print in PDF exports; Libera waits for them to finish drawing first.
+In a shared notebook, a live block shows a **Run** button instead of running on its own. Once run, it still has no network access. Charts and live blocks print in PDF exports; Libera waits for them to finish drawing first. The same blocks work in notes (see [Charts and live HTML in notes](#charts-and-live-html-in-notes) and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md)).
 
 **Present slides** in the toolbar, or **Present from here** above any slide, starts the presentation in full screen. Advance with →, Space, PageDown, N, or a click; go back with ←, PageUp, P, or a right-click. ↓/↑ skip build steps, and Home/End jump to the first and last slide. Type a number and press Enter to jump to that slide. G opens an overview of every slide, S switches to speaker view (current slide, next step, notes, timer, and clock; T resets the timer), B or `.` blanks the screen black, W or `,` blanks it white, and ? lists the shortcuts. Esc closes an overlay or ends the presentation.
 

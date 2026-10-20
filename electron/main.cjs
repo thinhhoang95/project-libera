@@ -916,6 +916,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       };
 
       await writeConfig(nextConfig);
+      // Re-encrypts the collaboration sign-in shared with the person's other computers.
+      if (existingConfig.passwordHash && nextConfig.passwordHash !== existingConfig.passwordHash) {
+        collabHost.masterPasswordChanged(input?.password, input?.currentPassword);
+      }
       nativeTheme.themeSource = nextConfig.themePreference;
       mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
       savedConfig = nextConfig;
@@ -1754,6 +1758,18 @@ function installWindowControlHandlers() {
 
   ipcMain.handle("window:close", (event) => {
     getWindowFromIpcEvent(event)?.close();
+  });
+
+  // The collapsed left panel leaves only the narrow icon rail, which has no
+  // room for the traffic lights, so the renderer hides them while collapsed.
+  ipcMain.handle("window:set-buttons-visible", (event, visible) => {
+    const window = getWindowFromIpcEvent(event);
+
+    if (process.platform !== "darwin" || !window) {
+      return;
+    }
+
+    window.setWindowButtonVisibility(visible !== false);
   });
 
   // Drive the native appearance from the renderer's resolved theme. This makes

@@ -1,9 +1,9 @@
 "use client";
 
 import { Play, TriangleAlert } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
-import { useContentTrust } from "@/components/markdown-renderer";
+import { useContentTrust, type MarkdownCodeBlock } from "@/components/markdown-renderer";
 import {
   SLIDE_THEME_TOKENS,
   buildSlideChartConfig,
@@ -18,6 +18,8 @@ import {
 export type SlideBlockMode = "export" | "presenter" | "preview";
 
 type SlideBlockProps = {
+  /** Where the block sits, for its labels: a slide, or a note in a notebook. */
+  context?: "note" | "slide";
   documentPath?: string;
   fontFamily?: string;
   mode: SlideBlockMode;
@@ -314,7 +316,7 @@ let frameSequence = 0;
  * block sets `height=…`. In a shared notebook it runs only when the reader
  * asks, and never with network access.
  */
-export function SlideLiveHtml({ documentPath, fontFamily, meta, mode, source, theme }: SlideBlockProps & { meta?: string }) {
+export function SlideLiveHtml({ context = "slide", documentPath, fontFamily, meta, mode, source, theme }: SlideBlockProps & { meta?: string }) {
   const trust = useContentTrust(documentPath);
   const [runShared, setRunShared] = useState(false);
   const [frameId] = useState(() => `slide-frame-${++frameSequence}`);
@@ -430,7 +432,7 @@ export function SlideLiveHtml({ documentPath, fontFamily, meta, mode, source, th
   if (!allowed) {
     return (
       <div className="markdown-slide-live-gate">
-        <p>This slide has interactive HTML from a shared notebook.</p>
+        <p>{`This ${context === "note" ? "block" : "slide"} has interactive HTML from a shared notebook.`}</p>
         {mode === "export" ? null : (
           <button type="button" onClick={() => setRunShared(true)}>
             <Play aria-hidden className="h-3.5 w-3.5" />
@@ -462,10 +464,69 @@ export function SlideLiveHtml({ documentPath, fontFamily, meta, mode, source, th
         srcDoc={srcDoc}
         onLoad={(event) => event.currentTarget.contentWindow?.postMessage("libera:report", "*")}
         style={{ height: fixedHeight ?? height ?? 160 }}
-        title="Interactive slide content"
+        title={context === "note" ? "Interactive content" : "Interactive slide content"}
       />
       {scriptError?.doc === srcDoc && mode !== "export" ? <BlockMessage>{`Script error: ${scriptError.message}`}</BlockMessage> : null}
     </div>
+  );
+}
+
+const LIVE_META = /(?:^|\s)live(?:\s|$)/;
+
+/** Whether a fenced block renders live: ```chart, or ```html with `live` in its info string. */
+export function isLiveCodeBlock(language: string | undefined, meta: string | undefined) {
+  return language === "chart" || (language === "html" && LIVE_META.test(meta ?? ""));
+}
+
+function subscribeAppTheme(listener: () => void) {
+  // ThemeSync and PDF export both toggle the root's `dark` class.
+  const observer = new MutationObserver(listener);
+  observer.observe(document.documentElement, { attributeFilter: ["class"], attributes: true });
+  return () => observer.disconnect();
+}
+
+/** The app's light or dark theme, as a slide theme name (notes follow the app). */
+function useAppSlideTheme() {
+  return useSyncExternalStore(
+    subscribeAppTheme,
+    () => (document.documentElement.classList.contains("dark") ? "dark" : "light"),
+    () => "light",
+  );
+}
+
+/**
+ * A ```chart or ```html live block in a note: the slide renderers, themed
+ * like the app instead of a deck.
+ */
+export function NotebookLiveBlock({
+  block,
+  documentPath,
+  fontFamily,
+  mode = "preview",
+}: {
+  block: MarkdownCodeBlock;
+  documentPath?: string;
+  fontFamily?: string;
+  mode?: SlideBlockMode;
+}) {
+  const theme = useAppSlideTheme();
+  const props = { context: "note" as const, documentPath, fontFamily, mode, source: block.code, theme };
+
+  return (
+    <div className="markdown-notebook-block">
+      {block.language === "chart" ? <SlideChart {...props} /> : <SlideLiveHtml {...props} meta={block.meta} />}
+    </div>
+  );
+}
+
+/** MarkdownRenderer's renderCodeBlock for notes: live blocks render, other code stays code. */
+export function useNotebookCodeBlockRenderer(documentPath: string | undefined, fontFamily: string | undefined, mode: SlideBlockMode = "preview") {
+  return useCallback(
+    (block: MarkdownCodeBlock) =>
+      isLiveCodeBlock(block.language, block.meta) ? (
+        <NotebookLiveBlock block={block} documentPath={documentPath} fontFamily={fontFamily} mode={mode} />
+      ) : null,
+    [documentPath, fontFamily, mode],
   );
 }
 
