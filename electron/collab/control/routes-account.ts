@@ -108,9 +108,11 @@ export function registerAccountRoutes(router: Router, runtime: CollabRuntime): v
   router.add("GET", ControlRoutes.sharedSignIn, async (): Promise<{ body: SharedOffer }> => ({ body: await runtime.sharedSignIn.offer() }));
 
   // "Continue as ...": the person chose the account from their other computer.
-  router.add("POST", ControlRoutes.sharedSignIn, async () => {
+  router.add("POST", ControlRoutes.sharedSignIn, async (request) => {
+    const body = objectBody(request.body);
+    const expected = { accountId: requiredString(body.accountId, "accountId", 200), serverUrl: serverUrlFrom(body.serverUrl) };
     try {
-      await runtime.sharedSignIn.continueFromOtherComputer();
+      await runtime.sharedSignIn.continueFromOtherComputer(expected);
     } catch (error) {
       if (!(error instanceof SharedSignInError)) throw error;
       const status = error.code === "nothing-shared" ? 404 : error.code === "refused" ? 403 : 409;

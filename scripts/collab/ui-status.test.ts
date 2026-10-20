@@ -210,6 +210,7 @@ test("sign in, profile colour and sign out go through the client", async () => {
   let status = hostStatus({ connection: "signed-out", account: null });
   const { calls } = installFakeFetch({
     "GET /status": () => ({ body: status }),
+    "GET /account/shared-sign-in": () => ({ body: { state: "none" } }),
     "POST /account/sign-in": (call) => {
       const body = call.body as { password: string };
       if (body.password !== "right") return { status: 401, body: { error: { code: "unauthorized", message: "no" } } };
@@ -280,10 +281,141 @@ test("signed out: unlock with the master password, then Continue as … the othe
   await support.typeInto(document.querySelector<HTMLInputElement>('input[id$="-master"]'), "master");
   await support.submit(group()!.querySelector("form"));
   await support.click(button(/Continue as owner@example\.com/));
-  assert.ok(calls.some((call) => call.method === "POST" && call.path === "/account/shared-sign-in"));
+  assert.deepEqual(calls.find((call) => call.method === "POST" && call.path === "/account/shared-sign-in")?.body, { accountId: "acc_owner", serverUrl: "https://collab.test" });
   assert.match(document.querySelector('[role="dialog"]')!.textContent!, /Connected/);
   assert.equal(group(), null, "nothing to offer once signed in");
   await view.unmount();
+});
+
+test("Continue keeps a transient error visible and lets the person retry", async () => {
+  const { createElement } = await import("react");
+  const support = await import("./ui-support");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let status = hostStatus({ connection: "signed-out", account: null });
+  let attempts = 0;
+  installFakeFetch({
+    "GET /status": () => ({ body: status }),
+    "GET /account/shared-sign-in": () => ({ body: { state: "available", accountId: "acc_1", email: "a@example.com", serverUrl: "https://collab.test" } }),
+    "POST /account/shared-sign-in": () => {
+      if (++attempts === 1) return { status: 503, body: { error: { code: "network", message: "offline" } } };
+      status = hostStatus();
+      return { body: status };
+    },
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  await support.click(button(/Continue as a@example/));
+  const group = document.querySelector('[aria-label="Sign in from your other computer"]');
+  assert.ok(group?.querySelector('[role="alert"]'), "the error stays visible");
+  assert.ok(button(/Continue as a@example/), "the same choice can be retried");
+  await support.click(button(/Continue as a@example/));
+  assert.equal(attempts, 2);
+  assert.match(document.querySelector('[role="dialog"]')!.textContent!, /Connected/);
+  await view.unmount();
+});
+
+test("Continue refreshes a stale offer and requires choosing the new identity", async () => {
+  const { createElement } = await import("react");
+  const support = await import("./ui-support");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let status = hostStatus({ connection: "signed-out", account: null });
+  let offer = { state: "available", accountId: "acc_1", email: "first@example.com", serverUrl: "https://first.test" };
+  const { calls } = installFakeFetch({
+    "GET /status": () => ({ body: status }),
+    "GET /account/shared-sign-in": () => ({ body: offer }),
+    "POST /account/shared-sign-in": (call) => {
+      if ((call.body as { accountId: string }).accountId === "acc_1") {
+        offer = { state: "available", accountId: "acc_2", email: "second@example.com", serverUrl: "https://second.test" };
+        return { status: 409, body: { error: { code: "offer-changed", message: "The account changed. Check it before continuing." } } };
+      }
+      status = hostStatus();
+      return { body: status };
+    },
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  await support.click(button(/Continue as first@example/));
+  assert.match(document.querySelector('[role="alert"]')!.textContent!, /account changed/);
+  assert.ok(button(/Continue as second@example/));
+  assert.equal(calls.filter((call) => call.method === "POST").length, 1, "refresh never signs in by itself");
+  await support.click(button(/Continue as second@example/));
+  assert.deepEqual(calls.filter((call) => call.method === "POST").map((call) => call.body), [
+    { accountId: "acc_1", serverUrl: "https://first.test" },
+    { accountId: "acc_2", serverUrl: "https://second.test" },
+  ]);
+  await view.unmount();
+});
+
+test("a revoked offer keeps its explanation visible after discovery returns none", async () => {
+  const { createElement } = await import("react");
+  const support = await import("./ui-support");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let revoked = false;
+  installFakeFetch({
+    "GET /status": () => ({ body: hostStatus({ connection: "signed-out", account: null }) }),
+    "GET /account/shared-sign-in": () => ({ body: revoked ? { state: "none" } : { state: "available", accountId: "acc_1", email: "a@example.com", serverUrl: "https://collab.test" } }),
+    "POST /account/shared-sign-in": () => {
+      revoked = true;
+      return { status: 403, body: { error: { code: "refused", message: "This sign-in was revoked. Sign in with your email and password." } } };
+    },
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  await support.click(button(/Continue as a@example/));
+  assert.match(document.querySelector('[role="alert"]')!.textContent!, /revoked/);
+  assert.ok(button("Check again"));
+  await view.unmount();
+});
+
+test("discovery errors can be retried without reopening the dialog", async () => {
+  const { createElement } = await import("react");
+  const support = await import("./ui-support");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let failed = true;
+  installFakeFetch({
+    "GET /status": () => ({ body: hostStatus({ connection: "signed-out", account: null }) }),
+    "GET /account/shared-sign-in": () => failed
+      ? { status: 503, body: { error: { code: "host-unavailable", message: "restarting" } } }
+      : { body: { state: "available", accountId: "acc_1", email: "a@example.com", serverUrl: "https://collab.test" } },
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  assert.ok(document.querySelector('[role="alert"]'));
+  failed = false;
+  await support.click(button("Check again"));
+  assert.ok(button(/Continue as a@example/));
+  assert.equal(document.querySelector('[role="alert"]'), null);
+  await view.unmount();
+});
+
+test("delayed offers are discovered by polling and reconnect events, with cleanup on close", async (context) => {
+  const { createElement, act } = await import("react");
+  const { CollabAccountDialog } = await import("../../src/components/libera/collab/collab-account-dialog");
+  let poll: (() => void) | undefined;
+  context.mock.method(window, "setInterval", (callback: () => void) => { poll = callback; return 123; });
+  const cleared = context.mock.method(window, "clearInterval", () => {});
+  let available = false;
+  const { calls } = installFakeFetch({
+    "GET /status": () => ({ body: hostStatus({ connection: "signed-out", account: null }) }),
+    "GET /account/shared-sign-in": () => ({ body: available ? { state: "available", accountId: "acc_1", email: "a@example.com", serverUrl: "https://collab.test" } : { state: "none" } }),
+  });
+  const view = await render(createElement(CollabAccountDialog, { open: true, onClose() {} }));
+  available = true;
+  await act(async () => poll!());
+  await flush();
+  assert.ok(button(/Continue as a@example/), "the file arriving later becomes visible");
+  available = false;
+  await act(async () => window.dispatchEvent(new Event("online")));
+  await flush();
+  assert.ok(button("Check again"));
+  available = true;
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  await flush();
+  assert.ok(button(/Continue as a@example/));
+  await view.unmount();
+  assert.ok(cleared.mock.calls.some((call) => call.arguments[0] === 123));
+  const checked = calls.length;
+  window.dispatchEvent(new Event("online"));
+  window.dispatchEvent(new Event("focus"));
+  poll!();
+  await flush();
+  assert.equal(calls.length, checked, "unmounted discovery stops timers and listeners");
 });
 
 test("create account sends the optional invitation", async () => {

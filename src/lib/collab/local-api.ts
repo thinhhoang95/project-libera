@@ -78,6 +78,12 @@ export type SharedSignInOffer =
   | { state: "locked" }
   | { state: "available"; accountId: string; email: string; serverUrl: string };
 
+/** The identity shown on the "Continue as ..." button, checked again by the host. */
+export interface ContinueSharedSignInRequest {
+  accountId: string;
+  serverUrl: string;
+}
+
 export interface HostStatus {
   hostVersion: number;
   connection: HostConnection;

@@ -33,11 +33,11 @@
 // it stops (the password is needed when another computer rewrote the file
 // with a new salt). They never reach disk.
 
-import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback, type ScryptOptions } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt as scryptCallback, type ScryptOptions } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { SharedSignInOffer } from "../../../src/lib/collab/local-api";
+import type { ContinueSharedSignInRequest, SharedSignInOffer } from "../../../src/lib/collab/local-api";
 import type { AuthResponse } from "../../../src/lib/collab/protocol/api";
 import { ApiClientError, type ApiClient } from "../core/api-client";
 import type { Clock, Logger, TimerHandle } from "../core/clock";
@@ -103,7 +103,19 @@ type ReadResult = { source?: string } & (
 /** What the file offers a computer that is not signed in (the sign-in form shows it). */
 export type SharedOffer = SharedSignInOffer;
 
-export type SharedSignInErrorCode = "locked" | "nothing-shared" | "already-signed-in" | "refused";
+export type SharedSignInErrorCode = "locked" | "nothing-shared" | "already-signed-in" | "refused" | "offer-changed" | "cancelled";
+
+interface ShareIntent {
+  version: 2;
+  accountId: string;
+  serverUrl: string;
+  /** Binds the choice to the file seen at sign-in, including while locked. */
+  sourceHash: string | null;
+}
+
+function sourceHash(source: string): string {
+  return createHash("sha256").update(source).digest("hex");
+}
 
 export class SharedSignInError extends Error {
   constructor(
@@ -295,7 +307,8 @@ export class SharedSignIn {
   /** Grants the server refused; not tried again until the file changes. */
   private readonly refused = new Set<string>();
   /** Signed in by hand while locked: replace the file on the next unlock. */
-  private pendingReplace = false;
+  private pendingReplace: ShareIntent | null = null;
+  private replaceCleared = false;
   private pendingRewrap: { key: DerivedKey; payload: SharedPayload; expected: ReadResult } | null = null;
   private stopped = false;
   private accountIntent = 0;
@@ -361,11 +374,19 @@ export class SharedSignIn {
       if (this.stopped) return;
       await rm(this.optOutFile, { force: true });
       this.refused.clear();
-      this.pendingReplace = true;
+      this.pendingReplace = null;
+      this.replaceCleared = false;
       const account = this.options.accounts.account;
       if (account) {
         try {
-          await writeAtomic(this.intentFile, `${JSON.stringify({ version: 1, accountId: account.id, serverUrl: account.serverUrl }, null, 2)}\n`);
+          let hash: string | null;
+          try { hash = sourceHash(await readSharedFile(this.file)); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            hash = null;
+          }
+          this.pendingReplace = { version: 2, accountId: account.id, serverUrl: account.serverUrl, sourceHash: hash };
+          await writeAtomic(this.intentFile, `${JSON.stringify(this.pendingReplace, null, 2)}\n`);
         } catch (error) {
           this.logger.warn("Could not remember the collaboration sign-in for your other computers", error);
         }
@@ -423,7 +444,7 @@ export class SharedSignIn {
    * remembered account. Throws SharedSignInError, or ApiClientError when the
    * server cannot be reached.
    */
-  continueFromOtherComputer(): Promise<void> {
+  continueFromOtherComputer(expected: ContinueSharedSignInRequest): Promise<void> {
     const intent = ++this.accountIntent;
     return this.serial(async () => {
       const accounts = this.options.accounts;
@@ -435,6 +456,10 @@ export class SharedSignIn {
         throw new SharedSignInError("nothing-shared", "Your other computer is not offering a sign-in any more. Sign in with your email and password.");
       }
       const { payload } = current;
+      if (payload.accountId !== expected.accountId || payload.serverUrl !== expected.serverUrl) {
+        throw new SharedSignInError("offer-changed", "The account shared by your other computer changed. Check the new account before continuing.");
+      }
+      const remembered = accounts.account;
       let auth: AuthResponse;
       try {
         auth = await accounts.exchangeDeviceGrant(payload.serverUrl, payload.grant);
@@ -446,12 +471,24 @@ export class SharedSignIn {
         throw error;
       }
       if (auth.account.id !== payload.accountId) throw new SharedSignInError("refused", "The sign-in from your other computer belongs to another account.");
-      const canAdopt = () => !this.stopped && this.accountIntent === intent && !accounts.session;
-      await this.options.signedIn(payload.serverUrl, auth, canAdopt);
-      // Lift the opt-out only once the session is really in place.
-      if (accounts.session && accounts.account?.id === payload.accountId) {
-        await rm(this.optOutFile, { force: true });
+      const canAdopt = () => !this.stopped && this.accountIntent === intent && !accounts.session && accounts.account === remembered;
+      const cancelled = () => new SharedSignInError("cancelled", "Sign-in was cancelled by another account action. Try again.");
+      if (!canAdopt()) throw cancelled();
+      // Persist the preference before installing the session. A locked or
+      // unwritable opt-out must fail before credentials become active.
+      const wasOptedOut = await this.optedOut();
+      if (wasOptedOut) await writeAtomic(this.optOutFile, `${JSON.stringify({ version: 1, disabled: false })}\n`);
+      const installed = () => !!accounts.session && accounts.account?.id === payload.accountId && accounts.account.serverUrl === payload.serverUrl;
+      try {
+        await this.options.signedIn(payload.serverUrl, auth, canAdopt);
+        if (!installed()) throw cancelled();
         await this.clearReplace();
+      } catch (error) {
+        if (wasOptedOut && !installed()) {
+          await writeAtomic(this.optOutFile, `${JSON.stringify({ version: 1, disabled: true })}\n`)
+            .catch((restoreError) => this.logger.warn("Could not restore the collaboration sign-out preference", restoreError));
+        }
+        throw error;
       }
     });
   }
@@ -479,18 +516,25 @@ export class SharedSignIn {
   }
 
   /** A sign-in by hand that the file does not reflect yet (survives restarts). */
-  private async replaceWanted(account: { id: string; serverUrl: string }): Promise<boolean> {
-    if (this.pendingReplace) return true;
+  private async replaceWanted(account: { id: string; serverUrl: string }, current: ReadResult): Promise<boolean> {
+    if (this.replaceCleared) return false;
+    if (current.kind === "unavailable") return false;
     try {
-      const stored = JSON.parse(await readFile(this.intentFile, "utf8")) as { version?: unknown; accountId?: unknown; serverUrl?: unknown } | null;
-      return stored?.version === 1 && stored.accountId === account.id && stored.serverUrl === account.serverUrl;
+      const stored = this.pendingReplace ?? (JSON.parse(await readFile(this.intentFile, "utf8")) as Partial<ShareIntent> | null);
+      const hash = current.kind === "missing" ? null : sourceHash(current.source!);
+      if (stored?.version === 2 && stored.accountId === account.id && stored.serverUrl === account.serverUrl && stored.sourceHash === hash) return true;
+      // A newer synced decision supersedes the earlier choice, even after a
+      // restart. Version 1 intents have no snapshot and cannot authorize it.
+      await this.clearReplace();
+      return false;
     } catch {
       return false;
     }
   }
 
   private async clearReplace(): Promise<void> {
-    this.pendingReplace = false;
+    this.pendingReplace = null;
+    this.replaceCleared = true;
     try {
       await rm(this.intentFile, { force: true });
     } catch (error) {
@@ -602,7 +646,7 @@ export class SharedSignIn {
   private async share(current: ReadResult): Promise<void> {
     const account = this.options.accounts.account!;
     const session = this.options.accounts.session;
-    const byHand = await this.replaceWanted(account);
+    const byHand = await this.replaceWanted(account, current);
     if (current.kind === "unavailable") return;
     if (current.kind === "ok") {
       const same = current.payload.accountId === account.id && current.payload.serverUrl === account.serverUrl;

@@ -15,6 +15,7 @@ import type { AuthResponse } from "../../src/lib/collab/protocol/api";
 import type { LocalAccount } from "../../src/lib/collab/local-api";
 
 const SERVER = "https://collab.example.test";
+const EXPECTED = { accountId: "acc_1", serverUrl: SERVER };
 const quietLogger = { warn: () => undefined, error: () => undefined };
 
 class PollClock implements Clock {
@@ -496,7 +497,7 @@ describe("shared collaboration sign-in", () => {
     assert.equal(a.signedInFlag, false, "opted out: nothing happens on its own");
     assert.deepEqual(await a.shared.offer(), { state: "available", accountId: "acc_1", email: "acc_1@example.test", serverUrl: SERVER });
 
-    await a.shared.continueFromOtherComputer();
+    await a.shared.continueFromOtherComputer(EXPECTED);
     assert.equal(a.signedInFlag, true);
     assert.equal(a.account?.id, "acc_1");
     assert.deepEqual(await a.shared.offer(), { state: "none" }, "nothing to offer once signed in");
@@ -515,7 +516,7 @@ describe("shared collaboration sign-in", () => {
     await b.shared.unlock("pw-12345678");
     const a = make("a");
     assert.deepEqual(await a.shared.offer(), { state: "locked" });
-    await assert.rejects(a.shared.continueFromOtherComputer(), (error) => error instanceof SharedSignInError && error.code === "locked");
+    await assert.rejects(a.shared.continueFromOtherComputer(EXPECTED), (error) => error instanceof SharedSignInError && error.code === "locked");
 
     await a.shared.unlock("wrong password");
     assert.deepEqual(await a.shared.offer(), { state: "none" }, "another master password cannot read it");
@@ -534,7 +535,7 @@ describe("shared collaboration sign-in", () => {
     a.account = { id: "acc_2", email: "other@example.test", displayName: "O", color: "#000000", serverUrl: SERVER };
     await a.shared.unlock("pw-12345678");
     assert.equal(a.signedInFlag, false, "automatic sign-in never switches accounts");
-    await a.shared.continueFromOtherComputer();
+    await a.shared.continueFromOtherComputer(EXPECTED);
     assert.equal(a.account?.id, "acc_1");
     assert.equal(a.signedInFlag, true);
   });
@@ -548,7 +549,7 @@ describe("shared collaboration sign-in", () => {
     const a = make("a");
     await a.signOut();
     await a.shared.unlock("pw-12345678");
-    await assert.rejects(a.shared.continueFromOtherComputer(), (error) => error instanceof SharedSignInError && error.code === "refused");
+    await assert.rejects(a.shared.continueFromOtherComputer(EXPECTED), (error) => error instanceof SharedSignInError && error.code === "refused");
     assert.deepEqual(await a.shared.offer(), { state: "none" });
     assert.equal(a.signedInFlag, false);
   });
@@ -601,5 +602,129 @@ describe("shared collaboration sign-in", () => {
     const b = make("b");
     await b.shared.unlock("new password");
     assert.equal(b.signedInFlag, true);
+  });
+
+  test("Continue refuses a different account or server than the displayed offer", async () => {
+    const { server, make } = setup();
+    const owner = make("owner");
+    await owner.signInByHand("acc_1");
+    await owner.shared.unlock("password");
+    const device = make("device");
+    await device.signOut();
+    await device.shared.unlock("password");
+    const displayed = await device.shared.offer();
+    assert.equal(displayed.state, "available");
+    await owner.signInByHand("acc_2");
+    await assert.rejects(device.shared.continueFromOtherComputer(EXPECTED), (error) => error instanceof SharedSignInError && error.code === "offer-changed");
+    assert.equal(server.exchanges.length, 0, "a changed offer is rejected before any exchange");
+    assert.equal(device.signedInFlag, false);
+    const updated = await device.shared.offer();
+    assert.equal(updated.state, "available");
+    if (updated.state !== "available") throw new Error("missing updated offer");
+    await assert.rejects(device.shared.continueFromOtherComputer({ ...updated, serverUrl: "https://other.test" }), (error) => error instanceof SharedSignInError && error.code === "offer-changed");
+    await device.shared.continueFromOtherComputer(updated);
+    assert.equal(device.account?.id, "acc_2", "the newly displayed account can be explicitly selected");
+  });
+
+  test("a later global stop supersedes pending sign-in intent in memory and after restart", async () => {
+    for (const restart of [false, true]) {
+      const { server, file, make } = setup();
+      const owner = make("owner");
+      await owner.signInByHand("acc_1");
+      await owner.shared.unlock("password");
+      let device = make("device");
+      await device.signInByHand("acc_1");
+      await owner.signOut(true);
+      const disabled = await readFile(file, "utf8");
+      if (restart) {
+        device.shared.stop();
+        const restarted = new Computer(server, path.dirname(path.dirname(file)), device.collabDir);
+        computers.push(restarted);
+        restarted.account = device.account;
+        restarted.signedInFlag = true;
+        device = restarted;
+      }
+      await device.shared.unlock("password");
+      assert.equal(await readFile(file, "utf8"), disabled);
+      assert.equal(server.minted, 1, "old intent cannot silently mint after revocation");
+      // A new choice made after seeing the stop can still offer a new grant.
+      await device.shared.signedInByHand();
+      assert.equal(server.minted, 2);
+    }
+  });
+
+  test("legacy intent without a snapshot cannot authorize overriding a tombstone", async () => {
+    const { server, file, make } = setup();
+    const owner = make("owner");
+    await owner.signInByHand("acc_1");
+    await owner.shared.unlock("password");
+    await owner.signOut(true);
+    const device = make("device");
+    await mkdir(device.collabDir, { recursive: true });
+    await writeFile(path.join(device.collabDir, "share-intent.json"), JSON.stringify({ version: 1, ...EXPECTED }));
+    device.account = { id: "acc_1", serverUrl: SERVER, email: "e", displayName: "P", color: "#000000" };
+    device.signedInFlag = true;
+    await device.shared.unlock("password");
+    assert.match(await readFile(file, "utf8"), /disabledAt/);
+    assert.equal(server.minted, 1);
+  });
+
+  test("Continue fails before activating credentials when opt-out persistence fails, then retries", async () => {
+    const { make } = setup();
+    const owner = make("owner");
+    await owner.signInByHand("acc_1");
+    await owner.shared.unlock("password");
+    const device = make("device");
+    await device.signOut();
+    const file = path.join(device.collabDir, "auto-sign-in.json");
+    await rm(file);
+    await mkdir(file);
+    await device.shared.unlock("password");
+    await assert.rejects(device.shared.continueFromOtherComputer(EXPECTED));
+    assert.equal(device.signedInFlag, false, "an error never hides an installed session");
+    await rm(file, { recursive: true });
+    await writeFile(file, JSON.stringify({ version: 1, disabled: true }));
+    await device.shared.continueFromOtherComputer(EXPECTED);
+    assert.equal(device.signedInFlag, true);
+    assert.equal(JSON.parse(await readFile(file, "utf8")).disabled, false);
+    device.signedInFlag = false;
+    await device.shared.unlock("password");
+    assert.equal(device.signedInFlag, true, "automatic recovery was durably re-enabled");
+  });
+
+  test("an account action during Continue cancels adoption and keeps the sign-out preference", async () => {
+    const { server, make } = setup();
+    const owner = make("owner");
+    await owner.signInByHand("acc_1");
+    await owner.shared.unlock("password");
+    const device = make("device");
+    await device.signOut();
+    await device.shared.unlock("password");
+    const started = deferred();
+    const release = deferred();
+    server.beforeExchange = async () => { started.resolve(); await release.promise; };
+    const continuing = device.shared.continueFromOtherComputer(EXPECTED);
+    await started.promise;
+    const signingOut = device.signOut();
+    release.resolve();
+    await assert.rejects(continuing, (error) => error instanceof SharedSignInError && error.code === "cancelled");
+    await signingOut;
+    assert.equal(device.signedInFlag, false);
+    assert.equal(JSON.parse(await readFile(path.join(device.collabDir, "auto-sign-in.json"), "utf8")).disabled, true);
+  });
+
+  test("failed session installation restores the opt-out after preflight succeeded", async () => {
+    const { make } = setup();
+    const owner = make("owner");
+    await owner.signInByHand("acc_1");
+    await owner.shared.unlock("password");
+    const device = make("device", { signedIn: async () => { throw new Error("Could not open the account database"); } });
+    await device.signOut();
+    await device.shared.unlock("password");
+    await assert.rejects(device.shared.continueFromOtherComputer(EXPECTED), /Could not open/);
+    assert.equal(device.signedInFlag, false);
+    assert.equal(JSON.parse(await readFile(path.join(device.collabDir, "auto-sign-in.json"), "utf8")).disabled, true);
+    await device.shared.unlock("password");
+    assert.equal(device.signedInFlag, false, "a failed explicit sign-in did not enable background adoption");
   });
 });

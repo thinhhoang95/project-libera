@@ -31,6 +31,7 @@ import {
   type ResolvedDoc,
   type ShareNotebookRequest,
   type SharedSignInOffer,
+  type ContinueSharedSignInRequest,
   type SignInRequest,
   type UpdateAccountRequest,
 } from "@/lib/collab/local-api";
@@ -194,7 +195,7 @@ export function createCollabClient(options: CollabClientOptions = {}) {
     account: () => request<LocalAccount | null>("GET", ControlRoutes.account),
     /** What the synced data folder offers ("Continue as ..."); never the grant itself. */
     sharedSignIn: () => request<SharedSignInOffer>("GET", ControlRoutes.sharedSignIn),
-    continueSharedSignIn: () => request<HostStatus | undefined>("POST", ControlRoutes.sharedSignIn),
+    continueSharedSignIn: (body: ContinueSharedSignInRequest) => request<HostStatus | undefined>("POST", ControlRoutes.sharedSignIn, body),
     /** Re-enters the master password (checked by Next) so the host can read the shared sign-in. */
     unlockSharedSignIn: (password: string) => requestUrl<{ ok: true }>("POST", "/api/auth/collab-unlock", { password }),
     updateAccount: (body: UpdateAccountRequest) => request<LocalAccount | undefined>("PATCH", ControlRoutes.account, body),

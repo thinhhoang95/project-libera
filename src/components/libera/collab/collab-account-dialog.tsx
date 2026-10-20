@@ -227,19 +227,42 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
   const [masterPassword, setMasterPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [discoveryError, setDiscoveryError] = useState("");
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    if (busy) return;
     let live = true;
-    collabClient
-      .sharedSignIn()
-      .then((next) => live && setOffer(next))
-      .catch(() => live && setOffer({ state: "none" }));
+    let checking = false;
+    async function check() {
+      if (!live || checking) return;
+      checking = true;
+      try {
+        const next = await collabClient.sharedSignIn();
+        if (live) {
+          setOffer(next);
+          setDiscoveryError("");
+        }
+      } catch (caught) {
+        if (live) setDiscoveryError(describeError(caught));
+      } finally {
+        checking = false;
+      }
+    }
+    void check();
+    const timer = window.setInterval(() => void check(), 15_000);
+    const checkAgain = () => void check();
+    window.addEventListener("online", checkAgain);
+    window.addEventListener("focus", checkAgain);
     return () => {
       live = false;
+      window.clearInterval(timer);
+      window.removeEventListener("online", checkAgain);
+      window.removeEventListener("focus", checkAgain);
     };
-  }, []);
+  }, [busy, refresh]);
 
-  if (!offer || offer.state === "none") return null;
+  if (!offer && !discoveryError && !error) return null;
 
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,8 +277,11 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
       setMasterPassword("");
       const next = await collabClient.sharedSignIn();
       // Unlocking may already have signed in (automatic sign-in was on here).
-      if (next.state === "none") onSignedIn(undefined);
-      else if (next.state === "locked") setError("Your other computer used a different master password. Sign in with your email and password instead.");
+      if (next.state === "none") {
+        const status = await collabClient.status();
+        if (status.account && status.connection !== "signed-out" && status.connection !== "needs-sign-in") onSignedIn(status);
+        else setError("No usable sign-in is available from your other computer. Check again after it syncs, or sign in with your email and password.");
+      } else if (next.state === "locked") setError("Your other computer used a different master password. Sign in with your email and password instead.");
       setOffer(next.state === "locked" ? { state: "none" } : next);
     } catch (caught) {
       setError(describeError(caught));
@@ -265,23 +291,23 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
   }
 
   async function continueAs() {
+    if (offer?.state !== "available") return;
     setBusy(true);
     setError("");
     try {
-      const next = await collabClient.continueSharedSignIn();
+      const next = await collabClient.continueSharedSignIn({ accountId: offer.accountId, serverUrl: offer.serverUrl });
       onSignedIn(next && typeof next === "object" && "connection" in next ? next : undefined);
     } catch (caught) {
       setError(describeError(caught));
-      setOffer({ state: "none" });
     } finally {
       setBusy(false);
     }
   }
 
-  const replaces = offer.state === "available" && account && account.id !== offer.accountId;
+  const replaces = offer?.state === "available" && account && (account.id !== offer.accountId || account.serverUrl !== offer.serverUrl);
   return (
     <div aria-label="Sign in from your other computer" className="space-y-2 rounded-xl border border-input p-3" role="group">
-      {offer.state === "available" ? (
+      {offer?.state === "available" ? (
         <>
           <p className="text-sm">You are signed in to collaboration on another computer.</p>
           <button className={PRIMARY_BUTTON} disabled={busy} type="button" onClick={() => void continueAs()}>
@@ -293,7 +319,7 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
             {replaces ? ` · Replaces ${account.email} on this computer.` : ""} This computer will sign in automatically again.
           </p>
         </>
-      ) : (
+      ) : offer?.state === "locked" ? (
         <form className="space-y-2" onSubmit={(event) => void unlock(event)}>
           <p className="text-sm">Another computer shares its collaboration sign-in. Enter your Libera master password to use it here.</p>
           <label className={LABEL} htmlFor={`${id}-master`}>
@@ -311,12 +337,25 @@ function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAcco
             {busy ? "Checking…" : "Unlock"}
           </button>
         </form>
+      ) : (
+        <p className="text-sm">No sign-in from another computer is available right now.</p>
       )}
-      {error ? (
+      {error || discoveryError ? (
         <p className="text-sm text-destructive" role="alert">
-          {error}
+          {error || discoveryError}
         </p>
       ) : null}
+      <button
+        className={SECONDARY_BUTTON}
+        disabled={busy}
+        type="button"
+        onClick={() => {
+          setError("");
+          setRefresh((value) => value + 1);
+        }}
+      >
+        <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Check again
+      </button>
       <p className="text-xs text-muted-foreground">Or sign in with your email and password below.</p>
     </div>
   );
