@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   save: (input) => ipcRenderer.invoke("setup:save", input),
   selectDataDir: () => ipcRenderer.invoke("setup:select-data-dir"),
   selectSearchWeights: (kind) => ipcRenderer.invoke("setup:select-search-weights", kind),
+  checkTtsModel: (directory) => ipcRenderer.invoke("setup:check-tts-model", directory),
+  checkDetectionModel: (directory) => ipcRenderer.invoke("setup:check-detection-model", directory),
   selectSearchIndexFile: (mode) => ipcRenderer.invoke("setup:select-search-index-file", mode),
   revealSearchIndex: (filePath) => ipcRenderer.invoke("setup:reveal-search-index", filePath),
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
@@ -45,6 +47,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
 
 contextBridge.exposeInMainWorld("liberaExport", {
   saveMarkdownFile: (input) => ipcRenderer.invoke("export:markdown-file", input),
+  saveTextFile: (input) => ipcRenderer.invoke("export:text-file", input),
   exportMarkdownPdf: (input) => ipcRenderer.invoke("export:markdown-pdf", input),
 });
 
@@ -107,6 +110,7 @@ contextBridge.exposeInMainWorld("liberaWindow", {
   minimize: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
   close: () => ipcRenderer.invoke("window:close"),
+  setButtonsVisible: (visible) => ipcRenderer.invoke("window:set-buttons-visible", visible),
   // Keep the native window appearance (and therefore the vibrancy material) in
   // sync with the in-app theme so the glass renders dark in dark mode.
   setTheme: (theme) => ipcRenderer.invoke("window:set-theme", theme),

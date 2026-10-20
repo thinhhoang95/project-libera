@@ -25,6 +25,10 @@ const nextConfig: NextConfig = {
     };
     return config;
   },
+  // Served to sandboxed live HTML blocks in slides (api/slide-libraries/chart).
+  outputFileTracingIncludes: {
+    "/api/slide-libraries/chart": ["./node_modules/chart.js/dist/chart.umd.min.js"],
+  },
   outputFileTracingExcludes: {
     "/*": [
       "./.electron-build/**/*",

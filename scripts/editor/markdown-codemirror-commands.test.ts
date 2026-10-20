@@ -248,7 +248,7 @@ test("Smart Paste and rich paste compute the textarea editor's result", () => {
   const document = "# 1. Intro\n\n## 1.1 Scope\n\nText.\n\n# 2. Method\n\n## 2.1 Data\n";
   const at = document.indexOf("# 2. Method");
   const pasted = "### Results\n\nBody.\n\n#### Detail\n\n";
-  const edit = sourcePasteEdit(document, { start: at, end: at }, { markdown: "", html: "", plain: pasted }, { smartPaste: true })!;
+  const edit = sourcePasteEdit(document, { start: at, end: at }, { markdown: "", html: "", plain: pasted }, { smartPaste: "child" })!;
   const expected = smartPasteMarkdown(document, { start: at, end: at }, pasted)!;
   const editor = codeMirrorWith(document, at, at);
   editor.view.dispatch(textareaEditSpec(editor.view.state, edit));
@@ -259,6 +259,11 @@ test("Smart Paste and rich paste compute the textarea editor's result", () => {
 
   // Without Smart Paste, plain text is left to the editor's own paste.
   assert.equal(sourcePasteEdit("abc", { start: 1, end: 1 }, { markdown: "", html: "", plain: "# H\n" }), null);
+  // The right-click menu has no browser paste behind it: plain text is inserted.
+  assert.equal(sourcePasteEdit("abc", { start: 1, end: 1 }, { markdown: "", html: "", plain: "# H\n" }, { insertPlain: true })?.replacement, "# H\n");
+  // Paste with Peer Heading Level matches the textarea editor too.
+  const peer = sourcePasteEdit(document, { start: at, end: at }, { markdown: "", html: "", plain: pasted }, { smartPaste: "peer" })!;
+  assert.equal(peer.replacement, getChangedTextRange(document, smartPasteMarkdown(document, { start: at, end: at }, pasted, "peer")!.value).replacement);
   // `text/markdown` is pasted as is and replaces the selection.
   assert.deepEqual(sourcePasteEdit("abc", { start: 1, end: 2 }, { markdown: "**x**", html: "<b>x</b>", plain: "x" }), {
     replacement: "**x**", selectionStart: 1, selectionEnd: 2, nextSelectionStart: 6, nextSelectionEnd: 6,

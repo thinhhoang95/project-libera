@@ -175,11 +175,14 @@ export type GalleryContents = {
   root: string;
   albums: GalleryAlbum[];
   photos: GalleryPhoto[];
+  /** Deletions discovered during this scan or change, including old chat attachments. */
+  deletedPhotoIds?: string[];
 };
 
 /** The Protected Archive, listed only once it is unlocked. */
 export type ArchiveContents = {
   photos: GalleryPhoto[];
+  deletedPhotoIds?: string[];
 };
 
 export function archiveRawUrl(photo: Pick<GalleryPhoto, "name" | "updatedAt" | "size">, thumbnail = false) {

@@ -221,6 +221,8 @@ export function CanvasSplitView({
             aria-label={split ? `Panel: ${tab?.file.name ?? "Empty"}` : undefined}
             className="libera-canvas-pane absolute flex min-h-0 min-w-0 flex-col overflow-hidden"
             data-canvas-pane-focused={focused ? "true" : "false"}
+            // The command palette reads the focused panel's toolbars.
+            data-command-scope={focused ? "1" : undefined}
             style={rectStyle(rect)}
             onPointerDownCapture={() => onFocusPane(pane.id)}
             onFocusCapture={() => onFocusPane(pane.id)}

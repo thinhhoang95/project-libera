@@ -79,6 +79,20 @@ test("a photo can be in several albums, and removing it from one moves nothing",
   assert.ok(gallery.albums.every((album) => album.count === 0));
 }));
 
+test("a WebP photo can be deleted after its thumbnail has been generated", () => withDataDirectory(async () => {
+  const body = await sharp(await tile()).webp().toBuffer();
+  const photo = await writeGalleryPhoto("", "thumbnail-then-delete.webp", body, {});
+  const thumbnail = await readGalleryThumbnail(photo.path);
+  assert.equal((await sharp(thumbnail.body).metadata()).format, "webp");
+
+  const result = await deletePhotos([photo.id]);
+  assert.equal(result.deleted, 1);
+  assert.deepEqual(result.gallery.photos, []);
+  await assert.rejects(stat(path.join(getGalleryRoot(), photo.path)), { code: "ENOENT" });
+  assert.deepEqual(await readdir(path.join(getGalleryRoot(), ".thumbnails")), []);
+  assert.deepEqual((await getGallery()).photos, []);
+}));
+
 test("stars, and changes made on disk are picked up", () => withDataDirectory(async () => {
   const photo = await writeGalleryPhoto("", "a.png", await tile(), {});
   let gallery = await setPhotosStarred([photo.id], true);

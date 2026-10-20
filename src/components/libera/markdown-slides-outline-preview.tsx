@@ -62,12 +62,11 @@ function markdownToPreviewText(markdown: string) {
 }
 
 function slideTitle(deck: MarkdownSlideDeck, slide: MarkdownSlide) {
-  if (slide.title) {
-    return slide.title;
-  }
+  const title = slide.title ?? (slide.kind === "title" ? deck.title : undefined);
 
-  if (slide.kind === "title" && deck.title) {
-    return deck.title;
+  if (title) {
+    // Titles may carry emphasis or code marks; the outline shows plain text.
+    return title.replace(/(\*\*|__|\*|_|`)(.+?)\1/g, "$2");
   }
 
   return slide.kind === "title" ? "Title Slide" : `Slide ${slide.index + 1}`;
@@ -163,7 +162,7 @@ export function MarkdownSlidesOutlinePreview({
   const activeSlideIndex = activeSlideIndexForTab(deck, activeTab);
 
   async function navigateToSlide(slide: MarkdownSlide) {
-    const offset = Math.max(0, Math.min(slide.sourceStart, activeTab.draft.length));
+    const offset = Math.max(0, Math.min(slide.bodyStart, activeTab.draft.length));
 
     await onOpenFile(activeTab.file, {
       viewState: {
@@ -211,12 +210,18 @@ export function MarkdownSlidesOutlinePreview({
                     {title}
                   </span>
                   <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                    Slide {slide.index + 1}
+                    {slide.hidden ? "Hidden" : `Slide ${slide.index + 1}`}
                   </span>
                 </span>
                 <span className="line-clamp-3 block text-xs leading-5 text-muted-foreground">
                   {preview}
                 </span>
+                {slide.stepCount > 1 || slide.notes ? (
+                  <span className="mt-1.5 flex gap-2 text-[10px] font-medium text-muted-foreground">
+                    {slide.stepCount > 1 ? <span>{slide.stepCount} steps</span> : null}
+                    {slide.notes ? <span>Notes</span> : null}
+                  </span>
+                ) : null}
               </SidebarNameTooltipButton>
             );
           })}

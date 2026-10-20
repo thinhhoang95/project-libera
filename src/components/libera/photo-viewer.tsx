@@ -23,11 +23,14 @@ import {
   Play,
   Plus,
   RotateCcw,
+  ScanSearch,
   Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { DetectionTool } from "@/components/libera/detection/detection-tool";
+import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
 import { PhotoEditor } from "@/components/libera/photo-editor";
 import { galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
@@ -223,6 +226,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   const [fitScale, setFitScale] = useState(1);
   const [infoOpen, setInfoOpen] = useState(initialViewState?.infoOpen ?? true);
   const [editing, setEditing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -274,6 +278,10 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  // Saving to a notebook folder finishes in the app's folder picker, which reports back here.
+  const photoUrl = photo ? rawUrl(photo) : "";
+  useEffect(() => subscribeImageSaved((saved) => { if (saved.src === photoUrl) setNotice(saved.message); }), [photoUrl]);
+
   function toggleFullscreen() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void rootRef.current?.requestFullscreen().catch(() => undefined);
@@ -294,7 +302,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   useEffect(() => {
     if (editing) return;
     function handleKey(event: KeyboardEvent) {
-      if (document.querySelector(".libera-dialog") || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (document.querySelector(".libera-dialog, [data-libera-overlay]") || event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [role=menu], #document-chat-panel")) return;
       const key = event.key;
       if (key === "Escape") { if (!document.fullscreenElement) onClose(); }
@@ -321,7 +329,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   const percent = Math.round(transform.scale * fitScale * 100);
   const editable = !photo.name.toLowerCase().endsWith(".svg");
 
-  const viewer = <div ref={rootRef} role="dialog" aria-modal={!chatOpen} aria-label={photo.name} className="fixed inset-0 z-40 flex flex-col bg-neutral-950 text-white">
+  const viewer = <div ref={rootRef} role="dialog" aria-modal={!chatOpen} aria-label={photo.name} data-command-scope="3" className="fixed inset-0 z-40 flex flex-col bg-neutral-950 text-white">
     {editing ? <PhotoEditor src={galleryRawUrl(photo)} onCancel={() => setEditing(false)} onSave={async (edits, mode) => {
       const result = await apiRequest<{ id: string; gallery: GalleryContents }>("/api/gallery/photos/edit", { method: "POST", body: JSON.stringify({ id: photo.id, edits, mode }) });
       setEditing(false);
@@ -329,7 +337,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
       actions.onEdited?.(result);
       setNotice(mode === "copy" ? "Saved as a copy" : "Saved. You can revert to the original from Info.");
     }} /> : <>
-      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2">
+      <header className="flex min-w-0 items-center gap-1 overflow-x-auto px-2 py-2" data-command-toolbar="Photo">
         <button className={toolButton} aria-label="Back to gallery" title="Back (Esc)" onClick={onClose}><ArrowLeft className="h-5 w-5" /></button>
         <div className="mr-auto min-w-0 px-2">
           <p className="truncate text-sm font-medium">{new Date(photo.createdAt).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" })}</p>
@@ -346,13 +354,16 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
           <Star className={`h-5 w-5 ${photo.starred ? "fill-amber-400 text-amber-400" : ""}`} />
         </button>}
         {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={() => { setPlaying(false); setEditing(true); }}><Pencil className="h-4 w-4" /></button>}
+        <button className={toolButton} aria-label="Detection and Segmentation" title="Detection and Segmentation: find, outline and count objects"
+          onClick={() => { setPlaying(false); if (document.fullscreenElement) void document.exitFullscreen(); setDetecting(true); }}><ScanSearch className="h-4 w-4" /></button>
         {actions.onAddToAlbum && <button className={toolButton} aria-label="Add to album" title="Add to album" onClick={(event) => actions.onAddToAlbum?.(photo, event.currentTarget)}><FolderInput className="h-4 w-4" /></button>}
         {actions.onArchive && <button className={toolButton} aria-label="Move to Protected Archive" title="Move to Protected Archive" onClick={() => { setPlaying(false); actions.onArchive?.(photo); }}><Lock className="h-4 w-4" /></button>}
         {actions.onRestore && <button className={toolButton} aria-label="Restore to gallery" title="Restore to gallery" onClick={() => { setPlaying(false); actions.onRestore?.(photo); }}><ArchiveRestore className="h-4 w-4" /></button>}
         {actions.onOpenInCanvas && <button className={toolButton} aria-label="Open in tab" aria-haspopup="menu" title="Open in an editor tab, or beside the current one"
           onClick={(event) => { setPlaying(false); actions.onOpenInCanvas?.(photo, event.currentTarget); }}><AppWindow className="h-4 w-4" /></button>}
         <button className={toolButton} aria-label={playing ? "Pause slideshow" : "Play slideshow"} title={playing ? "Pause slideshow (Space)" : "Slideshow (Space)"} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>
-        <a className={toolButton} aria-label="Download" title="Download" href={rawUrl(photo)} download={photo.name}><Download className="h-4 w-4" /></a>
+        <button className={toolButton} aria-label="Save photo" aria-haspopup="menu" title="Save to computer or a notebook folder"
+          onClick={(event) => { setPlaying(false); void openImageSaveMenu(event.currentTarget, "notebook", { name: photo.name, src: rawUrl(photo) }); }}><Download className="h-4 w-4" /></button>
         <button className={toolButton} aria-label="Copy image" title="Copy image" onClick={() => copyImage(rawUrl(photo)).then(() => setNotice("Copied to the clipboard"), () => setNotice("Could not copy this photo"))}><Copy className="h-4 w-4" /></button>
         <button className={toolButton} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title="Full screen (F)" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</button>
         {chat && <button className={toolButton} aria-label="Ask AI about this photo" aria-pressed={chat.open} title="Ask AI about this photo (⌘/Ctrl+Shift+B)" onClick={toggleChat}><Sparkles className={`h-4 w-4 ${chat.open ? "text-white" : ""}`} /></button>}
@@ -391,6 +402,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         </aside>}
       </div>
     </>}
+    {detecting && <DetectionTool src={rawUrl(photo)} name={photo.name} source={`gallery/${photo.path}`} onClose={() => setDetecting(false)} />}
   </div>;
   return createPortal(viewer, document.body);
 }

@@ -88,6 +88,7 @@ export function syncWording(status: SyncStatus, now = Date.now()): SyncWording {
   const waiting = pending > 0 ? ` ${changes(pending)} waiting, oldest ${formatAge(oldestPendingAgeMs)}.` : "";
   const extra = status.detail ? ` ${status.detail}` : "";
   const byState: Record<SyncState, () => SyncWording> = {
+    deleted: () => ({ label: "File deleted", detail: "This file was deleted from the shared notebook. Your local text is kept; copy or export it.", tone: "warn" }),
     loading: () => ({ label: "Loading…", detail: `Opening the shared document.${extra}`, tone: "neutral" }),
     "saved-local": () => ({
       label: "Saved on this device",

@@ -13,6 +13,7 @@ import {
   Pause,
   Pencil,
   Play,
+  ScanSearch,
   Trash2,
   Type,
   ZoomIn,
@@ -21,7 +22,9 @@ import {
 import { MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
+import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { PhotoEditor } from "@/components/libera/photo-editor";
+import { downloadImage, openImageSaveMenu, subscribeImageSaved, type ImageSaveDestination } from "@/components/libera/image-save";
 import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
@@ -41,6 +44,7 @@ import { TextAnnotationStyleControls } from "@/components/libera/annotation-styl
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
 import {
   DEFAULT_PDF_TEXT_COLOR,
   DEFAULT_PDF_TEXT_FONT,
@@ -82,6 +86,8 @@ type ImageViewerProps = {
   /** Shows a sibling in place of this image. The viewer remounts for it. */
   onShowSibling?: (path: string) => void;
   onViewStateChange?: (viewState: ImageTabViewState) => void;
+  /** Adds a Save menu to the Download button, offering the Gallery or a notebook folder too. */
+  saveDestination?: ImageSaveDestination;
 };
 
 // Stepping to a sibling remounts the viewer for the next file. The slideshow
@@ -132,6 +138,7 @@ export function ImageViewer({
   onSaveEditedCopy,
   onShowSibling,
   onViewStateChange,
+  saveDestination,
 }: ImageViewerProps) {
   const paneFocused = useCanvasPaneFocused();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -140,6 +147,8 @@ export function ImageViewer({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
+  // The file whose annotations have finished loading (successfully or not).
+  const [annotationsLoadedPath, setAnnotationsLoadedPath] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(
     initialViewState?.selectedAnnotationId ?? "",
   );
@@ -168,6 +177,7 @@ export function ImageViewer({
   const [fullscreen, setFullscreen] = useState(() => carriedOver(filePath)?.fullscreen ?? false);
   const fullscreenRef = useRef(fullscreen);
   const [editing, setEditing] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -207,9 +217,11 @@ export function ImageViewer({
 
         latestAnnotationsRef.current = payload.annotations;
         setAnnotations(payload.annotations);
+        setAnnotationsLoadedPath(filePath);
       })
       .catch((loadError) => {
         if (active) {
+          setAnnotationsLoadedPath(filePath);
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -349,6 +361,39 @@ export function ImageViewer({
   function zoomBy(factor: number) {
     zoomTo(transformRef.current.zoom * factor);
   }
+
+  useEffect(() => {
+    if (annotatable) rememberFileAnnotations(filePath, annotations);
+  }, [annotatable, annotations, filePath]);
+
+  // Following a link: select its note once and, when zoomed in, center it.
+  const revealSelectedAnnotation = initialViewState?.revealSelectedAnnotation;
+  const revealAnnotationId = initialViewState?.selectedAnnotationId ?? "";
+  const annotationsLoaded = !annotatable || annotationsLoadedPath === filePath;
+  useEffect(() => {
+    if (!revealSelectedAnnotation || !annotationsLoaded) return;
+    const animationFrame = window.requestAnimationFrame(() => {
+      const annotation = latestAnnotationsRef.current.find((current) => current.id === revealAnnotationId);
+      if (!annotation) {
+        updateViewState({ revealSelectedAnnotation: undefined });
+        return;
+      }
+      const current = transformRef.current;
+      const nextPan = current.zoom > 1 && imageSize.width
+        ? panCenteringRect(annotation.rect, imageSize, current.zoom)
+        : current.pan;
+      transformRef.current = { zoom: current.zoom, pan: nextPan };
+      setPan(nextPan);
+      setSelectedAnnotationId(annotation.id);
+      updateViewState({
+        panX: nextPan.x,
+        panY: nextPan.y,
+        revealSelectedAnnotation: undefined,
+        selectedAnnotationId: annotation.id,
+      });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [annotationsLoaded, imageSize, revealAnnotationId, revealSelectedAnnotation, updateViewState]);
 
   // At zoom 1 the image fits the view; this is its share of the real pixels.
   const fitScale = naturalSize.width && imageSize.width ? imageSize.width / naturalSize.width : 1;
@@ -688,16 +733,32 @@ export function ImageViewer({
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  function downloadImage() {
+  function saveImage(button: HTMLElement) {
     if (!src) {
       return;
     }
 
-    const link = document.createElement("a");
-    link.href = src;
-    link.download = fileName;
-    link.click();
+    if (!saveDestination) {
+      downloadImage({ name: fileName, src });
+      return;
+    }
+
+    setPlaying(false);
+    void openImageSaveMenu(button, saveDestination, { name: fileName, src }).then((message) => {
+      if (message) {
+        setNotice(message);
+      }
+    });
   }
+
+  // Saves from the tab's ⋯ menu report here.
+  useEffect(() => {
+    return subscribeImageSaved((saved) => {
+      if (saved.src === src) {
+        setNotice(saved.message);
+      }
+    });
+  }, [src]);
 
   function copyToClipboard() {
     if (!src) {
@@ -729,7 +790,7 @@ export function ImageViewer({
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
-        document.querySelector(".libera-dialog") ||
+        document.querySelector(".libera-dialog, [data-libera-overlay]") ||
         (target instanceof HTMLElement &&
           (target.isContentEditable || target.closest("input, textarea, select, [role=menu]")))
       ) {
@@ -811,7 +872,7 @@ export function ImageViewer({
       }`}
       data-image-viewer-fullscreen={fullscreen ? "" : undefined}
     >
-      <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
+      <div className="libera-viewer-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar="Image">
         <div className="flex min-w-0 flex-wrap items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
           <Move aria-hidden className="h-4 w-4 shrink-0" />
           {annotatable ? <>
@@ -914,6 +975,20 @@ export function ImageViewer({
               <Pencil aria-hidden className="h-4 w-4" />
             </button>
           ) : null}
+          <button
+            aria-label="Detection and Segmentation"
+            className={iconButton}
+            type="button"
+            title="Detection and Segmentation: find, outline and count objects"
+            disabled={!src}
+            onClick={() => {
+              setPlaying(false);
+              if (fullscreen) toggleFullscreen();
+              setDetecting(true);
+            }}
+          >
+            <ScanSearch aria-hidden className="h-4 w-4" />
+          </button>
           {siblingCount > 1 ? (
             <button
               aria-label={playing ? "Pause slideshow" : "Play slideshow"}
@@ -928,7 +1003,15 @@ export function ImageViewer({
           <button aria-label="Copy image" className={iconButton} type="button" title="Copy image" disabled={!src} onClick={copyToClipboard}>
             <Copy aria-hidden className="h-4 w-4" />
           </button>
-          <button aria-label="Download image" className={iconButton} type="button" title="Download" disabled={!src} onClick={downloadImage}>
+          <button
+            aria-label={saveDestination ? "Save image" : "Download image"}
+            aria-haspopup={saveDestination ? "menu" : undefined}
+            className={iconButton}
+            type="button"
+            title={saveDestination === "gallery" ? "Save to computer, the Gallery or an album" : saveDestination === "notebook" ? "Save to computer or a notebook folder" : "Download"}
+            disabled={!src}
+            onClick={(event) => saveImage(event.currentTarget)}
+          >
             <Download aria-hidden className="h-4 w-4" />
           </button>
           <button
@@ -1086,6 +1169,7 @@ export function ImageViewer({
   return (
     <>
       {fullscreen ? createPortal(viewer, document.body) : viewer}
+      {detecting && src ? <DetectionTool src={src} name={fileName} source={filePath} onClose={() => setDetecting(false)} /> : null}
       {editing && src && onSaveEditedCopy
         ? createPortal(
             <div role="dialog" aria-modal="true" aria-label={`Edit ${fileName}`} className="fixed inset-0 z-[60] flex flex-col bg-neutral-950 text-white">

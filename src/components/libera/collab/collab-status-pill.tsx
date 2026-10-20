@@ -23,6 +23,7 @@ const ICONS: Record<SyncState, LucideIcon> = {
   offline: CloudOff,
   "read-only": Lock,
   "access-changed": ShieldAlert,
+  deleted: Lock,
 };
 
 const SPINNING: ReadonlySet<SyncState> = new Set(["loading", "syncing"]);

@@ -82,13 +82,13 @@ test("takedown preserves local files, revokes collaborators, and allows sharing 
     assert.equal(alice.service.resolvePath("Research/note.md")?.readOnly, false);
     assert.equal(sameTree(before, snapshotTree(root)), null, "sharing again preserves all content");
 
-    // Deletion from another device still permits finishing this device's cleanup.
+    // The owner's account took it down from another device: this device finishes the takedown.
     const secondId = (reshared.body as { projectId: string }).projectId;
     assert.equal((await api(server, `/v1/projects/${secondId}`, undefined, aliceAuth.accessToken, "DELETE")).status, 204);
-    await until(() => alice.service.localProjects()[0]?.revoked === true, "the other device's deletion to arrive");
-    assert.equal((await alice.router.call("DELETE", ControlRoutes.project(secondId))).status, 204);
+    await until(() => alice.service.localProjects().length === 0, "the other device's deletion to arrive");
     assert.equal(existsSync(path.join(root, ".libera-shared.json")), false);
-    assert.deepEqual(alice.service.localProjects(), []);
+    assert.equal(alice.host.store.getProject(secondId), null);
+    assert.equal(sameTree(before, snapshotTree(root)), null, "the owner's files are preserved");
   } finally {
     for (const peer of peers) await closePeer(peer).catch(() => undefined);
     await server.stop().catch(() => undefined);

@@ -15,7 +15,8 @@ import {
 import { embeddingText } from "@/lib/search/chunking";
 
 export type SearchSelection = { key: string; hit: number };
-export type SearchEntry = { result: SearchResultFile; hit: number };
+/** A result and one of its passages; `terms` (the query's words) travel along when it is opened. */
+export type SearchEntry = { result: SearchResultFile; hit: number; terms?: string[] };
 
 /** The image a result stands for, as it would go in the search box. */
 export function resultImageRef(result: SearchResultFile): SearchImageRef | null {

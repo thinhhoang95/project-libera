@@ -387,11 +387,27 @@ function createCollabHost(options = {}) {
     return true;
   }
 
+  /**
+   * The master password changed: the host re-encrypts the collaboration
+   * sign-in shared through the data folder (shared-sign-in.ts). Best effort.
+   */
+  function masterPasswordChanged(password, previousPassword) {
+    if (!enabled || !url || !ready || typeof password !== "string" || !password) return;
+    fetch(`${url}/account/unlock`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ password, previousPassword, changed: true }),
+    })
+      .then((response) => response.body?.cancel())
+      .catch((error) => console.warn(`[collab-host] Could not update the shared sign-in: ${error.message}`));
+  }
+
   return {
     enabled,
     start,
     stop,
     environment,
+    masterPasswordChanged,
     claimSingleInstance,
     nudge,
     get ready() {

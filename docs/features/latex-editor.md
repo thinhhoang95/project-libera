@@ -33,3 +33,5 @@ Right-click in the editor for AI Format (turn plain text, Markdown or pasted PDF
 The AI chat includes the open LaTeX source as context, and ⌘⇧L adds the editor selection to the conversation.
 
 Validation: `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/latex-editor.test.ts` (the compile test is skipped when TeX is not installed)
+
+`npm run test:latex-production` checks the compiled production routes: password login, a real TeX build with a bibliography, and the authenticated PDF response. It runs automatically after the Electron Next build and again against the packaged app. Install TeX on the build machine to exercise compilation; the check reports a skip when TeX is absent. This catches mismatched bundled toolchain exports that source tests cannot detect. An optional server directory argument lets the same check validate an installed app.

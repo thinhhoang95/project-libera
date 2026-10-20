@@ -101,6 +101,8 @@ export interface PeerOptions {
   library?: string;
   /** Overrides the fast test timings (e.g. to check the write cadence). */
   timings?: Partial<Timings>;
+  /** Writer lease length for synced folders (renewals and takeovers every third of it). */
+  leaseTtlMs?: number;
 }
 
 export async function makePeer(dir: string, name: string, server: ServerProcess, auth: AuthResponse, options: PeerOptions = {}): Promise<Peer> {
@@ -141,6 +143,7 @@ export async function makePeer(dir: string, name: string, server: ServerProcess,
       timings: { writeDebounceMs: 40, writeMaxWaitMs: 400, settleMs: 80, deleteGraceMs: 500, pollMs: 700, retryMs: 700, ...options.timings },
       joinTimeoutMs: 30_000,
       shareSyncTimeoutMs: 15_000,
+      ...(options.leaseTtlMs ? { leaseTtlMs: options.leaseTtlMs } : {}),
     },
   );
   const router = new RouterDouble();

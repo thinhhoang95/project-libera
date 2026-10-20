@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { useNotebookCodeBlockRenderer } from "@/components/libera/slide-live-blocks";
 import { ReferenceRenderProvider, referenceNotebookForPath } from "@/components/libera/references/reference-render-context";
 import {
   getRenderedMarkdownFontStack,
@@ -21,6 +22,8 @@ export function MarkdownPreviewPage({
   const [error, setError] = useState("");
   const request = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const fontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
+  const renderCodeBlock = useNotebookCodeBlockRenderer(snapshot?.documentPath, fontFamily);
 
   const refresh = useCallback(() => {
     if (!window.opener || window.opener.closed) {
@@ -79,9 +82,8 @@ export function MarkdownPreviewPage({
                 mathMarkers={markdownPreferences}
                 content={snapshot.content}
                 documentPath={snapshot.documentPath}
-                fontFamily={getRenderedMarkdownFontStack(
-                  markdownPreferences.renderedMarkdownFontFamily,
-                )}
+                fontFamily={fontFamily}
+                renderCodeBlock={renderCodeBlock}
               />
             </ReferenceRenderProvider>
           ) : (

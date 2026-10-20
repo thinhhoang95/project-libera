@@ -12,10 +12,10 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
-import type { HostConnection, HostStatus, LocalAccount } from "@/lib/collab/local-api";
+import type { HostConnection, HostStatus, LocalAccount, SharedSignInOffer } from "@/lib/collab/local-api";
 import { nudgeHost } from "@/lib/collab/ui/bridge";
 import { collabClient, describeError } from "@/lib/collab/ui/client";
 import { useCollabStatus } from "@/lib/collab/ui/hooks";
@@ -100,7 +100,11 @@ export function CollabAccountDialog({ open, onClose, onJoin }: CollabAccountDial
           <>
             {status?.account ? <ConnectionSection status={status} /> : null}
             {showSignIn ? (
-              <section className="libera-dialog-section">
+              <section className="libera-dialog-section space-y-4">
+                <ContinueFromOtherComputer
+                  account={status?.account ?? null}
+                  onSignedIn={(next) => (next ? collab.setStatus(next) : void collab.refresh())}
+                />
                 <SignInForm
                   key={status?.account?.id ?? "new"}
                   account={status?.account ?? null}
@@ -200,7 +204,7 @@ function UpdateAction() {
               setState("done");
             })
             .catch(() => {
-              setMessage("The update check failed. Open About LiBERA to try again.");
+              setMessage("The update check failed. Open About Libera to try again.");
               setState("done");
             });
         }}
@@ -208,6 +212,151 @@ function UpdateAction() {
         {state === "checking" ? "Checking…" : "Check for updates"}
       </button>
       {message ? <p className="text-xs text-muted-foreground" role="status">{message}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * "Continue as ...": the account another computer shares through the synced
+ * data folder. Also the way back after signing out of this computer, which
+ * turns automatic sign-in off here.
+ */
+function ContinueFromOtherComputer({ account, onSignedIn }: { account: LocalAccount | null; onSignedIn: (status: HostStatus | undefined) => void }) {
+  const id = useId();
+  const [offer, setOffer] = useState<SharedSignInOffer | null>(null);
+  const [masterPassword, setMasterPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [discoveryError, setDiscoveryError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    if (busy) return;
+    let live = true;
+    let checking = false;
+    async function check() {
+      if (!live || checking) return;
+      checking = true;
+      try {
+        const next = await collabClient.sharedSignIn();
+        if (live) {
+          setOffer(next);
+          setDiscoveryError("");
+        }
+      } catch (caught) {
+        if (live) setDiscoveryError(describeError(caught));
+      } finally {
+        checking = false;
+      }
+    }
+    void check();
+    const timer = window.setInterval(() => void check(), 15_000);
+    const checkAgain = () => void check();
+    window.addEventListener("online", checkAgain);
+    window.addEventListener("focus", checkAgain);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+      window.removeEventListener("online", checkAgain);
+      window.removeEventListener("focus", checkAgain);
+    };
+  }, [busy, refresh]);
+
+  if (!offer && !discoveryError && !error) return null;
+
+  async function unlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!masterPassword) {
+      setError("Enter your Libera master password.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await collabClient.unlockSharedSignIn(masterPassword);
+      setMasterPassword("");
+      const next = await collabClient.sharedSignIn();
+      // Unlocking may already have signed in (automatic sign-in was on here).
+      if (next.state === "none") {
+        const status = await collabClient.status();
+        if (status.account && status.connection !== "signed-out" && status.connection !== "needs-sign-in") onSignedIn(status);
+        else setError("No usable sign-in is available from your other computer. Check again after it syncs, or sign in with your email and password.");
+      } else if (next.state === "locked") setError("Your other computer used a different master password. Sign in with your email and password instead.");
+      setOffer(next.state === "locked" ? { state: "none" } : next);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueAs() {
+    if (offer?.state !== "available") return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await collabClient.continueSharedSignIn({ accountId: offer.accountId, serverUrl: offer.serverUrl });
+      onSignedIn(next && typeof next === "object" && "connection" in next ? next : undefined);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const replaces = offer?.state === "available" && account && (account.id !== offer.accountId || account.serverUrl !== offer.serverUrl);
+  return (
+    <div aria-label="Sign in from your other computer" className="space-y-2 rounded-xl border border-input p-3" role="group">
+      {offer?.state === "available" ? (
+        <>
+          <p className="text-sm">You are signed in to collaboration on another computer.</p>
+          <button className={PRIMARY_BUTTON} disabled={busy} type="button" onClick={() => void continueAs()}>
+            {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <LogIn aria-hidden className="h-3.5 w-3.5" />}
+            Continue as {offer.email}
+          </button>
+          <p className="text-xs text-muted-foreground">
+            {offer.serverUrl}
+            {replaces ? ` · Replaces ${account.email} on this computer.` : ""} This computer will sign in automatically again.
+          </p>
+        </>
+      ) : offer?.state === "locked" ? (
+        <form className="space-y-2" onSubmit={(event) => void unlock(event)}>
+          <p className="text-sm">Another computer shares its collaboration sign-in. Enter your Libera master password to use it here.</p>
+          <label className={LABEL} htmlFor={`${id}-master`}>
+            Libera master password
+          </label>
+          <input
+            autoComplete="current-password"
+            className={FIELD}
+            id={`${id}-master`}
+            type="password"
+            value={masterPassword}
+            onChange={(event) => setMasterPassword(event.target.value)}
+          />
+          <button className={SECONDARY_BUTTON} disabled={busy} type="submit">
+            {busy ? "Checking…" : "Unlock"}
+          </button>
+        </form>
+      ) : (
+        <p className="text-sm">No sign-in from another computer is available right now.</p>
+      )}
+      {error || discoveryError ? (
+        <p className="text-sm text-destructive" role="alert">
+          {error || discoveryError}
+        </p>
+      ) : null}
+      <button
+        className={SECONDARY_BUTTON}
+        disabled={busy}
+        type="button"
+        onClick={() => {
+          setError("");
+          setRefresh((value) => value + 1);
+        }}
+      >
+        <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Check again
+      </button>
+      <p className="text-xs text-muted-foreground">Or sign in with your email and password below.</p>
     </div>
   );
 }
@@ -467,6 +616,7 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
 
 function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
   const [confirming, setConfirming] = useState(false);
+  const [everywhere, setEverywhere] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
@@ -474,6 +624,16 @@ function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
       {confirming ? (
         <>
           <p className="text-sm">Shared notebooks stay on this device but stop syncing until you sign in again.</p>
+          <p className="text-xs text-muted-foreground">
+            This computer will not sign in automatically again until you sign in here yourself.
+          </p>
+          <label className="flex items-start gap-2 text-sm">
+            <input checked={everywhere} className="mt-0.5" disabled={busy} type="checkbox" onChange={(event) => setEverywhere(event.target.checked)} />
+            <span>
+              Also stop automatic sign-in on my other computers
+              <span className="block text-xs text-muted-foreground">Computers that are already signed in stay signed in.</span>
+            </span>
+          </label>
           <div className="flex gap-2">
             <button
               className="inline-flex items-center rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
@@ -483,7 +643,7 @@ function SignOutSection({ onSignedOut }: { onSignedOut: () => void }) {
                 setBusy(true);
                 setError("");
                 collabClient
-                  .signOut()
+                  .signOut({ everywhere })
                   .then(() => {
                     setConfirming(false);
                     onSignedOut();

@@ -359,6 +359,8 @@ describe("admin CLI: accounts and audit", () => {
     });
     assert.equal(registered.status, 201);
     const accountId = registered.body.account.id;
+    const grantBeforeDisable = await json<{ grant: string }>(env.server.url, "/v1/auth/device-grants", { token: registered.body.accessToken, body: {} });
+    assert.equal(grantBeforeDisable.status, 200);
     const socket = await env.connect({ id: accountId, familyId: "", token: registered.body.accessToken });
     assert.ok(socket.welcome);
 
@@ -377,8 +379,14 @@ describe("admin CLI: accounts and audit", () => {
     assert.equal(login.status, 401);
 
     assert.equal((await cli("account", "enable", email)).code, 0);
+    assert.equal((await json(env.server.url, "/v1/auth/device-grants/sign-in", { body: { grant: grantBeforeDisable.body.grant } })).status, 401, "enabling an account does not revive old grants");
+    const renewed = await json<{ accessToken: string }>(env.server.url, "/v1/auth/login", { body: { email, password: "correct horse battery" } });
+    assert.equal(renewed.status, 200);
+    const grantBeforeReset = await json<{ grant: string }>(env.server.url, "/v1/auth/device-grants", { token: renewed.body.accessToken, body: {} });
+    assert.equal(grantBeforeReset.status, 200);
     const reset = await cli("account", "reset-password", email, "--json");
     assert.equal(reset.code, 0, reset.stderr);
+    assert.equal((await json(env.server.url, "/v1/auth/device-grants/sign-in", { body: { grant: grantBeforeReset.body.grant } })).status, 401, "admin password reset revokes synced grants");
     const password = reset.json.temporaryPassword as string;
     assert.match(password, /^[A-Za-z2-9]{20}$/);
     assert.equal((await json(env.server.url, "/v1/auth/login", { body: { email, password: "correct horse battery" } })).status, 401);

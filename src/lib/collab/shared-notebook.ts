@@ -8,10 +8,10 @@
 // refuses with 409 `shared-document`; the callers will route through the
 // host's control API instead.
 //
-// The check is synchronous and cheap: one stat of the notebook folder per
-// call, with the marker read only when the folder changed (creating or
-// rewriting the marker changes the folder's mtime) or the cached answer is a
-// few seconds old (some file systems keep coarse folder mtimes).
+// The check is synchronous and cheap: one stat of the marker per call,
+// with its contents read only when its identity changes or the cached
+// answer is a few seconds old. Folder mtimes can be coarse, so they cannot
+// reliably tell us when a takedown removed the marker.
 
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -51,7 +51,7 @@ export function isSharedDocumentError(error: unknown): error is SharedDocumentEr
   return error instanceof SharedDocumentError || (error instanceof StorageError && error.message === SHARED_DOCUMENT_ERROR && error.status === 409);
 }
 
-type CacheEntry = { folderMtimeMs: number; checkedAt: number; marker: SharedNotebookMarker | null };
+type CacheEntry = { identity: string; checkedAt: number; marker: SharedNotebookMarker | null };
 
 const CACHE_KEY = Symbol.for("libera.sharedNotebooks");
 const MAX_AGE_MS = 2000;
@@ -81,18 +81,19 @@ export function sharedNotebookMarker(notebook: string): SharedNotebookMarker | n
   if (!notebook || notebook.startsWith(".") || /[\\/\0]/.test(notebook) || notebook === "..") return null;
   if (getLinkedFolder(notebook)) return null;
   const root = path.join(getAdminRoot(), notebook);
-  let folderMtimeMs: number;
+  let identity: string;
   try {
-    folderMtimeMs = statSync(root).mtimeMs;
+    const stats = statSync(path.join(root, SHARED_MARKER_FILE));
+    identity = `${stats.ino}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.size}`;
   } catch {
     cache().delete(root);
     return null;
   }
   const now = Date.now();
   const cached = cache().get(root);
-  if (cached && cached.folderMtimeMs === folderMtimeMs && now - cached.checkedAt < MAX_AGE_MS) return cached.marker;
+  if (cached && cached.identity === identity && now - cached.checkedAt < MAX_AGE_MS) return cached.marker;
   const marker = readMarker(root);
-  cache().set(root, { folderMtimeMs, checkedAt: now, marker });
+  cache().set(root, { identity, checkedAt: now, marker });
   return marker;
 }
 

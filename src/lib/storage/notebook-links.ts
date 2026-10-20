@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { extractMarkdownLinkOccurrences } from "@/lib/markdown-link-occurrences";
 import { resolveMarkdownFileLink } from "@/lib/markdown-file-links";
-import { filePathFromParts, notebookSystemDirectoryPath } from "@/lib/storage/paths";
+import { filePathFromParts, notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
+import { assertDirectorySignature, readDirectorySignature, readTextSnapshot } from "@/lib/storage/file-signature";
+import { writeJsonAtomically } from "@/lib/storage/fs-utils";
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 // Parse only on the server, when a saved file's fingerprint changes. The links
@@ -12,8 +13,8 @@ export function extractNotebookLinkDestinations(content: string): string[] {
   return [...new Set(extractMarkdownLinkOccurrences(content).map((occurrence) => occurrence.href))];
 }
 
-type LinkEntry = { updatedAt: string; size: number; destinations: string[] };
-type LinkIndex = { version: 1; files: Record<string, LinkEntry> };
+type LinkEntry = { updatedAt: string; size: number; contentHash: string; destinations: string[] };
+type LinkIndex = { version: 2; files: Record<string, LinkEntry> };
 
 function collectFiles(nodes: LiberaTreeNode[]): LiberaFileNode[] {
   return nodes.flatMap((node) => node.kind === "file" ? [node] : collectFiles(node.children));
@@ -22,43 +23,57 @@ function collectFiles(nodes: LiberaTreeNode[]): LiberaFileNode[] {
 async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
   try {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
-    if (index.version === 1 && index.files && typeof index.files === "object") return index;
+    if (index.version === 2 && index.files && typeof index.files === "object") return index;
   } catch {
     // Missing, old or partially synced indexes can be rebuilt from saved files.
   }
-  return { version: 1, files: {} };
+  return { version: 2, files: {} };
 }
 
+const rebuilds = new Map<string, Promise<LinkIndex["files"]>>();
 async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[]) {
+  if (notebook.folder?.missing) return {};
   // Linked folders keep this index in the data folder, never in the user's folder.
   const directory = notebookSystemDirectoryPath(notebook.name);
   const indexPath = path.join(directory, "notebook-links.json");
+  const root = notebookPath(notebook.name);
+  const task = (rebuilds.get(indexPath) ?? Promise.resolve()).catch(() => undefined)
+    .then(() => rebuildDestinations(notebook, files, indexPath, root));
+  rebuilds.set(indexPath, task);
+  void task.finally(() => { if (rebuilds.get(indexPath) === task) rebuilds.delete(indexPath); }).catch(() => undefined);
+  return task;
+}
+
+async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFileNode[], indexPath: string, root: string) {
+  let identity;
+  try { identity = await readDirectorySignature(root); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   const previous = await readLinkIndex(indexPath);
-  const next: LinkIndex = { version: 1, files: {} };
+  const next: LinkIndex = { version: 2, files: {} };
   for (const file of files) {
     if (file.fileType !== "markdown") continue;
+    let snapshot;
+    try { snapshot = await readTextSnapshot(filePathFromParts(notebook.name, file.path.split("/").slice(1))); }
+    catch (error) {
+      // A file may disappear, become unreadable, or change during a tree scan.
+      if (["ENOENT", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") || (error as { status?: number }).status === 409) continue;
+      throw error;
+    }
     const cached = previous.files[file.path];
-    if (cached?.updatedAt === file.updatedAt && cached.size === file.size &&
+    if (cached?.contentHash === snapshot.contentHash &&
         Array.isArray(cached.destinations) && cached.destinations.every((href) => typeof href === "string")) {
-      next.files[file.path] = cached;
+      next.files[file.path] = { ...cached, updatedAt: file.updatedAt, size: file.size };
     } else {
-      const content = await readFile(filePathFromParts(notebook.name, file.path.split("/").slice(1)), "utf8");
       next.files[file.path] = {
-        updatedAt: file.updatedAt, size: file.size,
-        destinations: extractNotebookLinkDestinations(content),
+        updatedAt: file.updatedAt, size: file.size, contentHash: snapshot.contentHash,
+        destinations: extractNotebookLinkDestinations(snapshot.content),
       };
     }
   }
   if (JSON.stringify(previous) !== JSON.stringify(next)) {
-    // Atomic replacement keeps readers and sync clients from seeing partial JSON.
-    const temporaryPath = `${indexPath}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(directory, { recursive: true });
-      await writeFile(temporaryPath, `${JSON.stringify(next)}\n`, "utf8");
-      await rename(temporaryPath, indexPath);
-    } finally {
-      await rm(temporaryPath, { force: true });
-    }
+    // Do not recreate a notebook deleted while this derived index was built.
+    try { await writeJsonAtomically(indexPath, next, () => assertDirectorySignature(root, identity)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   }
   return next.files;
 }
@@ -66,6 +81,7 @@ async function notebookDestinations(notebook: LiberaNotebookNode, files: LiberaF
 export async function populateRelatedNotebooks(notebooks: LiberaNotebookNode[]) {
   const filesByNotebook = notebooks.map((notebook) => collectFiles(notebook.children));
   const allFiles = new Map(filesByNotebook.flat().map((file) => [file.path, file]));
+  for (const file of allFiles.values()) delete file.linkedFilePaths;
   for (const [index, notebook] of notebooks.entries()) {
     const entries = await notebookDestinations(notebook, filesByNotebook[index]);
     const related = new Set<string>();

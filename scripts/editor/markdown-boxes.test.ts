@@ -126,7 +126,7 @@ test("source toolbar exposes all highlight colors and inserts the chosen box mar
   try {
     await act(async () => root.render(createElement(MarkdownToolbar, {
       files: [], documentPath: "note.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 100,
-      onEnumerateHeadings: noop, onFixChatGptEquations: noop, onInsert: (before) => { calls.push(before); },
+      onEnumerateHeadings: noop, onFixChatGptEquations: noop, onInsert: (before) => { calls.push(before); }, onInsertTable: noop,
       onInsertExistingImage: noop, onInsertImage: async () => {}, onMarkdownZoomChange: noop,
       onStartScreenshotSnip: noop, onTogglePreviewFullscreen: noop, onOpenFileLink: async () => false, previewFullscreen: false,
     })));

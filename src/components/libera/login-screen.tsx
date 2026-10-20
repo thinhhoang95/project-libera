@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
-import { ArrowRight, BookOpen, Check, Eye, EyeOff, ImagePlus, LockKeyhole, MoreHorizontal } from "lucide-react";
+import { ArrowRight, Check, Eye, EyeOff, ImagePlus, LockKeyhole, MoreHorizontal } from "lucide-react";
 import { WindowControls } from "@/components/libera/window-controls";
 import styles from "./login-screen.module.css";
 import { defaultLoginWallpaper, LOGIN_WALLPAPERS, readLoginWallpaper, saveLoginWallpaper, subscribeLoginWallpaper } from "./login-wallpaper";
@@ -109,18 +109,11 @@ export function LoginScreen({
       </div>
       <section className={styles.card} aria-labelledby="login-heading">
         <div className={styles.brand}>
-          <span className={styles.brandIcon}><BookOpen aria-hidden size={40} strokeWidth={1.5} /></span>
-          <div>
-            <p className={styles.brandName}>Libera</p>
-            <p className={styles.tagline}>Your knowledge, organized</p>
-          </div>
+          <img className={styles.brandIcon} src="/libera-icon.png" alt="Libera" width={96} height={96} draggable={false} />
         </div>
         <h1 id="login-heading" className={styles.heading}>
           {yourName ? `Welcome, ${yourName}` : "Sign in"}
         </h1>
-        <p className={styles.subtitle}>
-          Sign in to continue to your notebooks.
-        </p>
         <form className={styles.form} onSubmit={onLogin} aria-busy={busy}>
           <label className={styles.label} htmlFor="password">
             Password

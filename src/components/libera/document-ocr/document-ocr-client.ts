@@ -1,18 +1,9 @@
 "use client";
 
 import { apiRequest } from "@/components/libera/api-client";
+import { ensureLocalModel } from "@/components/libera/local-models/local-model-client";
 import { PICTURE_PLACEHOLDER_PREFIX, type DocTagsConversion, type DocumentBox } from "@/lib/document-ocr/doctags";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-
-export type DocumentOcrModelStatus = {
-  state: "unconfigured" | "missing" | "downloading" | "ready" | "error";
-  directory: string;
-  downloadedBytes: number;
-  totalBytes: number;
-  error: string;
-  model: string;
-  license: string;
-};
 
 export type DocumentOcrPageResult = DocTagsConversion & {
   stopped: "eos" | "length" | "loop" | "cancelled";
@@ -20,59 +11,9 @@ export type DocumentOcrPageResult = DocTagsConversion & {
   ms: number;
 };
 
-export function fetchDocumentOcrModelStatus() {
-  return apiRequest<DocumentOcrModelStatus>("/api/document-ocr/model");
-}
-
-export function startDocumentOcrModelDownload() {
-  return apiRequest<DocumentOcrModelStatus>("/api/document-ocr/model", { method: "POST" });
-}
-
-export function cancelDocumentOcrModelDownload() {
-  return apiRequest<DocumentOcrModelStatus>("/api/document-ocr/model", { method: "DELETE" });
-}
-
-// One prompt for the whole app: features ask for the model, and the dialog
-// (mounted once) shows setup or download progress until it is ready.
-type GateState = { open: boolean };
-let gateState: GateState = { open: false };
-const gateListeners = new Set<() => void>();
-let gateWaiters: Array<(ready: boolean) => void> = [];
-
-function setGate(next: GateState) {
-  gateState = next;
-  for (const listener of gateListeners) listener();
-}
-
-export function subscribeDocumentOcrGate(listener: () => void) {
-  gateListeners.add(listener);
-  return () => gateListeners.delete(listener);
-}
-
-export function getDocumentOcrGate() {
-  return gateState;
-}
-
-/** Called by the dialog when the model became ready (true) or the user closed it (false). */
-export function settleDocumentOcrGate(ready: boolean) {
-  const waiters = gateWaiters;
-  gateWaiters = [];
-  setGate({ open: false });
-  for (const resolve of waiters) resolve(ready);
-}
-
-/** Resolve true once the model is installed, asking the user to set it up first when needed. */
-export async function ensureDocumentOcrModel(): Promise<boolean> {
-  try {
-    if ((await fetchDocumentOcrModelStatus()).state === "ready") return true;
-  } catch {
-    // Show the dialog; it reports the error.
-  }
-
-  return new Promise<boolean>((resolve) => {
-    gateWaiters.push(resolve);
-    setGate({ open: true });
-  });
+/** Resolve true once the PDF reading model is installed, offering its download first when needed. */
+export function ensureDocumentOcrModel() {
+  return ensureLocalModel("reading");
 }
 
 /** Read one image into Markdown. `maxEdge` caps the resolution the model reads it at. */

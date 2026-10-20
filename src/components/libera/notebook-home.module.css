@@ -51,10 +51,6 @@
 .newMenuList svg { color: #5a6a94; }
 
 .hero { margin-top: auto; padding-top: clamp(26px, 4vw, 52px); }
-.heroCopy { max-width: 80%; color: #172039; }
-.eyebrow { display: flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: #5a6a94; }
-.hero h1 { margin-top: 8px; font-size: clamp(25px, 3.3cqi, 38px); line-height: 1.16; font-weight: 700; letter-spacing: -1.2px; overflow-wrap: anywhere; }
-.heroCopy > p:last-child { margin-top: 9px; font-size: 14px; color: #5c6885; line-height: 1.55; }
 
 /* Glass search bar floating on the cover photo. */
 .search { position: relative; margin-top: 20px; max-width: 680px; }
@@ -120,6 +116,7 @@
 .kindChip[data-kind=text] { --kind: #4b6a88; }
 .kindChip[data-kind=image] { --kind: #29966c; }
 .kindChip[data-kind=pdf] { --kind: #d16d54; }
+.kindChip[data-kind=audio] { --kind: #c2477a; }
 .fileTags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
 /* Above the stretched open button so it takes its own clicks. */
 .editTags { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; font-size: 11px; color: var(--home-muted); opacity: 0; transition: opacity 120ms, background 120ms; }
@@ -177,8 +174,8 @@
 :global(.dark) .home { --home-ink: #e9edfb; --home-muted: #a2acc5; --home-line: #2c3243; --home-surface: #1c202b; --home-page: #1a1d29; background: linear-gradient(140deg, #171a24, #1b1d2a); }
 :global(.dark) .cover::before { background: linear-gradient(104deg, #161a2ce0, #1b2137a6 48%, #1b213747 80%), linear-gradient(#1b213730, #1b213730); }
 :global(.dark) .cover::after { background: linear-gradient(to bottom, #00000000 50%, color-mix(in srgb, var(--home-page) 70%, transparent) 80%, var(--home-page)); }
-:global(.dark) .title, :global(.dark) .heroCopy { color: #f4f5ff; }
-:global(.dark) .eyebrow, :global(.dark) .metadata, :global(.dark) .heroCopy > p:last-child { color: #c6d2f4; }
+:global(.dark) .title { color: #f4f5ff; }
+:global(.dark) .metadata { color: #c6d2f4; }
 :global(.dark) .newMenuList { background: #1c2030ed; border-color: #ffffff1f; box-shadow: 0 18px 40px #00000066; }
 :global(.dark) .newMenuList button { color: #eef1ff; }
 :global(.dark) .newMenuList button:hover, :global(.dark) .newMenuList button:focus-visible { background: #ffffff14; }
@@ -206,14 +203,12 @@
   .stat { gap: 10px; padding: 15px 12px; }
   .statIcon { width: 37px; height: 40px; border-radius: 12px; }
   .stat .statDate { font-size: 12px; }
-  .heroCopy { max-width: 90%; }
 }
 @container (max-width: 630px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cover { padding-bottom: 30px; }
   .cover { min-height: 230px; }
   .hero { padding-top: 24px; }
-  .heroCopy { max-width: 100%; }
   .search input { height: 50px; }
   .searchIcon { top: 15px; }
   .clearSearch { top: 11px; }

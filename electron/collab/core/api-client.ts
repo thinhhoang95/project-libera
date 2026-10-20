@@ -30,10 +30,15 @@ import type {
   DecideSuggestionsResponse,
   DocumentInfo,
   EditMessageRequest,
+  FolderLease,
+  FolderLeaseRequest,
   Invitation,
   InvitationPreview,
   LoginRequest,
   LogoutRequest,
+  DeviceGrantRequest,
+  DeviceGrantResponse,
+  DeviceGrantSignInRequest,
   MarkNotificationsReadRequest,
   Member,
   NotificationInfo,
@@ -217,6 +222,20 @@ export class ApiClient {
     return this.request("POST", ApiRoutes.logout, { body, anonymous: true });
   }
 
+  /** A grant that lets the person's other computers sign in (DeviceGrantRequest). */
+  createDeviceGrant(body: DeviceGrantRequest = {}): Promise<DeviceGrantResponse> {
+    return this.request("POST", ApiRoutes.deviceGrants, { body });
+  }
+
+  /** Revokes every device grant of the account; signed-in computers stay signed in. */
+  revokeDeviceGrants(): Promise<void> {
+    return this.request("DELETE", ApiRoutes.deviceGrants);
+  }
+
+  deviceGrantSignIn(body: DeviceGrantSignInRequest): Promise<AuthResponse> {
+    return this.request("POST", ApiRoutes.deviceGrantSignIn, { body, anonymous: true });
+  }
+
   me(): Promise<Account> {
     return this.request("GET", ApiRoutes.me);
   }
@@ -249,6 +268,16 @@ export class ApiClient {
 
   deleteProject(projectId: string): Promise<void> {
     return this.request("DELETE", ApiRoutes.project(projectId));
+  }
+
+  /** Takes or renews the writer lease of a synced folder (granted: false when another installation holds it). */
+  acquireFolderLease(projectId: string, body: FolderLeaseRequest): Promise<FolderLease> {
+    return this.request("POST", ApiRoutes.folderLease(projectId), { body });
+  }
+
+  /** Gives the lease up, if `holder` still holds it. */
+  releaseFolderLease(projectId: string, folderId: string, holder: string): Promise<void> {
+    return this.request("DELETE", ApiRoutes.folderLease(projectId), { query: { folderId, holder } });
   }
 
   listMembers(projectId: string): Promise<Member[]> {

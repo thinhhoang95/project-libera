@@ -23,6 +23,8 @@ export type OpenTab = {
   rawUrl?: string;
   /** Set on read-only tabs that show a gallery photo instead of a notebook file. */
   gallery?: { photoId: string };
+  /** Set on the tab of a recording in progress, which is not a notebook file yet. */
+  recording?: { id: string };
   untitled?: boolean;
   standaloneSaveId?: string;
   saveDirectory?: string;
@@ -36,6 +38,8 @@ export type MarkdownTabViewState = {
   editorScrollLeft?: number;
   editorScrollTop?: number;
   line?: number;
+  /** The highlighted passage in either editor, as source offsets, for "link to selection". */
+  linkSelection?: { end: number; start: number };
   previewScrollLeft?: number;
   previewScrollTop?: number;
   selectionEnd?: number;
@@ -64,6 +68,9 @@ export type PdfTabViewState = {
   selectedAnnotationId?: string;
   shapeKind?: PdfShapeKind;
   strokeWidth?: number;
+  /** One-shot request, cleared by the viewer: scroll to the selected annotation
+   * instead of restoring the saved scroll position (set when following a link). */
+  revealSelectedAnnotation?: boolean;
   textColor?: string;
   tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
   zoom?: number;
@@ -97,6 +104,8 @@ export type ImageTabViewState = {
   panX?: number;
   panY?: number;
   selectedAnnotationId?: string;
+  /** One-shot request, cleared by the viewer: select and show the annotation. */
+  revealSelectedAnnotation?: boolean;
   textColor?: string;
   tool?: "select" | "text";
   zoom?: number;
@@ -112,7 +121,26 @@ export type TextTabViewState = {
   reveal?: { line: number; endLine?: number; nonce: number };
 };
 
+export type AudioTabViewState = {
+  /** Where playback was, in seconds. */
+  currentTime?: number;
+  playbackRate?: number;
+  volume?: number;
+  /** Audio Boost gain above 100%: 1 is off, up to 4. */
+  boost?: number;
+  transcriptOpen?: boolean;
+  /** Width of the transcript panel in pixels. */
+  transcriptWidth?: number;
+  followPlayback?: boolean;
+  /**
+   * One-shot request (Global Search) to play a passage: from the first of its
+   * segments with one of `terms`, or from `seconds` when none has.
+   */
+  reveal?: { seconds: number; end?: number; terms?: string[]; nonce: number };
+};
+
 export type OpenTabViewState = {
+  audio?: AudioTabViewState;
   image?: ImageTabViewState;
   latex?: LatexTabViewState;
   markdown?: MarkdownTabViewState;
@@ -258,6 +286,16 @@ export type MarkdownFileLinkSelection = {
   viewState?: OpenTabViewState;
 };
 
+/** A link to the passage highlighted in another open Markdown tab. */
+export type MarkdownSelectionLinkOption = {
+  href: string;
+  id: string;
+  label: string;
+  tabName: string;
+  /** For example "Link to highlight in paper.pdf". */
+  title: string;
+};
+
 export type MarkdownFileLinkRange = {
   end: number;
   start: number;
@@ -375,6 +413,7 @@ export type LiberaWorkspace = {
     options?: { viewState?: OpenTabViewState; placement?: "tab" | "right" | "bottom" },
   ) => Promise<void>;
   openMarkdownFileLink: (sourcePath: string, href: string) => Promise<boolean>;
+  listMarkdownSelectionLinks: (sourcePath: string) => MarkdownSelectionLinkOption[];
   openCreateNotebookDialog: () => void;
   openCreateNotebookGroupDialog: () => void;
   openEditNotebookDialog: (notebook: LiberaNotebookNode) => void;

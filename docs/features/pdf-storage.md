@@ -1,7 +1,8 @@
 # PDF annotations and extracted text
 
-PDF annotations are stored by complete relative file path in each notebook's
-`.libera/annotations/pdf/by-path/` directory. Same-named PDFs in different
+PDF annotations, and the PDF's review comment threads (key `comments`; see
+[Review Mode](../review-mode.md#review-comments-on-pdfs)), are stored by complete
+relative file path in each notebook's `.libera/annotations/pdf/by-path/` directory. Same-named PDFs in different
 folders have independent notes. File and folder renames, moves, copies, archive,
 and deletion update their corresponding sidecars.
 

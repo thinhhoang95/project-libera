@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, cp, link, mkdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, link, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { StorageError } from "@/lib/storage/errors";
+import { assertFileContentHash, assertFileSignature } from "./file-signature";
 
 export async function pathExists(targetPath: string) {
   try {
@@ -108,12 +109,44 @@ export async function writeJsonAtomically(targetPath: string, value: unknown, be
     // A source deletion can race recursive mkdir. Remove only empty directories
     // this call created, so an aborted cache write cannot resurrect a notebook.
     if (!published && createdRoot) {
-      let directory = path.dirname(targetPath);
-      while (directory === createdRoot || directory.startsWith(`${createdRoot}${path.sep}`)) {
+      // Windows mkdir can return a \\?\ path while targetPath uses a drive
+      // letter. Compare the same representation before removing empty parents.
+      const createdDirectory = path.toNamespacedPath(createdRoot);
+      let directory = path.toNamespacedPath(path.dirname(targetPath));
+      while (directory === createdDirectory || directory.startsWith(`${createdDirectory}${path.sep}`)) {
         try { await rmdir(directory); } catch { break; }
-        if (directory === createdRoot) break;
+        if (directory === createdDirectory) break;
         directory = path.dirname(directory);
       }
     }
+  }
+}
+
+const sourceWrites = new Map<string, Promise<void>>();
+/** A background result must still belong to the same source when it is published. */
+export function writeJsonForSource(targetPath: string, value: object, sourcePath: string, signature: string, contentHash?: string) {
+  const task = (sourceWrites.get(targetPath) ?? Promise.resolve()).catch(() => undefined)
+    .then(() => publishSourceJson(targetPath, value, sourcePath, signature, contentHash));
+  sourceWrites.set(targetPath, task);
+  void task.finally(() => { if (sourceWrites.get(targetPath) === task) sourceWrites.delete(targetPath); }).catch(() => undefined);
+  return task;
+}
+
+async function publishSourceJson(targetPath: string, value: object, sourcePath: string, signature: string, contentHash?: string) {
+  await assertFileSignature(sourcePath, signature);
+  const verify = async () => {
+    await assertFileSignature(sourcePath, signature);
+    if (contentHash) await assertFileContentHash(sourcePath, contentHash);
+  };
+  const publication = randomUUID();
+  await writeJsonAtomically(targetPath, { ...value, _liberaWriteId: publication }, verify);
+  try { await verify(); }
+  catch (error) {
+    // A deletion can race the final rename. Do not remove a newer writer's result.
+    try {
+      const current = JSON.parse(await readFile(targetPath, "utf8"));
+      if (current._liberaWriteId === publication) await rm(targetPath, { force: true });
+    } catch { /* Missing or superseded sidecar. */ }
+    throw error;
   }
 }

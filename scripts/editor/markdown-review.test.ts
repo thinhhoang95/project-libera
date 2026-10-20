@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, applyReviewEdits, commentsKey, decideSuggestions, mapAnchor, newReview, paragraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
+import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, dueReviewReplies, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
 
 const source = "# Title\r\n\r\nFirst **paragraph**.\r\n\r\nSecond paragraph.\r\n\r\nThird paragraph.";
 function fixture(): ReviewDocument {
@@ -19,6 +19,24 @@ test("paragraph selections use exact UTF-16 Markdown block ranges including CRLF
       assert.deepEqual(paragraphRange(value, { start: block.start + 1, end: block.start + 1 }), { start: block.start, end: block.end });
     }
   }
+});
+test("comments attach to the selected text, or to the caret's paragraph", () => {
+  const word = source.indexOf("Second");
+  assert.deepEqual(commentRange(source, { start: word, end: word + 6 }), { start: word, end: word + 6 });
+  // Whitespace around the selection stays outside the anchor; backwards selections are normalized.
+  assert.deepEqual(commentRange(source, { start: word + 6 + 1, end: word - 2 }), { start: word, end: word + 6 });
+  const block = reviewBlocks(source)[2];
+  assert.deepEqual(commentRange(source, { start: word + 2, end: word + 2 }), { start: block.start, end: block.end });
+  assert.deepEqual(commentRange(source, { start: block.end, end: block.end + 4 }), { start: block.start, end: block.end });
+  const tex = "Intro text.\n\nSecond line here.";
+  assert.deepEqual(commentRange(tex, { start: 14, end: 14 }, plainParagraphRange), { start: 13, end: tex.length });
+});
+test("an anchor on part of a paragraph follows edits elsewhere in it", () => {
+  const word = source.indexOf("Second"), anchor = anchorAt(source, { start: word, end: word + 6 });
+  const edited = source.replace("Second paragraph.", "Second paragraph, revised.");
+  assert.deepEqual([mapAnchor(anchor, source, edited).quote, mapAnchor(anchor, source, edited).state], ["Second", "attached"]);
+  const before = source.replace("Second paragraph.", "The Second paragraph.");
+  assert.equal(mapAnchor(anchor, source, before).start, word + 4);
 });
 test("anchors follow insertions and edits but orphan deleted text and refuse ambiguous duplicates", () => {
   const block = reviewBlocks(source)[2], anchor = anchorAt(source, block);
@@ -169,4 +187,23 @@ test('shared semantic recovery preserves resolved orphan reattachment and ambigu
   const ambiguous = syncReview(doc, after + '\n\n__Old__ paragraph.');
   assert.ok(ambiguous.threads.every(thread => thread.anchor.state === 'ambiguous'));
   assert.equal(doc.threads[0].anchor.state, 'orphaned');
+});
+
+test("plan replies are optional, skip settled threads, and do not make the plan stale", () => {
+  const doc = fixture(), ids = doc.threads.map((t) => t.id);
+  const plan = validatePlan({ summary: "No edits", steps: [], dispositions: [
+    { commentId: "c1", reason: "Answered", reply: "  Yes, see section 2.  " },
+    { commentId: "c2", reason: "Withdrawn", reply: "" },
+    { commentId: "c3", reason: "Answered", reply: "Already said." },
+  ], blockingQuestions: [], revisionSummary: "" }, 1, ids, reviewBlocks(source));
+  assert.equal(plan.dispositions[0].reply, "Yes, see section 2.");
+  assert.equal("reply" in plan.dispositions[1], false);
+  doc.threads[2].messages.push({ id: "m3b", text: "Already  said.", createdAt: "2026-09-12" });
+  assert.deepEqual(dueReviewReplies(plan, doc.threads), [{ commentId: "c1", text: "Yes, see section 2." }]);
+  doc.threads[0].status = "resolved";
+  assert.deepEqual(dueReviewReplies(plan, doc.threads), []);
+  const key = commentsKey(doc.threads, ids);
+  doc.threads[1].messages.push({ id: "own", text: "Posted", createdAt: "2026-09-12", author: "agent" });
+  assert.notEqual(commentsKey(doc.threads, ids), key);
+  assert.equal(commentsKey(doc.threads, ids, [{ messageId: "own" }]), key);
 });

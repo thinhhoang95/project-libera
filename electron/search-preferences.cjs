@@ -17,6 +17,15 @@ const DEFAULT_SEARCH_PREFERENCES = Object.freeze({
   readingModelDirectory: "",
 });
 const INDEX_FILE_NAME = "libera-search.sqlite";
+// Each local model's subfolder of the default models folder.
+const MODEL_FOLDERS = Object.freeze({
+  search: "embeddinggemma-2-ONNX",
+  reading: "granite-docling-258M",
+  readAloud: "kokoro-int8-multi-lang-v1_0",
+  speech: "speech",
+  // YOLOE-26 weights and the Python runtime that runs them.
+  detection: "yoloe-26",
+});
 
 function normalizePath(value) {
   if (typeof value !== "string") return "";
@@ -45,7 +54,7 @@ function normalizeSearchPreferences(input) {
     // Earlier versions named a folder; its index file had a fixed name.
     indexFile: normalizePath(value.indexFile) ||
       (normalizePath(value.indexDirectory) ? path.join(normalizePath(value.indexDirectory), INDEX_FILE_NAME) : ""),
-    // The PDF reading model (granite-docling): a folder like its Hugging Face repository.
+    // The PDF reading model (granite-docling): a folder like its Hugging Face repository; empty uses Libera's download.
     readingModelDirectory: normalizePath(value.readingModelDirectory),
   };
 }
@@ -59,10 +68,24 @@ function normalizeSearchPreferences(input) {
  */
 function defaultSearchIndexFile({ adminRoot, configPath, platform = process.platform, localAppData = process.env.LOCALAPPDATA }) {
   if (!configPath) return path.join(adminRoot, ".libera", "search", INDEX_FILE_NAME);
-  const appData = path.dirname(configPath);
-  const base = platform === "win32" && localAppData ? path.join(localAppData, path.basename(appData)) : appData;
   const library = createHash("sha256").update(path.resolve(adminRoot)).digest("hex").slice(0, 16);
-  return path.join(base, "search-index", library, INDEX_FILE_NAME);
+  return path.join(localDataDirectory(configPath, platform, localAppData), "search-index", library, INDEX_FILE_NAME);
+}
+
+/** Libera's application data on this computer: beside the config, or Local on Windows. */
+function localDataDirectory(configPath, platform, localAppData) {
+  const appData = path.dirname(configPath);
+  return platform === "win32" && localAppData ? path.join(localAppData, path.basename(appData)) : appData;
+}
+
+/**
+ * Where Libera downloads its local models when Preferences names no folder:
+ * like the index, on this computer in its application data, shared by every
+ * Master directory. A server without the desktop config keeps them with its data.
+ */
+function defaultModelsDirectory({ adminRoot, configPath, platform = process.platform, localAppData = process.env.LOCALAPPDATA }) {
+  if (!configPath) return path.join(adminRoot, ".libera", "models");
+  return path.join(localDataDirectory(configPath, platform, localAppData), "models");
 }
 
 /** Preferences from LIBERA_SEARCH_* variables, for deployments without the desktop config file. */
@@ -85,8 +108,10 @@ function searchPreferencesFromEnvironment(env = process.env) {
 module.exports = {
   DEFAULT_SEARCH_PREFERENCES,
   INDEX_FILE_NAME,
+  MODEL_FOLDERS,
   SEARCH_DIMENSIONS,
   SEARCH_VISION_TOKENS,
+  defaultModelsDirectory,
   defaultSearchIndexFile,
   normalizeSearchPreferences,
   searchPreferencesFromEnvironment,

@@ -486,7 +486,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   // Esc clears the selection, ⌘A selects all, and + / − change the thumbnail size.
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
-      if (viewingId || dialog || albumMenu || openMenu || photoMenu || !showGrid || document.querySelector(".libera-dialog")) return;
+      if (viewingId || dialog || albumMenu || openMenu || photoMenu || !showGrid || document.querySelector(".libera-dialog, [data-libera-overlay]")) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable=true]")) return;
       const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
       if (event.key === "Escape" && selecting) setSelected(new Set());
@@ -510,7 +510,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
         event.target.value = "";
         void uploadPhotos(files, uploadTargetAlbum?.id);
       }} />
-    <header className="libera-window-drag-region flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
+    <header className="libera-window-drag-region flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-4 py-2" data-command-toolbar="Gallery">
       {selecting ? <>
         <button className={iconButton} aria-label="Clear selection" title="Clear selection (Esc)" onClick={() => setSelected(new Set())}><X className="h-4 w-4" /></button>
         <h2 className="mr-auto text-sm font-semibold">{selected.size} selected</h2>
@@ -849,7 +849,7 @@ function PhotoMenu({ state, archived, onOpenInCanvas, onArchive, onRestore, onDe
   </PopupMenu>;
 }
 
-function AlbumNameDialog({ title, initialName = "", submitLabel, note, busy, error, onClose, onSubmit }: {
+export function AlbumNameDialog({ title, initialName = "", submitLabel, note, busy, error, onClose, onSubmit }: {
   title: string;
   initialName?: string;
   submitLabel: string;

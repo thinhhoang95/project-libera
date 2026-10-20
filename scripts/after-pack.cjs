@@ -54,5 +54,12 @@ exports.default = async function afterPack(context) {
   importFrom(path.join(appRoot, "electron"), ["@huggingface/transformers", "pdfjs-dist/legacy/build/pdf.mjs"]);
   // The Next server loads the top-level sharp.
   importFrom(path.join(appRoot, ".next", "standalone"), ["sharp"]);
+  const latexCheck = spawnSync(process.execPath, [
+    path.join(__dirname, "check-latex-production.cjs"),
+    path.join(appRoot, ".next", "standalone", ".next", "server"),
+  ], { stdio: "inherit", windowsHide: true });
+  if (latexCheck.status !== 0) {
+    throw new Error(`Packed app LaTeX check failed: ${latexCheck.error || latexCheck.status}`);
+  }
   console.log("Packed app runtime loaded successfully.");
 };

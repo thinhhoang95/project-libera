@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { recordingForCompanion } from "@/lib/storage/transcripts";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,7 @@ export async function POST(request: NextRequest) {
   const paths = body.paths.filter(
     (entry): entry is string => typeof entry === "string" && entry.length <= 1024 && !entry.split("/").includes("..") && isSharedNotebookPath(entry),
   );
-  if (paths.length > 0) notifySearchChanges(paths);
+  // A collaborator's transcript reaches the index through its recording.
+  if (paths.length > 0) notifySearchChanges([...new Set(paths.map((entry) => recordingForCompanion(entry) ?? entry))]);
   return NextResponse.json({ accepted: paths.length });
 }

@@ -5,7 +5,7 @@ import { EditorView } from "@codemirror/view";
 import { closeHistory } from "@tiptap/pm/history";
 import type { Transaction } from "@tiptap/pm/state";
 import { TIPTAP_BRIDGE_META } from "@/lib/collab/bindings/tiptap-ytext";
-import { sourceRangeForTiptapSelection, tiptapRangeForSource, tiptapReviewBlocks, tiptapReviewChanges, tiptapReviewKey } from "@/lib/tiptap-review";
+import { sourceRangeForTiptapTextSelection, tiptapReviewBlocks, tiptapReviewChanges, tiptapReviewKey, tiptapSelectionForSourceRange } from "@/lib/tiptap-review";
 import { tiptapChangesKey, type ChangeDecider, type TiptapChangesMeta } from "@/lib/tiptap-changes";
 import { installCodeMirrorReview, setCodeMirrorReviewLocked, setReviewHighlights } from "@/lib/codemirror-review";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
@@ -153,18 +153,18 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       editor.view.dispatch(closeHistory(editor.state.tr));
     }, selection: () => {
       const { from, to } = editor.state.selection;
-      return to > from ? sourceRangeForTiptapSelection(editor, read(), from, to) : null;
+      return to > from ? sourceRangeForTiptapTextSelection(editor, read(), from, to) : null;
     }, focus: (range) => {
-      const target = tiptapRangeForSource(editor, read(), range);
+      const target = tiptapSelectionForSourceRange(editor, read(), range);
       if (!target) return;
-      editor.commands.setTextSelection({ from: target.from + 1, to: Math.max(target.from + 1, target.to - 1) });
+      editor.commands.setTextSelection(target);
       editor.commands.scrollIntoView(); editor.view.focus();
     } });
     function select(x: number, y: number) {
       const review = latest.current;
       if (!review?.enabled || editor!.view.composing) return;
       const { from, to } = editor!.state.selection;
-      const range = sourceRangeForTiptapSelection(editor!, read(), from, to);
+      const range = sourceRangeForTiptapTextSelection(editor!, read(), from, to);
       if (range) {
         if (review.error === VISUAL_SELECTION_ERROR) review.reportError("");
         review.select(range, x, y);
@@ -218,7 +218,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
     const ranges = r?.enabled ? [
       ...(r.doc?.threads.filter((t) => t.anchor.state === "attached" && t.status === "open").map((t) => ({ ...t.anchor, kind: "comment" })) ?? []),
       ...(r.selection ? [{ ...r.selection.range, kind: "selection" }] : []),
-    ].flatMap((range) => { const mapped = tiptapRangeForSource(editor, source, range); return mapped ? [{ from: mapped.from + 1, to: Math.max(mapped.from + 1, mapped.to - 1), kind: range.kind }] : []; }) : [];
+    ].flatMap((range) => { const mapped = tiptapSelectionForSourceRange(editor, source, range); return mapped ? [{ ...mapped, kind: range.kind }] : []; }) : [];
     // Pending agentic-review proposals are previewed inline as changes; their
     // decisions still go through the review so its undo/CAS state stays exact.
     // On a shared document they are overlay suggestions, drawn on their own

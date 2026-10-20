@@ -211,6 +211,25 @@ async function copySearchRuntime(distNodeModulesRoot) {
   await copyPackage(sqliteVecPackageName(), resolveSqliteVecDirectory(), distNodeModulesRoot);
 }
 
+function sherpaOnnxPackageName() {
+  return `sherpa-onnx-${process.platform === "win32" ? "win" : process.platform}-${process.arch}`;
+}
+
+/**
+ * Voice memo transcription runs sherpa-onnx in a worker process
+ * (electron/transcription-worker.mjs). Copy its JavaScript wrapper and only
+ * this platform's native build (the addon with its own ONNX Runtime), not the
+ * builds for every platform it lists as optional.
+ */
+async function copySpeechRuntime(distNodeModulesRoot) {
+  const wrapper = resolvePackageDirectory("sherpa-onnx-node", projectRoot);
+  const destination = path.join(distNodeModulesRoot, "sherpa-onnx-node");
+  await removeIfPresent(destination);
+  await copy(wrapper, destination);
+  const nativePackage = sherpaOnnxPackageName();
+  await copyPackage(nativePackage, resolvePackageDirectory(nativePackage, wrapper), distNodeModulesRoot);
+}
+
 async function listPackageDirectories(nodeModulesDirectory) {
   const entries = await fs.readdir(nodeModulesDirectory, { withFileTypes: true }).catch(() => []);
   const packages = [];
@@ -343,6 +362,7 @@ async function main() {
   }
 
   await copySearchRuntime(distNodeModulesRoot);
+  await copySpeechRuntime(distNodeModulesRoot);
 
   const externalPackages = JSON.parse(await fs.readFile(path.join(distAppRoot, ".next", "standalone", ".libera-external-packages.json"), "utf8"));
   const dependencies = {
@@ -355,6 +375,8 @@ async function main() {
     react: await readPackageVersion(distNodeModulesRoot, "react"),
     "@huggingface/transformers": await readPackageVersion(distNodeModulesRoot, "@huggingface/transformers"),
     [sqliteVecPackageName()]: await readPackageVersion(distNodeModulesRoot, sqliteVecPackageName()),
+    "sherpa-onnx-node": await readPackageVersion(distNodeModulesRoot, "sherpa-onnx-node"),
+    [sherpaOnnxPackageName()]: await readPackageVersion(distNodeModulesRoot, sherpaOnnxPackageName()),
   };
 
   if (process.platform !== "win32") {

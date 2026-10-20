@@ -7,6 +7,8 @@ import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
 import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
+import { readTranscript } from "@/lib/storage/transcripts";
+import { formatClock, speakerName, transcriptLine } from "@/lib/transcription/format";
 import { isTextFileType, type PdfTextPage } from "@/lib/types";
 import { globToRegExp } from "./glob";
 import { resolveLibraryPath, statLibraryPath, suggestSimilarPath, walkLibraryFiles, type LibraryEntry, type ResolvedPath } from "./library";
@@ -333,6 +335,23 @@ function describePageRanges(pages: number[]) {
   return ranges.join(", ");
 }
 
+/** A recording reads as its transcript: one line per segment, with its time and speaker. */
+async function readAudioTranscript(context: ToolContext, resolved: ResolvedPath) {
+  const stats = await statLibraryPath(resolved);
+  if (!stats) return missingFileError(context, resolved);
+  const { transcript, stale } = await readTranscript(resolved.path);
+  if (!transcript) throw new ToolError(`${resolved.path} is a recording without a transcript. Ask the user to transcribe it in the voice memo viewer.`);
+  const lines = transcript.segments.map((segment) => {
+    const name = speakerName(transcript, segment.speaker);
+    return `[${formatClock(segment.start)}]${name ? ` ${name}:` : ""} ${segment.text}`;
+  });
+  let body = lines.join("\n");
+  if (body.length > context.maxResultChars) body = `${body.slice(0, body.lastIndexOf("\n", context.maxResultChars))}\n\n(Transcript cut short.)`;
+  const speakers = transcript.speakers.map((speaker) => speaker.name).join(", ");
+  const header = `Transcript of ${resolved.path} (${formatClock(transcript.audio.duration)}${speakers ? `; ${speakers}` : ""})${stale ? ". The recording changed after it was transcribed." : ""}. Link to a moment as [3:05](${resolved.path.split("/").map(encodeURIComponent).join("/")}#t=185), the time in seconds.`;
+  return ok(`${header}\n\n${body}`, `${plural(lines.length, "segment")}`);
+}
+
 async function readPdf(context: ToolContext, resolved: ResolvedPath, pagesArgument: string | undefined) {
   let pages: PdfTextPage[];
   try { pages = (await readPdfTextCache(resolved.path)).pages; }
@@ -403,6 +422,7 @@ Usage:
       return readPdf(context, resolved, optionalString(args, "pages"));
     }
     if (fileType === "image") throw new ToolError(`${resolved.path} is an image; Read cannot show images.`);
+    if (fileType === "audio") return readAudioTranscript(context, resolved);
     const current = await readCurrentText(context, resolved);
     if (!current) return missingFileError(context, resolved);
     const lines = splitLines(current.content);
@@ -550,7 +570,7 @@ function grepText(text: string, label: string, options: GrepOptions): { count: n
 const grepTool: AgentTool = {
   name: "Grep",
   kind: "read",
-  description: `Searches file contents with a regular expression, across Markdown, LaTeX, plain-text files and the extracted text of PDFs.
+  description: `Searches file contents with a regular expression, across Markdown, LaTeX, plain-text files, the extracted text of PDFs, and the transcripts of voice memos (recordings).
 
 Usage:
 - pattern is a JavaScript regular expression, e.g. "budget", "Q[34] (report|review)", "\\\\[\\\\[Project Atlas". Escape regex characters to match them literally. Set -i for case-insensitive search.
@@ -558,12 +578,13 @@ Usage:
 - glob filters files by name, e.g. "*.md" or "**/meetings/*.md".
 - output_mode:
   - "files_with_matches" (default): paths of files that match, most recently modified first.
-  - "content": the matching lines as "path:line number:text" (PDF lines as "path:page N:text"). Add context lines with -A (after), -B (before) or -C (both). -n (line numbers) is on by default.
+  - "content": the matching lines as "path:line number:text" (PDF lines as "path:page N:text"; transcript lines as "path:[m:ss] Speaker: text"). Add context lines with -A (after), -B (before) or -C (both). -n (line numbers) is on by default.
   - "count": the number of matches per file.
 - head_limit caps the output entries (default ${GREP_DEFAULT_HEAD_LIMIT}); use offset to page through more.
 - multiline: true lets patterns span lines ("." also matches newlines).
 - PDFs are searched through their extracted text. PDFs whose text has never been extracted are extracted on the fly within a time budget; any left out are reported.
-- Prefer Grep over reading many files to find where something is mentioned. For a PDF hit, Read the PDF with pages set to that page.`,
+- Recordings (.m4a, .mp3, .wav, …) are searched through their transcripts, one line per passage with its time and speaker, so a pattern like "Vy:.*budget" finds what Vy said about the budget. Recordings without a transcript are skipped.
+- Prefer Grep over reading many files to find where something is mentioned. For a PDF hit, Read the PDF with pages set to that page; for a recording, Read it for the whole transcript.`,
   parameters: {
     type: "object",
     properties: {
@@ -633,6 +654,7 @@ Usage:
     let extractionTime = 0;
     let unsearchedPdfs = 0;
     let unreadable = 0;
+    let untranscribed = 0;
     let timedOut = false;
     const hits: GrepHit[] = [];
     const uncachedPdfs: LibraryEntry[] = [];
@@ -651,6 +673,15 @@ Usage:
       if (entry.fileType === "pdf") {
         const cached = await readFreshPdfTextCache(entry.path).catch(() => null);
         if (cached) searchPdf(entry, cached.pages); else uncachedPdfs.push(entry);
+        continue;
+      }
+      // A recording is searched through its transcript, never its audio.
+      if (entry.fileType === "audio") {
+        const { transcript, stale } = await readTranscript(entry.path).catch(() => ({ transcript: null, stale: false }));
+        if (!transcript || stale) { untranscribed++; continue; }
+        const text = transcript.segments.map((segment) => transcriptLine(transcript, segment)).join("\n");
+        const result = grepText(text, entry.path, { ...options, lineNumbers: false });
+        if (result.count) hits.push({ path: entry.path, mtimeMs: entry.mtimeMs, count: result.count, lines: result.lines });
         continue;
       }
       let content = context.drafts.get(entry.path);
@@ -681,6 +712,7 @@ Usage:
     if (unsearchedPdfs) notes.push(`${plural(unsearchedPdfs, "PDF")} were not searched because their text has not been extracted yet. Read one (or Grep it by path) to extract it.`);
     if (timedOut) notes.push("The search stopped early because it took too long; narrow the path or glob.");
     if (unreadable) notes.push(`${plural(unreadable, "file")} could not be read.`);
+    if (untranscribed) notes.push(`${plural(untranscribed, "recording")} had no transcript to search.`);
     const where = root ? root.path : "the library";
     if (!entries.length) {
       return ok([`No matches for ${JSON.stringify(pattern)} in ${where}.`, ...notes].join("\n"), "No matches");

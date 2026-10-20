@@ -284,6 +284,10 @@ export class CollabHost {
     return this.options.dbPath;
   }
 
+  get installationId(): string {
+    return this.options.installationId;
+  }
+
   /** The signed-in account id, or null. */
   get accountId(): string | null {
     return this.account?.accountId ?? null;
@@ -410,7 +414,8 @@ export class CollabHost {
     if (!this.storeInstance || !this.syncClient) return;
     for (const docId of this.store.docsWithUnacked()) {
       if (this.background.has(docId)) continue;
-      if (this.store.getDocMeta(docId)?.readOnlyReason === "access-revoked") continue;
+      const reason = this.store.getDocMeta(docId)?.readOnlyReason;
+      if (reason === "access-revoked" || reason === "document-deleted") continue;
       const hub = this.registry.acquire(docId);
       let released = false;
       let unsubscribe: () => void = () => {};

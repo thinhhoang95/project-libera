@@ -1,8 +1,9 @@
-import { deletePdfAnnotationDirectory, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
+import { deleteImageAnnotationDirectory, deletePdfAnnotationDirectory, migrateImageAnnotationDirectory, migrateImageAnnotations, migratePdfAnnotationDirectory, migratePdfAnnotations } from "./annotations";
 import { moveReviewPath, deleteReviewPath, copyReviewPath } from "./markdown-reviews";
 import { detachReferenceAttachments, moveReferenceAttachments } from "./references";
 import { copyReferencesOnMove, type ReferenceMoveResult } from "@/lib/references/moves";
-import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
@@ -16,7 +17,6 @@ import {
 import {
   assertDirectoryExists,
   copyFileIfExists,
-  ensureParentDirectory,
   findAvailableFilePath,
   moveFileIfExists,
   movePath,
@@ -29,17 +29,17 @@ import {
   movePdfTextCache,
   movePdfTextCacheDirectory,
 } from "@/lib/storage/pdf-text-cache";
-import { pruneUnusedMarkdownImageAssets } from "@/lib/storage/markdown-assets";
+import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, pruneUnusedMarkdownImageAssets, readMarkdownAssetDocuments } from "@/lib/storage/markdown-assets";
 import {
   assertSafeSegment,
+  audioSidecarDirectories,
+  audioPeaksPath,
+  audioSidecarPaths,
   ensureAdminRoot,
   filePathFromParts,
   imageAnnotationsPath,
+  imageAnnotationsDirectoryPath,
   itemPath,
-  legacyImageAnnotationsPath,
-  markdownAssetsDirectoryPath,
-  markdownAssetsDirectoryPathForDirectory,
-  markdownAssetsDirectoryPathFromParts,
   notebookPath,
   pdfAnnotationsPath,
   pdfAnnotationsDirectoryPath,
@@ -57,8 +57,9 @@ import {
   renameFileMetadataPath,
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
-import { isTextFileType, type LiberaFilePayload } from "@/lib/types";
+import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { copyTranscript } from "@/lib/storage/transcripts";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
@@ -143,14 +144,15 @@ export async function updateMarkdownFile(relativePath: string, content: string) 
 
   // A shared file is a working copy of a CRDT document; edits go through the host.
   assertNotSharedItem(notebook, pathParts);
+  const previous = fileType === "markdown" ? await readFile(filePathFromParts(notebook, pathParts), "utf8") : undefined;
   await writeFile(filePathFromParts(notebook, pathParts), content, "utf8");
-  if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content);
+  if (fileType === "markdown") await pruneUnusedMarkdownImageAssets(relativePath, content, previous);
   notifySearchChanges([relativePath]);
 
   return readLiberaFile(relativePath);
 }
 
-export async function moveFile(relativePath: string, nextNotebook: string, nextName: string) {
+export async function moveFile(relativePath: string, nextNotebook: string, nextName: string): Promise<LiberaFileMovePayload> {
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const safeNextNotebook = assertSafeSegment(nextNotebook, "Notebook name");
@@ -177,13 +179,15 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   }
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
-  await movePath(currentPath, nextPath);
+  if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
+  const images = await prepareMarkdownImageMove(currentRelativePath, nextRelativePath, currentFileType, nextFileType);
+  try { await movePath(currentPath, nextPath); }
+  catch (error) { await images?.discard(); throw error; }
+  await finishMarkdownImageMove(currentRelativePath, nextRelativePath, images);
   await moveRelatedMetadata(
     current.notebook,
-    current.name,
     current.pathParts,
     safeNextNotebook,
-    safeNextName,
     nextParts,
     currentFileType,
     nextFileType,
@@ -195,7 +199,27 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
   const references = await copyCitedReferences(current.notebook, safeNextNotebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return withReferences(await readLiberaFile(nextRelativePath), references);
+  return withReferences({ ...await readLiberaFile(nextRelativePath), ...(images ? { imageSources: images.imageSources } : {}) }, references);
+}
+
+async function prepareMarkdownImageMove(from: string, to: string, currentType: string, nextType: string) {
+  if (currentType !== "markdown" || nextType !== "markdown" || splitFilePath(from).notebook === splitFilePath(to).notebook) return null;
+  const source = splitFilePath(from);
+  const previous = await readFile(filePathFromParts(source.notebook, source.pathParts), "utf8");
+  const images = await copyMarkdownImageAssets(from, to, previous, true);
+  try {
+    if (await readFile(filePathFromParts(source.notebook, source.pathParts), "utf8") !== previous) {
+      throw new StorageError("The document changed while its images were being copied. Try moving it again.", 409);
+    }
+    return { ...images, previous };
+  } catch (error) { await images.discard(); throw error; }
+}
+
+async function finishMarkdownImageMove(from: string, to: string, images: Awaited<ReturnType<typeof prepareMarkdownImageMove>>) {
+  if (!images) return;
+  const destination = splitFilePath(to);
+  await writeFile(filePathFromParts(destination.notebook, destination.pathParts), images.content, "utf8");
+  await cleanupMarkdownImageAssets(splitFilePath(from).notebook, [{ documentPath: from, content: images.previous }]);
 }
 
 /**
@@ -268,19 +292,16 @@ export async function renameFolder(relativePath: string, nextName: string) {
   }
 
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, nextPath);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
   ]);
-  await moveFileIfExists(
-    markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
-    markdownAssetsDirectoryPathForDirectory(current.notebook, [
-      ...parentParts,
-      safeNextName,
-    ]),
-  );
+  // Image URLs are relative to the notebook root, so their paths stay stable.
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(
@@ -339,13 +360,12 @@ export async function archiveFolder(relativePath: string) {
   const nextRelativePath = relativeFilePath(current.notebook, nextParts);
 
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   await rename(currentPath, available.path);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
+  await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
-  await moveFileIfExists(
-    markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts),
-    markdownAssetsDirectoryPathForDirectory(current.notebook, nextParts),
-  );
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await renameFileMetadataPathPrefix(currentRelativePath, nextRelativePath);
@@ -366,14 +386,18 @@ export async function deleteFolder(relativePath: string) {
   const targetPath = itemPath(current.notebook, current.pathParts);
   assertNotSharedItem(current.notebook, current.pathParts);
   await assertDirectoryExists(targetPath, "Folder was not found.");
+  const markdown = (await readMarkdownAssetDocuments(current.notebook)).documents.filter((document) =>
+    document.documentPath.startsWith(`${relativePath}/`));
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
+  await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
   await rm(targetPath, { recursive: true });
   await deletePdfAnnotationDirectory(current.notebook, current.pathParts);
+  await deleteImageAnnotationDirectory(current.notebook, current.pathParts);
   await deletePdfTextCacheDirectory(current.notebook, current.pathParts);
-  await rm(markdownAssetsDirectoryPathForDirectory(current.notebook, current.pathParts), {
-    force: true,
-    recursive: true,
-  });
+  for (const directory of audioSidecarDirectories(current.notebook, current.pathParts)) {
+    await rm(directory, { force: true, recursive: true });
+  }
+  await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
   await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
   await removeFileMetadataPathPrefix(relativeFilePath(current.notebook, current.pathParts));
@@ -389,7 +413,7 @@ export async function moveFileToDirectory(
   relativePath: string,
   destinationDirectory: string,
   destinationName?: string,
-) {
+): Promise<LiberaFileMovePayload> {
   await ensureAdminRoot();
   const current = splitFilePath(relativePath);
   const destination = splitDirectoryPath(destinationDirectory);
@@ -419,13 +443,15 @@ export async function moveFileToDirectory(
   }
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
-  await movePath(currentPath, nextPath);
+  if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
+  const images = await prepareMarkdownImageMove(currentRelativePath, nextRelativePath, currentFileType, nextFileType);
+  try { await movePath(currentPath, nextPath); }
+  catch (error) { await images?.discard(); throw error; }
+  await finishMarkdownImageMove(currentRelativePath, nextRelativePath, images);
   await moveRelatedMetadata(
     current.notebook,
-    current.name,
     current.pathParts,
     destination.notebook,
-    safeNextName,
     nextParts,
     currentFileType,
     nextFileType,
@@ -437,7 +463,7 @@ export async function moveFileToDirectory(
   const references = await copyCitedReferences(current.notebook, destination.notebook, currentRelativePath, nextRelativePath);
   notifySearchChanges([currentRelativePath, nextRelativePath]);
 
-  return withReferences(await readLiberaFile(nextRelativePath), references);
+  return withReferences({ ...await readLiberaFile(nextRelativePath), ...(images ? { imageSources: images.imageSources } : {}) }, references);
 }
 
 export async function archiveFile(relativePath: string) {
@@ -462,13 +488,12 @@ export async function archiveFile(relativePath: string) {
   const nextRelativePath = relativeFilePath(current.notebook, nextParts);
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
+  if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
   await rename(currentPath, available.path);
   await moveRelatedMetadata(
     current.notebook,
-    current.name,
     current.pathParts,
     current.notebook,
-    safeNextName,
     nextParts,
     currentFileType,
     nextFileType,
@@ -500,18 +525,37 @@ export async function copyFileToDirectory(
 
   await assertDirectoryExists(destinationPath, "Destination folder was not found.");
 
-  const available = await findAvailableFilePath(destinationPath, requestedName);
+  let available;
+  for (;;) {
+    available = await findAvailableFilePath(destinationPath, requestedName);
+    try {
+      await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path, constants.COPYFILE_EXCL);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
   const safeNextName = available.name;
   const nextParts = [...destination.pathParts, safeNextName];
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
-  await copyFile(filePathFromParts(current.notebook, current.pathParts), available.path);
+  if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
+  if (currentFileType === "markdown") {
+    let images;
+    try {
+      const content = await readFile(available.path, "utf8");
+      images = await copyMarkdownImageAssets(relativePath, relativeFilePath(destination.notebook, nextParts), content);
+      await writeFile(available.path, images.content, "utf8");
+    } catch (error) {
+      await images?.discard();
+      await rm(available.path, { force: true });
+      throw error;
+    }
+  }
   await copyRelatedMetadata(
     current.notebook,
-    current.name,
     current.pathParts,
     destination.notebook,
-    safeNextName,
     nextParts,
     currentFileType,
   );
@@ -529,6 +573,8 @@ export async function deleteFile(relativePath: string) {
   assertNotSharedItem(notebook, pathParts);
 
   if (fileType === "pdf") await migratePdfAnnotations(notebook, pathParts);
+  if (fileType === "image") await migrateImageAnnotations(notebook, pathParts);
+  const markdown = fileType === "markdown" ? await readFile(filePathFromParts(notebook, pathParts), "utf8") : null;
   await rm(filePathFromParts(notebook, pathParts));
 
   if (fileType === "pdf") {
@@ -537,20 +583,14 @@ export async function deleteFile(relativePath: string) {
   }
 
   if (fileType === "image") {
-    await rm(imageAnnotationsPath(notebook, name), { force: true });
-    await rm(legacyImageAnnotationsPath(notebook, name), { force: true });
+    await rm(imageAnnotationsPath(notebook, pathParts), { force: true });
   }
 
-  if (fileType === "markdown") {
-    await rm(markdownAssetsDirectoryPathFromParts(notebook, pathParts), {
-      force: true,
-      recursive: true,
-    });
-    await rm(markdownAssetsDirectoryPath(notebook, name), {
-      force: true,
-      recursive: true,
-    });
+  if (fileType === "audio") {
+    for (const sidecar of audioSidecarPaths(notebook, pathParts)) await rm(sidecar, { force: true });
   }
+
+  if (markdown !== null) await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
   await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
@@ -641,12 +681,27 @@ export async function getRawFile(relativePath: string) {
   };
 }
 
+/** Transcripts and waveforms of the recordings in a renamed or archived folder. */
+/** Where a raw file is, without reading it, so large recordings can be streamed in ranges. */
+export async function locateRawFile(relativePath: string) {
+  await ensureAdminRoot();
+  const { notebook, name, pathParts } = splitFilePath(relativePath);
+  const fileType = assertSupportedFileName(name);
+  const node = await getFileNode(notebook, pathParts);
+  return { absolutePath: filePathFromParts(notebook, pathParts), contentType: getContentType(name, fileType), fileType, node };
+}
+
+async function moveAudioSidecarDirectories(notebook: string, currentParts: string[], nextParts: string[]) {
+  const next = audioSidecarDirectories(notebook, nextParts);
+  for (const [index, directory] of audioSidecarDirectories(notebook, currentParts).entries()) {
+    await moveFileIfExists(directory, next[index]);
+  }
+}
+
 async function moveRelatedMetadata(
   currentNotebook: string,
-  currentName: string,
   currentPathParts: string[],
   nextNotebook: string,
-  nextName: string,
   nextPathParts: string[],
   currentFileType: string,
   nextFileType: string,
@@ -669,56 +724,27 @@ async function moveRelatedMetadata(
 
   if (currentFileType === "image" && nextFileType === "image") {
     await moveFileIfExists(
-      imageAnnotationsPath(currentNotebook, currentName),
-      imageAnnotationsPath(nextNotebook, nextName),
-    );
-    await moveFileIfExists(
-      legacyImageAnnotationsPath(currentNotebook, currentName),
-      imageAnnotationsPath(nextNotebook, nextName),
+      imageAnnotationsPath(currentNotebook, currentPathParts),
+      imageAnnotationsPath(nextNotebook, nextPathParts),
     );
   } else if (currentFileType === "image") {
-    await rm(imageAnnotationsPath(currentNotebook, currentName), { force: true });
-    await rm(legacyImageAnnotationsPath(currentNotebook, currentName), { force: true });
+    await rm(imageAnnotationsPath(currentNotebook, currentPathParts), { force: true });
   }
 
-  if (currentFileType === "markdown" && nextFileType === "markdown") {
-    const currentAssetsPath = markdownAssetsDirectoryPathFromParts(
-      currentNotebook,
-      currentPathParts,
-    );
-    const nextAssetsPath = markdownAssetsDirectoryPathFromParts(
-      nextNotebook,
-      nextPathParts,
-    );
-
-    if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
-      await ensureParentDirectory(nextAssetsPath);
-      await movePath(currentAssetsPath, nextAssetsPath);
-    }
-
-    const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
-      currentNotebook,
-      currentName,
-    );
-    const nextLegacyAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
-
-    if (
-      currentLegacyAssetsPath !== currentAssetsPath &&
-      (await pathExists(currentLegacyAssetsPath)) &&
-      !(await pathExists(nextLegacyAssetsPath))
-    ) {
-      await ensureParentDirectory(nextLegacyAssetsPath);
-      await movePath(currentLegacyAssetsPath, nextLegacyAssetsPath);
+  if (currentFileType === "audio") {
+    const current = audioSidecarPaths(currentNotebook, currentPathParts);
+    const next = audioSidecarPaths(nextNotebook, nextPathParts);
+    for (const [index, sidecar] of current.entries()) {
+      if (nextFileType === "audio") await moveFileIfExists(sidecar, next[index]);
+      else await rm(sidecar, { force: true });
     }
   }
 }
 
 async function copyRelatedMetadata(
   currentNotebook: string,
-  currentName: string,
   currentPathParts: string[],
   nextNotebook: string,
-  nextName: string,
   nextPathParts: string[],
   currentFileType: string,
 ) {
@@ -732,37 +758,14 @@ async function copyRelatedMetadata(
 
   if (currentFileType === "image") {
     await copyFileIfExists(
-      imageAnnotationsPath(currentNotebook, currentName),
-      imageAnnotationsPath(nextNotebook, nextName),
+      imageAnnotationsPath(currentNotebook, currentPathParts),
+      imageAnnotationsPath(nextNotebook, nextPathParts),
     );
   }
 
-  if (currentFileType === "markdown") {
-    const currentAssetsPath = markdownAssetsDirectoryPathFromParts(
-      currentNotebook,
-      currentPathParts,
-    );
-    const nextAssetsPath = markdownAssetsDirectoryPathFromParts(
-      nextNotebook,
-      nextPathParts,
-    );
-
-    if ((await pathExists(currentAssetsPath)) && !(await pathExists(nextAssetsPath))) {
-      await cp(currentAssetsPath, nextAssetsPath, { recursive: true });
-    }
-
-    const currentLegacyAssetsPath = markdownAssetsDirectoryPath(
-      currentNotebook,
-      currentName,
-    );
-    const nextLegacyAssetsPath = markdownAssetsDirectoryPath(nextNotebook, nextName);
-
-    if (
-      currentLegacyAssetsPath !== currentAssetsPath &&
-      (await pathExists(currentLegacyAssetsPath)) &&
-      !(await pathExists(nextLegacyAssetsPath))
-    ) {
-      await cp(currentLegacyAssetsPath, nextLegacyAssetsPath, { recursive: true });
-    }
+  if (currentFileType === "audio") {
+    // The waveform is a local cache; the transcript may be a shared notebook's companion.
+    await copyFileIfExists(audioPeaksPath(currentNotebook, currentPathParts), audioPeaksPath(nextNotebook, nextPathParts));
+    await copyTranscript(relativeFilePath(currentNotebook, currentPathParts), relativeFilePath(nextNotebook, nextPathParts));
   }
 }

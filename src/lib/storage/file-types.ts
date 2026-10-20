@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  AUDIO_EXTENSIONS,
   IMAGE_EXTENSIONS,
   LATEX_EXTENSIONS,
   MARKDOWN_EXTENSIONS,
@@ -10,6 +11,18 @@ import {
 import { StorageError } from "@/lib/storage/errors";
 import { assertSafeSegment } from "@/lib/storage/paths";
 import type { LiberaFileType } from "@/lib/types";
+
+const AUDIO_CONTENT_TYPES: Record<string, string> = {
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".flac": "audio/flac",
+  ".webm": "audio/webm",
+};
 
 export function getFileType(name: string): LiberaFileType | null {
   const extension = path.extname(name).toLowerCase();
@@ -30,6 +43,10 @@ export function getFileType(name: string): LiberaFileType | null {
     return "pdf";
   }
 
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return "audio";
+  }
+
   if (TEXT_EXTENSIONS.has(extension) || TEXT_FILE_NAMES.has(path.basename(name).toLowerCase())) {
     return "text";
   }
@@ -41,7 +58,7 @@ export function assertSupportedFileName(name: string) {
   const fileType = getFileType(name);
 
   if (!fileType) {
-    throw new StorageError("Only Markdown, LaTeX, image, PDF, and plain-text or code files are supported.");
+    throw new StorageError("Only Markdown, LaTeX, image, PDF, audio, and plain-text or code files are supported.");
   }
 
   return fileType;
@@ -143,6 +160,10 @@ export function getContentType(name: string, fileType: LiberaFileType) {
 
   if (extension === ".webp") {
     return "image/webp";
+  }
+
+  if (fileType === "audio") {
+    return AUDIO_CONTENT_TYPES[extension] ?? "application/octet-stream";
   }
 
   return "application/octet-stream";

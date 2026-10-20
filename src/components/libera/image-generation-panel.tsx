@@ -64,7 +64,8 @@ async function prepareReference(blob: Blob, name: string): Promise<ReferencePhot
   }
 }
 
-function folderOptions(tree: LiberaTree): FolderOption[] {
+/** Notebooks and their folders, as `Notebook / Folder` labels. */
+export function folderOptions(tree: LiberaTree): FolderOption[] {
   const options: FolderOption[] = [];
   function visit(nodes: LiberaTreeNode[], trail: string) {
     for (const node of nodes) {

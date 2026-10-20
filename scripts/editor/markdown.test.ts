@@ -544,22 +544,28 @@ test("visual toolbar and right-click menus expose and execute heading actions", 
   document.body.append(host);
   const root = createRoot(host);
   try {
-    await act(async () => { root.render(createElement(TiptapEditorActions, { editor, documentPath: 'Notebook/note.md', onError: (message: string) => { if (message) assert.fail(message); } })); });
-    const toolbarButton = host.querySelector<HTMLButtonElement>('[aria-label="Enumerate Headings"]')!;
-    assert.ok(toolbarButton);
-    await act(async () => { toolbarButton.click(); });
-    assert.ok(document.querySelector('[aria-label="Heading numbering"]'));
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await act(async () => { root.render(createElement(TiptapEditorActions, { editor, documentPath: 'Notebook/note.md', onPaste: () => undefined, onError: (message: string) => { if (message) assert.fail(message); } })); });
+    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Heading Numbering"]')!;
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+    const chevron = host.querySelector<HTMLButtonElement>('[aria-label="Heading numbering options"]')!;
+    await act(async () => { chevron.click(); });
+    const numberingMenu = document.querySelector('[aria-label="Heading numbering"]')!;
+    for (const label of ['Skip the first level-1 heading', 'Enumerate All Headings', 'Remove All Heading Numbers', 'Enumerate Selected Headings']) assert.ok(numberingMenu.textContent?.includes(label), label);
+    const enumerate = Array.from(numberingMenu.querySelectorAll('button')).find((button) => button.textContent?.includes('Enumerate All Headings'))!;
+    await act(async () => { enumerate.click(); });
+    // The title (the first level-1 heading) is skipped by default.
+    assert.equal(editor.getMarkdown(), '# Title\n\n## 1. Child');
+    assert.equal(document.querySelector('[aria-label="Heading numbering"]'), null);
     await act(async () => {
       editor.commands.setTextSelection({ from: 1, to: editor.state.doc.content.size - 1 });
       editor.view.dom.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
     });
     const menu = document.querySelector('[aria-label="Editor actions"]')!;
     assert.ok(menu);
-    for (const label of ['AI Format', 'AI Rewrite', 'Indent Headings', 'Unindent Headings', 'Enumerate All Headings', 'Enumerate Selected Headings']) assert.ok(menu.textContent?.includes(label), label);
-    const enumerate = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Enumerate All Headings'))!;
-    await act(async () => { enumerate.click(); });
-    assert.equal(editor.getMarkdown(), '# 1. Title\n\n## 1.1. Child');
+    for (const label of ['Paste', 'Paste with Peer Heading Level', 'AI Format', 'AI Rewrite', 'Indent Headings', 'Unindent Headings']) assert.ok(menu.textContent?.includes(label), label);
+    const indent = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Indent Headings'))!;
+    await act(async () => { indent.click(); });
+    assert.equal(editor.getMarkdown(), '## Title\n\n### 1. Child');
     assert.equal(document.querySelector('[aria-label="Editor actions"]'), null);
   } finally {
     await act(async () => root.unmount());
@@ -583,7 +589,7 @@ test("right-clicking a rendered image targets its stored asset and aborts AI on 
     return new Promise<Response>(() => {});
   }) as typeof fetch;
   try {
-    await act(async () => { root.render(createElement(TiptapEditorActions, { editor, documentPath: 'Notebook/note.md', onError: (message: string) => { if (message) assert.fail(message); } })); });
+    await act(async () => { root.render(createElement(TiptapEditorActions, { editor, documentPath: 'Notebook/note.md', onPaste: () => undefined, onError: (message: string) => { if (message) assert.fail(message); } })); });
     await act(async () => { editor.view.dom.querySelector('img')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
     const menu = document.querySelector('[aria-label="Editor actions"]')!;
     const button = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'AI Image to Markdown')!;

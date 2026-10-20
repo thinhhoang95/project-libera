@@ -16,6 +16,7 @@ import { reviewIntent } from "@/lib/markdown-review";
 import { useMarkdownReview, type SharedReviewState } from "./markdown-review-context";
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
+import { usePaletteCommands } from "./command-palette/commands";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
@@ -25,6 +26,41 @@ export function ReviewToggle() {
   const review = useMarkdownReview();
   if (!review) return null;
   return <button type="button" className="review-toggle inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-accent" aria-label="Review mode" title="Review mode" aria-pressed={review.enabled} disabled={!!review.busy || !review.doc} onClick={() => void review.action("toggle", { enabled: !review.enabled })}><MessageSquarePlus size={16} /></button>;
+}
+/** Comment commands for the command palette; renders nothing. */
+export function ReviewPaletteCommands() {
+  const review = useMarkdownReview();
+  usePaletteCommands(null, () => {
+    if (!review?.doc) return [];
+    const group = "Comments";
+    return [
+      {
+        id: "review:add-comment",
+        title: "Add comment on selection",
+        group,
+        icon: MessageSquarePlus,
+        shortcut: "Ctrl/⌘+Alt+M",
+        keywords: "review note annotate",
+        disabled: !review.enabled || !!review.busy,
+        run: () => {
+          const range = review.editorSelection();
+          if (range) review.select(range, window.innerWidth / 2, 160);
+          else review.reportError("Select a passage in the editor to comment on.");
+        },
+      },
+      {
+        id: "review:toggle-mode",
+        title: review.enabled ? "Turn off Review mode" : "Turn on Review mode",
+        group,
+        icon: MessageSquarePlus,
+        keywords: "comments suggestions",
+        disabled: !!review.busy,
+        run: () => void review.action("toggle", { enabled: !review.enabled }),
+      },
+      { id: "review:show-comments", title: "Open comments panel", group, icon: MessageSquarePlus, shortcut: "Ctrl/⌘+3", run: review.showComments },
+    ];
+  });
+  return null;
 }
 export function ReviewComments() {
   const r = useMarkdownReview();
@@ -92,7 +128,7 @@ export function ReviewComments() {
     <div ref={list} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-4">
     {r.error && <p role="alert" className="mt-2 text-sm text-destructive">{r.error} <button className={button} onClick={() => void r.reload()}>Reload review</button></p>}
     {r.recovery && <div className="libera-panel-card space-y-2 p-3 text-sm"><p>A saved review result differs from the current file. Restore its unsaved draft or keep your current text.</p><div className="flex gap-2"><button className={button} onClick={r.restore}>Restore review draft</button><button className={button} onClick={() => void r.action("sync")}>Keep current text</button></div></div>}
-      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select a paragraph in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
+      {!r.doc ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">Open a Markdown or LaTeX document to see its comments.</p> : !threads.length && !openSuggestions.length ? <p className="rounded-lg border border-dashed border-input px-4 py-8 text-center text-sm text-muted-foreground">No comments yet. Select text in the editor to add one.</p> : !shown.length && !shownSuggestions.length && <p className="rounded-lg border border-dashed border-input px-4 py-3 text-sm text-muted-foreground">No comments match “{query.trim()}”.</p>}
       {shownSuggestions.length > 0 && <section className="space-y-2" aria-label="Suggested edits">
         {pendingSuggestions.length > 1 && <div className="flex flex-wrap items-center gap-1">
           <span className="min-w-0 flex-1 text-xs font-semibold">Suggested edits</span>
@@ -219,6 +255,7 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
   // A shared document's threads come from the collab server; the plan
   // addresses them by id like local comments.
   const selectedIds = doc?.threads.filter((t) => t.status === "open" && !excluded.includes(t.id)).map((t) => t.id) ?? [];
+  const plannedReplies = session?.plan.dispositions.filter((d) => d.reply).length ?? 0;
   const contextChanged = !!session && (JSON.stringify(references) !== JSON.stringify(session.references) || JSON.stringify([...selectedIds].sort()) !== JSON.stringify([...session.selectedIds].sort()));
   async function send() {
     setError("");
@@ -274,10 +311,11 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
       </details>}
       {session && <>
         <details><summary className="cursor-pointer text-sm">Review conversation</summary>{session.messages.map((m, i) => <div key={i} className="my-2 whitespace-pre-wrap text-sm"><strong>{m.role === "user" ? "You" : "Assistant"}</strong><p>{m.text}</p></div>)}</details>
-        <section className="rounded-lg border border-border p-3 text-sm"><strong>Plan {session.plan.version}</strong><p className="mt-2 whitespace-pre-wrap">{session.plan.summary}</p><ol className="my-2 list-decimal space-y-2 pl-5">{session.plan.steps.map((step, i) => <li key={i}><p>{step.proposedChange}</p><p className="text-xs text-muted-foreground">{step.rationale}</p></li>)}</ol>{!!session.plan.dispositions.length && <><p className="mt-2 text-xs font-medium">No edit needed</p><ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{session.plan.dispositions.map((d) => <li key={d.commentId}>{d.reason}</li>)}</ul></>}{session.plan.blockingQuestions.map((q, i) => <p key={i} className="mt-2 font-medium">Question: {q}</p>)}{session.plan.revisionSummary && <p className="mt-2 text-xs">{session.plan.revisionSummary}</p>}</section>
+        <section className="rounded-lg border border-border p-3 text-sm"><strong>Plan {session.plan.version}</strong><p className="mt-2 whitespace-pre-wrap">{session.plan.summary}</p><ol className="my-2 list-decimal space-y-2 pl-5">{session.plan.steps.map((step, i) => <li key={i}><p>{step.proposedChange}</p><p className="text-xs text-muted-foreground">{step.rationale}</p></li>)}</ol>{!!session.plan.dispositions.length && <><p className="mt-2 text-xs font-medium">No edit needed</p><ul className="mt-1 list-disc space-y-1 pl-5 text-xs">{session.plan.dispositions.map((d) => <li key={d.commentId}>{d.reason}{d.reply && <p className="mt-1 whitespace-pre-wrap text-muted-foreground"><span className="font-medium">{session.replies?.some((reply) => reply.commentId === d.commentId) ? "Replied" : "Reply"}:</span> {d.reply}</p>}</li>)}</ul></>}{session.plan.blockingQuestions.map((q, i) => <p key={i} className="mt-2 font-medium">Question: {q}</p>)}{session.plan.revisionSummary && <p className="mt-2 text-xs">{session.plan.revisionSummary}</p>}</section>
         {session.messages.at(-1)?.role === "assistant" && session.confirmedVersion && <p className="whitespace-pre-wrap text-sm">{session.messages.at(-1)!.text}</p>}
         {session.phase === "stale" && <p role="status" className="text-sm text-destructive">The document or comments changed. Send a request to refresh the plan.</p>}
         {session.phase === "awaiting_confirmation" && contextChanged && <p className="text-sm">Comments or references changed. Send a request to refresh the plan.</p>}
+        {session.phase === "awaiting_confirmation" && plannedReplies > 0 && <p className="text-xs text-muted-foreground">Confirming posts {plannedReplies === 1 ? "the reply" : `${plannedReplies} replies`} above in {plannedReplies === 1 ? "its comment thread" : "their comment threads"}{r.shared ? ", as AI acting for you" : ""}.</p>}
         {session.phase === "awaiting_confirmation" && <button className={button} disabled={!!r.busy || !!session.plan.blockingQuestions.length || r.recovery || contextChanged} onClick={() => void r.generate("generate", "Confirm the current plan and generate changes.")}>{session.plan.steps.length ? "Confirm plan & generate changes" : "Confirm plan (no edits)"}</button>}
         {!!suggestions.length && <><p className="text-xs">{pending.length} pending · {suggestions.filter((s) => s.status === "conflicted").length} conflicted · {suggestions.filter((s) => s.status === "accepted").length} accepted · {suggestions.filter((s) => s.status === "rejected").length} rejected</p><div className="flex flex-wrap gap-1"><button className={button} disabled={!pending.length || !!r.busy || r.recovery} onClick={() => void r.action("decision", { ids: pending.map((s) => s.id), decision: "accept" })}>Accept all remaining</button><button className={button} disabled={!pending.length || !!r.busy} onClick={() => void r.action("decision", { ids: pending.map((s) => s.id), decision: "reject" })}>Reject all remaining</button><button className={button} disabled={!doc.undo.length || !!r.busy} onClick={() => void r.action("undo")}>Undo acceptance</button></div></>}
         {suggestions.map((s, i) => s.status !== "superseded" && <ReviewSuggestionCard key={s.id} suggestion={s} number={i + 1} />)}
@@ -323,7 +361,8 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
 // ---- Shared documents (plan M2.1–M2.3, M2.6): authors, pending chips,
 // detached anchors and the one-time move of local comments.
 
-function useNow(intervalMs = 60_000) {
+/** The time, refreshed every minute, for "5 min ago" labels. */
+export function useNow(intervalMs = 60_000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), intervalMs);

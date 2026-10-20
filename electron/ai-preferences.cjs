@@ -45,8 +45,30 @@ function normalizeReferencePreferences(input) {
   };
 }
 
+const DEFAULT_WHERE_WAS_I_MODEL = "deepseek/deepseek-v4.1-flash";
+
+/**
+ * Preferences → AI → Where Was I: the session recap on each notebook's home.
+ * `enabled` turns the whole feature off (no card, nothing recorded);
+ * `summarize` only the AI bullets. It has its own cheap model rather than the
+ * fallback model, and is on by default.
+ */
+function normalizeWhereWasIPreferences(input) {
+  const model = typeof input?.model === "string" ? input.model.trim() : "";
+  return {
+    enabled: typeof input?.enabled === "boolean" ? input.enabled : true,
+    summarize: typeof input?.summarize === "boolean" ? input.summarize : true,
+    model: model && model.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(model) ? model : DEFAULT_WHERE_WAS_I_MODEL,
+    reasoningEffort: REASONING_EFFORTS.includes(input?.reasoningEffort) ? input.reasoningEffort : "low",
+  };
+}
+
 function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash") {
-  return { ...normalizeAiFunctionPreferences(input, defaultModel), references: normalizeReferencePreferences(input?.references) };
+  return {
+    ...normalizeAiFunctionPreferences(input, defaultModel),
+    references: normalizeReferencePreferences(input?.references),
+    whereWasI: normalizeWhereWasIPreferences(input?.whereWasI),
+  };
 }
 
 function normalizeAiFunctionPreferences(input, defaultModel) {
@@ -81,6 +103,10 @@ function aiPreferencesEnvironment(preferences, defaultModel) {
     LIBERA_REFERENCES_WEB_SEARCH: String(references.webSearch),
     LIBERA_REFERENCES_CONTACT_EMAIL: references.contactEmail,
     LIBERA_REFERENCES_AUTO_CREATE_PDFS: String(references.autoCreateForPdfs),
+    LIBERA_WHERE_WAS_I_ENABLED: String(normalized.whereWasI.enabled),
+    LIBERA_WHERE_WAS_I_SUMMARIZE: String(normalized.whereWasI.summarize),
+    LIBERA_AI_WHERE_WAS_I_MODEL: normalized.whereWasI.model,
+    LIBERA_AI_WHERE_WAS_I_REASONING_EFFORT: normalized.whereWasI.reasoningEffort,
   };
 }
 
@@ -92,4 +118,4 @@ function aiFunctionEnvironment(normalized) {
     ...(name === "chat" ? [[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_ALTERNATIVE_MODELS`, JSON.stringify(value.alternativeModels)]] : []),
   ]));
 }
-module.exports = { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, REASONING_EFFORTS, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, aiPreferencesEnvironment };
+module.exports = { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, REASONING_EFFORTS, DEFAULT_WHERE_WAS_I_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, aiPreferencesEnvironment };

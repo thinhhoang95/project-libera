@@ -4,6 +4,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { reviewBlocks, type ReviewEdit, type ReviewRange } from "./markdown-review";
 import { diffNodes, type ChangeHunk, type TrackedChange } from "./tiptap-changes";
+import { locateRenderedTextInMarkdown, plainTextOfMarkdown } from "./markdown-selection-links";
 
 export const tiptapReviewKey = new PluginKey<DecorationSet>("liberaReview");
 export const TiptapReview = Extension.create({
@@ -89,6 +90,42 @@ export function sourceRangeForTiptapSelection(editor: Editor, source: string, fr
   // Include only blocks whose editable content actually intersects selection.
   const blocks = tiptapReviewBlocks(editor, source).filter((b) => from === to ? b.from <= from && b.to > from : b.from + 1 < to && b.to - 1 > from);
   return blocks.length ? { start: blocks[0].start, end: blocks.at(-1)!.end } : null;
+}
+
+/** The exact source range of a visual selection, or its whole blocks when the
+ * selected text cannot be found in their Markdown unambiguously. */
+export function sourceRangeForTiptapTextSelection(editor: Editor, source: string, from: number, to: number): ReviewRange | null {
+  const blocks = sourceRangeForTiptapSelection(editor, source, from, to);
+  if (!blocks || from === to) return blocks;
+  const located = locateRenderedTextInMarkdown(source.slice(blocks.start, blocks.end), editor.state.doc.textBetween(from, to, "\n"));
+  return located ? { start: blocks.start + located.start, end: blocks.start + located.end } : blocks;
+}
+
+/** The visual-editor positions showing a source range: its exact text when it
+ * can be found in the mapped blocks, otherwise the blocks themselves. */
+export function tiptapSelectionForSourceRange(editor: Editor, source: string, range: ReviewRange) {
+  const blocks = tiptapReviewBlocks(editor, source).filter((b) => b.start < Math.max(range.end, range.start + 1) && b.end > range.start);
+  if (!blocks.length) return null;
+  const from = blocks[0].from, to = blocks.at(-1)!.to;
+  const target = plainTextOfMarkdown(source.slice(range.start, range.end)).toLocaleLowerCase();
+  if (target) {
+    // Collapse whitespace in the live text while remembering each character's position.
+    let text = "";
+    const positions: number[] = [];
+    editor.state.doc.nodesBetween(from, to, (node, pos) => {
+      if (node.isBlock && text && !text.endsWith(" ")) { text += " "; positions.push(pos); }
+      if (!node.isText) return;
+      for (let index = 0; index < node.text!.length; index++) {
+        const character = /\s/.test(node.text![index]) ? " " : node.text![index].toLocaleLowerCase();
+        if (character === " " && text.endsWith(" ")) continue;
+        text += character;
+        positions.push(pos + index);
+      }
+    });
+    const index = text.indexOf(target);
+    if (index >= 0) return { from: positions[index], to: positions[index + target.length - 1] + 1 };
+  }
+  return { from: from + 1, to: Math.max(from + 1, to - 1) };
 }
 
 function hashText(text: string) {

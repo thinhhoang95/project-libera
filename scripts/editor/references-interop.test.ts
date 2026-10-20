@@ -418,25 +418,25 @@ test("the citation index reads only new and changed files and drops deleted ones
     const indexPath = citationIndexPath("Notes");
     assert.equal(indexPath, path.join(root, ".libera", "references", "citations.json"));
     const index = JSON.parse(await readFile(indexPath, "utf8"));
-    assert.equal(index.version, 2, "version 2 indexes narrative @key candidates too");
+    assert.equal(index.version, 3, "version 3 verifies saved content as well as narrative citation candidates");
     assert.deepEqual(Object.keys(index.files), ["Notes/a.md", "Notes/c.md", "Notes/sub/b.md"]);
-    assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["keys", "mtimeMs", "size"]);
+    assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["contentHash", "keys", "mtimeMs", "size"]);
     const indexMtime = (await stat(indexPath)).mtimeMs;
 
     result = await refreshNotebookCitations("Notes");
     assert.deepEqual(result.stats, { files: 3, read: 0, written: false });
     assert.equal((await stat(indexPath)).mtimeMs, indexMtime, "an unchanged index is not rewritten");
 
-    // Same size and mtime: the file is not read again, so its old keys remain.
+    // Same size and mtime still checks source bytes and reparses changed keys.
     await writeFile(path.join(root, "a.md"), "See [@q; @w, p. 2] and `[@code]`.");
     await utimes(path.join(root, "a.md"), fixed, fixed);
     result = await refreshNotebookCitations("Notes");
-    assert.deepEqual(result.byFile["Notes/a.md"], ["x", "y"]);
-    assert.equal(result.stats.read, 0);
+    assert.deepEqual(result.byFile["Notes/a.md"], ["q", "w"]);
+    assert.equal(result.stats.read, 1);
     await utimes(path.join(root, "a.md"), fixed, new Date(fixed.getTime() + 5000));
     result = await refreshNotebookCitations("Notes");
     assert.deepEqual(result.byFile["Notes/a.md"], ["q", "w"]);
-    assert.equal(result.stats.read, 1);
+    assert.equal(result.stats.read, 0, "timestamp-only changes reuse parsed citations");
 
     await writeFile(path.join(root, "e.md"), "[@new]");
     await unlink(path.join(root, "sub/b.md"));
@@ -498,7 +498,7 @@ test("a linked folder keeps its citation index in the data folder", async () => 
   });
 });
 
-test("an unchanged notebook of 1,000 Markdown files answers from a stat walk", async () => {
+test("an unchanged notebook of 1,000 Markdown files reuses parsed citations", async () => {
   await withLibrary(async (root) => {
     for (let folder = 0; folder < 10; folder++) {
       await mkdir(path.join(root, `f${folder}`), { recursive: true });

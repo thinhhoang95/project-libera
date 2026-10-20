@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
         case "migrate": doc.key = reviewString(body.key, "document key", 2000); break;
         default: throw new Error("Unknown review action.");
       }
-      if (doc.session && !["decision", "undo", "redo", "sync", "toggle", "migrate"].includes(body.action) && commentsKey(doc.threads, doc.session.selectedIds) !== doc.session.commentsKey) {
+      if (doc.session && !["decision", "undo", "redo", "sync", "toggle", "migrate"].includes(body.action) && commentsKey(doc.threads, doc.session.selectedIds, doc.session.replies) !== doc.session.commentsKey) {
         doc.session.phase = "stale";
         doc.session.suggestions = doc.session.suggestions.map((s) => s.status === "pending" ? { ...s, status: "conflicted" } : s);
       }

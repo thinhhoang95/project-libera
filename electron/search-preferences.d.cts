@@ -7,14 +7,16 @@ export type SearchPreferences = {
   backgroundIndexing: boolean;
   /** The index's SQLite file; empty for the default location. */
   indexFile: string;
-  /** The PDF reading model's folder, laid out like its Hugging Face repository; empty when not chosen. */
+  /** The PDF reading model's folder, laid out like its Hugging Face repository; empty for Libera's download folder. */
   readingModelDirectory: string;
 };
 
 export const DEFAULT_SEARCH_PREFERENCES: Readonly<SearchPreferences>;
 export const INDEX_FILE_NAME: string;
+export const MODEL_FOLDERS: Readonly<{ search: string; reading: string; readAloud: string; speech: string; detection: string }>;
 export const SEARCH_DIMENSIONS: SearchPreferences["dimensions"][];
 export const SEARCH_VISION_TOKENS: SearchPreferences["visionTokens"][];
+export function defaultModelsDirectory(options: { adminRoot: string; configPath?: string; platform?: string; localAppData?: string }): string;
 export function defaultSearchIndexFile(options: { adminRoot: string; configPath?: string; platform?: string; localAppData?: string }): string;
 export function normalizeSearchPreferences(input: unknown): SearchPreferences;
 export function searchPreferencesFromEnvironment(env?: NodeJS.ProcessEnv): SearchPreferences;

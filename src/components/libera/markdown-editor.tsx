@@ -13,8 +13,10 @@ import {
   PenLine,
   Search,
   Sparkles,
+  Volume2,
   X,
 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -37,6 +39,7 @@ import {
 } from "react";
 import {
   MarkdownFileLinkPopup,
+  MarkdownHeadingLinkPopup,
   buildMarkdownFileLinkSections,
   flattenMarkdownFileLinkSections,
 } from "@/components/libera/markdown-file-link-popup";
@@ -54,6 +57,12 @@ import {
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import {
+  filterMarkdownHeadingAnchors,
+  markdownHeadingAnchors,
+  markdownHeadingHref,
+  type MarkdownHeadingAnchor,
+} from "@/lib/markdown-heading-anchors";
+import {
   createMarkdownEditorLineIndex,
   getMarkdownEditorLineHighlight,
   initialMarkdownEditorHighlightState,
@@ -66,7 +75,15 @@ import type {
 import type { LiberaFileNode } from "@/lib/types";
 import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
 import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
-import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
+import { smartPasteMarkdown, type SmartPasteMode } from "@/lib/markdown-smart-paste";
+import {
+  applyTextChanges,
+  detectMarkdownHeadingNumbering,
+  getMarkdownHeadingNumberingChanges,
+  mapOffsetThroughTextChanges,
+} from "@/lib/markdown-heading-numbering";
+import { useHeadingNumbering } from "@/components/libera/heading-numbering-state";
+import { PasteMenuItems, readClipboardText, type ClipboardText, type MenuPasteMode } from "@/components/libera/paste-menu-items";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import { citationAt, citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
 import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
@@ -93,6 +110,8 @@ type EditorContextMenuState = {
 type FileLinkPopupContext = {
   destinationEnd: number;
   destinationStart: number;
+  /** This document's headings, parsed once when the destination starts with "#". */
+  headings?: MarkdownHeadingAnchor[];
   query: string;
   x: number;
   y: number;
@@ -631,6 +650,7 @@ function isSameFileLinkPopupContext(
     left?.destinationEnd === right?.destinationEnd &&
     left?.destinationStart === right?.destinationStart &&
     left?.query === right?.query &&
+    !left?.headings === !right?.headings &&
     left?.x === right?.x &&
     left?.y === right?.y
   );
@@ -696,6 +716,19 @@ export function MarkdownEditor({
   const citationHover = useEditorCitationHover();
   const publishedDraftsRef = useRef<string[]>([]);
   const composingRef = useRef(false);
+  const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
+  const headingNumberingRef = useRef(headingNumbering);
+  const renumberingRef = useRef(false);
+  // Switching numbering on (or changing its title setting) renumbers now;
+  // opening a document never edits it.
+  useEffect(() => {
+    const previous = headingNumberingRef.current;
+    headingNumberingRef.current = headingNumbering;
+    if (previous === headingNumbering || !headingNumbering.enabled) return;
+    const textarea = textareaRef.current;
+    if (textarea) renumberHeadings(textarea, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on settings changes only
+  }, [headingNumbering]);
   const previousActiveFilePathRef = useRef(activeFilePath);
   const selectionChangeTimeoutRef = useRef<number | null>(null);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -815,9 +848,16 @@ export function MarkdownEditor({
     const textarea = textareaRef.current;
     if (textarea) { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; }
   }, [activeMatchIndex, findOpen, findQuery, wildcardMatches, reviewRanges, textareaRef, findMatches]);
+  const headingLinkOptions = useMemo(
+    () =>
+      fileLinkPopup?.headings
+        ? filterMarkdownHeadingAnchors(fileLinkPopup.headings, fileLinkPopup.query)
+        : null,
+    [fileLinkPopup],
+  );
   const fileLinkSections = useMemo(
     () =>
-      fileLinkPopup
+      fileLinkPopup && !fileLinkPopup.headings
         ? buildMarkdownFileLinkSections({
             activeFilePath,
             files,
@@ -832,8 +872,9 @@ export function MarkdownEditor({
     () => flattenMarkdownFileLinkSections(fileLinkSections),
     [fileLinkSections],
   );
-  const selectedFileLinkIndex = fileLinkOptions.length
-    ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1)
+  const linkOptionCount = headingLinkOptions ? headingLinkOptions.length : fileLinkOptions.length;
+  const selectedFileLinkIndex = linkOptionCount
+    ? Math.min(activeFileLinkIndex, linkOptionCount - 1)
     : 0;
   const contextMenuHeadingLevels = useMemo(() => {
     if (!contextMenu || contextMenu.start === contextMenu.end) {
@@ -1065,11 +1106,19 @@ export function MarkdownEditor({
       const point = getTextareaClientPointForOffset(textarea, cursor);
       const width = Math.min(384, window.innerWidth - 16);
       const height = 384;
+      const query = destination.replace(/^</, "");
+      const currentPopup = fileLinkPopupRef.current;
+      const headings = query.startsWith("#")
+        ? currentPopup?.destinationStart === destinationStart && currentPopup.headings
+          ? currentPopup.headings
+          : markdownHeadingAnchors(nextValue)
+        : undefined;
 
       return {
         destinationEnd: cursor,
         destinationStart,
-        query: destination.replace(/^</, ""),
+        headings,
+        query,
         x: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
         y: Math.max(8, Math.min(point.y + 6, window.innerHeight - height - 8)),
       };
@@ -1280,6 +1329,44 @@ export function MarkdownEditor({
     onInsertFileLink(selection, range);
   }
 
+  function insertHeadingLink(heading: MarkdownHeadingAnchor) {
+    const popup = fileLinkPopup;
+    const textarea = textareaRef.current;
+
+    closeFileLinkPopup();
+
+    if (!popup || !textarea) {
+      return;
+    }
+
+    const value = editorValueRef.current;
+    const href = markdownHeadingHref(heading);
+    const lineEnd = value.indexOf("\n", popup.destinationEnd);
+    const closeIndex = value.indexOf(")", popup.destinationEnd);
+    const hasClose = closeIndex >= 0 && (lineEnd < 0 || closeIndex < lineEnd);
+    const replacement = hasClose ? href : `${href})`;
+    const caret = popup.destinationStart + href.length + 1;
+    const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
+      selectionStart: popup.destinationStart,
+      selectionEnd: popup.destinationEnd,
+      replacement,
+      nextSelectionStart: caret,
+      nextSelectionEnd: caret,
+      scrollLeft: textarea.scrollLeft,
+      scrollTop: textarea.scrollTop,
+    });
+
+    if (!usedNativeUndo) {
+      commitEditorValue(
+        textarea,
+        `${value.slice(0, popup.destinationStart)}${replacement}${value.slice(popup.destinationEnd)}`,
+      );
+      textarea.setSelectionRange(caret, caret);
+    }
+    readDraft();
+    textarea.focus();
+  }
+
   useEffect(() => {
     if (!contextMenu) {
       return;
@@ -1346,7 +1433,7 @@ export function MarkdownEditor({
     // Without a selection the menu offers Write with AI at the caret.
     event.preventDefault();
     const menuWidth = 288;
-    const menuHeight = (hasText ? 340 : 114) + (image ? 44 : 0);
+    const menuHeight = (hasText ? 384 : 114) + 90 + (image ? 44 : 0);
     setRewritePrompt("");
     setWritePrompt("");
 
@@ -1563,33 +1650,55 @@ export function MarkdownEditor({
       return;
     }
 
-    const clipboardMarkdown = event.clipboardData.getData("text/markdown");
-    const html = clipboardMarkdown ? "" : event.clipboardData.getData("text/html");
-    let replacement = clipboardMarkdown;
-    if (!replacement && html) {
+    const textarea = event.currentTarget;
+    const pasted = pasteClipboardText(textarea, {
+      end: textarea.selectionEnd,
+      start: textarea.selectionStart,
+    }, {
+      html: event.clipboardData.getData("text/html"),
+      markdown: event.clipboardData.getData("text/markdown"),
+      plain: event.clipboardData.getData("text/plain"),
+    }, smartPaste ? "child" : null);
+
+    if (pasted) event.preventDefault();
+  }
+
+  /** Paste clipboard text the way Ctrl+V does: rich HTML becomes Markdown and
+   * Smart Paste places pasted headings. False leaves the paste to the browser
+   * (unless `insertPlain`, used by the right-click menu, which has no browser
+   * paste to fall back on). */
+  function pasteClipboardText(
+    textarea: HTMLTextAreaElement,
+    { end: selectionEnd, start: selectionStart }: { end: number; start: number },
+    clipboard: ClipboardText,
+    smartMode: SmartPasteMode | null,
+    insertPlain = false,
+  ) {
+    let replacement = clipboard.markdown;
+    if (!replacement && clipboard.html) {
       try {
-        replacement = convertClipboardHtmlToMarkdown(html, mathMarkers);
+        replacement = convertClipboardHtmlToMarkdown(clipboard.html, mathMarkers);
       } catch {
         // Preserve the browser's plain-text fallback for malformed clipboard HTML.
-        if (!smartPaste) return;
+        if (!smartMode && !insertPlain) return false;
       }
     }
 
-    const textarea = event.currentTarget;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
     const currentValue = editorValueRef.current;
-    const smartPasted = smartPaste
+    const smartPasted = smartMode
       ? smartPasteMarkdown(
           currentValue,
           { end: selectionEnd, start: selectionStart },
-          replacement || event.clipboardData.getData("text/plain"),
+          replacement || clipboard.plain,
+          smartMode,
         )
       : null;
 
-    if (!replacement && !smartPasted) return;
+    if (!replacement && !smartPasted) {
+      if (!insertPlain || !clipboard.plain) return false;
+      replacement = clipboard.plain;
+    }
 
-    event.preventDefault();
     setContextMenu(null);
     closeFileLinkPopup();
 
@@ -1608,6 +1717,7 @@ export function MarkdownEditor({
       scrollTop: textarea.scrollTop,
     })) {
       commitEditorValue(textarea, nextValue);
+      textarea.setSelectionRange(nextSelection, nextSelection);
     }
 
     readDraft();
@@ -1615,11 +1725,56 @@ export function MarkdownEditor({
       const nextTextarea = textareaRef.current;
       if (!nextTextarea) return;
       nextTextarea.focus();
-      nextTextarea.setSelectionRange(nextSelection, nextSelection);
       emitSelectionChange(nextTextarea);
       syncHighlightLayerScroll(nextTextarea);
-      scheduleFileLinkPopupRefresh(nextTextarea, nextValue);
+      scheduleFileLinkPopupRefresh(nextTextarea, editorValueRef.current);
     });
+    return true;
+  }
+
+  async function pasteFromContextMenu(mode: MenuPasteMode) {
+    const menu = contextMenu;
+    setContextMenu(null);
+    if (!menu) return;
+    const clipboard = await readClipboardText();
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    pasteClipboardText(
+      textarea,
+      { end: menu.end, start: menu.start },
+      clipboard,
+      mode === "peer" ? "peer" : smartPaste ? "child" : null,
+      true,
+    );
+  }
+
+  /** Structural heading numbering: bring every heading's number in line with
+   * the document, as its own undo step after the edit that changed it. */
+  function renumberHeadings(textarea: HTMLTextAreaElement, shrunk: boolean) {
+    const settings = headingNumberingRef.current;
+    if (!settings.enabled || renumberingRef.current || composingRef.current) return;
+    const currentValue = editorValueRef.current;
+    const caret = textarea.selectionStart === textarea.selectionEnd ? textarea.selectionStart : undefined;
+    const changes = getMarkdownHeadingNumberingChanges(currentValue, settings, shrunk ? caret : undefined);
+    if (!changes.length) return;
+    const nextValue = applyTextChanges(currentValue, changes);
+    const nextSelectionStart = mapOffsetThroughTextChanges(textarea.selectionStart, changes);
+    const nextSelectionEnd = mapOffsetThroughTextChanges(textarea.selectionEnd, changes);
+    renumberingRef.current = true;
+    try {
+      if (!replaceTextareaSelectionWithUndo(textarea, {
+        ...getChangedTextRange(currentValue, nextValue),
+        nextSelectionEnd,
+        nextSelectionStart,
+        scrollLeft: textarea.scrollLeft,
+        scrollTop: textarea.scrollTop,
+      })) {
+        commitEditorValue(textarea, nextValue);
+        textarea.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+      }
+    } finally {
+      renumberingRef.current = false;
+    }
   }
 
   function applyMarkdownFormat(
@@ -1681,23 +1836,24 @@ export function MarkdownEditor({
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "ArrowDown") {
+      if (linkOptionCount && event.key === "ArrowDown") {
         event.preventDefault();
-        setActiveFileLinkIndex((current) => (current + 1) % fileLinkOptions.length);
+        setActiveFileLinkIndex((current) => (current + 1) % linkOptionCount);
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "ArrowUp") {
+      if (linkOptionCount && event.key === "ArrowUp") {
         event.preventDefault();
         setActiveFileLinkIndex(
-          (current) => (current - 1 + fileLinkOptions.length) % fileLinkOptions.length,
+          (current) => (current - 1 + linkOptionCount) % linkOptionCount,
         );
         return;
       }
 
-      if (fileLinkOptions.length && event.key === "Enter") {
+      if (linkOptionCount && event.key === "Enter") {
         event.preventDefault();
-        insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        if (headingLinkOptions) insertHeadingLink(headingLinkOptions[selectedFileLinkIndex]);
+        else insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
         return;
       }
     }
@@ -1768,8 +1924,12 @@ export function MarkdownEditor({
     scheduleSelectionChange(textarea);
   }
 
-  function handleEditorChange(textarea: HTMLTextAreaElement) {
+  function handleEditorChange(textarea: HTMLTextAreaElement, inputType?: string) {
+    const previousLength = editorValueRef.current.length;
     commitEditorValue(textarea, textarea.value);
+    // Undo and redo restore exactly what was there; renumbering them would
+    // put back the number the user just undid.
+    if (!inputType?.startsWith("history")) renumberHeadings(textarea, textarea.value.length < previousLength);
   }
 
   function emitSelectionChange(textarea: HTMLTextAreaElement) {
@@ -1878,7 +2038,7 @@ export function MarkdownEditor({
         }}
         defaultValue={initialValue}
         onBlur={(event) => { readDraft(); flushSelectionChange(event.currentTarget); }}
-        onChange={(event) => handleEditorChange(event.currentTarget)}
+        onChange={(event) => handleEditorChange(event.currentTarget, (event.nativeEvent as InputEvent).inputType)}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
         onContextMenu={openContextMenu}
@@ -1966,8 +2126,24 @@ export function MarkdownEditor({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          <PasteMenuItems
+            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            onPaste={(mode) => void pasteFromContextMenu(mode)}
+          />
           {contextMenu.hasText ? (
             <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: "Selection" });
+                  setContextMenu(null);
+                }}
+              >
+                <Volume2 aria-hidden className="h-4 w-4" />
+                Read Out Loud
+              </button>
               <button
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 type="button"
@@ -2116,7 +2292,15 @@ export function MarkdownEditor({
       ) : null}
       {citationHover.element}
 
-      {fileLinkPopup ? (
+      {fileLinkPopup && headingLinkOptions ? (
+        <MarkdownHeadingLinkPopup
+          activeIndex={selectedFileLinkIndex}
+          headings={headingLinkOptions}
+          x={fileLinkPopup.x}
+          y={fileLinkPopup.y}
+          onSelect={insertHeadingLink}
+        />
+      ) : fileLinkPopup ? (
         <MarkdownFileLinkPopup
           activeIndex={selectedFileLinkIndex}
           sections={fileLinkSections}

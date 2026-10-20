@@ -1,5 +1,6 @@
 "use client";
 
+import { popupReferenceMenu } from "./native-reference-menu";
 import { DocumentStylePicker } from "@/components/libera/references/document-style-picker";
 import { retractionTone } from "@/components/libera/references/retraction-badge";
 import {
@@ -69,6 +70,7 @@ import {
   MissingReferenceRow,
   REFERENCE_ROW_HEIGHT,
   ReferenceActionsMenu,
+  openNativeReferenceActionsMenu,
   ReferenceRow,
   type ReferenceMenuAction,
 } from "@/components/libera/references/reference-row";
@@ -759,6 +761,41 @@ function ReferencesPanelBody({
   const first = windowed ? Math.max(0, Math.floor(Math.max(0, scroll.top - offset) / REFERENCE_ROW_HEIGHT) - 8) : 0;
   const last = windowed ? Math.min(listed.length, Math.ceil((scroll.top - offset + scroll.height) / REFERENCE_ROW_HEIGHT) + 8) : listed.length;
 
+  const panelMenuProps: PanelMenuProps = {
+    currentStyle,
+    styleFiles,
+    undoLabel: undo.canUndo ? undo.undoLabel : null,
+    undoStale: undo.stale,
+    onClose: () => setPanelMenuOpen(false),
+    onUndo: () => void runUndo(),
+    onStyle: (style) => void run([{ op: "set-style", style }], "Change citation style", `Citation style: ${BUNDLED_CSL_STYLES.find((item) => item.id === style)?.label ?? fileBaseName(style)}.`).catch(() => undefined),
+    onExport: (format) => void exportReferences({ notebook, format })
+      .then((fileName) => setNotice({ tone: "info", text: `Exported ${fileName}.` }))
+      .catch((exportError: Error) => setNotice({ tone: "error", text: exportError.message })),
+    onImport: () => { setOpenId(null); setAddBox({ id: Date.now(), query: "" }); },
+    onManage: () => setManageOpen(true),
+    jobActive: jobs.active,
+    onGenerate: () => void generateForPdfs(),
+    autoCreate: library?.settings?.autoCreateForPdfs,
+    onAutoCreate: (value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], "Change automatic PDF entries",
+      value === null ? "New PDFs follow the preference." : value ? `New PDFs in ${notebook} get entries automatically.` : `New PDFs in ${notebook} do not get entries automatically.`).catch(() => undefined),
+    autoCreateDefault: preferences ? preferences.autoCreateForPdfs : null,
+    factCheckBlocker,
+    onFactCheck: () => setFactCheckOpen(true),
+    onCopyList: () => void copyList(false),
+    onExportList: (format) => void exportList(format, false),
+    documentBlocker,
+    onCopyDocument: () => void copyList(true),
+    onExportDocument: (format) => void exportList(format, true),
+  };
+
+  async function openPanelMenu(button: HTMLButtonElement) {
+    const rect = button.getBoundingClientRect();
+    if (!await openNativePanelMenu(panelMenuProps, { x: rect.left, y: rect.bottom })) {
+      setPanelMenuOpen((current) => !current);
+    }
+  }
+
   function renderList() {
     if (!library) {
       if (error) {
@@ -811,7 +848,12 @@ function ReferencesPanelBody({
       onOpen: () => { setSelectedId(entry.id); setOpenId(entry.id); },
       onCite: () => cite(entry),
       onOpenAttachment: onOpenPath,
-      onMenu: (point: { x: number; y: number }) => { setSelectedId(entry.id); setMenu({ entryId: entry.id, point }); },
+      onMenu: async (point: { x: number; y: number }) => {
+        setSelectedId(entry.id);
+        if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
+          setMenu({ entryId: entry.id, point });
+        }
+      },
     });
     return (
       <div
@@ -863,37 +905,11 @@ function ReferencesPanelBody({
           <Table2 aria-hidden className="h-4 w-4" />
         </button>
         <div className="relative">
-          <button type="button" className={iconButton} aria-label="References menu" title="Style, export and undo" aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={() => setPanelMenuOpen((current) => !current)}>
+          <button type="button" className={iconButton} aria-label="References menu" title="Style, export and undo" aria-haspopup="menu" aria-expanded={panelMenuOpen} disabled={!library} onClick={(event) => void openPanelMenu(event.currentTarget)}>
             <MoreVertical aria-hidden className="h-4 w-4" />
           </button>
           {panelMenuOpen && library ? (
-            <PanelMenu
-              currentStyle={currentStyle}
-              styleFiles={styleFiles}
-              undoLabel={undo.canUndo ? undo.undoLabel : null}
-              undoStale={undo.stale}
-              onClose={() => setPanelMenuOpen(false)}
-              onUndo={() => void runUndo()}
-              onStyle={(style) => void run([{ op: "set-style", style }], "Change citation style", `Citation style: ${BUNDLED_CSL_STYLES.find((item) => item.id === style)?.label ?? fileBaseName(style)}.`).catch(() => undefined)}
-              onExport={(format) => void exportReferences({ notebook, format })
-                .then((fileName) => setNotice({ tone: "info", text: `Exported ${fileName}.` }))
-                .catch((exportError: Error) => setNotice({ tone: "error", text: exportError.message }))}
-              onImport={() => { setOpenId(null); setAddBox({ id: Date.now(), query: "" }); }}
-              onManage={() => setManageOpen(true)}
-              jobActive={jobs.active}
-              onGenerate={() => void generateForPdfs()}
-              autoCreate={library.settings?.autoCreateForPdfs}
-              onAutoCreate={(value) => void run([{ op: "set-settings", settings: { autoCreateForPdfs: value } }], "Change automatic PDF entries",
-                value === null ? "New PDFs follow the preference." : value ? `New PDFs in ${notebook} get entries automatically.` : `New PDFs in ${notebook} do not get entries automatically.`).catch(() => undefined)}
-              autoCreateDefault={preferences ? preferences.autoCreateForPdfs : null}
-              factCheckBlocker={factCheckBlocker}
-              onFactCheck={() => setFactCheckOpen(true)}
-              onCopyList={() => void copyList(false)}
-              onExportList={(format) => void exportList(format, false)}
-              documentBlocker={documentBlocker}
-              onCopyDocument={() => void copyList(true)}
-              onExportDocument={(format) => void exportList(format, true)}
-            />
+            <PanelMenu {...panelMenuProps} />
           ) : null}
         </div>
       </PanelHeading>
@@ -1239,30 +1255,7 @@ function FactCheckPopover({ path, defaultWebSearch, blocker, onCancel, onStart }
   );
 }
 
-function PanelMenu({
-  currentStyle,
-  styleFiles,
-  undoLabel,
-  undoStale,
-  onClose,
-  onUndo,
-  onStyle,
-  onExport,
-  onImport,
-  onManage,
-  jobActive,
-  onGenerate,
-  autoCreate,
-  onAutoCreate,
-  autoCreateDefault,
-  factCheckBlocker,
-  onFactCheck,
-  onCopyList,
-  onExportList,
-  documentBlocker,
-  onCopyDocument,
-  onExportDocument,
-}: {
+type PanelMenuProps = {
   currentStyle: string;
   styleFiles: string[];
   undoLabel: string | null;
@@ -1290,7 +1283,68 @@ function PanelMenu({
   documentBlocker: string | null;
   onCopyDocument: () => void;
   onExportDocument: (format: DocumentExportFormat) => void;
-}) {
+};
+
+function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: number }) {
+  const styles = [...BUNDLED_CSL_STYLES, ...props.styleFiles.map((path) => ({ id: path, label: fileBaseName(path) }))];
+  return popupReferenceMenu([
+    { id: "undo", label: props.undoLabel ? `Undo ${props.undoLabel}` : "Nothing to undo", enabled: Boolean(props.undoLabel) && !props.undoStale, onSelect: props.onUndo },
+    { type: "separator" },
+    { id: "style", label: "Citation style", submenu: styles.map((style, index) => ({
+      id: `style:${index}`, label: style.label, type: "radio", checked: style.id === props.currentStyle,
+      onSelect: () => { if (style.id !== props.currentStyle) props.onStyle(style.id); },
+    })) },
+    { id: "export", label: "Export library", submenu: EXPORT_FORMATS.map((format) => ({
+      id: `export:${format.id}`, label: `${format.label} (.${format.extension})`, onSelect: () => props.onExport(format.id),
+    })) },
+    { type: "separator" },
+    { id: "copy-list", label: "Copy reference list", onSelect: props.onCopyList },
+    { id: "export-list", label: "Export reference list…", submenu: BIBLIOGRAPHY_FORMATS.map((format) => ({
+      id: `export-list:${format.id}`, label: format.label, onSelect: () => props.onExportList(format.id),
+    })) },
+    { id: "copy-document", label: "Copy bibliography", enabled: !props.documentBlocker, onSelect: props.onCopyDocument },
+    { id: "export-document", label: "Export bibliography as", enabled: !props.documentBlocker, submenu: DOCUMENT_EXPORT_FORMATS.map((format) => ({
+      id: `export-document:${format.id}`, label: format.label, onSelect: () => props.onExportDocument(format.id),
+    })) },
+    { type: "separator" },
+    { id: "generate", label: "Generate entries for PDFs without one", enabled: !props.jobActive, onSelect: props.onGenerate },
+    { id: "auto-create", label: "Create entries for new PDFs automatically", submenu: AUTO_CREATE_CHOICES.map((choice) => ({
+      id: `auto-create:${choice.value}`, label: choice.value === null && props.autoCreateDefault !== null ? `${choice.label} (${props.autoCreateDefault ? "on" : "off"})` : choice.label,
+      type: "radio", checked: (props.autoCreate ?? null) === choice.value,
+      onSelect: () => { if ((props.autoCreate ?? null) !== choice.value) props.onAutoCreate(choice.value); },
+    })) },
+    { type: "separator" },
+    { id: "fact-check", label: "Fact-check citations…", enabled: !props.factCheckBlocker, onSelect: props.onFactCheck },
+    { type: "separator" },
+    { id: "import", label: "Import or paste…", onSelect: props.onImport },
+    { id: "manage", label: "Manage references…", onSelect: props.onManage },
+  ], point);
+}
+
+function PanelMenu({
+  currentStyle,
+  styleFiles,
+  undoLabel,
+  undoStale,
+  onClose,
+  onUndo,
+  onStyle,
+  onExport,
+  onImport,
+  onManage,
+  jobActive,
+  onGenerate,
+  autoCreate,
+  onAutoCreate,
+  autoCreateDefault,
+  factCheckBlocker,
+  onFactCheck,
+  onCopyList,
+  onExportList,
+  documentBlocker,
+  onCopyDocument,
+  onExportDocument,
+}: PanelMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function close(event: PointerEvent) {

@@ -63,7 +63,7 @@ export interface OutboundBatch {
 }
 
 export type DocKindTag = "file" | "manifest";
-export type ReadOnlyReason = "schema-newer" | "access-revoked";
+export type ReadOnlyReason = "schema-newer" | "access-revoked" | "document-deleted";
 
 export interface DocMetaRow {
   docId: string;
@@ -845,7 +845,7 @@ export class HostStore {
     if (!row) return null;
     const kind = row.doc_kind === "file" || row.doc_kind === "manifest" ? row.doc_kind : null;
     const reason =
-      row.read_only_reason === "schema-newer" || row.read_only_reason === "access-revoked" ? row.read_only_reason : null;
+      row.read_only_reason === "schema-newer" || row.read_only_reason === "access-revoked" || row.read_only_reason === "document-deleted" ? row.read_only_reason : null;
     return {
       docId,
       projectId: asNullableString(row.project_id),

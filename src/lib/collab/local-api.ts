@@ -71,6 +71,19 @@ export interface LocalProject {
   reconcilePending: number;
 }
 
+/** GET ControlRoutes.sharedSignIn: what the synced data folder offers this computer. */
+export type SharedSignInOffer =
+  | { state: "none" }
+  /** A sign-in is there, but Libera must be unlocked with the master password to read it. */
+  | { state: "locked" }
+  | { state: "available"; accountId: string; email: string; serverUrl: string };
+
+/** The identity shown on the "Continue as ..." button, checked again by the host. */
+export interface ContinueSharedSignInRequest {
+  accountId: string;
+  serverUrl: string;
+}
+
 export interface HostStatus {
   hostVersion: number;
   connection: HostConnection;
@@ -245,6 +258,12 @@ export interface FileOpRequest {
   content?: string;
   /** For write-blob: the file's bytes, base64. */
   contentBase64?: string;
+  /**
+   * For write-blob, instead of contentBase64 (for files too large for a
+   * request): the name of a file the caller wrote in the notebook's
+   * `.libera/collab/incoming/` folder. The host reads it and removes it.
+   */
+  stagedFile?: string;
   /** For write-blob: refuse an existing entry instead of replacing its bytes. */
   createOnly?: boolean;
 }
@@ -444,6 +463,10 @@ export const ControlRoutes = {
   signIn: "/account/sign-in",
   register: "/account/register",
   signOut: "/account/sign-out",
+  /** Next's login route hands the master password over (shared sign-in); never proxied. */
+  unlock: "/account/unlock",
+  /** GET: what the synced folder offers (SharedOffer); POST: continue with it. */
+  sharedSignIn: "/account/shared-sign-in",
   account: "/account",
   projects: "/projects",
   project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,

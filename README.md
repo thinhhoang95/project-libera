@@ -56,6 +56,8 @@ Direct child folders are notebooks. Files inside notebooks currently support:
 
 The API rejects unsafe paths that escape the admin master directory.
 
+Libera keeps its own per-notebook state in a hidden `.libera/` folder inside each notebook, for example the reference library (`references/`) and the Where Was I session records (`where-was-i/<device>.json`). Linked folders keep this state in the data directory instead of the folder.
+
 Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
 
 ## Math Rendering
@@ -269,11 +271,113 @@ Use **Enumerate Headings** in the visual toolbar to number all headings or selec
 
 Turn on **Smart Paste** in Preferences → General to paste Markdown with headings into either editor so it fits the document: the pasted text's highest heading is moved to the document's highest heading level (the highest numbered level, in a numbered document), and if any heading is numbered, every heading is renumbered so the numbering continues through the pasted text (`1.1` or `1.1.` style is kept). Unnumbered headings above the numbered level, such as a title, are left alone. The paste is a single undo step; pastes without headings, or into code, are unchanged. Restart Libera after toggling it.
 
-Both editors can snip a region of an open image or PDF tab, either as a picture or read into Markdown (see [PDF to Markdown](#pdf-to-markdown)). Use **Source** to access the existing source/preview workflow, file-link picker, and slide controls. Slide decks continue using the source editor. Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
+Both editors can snip a region of an open image or PDF tab, either as a picture or read into Markdown (see [PDF to Markdown](#pdf-to-markdown)). Use **Source** to access the existing source/preview workflow and file-link picker. Slide decks always use the source editor (see [Markdown Slides](#markdown-slides)). Both modes edit the same Markdown draft; use the save button or Cmd/Ctrl+S to save. TipTap may normalize Markdown whitespace and delimiters after a visual edit; simply opening a note does not rewrite it.
 
 Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`) retain their existing syntax. Underlines use `<u>text</u>`. Font size and line spacing use safe numeric span attributes, for example `<span data-font-size="24" data-line-height="2">text</span>`, supported by both the visual editor and Markdown preview/export. Other Markdown viewers may ignore these presentation attributes.
 
 Run the editor's Markdown round-trip regression tests with `npm run test:editor`.
+
+### Charts and live HTML in notes
+
+Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
+
+````markdown
+```chart
+type: line
+title: Weekly sign-ups
+labels: [W1, W2, W3, W4]
+series: [32, 41, 38, 57]
+```
+````
+
+See [Charts and live HTML in slides](#charts-and-live-html-in-slides) for the settings, and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md) for the full guide.
+
+## Markdown Slides
+
+A file named `*.slides.md` is a slide deck. **New slides** in a notebook's menu creates one. Decks open in the source editor with the slides beside it. The preview follows the caret, and clicking a slide puts the caret on it. Each slide is laid out on a fixed 16:9 canvas and scaled to fit, so the preview, the presentation, and the PDF all show the same slide. When a slide has too much content, its body shrinks to fit, down to about half size. Past that, the preview flags the slide. Slides render math, citations, highlights, and links like notes do, using the same inline and display math markers as your notes.
+
+```markdown
+$title = Results from the field
+$subtitle = Spring survey, $n = 412$
+$author = ["Ada Lovelace", "Grace Hopper"]
+$affiliation = Analytical Engine Lab
+$date = October 2026
+$theme = light
+---
+## What we measured
+
+- Response time
+- Error rate
+
+--
+
+- This appears on the next click
+
+???
+Speaker notes: only you see these.
+---
+## Side by side
+$columns = [3, 2]
+
+Left column
+
+|||
+
+Right column
+```
+
+- A line with only `---` starts a new slide. The part above the first `---` is the deck's metadata and title slide. A deck may instead open with YAML-style front matter (`---`, then `title: ...` lines, then `---`).
+- `$key = value` lines go at the top of a slide, or right under its title heading. A value is a JSON literal (`"text"`, `21`, `true`, `["a", "b"]`) or plain text.
+- A leading `#` or `##` heading becomes the slide title (`$title` works too).
+- `--` on its own line, after a blank line, is a build step: what follows appears on the next click. Hidden steps keep their space, so nothing jumps.
+- `|||` on its own line starts a new column. `$columns = [2, 1]` sets relative widths.
+- `???` on its own line starts the speaker notes. Notes show under each slide in the preview, and in speaker view while presenting.
+- Slide markers inside code fences and multi-line HTML comments are ignored, so a slide can be commented out with `<!-- ... -->`.
+
+Deck settings: `$theme` (`light`, `dark`, `paper`, `night`), `$accent` (any CSS color), `$aspect` (`16:9`, `16:10`, `4:3`), `$fontsize` (body size in canvas pixels, 21 by default), `$footer` (text, or `false` to hide it; author and title by default), `$paginate` (`false` hides slide numbers), `$transition` (`fade`, `slide`, `none`), `$fit` (`false` turns off shrink-to-fit), and `citation-style`. Slide settings: `$title`, `$layout` (`default`, `top`, `center`, `section` for a divider, `blank` for a full-bleed image), `$columns`, `$fontsize`, `$background` (a CSS color), `$fit`, and `$hidden = true`, which keeps a backup slide in the file but out of the presentation and the PDF. Unknown values are listed above the preview.
+
+### Charts and live HTML in slides
+
+A fenced code block tagged `chart` draws a chart from a few lines of settings, in YAML or JSON. Charts use the slide's theme and a colorblind-safe palette. They have hover tooltips, show a legend when there are two or more series, and include a table of the data for screen readers. They render in every notebook, shared ones included, because they contain only data.
+
+````markdown
+```chart
+type: bar
+title: Revenue by quarter ($k)
+labels: [Q1, Q2, Q3, Q4]
+series:
+  2025: [12, 19, 8, 15]
+  2026: [14, 22, 11, 18]
+```
+````
+
+- `type`: `bar` (default), `line`, `area`, `pie`, `doughnut`, `scatter`, `bubble`, `radar`, or `polarArea`.
+- Data comes from `labels` plus `series` (a name for each list of values, or one plain list), or from `data`. `data` can be CSV text (use `data: |` and indent the rows) or the path of a `.csv`/`.tsv` file next to the deck, such as `data: sales.csv`. In CSV, the first column labels the points and each other column is a series; empty or non-numeric cells are gaps. For `scatter`, the first column is x.
+- Settings: `title`, `x` and `y` (axis titles), `stacked`, `horizontal`, `smooth`, `legend` (`top`, `bottom`, `left`, `right`, or `none`), `height` (canvas pixels, 300 by default), `min`/`max`, `beginAtZero` (`false` to let the axis start elsewhere), and `colors` (a list of CSS colors; quote hex values, as in `["#0d9488"]`, because YAML reads `#` as a comment).
+- For anything else, `options` is merged into Chart.js's own options, and `datasets` replaces `series` with Chart.js datasets.
+- A mistake in the settings, or a data file that can't be read, shows a message on the slide in place of the chart.
+
+A fenced block tagged `html live` runs its HTML, CSS, and JavaScript like a small web page inside the slide. Chart.js is already loaded as `Chart`. `libera.colors` holds the slide's series palette, and `libera.theme` its colors and whether it is dark. The block grows to fit its content; add `height=400` after `live` for a fixed height. The code runs in a sandboxed frame with no access to Libera, your files, or your session. In your own notebooks it may load scripts, images, and data over https; it cannot reach other addresses, so pictures from the notebook need an https or `data:` URL. Each block starts when it first scrolls into view. Keys pressed inside the frame still move the presentation, unless focus is in a text field. Script errors show under the block in the editor preview.
+
+A responsive Chart.js canvas is half as tall as it is wide, so a full-width one can make the slide shrink to fit. Wrap the canvas in a `<div style="height:300px">` and pass `maintainAspectRatio: false` to set its height yourself.
+
+````markdown
+```html live
+<canvas id="growth"></canvas>
+<script>
+  new Chart(document.getElementById("growth"), {
+    type: "line",
+    data: { labels: [1, 2, 3, 4], datasets: [{ label: "Users", data: [3, 7, 12, 20], borderColor: libera.colors[0] }] },
+  });
+</script>
+```
+````
+
+In a shared notebook, a live block shows a **Run** button instead of running on its own. Once run, it still has no network access. Charts and live blocks print in PDF exports; Libera waits for them to finish drawing first. The same blocks work in notes (see [Charts and live HTML in notes](#charts-and-live-html-in-notes) and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md)).
+
+**Present slides** in the toolbar, or **Present from here** above any slide, starts the presentation in full screen. Advance with →, Space, PageDown, N, or a click; go back with ←, PageUp, P, or a right-click. ↓/↑ skip build steps, and Home/End jump to the first and last slide. Type a number and press Enter to jump to that slide. G opens an overview of every slide, S switches to speaker view (current slide, next step, notes, timer, and clock; T resets the timer), B or `.` blanks the screen black, W or `,` blanks it white, and ? lists the shortcuts. Esc closes an overlay or ends the presentation.
+
+**Download → PDF file** (in the file actions menu, desktop app) prints a deck one slide per page, at the slide's own size, with every build step shown and hidden slides left out. Citations are numbered across the whole deck; put `:::bibliography` on a slide to place the reference list.
 
 ## LaTeX PDF export
 
@@ -288,6 +392,20 @@ Libera remembers the last selected notebook in the workspace data and reopens it
 ## Split panels
 
 Work on several files side by side by splitting the editor area into panels. Choose **Split Right** or **Split Down** in the file actions menu (Cmd/Ctrl+\ and Cmd/Ctrl+Shift+\), or right-click a tab and choose **Open to the Right** or **Open Below**. You can also drag a tab onto a panel: the highlighted zone shows whether it will split left, right, up, or down, or replace the panel's file. Panels can be split again in either direction. Drag a divider to resize panels, or double-click it to even them out. **Close Panel** and **Close Other Panels** are in the same menu. Each file shows in one panel at a time, so two editors never change the same draft. The layout is saved with the workspace.
+
+## Command palette
+
+Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
+
+Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+
+## Where Was I
+
+Open a notebook's home to see **Where you left off**: two to four AI bullet points about what you did there in your last session, the files you edited, created, or viewed (hover for a short excerpt of each change), including uploads and other files added without being opened, and the files added or changed since you left, such as a collaborator's edits in a shared notebook or files copied in or synced from another computer.
+
+Libera keeps the session in memory and writes it only when you close a file you edited and when the app quits, never while you type. It keeps at most 12 files per notebook and two short excerpts per file, in the notebook's `.libera/where-was-i/` folder, one file per computer so synced folders never conflict. In shared notebooks, your record stays on your computer, and changes from collaborators are labelled as theirs. Each finished session is summarized once, with only file paths, change sizes, and the excerpts sent to the model.
+
+Preferences → AI → **Where Was I** turns the card off entirely (nothing is recorded) or just the AI summary, and sets the model (`deepseek/deepseek-v4.1-flash` by default) and reasoning effort. Changes apply without a restart. See [docs/features/where-was-i.md](docs/features/where-was-i.md) for details.
 
 ## Links between notes
 
@@ -348,9 +466,42 @@ See [docs/features/ai-agent.md](docs/features/ai-agent.md) for permissions, tool
 
 Open **Search** in the left rail (Cmd/Ctrl+6), or press Cmd/Ctrl+Shift+F anywhere, to search every notebook, linked folder and the Image Gallery. Describe what you are looking for in your own words, put words in quotes for an exact phrase, or paste, drop or pick an image to find similar photos. Images sit in the box between words, so “photos like [image] but at night” searches by both. Results show the matching passage with its page, section or lines and a preview, and open at that passage in the editor or PDF viewer.
 
-Search combines meaning and exact words. Meaning comes from Google's EmbeddingGemma 2, which runs on this computer through Transformers.js in a background worker process; its weights stay outside the app. Choose the text model and vision encoder files in Preferences → Search, or run `npm run search:download-model` to download them. Without weights, Search still finds exact words. The index is a single SQLite file (full-text and sqlite-vec vector tables) kept on this computer in Libera's application data, outside the Master directory so a synced notes folder never uploads it (or in a file chosen in Preferences). The first index is built only when you click **Build index**, so you can instead choose an index built before with **Use existing index…**. After that it is kept up to date in the background: only changed passages are embedded again.
+Search combines meaning and exact words. Meaning comes from Google's EmbeddingGemma 2, which runs on this computer through Transformers.js in a background worker process; the Search panel offers to download its 8-bit text model and vision encoder (about 540 MB) into Libera's application data, outside the Master directory. Other weights can be chosen in Preferences → Search, or downloaded with `npm run search:download-model`. Every local model can also be downloaded on request with `npm run models:download -- [search|reading|read-aloud|speech|all]` (or `npm run models:download:search`, `:reading`, `:read-aloud`, `:speech`), into the same folder the app uses. Without weights, Search still finds exact words. The index is a single SQLite file (full-text and sqlite-vec vector tables) kept on this computer in Libera's application data, outside the Master directory so a synced notes folder never uploads it (or in a file chosen in Preferences). The first index is built only when you click **Build index**, so you can instead choose an index built before with **Use existing index…**. After that it is kept up to date in the background: only changed passages are embedded again.
 
 See [docs/features/global-search.md](docs/features/global-search.md) for details and measured speeds.
+
+## Voice memos
+
+Upload recordings (M4A, MP3, WAV, OGG, FLAC, …) to a notebook and open them in a player with a waveform, transport controls and, beside it, a timestamped transcript with who said what. Transcribe on this computer with NVIDIA Parakeet TDT 0.6B v3, or with an OpenRouter speech-to-text model such as `openai/whisper-large-v3`; speakers are told apart on this computer with pyannote either way. Long recordings are cut at quiet moments into pieces and joined back on one timeline. Transcripts are sidecars that follow their recording, are found by Global Search (the audio itself is never indexed) and can be searched within the panel. Like the other models, the transcript panel offers to download the speech models into Libera's application data, or into a folder chosen in Preferences → Speech, which also sets the voice memo and dictation engines.
+
+AI Chat reads the transcript of the memo you are playing; quote lines from the transcript with ⌘/Ctrl+Shift+L. Search within a transcript or in Global Search with `speaker:Name`. Export transcripts as Markdown (a new note, a note beside the recording, or a file), plain text, SRT or WebVTT, and link a note to a moment (`memo.m4a#t=185`). In shared notebooks, recordings sync as blobs and transcripts as companion files every member sees. AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite also take dictated prompts through the same speech-to-text engines, and the agent finds memos by searching their transcripts.
+
+See [docs/features/voice-memos.md](docs/features/voice-memos.md) for details.
+
+## Recording meetings
+
+**New → Audio recording** on a notebook's cover (or **New audio recording** in a notebook's or folder's menu) opens a recording tab, laid out like the voice memo player: a live waveform and clock, Pause/Resume, Stop & save, the Live Recap in the middle and the live transcript at the side. The recording goes on while you work in other tabs, with a small bar to come back to it. Turn on **Live transcribe** to see the transcript a few seconds behind the speaker, made on this computer by Parakeet, which hears the recording in short pieces cut at pauses. Without the Parakeet model the switch is off and the recorder offers to download it. Turn on **Live recap** to keep a bullet-point summary with an AI model (the Formatting model in Preferences → AI, through OpenRouter). Each update adds a bullet or changes one, so the recap is never rewritten under you. **Stop** saves the recording as an `.m4a` voice memo, with the live transcript as its transcript and a `<name> recap.md` note whose bullets link to the moment they were said.
+
+While recording, the audio is saved to disk every few seconds outside your notes, so a crash loses at most the last few seconds. The next time Libera opens, it offers to save the unfinished recording, record on, or delete it.
+
+See [docs/features/meeting-recorder.md](docs/features/meeting-recorder.md) for details.
+
+## Read aloud
+
+Have Libera read text out loud: a selection in any editor or PDF, or the AI's replies. Markup is cleaned up first, so headings, emphasis, list bullets, link URLs and citations are not spoken, code blocks are said as "code omitted" and math as "equation".
+
+- **Editors.** Select text and choose **Read Out Loud** from the right-click menu in the Visual (TipTap) editor, both Markdown Source editors (textarea and CodeMirror), the LaTeX editor, and the code editor used for every other text file. In `.tex` files, comments, `\cite`/`\ref`/`\label` and markup commands are dropped and wrapped source lines are read as one paragraph; code and plain text are read as written. The code editor's right-click menu also has Cut, Copy and Paste.
+- **PDFs.** Select text and press the speaker button (**Read out loud**) in the selection toolbar, next to Copy and Quote and cite. The selection is read as the same clean text that Copy produces.
+- **AI Chat and Agent.** Each finished reply has a speaker button beside Copy, which becomes a stop button while that reply is read. **Auto Read** in the chat's ⋯ menu reads every reply aloud as soon as the model finishes; stopped or failed replies are skipped. The setting is remembered on this computer.
+- **Playback bar.** While something is read, a bar at the bottom of the window shows progress with **Pause** and **Stop**, and explains any failure (no API key, missing model folder, provider error). Starting something new stops what was playing. Speech starts after the first sentence: the text is read in short passages while the next ones are prepared.
+
+Choose the engine in Preferences → **Read Aloud**:
+
+- **OpenRouter** (default). Any OpenRouter text-to-speech model; the default `hexgrad/kokoro-82m` costs well under a dollar per million characters. The voice field suggests the chosen model's voices (`af_heart` by default).
+- **This computer.** Kokoro 82M (Apache-2.0) through sherpa-onnx, the runtime voice memos already use; nothing leaves the computer. The first time you read aloud, Libera offers to download sherpa-onnx's `kokoro-int8-multi-lang-v1_0` (about 190 MB) into its application data; or extract another release (`kokoro-multi-lang-v1_0` or `kokoro-en-v0_19`) and choose its folder. 53 voices across American and British English, Spanish, French, Hindi, Italian, Japanese, Portuguese and Chinese.
+- **Speed** from 0.75× to 2×. Changes apply without restarting. Web deployments use the `LIBERA_TTS_*` variables instead.
+
+See [docs/features/read-aloud.md](docs/features/read-aloud.md) for the user guide and [docs/read-aloud/implementation.md](docs/read-aloud/implementation.md) for how it is built and how to extend it.
 
 ## PDF to Markdown
 
@@ -359,9 +510,23 @@ Read PDF pages, scanned books, and images into Markdown on this computer, with n
 - **Snip as Markdown.** In either editor, click the text-scan button next to the snipping tool, then drag a rectangle over a PDF or image tab. The Markdown is inserted at the cursor, and figures inside the snip are saved as images next to the note.
 - **Convert PDF to Markdown.** In a PDF tab, click the text-scan button in the toolbar and choose the pages. Libera writes `<PDF name>.md` next to the PDF and saves after every page. The conversion keeps running while you switch tabs, and **Stop** keeps what was read so far.
 
-The model is IBM's granite-docling-258M (Apache-2.0), run on the CPU through Transformers.js in a background worker process. Like the Global Search weights, it lives in a folder you choose in Preferences → Search → **PDF reading model**. The first time you use either feature, Libera offers to download it there (about 600 MB), or you can put the files from Hugging Face there yourself. Expect several seconds for a small snip and one to three minutes for a full page. Small print such as footnotes can be missed; pages the model could not finish are listed when the conversion ends.
+The model is IBM's granite-docling-258M (Apache-2.0), run on the CPU through Transformers.js in a background worker process. The first time you use either feature, Libera offers to download it (about 600 MB) into its application data, or into a folder chosen in Preferences → Search → **PDF reading model**, where you can also put the files from Hugging Face yourself. Expect several seconds for a small snip and one to three minutes for a full page. Small print such as footnotes can be missed; pages the model could not finish are listed when the conversion ends.
 
 See [docs/features/pdf-to-markdown.md](docs/features/pdf-to-markdown.md) for setup, file layout, and how it works.
+
+## Detection and Segmentation
+
+Find, outline, and count objects in photos with Ultralytics' YOLOE-26, on this computer. Open it with the scan button in an image tab or the Image Gallery's photo viewer.
+
+- **Prompts.** Describe what to find in words (several at once, separated by commas), box examples on the photo, or box them in an uploaded reference image. Each prompt is a class, and prompts with the same label are counted together. Text and visual prompts mix in one run.
+- **Results.** Masks, boxes, labels, centroids, and quadrat density drawn over the photo, with zoom and pan. A sortable table filters by confidence without running again.
+- **Statistics.** Counts, density, and coverage per label. Area, equivalent diameter, perimeter, circularity, and aspect ratio (mean ± SD, median and IQR, histograms). Spatial distribution: nearest-neighbour distances, the Clark–Evans index with edge correction, and quadrat variance/mean, χ², and Morisita's index. Set a scale by typing it or by measuring a scale bar, and sizes switch to nm, µm, mm, cm, or m.
+- **Tag and edit by hand.** Tag missed objects with a box, a polygon, or a freehand stroke smoothed into a curve. Reshape any object by dragging the control points of its outline (a smooth curve through at most 24 points) or the corners of its box; add and remove points, move, relabel, delete, revert, and undo. Hand-tagged objects are marked **Manual** and corrected ones **Edited**, keeping what the model found. A new run keeps both, and deleted detections stay deleted.
+- **Save and load.** A JSON file holds the model and its settings, the prompts (with reference images), the date, the image, the scale, every object with its outline and origin, removed detections, and the statistics. Opening it shows the results again. The table also exports as CSV.
+
+The first time, Libera offers to download a private Python runtime with PyTorch and Ultralytics (about 1 GB, installed by uv into Libera's application data, nothing system-wide), the MobileCLIP2-B text encoder (254 MB), and the chosen variant's weights (YOLOE-26n to YOLOE-26x, 12–172 MB). A runtime is needed because YOLOE-26 accepts new prompts only through Ultralytics in Python. Preferences → **Detection and Segmentation** sets the default variant, CPU or GPU, the confidence and IoU thresholds, the inference size, and the model folder. Ultralytics and the YOLOE-26 weights are licensed AGPL-3.0.
+
+See [docs/features/detection-and-segmentation.md](docs/features/detection-and-segmentation.md) for the full guide, the file format, and how it works.
 
 ## Image Gallery
 
@@ -385,7 +550,7 @@ Albums are folders inside the gallery folder; photos outside any album sit at it
 
 ### Viewing and editing
 
-Click a photo to open the viewer. Zoom with the scroll wheel, pinch, double-click, `+`/`-`/`0`, or the zoom buttons, and drag to pan. Use the arrow keys for the previous and next photo, S to star, Space for a slideshow, F for full screen, and I for info (date, size, albums, location on disk, model, and prompt, with **Reuse prompt**). Photos can also be downloaded or copied.
+Click a photo to open the viewer. Zoom with the scroll wheel, pinch, double-click, `+`/`-`/`0`, or the zoom buttons, and drag to pan. Use the arrow keys for the previous and next photo, S to star, Space for a slideshow, F for full screen, and I for info (date, size, albums, location on disk, model, and prompt, with **Reuse prompt**). Photos can also be downloaded or copied. The scan button opens [Detection and Segmentation](#detection-and-segmentation) for the photo.
 
 Press E (or **Edit**) to rotate, flip, and crop (Free, Original, Square, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16), adjust brightness, contrast, saturation, warmth, tint, and vignette, or apply a filter preset. **Save** (Cmd/Ctrl+S) replaces the photo and keeps the original, so **Revert to original** in the info panel can undo it; **Save as copy** adds a new photo beside the original, in the same albums. The saved photo uses the same calculations as the preview. SVG images cannot be edited.
 

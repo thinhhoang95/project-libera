@@ -8,6 +8,8 @@ import type { MarkdownEditorMode, OpenTab } from "@/components/libera/types";
 import { TAB_DRAG_MIME } from "@/lib/canvas-layout";
 import { FileTypeIcon } from "./file-type";
 import { isGalleryTab } from "./gallery-tabs";
+import { announceImageSaved, imageSaveMenuItems, runImageSaveMenuAction } from "./image-save";
+import { isRecordingTab } from "./recording/recording-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
@@ -168,8 +170,8 @@ export function TabStrip({
       .popup({
         ...nativeMenuPointFromMouseEvent(event),
         items: [
-          { id: "add-to-ai-chat", label: "Add to AI Chat" },
-          { type: "separator" },
+          // A recording in progress has no file for AI Chat or another window to open.
+          ...(isRecordingTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
           ...(onOpenTabInSplit
             ? [
                 { id: "open-split-right", label: "Open to the Right" },
@@ -178,7 +180,7 @@ export function TabStrip({
               ]
             : []),
           // Gallery photos have no notebook file for another window to open.
-          ...(isGalleryTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
+          ...(isGalleryTab(tab) || isRecordingTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -377,8 +379,8 @@ function ActiveFileActions({
   const canvasActions = { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels };
   const canvasItems = canvasMenuItems(canvasPanelCount, canvasActions);
 
-  if (!activeTab) {
-    // An empty split panel has no file, but its layout can still be changed.
+  if (!activeTab || isRecordingTab(activeTab)) {
+    // An empty split panel, or a recording in progress, has no file, but its layout can still be changed.
     if (canvasPanelCount < 2 || !canvasItems.length) {
       return null;
     }
@@ -406,6 +408,7 @@ function ActiveFileActions({
   const isMarkdown = activeTab.file.fileType === "markdown";
   const isLatex = activeTab.file.fileType === "latex";
   const isPdf = activeTab.file.fileType === "pdf";
+  const isImage = activeTab.file.fileType === "image";
   // Gallery photos are renamed, moved and deleted from the gallery itself.
   const isGalleryPhoto = isGalleryTab(activeTab);
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
@@ -493,7 +496,9 @@ function ActiveFileActions({
                       ],
                     },
                   ]
-                : [{ id: "download-original", label: "Download" }]),
+                : isImage
+                  ? [{ id: "save-image", label: "Save", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
+                  : [{ id: "download-original", label: "Download" }]),
           ...(isGalleryPhoto
             ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
             : [
@@ -512,6 +517,13 @@ function ActiveFileActions({
     setActionMenuOpen(false);
 
     if (runCanvasMenuAction(selectedItemId, canvasActions)) {
+      return;
+    }
+
+    if (selectedItemId?.startsWith("save-image:")) {
+      const source = { name: activeTab.file.name, src: activeTab.rawUrl ?? "" };
+      const message = source.src ? await runImageSaveMenuAction(selectedItemId, source) : null;
+      if (message) announceImageSaved(source.src, message);
       return;
     }
 

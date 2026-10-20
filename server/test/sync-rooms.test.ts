@@ -4,7 +4,7 @@ import { after, before, describe, test } from "node:test";
 import type * as Y from "yjs";
 
 import { EventKind, MessageType, type Actor, type RemoteMessage } from "../src/protocol.js";
-import { addMember, createDocument, startSyncEnv, type SyncEnv } from "./support/sync-fixtures.js";
+import { addMember, createAccount, createDocument, startSyncEnv, type SyncEnv } from "./support/sync-fixtures.js";
 
 function insert(text: string) {
   return (doc: Y.Doc) => {
@@ -144,7 +144,12 @@ describe("RoomService", () => {
     assert.equal(env.server.server.sync.roomCount(), loaded - 1);
     a.send({ type: MessageType.Open, docId, subdocs: [] });
     const refused = await a.waitFor((m) => m.type === MessageType.Closed && m.docId === docId);
-    assert.equal(refused.type === MessageType.Closed && refused.reason, "not-found");
+    assert.equal(refused.type === MessageType.Closed && refused.reason, "document-deleted");
+    const stranger = await env.connect(await createAccount(env.db, env.config));
+    stranger.send({ type: MessageType.Open, docId, subdocs: [] });
+    const hidden = await stranger.waitFor((m) => m.type === MessageType.Closed && m.docId === docId);
+    assert.equal(hidden.type === MessageType.Closed && hidden.reason, "not-found", "non-members cannot distinguish deleted documents from unknown ids");
+    await stranger.close();
     await a.close();
     await b.close();
   });

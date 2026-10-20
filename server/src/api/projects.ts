@@ -15,6 +15,7 @@ import {
   EventKind,
   isRole,
   type AuditEntry,
+  type FolderLease,
   type Member,
   type ProjectSummary,
   type Role,
@@ -36,6 +37,12 @@ const auditQuery = z.object({
   /** Audit entry id to page backwards from (exclusive). */
   before: z.coerce.number().int().positive().optional(),
 });
+
+const leaseId = z.string().min(1).max(200);
+const folderLeaseBody = z.object({ folderId: leaseId, holder: leaseId, ttlMs: z.number().int().positive() });
+const folderLeaseQuery = z.object({ folderId: leaseId, holder: leaseId });
+const MIN_LEASE_MS = 500;
+const MAX_LEASE_MS = 10 * 60_000;
 
 /** Creates a project, its owner membership and its empty manifest document. */
 export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name: string): Promise<ProjectSummary> {
@@ -265,6 +272,57 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       details: { role: target.role },
     });
     announceMembership(context, projectId, userId, null);
+    return reply.status(204).send();
+  });
+
+  // Writer leases for synced folders (004_folder_leases.sql). Leases are per
+  // account: one member cannot take or release another's.
+  app.post(route(ApiRoutes.folderLease, "projectId"), async (request): Promise<FolderLease> => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    const body = folderLeaseBody.parse(request.body);
+    await requireProjectAction(db, projectId, accountId, "read");
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + Math.min(MAX_LEASE_MS, Math.max(MIN_LEASE_MS, body.ttlMs)));
+    const taken = await db
+      .insertInto("folder_leases")
+      .values({ project_id: projectId, account_id: accountId, folder_id: body.folderId, holder: body.holder, expires_at: expiresAt, updated_at: now })
+      .onConflict((conflict) =>
+        conflict
+          .columns(["project_id", "account_id", "folder_id"])
+          .doUpdateSet({ holder: body.holder, expires_at: expiresAt, updated_at: now })
+          .where((eb) => eb.or([eb("folder_leases.holder", "=", body.holder), eb("folder_leases.expires_at", "<=", now)])),
+      )
+      .returning(["holder", "expires_at", "contended_at"])
+      .executeTakeFirst();
+    if (taken) {
+      return { folderId: body.folderId, holder: taken.holder, granted: true, expiresAt: iso(taken.expires_at), contended: taken.contended_at !== null };
+    }
+    // Held by another installation: remember that the folder has contenders,
+    // so its holder learns it at the next renewal.
+    const current = await db
+      .updateTable("folder_leases")
+      .set({ contended_at: now })
+      .where("project_id", "=", projectId)
+      .where("account_id", "=", accountId)
+      .where("folder_id", "=", body.folderId)
+      .returning(["holder", "expires_at"])
+      .executeTakeFirst();
+    return { folderId: body.folderId, holder: current?.holder ?? null, granted: false, expiresAt: current ? iso(current.expires_at) : null, contended: true };
+  });
+
+  app.delete(route(ApiRoutes.folderLease, "projectId"), async (request, reply) => {
+    const { accountId } = await requireAccount(context, request);
+    const { projectId } = projectParams.parse(request.params);
+    const query = folderLeaseQuery.parse(request.query);
+    await requireProjectAction(db, projectId, accountId, "read");
+    await db
+      .deleteFrom("folder_leases")
+      .where("project_id", "=", projectId)
+      .where("account_id", "=", accountId)
+      .where("folder_id", "=", query.folderId)
+      .where("holder", "=", query.holder)
+      .execute();
     return reply.status(204).send();
   });
 

@@ -20,7 +20,7 @@ export interface AccountFixture {
 export async function createAccount(
   db: Kysely<DB>,
   config: Config,
-  options: { id?: string; disabled?: boolean } = {},
+  options: { id?: string; disabled?: boolean; familyId?: string } = {},
 ): Promise<AccountFixture> {
   const id = options.id ?? newId("acc");
   await db
@@ -35,7 +35,11 @@ export async function createAccount(
     })
     .onConflict((oc) => oc.column("id").doNothing())
     .execute();
-  const familyId = newId("fam");
+  const familyId = options.familyId ?? newId("fam");
+  await db.insertInto("refresh_tokens").values({
+    id: newId("rft"), account_id: id, family_id: familyId, token_hash: newId("hash"),
+    expires_at: new Date(Date.now() + 86400_000),
+  }).execute();
   const { token } = await signAccessToken(config, id, familyId);
   return { id, familyId, token };
 }

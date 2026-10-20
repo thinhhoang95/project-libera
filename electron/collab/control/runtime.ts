@@ -21,6 +21,7 @@ import { consoleLogger } from "../core/clock";
 import { CollabHost, syncClientId, type CollabHostEvent, type CollabHostOptions } from "../core/host";
 import { createNotebookService } from "../notebooks";
 import { AccountManager, type SecretCodec } from "./account";
+import { SharedSignIn } from "./shared-sign-in";
 import { Router } from "./router";
 import { HOST_VERSION, connectionDetail, hostConnection } from "./status";
 import type { ControlDeps, NotebookService } from "./types";
@@ -42,6 +43,8 @@ export interface CollabRuntimeOptions {
   fetch?: FetchLike;
   clock?: Clock;
   logger?: Logger;
+  /** Tests: shared sign-in options (cheap scrypt, short poll). */
+  sharedSignIn?: { kdf?: { N: number; r: number; p: number }; pollMs?: number };
 }
 
 interface Generation {
@@ -62,10 +65,12 @@ const PROJECT_EVENT_KINDS: ReadonlySet<string> = new Set([EventKind.RoleChanged,
 
 export class CollabRuntime {
   readonly accounts: AccountManager;
+  /** Automatic sign-in through the synced data folder (shared-sign-in.ts). */
+  readonly sharedSignIn: SharedSignIn;
   /** Shared-notebook routes of the current NotebookService. */
   readonly notebookRoutes = new Router();
   private readonly options: CollabRuntimeOptions;
-  private readonly logger: Logger;
+  readonly logger: Logger;
   private current: Generation | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private lastStatus = "";
@@ -82,6 +87,16 @@ export class CollabRuntime {
       logger: this.logger,
     });
     this.accounts.on(() => this.statusChanged());
+    this.sharedSignIn = new SharedSignIn({
+      libraryRoot: options.libraryRoot,
+      collabDir: options.collabDir,
+      accounts: this.accounts,
+      api: () => (this.accounts.session ? (this.current?.host.api ?? null) : null),
+      signedIn: (serverUrl, auth, canAdopt) => this.signedIn(serverUrl, auth, canAdopt),
+      clock: options.clock,
+      logger: this.logger,
+      ...options.sharedSignIn,
+    });
   }
 
   get host(): CollabHost {
@@ -120,14 +135,18 @@ export class CollabRuntime {
   stop(): Promise<void> {
     return this.serial(async () => {
       this.stopped = true;
+      this.sharedSignIn.stop();
       await this.closeCurrent();
     });
   }
 
   /** Signs in with a fresh AuthResponse; switches to the account's database first. */
-  signedIn(serverUrl: string, auth: AuthResponse): Promise<void> {
+  signedIn(serverUrl: string, auth: AuthResponse, canAdopt: () => boolean = () => true): Promise<void> {
     return this.serial(async () => {
+      if (this.stopped || !canAdopt()) return;
+      if (this.accounts.account) await this.notebooks.beforeAccountChange?.();
       await this.open(databaseKey(auth.account.id));
+      if (this.stopped || !canAdopt()) return;
       await this.accounts.signIn(serverUrl, auth);
       this.applyAccount();
       await this.notebooks.accountChanged();
@@ -141,6 +160,7 @@ export class CollabRuntime {
    */
   signOut(): Promise<void> {
     return this.serial(async () => {
+      await this.notebooks.beforeAccountChange?.();
       await this.accounts.signOut();
       this.applyAccount();
       await this.notebooks.accountChanged();

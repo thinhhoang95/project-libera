@@ -10,12 +10,14 @@ import {
 import {
   ADMIN_USER,
   ANNOTATIONS_DIR,
+  AUDIO_PEAKS_DIR,
   IMAGE_ANNOTATIONS_SUFFIX,
   LIBERA_SYSTEM_DIR,
   MARKDOWN_ASSETS_DIR,
   NOTEBOOK_METADATA_FILE,
   PDF_ANNOTATIONS_SUFFIX,
   PDF_TEXT_CACHE_DIR,
+  TRANSCRIPTS_DIR,
   WORKSPACE_METADATA_FILE,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
@@ -238,6 +240,36 @@ export function pdfAnnotationsPath(notebook: string, nameOrParts: string | strin
   return path.join(pdfAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
 }
 
+/** A path-scoped sidecar of an audio file, like a PDF's annotations: `<dir>/by-path/<folders>/<name>.json`. */
+function audioSidecarPath(directory: string, notebook: string, pathParts: string[]) {
+  if (!pathParts.length) throw new StorageError("Audio sidecar path is invalid.");
+  const safeParts = pathParts.map((part) => assertSafeUserSegment(part, "File path segment"));
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), directory, "by-path",
+    ...safeParts.slice(0, -1), `${safeParts.at(-1)}.json`);
+}
+
+/** A voice memo's transcript. */
+export function transcriptPath(notebook: string, pathParts: string[]) {
+  return audioSidecarPath(TRANSCRIPTS_DIR, notebook, pathParts);
+}
+
+/** A recording's waveform overview, rebuilt when the audio changes. */
+export function audioPeaksPath(notebook: string, pathParts: string[]) {
+  return audioSidecarPath(AUDIO_PEAKS_DIR, notebook, pathParts);
+}
+
+/** Every sidecar an audio file can have, so moves, copies and deletions take them along. */
+export function audioSidecarPaths(notebook: string, pathParts: string[]) {
+  return [transcriptPath(notebook, pathParts), audioPeaksPath(notebook, pathParts)];
+}
+
+/** The folders holding the audio sidecars of everything inside a notebook folder. */
+export function audioSidecarDirectories(notebook: string, folderParts: string[]) {
+  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
+  const safeParts = folderParts.map((part) => assertSafeUserSegment(part, "Folder path segment"));
+  return [TRANSCRIPTS_DIR, AUDIO_PEAKS_DIR].map((directory) => notebookSystemPath(safeNotebook, directory, "by-path", ...safeParts));
+}
+
 export function legacyFlatPdfAnnotationsPath(notebook: string, name: string) {
   return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "pdf",
     `${assertSafeSegment(name, "File name")}.json`);
@@ -274,10 +306,21 @@ export function pdfTextCacheDirectoryPath(notebook: string, pathParts: string[])
   return notebookSystemPath(safeNotebook, PDF_TEXT_CACHE_DIR, ...safePathParts);
 }
 
-export function imageAnnotationsPath(notebook: string, name: string) {
-  const safeNotebook = assertSafeSegment(notebook, "Notebook name");
-  const safeName = assertSafeSegment(name, "File name");
-  return notebookSystemPath(safeNotebook, ANNOTATIONS_DIR, "image", `${safeName}.json`);
+export function imageAnnotationsDirectoryPath(notebook: string, parts: string[] = []) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "image", "by-path",
+    ...parts.map((part) => assertSafeUserSegment(part, "Folder path segment")));
+}
+
+export function imageAnnotationsPath(notebook: string, nameOrParts: string | string[]) {
+  const parts = Array.isArray(nameOrParts) ? nameOrParts : [nameOrParts];
+  if (!parts.length) throw new StorageError("Image annotation path is invalid.");
+  const safeParts = parts.map((part) => assertSafeUserSegment(part, "File path segment"));
+  return path.join(imageAnnotationsDirectoryPath(notebook, safeParts.slice(0, -1)), `${safeParts.at(-1)}.json`);
+}
+
+export function legacyFlatImageAnnotationsPath(notebook: string, name: string) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ANNOTATIONS_DIR, "image",
+    `${assertSafeSegment(name, "File name")}.json`);
 }
 
 export function legacyImageAnnotationsPath(notebook: string, name: string) {

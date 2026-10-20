@@ -183,7 +183,7 @@ class SearchWorkerClient {
   /** Load the model once; failures are remembered so indexing does not retry in a loop. */
   async ensureModel() {
     if (!this.configured) {
-      throw new Error("Choose the EmbeddingGemma 2 text model weights in Preferences → Search.");
+      throw new Error("Download EmbeddingGemma 2 from the Search panel, or choose its weights in Preferences → Search.");
     }
     if (this.modelState === "error" && Date.now() - this.loadFailedAt < LOAD_RETRY_MS) {
       throw new Error(this.modelError);

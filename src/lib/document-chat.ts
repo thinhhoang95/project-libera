@@ -8,7 +8,8 @@ export type ChatReasoningEffort = typeof CHAT_REASONING_EFFORTS[number];
 export function isChatReasoningEffort(value: unknown): value is ChatReasoningEffort {
   return CHAT_REASONING_EFFORTS.some((effort) => effort === value);
 }
-export type ChatContext = { kind: "document" | "selection"; path: string; name: string; text: string };
+/** `comments` holds a document's review comments and replies, as text (src/lib/chat-comments.ts). */
+export type ChatContext = { kind: "document" | "selection" | "comments"; path: string; name: string; text: string };
 export const MAX_CHAT_PHOTOS = 4;
 export const MAX_CHAT_PHOTO_BYTES = 5 * 1024 * 1024;
 /** `source` identifies a photo attached from elsewhere in the app, such as the gallery viewer. */
@@ -22,8 +23,36 @@ export type ChatMode = "chat" | "agent";
 export function isChatMode(value: unknown): value is ChatMode {
   return value === "chat" || value === "agent";
 }
-export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
+export type DocumentChat = { id: string; title: string; titleEdited?: boolean; reasoningEffort?: ChatReasoningEffort; mode?: ChatMode; agentPermission?: AgentPermission; messages: ChatMessage[]; prompt: string; selections: ChatContext[]; photos?: ChatPhoto[]; excludedDocumentPaths?: string[]; excludedCommentPaths?: string[]; excludedPhotoSources?: string[]; usageRequests?: ChatUsageRequest[] };
 export type ChatStore = { chats: DocumentChat[]; activeId: string };
+
+/** Versions share a gallery id; uploaded chat attachments have no gallery source. */
+export function galleryPhotoIdFromSource(source: string | undefined) {
+  return source?.match(/^gallery:([^:]+)(?::|$)/)?.[1];
+}
+
+export function filterGalleryChatPhotos(store: ChatStore, keep: (id: string) => boolean): ChatStore {
+  const keepSource = (source: string | undefined) => {
+    const id = galleryPhotoIdFromSource(source);
+    return !id || keep(id);
+  };
+  const filterPhotos = (photos: ChatPhoto[] | undefined) => {
+    const filtered = photos?.filter((photo) => keepSource(photo.source));
+    return filtered?.length === photos?.length ? photos : filtered;
+  };
+  const chats = store.chats.map((chat) => {
+    const photos = filterPhotos(chat.photos);
+    const excluded = chat.excludedPhotoSources?.filter(keepSource);
+    const messages = chat.messages.map((message) => {
+      const kept = filterPhotos(message.photos);
+      return kept === message.photos ? message : { ...message, photos: kept };
+    });
+    if (photos === chat.photos && excluded?.length === chat.excludedPhotoSources?.length && messages.every((message, i) => message === chat.messages[i])) return chat;
+    return { ...chat, ...(photos !== chat.photos ? { photos } : {}),
+      ...(excluded?.length !== chat.excludedPhotoSources?.length ? { excludedPhotoSources: excluded } : {}), messages };
+  });
+  return chats.every((chat, i) => chat === store.chats[i]) ? store : { ...store, chats };
+}
 
 export function formatChatTimestamp(createdAt: string, now = new Date()) {
   const date = new Date(createdAt);
@@ -31,6 +60,13 @@ export function formatChatTimestamp(createdAt: string, now = new Date()) {
   const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   return date.toDateString() === now.toDateString() ? time : `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
 }
+
+/**
+ * Asks the chat panel to quote a passage, with where it comes from: the
+ * transcript panel sends lines of a recording ("[3:05] Vy: …") this way.
+ */
+export const CHAT_QUOTE_EVENT = "libera:chat-quote";
+export type ChatQuoteDetail = { path: string; name: string; text: string };
 
 export function newDocumentContext(messages: ChatMessage[], document: ChatContext | null): ChatContext[] {
   return newChatContexts(messages, document ? [document] : []);
@@ -44,9 +80,19 @@ export function chatHasPhotoSource(messages: ChatMessage[], source: string) {
 
 // Keep a single snapshot per file in each conversation, including explicit file
 // mentions and restored drafts. Selected passages remain independent context.
+// Review comments change as people reply, so a file's comments go again when
+// they differ from the last copy sent, once per message.
 export function newChatContexts(messages: ChatMessage[], contexts: ChatContext[]): ChatContext[] {
   const paths = new Set(messages.flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document").map((context) => context.path)));
+  const sentComments = new Map<string, string>();
+  for (const message of messages) for (const context of message.contexts ?? []) if (context.kind === "comments") sentComments.set(context.path, context.text);
+  const commentPaths = new Set<string>();
   return contexts.filter((context) => {
+    if (context.kind === "comments") {
+      if (commentPaths.has(context.path) || sentComments.get(context.path) === context.text) return false;
+      commentPaths.add(context.path);
+      return true;
+    }
     if (context.kind !== "document") return true;
     if (paths.has(context.path)) return false;
     paths.add(context.path);
@@ -61,7 +107,7 @@ export function validateChatMessages(value: unknown, enforceLimits = true): valu
     (message.status === undefined || message.status === "streaming" || message.status === "interrupted") && (message.photos === undefined || validateChatPhotos(message.photos)) && typeof message.text === "string" && (!enforceLimits || message.text.length <= 100_000) &&
     (message.agent === undefined || (message.role === "assistant" && validateAgentRunRecord(message.agent))) &&
     (message.contexts === undefined || (Array.isArray(message.contexts) && (!enforceLimits || message.contexts.length <= 30) && message.contexts.every((context: ChatContext) =>
-      context && (context.kind === "document" || context.kind === "selection") &&
+      context && (context.kind === "document" || context.kind === "selection" || context.kind === "comments") &&
       typeof context.path === "string" && typeof context.name === "string" && typeof context.text === "string" && (!enforceLimits || context.text.length <= 500_000)))));
 }
 
@@ -73,7 +119,7 @@ export function validateChatStore(value: unknown): value is ChatStore {
   if (!value || typeof value !== "object") return false;
   const store = value as ChatStore;
   return Array.isArray(store.chats) && store.chats.length > 0 && store.chats.some((item) => item.id === store.activeId) && store.chats.every((item) =>
-    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.mode === undefined || isChatMode(item.mode)) && (item.agentPermission === undefined || isAgentPermission(item.agentPermission)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
+    item && (item.reasoningEffort === undefined || isChatReasoningEffort(item.reasoningEffort)) && (item.mode === undefined || isChatMode(item.mode)) && (item.agentPermission === undefined || isAgentPermission(item.agentPermission)) && (item.photos === undefined || validateChatPhotos(item.photos)) && (item.excludedDocumentPaths === undefined || (Array.isArray(item.excludedDocumentPaths) && item.excludedDocumentPaths.every((path) => typeof path === "string"))) && (item.excludedCommentPaths === undefined || (Array.isArray(item.excludedCommentPaths) && item.excludedCommentPaths.every((path) => typeof path === "string"))) && (item.excludedPhotoSources === undefined || (Array.isArray(item.excludedPhotoSources) && item.excludedPhotoSources.every((source) => typeof source === "string"))) && typeof item.id === "string" && typeof item.title === "string" && typeof item.prompt === "string" && Array.isArray(item.selections) && Array.isArray(item.messages) &&
     (item.usageRequests === undefined || validateUsageRequests(item.usageRequests)) &&
     (!item.messages.length || validateChatMessages(item.messages, false)) && validateChatMessages([{ id: "draft", role: "user", text: "", contexts: item.selections }], false));
 }
@@ -97,8 +143,10 @@ export function chatCompletionContent(message: ChatMessage) {
   ] : text;
 }
 
-export function messagesWithoutExcludedDocuments(messages: ChatMessage[], excludedPaths: string[] = []) {
-  return messages.map((message) => ({ ...message, contexts: message.contexts?.filter((context) => context.kind !== "document" || !excludedPaths.includes(context.path)) }));
+/** Removing a document (or its comments) from the context removes it from the whole conversation. */
+export function messagesWithoutExcludedDocuments(messages: ChatMessage[], excludedPaths: string[] = [], excludedCommentPaths: string[] = []) {
+  return messages.map((message) => ({ ...message, contexts: message.contexts?.filter((context) =>
+    context.kind === "document" ? !excludedPaths.includes(context.path) : context.kind === "comments" ? !excludedCommentPaths.includes(context.path) : true) }));
 }
 
 export function exportChatMarkdown(chat: DocumentChat, mathMarkers: MathMarkerSettings = {}) {

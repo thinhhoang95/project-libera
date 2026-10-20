@@ -32,8 +32,9 @@ export function downloadText(fileName: string, text: string) {
 }
 
 /** The read-only banner a shared tab needs, from its replica state (a rejection banner can show beside it). */
-export function sharedBannerKind(snapshot: ReplicaSnapshot | null): "access-changed" | "update-required" | null {
+export function sharedBannerKind(snapshot: ReplicaSnapshot | null): "access-changed" | "update-required" | "deleted" | null {
   if (!snapshot) return null;
+  if (snapshot.closed === "document-deleted" || snapshot.meta?.readOnlyReason === "document-deleted") return "deleted";
   if (snapshot.status?.state === "access-changed" || snapshot.meta?.readOnlyReason === "access-revoked") return "access-changed";
   if (snapshot.status?.state === "read-only" || snapshot.meta?.readOnlyReason === "schema-newer") return "update-required";
   return null;
@@ -124,6 +125,13 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: 
           onExport={() => downloadText(fileName, replica.text())}
           onDismiss={() => setDismissedAccess(true)}
         />
+      ) : null}
+      {banner === "deleted" ? (
+        <div className="libera-collab-tone flex items-center gap-2 rounded-lg px-3 py-2 text-sm" data-tone="warn" role="alert">
+          <Lock aria-hidden className="h-4 w-4 shrink-0" />
+          <p className="flex-1">This file was deleted. Your local text is kept here for recovery.</p>
+          <button type="button" className="shrink-0 underline" onClick={() => downloadText(fileName, replica.text())}>Export text</button>
+        </div>
       ) : null}
       {banner === "update-required" ? (
         <div className="libera-collab-tone flex items-start gap-2 rounded-lg px-3 py-2 text-sm" data-tone="danger" role="alert">

@@ -343,6 +343,37 @@ function ImagePassage({ result, onFindSimilar }: { result: SearchResultFile; onF
   );
 }
 
+/**
+ * A voice memo's passage: its transcript lines with their speakers, and a
+ * player that starts where the passage does.
+ */
+function AudioPassage({ result, hit, terms }: { result: SearchResultFile; hit: SearchHit; terms: string[] }) {
+  const seconds = (hit.location.start ?? 0) / 1000;
+  return (
+    <div className="space-y-3">
+      <audio
+        key={`${result.key}:${hit.chunkId}`}
+        className="h-9 w-full"
+        controls
+        preload="none"
+        src={`/api/files/raw/${encodeFilePath(result.path)}#t=${seconds.toFixed(2)}`}
+      />
+      <div className="space-y-2 rounded-lg bg-muted/60 px-3 py-2.5 text-[13px] leading-5 text-foreground/85">
+        {hit.text.split("\n").map((line, index) => {
+          const match = /^([^:\n]{1,80}): (.*)$/.exec(line);
+          return (
+            <p key={index}>
+              {match ? <span className="mr-1.5 font-semibold text-foreground">{match[1]}</span> : null}
+              <Highlighted text={match ? match[2] : line} terms={terms} />
+            </p>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-muted-foreground">Open plays the memo from here, with its transcript beside it.</p>
+    </div>
+  );
+}
+
 /** A References entry's passage: its description, abstract or notes, as stored. */
 function ReferencePassage({ hit, terms }: { hit: SearchHit; terms: string[] }) {
   return (
@@ -402,6 +433,7 @@ export function SearchPreview({
           : result.kind === "pdf" ? <PdfPassage key={result.key} result={result} hit={hit} terms={terms} />
           : result.kind === "image" ? <ImagePassage result={result} onFindSimilar={onFindSimilar} />
           : result.kind === "reference" ? <ReferencePassage hit={hit} terms={terms} />
+          : result.kind === "audio" ? <AudioPassage result={result} hit={hit} terms={terms} />
           : <SourcePassage key={`${result.key}:${hit.chunkId}`} result={result} hit={hit} terms={terms} />}
       </div>
     </div>

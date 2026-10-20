@@ -2,6 +2,8 @@ type LiberaMarkdownPdfExportInput = {
   content: string;
   documentPath: string;
   fileName: string;
+  /** "slides" prints a Markdown Slides deck, one slide per page. */
+  kind?: "document" | "slides";
   title?: string;
 };
 
@@ -13,6 +15,7 @@ type LiberaMarkdownPdfExportResult = {
 type LiberaMarkdownPdfRenderInput = {
   content: string;
   documentPath?: string;
+  kind?: "document" | "slides";
   title?: string;
 };
 
@@ -82,6 +85,8 @@ declare global {
     };
     liberaExport?: {
       saveMarkdownFile: (input: { content: string; fileName: string; saveId?: string }) => Promise<{ canceled: boolean; saveId?: string; fileName?: string }>;
+      /** A Save dialog for any text export (transcripts as Markdown, text or subtitles). */
+      saveTextFile?: (input: { content: string; fileName: string; filterName: string; extensions: string[] }) => Promise<{ canceled: boolean; fileName?: string }>;
       exportMarkdownPdf: (
         input: LiberaMarkdownPdfExportInput,
       ) => Promise<LiberaMarkdownPdfExportResult>;
@@ -113,6 +118,7 @@ declare global {
       close: () => Promise<void>;
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<void>;
+      setButtonsVisible: (visible: boolean) => Promise<void>;
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
     };

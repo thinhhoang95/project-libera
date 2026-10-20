@@ -18,6 +18,18 @@ Review history is stored locally under `.libera/markdown-reviews.json` in the Li
 
 AI review uses the configured Chat model and OpenRouter connection from AI preferences. It checks context capacity before sending the complete review. Large targets or attachments may require a model with a larger context or fewer references. Cancelled, malformed, or invalid generation does not partially apply changes.
 
+## Review comments on PDFs
+
+Open a PDF, select text on a page and choose **Add comment** (the speech-bubble button in the floating selection menu, or **⌘/Ctrl+Alt+M**). Write the comment in the box that opens beside the passage; **⌘/Ctrl+Enter** saves it and **Esc** cancels. A selection that runs over several pages is one comment.
+
+- Commented passages are washed in amber with a dotted rule and a numbered badge at their end. Clicking the passage or the badge opens its card in the **Comments** tab; choosing a card scrolls the PDF to its passage. The comment button in the PDF toolbar shows how many are open and opens the tab.
+- Cards are numbered in reading order (page, then down the page) and show the page and the quoted text. Reply, edit your own messages, resolve, reopen and delete as on a Markdown document. Resolved comments leave the page until their card is opened. Search covers the page ("page 3"), the passage and every message.
+- The AI agent reads a PDF's comments with ReadComments and replies to them with ReplyToComment; its replies show as **Agent**. It never starts comments on a PDF. See [the AI agent](features/ai-agent.md#review-comments-on-pdfs).
+- Comments are outside the PDF viewer's undo, like comments on Markdown documents, and are never written into the PDF itself or into annotated exports.
+- They are stored in the PDF's annotation sidecar (`.libera/annotations/pdf/by-path/<path>.json`, under `comments`) beside its highlights and notes, so renaming, moving, copying, archiving and deleting the PDF or its folders carry them exactly as they carry its markup, and a synced notebook carries them to other computers. A copy's comments are its own. Each change rewrites one thread under a lock on the sidecar, so saving markup in the viewer and the agent replying never overwrite each other. In a shared notebook, PDF comments stay with the PDF's other annotations on this computer; they are not collaboration-server threads.
+
+Agentic review, suggested edits and **Request review…** are for Markdown and LaTeX documents only.
+
 ## Shared documents
 
 In a shared notebook, Review Mode works the same way, but comments, suggestions and reviews are shared with everyone in the notebook.

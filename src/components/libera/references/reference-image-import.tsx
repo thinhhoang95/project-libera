@@ -298,7 +298,7 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
         tabIndex={0}
         aria-label="Reference list image: paste, drop or choose a screenshot or photo"
         aria-busy={working}
-        className={`flex items-center gap-2 rounded-lg border border-dashed px-2.5 py-2 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring ${dragging ? "border-accent bg-muted" : "border-input"}`}
+        className={`flex flex-col items-stretch gap-1.5 rounded-lg border border-dashed px-2.5 py-2 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring ${dragging ? "border-accent bg-muted" : "border-input"}`}
         onPaste={(event: ClipboardEvent<HTMLDivElement>) => {
           const files = Array.from(event.clipboardData.files);
           if (!files.length) return;
@@ -326,22 +326,26 @@ export function ReferenceImageImport({ notebook, library, webSearch, busy = fals
           }
         }}
       >
-        {working ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <ScanText aria-hidden className="h-3.5 w-3.5 shrink-0" />}
-        <span className="min-w-0 flex-1" role={working ? "status" : undefined}>
-          {working ? progressText(state.progress) : "Screenshot or photo of a reference list: paste or drop it here"}
-        </span>
-        {working ? (
-          <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}>Cancel</button>
-        ) : (
-          <>
-            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" title="Paste an image from the clipboard" onClick={() => void pasteFromClipboard()}>
-              <ClipboardPaste aria-hidden className="h-3 w-3" /> Paste
-            </button>
-            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" title="Choose an image" onClick={() => inputRef.current?.click()}>
-              <ImageUp aria-hidden className="h-3 w-3" /> Image
-            </button>
-          </>
-        )}
+        <div className="flex min-w-0 items-center gap-2">
+          {working ? <Loader2 aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <ScanText aria-hidden className="h-3.5 w-3.5 shrink-0" />}
+          <span className="min-w-0 flex-1" role={working ? "status" : undefined}>
+            {working ? progressText(state.progress) : "Screenshot or photo of a reference list: paste or drop it here"}
+          </span>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          {working ? (
+            <button type="button" className="libera-panel-button h-6 px-2 text-[11px]" onClick={cancel}>Cancel</button>
+          ) : (
+            <>
+              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title="Paste an image from the clipboard" onClick={() => void pasteFromClipboard()}>
+                <ClipboardPaste aria-hidden className="h-3 w-3" /> Paste
+              </button>
+              <button type="button" className="libera-panel-button h-6 whitespace-nowrap px-2 text-[11px]" title="Choose an image" onClick={() => inputRef.current?.click()}>
+                <ImageUp aria-hidden className="h-3 w-3" /> Image
+              </button>
+            </>
+          )}
+        </div>
       </div>
       {state.kind === "error" ? (
         <div role="alert" className="flex items-start gap-2 rounded-lg bg-destructive-muted p-2 text-[11px] text-destructive">

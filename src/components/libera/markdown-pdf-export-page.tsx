@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { MarkdownSlidesPrintDocument } from "@/components/libera/markdown-slides-viewer";
+import { useNotebookCodeBlockRenderer, waitForSlideBlocksReady } from "@/components/libera/slide-live-blocks";
+import { parseMarkdownSlides } from "@/lib/markdown-slides";
 import {
   ReferenceRenderProvider,
   referenceNotebookForPath,
@@ -15,6 +18,7 @@ import {
 type MarkdownPdfExportPayload = {
   content: string;
   documentPath?: string;
+  kind?: "document" | "slides";
   title?: string;
 };
 
@@ -32,6 +36,7 @@ function normalizePayload(payload: MarkdownPdfExportPayload): MarkdownPdfExportP
     content: typeof payload.content === "string" ? payload.content : "",
     documentPath:
       typeof payload.documentPath === "string" ? payload.documentPath : undefined,
+    kind: payload.kind === "slides" ? "slides" : "document",
     title: typeof payload.title === "string" ? payload.title : undefined,
   };
 }
@@ -96,6 +101,8 @@ async function waitForExportReady(root: HTMLElement) {
   await nextFrame();
   await document.fonts?.ready;
   await waitForImages(root);
+  // Slide charts and live HTML frames draw after their data and scripts load.
+  await waitForSlideBlocksReady(root);
   fitOversizedDisplayMath(root);
   await nextFrame();
 }
@@ -105,7 +112,13 @@ export function MarkdownPdfExportPage({
 }: MarkdownPdfExportPageProps) {
   const [payload, setPayload] = useState<MarkdownPdfExportPayload | null>(null);
   const pendingRendersRef = useRef<PendingRender[]>([]);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
+  const deck = useMemo(
+    () => (payload?.kind === "slides" ? parseMarkdownSlides(payload.content) : null),
+    [payload],
+  );
+  const documentFontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
+  const renderCodeBlock = useNotebookCodeBlockRenderer(payload?.documentPath, documentFontFamily, "export");
 
   useEffect(() => {
     const { documentElement } = document;
@@ -172,6 +185,22 @@ export function MarkdownPdfExportPage({
     };
   }, [payload]);
 
+  if (deck && payload) {
+    return (
+      <main ref={rootRef} className="markdown-slides-export-page">
+        <ReferenceRenderProvider notebook={referenceNotebookForPath(payload.documentPath)}>
+          <MarkdownSlidesPrintDocument
+            baseLineHeight={markdownPreferences.baseLineHeight}
+            deck={deck}
+            documentPath={payload.documentPath}
+            fontFamily={getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily)}
+            mathMarkers={markdownPreferences}
+          />
+        </ReferenceRenderProvider>
+      </main>
+    );
+  }
+
   return (
     <main className="markdown-pdf-export-page">
       <article ref={rootRef} className="markdown-pdf-export-document">
@@ -183,9 +212,8 @@ export function MarkdownPdfExportPage({
               baseLineHeight={markdownPreferences.pdfExportBaseLineHeight}
               content={payload.content}
               documentPath={payload.documentPath}
-              fontFamily={getRenderedMarkdownFontStack(
-                markdownPreferences.renderedMarkdownFontFamily,
-              )}
+              fontFamily={documentFontFamily}
+              renderCodeBlock={renderCodeBlock}
             />
           </ReferenceRenderProvider>
         ) : (

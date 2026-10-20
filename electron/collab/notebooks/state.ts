@@ -23,6 +23,25 @@ export interface SharedMarker {
   accountId: string;
   manifestDocId: string;
   sharedAt: string;
+  /**
+   * The installation that keeps this folder in sync. A folder synced to
+   * other devices (OneDrive and the like) carries the marker there too; their
+   * hosts leave the folder alone. Missing in markers written before this
+   * field; the first host to load such a marker claims it.
+   */
+  writer?: string;
+  /**
+   * The folder's identity, the same on every device that syncs it: the key
+   * of its writer lease on the server. Missing in older markers; the writer
+   * adds one.
+   */
+  folderId?: string;
+  /**
+   * More than one installation has used this folder (it syncs to other
+   * devices or Libera profiles). A signed-out host then never writes it:
+   * it cannot hold the lease, and another installation may.
+   */
+  syncedElsewhere?: boolean;
   /** Access was revoked: the folder is kept, read-only, and no longer synced. */
   revoked?: boolean;
   revokedAt?: string;
@@ -38,6 +57,37 @@ export interface LayoutRecord {
   hash?: string;
   size?: number;
   mtimeMs?: number;
+  /**
+   * Earlier bytes this host wrote or adopted here, newest first. A file that
+   * comes back with one of these hashes and that version's mtime is an old
+   * copy put back by a sync client, not an edit (see isStaleCopy).
+   */
+  previous?: Array<{ hash: string; mtimeMs: number }>;
+}
+
+const MAX_PREVIOUS = 8;
+/** FAT and ExFAT keep mtimes in 2 s steps. */
+const MTIME_SLACK_MS = 2000;
+
+/** Sets the bytes now on disk for a record, remembering the version they replace. */
+export function setMaterialized(record: LayoutRecord, hash: string, size: number | undefined, mtimeMs: number | undefined): void {
+  if (record.hash && record.hash !== hash && record.mtimeMs !== undefined) {
+    const earlier = (record.previous ?? []).filter((item) => item.hash !== record.hash);
+    record.previous = [{ hash: record.hash, mtimeMs: record.mtimeMs }, ...earlier].slice(0, MAX_PREVIOUS);
+  }
+  Object.assign(record, { hash, size, mtimeMs });
+}
+
+/**
+ * Whether bytes on disk are an earlier version this host wrote, put back
+ * with its original mtime (a sync client restoring or delivering a stale
+ * copy) rather than an edit. A person's edit, even one that restores the
+ * same text, gets a new mtime, newer than the current version's.
+ */
+export function isStaleCopy(record: LayoutRecord, hash: string, mtimeMs: number): boolean {
+  if (!record.previous || hash === record.hash) return false;
+  if (record.mtimeMs !== undefined && mtimeMs > record.mtimeMs) return false;
+  return record.previous.some((item) => item.hash === hash && Math.abs(item.mtimeMs - mtimeMs) <= MTIME_SLACK_MS);
 }
 
 export interface ProjectState {

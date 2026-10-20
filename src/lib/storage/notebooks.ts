@@ -29,6 +29,7 @@ import {
 } from "@/lib/storage/workspace-metadata";
 import type { LiberaNotebookMetadata } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
+import { remapLastNotebookName } from "@/lib/storage/last-notebook";
 import { assertNotSharedItem, SharedDocumentError, sharedNotebookMarker } from "@/lib/collab/shared-notebook";
 
 /** Notebooks and linked folders share one namespace of top-level names. */
@@ -122,6 +123,7 @@ export async function renameNotebook(
   // The notebook's own library moves with its folder; pointers into it are renamed here.
   await moveReferenceAttachments(currentName, nextName);
   await renameFileMetadataPathPrefix(currentName, nextName);
+  await remapLastNotebookName(currentName, nextName);
   if (currentName !== nextName) notifySearchChanges();
 
   return getTree();
@@ -146,6 +148,7 @@ export async function deleteNotebook(name: string) {
   // The notebook's own library was deleted with its folder; other libraries lose pointers into it.
   await detachReferenceAttachments(assertSafeSegment(name, "Notebook name"));
   await removeFileMetadataPathPrefix(name);
+  await remapLastNotebookName(name);
   notifySearchChanges();
 
   return getTree();

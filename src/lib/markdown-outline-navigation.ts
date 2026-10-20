@@ -7,6 +7,8 @@ export const MARKDOWN_OUTLINE_NAVIGATE_EVENT = "libera:markdown-outline-navigate
 
 export type MarkdownOutlineNavigateDetail = {
   documentPath: string;
+  /** With an end, selects the source range [offset, end) instead of a heading. */
+  end?: number;
   markdown: string;
   offset: number;
 };

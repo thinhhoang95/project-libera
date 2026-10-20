@@ -1,10 +1,12 @@
-import { LogOut } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { MouseEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { AboutDialog } from "@/components/libera/about-dialog";
 import type { ThemePreference } from "@/lib/theme";
 import { applyThemePreference } from "@/components/libera/theme-sync";
+
+const LIBERA_BLOG_URL = "https://blog.intuelle.com";
 
 type SidebarAppMenuProps = {
   collapsed?: boolean;
@@ -72,21 +74,32 @@ export function SidebarAppMenu({
         ...point,
         items: [
           {
+            id: "preferences",
+            label: "Preferences…",
+            enabled: Boolean(window.liberaPreferences),
+          },
+          { type: "separator" },
+          {
             id: "toggle-dark-mode",
             label: "Dark Mode",
             type: "checkbox",
             checked: theme === "dark",
           },
           { type: "separator" },
-          { id: "about", label: "About LiBERA" },
+          { id: "visit-blog", label: "Visit Libera Blog" },
+          { id: "about", label: "About Libera" },
         ],
       })
       .catch(() => null);
 
     setMenuOpen(false);
 
-    if (selectedItemId === "toggle-dark-mode") {
+    if (selectedItemId === "preferences") {
+      void window.liberaPreferences?.open();
+    } else if (selectedItemId === "toggle-dark-mode") {
       toggleDarkMode();
+    } else if (selectedItemId === "visit-blog") {
+      window.open(LIBERA_BLOG_URL, "_blank", "noopener,noreferrer");
     } else if (selectedItemId === "about") {
       openAboutDialog();
     }
@@ -104,13 +117,13 @@ export function SidebarAppMenu({
             <button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              aria-label="LiBERA menu"
+              aria-label="Libera menu"
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold"
-              title="LiBERA menu"
+              title="Libera menu"
               type="button"
               onClick={(event) => void openMenu(event)}
             >
-              L
+              <Settings aria-hidden className="h-4 w-4" />
             </button>
             <button
               aria-label="Logout"
@@ -131,7 +144,7 @@ export function SidebarAppMenu({
               type="button"
               onClick={(event) => void openMenu(event)}
             >
-              LiBERA
+              Libera
             </button>
             <button
               aria-label="Logout"

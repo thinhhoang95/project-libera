@@ -20,6 +20,8 @@ import { currentReferenceSignature, parseReferenceRecordKey, readReferenceSource
 import { getSearchPreferences, searchIndexFile, type SearchPreferences } from "@/lib/search/settings";
 import { getSearchWorker } from "@/lib/search/worker-client";
 import { readFileSignature } from "@/lib/storage/file-signature";
+import { readTranscript, transcriptSignature } from "@/lib/storage/transcripts";
+import { transcriptPassages } from "@/lib/transcription/format";
 import { getGallery, getGalleryRoot } from "@/lib/storage/gallery";
 import { filePathFromParts, getAdminRoot, getLinkedFolder, getLinkedFolders, referenceLibraryPath, splitFilePath } from "@/lib/storage/paths";
 import { referenceLibraryNotebooks } from "@/lib/storage/references";
@@ -692,10 +694,17 @@ export class SearchIndexer {
   /**
    * A library file's identity. A PDF's includes its highlights' sidecar, so
    * adding a highlight indexes its quote; a PDF without one keeps the plain
-   * file signature.
+   * file signature. A recording's includes its transcript, which is what is
+   * indexed: transcribing it, or renaming a speaker, indexes it again.
    */
   private async librarySignature(relativePath: string, fileType: LiberaFileNode["fileType"]) {
     const signature = await readFileSignature(libraryAbsolutePath(relativePath));
+    if (fileType === "audio") {
+      const transcript = await transcriptSignature(relativePath);
+      if (!transcript) return signature;
+      const { stale } = await readTranscript(relativePath);
+      return `${signature}|${transcript}|${stale ? "stale" : "current"}`;
+    }
     if (fileType !== "pdf") return signature;
     const highlights = await pdfHighlightSignature(relativePath);
     return highlights ? `${signature}|${highlights}` : signature;
@@ -718,6 +727,13 @@ export class SearchIndexer {
       // Highlight quotes are passages of their own, so a search can find what was marked.
       const chunks = [...toNewChunks(chunkPdfPages(pages)), ...await pdfHighlightChunks(file.path)];
       return chunks.length ? chunks : nameOnlyChunk(file.name);
+    }
+
+    // A recording is found through its current transcript, without decoding audio.
+    if (file.fileType === "audio") {
+      const { transcript, stale } = await readTranscript(file.path);
+      const passages = transcript && !stale ? transcriptPassages(transcript) : [];
+      return passages.length ? passages : nameOnlyChunk(file.name);
     }
 
     if (file.size > MAX_INDEXED_TEXT_BYTES) return nameOnlyChunk(file.name);

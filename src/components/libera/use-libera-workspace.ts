@@ -20,6 +20,7 @@ import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events"
 import type {
   MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
+  MarkdownSelectionLinkOption,
   MarkdownImageSelection,
   MarkdownScreenshotSnipMode,
   MarkdownScreenshotSnipSession,
@@ -42,6 +43,16 @@ import {
   resolveMarkdownFileLink,
   type MarkdownFileLinkMetadata,
 } from "@/lib/markdown-file-links";
+import { findMarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
+import { annotationLinkLabel, findRememberedAnnotation } from "@/lib/annotation-links";
+import {
+  createMarkdownLinkQuote,
+  isMarkdownSourceRange,
+  markdownLinkQuoteLabel,
+  resolveMarkdownLinkQuote,
+} from "@/lib/markdown-selection-links";
+import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
+import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { useMarkdownWindows } from "./use-markdown-windows";
 import { useSavedWorkspaces } from "./use-saved-workspaces";
 import { createDeferredSave, flushPendingState, registerStateFlusher } from "./deferred-save";
@@ -49,6 +60,7 @@ import { useCanvasLayout } from "./use-canvas-layout";
 import { captureCanvasViewState } from "./canvas-view-state";
 import { useGallery } from "./gallery-store";
 import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
+import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
 import type { GalleryPhoto } from "@/lib/image-generation";
 import type { PhotoEdits } from "@/lib/photo-edits";
@@ -58,6 +70,7 @@ import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
 import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
 import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
+import { MARKDOWN_TABLE_FIRST_HEADER, markdownTable } from "@/lib/markdown-table";
 import {
   ensureDocumentOcrModel,
   readImageAsMarkdown,
@@ -79,37 +92,16 @@ import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 import { subscribeSharedTreeChanges } from "@/lib/collab/ui/tree-changes";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
 import { rewriteCitationKeys } from "@/lib/references/citation-syntax";
+import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
+import { searchNotebookTree } from "./notebook-search";
+import { useWhereWasITracker, whereWasITracker } from "./where-was-i-tracker";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
 const isSharedRegistryTab = (tabId: string) => getSharedDocRegistry().isSharedTab(tabId);
 const PASTE: Provenance = { source: "paste" };
-
-function collectFileSearchResults(
-  nodes: LiberaTreeNode[],
-  notebook: string,
-  normalizedQuery: string,
-  results: SearchResult[],
-) {
-  for (const node of nodes) {
-    if (node.kind === "folder") {
-      collectFileSearchResults(node.children, notebook, normalizedQuery, results);
-      continue;
-    }
-
-    if (node.name.toLowerCase().includes(normalizedQuery)) {
-      results.push({
-        type: "file",
-        notebook,
-        file: node,
-        label: node.path,
-      });
-    }
-  }
-}
-
 
 function subscribeToNothing() {
   return () => undefined;
@@ -195,12 +187,18 @@ function createMarkdownSlidesContent(name: string) {
     "$author = []",
     "$affiliation = []",
     "$date = \"\"",
-    "$template = \"default\"",
-    "$fontsize = 21",
+    "$theme = \"light\"",
     "---",
-    "$title = \"First Slide\"",
+    "## First slide",
     "",
     "Start your slide content here.",
+    "",
+    "--",
+    "",
+    "- A line with only -- reveals what follows on the next click",
+    "",
+    "???",
+    "Speaker notes: only you see these, in speaker view (press S while presenting).",
     "",
   ].join("\n");
 }
@@ -235,6 +233,9 @@ function mergeOpenTabViewState(
 ): OpenTabViewState {
   return {
     ...currentViewState,
+    audio: patchViewState.audio
+      ? { ...currentViewState?.audio, ...patchViewState.audio }
+      : currentViewState?.audio,
     image: patchViewState.image
       ? { ...currentViewState?.image, ...patchViewState.image }
       : currentViewState?.image,
@@ -311,6 +312,8 @@ function setsEqual(left: Set<string>, right: Set<string>) {
 }
 
 const FILE_INTERACTIONS_STORAGE_KEY = "libera.fileInteractions";
+// Switching windows back and forth should not walk the whole library each time.
+const FOCUS_TREE_REFRESH_INTERVAL_MS = 5000;
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
@@ -321,6 +324,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [tree, setTree] = useState<LiberaTree>(emptyTree);
+  const appliedTreeRef = useRef<LiberaTree | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   // The latest tabs, for work that finishes after a render, like reading a snip.
@@ -377,7 +381,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // Shared documents (plan M1.4/M1.6): the replica of a shared tab lives in
   // the registry for as long as the tab is open; its text is the tab's draft.
   const sharedRegistry = getSharedDocRegistry();
-  const sharedTabIds = useSharedTabs(tabs, { onText: mirrorSharedText, onAttached: adoptPendingDraft });
+  // Register the recap before shared attachment effects can report a baseline.
+  useWhereWasITracker(tabs, (tabId) => sharedRegistry.isSharedTab(tabId), getTabDraft, tree.notebooks);
+  const sharedTabIds = useSharedTabs(tabs, {
+    onText: mirrorSharedText,
+    onAttached: (tabId, session) => {
+      // The recap's baseline is the shared text before a pending draft is applied.
+      whereWasITracker.sharedAttached(tabId, session.replica.ytext.toString());
+      adoptPendingDraft(tabId, session);
+    },
+    onEdit: (tabId, local, text) => whereWasITracker.sharedEdited(tabId, local, text),
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const openingFilePathsRef = useRef<Set<string>>(new Set());
@@ -461,29 +475,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
 
-  const searchResults = useMemo<SearchResult[]>(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    if (!normalizedQuery) {
-      return [];
-    }
-
-    const results: SearchResult[] = [];
-
-    for (const notebook of visibleTree.notebooks) {
-      if (notebook.name.toLowerCase().includes(normalizedQuery)) {
-        results.push({
-          type: "notebook",
-          notebook: notebook.name,
-          label: notebook.name,
-        });
-      }
-
-      collectFileSearchResults(notebook.children, notebook.name, normalizedQuery, results);
-    }
-
-    return results.slice(0, 12);
-  }, [query, visibleTree]);
+  const searchResults = useMemo<SearchResult[]>(
+    () => searchNotebookTree(visibleTree, query, { includeNotebooks: true, limit: 12 }),
+    [query, visibleTree],
+  );
 
   function persistNotebookPanelExpansion(nextExpanded: Set<string>) {
     if (workspaceManager.activeWorkspace) return;
@@ -546,11 +541,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       try { nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true"); }
       catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Could not refresh archived files."); }
     }
+    appliedTreeRef.current = nextTree;
     setTree(nextTree);
   }
 
-  async function refreshTree(expandNotebook?: string) {
+  /** `onlyIfChanged` drops a result that matches the shown tree or lost a race with a newer one. */
+  async function refreshTree(expandNotebook?: string, options?: { onlyIfChanged?: boolean }) {
+    const treeAtStart = appliedTreeRef.current;
     const nextTree = await apiRequest<LiberaTree>("/api/tree?includeArchive=true");
+    if (options?.onlyIfChanged && (appliedTreeRef.current !== treeAtStart ||
+        JSON.stringify(nextTree) === JSON.stringify(treeAtStart))) {
+      return appliedTreeRef.current ?? nextTree;
+    }
     await applyCompleteTree(nextTree);
     setSelectedNotebookName((current) => {
       if (current && nextTree.notebooks.some((notebook) => notebook.name === current)) {
@@ -573,6 +575,34 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     refreshTree().catch((error: Error) => setWorkspaceError(error.message));
+  }, [authenticated]);
+
+  // Files added in Finder or another app raise no event here (only shared
+  // notebooks are watched), so read the library again when the window returns.
+  const latestFocusRefresh = useRef(refreshTree);
+  useLayoutEffect(() => {
+    latestFocusRefresh.current = refreshTree;
+  });
+  useEffect(() => {
+    if (!authenticated) return;
+    let running = false;
+    let lastStartedAt = Date.now();
+    const onReturn = () => {
+      if (document.visibilityState !== "visible" || running ||
+          Date.now() - lastStartedAt < FOCUS_TREE_REFRESH_INTERVAL_MS) return;
+      running = true;
+      lastStartedAt = Date.now();
+      // A failed background check is not worth an error banner; the next one retries.
+      void latestFocusRefresh.current(undefined, { onlyIfChanged: true })
+        .catch(() => undefined)
+        .finally(() => { running = false; });
+    };
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+    return () => {
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
+    };
   }, [authenticated]);
 
   useEffect(() => {
@@ -993,10 +1023,37 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
   }
 
-  // Steps an image tab to another image in its folder, in place: the tab keeps
-  // its position and panel instead of a new tab opening for every photo.
+  /** Opens the tab of a recording in progress, or brings it to the front. */
+  function openRecordingTab(recordingId: string, name: string, notebook: string) {
+    setWorkspaceError("");
+    const tab = createRecordingTab(recordingId, name, notebook);
+    setTabs((currentTabs) => currentTabs.some((currentTab) => currentTab.id === tab.id) ? currentTabs : [...currentTabs, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function renameRecordingTab(recordingId: string, name: string) {
+    const tabId = recordingTabId(recordingId);
+    if (!tabs.some((tab) => tab.id === tabId && tab.file.name !== name)) return;
+    updateTab(tabId, (tab) => ({ ...tab, file: { ...tab.file, name } }));
+  }
+
+  /** The recording was saved: its tab becomes the saved voice memo, in place. */
+  async function replaceRecordingTab(recordingId: string, path: string) {
+    const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`);
+    const tabId = recordingTabId(recordingId);
+    if (tabs.some((tab) => tab.id === tabId)) showImageInTab(tabId, payload.file);
+    else await openFile(payload.file);
+  }
+
+  function closeRecordingTab(recordingId: string) {
+    const tabId = recordingTabId(recordingId);
+    if (tabs.some((tab) => tab.id === tabId)) closeTabWithoutConfirm(tabId);
+  }
+
+  // Steps an image or recording tab to another one in its folder, in place: the
+  // tab keeps its position and panel instead of a new tab opening for each.
   function showImageInTab(tabId: string, file: LiberaFileNode) {
-    if (file.fileType !== "image" || tabId === file.path) {
+    if ((file.fileType !== "image" && file.fileType !== "audio") || tabId === file.path) {
       return;
     }
 
@@ -1030,16 +1087,133 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function openMarkdownFileLink(sourcePath: string, href: string) {
+    if (href.startsWith("#")) {
+      const sourceTab = tabs.find((tab) => tab.file.path === sourcePath);
+
+      if (!sourceTab || sourceTab.file.fileType !== "markdown") {
+        return false;
+      }
+
+      const markdown =
+        sourceTab.id === activeTabId && textareaRef.current
+          ? textareaRef.current.value
+          : getTabDraft(sourceTab);
+
+      return openMarkdownHeading(sourceTab.file, markdown, href);
+    }
+
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
 
     if (!resolvedLink) {
       return false;
     }
 
+    const quote = resolvedLink.metadata?.quote;
+
+    if ((resolvedLink.headingFragment || quote) && resolvedLink.file.fileType === "markdown") {
+      const markdown = await readMarkdownForLink(resolvedLink.file);
+
+      if (resolvedLink.headingFragment && await openMarkdownHeading(resolvedLink.file, markdown, resolvedLink.headingFragment)) {
+        return true;
+      }
+
+      const range = quote
+        ? resolveMarkdownLinkQuote(markdown, quote, resolvedLink.metadata?.viewState?.markdown?.selectionStart)
+        : null;
+
+      if (range) {
+        await revealMarkdownRange(resolvedLink.file, markdown, range.start, range.end);
+        return true;
+      }
+    }
+
+    const time = resolvedLink.file.fileType === "audio" ? resolvedLink.metadata?.viewState?.audio?.currentTime : undefined;
     await openFile(resolvedLink.file, {
-      viewState: resolvedLink.metadata?.viewState,
+      // A link to a moment in a recording plays it from there.
+      viewState: time !== undefined
+        ? { audio: { currentTime: time, reveal: { seconds: time, nonce: Date.now() } } }
+        : withAnnotationReveal(resolvedLink.metadata?.viewState),
     });
     return true;
+  }
+
+  // An annotation link (one without a saved view) asks the PDF or image viewer
+  // to show its annotation, instead of restoring the tab's own scroll or pan.
+  function withAnnotationReveal(viewState: OpenTabViewState | undefined): OpenTabViewState | undefined {
+    const pdf = viewState?.pdf;
+    const image = viewState?.image;
+
+    if (pdf?.selectedAnnotationId && pdf.scrollTop === undefined) {
+      return { ...viewState, pdf: { ...pdf, revealSelectedAnnotation: true } };
+    }
+
+    if (image?.selectedAnnotationId && image.panX === undefined) {
+      return { ...viewState, image: { ...image, revealSelectedAnnotation: true } };
+    }
+
+    return viewState;
+  }
+
+  async function readMarkdownForLink(file: LiberaFileNode) {
+    const openTab = tabs.find((tab) => tab.id === file.path);
+
+    if (openTab) {
+      return openTab.id === activeTabId && textareaRef.current
+        ? textareaRef.current.value
+        : getTabDraft(openTab);
+    }
+
+    try {
+      const payload = await apiRequest<LiberaFilePayload>(
+        `/api/files?path=${encodeURIComponent(file.path)}`,
+      );
+      return payload.content ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  // Opens a Markdown file at the heading a `#fragment` names.
+  async function openMarkdownHeading(file: LiberaFileNode, markdown: string, fragment: string) {
+    const heading = findMarkdownHeadingAnchor(markdown, fragment);
+
+    if (!heading) {
+      return false;
+    }
+
+    await revealMarkdownRange(file, markdown, heading.offset);
+    return true;
+  }
+
+  // Opens a Markdown file at a source offset, or with a source range selected,
+  // in the source editor or the visual editor, whichever shows the document.
+  async function revealMarkdownRange(file: LiberaFileNode, markdown: string, start: number, end?: number) {
+    await openFile(file, {
+      viewState: {
+        markdown: {
+          line: lineForOffset(markdown, start),
+          selectionEnd: end ?? start,
+          selectionStart: start,
+        },
+      },
+    });
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+
+        if (textarea && textarea.value === markdown) {
+          textarea.focus();
+          textarea.setSelectionRange(start, end ?? start);
+          scrollTextareaToOffset(textarea, start, { block: end === undefined ? "start" : "center" });
+          return;
+        }
+
+        window.dispatchEvent(new CustomEvent<MarkdownOutlineNavigateDetail>(MARKDOWN_OUTLINE_NAVIGATE_EVENT, {
+          detail: { documentPath: file.path, end, markdown, offset: start },
+        }));
+      });
+    });
   }
 
   const closeTabsWithoutConfirm = useCallback((tabIds: string[]) => {
@@ -1240,16 +1414,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   /**
    * The text of a tab whose Markdown moved to another notebook, where the
-   * server may have renamed citation keys (src/lib/references/moves.ts): the
-   * saved copy is the server's content, and the draft gets the same key map,
+   * server may have renamed citation keys or image URLs: the
+   * saved copy is the server's content, and the draft gets the same rewrites,
    * or shows the new content when it had no unsaved changes.
    */
   function movedTabText(tab: OpenTab, draft: string, payload: LiberaFileMovePayload) {
     const map = payload.references?.drafts.find((item) => item.path === payload.file.path)?.map;
-    if (!map || !Object.keys(map).length || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
-    const keys = new Map(Object.entries(map));
-    const saved = payload.content ?? rewriteCitationKeys(tab.saved, keys).text;
-    return { saved, draft: draft === tab.saved ? saved : rewriteCitationKeys(draft, keys).text };
+    if ((!map && !payload.imageSources) || !isTextFileType(tab.file.fileType) || !mayTakeContentFromDisk(tab.id, isSharedTab)) return null;
+    const rewrite = (text: string) => rewriteMarkdownImageSources(
+      rewriteCitationKeys(text, new Map(Object.entries(map ?? {}))).text,
+      payload.imageSources ?? {},
+    );
+    const saved = payload.content ?? rewrite(tab.saved);
+    return { saved, draft: draft === tab.saved ? saved : rewrite(draft) };
   }
 
   /** After a move: the destination's References panel reloads, and a notice says what was copied or renamed. */
@@ -1438,6 +1615,49 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return true;
   }
 
+  /** Insert an empty table as its own block after the caret's paragraph, with
+   * the first column name selected so typing replaces it. */
+  function insertMarkdownTable(rows: number, columns: number) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
+    const position = findMarkdownBlockInsertionOffset(draft, textarea?.selectionEnd ?? draft.length);
+    const insertion = insertMarkdownBlock(draft, position, markdownTable(rows, columns));
+    const replacement = insertion.value.slice(position, position + insertion.value.length - draft.length);
+    const nextSelectionStart = insertion.start + 2;
+    const nextSelectionEnd = nextSelectionStart + MARKDOWN_TABLE_FIRST_HEADER.length;
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd,
+        nextSelectionStart,
+        replacement,
+        selectionEnd: position,
+        selectionStart: position,
+      })
+    ) {
+      restoreMarkdownTextarea({
+        ...scrollState,
+        selectionStart: nextSelectionStart,
+        selectionEnd: nextSelectionEnd,
+      });
+      return;
+    }
+
+    setActiveDraft(insertion.value);
+    restoreMarkdownTextarea({
+      ...scrollState,
+      selectionStart: nextSelectionStart,
+      selectionEnd: nextSelectionEnd,
+    });
+  }
+
   function insertMarkdownFileLinkPlaceholder() {
     if (!activeTab || activeTab.file.fileType !== "markdown") {
       return;
@@ -1480,6 +1700,74 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  /** The passage highlighted in a Markdown tab's source or visual editor. */
+  function markdownTabHighlight(tab: OpenTab, viewState = tab.viewState) {
+    if (tab.file.fileType !== "markdown" || isGalleryTab(tab)) {
+      return null;
+    }
+
+    const markdown = getTabDraft(tab);
+    const range = viewState?.markdown?.linkSelection;
+
+    if (!isMarkdownSourceRange(range, markdown)) {
+      return null;
+    }
+
+    const quote = createMarkdownLinkQuote(markdown, range);
+
+    return { label: markdownLinkQuoteLabel(quote.text), quote, range };
+  }
+
+  /** The annotation selected in a PDF or image tab, which a link can point to. */
+  function annotationTabHighlight(tab: OpenTab, viewState = tab.viewState) {
+    if (isGalleryTab(tab)) {
+      return null;
+    }
+
+    const fileType = tab.file.fileType;
+    const id = fileType === "pdf"
+      ? viewState?.pdf?.selectedAnnotationId
+      : fileType === "image" ? viewState?.image?.selectedAnnotationId : undefined;
+
+    if (!id) {
+      return null;
+    }
+
+    const annotation = findRememberedAnnotation(tab.file.path, id);
+    const kind = annotation?.type === "highlight" ? "highlight" : annotation ? "note" : "annotation";
+
+    return { id, kind, label: annotationLinkLabel(annotation, `Selected ${kind}`) };
+  }
+
+  /** "Link to the highlighted text / selected annotation in <tab>" choices for the link dialogs. */
+  function listMarkdownSelectionLinks(sourcePath: string): MarkdownSelectionLinkOption[] {
+    return tabs.flatMap((tab) => {
+      if (tab.file.path === sourcePath) {
+        return [];
+      }
+
+      const highlighted = markdownTabHighlight(tab) ?? annotationTabHighlight(tab);
+
+      if (!highlighted?.label) {
+        return [];
+      }
+
+      return [{
+        href: createMarkdownFileLinkDestination({
+          metadata: createMarkdownFileLinkMetadata({ file: tab.file, source: "tab", tabId: tab.id, viewState: tab.viewState }),
+          sourcePath,
+          targetPath: tab.file.path,
+        }),
+        id: tab.id,
+        label: highlighted.label,
+        tabName: tab.file.name,
+        title: "kind" in highlighted
+          ? `Link to ${highlighted.kind} in ${tab.file.name}`
+          : `Link to highlighted text in ${tab.file.name}`,
+      }];
+    });
+  }
+
   function createMarkdownFileLinkMetadata(
     selection: MarkdownFileLinkSelection,
   ): MarkdownFileLinkMetadata | undefined {
@@ -1491,7 +1779,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       (tab) => tab.id === selection.tabId || tab.file.path === selection.file.path,
     );
     const viewState = selection.viewState ?? targetTab?.viewState ?? {};
-    const markdownSelectionStart = viewState.markdown?.selectionStart;
+    const highlighted = targetTab ? markdownTabHighlight(targetTab, viewState) : null;
+    const annotation = targetTab ? annotationTabHighlight(targetTab, viewState) : null;
+    const markdownSelectionStart = highlighted?.range.start ?? viewState.markdown?.selectionStart;
     const line =
       targetTab?.file.fileType === "markdown" &&
       typeof markdownSelectionStart === "number"
@@ -1501,10 +1791,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     return {
       fileType: selection.file.fileType,
       line,
+      quote: highlighted?.quote,
       v: 1,
       viewState: {
+        audio:
+          selection.file.fileType === "audio"
+            ? { currentTime: viewState.audio?.currentTime }
+            : undefined,
+        // An annotation link carries no pan, zoom or scroll: the target tab
+        // keeps its own and shows the annotation (see withAnnotationReveal).
         image:
-          selection.file.fileType === "image"
+          selection.file.fileType === "image" && annotation
+            ? { selectedAnnotationId: annotation.id }
+            : selection.file.fileType === "image"
             ? {
                 fontSize: viewState.image?.fontSize,
                 panX: viewState.image?.panX ?? 0,
@@ -1522,14 +1821,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
                 line,
                 previewScrollLeft: viewState.markdown?.previewScrollLeft ?? 0,
                 previewScrollTop: viewState.markdown?.previewScrollTop ?? 0,
-                selectionEnd: viewState.markdown?.selectionEnd,
-                selectionStart: viewState.markdown?.selectionStart,
+                selectionEnd: highlighted?.range.end ?? viewState.markdown?.selectionEnd,
+                selectionStart: highlighted?.range.start ?? viewState.markdown?.selectionStart,
                 slideIndex: viewState.markdown?.slideIndex,
                 zoom: viewState.markdown?.zoom,
               }
             : undefined,
         pdf:
-          selection.file.fileType === "pdf"
+          selection.file.fileType === "pdf" && annotation
+            ? { selectedAnnotationId: annotation.id }
+            : selection.file.fileType === "pdf"
             ? {
                 fontSize: viewState.pdf?.fontSize,
                 scrollLeft: viewState.pdf?.scrollLeft ?? 0,
@@ -1551,11 +1852,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const metadata = createMarkdownFileLinkMetadata(selection);
     const destination = createMarkdownFileLinkDestination({
-      metadata: createMarkdownFileLinkMetadata(selection),
+      metadata,
       sourcePath: activeTab.file.path,
       targetPath: selection.file.path,
     });
+    const linkedTab = selection.source === "tab"
+      ? tabs.find((tab) => tab.id === selection.tabId || tab.file.path === selection.file.path)
+      : undefined;
+    const annotationLabel = linkedTab
+      ? annotationTabHighlight(linkedTab, selection.viewState ?? linkedTab.viewState)?.label
+      : undefined;
+    const label = ((metadata?.quote && markdownLinkQuoteLabel(metadata.quote.text)) || annotationLabel || selection.file.name)
+      .replace(/[\[\]\\]/g, "\\$&");
     const textarea = textareaRef.current;
     const scrollState = getMarkdownTextareaScrollState();
     const draft = textarea?.value ?? getTabDraft(activeTab);
@@ -1572,12 +1882,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const replacement =
       hasLinkShell && (destinationCloseIndex < 0 || destinationCloseIndex >= end)
         ? `${destination}${destinationCloseIndex < 0 ? ")" : ""}`
-        : `[${selection.file.name}](${destination})`;
+        : `[${label}](${destination})`;
     const nextDraft = `${draft.slice(0, start)}${replacement}${draft.slice(end)}`;
     const nextSelectionStart = hasLinkShell ? start : start + 1;
     const nextSelectionEnd = hasLinkShell
       ? start + destination.length
-      : start + 1 + selection.file.name.length;
+      : start + 1 + label.length;
 
     if (
       textarea &&
@@ -2330,11 +2640,11 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (!savingDraftRef.current) setSaveDraftTabId(null);
   }
 
-  /** A new, empty Markdown file next to a PDF, named after it ("Paper.md", then "Paper (2).md", …). */
+  /** A new, empty Markdown file next to a PDF or recording, named after it ("Paper.md", then "Paper (2).md", …). */
   async function createMarkdownBesidePdf(pdfPath: string): Promise<LiberaFileNode> {
     const parts = pdfPath.split("/");
     const directory = parts.slice(0, -1).join("/");
-    const stem = (parts.at(-1) ?? "Document").replace(/\.pdf$/i, "") || "Document";
+    const stem = (parts.at(-1) ?? "Document").replace(/\.[^./]+$/, "") || "Document";
 
     for (let copy = 1; copy <= 50; copy += 1) {
       const name = copy === 1 ? `${stem}.md` : `${stem} (${copy}).md`;
@@ -2879,6 +3189,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         content: getTabDraft(tab),
         documentPath: tab.file.path,
         fileName: markdownPdfFileName(tab.file.name),
+        kind: isMarkdownSlidesPath(tab.file.path) ? "slides" : "document",
         title: markdownExportBaseName(tab.file.name),
       });
     } catch (error) {
@@ -3079,7 +3390,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     let moved: ReturnType<typeof movedTabText> = null;
     if (openTab) {
       const draft = getTabDraft(openTab);
-      moved = "references" in payload ? movedTabText(openTab, draft, payload) : null;
+      moved = movedTabText(openTab, draft, payload);
 
       forgetTabDraft(openTab.id);
       rememberTabDraft(nextId, moved?.draft ?? draft);
@@ -3571,6 +3882,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     notebook: string,
     files: File[],
     destinationPath?: string,
+    options?: { throwOnError?: boolean },
   ): Promise<LiberaFileNode[]> {
     if (!files.length) {
       return [];
@@ -3604,6 +3916,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       if (payload.error) setWorkspaceError(payload.error);
       return payload.uploaded;
     } catch (error) {
+      if (options?.throwOnError) throw error;
       setWorkspaceError(error instanceof Error ? error.message : "Upload failed.");
       return [];
     }
@@ -3678,8 +3991,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (tabId !== activeTabId) captureCanvasViewState();
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    // Gallery photos belong to no notebook and stay out of recent files.
-    if (tab && !isGalleryTab(tab)) {
+    // Gallery photos and recordings in progress belong to no notebook file and stay out of recent files.
+    if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
       setSelectedNotebookName(tab.file.notebook);
       recordFileInteraction(tab.file);
     }
@@ -3708,7 +4021,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     function activateShortcutTab(tabId: string) {
       const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-      if (tab && !isGalleryTab(tab)) {
+      if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
         const interactedAt = new Date().toISOString();
 
         setSelectedNotebookName(tab.file.notebook);
@@ -3912,13 +4225,19 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       insertMarkdown,
       insertCitation,
       activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,
+      insertMarkdownTable,
       moveFileFromPrompt,
       moveFileToFolder,
       openFile,
       openGalleryPhoto,
+      openRecordingTab,
+      renameRecordingTab,
+      replaceRecordingTab,
+      closeRecordingTab,
       showImageInTab,
       saveEditedImageCopy,
       openMarkdownFileLink,
+      listMarkdownSelectionLinks,
       openCreateNotebookDialog,
       openCreateNotebookGroupDialog,
       openEditNotebookDialog,

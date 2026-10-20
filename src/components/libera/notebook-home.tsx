@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   LayoutGrid,
   List,
+  Mic,
   Plus,
   Sparkles,
   Tag,
@@ -61,6 +62,8 @@ import {
 } from "./notebook-home-preferences";
 
 import { useWorkspaceView } from "./workspace-view-context";
+import { WhereWasICard } from "./where-was-i-card";
+import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -132,6 +135,7 @@ export function NotebookHome({
   onCreateLatex,
   onOpenFile,
 }: NotebookHomeProps) {
+  const recorder = useRecorderLauncher();
   const { files, notes, images, folders } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
@@ -202,7 +206,7 @@ export function NotebookHome({
     <div className={styles.home}>
       <section
         className={styles.cover}
-        aria-labelledby="notebook-welcome"
+        aria-label={notebook.name}
         style={{ "--notebook-illustration": `url("${notebookIllustrationUrl(notebook.illustration, notebook.createdAt)}")` } as CSSProperties}
       >
         <div className={styles.coverInner}>
@@ -225,16 +229,13 @@ export function NotebookHome({
                   { label: "Note", icon: <FileText aria-hidden size={16} />, onSelect: () => onCreateMarkdown(notebook.name) },
                   ...(onCreateLatex ? [{ label: "LaTeX document", icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
                   { label: "Slides", icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
+                  ...(recorder && !recorder.busy ? [{ label: "Audio recording", icon: <Mic aria-hidden size={16} />, onSelect: () => recorder.startRecording(notebook.name) }] : []),
                 ]}
               />
             </div>
           </header>
 
           <div className={styles.hero}>
-            <div className={styles.heroCopy}>
-              <p className={styles.eyebrow}><Sparkles aria-hidden size={14} /> Keep exploring</p>
-              <h1 id="notebook-welcome">What&apos;s next for {notebook.name}?</h1>
-            </div>
             <div className={styles.search}>
               <Search aria-hidden className={styles.searchIcon} size={20} />
               <input
@@ -278,6 +279,8 @@ export function NotebookHome({
       </section>
 
       <div className={styles.content}>
+        <WhereWasICard notebook={notebook} files={files} onOpenFile={(file) => { void onOpenFile(file); }} />
+
         <section className={styles.stats} aria-label="Notebook overview">
           <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>Notes</span></div></div>
           <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>Images</span></div></div>

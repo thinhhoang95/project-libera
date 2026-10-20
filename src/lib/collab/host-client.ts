@@ -10,7 +10,8 @@
 // Never import this from client components: the token must stay on the
 // server.
 
-import type { LocalProject, AnchoredThreadsResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
+import type { Command, CreateMessageRequest, ThreadMessage } from "./protocol/api";
+import type { LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -82,6 +83,28 @@ export async function fetchCollabHost(pathAndQuery: string, options: HostFetchOp
   }
 }
 
+/**
+ * Hands the master password to the host after a successful local login, for
+ * automatic collaboration sign-in through the synced data folder. Never
+ * throws and never delays the login: collaboration may be off or restarting.
+ */
+export function unlockCollabHost(password: string): void {
+  if (!collabHostConfig()) return;
+  void fetchCollabHost(ControlRoutes.unlock, { method: "POST", body: { password } })
+    .then((response) => response.body?.cancel())
+    .catch(() => undefined);
+}
+
+/**
+ * Unlocks the shared sign-in and waits until the host has read the file, so
+ * the sign-in form can offer "Continue as ..." straight away.
+ */
+export async function unlockCollabHostAndWait(password: string): Promise<void> {
+  const response = await fetchCollabHost(ControlRoutes.unlock, { method: "POST", body: { password, wait: true } });
+  await response.body?.cancel();
+  if (!response.ok) throw new CollabHostError(response.status, "collab-error", "The collaboration service could not read the shared sign-in.");
+}
+
 async function hostJson<T>(pathAndQuery: string, options: HostFetchOptions = {}): Promise<T> {
   const response = await fetchCollabHost(pathAndQuery, options);
   const text = await response.text();
@@ -142,6 +165,16 @@ export function createThreadAtRange(docId: string, request: CreateThreadAtRangeR
 /** A document's comment threads, each with its anchor resolved against the live text. */
 export function listAnchoredThreads(docId: string, config?: HostClientConfig | null): Promise<AnchoredThreadsResponse> {
   return hostJson(ControlRoutes.threadsAnchored(docId), { config });
+}
+
+/** A reply in a comment thread, sent to the server now (fails when it cannot be reached; see enqueueCommand). */
+export function createThreadMessage(threadId: string, request: CreateMessageRequest, config?: HostClientConfig | null): Promise<ThreadMessage> {
+  return hostJson(ControlRoutes.threadMessages(threadId), { method: "POST", body: request, config });
+}
+
+/** Queues a comment command for the host to send when the server can be reached (a replayed id is not queued twice). */
+export function enqueueCommand(command: Command, config?: HostClientConfig | null): Promise<EnqueueCommandResponse> {
+  return hostJson(ControlRoutes.commands, { method: "POST", body: command, config });
 }
 
 /** The projects joined on this machine, refreshed from the server when it can be reached. */

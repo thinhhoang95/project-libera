@@ -43,6 +43,11 @@ import { referenceKeyResolver, useReferenceRender } from "../references/referenc
 import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "../references/pdf-quote-cite";
 import { quoteBlockInsertion } from "@/lib/references/pdf-quote";
 import type { MarkdownSourceEditorProps } from "./types";
+import { speakMarkdown } from "@/lib/tts/player";
+import { headingNumberingExtension, headingNumberingSpec } from "@/lib/markdown-codemirror/heading-numbering";
+import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering";
+import { useHeadingNumbering } from "../heading-numbering-state";
+import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
 
 /* The Markdown Source editor on CodeMirror 6 (decision D8). It keeps the
  * textarea editor's props, keyboard shortcuts, menus and draft flow, and
@@ -164,6 +169,18 @@ export function MarkdownCodeMirrorEditor({
     latest.current = { onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null };
   });
   useLayoutEffect(() => { findRef.current = find; }, [find]);
+  // Structural heading numbering, read by the view's transaction filter.
+  // Switching it on (or changing its title setting) renumbers now; opening a
+  // document never edits it.
+  const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
+  const headingNumberingRef = useRef(headingNumbering);
+  useLayoutEffect(() => {
+    const previous = headingNumberingRef.current;
+    headingNumberingRef.current = headingNumbering;
+    if (previous === headingNumbering || !headingNumbering.enabled || !view) return;
+    const spec = headingNumberingSpec(view.state, headingNumbering);
+    if (spec) view.dispatch({ ...spec, userEvent: "input.numbering" });
+  }, [headingNumbering, view]);
 
   /** Publishes the live text as the tab draft now, and returns it. This is the
    * reader registered with the workspace (`getTabDraft`). */
@@ -434,7 +451,7 @@ export function MarkdownCodeMirrorEditor({
               markdown,
               html: markdown ? "" : data.getData("text/html"),
               plain: data.getData("text/plain"),
-            }, { mathMarkers: latest.current.mathMarkers, smartPaste: latest.current.smartPaste });
+            }, { mathMarkers: latest.current.mathMarkers, smartPaste: latest.current.smartPaste ? "child" : false });
             if (!edit) return false;
             event.preventDefault();
             closeMenus();
@@ -525,6 +542,7 @@ export function MarkdownCodeMirrorEditor({
           },
           open: (citation) => openCitationAttachment(referenceRenderRef.current, citation),
         }),
+        headingNumberingExtension(() => headingNumberingRef.current),
         extensionsCompartment.of(initial.extensions ?? []),
       ],
     });
@@ -796,6 +814,23 @@ export function MarkdownCodeMirrorEditor({
 
   // Context menu ---------------------------------------------------------------
 
+  /** Paste or Paste with Peer Heading Level, from the right-click menu. */
+  async function pasteFromMenu(menu: SourceContextMenuState, mode: MenuPasteMode) {
+    const clipboard = await readClipboardText();
+    const current = viewRef.current;
+    if (!current) return;
+    const edit = sourcePasteEdit(current.state.doc.toString(), { start: menu.start, end: menu.end }, clipboard, {
+      insertPlain: true,
+      mathMarkers: latest.current.mathMarkers,
+      smartPaste: mode === "peer" ? "peer" : latest.current.smartPaste ? "child" : false,
+    });
+    if (!edit) return;
+    closeFileLinkPopup();
+    current.dispatch({ ...textareaEditSpec(current.state, edit), userEvent: "input.paste", scrollIntoView: true });
+    readDraft();
+    current.focus();
+  }
+
   function runMenuAction(action: (menu: SourceContextMenuState) => void) {
     const menu = contextMenu;
     if (!menu) return;
@@ -849,6 +884,7 @@ export function MarkdownCodeMirrorEditor({
           imageConverting={imageConverting}
           menu={contextMenu}
           onClose={() => setContextMenu(null)}
+          onPaste={(mode) => runMenuAction((menu) => { void pasteFromMenu(menu, mode); })}
           onFormat={() => runMenuAction((menu) => { if (!aiWorking) void onAiFormatSelection({ start: menu.start, end: menu.end }); })}
           onHeadingLevels={(direction) => runMenuAction((menu) => {
             const current = viewRef.current;
@@ -860,6 +896,10 @@ export function MarkdownCodeMirrorEditor({
           onRewrite={(prompt) => runMenuAction((menu) => { void onAiRewriteSelection({ start: menu.start, end: menu.end }, prompt); })}
           onWrite={(prompt) => runMenuAction((menu) => { void onAiWriteAt(menu.end, prompt); })}
           onImageToMarkdown={() => runMenuAction((menu) => { if (menu.image && !aiWorking) void onAiImageToMarkdown(menu.image); })}
+          onReadAloud={() => runMenuAction((menu) => {
+            const text = viewRef.current?.state.sliceDoc(menu.start, menu.end) ?? "";
+            if (text.trim()) speakMarkdown(text, { label: "Selection" });
+          })}
         />
       ) : null}
 

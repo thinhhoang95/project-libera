@@ -43,6 +43,7 @@ export interface AuthLimits {
   registerPerIp: RateLimiter;
   registerPerEmail: RateLimiter;
   refreshPerIp: RateLimiter;
+  deviceGrantPerIp: RateLimiter;
 }
 
 function defaults(): AuthLimits {
@@ -54,6 +55,8 @@ function defaults(): AuthLimits {
     registerPerIp: new RateLimiter(30, 60 * minute),
     registerPerEmail: new RateLimiter(5, 60 * minute),
     refreshPerIp: new RateLimiter(120, minute),
+    // Grants are long random secrets; this only stops a runaway client.
+    deviceGrantPerIp: new RateLimiter(30, 5 * minute),
   };
 }
 

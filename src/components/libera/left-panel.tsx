@@ -22,6 +22,7 @@ import { ImageGenerationPanel } from "@/components/libera/image-generation-panel
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
 import { ReviewComments } from "@/components/libera/markdown-review-ui";
+import { PdfReviewComments } from "@/components/libera/pdf-comments-panel";
 import { ReferencesPanel, type ReferencesPanelProps } from "@/components/libera/references/references-panel";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
@@ -50,18 +51,23 @@ type LeftPanelProps = NotebookPanelProps & {
   references?: LeftPanelReferences;
 };
 
-const LEFT_PANEL_TABS: Array<{
+type LeftPanelRailTab = {
   icon: LucideIcon;
   id: LeftPanelTab;
   label: string;
-}> = [
-  { id: "workspaces", label: "Workspaces", icon: Layers3 },
+};
+
+const TOP_PANEL_TABS: LeftPanelRailTab[] = [
   { id: "notebook", label: "Notebook", icon: BookOpen },
   { id: "outlines", label: "Outlines", icon: ListTree },
   { id: "comments", label: "Comments", icon: MessageSquare },
-  { id: "gallery", label: "Image Gallery", icon: Images },
-  { id: "search", label: "Search", icon: ScanSearch },
   { id: "references", label: "References", icon: BookMarked },
+  { id: "gallery", label: "Image Gallery", icon: Images },
+];
+
+const BOTTOM_PANEL_TABS: LeftPanelRailTab[] = [
+  { id: "search", label: "Search", icon: ScanSearch },
+  { id: "workspaces", label: "Workspaces", icon: Layers3 },
 ];
 
 export function LeftPanel({
@@ -87,6 +93,16 @@ export function LeftPanel({
       onToggleCollapsed();
     }
   }
+
+  // macOS frameless window: the collapsed rail is too narrow for the traffic
+  // lights, so hide them until the panel expands again. No-op elsewhere.
+  useEffect(() => {
+    void window.liberaWindow?.setButtonsVisible(!collapsed);
+  }, [collapsed]);
+
+  useEffect(() => () => {
+    void window.liberaWindow?.setButtonsVisible(true);
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -210,7 +226,11 @@ export function LeftPanel({
                 onRevertCitationRewrite={references?.onRevertCitationRewrite}
               />
             ) : activePanel === "comments" ? (
-              <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
+              activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
+                <PdfReviewComments key={activeTab.file.path} path={activeTab.file.path} />
+              ) : (
+                <CommentsWithSuggestions key={activeTab?.id ?? "no-document"} tabId={activeTab?.id} comments={<ReviewComments />} />
+              )
             ) : (
               <OutlinePanel
                 activeTab={activeTab}
@@ -255,6 +275,29 @@ function LeftPanelRail({
   onSelectPanel: (panel: LeftPanelTab) => void;
   onToggleCollapsed: () => void;
 }) {
+  function renderTab(tab: LeftPanelRailTab) {
+    const Icon = tab.icon;
+    const label = tab.label;
+    const selected = activePanel === tab.id;
+
+    return (
+      <button
+        key={tab.id}
+        id={`left-panel-tab-${tab.id}`}
+        aria-controls={`left-panel-${tab.id}`}
+        aria-label={`${label} tab`}
+        aria-selected={selected}
+        className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
+        role="tab"
+        title={label}
+        type="button"
+        onClick={() => onSelectPanel(tab.id)}
+      >
+        <Icon aria-hidden className="h-4 w-4" />
+      </button>
+    );
+  }
+
   return (
     <div className="libera-glass-chrome flex w-12 shrink-0 flex-col bg-card">
       <div className="flex justify-center py-2">
@@ -275,34 +318,18 @@ function LeftPanelRail({
 
       <div
         aria-label="Left panel tabs"
-        className="flex flex-col items-center gap-1 py-2"
+        className="flex min-h-0 flex-1 flex-col items-center gap-1 py-2"
         role="tablist"
       >
-        {LEFT_PANEL_TABS.map((tab) => {
-          const Icon = tab.icon;
-          const label = tab.label;
-          const selected = activePanel === tab.id;
-
-          return (
-            <button
-              key={tab.id}
-              id={`left-panel-tab-${tab.id}`}
-              aria-controls={`left-panel-${tab.id}`}
-              aria-label={`${label} tab`}
-              aria-selected={selected}
-              className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg"
-              role="tab"
-              title={label}
-              type="button"
-              onClick={() => onSelectPanel(tab.id)}
-            >
-              <Icon aria-hidden className="h-4 w-4" />
-            </button>
-          );
-        })}
+        <div className="flex flex-col items-center gap-1">
+          {TOP_PANEL_TABS.map(renderTab)}
+        </div>
+        <div className="min-h-0 flex-1" />
+        <div className="flex flex-col items-center gap-1">
+          {BOTTOM_PANEL_TABS.map(renderTab)}
+        </div>
       </div>
 
-      <div className="min-h-0 flex-1" />
       <CollabRailButtons />
       <SidebarAppMenu collapsed onLogout={onLogout} />
     </div>

@@ -4,6 +4,8 @@ import {
   MAX_SEARCH_UPLOAD_BYTES,
   SEARCH_FILE_KINDS,
   SEARCH_QUERY_PREFIX,
+  extractSpeakerFilters,
+  passageHasSpeaker,
   searchQueryPlainText,
   searchQueryTerms,
   searchQueryText,
@@ -183,10 +185,17 @@ function toHit(row: ChunkRow, candidate: Candidate): SearchHit {
 
 export async function runSearch(request: SearchRequest): Promise<SearchResponse> {
   const started = Date.now();
-  const parts = normalizeParts(request.parts);
-  const kinds = Array.isArray(request.kinds)
-    ? request.kinds.filter((kind): kind is SearchFileKind => SEARCH_FILE_KINDS.includes(kind))
-    : [];
+  const filters = extractSpeakerFilters(normalizeParts(request.parts));
+  const speakers = filters.speakers;
+  // `speaker:Vy` alone finds what Vy said: her name is in each of her lines.
+  const parts = speakers.length && !searchQueryPlainText(filters.parts) && !filters.parts.some((part) => part.type === "image")
+    ? [{ type: "text" as const, text: speakers.join(" ") }]
+    : filters.parts;
+  const kinds = speakers.length
+    ? ["audio" as const]
+    : Array.isArray(request.kinds)
+      ? request.kinds.filter((kind): kind is SearchFileKind => SEARCH_FILE_KINDS.includes(kind))
+      : [];
   const scope = Array.isArray(request.scope) ? new Set(request.scope.filter((item) => typeof item === "string")) : null;
   const includeArchive = request.includeArchive !== false;
   // The References entries of a notebook show with its files.
@@ -226,9 +235,9 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   if (!indexer.vectorsUsable) {
     warnings.push("Semantic search is off: the index's vectors were made with other settings. Re-embed them in the Search panel, or switch back. Showing keyword matches.");
   } else if (!worker.configured) {
-    warnings.push("Semantic search is off: choose the EmbeddingGemma 2 weights in Preferences → Search. Showing keyword matches.");
+    warnings.push("Semantic search is off until EmbeddingGemma 2 is downloaded. Showing keyword matches.");
   } else if (imageParts.length && !worker.visionConfigured) {
-    warnings.push("Searching with images needs the EmbeddingGemma 2 vision encoder. Choose it in Preferences → Search.");
+    warnings.push("Searching with images needs the EmbeddingGemma 2 vision encoder. Download the model again, or choose the encoder in Preferences → Search.");
   } else {
     try {
       const images = imageParts.map((part) => resolveImage(part.image));
@@ -295,6 +304,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
     if (row.source === "library" && scope && !scope.has(row.path)) continue;
     if (row.source === "references" && scopeNotebooks && !scopeNotebooks.has(row.notebook)) continue;
     if (row.source === "library" && !includeArchive && row.path.split("/").includes(ARCHIVE_DIR)) continue;
+    if (speakers.length && (row.kind !== "audio" || !passageHasSpeaker(row.text, speakers))) continue;
     const entry = files.get(row.key) ?? { row, hits: [] };
     if (entry.hits.length < MAX_HITS_PER_FILE) entry.hits.push(toHit(row, candidate));
     files.set(row.key, entry);

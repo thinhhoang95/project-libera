@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionToken, getSessionCookieOptions, SESSION_COOKIE_NAME, verifyPassword } from "@/lib/auth";
+import { unlockCollabHost } from "@/lib/collab/host-client";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: message }, { status: 401 });
   }
+
+  // The master password also opens the collaboration sign-in shared by the
+  // person's other computers (electron/collab/control/shared-sign-in.ts).
+  unlockCollabHost(body.password);
 
   const response = NextResponse.json({ authenticated: true });
   response.cookies.set(SESSION_COOKIE_NAME, createSessionToken(), getSessionCookieOptions());

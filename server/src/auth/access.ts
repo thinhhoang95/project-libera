@@ -20,6 +20,19 @@ declare module "fastify" {
   }
 }
 
+/** Rotation consumes individual tokens; the session lives while its family has a live token. */
+export async function hasActiveSession(db: Kysely<DB>, accountId: string, familyId: string): Promise<boolean> {
+  const session = await db
+    .selectFrom("refresh_tokens")
+    .select("id")
+    .where("account_id", "=", accountId)
+    .where("family_id", "=", familyId)
+    .where("revoked_at", "is", null)
+    .where("expires_at", ">", new Date())
+    .executeTakeFirst();
+  return session !== undefined;
+}
+
 /** Reads and verifies the bearer token. Throws HttpError 401. */
 export async function authenticate(config: Config, db: Kysely<DB>, request: FastifyRequest): Promise<AuthenticatedAccount> {
   if (request.account) return request.account;
@@ -38,6 +51,7 @@ export async function authenticate(config: Config, db: Kysely<DB>, request: Fast
     .where("id", "=", claims.accountId)
     .executeTakeFirst();
   if (!account || account.disabled_at) throw new HttpError("unauthorized", "Account is not active.");
+  if (!(await hasActiveSession(db, claims.accountId, claims.familyId))) throw new HttpError("unauthorized", "Session ended. Sign in again.");
   request.account = { accountId: claims.accountId, familyId: claims.familyId };
   return request.account;
 }

@@ -6,7 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, ListOrdered, MessageSquarePlus, PenLine, Rows3, Sparkles } from "lucide-react";
+import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Columns3, ImageIcon, ListIndentDecrease, ListIndentIncrease, MessageSquarePlus, PenLine, Rows3, Sparkles, Volume2 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
 import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
@@ -17,6 +18,8 @@ import {
   getTiptapHeadings,
   hasTiptapHeadings,
   getTiptapSelectionMarkdown,
+  numberTiptapHeadings,
+  removeTiptapHeadingNumbers,
   replaceTiptapRangeWithMarkdown,
   trackTiptapRange,
   type EditorRange,
@@ -25,10 +28,13 @@ import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-
 import type { SharedVisualSuggestions } from "@/lib/collab/bindings/react-visual";
 import { aiSuggestionNotice, imageSourceRange } from "@/lib/collab/client/suggestions-ai";
 import type { SnapshotEdit } from "@/lib/collab/suggestions/model";
+import { detectStructuralHeadingNumbering } from "@/lib/markdown-heading-numbering";
+import { HeadingNumberingControl } from "./heading-numbering-control";
+import { readHeadingNumberingSkipTitle, saveDocumentHeadingNumbering, saveHeadingNumberingSkipTitle, useHeadingNumbering } from "./heading-numbering-state";
+import { PasteMenuItems, readClipboardText, type ClipboardText, type MenuPasteMode } from "./paste-menu-items";
 
 type ImageSelection = EditorRange & { src: string; alt: string };
 type Popup = EditorRange & {
-  kind: "headings" | "context";
   x: number;
   y: number;
   image?: ImageSelection;
@@ -37,10 +43,12 @@ type Popup = EditorRange & {
 type AiAction = "format" | "rewrite" | "write" | "image";
 const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
-export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
+export function TiptapEditorActions({ editor, documentPath, onError, onPaste, shared }: {
   editor: Editor;
   documentPath: string;
   onError: (message: string) => void;
+  /** Paste or Paste with Peer Heading Level from the right-click menu. */
+  onPaste?: (range: EditorRange, clipboard: ClipboardText, mode: MenuPasteMode) => void;
   /**
    * Shared tab: AI results become AI suggestions on the overlay instead of
    * applied changes (plan M3.4), and "Suggest edit" proposes a replacement
@@ -49,16 +57,23 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
   shared?: () => SharedVisualSuggestions | null;
 }) {
   const [popup, setPopup] = useState<Popup | null>(null);
-  const [startAt, setStartAt] = useState("1");
   const [prompt, setPrompt] = useState("");
   const [writePrompt, setWritePrompt] = useState("");
   const [suggestText, setSuggestText] = useState("");
   const [working, setWorking] = useState<AiAction | null>(null);
   useEffect(() => (working ? beginAiActivity() : undefined), [working]);
   const menuRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
   const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
+  const headingNumbering = useHeadingNumbering(documentPath, () => {
+    const { doc } = editor.state;
+    if (doc.content.size <= 2) return null;
+    const headings: { level: number; text: string }[] = [];
+    doc.descendants((node) => {
+      if (node.type.name === "heading") headings.push({ level: node.attrs.level, text: node.textContent });
+    });
+    return detectStructuralHeadingNumbering(headings);
+  });
   const sharedRef = useRef(shared);
   useEffect(() => { sharedRef.current = shared; });
 
@@ -97,14 +112,13 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
         : editor.view.coordsAtPos(from);
       setPrompt("");
       setWritePrompt("");
-      setStartAt("1");
       // "Suggest edit" starts from the selection's own source text.
       const sharedTarget = sharedRef.current?.() ?? null;
       if (sharedTarget && from !== to) {
         const source = sharedTarget.sourceRange({ from, to });
         setSuggestText(sharedTarget.text().slice(source.start, source.end));
       } else setSuggestText("");
-      setPopup({ from, to, kind: "context", image, tableCell,
+      setPopup({ from, to, image, tableCell,
         x: Math.max(8, Math.min(point.left, window.innerWidth - 296)),
         y: Math.max(8, Math.min(point.top, window.innerHeight - 420)),
       });
@@ -123,7 +137,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
     const close = () => setPopup(null);
     const onPointer = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) close();
+      if (!menuRef.current?.contains(target)) close();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") { close(); editor.commands.focus(); }
@@ -139,7 +153,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
     window.addEventListener("resize", close);
     window.addEventListener("scroll", onScroll, true);
     editor.on("transaction", onTransaction);
-    const writeOnly = popup.kind === "context" && popup.from === popup.to;
+    const writeOnly = popup.from === popup.to;
     menuRef.current?.querySelector<HTMLElement>(writeOnly ? "#visual-ai-write" : "button:not(:disabled)")?.focus();
     return () => {
       window.removeEventListener("pointerdown", onPointer);
@@ -156,10 +170,13 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
     pendingRef.current = null;
   }, []);
 
-  function enumerate(scope: "all" | "selected") {
-    if (!popup) return;
-    enumerateTiptapHeadings(editor, scope, popup, scope === "all" ? 1 : Number(startAt));
+  async function paste(mode: MenuPasteMode) {
+    if (!popup || !onPaste) return;
+    const range = { from: popup.from, to: popup.to };
     setPopup(null);
+    const clipboard = await readClipboardText();
+    if (editor.isDestroyed) return;
+    onPaste(range, clipboard, mode);
     editor.commands.focus();
   }
 
@@ -263,11 +280,11 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
   }
 
   const selectedHeadings = popup ? getTiptapHeadings(editor, popup).filter((heading) => heading.selected) : [];
-  const canSuggestEdit = !!popup && popup.kind === "context" && popup.from !== popup.to && !!shared?.()?.controller.canSuggest();
+  const canSuggestEdit = !!popup && popup.from !== popup.to && !!shared?.()?.controller.canSuggest();
   const hasText = popup ? !!getTiptapSelectionMarkdown(editor, popup).trim() : false;
   const canIndent = selectedHeadings.some(({ node }) => node.attrs.level < 6);
   const canUnindent = selectedHeadings.length > 0;
-  const writeOnly = popup?.kind === "context" && popup.from === popup.to;
+  const writeOnly = popup?.from === popup?.to;
   type TableAction = "addRowBefore" | "addRowAfter" | "addColumnBefore" | "addColumnAfter" | "deleteRow" | "deleteColumn";
   function tableAction(action: TableAction) {
     if (popup?.tableCell === undefined) return;
@@ -284,19 +301,19 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
   </form>;
 
   return <>
-    <button ref={buttonRef} type="button" aria-label="Enumerate Headings" title="Enumerate Headings"
-      aria-haspopup="menu" aria-expanded={popup?.kind === "headings"} disabled={!hasHeadings || !!working}
-      className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={() => {
-        if (popup?.kind === "headings") { setPopup(null); return; }
-        const rect = buttonRef.current!.getBoundingClientRect();
-        const { from, to } = editor.state.selection;
-        setStartAt("1");
-        setPopup({ kind: "headings", from, to, x: Math.max(8, Math.min(rect.left, window.innerWidth - 296)), y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 200)) });
-      }}><ListOrdered aria-hidden className="h-4 w-4" /></button>
+    <HeadingNumberingControl
+      buttonClassName="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 aria-pressed:bg-muted aria-pressed:text-foreground"
+      disabled={!!working}
+      enabled={headingNumbering.enabled}
+      skipTitle={headingNumbering.skipTitle}
+      onEnumerateSelected={hasHeadings ? (startAt) => { enumerateTiptapHeadings(editor, "selected", editor.state.selection, startAt); editor.commands.focus(); } : undefined}
+      onNumberAll={() => { numberTiptapHeadings(editor, { skipTitle: readHeadingNumberingSkipTitle() }); editor.commands.focus(); }}
+      onRemoveAll={() => { saveDocumentHeadingNumbering(documentPath, false); removeTiptapHeadingNumbers(editor); editor.commands.focus(); }}
+      onSkipTitleChange={saveHeadingNumberingSkipTitle}
+      onToggle={(enabled) => saveDocumentHeadingNumbering(documentPath, enabled)}
+    />
     {popup ? createPortal(
-      <div ref={menuRef} role="menu" aria-label={popup.kind === "headings" ? "Heading numbering" : "Editor actions"}
+      <div ref={menuRef} role="menu" aria-label="Editor actions"
         className="fixed z-50 w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg"
         style={{ left: popup.x, top: popup.y, maxHeight: "calc(100vh - 16px)" }}
         onKeyDown={(event) => {
@@ -307,21 +324,14 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
           buttons[next]?.focus();
           event.preventDefault();
         }}>
+        {onPaste ? <PasteMenuItems className={menuItemClass} disabled={!!working} onPaste={(mode) => void paste(mode)} /> : null}
         {writeOnly ? writeForm : null}
-        {popup.kind === "context" && !writeOnly ? <>
+        {!writeOnly ? <>
+          <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => { speakMarkdown(getTiptapSelectionMarkdown(editor, popup), { label: "Selection" }); setPopup(null); }}><Volume2 aria-hidden className="h-4 w-4" />Read Out Loud</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!!working || !hasText} onClick={() => void runAi("format")}><Sparkles aria-hidden className="h-4 w-4" />AI Format</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canIndent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "indent"); setPopup(null); editor.commands.focus(); }}><ListIndentIncrease aria-hidden className="h-4 w-4" />Indent Headings</button>
           <button type="button" role="menuitem" className={menuItemClass} disabled={!canUnindent} onClick={() => { changeTiptapHeadingLevels(editor, popup, "unindent"); setPopup(null); editor.commands.focus(); }}><ListIndentDecrease aria-hidden className="h-4 w-4" />Unindent Headings</button>
         </> : null}
-        <button type="button" role="menuitem" className={menuItemClass} disabled={!hasHeadings} onClick={() => enumerate("all")}><ListOrdered aria-hidden className="h-4 w-4" />Enumerate All Headings</button>
-        {writeOnly ? null : <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); enumerate("selected"); }}>
-          <label className="block text-xs font-medium text-muted-foreground" htmlFor="visual-heading-start">Enumerate Selected Headings</label>
-          <div className="mt-1 flex items-center gap-2">
-            <input id="visual-heading-start" aria-label="Selected heading start value" type="number" min="1" step="1" value={startAt} disabled={!selectedHeadings.length}
-              className="h-8 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm" onChange={(event) => setStartAt(event.target.value)} />
-            <button type="submit" disabled={!selectedHeadings.length} className="h-8 rounded-md bg-primary px-3 text-sm text-primary-foreground disabled:opacity-50">Apply</button>
-          </div>
-        </form>}
         {canSuggestEdit ? <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); suggestEdit(); }}>
           <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="visual-suggest-edit"><MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />Suggest edit</label>
           <div className="mt-1 flex items-start gap-2">
@@ -332,7 +342,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
             <button type="submit" aria-label="Suggest this replacement" title="Suggest this replacement" className="h-8 shrink-0 rounded-md bg-primary px-2 text-primary-foreground"><MessageSquarePlus aria-hidden className="h-4 w-4" /></button>
           </div>
         </form> : null}
-        {popup.kind === "context" && !writeOnly ? <>
+        {!writeOnly ? <>
           <form className="mt-1 border-t border-border px-2 py-2" onSubmit={(event) => { event.preventDefault(); void runAi("rewrite"); }}>
             <label className="block text-xs font-medium text-muted-foreground" htmlFor="visual-ai-rewrite">AI Rewrite</label>
             <div className="mt-1 flex items-start gap-2">
@@ -342,7 +352,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
           </form>
           {writeForm}
         </> : null}
-        {popup.kind === "context" ? <>
+        <>
           {popup.tableCell !== undefined ? <>
             <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addRowBefore")}><ArrowUpToLine aria-hidden className="h-4 w-4" />Insert Row Above</button>
             <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("addRowAfter")}><ArrowDownToLine aria-hidden className="h-4 w-4" />Insert Row Below</button>
@@ -352,7 +362,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, shared }: {
             <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => tableAction("deleteColumn")}><Columns3 aria-hidden className="h-4 w-4" />Delete Column</button>
           </> : null}
           {popup.image ? <button type="button" role="menuitem" className={menuItemClass} disabled={!!working} onClick={() => void runAi("image")}><ImageIcon aria-hidden className="h-4 w-4" />AI Image to Markdown</button> : null}
-        </> : null}
+        </>
       </div>, document.body,
     ) : null}
   </>;

@@ -270,6 +270,12 @@ html.libera-glass .libera-glass-panel input {
   background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 
+/* The chat search draws its frost on the rounded field wrapper (so the icon and
+   count sit inside it); the bare input stays clear. */
+.libera-chat-search-field { background-color: var(--background); }
+html.libera-glass .libera-chat-search-field { background-color: color-mix(in srgb, var(--foreground) 5%, transparent); }
+html.libera-glass .libera-glass-panel .libera-chat-search-field input { background-color: transparent; }
+
 /* Notebook cards get a barely-there fill so each one lifts off the panel as its
    own glass tile; the softened `--border` above supplies the hairline edge. */
 html.libera-glass .libera-glass-card {
@@ -1014,107 +1020,490 @@ button.border[class*="border-white"]:hover {
   touch-action: none;
 }
 
-.markdown-slide-preview-sheet {
-  aspect-ratio: auto;
-  height: auto;
+/* Markdown Slides (markdown-slide-templates.tsx, markdown-slides-viewer.tsx).
+   A slide is laid out on a fixed canvas (--slide-width x --slide-height) and
+   scaled to fit wherever it is shown, so the preview, the presentation and
+   the PDF are the same slide. Themes set the --slide-* palette, which the
+   rendered Markdown reads through the usual tokens. */
+.markdown-slide-frame {
+  overflow: hidden;
+  position: relative;
   width: 100%;
 }
 
-.markdown-slide-presenter-sheet {
-  aspect-ratio: 16 / 9;
-  border: 0;
-  height: min(100vh, calc(100vw * 9 / 16));
-  width: min(100vw, calc(100vh * 16 / 9));
+.markdown-slide-scaler {
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(var(--slide-scale, 0));
+  transform-origin: center;
 }
 
-.dark .markdown-slide-light,
-.markdown-slide-light {
-  --accent: #09090b;
-  --background: #ffffff;
-  --border: #e4e4e7;
-  --card: #ffffff;
-  --card-foreground: #09090b;
-  --foreground: #09090b;
-  --input: #d4d4d8;
-  --muted: #f4f4f5;
-  --muted-foreground: #09090b;
-  background-color: #ffffff;
-  color: #09090b;
+.markdown-slide {
+  --slide-bg: #ffffff;
+  --slide-fg: #18181b;
+  --slide-muted: #71717a;
+  --slide-subtle: #f4f4f5;
+  --slide-rule: #e4e4e7;
+  --slide-accent: #0d9488;
+  --slide-heading-font: inherit;
+  --background: var(--slide-bg);
+  --foreground: var(--slide-fg);
+  --card: var(--slide-bg);
+  --card-foreground: var(--slide-fg);
+  --muted: var(--slide-subtle);
+  --muted-foreground: var(--slide-muted);
+  --border: var(--slide-rule);
+  --input: var(--slide-rule);
+  --ring: var(--slide-accent);
+  --accent: var(--slide-accent);
+  --accent-foreground: var(--slide-bg);
+  --primary: var(--slide-fg);
+  --primary-foreground: var(--slide-bg);
+  --markdown-highlight: #fef08a;
+  --markdown-highlight-foreground: #422006;
+  background: var(--slide-bg);
+  box-sizing: border-box;
+  color: var(--slide-fg);
   color-scheme: light;
+  display: flex;
+  flex-direction: column;
+  height: var(--slide-height);
+  overflow: hidden;
+  position: relative;
+  text-align: left;
+  width: var(--slide-width);
 }
 
-.dark .markdown-slide-light :where(*),
-.markdown-slide-light :where(*) {
-  color: #09090b;
+.markdown-slide[data-theme="dark"] {
+  --slide-bg: #18181b;
+  --slide-fg: #f4f4f5;
+  --slide-muted: #a1a1aa;
+  --slide-subtle: #27272a;
+  --slide-rule: #3f3f46;
+  --slide-accent: #2dd4bf;
 }
 
-.dark .markdown-slide-light .bg-white,
-.markdown-slide-light .bg-white {
-  background-color: #ffffff;
+.markdown-slide[data-theme="paper"] {
+  --slide-bg: #fbf8f1;
+  --slide-fg: #292524;
+  --slide-muted: #78716c;
+  --slide-subtle: #f1ebdd;
+  --slide-rule: #e2d9c5;
+  --slide-accent: #b45309;
+  --slide-heading-font: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
 }
 
-.dark .markdown-slide-light .bg-zinc-50,
-.markdown-slide-light .bg-zinc-50 {
-  background-color: #fafafa;
+.markdown-slide[data-theme="night"] {
+  --slide-bg: #0f172a;
+  --slide-fg: #e2e8f0;
+  --slide-muted: #94a3b8;
+  --slide-subtle: #1e293b;
+  --slide-rule: #334155;
+  --slide-accent: #38bdf8;
 }
 
-.dark .markdown-slide-light .bg-zinc-100,
-.markdown-slide-light .bg-zinc-100 {
-  background-color: #f4f4f5;
+.markdown-slide:is([data-theme="dark"], [data-theme="night"]) {
+  --markdown-highlight: color-mix(in srgb, #facc15 38%, transparent);
+  --markdown-highlight-foreground: #fef9c3;
+  color-scheme: dark;
 }
 
-.dark .markdown-slide-light .border-zinc-100,
-.markdown-slide-light .border-zinc-100 {
-  border-color: #f4f4f5;
+/* Content that names zinc shades directly follows the theme too. */
+.markdown-slide :is(.text-zinc-950, .text-zinc-900, .text-zinc-800, .text-zinc-700) {
+  color: var(--slide-fg);
 }
 
-.dark .markdown-slide-light .border-zinc-200,
-.markdown-slide-light .border-zinc-200 {
-  border-color: #e4e4e7;
+.markdown-slide :is(.text-zinc-600, .text-zinc-500, .text-zinc-400) {
+  color: var(--slide-muted);
 }
 
-.dark .markdown-slide-light .border-zinc-300,
-.markdown-slide-light .border-zinc-300 {
-  border-color: #d4d4d8;
+.markdown-slide :is(.bg-white) {
+  background-color: var(--slide-bg);
 }
 
-.dark .markdown-slide-light .text-zinc-950,
-.dark .markdown-slide-light .text-zinc-900,
-.dark .markdown-slide-light .text-zinc-800,
-.markdown-slide-light .text-zinc-950,
-.markdown-slide-light .text-zinc-900,
-.markdown-slide-light .text-zinc-800 {
-  color: #09090b;
+.markdown-slide :is(.bg-zinc-50, .bg-zinc-100) {
+  background-color: var(--slide-subtle);
 }
 
-.dark .markdown-slide-light .text-zinc-700,
-.markdown-slide-light .text-zinc-700 {
-  color: #09090b;
+.markdown-slide :is(.border-zinc-100, .border-zinc-200, .border-zinc-300) {
+  border-color: var(--slide-rule);
 }
 
-.dark .markdown-slide-light .text-zinc-600,
-.markdown-slide-light .text-zinc-600 {
-  color: #09090b;
+.markdown-slide-header {
+  flex-shrink: 0;
+  padding: 34px 48px 0;
 }
 
-.dark .markdown-slide-light .text-zinc-500,
-.markdown-slide-light .text-zinc-500 {
-  color: #09090b;
+.markdown-slide-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--slide-fg);
+  display: -webkit-box;
+  font-family: var(--slide-heading-font);
+  font-size: calc(var(--slide-font-size) * 1.55);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  overflow: hidden;
 }
 
-.dark .markdown-slide-light .text-zinc-400,
-.markdown-slide-light .text-zinc-400 {
-  color: #09090b;
+.markdown-slide-rule {
+  background: var(--slide-accent);
+  border-radius: 2px;
+  flex-shrink: 0;
+  height: 3px;
+  margin-top: 12px;
+  width: 44px;
 }
 
-.dark .markdown-slide-light .text-teal-700,
-.markdown-slide-light .text-teal-700 {
-  color: #09090b;
+.markdown-slide-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding: 18px 48px 20px;
 }
 
-.dark .markdown-slide-light .hover\:text-teal-900:hover,
-.markdown-slide-light .hover\:text-teal-900:hover {
-  color: #09090b;
+.markdown-slide-fit-frame {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: safe center;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.markdown-slide[data-layout="top"] .markdown-slide-fit-frame {
+  justify-content: flex-start;
+}
+
+.markdown-slide-fit-measure {
+  flex-shrink: 0;
+}
+
+.markdown-slide-fit {
+  transform-origin: 0 0;
+}
+
+.markdown-slide[data-layout="center"] .markdown-slide-body,
+.markdown-slide[data-layout="center"] .markdown-slide-header {
+  text-align: center;
+}
+
+.markdown-slide[data-layout="center"] .markdown-slide-rule {
+  margin-inline: auto;
+}
+
+.markdown-slide[data-layout="center"] .markdown-slide-body :where(ul, ol) {
+  display: inline-block;
+  text-align: left;
+}
+
+.markdown-slide[data-layout="blank"] .markdown-slide-body {
+  padding: 0;
+}
+
+.markdown-slide[data-layout="section"] .markdown-slide-body {
+  padding: 48px 72px;
+}
+
+.markdown-slide-section-title {
+  font-family: var(--slide-heading-font);
+  font-size: calc(var(--slide-font-size) * 2);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.markdown-slide[data-layout="section"] .markdown-slide-rule {
+  margin: 20px 0 18px;
+  width: 56px;
+}
+
+.markdown-slide-section-body {
+  color: var(--slide-muted);
+  --foreground: var(--slide-muted);
+}
+
+.markdown-slide-cover {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+  padding: 56px 72px;
+}
+
+.markdown-slide[data-layout="center"] .markdown-slide-cover {
+  align-items: center;
+  text-align: center;
+}
+
+.markdown-slide-cover-title {
+  font-family: var(--slide-heading-font);
+  font-size: calc(var(--slide-font-size) * 2.3);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.markdown-slide-cover-subtitle {
+  color: var(--slide-muted);
+  font-size: calc(var(--slide-font-size) * 1.2);
+  line-height: 1.3;
+  margin-top: 14px;
+}
+
+.markdown-slide-cover .markdown-slide-rule {
+  margin: 26px 0 22px;
+  width: 56px;
+}
+
+.markdown-slide-cover-people {
+  font-size: calc(var(--slide-font-size) * 0.95);
+  font-weight: 600;
+  margin: 0;
+}
+
+.markdown-slide-cover-meta {
+  color: var(--slide-muted);
+  font-size: calc(var(--slide-font-size) * 0.8);
+  margin: 4px 0 0;
+}
+
+.markdown-slide-cover-body {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  margin-top: 24px;
+  min-height: 0;
+  width: 100%;
+}
+
+.markdown-slide-columns {
+  align-items: start;
+  column-gap: 36px;
+  display: grid;
+}
+
+.markdown-slide-segment + .markdown-slide-segment {
+  margin-top: 0.8em;
+}
+
+.markdown-slide-segment {
+  transition: opacity 200ms ease;
+}
+
+.markdown-slide-segment[data-pending="true"] {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.markdown-slide .markdown-renderer > :first-child {
+  margin-top: 0;
+}
+
+.markdown-slide .markdown-renderer > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-slide .markdown-renderer img {
+  margin-inline: auto;
+  max-height: 380px;
+}
+
+.markdown-slide .markdown-renderer p:has(> img:only-child) {
+  text-align: center;
+}
+
+.markdown-slide[data-layout="blank"] .markdown-renderer img {
+  border: 0;
+  border-radius: 0;
+  margin: 0 auto;
+  max-height: var(--slide-height);
+}
+
+/* ```chart and ```html live blocks (slide-live-blocks.tsx). */
+.markdown-slide-chart {
+  margin: 0.25em 0 0.75em;
+  position: relative;
+  width: 100%;
+}
+
+.markdown-slide-live {
+  margin: 0.25em 0 0.75em;
+}
+
+/* The frame's color-scheme matches the slide's (inherited), so it stays
+   transparent instead of getting an opaque backdrop. */
+.markdown-slide-live-frame {
+  background: transparent;
+  border: 0;
+  display: block;
+  margin-inline: auto;
+  width: 100%;
+}
+
+.markdown-slide-block-message {
+  align-items: flex-start;
+  background: color-mix(in srgb, #f59e0b 14%, var(--slide-bg));
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--slide-bg));
+  border-radius: 6px;
+  color: var(--slide-fg);
+  display: flex;
+  font-size: 14px;
+  gap: 8px;
+  line-height: 1.4;
+  margin: 0.25em 0 0.75em;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.markdown-slide-live-gate {
+  align-items: center;
+  border: 1px dashed var(--slide-rule);
+  border-radius: 8px;
+  color: var(--slide-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 15px;
+  gap: 10px;
+  margin: 0.25em 0 0.75em;
+  padding: 24px;
+  text-align: center;
+}
+
+.markdown-slide-live-gate p {
+  margin: 0;
+}
+
+.markdown-slide-live-gate button {
+  align-items: center;
+  background: var(--slide-subtle);
+  border: 1px solid var(--slide-rule);
+  border-radius: 6px;
+  color: var(--slide-fg);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 500;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+/* The same blocks in a note (preview, Visual editor, PDF export): the
+   slide colors come from the app theme. */
+.markdown-notebook-block {
+  --slide-bg: var(--background);
+  --slide-fg: var(--foreground);
+  --slide-muted: var(--muted-foreground);
+  --slide-subtle: var(--muted);
+  --slide-rule: var(--border);
+  margin: 1em 0;
+}
+
+/* A title or subtitle: one line of Markdown that takes the surrounding type. */
+.markdown-slide-inline.markdown-renderer,
+.markdown-slide-inline :where(p, div[role="heading"]) {
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  margin: 0;
+}
+
+.markdown-slide-footer {
+  align-items: center;
+  color: var(--slide-muted);
+  display: flex;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  gap: 24px;
+  height: 38px;
+  justify-content: space-between;
+  padding: 0 48px 4px;
+}
+
+.markdown-slide-footer > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-slide-page {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+/* Overfull slides are flagged in the preview, never in the presentation. */
+.markdown-slide-overflow-badge {
+  display: none;
+}
+
+.markdown-slide-preview-item:has(.markdown-slide[data-overflow="true"]) .markdown-slide-overflow-badge {
+  display: inline-flex;
+}
+
+.markdown-slide-presenter-sheet[data-transition="fade"] {
+  animation: markdown-slide-fade 180ms ease-out;
+}
+
+.markdown-slide-presenter-sheet[data-transition="slide"][data-direction="forward"] {
+  animation: markdown-slide-in-forward 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.markdown-slide-presenter-sheet[data-transition="slide"][data-direction="backward"] {
+  animation: markdown-slide-in-backward 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes markdown-slide-fade {
+  from { opacity: 0; }
+}
+
+@keyframes markdown-slide-in-forward {
+  from { opacity: 0; transform: translateX(6%); }
+}
+
+@keyframes markdown-slide-in-backward {
+  from { opacity: 0; transform: translateX(-6%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-slide-presenter-sheet,
+  .markdown-slide-segment {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.markdown-slide-notes-panel {
+  --foreground: #f4f4f5;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #3f3f46;
+  --input: #3f3f46;
+  --accent: #5eead4;
+}
+
+.markdown-slides-export-page {
+  background: #ffffff;
+  margin: 0;
+  padding: 0;
+}
+
+.markdown-slide-print-page {
+  break-after: page;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.markdown-slide-print-page:last-child {
+  break-after: auto;
 }
 
 .libera-horizontal-toolbar {
@@ -1456,6 +1845,83 @@ button.border[class*="border-white"]:hover {
 
 .pdf-selection-menu-action:hover { background: var(--muted); color: var(--foreground); }
 
+/* Review comments: a faint amber wash with a dotted rule under the passage,
+ * stronger while its card is open, and a numbered badge at its end. The
+ * layer sits under the text layer like highlights, so text stays selectable. */
+.pdf-comment-layer {
+  inset: 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  position: absolute;
+  z-index: 6;
+}
+
+.pdf-comment-mark {
+  background: rgb(245 158 11 / 0.12);
+  border-bottom: 1.5px dotted rgb(217 119 6 / 0.85);
+  border-radius: 2px;
+  position: absolute;
+}
+
+.pdf-comment-mark[data-selected] {
+  background: rgb(245 158 11 / 0.3);
+  border-bottom-style: solid;
+}
+
+.pdf-comment-badge {
+  align-items: center;
+  background: #fffbeb;
+  border: 1px solid rgb(217 119 6 / 0.6);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.15);
+  color: #92400e;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  gap: 2px;
+  height: 18px;
+  line-height: 1;
+  padding: 0 5px 0 4px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 1;
+}
+
+.pdf-comment-badge:hover,
+.pdf-comment-badge[data-selected] {
+  background: #f59e0b;
+  border-color: #b45309;
+  color: #fff;
+}
+
+.pdf-comment-composer {
+  animation: pdf-pop-in 120ms ease-out;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgb(15 23 42 / 0.18), 0 1px 3px rgb(15 23 42 / 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  pointer-events: auto;
+  position: absolute;
+  z-index: 50;
+}
+
+.pdf-comment-composer-quote {
+  border-left: 2px solid rgb(217 119 6 / 0.7);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-style: italic;
+  max-height: 4.5em;
+  overflow: auto;
+  padding-left: 8px;
+  white-space: pre-wrap;
+}
+
 /* Text notes: ink set straight on the paper — no fill, no frame at rest. */
 .pdf-note {
   --pdf-note-accent: #3b82f6;
@@ -1755,6 +2221,9 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap pre { overflow-x: auto; background: var(--muted); border-radius: .5rem; padding: 1rem; margin: 1em 0; }
 .libera-tiptap code { background: var(--muted); border-radius: .2em; padding: .1em .25em; font-size: .9em; }
 .libera-tiptap pre code { padding: 0; }
+/* A ```chart or ```html live block's output, under its code (tiptap-live-code-block-view.tsx). */
+.libera-tiptap-live-block { margin: -0.5em 0 1em; user-select: none; white-space: normal; }
+.libera-tiptap-live-block .markdown-notebook-block { margin: 0; }
 .libera-tiptap a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 .libera-tiptap img { display: block; max-width: 100%; max-height: 560px; object-fit: contain; border-radius: .5rem; margin: 1em 0; }
 .libera-tiptap hr { border-color: var(--border); margin: 1.5em 0; }
@@ -1799,6 +2268,16 @@ button.border[class*="border-white"]:hover {
   .libera-main-layout { grid-template-columns: minmax(0, 1fr) min(var(--libera-chat-width), 45vw); grid-template-rows: auto minmax(0, 1fr); }
   .libera-main-layout > .libera-left-panel { grid-column: 1 / -1; }
   .libera-main-layout > .libera-chat-panel { grid-column: 2; grid-row: 2; }
+}
+
+/* A message opened from chat search briefly glows so it is easy to spot. */
+@keyframes libera-chat-search-hit {
+  from { background-color: color-mix(in oklab, var(--primary) 18%, transparent); }
+  to { background-color: transparent; }
+}
+.libera-chat-message.libera-chat-search-hit {
+  border-radius: 0.5rem;
+  animation: libera-chat-search-hit 2s ease-out;
 }
 
 @keyframes libera-chat-shimmer {
@@ -1936,7 +2415,11 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* Files whose Markdown links to the open file (backlinks). */
+/* Files linked with the open file: backlinks (link to it) in the accent teal,
+   forward links (it links to them) in purple, and a split tint when both. */
+.libera-left-panel { --forwardlink: #9333ea; }
+html.dark .libera-left-panel { --forwardlink: #c084fc; }
+
 .libera-left-panel button[data-backlink="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
@@ -1945,7 +2428,26 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.libera-backlink-count {
+.libera-left-panel button[data-forwardlink="true"] {
+  background: color-mix(in srgb, var(--forwardlink) 14%, transparent);
+}
+
+.libera-left-panel button[data-forwardlink="true"]:hover {
+  background: color-mix(in srgb, var(--forwardlink) 22%, transparent);
+}
+
+.libera-left-panel button[data-backlink="true"][data-forwardlink="true"] {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), color-mix(in srgb, var(--forwardlink) 14%, transparent));
+}
+
+.libera-left-panel button[data-backlink="true"][data-forwardlink="true"]:hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 15%, transparent), color-mix(in srgb, var(--forwardlink) 22%, transparent));
+}
+
+.libera-forwardlink-icon { display: inline-flex; color: var(--forwardlink); }
+
+.libera-backlink-count,
+.libera-forwardlink-count {
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
@@ -1955,6 +2457,8 @@ html.dark .libera-notebook-section[data-selected="true"] > .libera-notebook-row 
   line-height: 1;
   color: var(--accent);
 }
+
+.libera-forwardlink-count { color: var(--forwardlink); }
 
 /* Links dialog: backlinks and forward links of the open note. */
 .libera-links-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }

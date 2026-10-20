@@ -1,6 +1,6 @@
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 
-export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf";
+export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf" | "audio";
 
 /** File types whose content is edited as text in a tab. */
 export function isTextFileType(fileType: LiberaFileType | undefined): fileType is "markdown" | "latex" | "text" {
@@ -97,6 +97,12 @@ export type LiberaFileNode = {
   createdAt: string;
   size: number;
   updatedAt: string;
+  /**
+   * The inode change time (ctime): also moves when a file is copied, moved or
+   * synced in with its original dates kept. Where Was I uses it to notice files
+   * that arrived while you were away.
+   */
+  changedAt?: string;
   /** Files this saved Markdown file links to, resolved against the tree. */
   linkedFilePaths?: string[];
 };
@@ -185,11 +191,52 @@ export type LiberaFilePayload = {
  */
 export type LiberaFileMovePayload = LiberaFilePayload & {
   references?: ReferenceMoveResult;
+  /** Image URLs rewritten when moving Markdown into another notebook. */
+  imageSources?: Record<string, string>;
 };
 
 export type PdfAnnotationsPayload = {
   path: string;
   annotations: PdfAnnotation[];
+};
+
+/** Where a PDF comment is: the selected text's boxes on each page it spans, in page fractions. */
+export type PdfCommentSegment = {
+  pageNumber: number;
+  rects: PdfAnnotationRect[];
+};
+
+export type PdfCommentAnchor = {
+  segments: PdfCommentSegment[];
+  quote: string;
+};
+
+/** `author` is "agent" for replies the AI agent posted; the user's own have none. */
+export type PdfCommentMessage = {
+  id: string;
+  text: string;
+  createdAt: string;
+  editedAt?: string;
+  author?: "agent";
+};
+
+/**
+ * A review comment thread on a PDF passage, kept in the PDF's annotation
+ * sidecar beside its markup (src/lib/storage/pdf-comments.ts). PDFs do not
+ * change, so anchors never need remapping the way Markdown ones do.
+ */
+export type PdfCommentThread = {
+  id: string;
+  anchor: PdfCommentAnchor;
+  status: "open" | "resolved";
+  messages: PdfCommentMessage[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PdfCommentsPayload = {
+  path: string;
+  threads: PdfCommentThread[];
 };
 
 export type ImageAnnotationsPayload = {

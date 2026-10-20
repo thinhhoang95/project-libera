@@ -16,6 +16,7 @@ import * as Y from "yjs";
 
 import { startControlApp, type ControlApp } from "../../electron/collab/control";
 import type { SecretCodec } from "../../electron/collab/control/account";
+import { SHARED_SIGN_IN_FILE } from "../../electron/collab/control/shared-sign-in";
 import { Router } from "../../electron/collab/control/router";
 import {
   ControlRoutes,
@@ -72,11 +73,12 @@ interface Client {
   call<T>(method: string, route: string, body?: unknown, token?: string | null): Promise<{ status: number; body: T }>;
 }
 
-async function startClient(dir: string): Promise<Client> {
+async function startClient(dir: string, libraryRoot = path.join(dir, "library")): Promise<Client> {
   const events: HostEvent[] = [];
   const app = await startControlApp({
     collabDir: dir,
-    libraryRoot: path.join(dir, "library"),
+    libraryRoot,
+    sharedSignIn: { kdf: { N: 2 ** 14, r: 8, p: 1 }, pollMs: 3_600_000 },
     appVersion: "test",
     installationId: `inst_${path.basename(dir).replace(/[^A-Za-z0-9_-]/g, "")}`,
     secrets: fakeSecrets,
@@ -393,6 +395,61 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     const wrong = await alice.call<{ error: { code: string } }>("POST", ControlRoutes.signIn, { serverUrl: server.url, email: "alice@example.test", password: "wrong password!" });
     assert.equal(wrong.status, 403, "a refused login is not a control-token 401");
     assert.equal((await alice.call<DocText>("GET", ControlRoutes.docText(docId))).body.text, "Hi there\nSecond line\nThird line\n");
+  } finally {
+    for (const client of clients) await client.app.close().catch(() => undefined);
+    await server.stop().catch(() => undefined);
+    removeDataDir(server.dataDir);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("two hosts share an encrypted grant and keep independent sessions against the real server", { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "libera-elec-shared-sign-in-"));
+  const server = await startServerProcess();
+  const clients: Client[] = [];
+  try {
+    const library = path.join(root, "library");
+    const a = await startClient(path.join(root, "a"), library);
+    const b = await startClient(path.join(root, "b"), library);
+    clients.push(a, b);
+    const registered = await a.call<HostStatus>("POST", ControlRoutes.register, { serverUrl: server.url, email: "shared@example.test", password: "correct horse battery", displayName: "Shared" });
+    assert.equal(registered.status, 201);
+    const file = path.join(library, SHARED_SIGN_IN_FILE);
+    assert.equal(existsSync(file), false, "no sharing before master unlock");
+    assert.equal((await a.call("POST", ControlRoutes.unlock, { password: "master password" })).status, 202);
+    await until(() => existsSync(file), "encrypted grant file");
+    assert.ok(!readFileSync(file, "utf8").includes("shared@example.test"));
+    assert.equal((await b.call("POST", ControlRoutes.unlock, { password: "master password" })).status, 202);
+    await until(() => b.app.runtime.accounts.session !== null, "second host to adopt grant");
+    assert.equal(b.app.runtime.accounts.account?.id, registered.body.account?.id);
+    const sessionA = a.app.runtime.accounts.session!;
+    const sessionB = b.app.runtime.accounts.session!;
+    assert.notEqual(sessionA.currentRefreshToken, sessionB.currentRefreshToken);
+    assert.ok(await sessionA.refresh());
+    assert.ok(await sessionB.refresh(), "refreshing A does not revoke B");
+    assert.equal((await b.call("POST", ControlRoutes.signOut)).status, 200);
+    await b.app.runtime.sharedSignIn.unlock("master password");
+    assert.equal(b.app.runtime.accounts.session, null, "explicit sign-out suppresses adoption");
+    // ... but the person can choose the other computer's account again.
+    const offer = await b.call<{ state: string; accountId: string; serverUrl: string; email?: string }>("GET", ControlRoutes.sharedSignIn);
+    assert.deepEqual([offer.status, offer.body.state, offer.body.email], [200, "available", "shared@example.test"]);
+    assert.equal((await b.call("POST", ControlRoutes.sharedSignIn)).status, 400, "the displayed identity is required");
+    const changed = await b.call<{ error: { code: string } }>("POST", ControlRoutes.sharedSignIn, { ...offer.body, accountId: "another-account" });
+    assert.deepEqual([changed.status, changed.body.error.code], [409, "offer-changed"]);
+    const continued = await b.call<HostStatus>("POST", ControlRoutes.sharedSignIn, offer.body);
+    assert.equal(continued.status, 200, JSON.stringify(continued.body));
+    assert.equal(continued.body.account?.id, registered.body.account?.id);
+    assert.notEqual(b.app.runtime.accounts.session, null, "continued with a session of its own");
+    assert.equal((await b.call<{ state: string }>("GET", ControlRoutes.sharedSignIn)).body.state, "none", "nothing to offer once signed in");
+    assert.equal((await b.call("POST", ControlRoutes.signOut)).status, 200);
+    assert.equal((await a.call("POST", ControlRoutes.signOut, { everywhere: true })).status, 200);
+    const refused = await b.call<{ error: { code: string } }>("POST", ControlRoutes.sharedSignIn, offer.body);
+    assert.deepEqual([refused.status, refused.body.error.code], [404, "nothing-shared"], "a tombstone offers nothing to continue with");
+    assert.match(readFileSync(file, "utf8"), /disabledAt/);
+    const c = await startClient(path.join(root, "c"), library);
+    clients.push(c);
+    await c.app.runtime.sharedSignIn.unlock("master password");
+    assert.equal(c.app.runtime.accounts.session, null, "new host honors global disable");
   } finally {
     for (const client of clients) await client.app.close().catch(() => undefined);
     await server.stop().catch(() => undefined);

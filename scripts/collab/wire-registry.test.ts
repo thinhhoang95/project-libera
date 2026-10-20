@@ -66,6 +66,47 @@ test("resolution is cached, including 'not shared', until host events invalidate
   }
 });
 
+test("deletion flushes the last editor batch and keeps a read-only recovery tab", async () => {
+  const harness = createHarness({ text: "original" });
+  try {
+    const paths = ["Shared/note.md"];
+    const { registry, emit } = harness.registry({ paths });
+    await registry.bindTab(paths[0], paths[0]);
+    const session = registry.sessionForTab(paths[0])!;
+    await session.replica.whenAttached();
+    session.replica.ytext.insert(0, "last frame ");
+    paths.length = 0;
+    emit({ t: "tree-changed", projectId: "p1", notebook: "Shared", added: [], moves: [], removed: ["Shared/note.md"] });
+    assert.equal(session.replica.canEditContent(), false);
+    assert.equal((await registry.bindTab("Shared/note.md", "Shared/note.md")).kind, "shared");
+    await waitFor(() => harness.hub.getText() === "last frame original", 3000, "last batch persists locally");
+    assert.equal(registry.readTabText("Shared/note.md"), "last frame original");
+    paths.push("Shared/note.md");
+    emit({ t: "files-changed", projectId: "p1", paths });
+    await registry.bindTab(paths[0], paths[0]);
+    assert.equal(registry.sessionForTab(paths[0]), session, "reusing a deleted path does not replace the recovery text");
+  } finally { harness.close(); }
+});
+
+test("deletion while a tab is resolving cannot mount an editable local tab", async () => {
+  const harness = createHarness({ text: "recover while opening" });
+  try {
+    const { registry, emit } = harness.registry();
+    const opening = registry.bindTab("Shared/note.md", "Shared/note.md");
+    emit({ t: "tree-changed", projectId: "p1", notebook: "Shared", added: [], moves: [], removed: ["Shared/note.md"] });
+    assert.equal((await opening).kind, "shared");
+    const session = registry.sessionForTab("Shared/note.md")!;
+    await session.replica.whenAttached();
+    assert.equal(session.replica.canEditContent(), false);
+    assert.equal(session.replica.text(), "recover while opening");
+
+    const missing = harness.registry({ paths: [] });
+    const missingOpening = missing.registry.bindTab("Shared/gone.md", "Shared/gone.md");
+    missing.emit({ t: "tree-changed", projectId: "p1", notebook: "Shared", added: [], moves: [], removed: ["Shared/gone.md"] });
+    assert.equal((await missingOpening).kind, "error", "a removed path resolving to null cannot become an ordinary editor");
+  } finally { harness.close(); }
+});
+
 test("getTabDraft reads the replica for shared tabs and the editor otherwise", async () => {
   const harness = createHarness({ text: "live shared text" });
   try {

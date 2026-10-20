@@ -91,6 +91,30 @@ export interface LogoutRequest {
   refreshToken: string;
 }
 
+/**
+ * A device sign-in grant lets another computer of the same person start its
+ * own session (POST deviceGrantSignIn). It never rotates, so copies can sit
+ * on several computers; changing the password revokes every grant.
+ */
+export interface DeviceGrantRequest {
+  deviceName?: string;
+  /** Background sharing must not undo server-side revocation. */
+  automatic?: boolean;
+  /** The grant being renewed; background renewal requires it to remain valid. */
+  previousGrant?: string;
+}
+
+export interface DeviceGrantResponse {
+  grant: string;
+  /** ISO time. */
+  expiresAt: string;
+}
+
+export interface DeviceGrantSignInRequest {
+  grant: string;
+  deviceName?: string;
+}
+
 export interface UpdateMeRequest {
   displayName?: string;
   color?: string;
@@ -118,6 +142,32 @@ export interface ProjectSummary {
   ownerId: string;
   manifestDocId: string;
   createdAt: string;
+}
+
+/**
+ * Which installation writes a shared-notebook folder that several of one
+ * account's installations see (a folder synced by OneDrive and the like).
+ * Acquiring or renewing is a compare-and-set: it succeeds when the lease is
+ * free, expired, or already the caller's.
+ */
+export interface FolderLeaseRequest {
+  /** The folder's identity (from its marker), the same on every device. */
+  folderId: string;
+  /** The calling installation. */
+  holder: string;
+  /** How long the lease lasts unless renewed (the server clamps it). */
+  ttlMs: number;
+}
+
+export interface FolderLease {
+  folderId: string;
+  /** The installation holding the lease, or null when it is free. */
+  holder: string | null;
+  /** Whether the caller holds the lease now. */
+  granted: boolean;
+  expiresAt: string | null;
+  /** Another installation has asked for this lease while it was held: the folder is seen by more than one. */
+  contended: boolean;
 }
 
 export interface CreateProjectRequest {
@@ -595,6 +645,9 @@ export const ApiRoutes = {
   login: "/v1/auth/login",
   refresh: "/v1/auth/refresh",
   logout: "/v1/auth/logout",
+  /** POST creates a grant; DELETE revokes all of the account's grants. */
+  deviceGrants: "/v1/auth/device-grants",
+  deviceGrantSignIn: "/v1/auth/device-grants/sign-in",
   me: "/v1/me",
   password: "/v1/me/password",
   projects: "/v1/projects",
@@ -630,6 +683,7 @@ export const ApiRoutes = {
   notifications: "/v1/notifications",
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
+  folderLease: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/folder-lease`,
   commands: "/v1/commands",
   documentDigest: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/digest`,
   telemetry: "/v1/telemetry",

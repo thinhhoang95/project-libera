@@ -22,6 +22,7 @@ const nativeOptionalPackages = {
     "@img/sharp-darwin-arm64",
     "@img/sharp-libvips-darwin-arm64",
     "sqlite-vec-darwin-arm64",
+    "sherpa-onnx-darwin-arm64",
   ],
   "darwin-x64": [
     "@esbuild/darwin-x64",
@@ -32,6 +33,7 @@ const nativeOptionalPackages = {
     "@img/sharp-darwin-x64",
     "@img/sharp-libvips-darwin-x64",
     "sqlite-vec-darwin-x64",
+    "sherpa-onnx-darwin-x64",
   ],
   "win32-arm64": [
     "@esbuild/win32-arm64",
@@ -49,6 +51,7 @@ const nativeOptionalPackages = {
     "@tailwindcss/oxide-win32-x64-msvc",
     "@img/sharp-win32-x64",
     "sqlite-vec-windows-x64",
+    "sherpa-onnx-win-x64",
   ],
 };
 

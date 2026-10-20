@@ -9,6 +9,8 @@ import {
   Highlighter,
   Loader2,
   type LucideIcon,
+  MessageSquare,
+  MessageSquarePlus,
   Minus,
   MousePointer2,
   MoveUpRight,
@@ -23,6 +25,7 @@ import {
   Type,
   Underline,
   Undo2,
+  Volume2,
   Waves,
   ZoomIn,
   ZoomOut,
@@ -52,7 +55,11 @@ import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
+import { useMarkdownReview } from "@/components/libera/markdown-review-context";
+import { changePdfComments, onPdfCommentFocus, pdfCommentsState, selectPdfComment, usePdfComments } from "@/components/libera/pdf-comments-store";
+import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
+import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
 import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -105,6 +112,7 @@ import {
 } from "@/lib/pdf-annotation-style";
 import { drawingBounds, isDrawingAnnotation, type PdfDrawingAnnotation } from "@/lib/pdf-drawing";
 import { normalizePdfHighlightQuote, pdfHighlightQuote } from "@/lib/pdf-highlight-quote";
+import { speakMarkdown } from "@/lib/tts/player";
 import { rememberPdfPageLabels } from "@/components/libera/references/pdf-page-labels";
 import { PDF_CITATION_MIME, PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import type {
@@ -112,6 +120,8 @@ import type {
   PdfAnnotationRect,
   PdfHighlightAnnotation,
   PdfAnnotationsPayload,
+  PdfCommentAnchor,
+  PdfCommentSegment,
   PdfMarkupStyle,
   PdfShapeKind,
   PdfTextAnnotation,
@@ -153,6 +163,12 @@ type PdfAnnotationScrollState = {
 };
 type RequestRenderSlot = () => Promise<() => void>;
 type SelectionMenuPosition = { left: number; top: number };
+/** A review comment's passage on one page; `number` matches its card in the Comments panel. */
+type PdfCommentMark = { id: string; number: number; rects: PdfAnnotationRect[]; selected: boolean; badge: boolean };
+type PdfCommentDraft = SelectionMenuPosition & { anchor: PdfCommentAnchor };
+const DRAFT_COMMENT_ID = "draft";
+const COMMENT_BOX_WIDTH = 320;
+const EMPTY_COMMENT_MARKS: PdfCommentMark[] = [];
 type AnnotationUpdater = (annotations: PdfAnnotation[]) => PdfAnnotation[];
 /**
  * Consecutive commits with the same key (one note being typed, one eraser
@@ -286,6 +302,136 @@ function intersectClientRect(rect: DOMRect, bounds: DOMRect) {
     width: (right - left) / bounds.width,
     height: (bottom - top) / bounds.height,
   };
+}
+
+/** A text selection inside the viewer, as line boxes and quote on each page it spans; null without one. */
+function selectionPageRects(selection: Selection | null, viewer: HTMLElement | null) {
+  if (!selection || selection.isCollapsed || !selection.rangeCount || !viewer) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+
+  if (!viewer.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+
+  const clientRects = rangeTextClientRects(range, ".pdf-text-layer");
+  const pages: (PdfCommentSegment & { quote?: string })[] = [];
+
+  for (const page of viewer.querySelectorAll<HTMLElement>("[data-pdf-page-content]")) {
+    const bounds = page.getBoundingClientRect();
+    const rects = clientRects
+      .map((rect) => intersectClientRect(rect, bounds))
+      .filter((rect): rect is PdfAnnotationRect => Boolean(rect));
+
+    if (rects.length) {
+      const textLayer = page.querySelector(".pdf-text-layer");
+      pages.push({
+        pageNumber: Number(page.dataset.pdfPageContent),
+        rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
+        quote: textLayer ? pdfHighlightQuote(range, textLayer) : undefined,
+      });
+    }
+  }
+
+  return pages.length ? pages : null;
+}
+
+/** Where the selection menu (and the comment box) opens: above the selection, or below it near the top. */
+function selectionMenuPosition(range: Range, scrollContainer: HTMLElement): SelectionMenuPosition | null {
+  const rects = rangeTextClientRects(range, ".pdf-text-layer");
+
+  if (!rects.length) {
+    return null;
+  }
+
+  const bounds = scrollContainer.getBoundingClientRect();
+  const first = rects.reduce((top, rect) => (rect.top < top.top ? rect : top));
+  const last = rects.reduce((bottom, rect) => (rect.bottom > bottom.bottom ? rect : bottom));
+  const menuHeight = 40;
+  const above = first.top - bounds.top - menuHeight - 6;
+  const top = above >= 0 ? above : last.bottom - bounds.top + 6;
+
+  return {
+    left: clamp(
+      first.left - bounds.left + scrollContainer.scrollLeft,
+      8,
+      Math.max(8, scrollContainer.scrollWidth - 456),
+    ),
+    top: top + scrollContainer.scrollTop,
+  };
+}
+
+/** The comment box opens just below the selection, so the passage stays in view while you write. */
+function commentBoxPosition(range: Range, scrollContainer: HTMLElement): SelectionMenuPosition | null {
+  const rects = rangeTextClientRects(range, ".pdf-text-layer");
+
+  if (!rects.length) {
+    return null;
+  }
+
+  const bounds = scrollContainer.getBoundingClientRect();
+  const first = rects.reduce((top, rect) => (rect.top < top.top ? rect : top));
+  const last = rects.reduce((bottom, rect) => (rect.bottom > bottom.bottom ? rect : bottom));
+  return {
+    left: first.left - bounds.left + scrollContainer.scrollLeft,
+    top: last.bottom - bounds.top + scrollContainer.scrollTop + 8,
+  };
+}
+
+/** The union of a comment's boxes on one page, to scroll it into view. */
+function unionRect([first, ...rest]: PdfAnnotationRect[]): PdfAnnotationRect {
+  return rest.reduce((union, rect) => {
+    const x = Math.min(union.x, rect.x), y = Math.min(union.y, rect.y);
+    return { x, y, width: Math.max(union.x + union.width, rect.x + rect.width) - x, height: Math.max(union.y + union.height, rect.y + rect.height) - y };
+  }, first);
+}
+
+/**
+ * Comment marks grouped by page, reusing a page's previous array while its
+ * marks are unchanged, so selecting a comment re-renders only its pages.
+ */
+function groupCommentMarks(
+  threads: ReturnType<typeof usePdfComments>["threads"],
+  selectedId: string | null,
+  draft: PdfCommentDraft | null,
+  previous: Map<number, PdfCommentMark[]>,
+) {
+  const grouped = new Map<number, PdfCommentMark[]>();
+  const add = (pageNumber: number, mark: PdfCommentMark) => {
+    const marks = grouped.get(pageNumber);
+    if (marks) marks.push(mark); else grouped.set(pageNumber, [mark]);
+  };
+  sortPdfCommentThreads(threads).forEach((thread, index) => {
+    const selected = thread.id === selectedId;
+    // Resolved threads leave the page unless their card is open.
+    if (thread.status === "resolved" && !selected) return;
+    thread.anchor.segments.forEach((segment, segmentIndex) => add(segment.pageNumber, { id: thread.id, number: index + 1, rects: segment.rects, selected, badge: segmentIndex === 0 }));
+  });
+  draft?.anchor.segments.forEach((segment, segmentIndex) => add(segment.pageNumber, { id: DRAFT_COMMENT_ID, number: 0, rects: segment.rects, selected: true, badge: segmentIndex === 0 }));
+
+  for (const [pageNumber, marks] of grouped) {
+    const before = previous.get(pageNumber);
+    if (before && JSON.stringify(before) === JSON.stringify(marks)) grouped.set(pageNumber, before);
+  }
+  return grouped;
+}
+
+function useCommentMarksByPage(
+  threads: ReturnType<typeof usePdfComments>["threads"],
+  selectedId: string | null,
+  draft: PdfCommentDraft | null,
+) {
+  const [cache, setCache] = useState(() => ({ groups: groupCommentMarks(threads, selectedId, draft, new Map()), threads, selectedId, draft }));
+
+  if (cache.threads === threads && cache.selectedId === selectedId && cache.draft === draft) {
+    return cache.groups;
+  }
+
+  const groups = groupCommentMarks(threads, selectedId, draft, cache.groups);
+  setCache({ groups, threads, selectedId, draft });
+  return groups;
 }
 
 function renderCanvas(viewport: PageViewport, canvas: HTMLCanvasElement) {
@@ -573,6 +719,44 @@ export function PdfViewer({
     [activeSelectedAnnotationId, annotations],
   );
   const annotationsByPage = useStablePageGroups(annotations);
+  // Review comments live beside the markup in the same sidecar, but have their
+  // own store and route: they are outside undo, and the agent replies to them.
+  const review = useMarkdownReview();
+  const comments = usePdfComments(filePath);
+  const [commentDraft, setCommentDraft] = useState<PdfCommentDraft | null>(null);
+  const [commentText, setCommentText] = useState("");
+  const commentMarksByPage = useCommentMarksByPage(comments.threads, comments.selectedId, commentDraft);
+  const openCommentCount = comments.threads.filter((thread) => thread.status === "open").length;
+  const showCommentsRef = useRef(review?.showComments);
+  useLayoutEffect(() => {
+    showCommentsRef.current = review?.showComments;
+  });
+  // A mark clicked on the page opens its card in the Comments panel.
+  const selectComment = useCallback((id: string) => {
+    if (id === DRAFT_COMMENT_ID) return;
+    selectPdfComment(filePath, id);
+    showCommentsRef.current?.();
+  }, [filePath]);
+
+  // A card chosen in the Comments panel brings its passage into view.
+  useEffect(() => onPdfCommentFocus(filePath, (threadId) => {
+    const segment = pdfCommentsState(filePath).threads.find((thread) => thread.id === threadId)?.anchor.segments[0];
+    const page = segment && pageElementRefs.current.get(segment.pageNumber);
+    const scrollContainer = scrollContainerRef.current;
+
+    if (!segment || !page || !scrollContainer) {
+      return;
+    }
+
+    const pageBounds = page.getBoundingClientRect();
+    const containerBounds = scrollContainer.getBoundingClientRect();
+    scrollContainer.scrollTop = scrollTopCenteringRect(
+      pageBounds.top - containerBounds.top + scrollContainer.scrollTop,
+      pageBounds.height,
+      unionRect(segment.rects),
+      scrollContainer.clientHeight,
+    );
+  }), [filePath]);
 
   const selectedTextAnnotation =
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
@@ -918,6 +1102,54 @@ export function PdfViewer({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [loading, pageLayouts.length, pdfDocument, reveal, updateViewState]);
+  // Following a link: scroll to its annotation once, in place of (and after)
+  // the saved-position restore, then save the new position as this tab's own.
+  const revealSelectedAnnotation = initialViewState?.revealSelectedAnnotation;
+  useEffect(() => {
+    if (!revealSelectedAnnotation || loading || !pdfDocument || !pageLayouts.length) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const scrollContainer = scrollContainerRef.current;
+      const id = initialViewStateRef.current?.selectedAnnotationId ?? "";
+      const annotation = latestAnnotationsRef.current.find((current) => current.id === id);
+      const page = annotation && pageElementRefs.current.get(annotation.pageNumber);
+      const annotationScrollState = annotationScrollStateRef.current;
+
+      annotationScrollState.lastSelectedAnnotationId = id;
+      annotationScrollState.allowInitialScroll = false;
+
+      if (!scrollContainer || !annotation || !page) {
+        updateViewState({ revealSelectedAnnotation: undefined });
+        return;
+      }
+
+      const pageBounds = page.getBoundingClientRect();
+      const containerBounds = scrollContainer.getBoundingClientRect();
+      scrollContainer.scrollTop = scrollTopCenteringRect(
+        pageBounds.top - containerBounds.top + scrollContainer.scrollTop,
+        pageBounds.height,
+        annotationAnchorRect(annotation),
+        scrollContainer.clientHeight,
+      );
+      pendingScrollRestoreRef.current = null;
+      updateCurrentPage(scrollContainer);
+      setSelectedAnnotationId(id);
+      updateViewState({
+        revealSelectedAnnotation: undefined,
+        scrollLeft: scrollContainer.scrollLeft,
+        scrollTop: scrollContainer.scrollTop,
+        selectedAnnotationId: id,
+      });
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [loading, pageLayouts.length, pdfDocument, revealSelectedAnnotation, updateCurrentPage, updateViewState]);
+
+  useEffect(() => {
+    rememberFileAnnotations(filePath, annotations);
+  }, [annotations, filePath]);
 
   useCanvasViewStateCapture(() => {
     const element = scrollContainerRef.current;
@@ -1287,43 +1519,24 @@ export function PdfViewer({
   /** Marks up the current text selection, split across every page it spans. */
   const markSelection = useCallback((color: string, markup: PdfMarkupStyle) => {
     const selection = window.getSelection();
-    const viewer = viewerRef.current;
+    const pages = selectionPageRects(selection, viewerRef.current);
 
-    if (!selection || selection.isCollapsed || !selection.rangeCount || !viewer) {
+    if (!selection || !pages) {
       return false;
     }
 
-    const range = selection.getRangeAt(0);
-
-    if (!viewer.contains(range.commonAncestorContainer)) {
-      return false;
-    }
-
-    const clientRects = rangeTextClientRects(range, ".pdf-text-layer");
     const timestamp = nowIso();
-    const created: PdfHighlightAnnotation[] = [];
-
-    for (const page of viewer.querySelectorAll<HTMLElement>("[data-pdf-page-content]")) {
-      const bounds = page.getBoundingClientRect();
-      const rects = clientRects
-        .map((rect) => intersectClientRect(rect, bounds))
-        .filter((rect): rect is PdfAnnotationRect => Boolean(rect));
-
-      if (rects.length) {
-        const textLayer = page.querySelector(".pdf-text-layer");
-        created.push({
-          id: createAnnotationId(),
-          type: "highlight",
-          pageNumber: Number(page.dataset.pdfPageContent),
-          color,
-          rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
-          quote: textLayer ? pdfHighlightQuote(range, textLayer) : undefined,
-          ...(markup === "highlight" ? {} : { markup }),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-      }
-    }
+    const created: PdfHighlightAnnotation[] = pages.map(({ pageNumber, rects, quote }) => ({
+      id: createAnnotationId(),
+      type: "highlight",
+      pageNumber,
+      color,
+      rects,
+      quote,
+      ...(markup === "highlight" ? {} : { markup }),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }));
 
     selection.removeAllRanges();
     setSelectionMenu(null);
@@ -1547,6 +1760,12 @@ export function PdfViewer({
         return;
       }
 
+      // Add comment on the selected text, as in the Markdown editors.
+      if (modifier && event.altKey && event.code === "KeyM") {
+        if (startCommentRef.current()) event.preventDefault();
+        return;
+      }
+
       const shortcutTool = TOOL_SHORTCUTS[key];
 
       if (shortcutTool && !modifier && !event.altKey && !event.shiftKey) {
@@ -1687,27 +1906,11 @@ export function PdfViewer({
         return;
       }
 
-      const rects = rangeTextClientRects(range, ".pdf-text-layer");
+      const position = selectionMenuPosition(range, scrollContainer);
 
-      if (!rects.length) {
-        return;
+      if (position) {
+        setSelectionMenu(position);
       }
-
-      const bounds = scrollContainer.getBoundingClientRect();
-      const first = rects.reduce((top, rect) => (rect.top < top.top ? rect : top));
-      const last = rects.reduce((bottom, rect) => (rect.bottom > bottom.bottom ? rect : bottom));
-      const menuHeight = 40;
-      const above = first.top - bounds.top - menuHeight - 6;
-      const top = above >= 0 ? above : last.bottom - bounds.top + 6;
-
-      setSelectionMenu({
-        left: clamp(
-          first.left - bounds.left + scrollContainer.scrollLeft,
-          8,
-          Math.max(8, scrollContainer.scrollWidth - 392),
-        ),
-        top: top + scrollContainer.scrollTop,
-      });
     });
   }
 
@@ -1746,6 +1949,15 @@ export function PdfViewer({
     };
   }
 
+  function readSelectionAloud() {
+    const viewer = viewerRef.current;
+    const selection = window.getSelection();
+    const inViewer = !!viewer && !!selection && !selection.isCollapsed && !!selection.rangeCount && viewer.contains(selection.getRangeAt(0).commonAncestorContainer);
+    const text = inViewer ? selectionMarkdown() || normalizePdfHighlightQuote(selection!.toString()) : "";
+    setSelectionMenu(null);
+    if (text.trim()) speakMarkdown(text, { label: "PDF selection" });
+  }
+
   function quoteSelection() {
     const source = selectionQuoteSource();
     setSelectionMenu(null);
@@ -1773,6 +1985,59 @@ export function PdfViewer({
     }
 
     setSelectionMenu(null);
+  }
+
+  /** Opens the comment box for the current text selection, whose passage stays marked while you write. */
+  function startComment() {
+    const selection = window.getSelection();
+    const pages = selectionPageRects(selection, viewerRef.current);
+    const scrollContainer = scrollContainerRef.current;
+
+    if (!selection || !pages || !scrollContainer) {
+      return false;
+    }
+
+    const position = commentBoxPosition(selection.getRangeAt(0), scrollContainer);
+    const quote = pages.map((page) => page.quote ?? "").filter(Boolean).join(" ") || normalizePdfHighlightQuote(selection.toString());
+    setCommentDraft({
+      anchor: { segments: pages.map(({ pageNumber, rects }) => ({ pageNumber, rects })), quote },
+      left: clamp(position?.left ?? 8, 8, Math.max(8, scrollContainer.scrollWidth - COMMENT_BOX_WIDTH - 16)),
+      top: position?.top ?? scrollContainer.scrollTop + 8,
+    });
+    setCommentText("");
+    selection.removeAllRanges();
+    setSelectionMenu(null);
+    return true;
+  }
+  const startCommentRef = useRef(startComment);
+  useLayoutEffect(() => {
+    startCommentRef.current = startComment;
+  });
+
+  function cancelComment() {
+    setCommentDraft(null);
+    setCommentText("");
+  }
+
+  async function submitComment() {
+    const draft = commentDraft;
+    const text = commentText.trim();
+
+    if (!draft || !text || comments.busy) {
+      return;
+    }
+
+    const before = new Set(pdfCommentsState(filePath).threads.map((thread) => thread.id));
+    const threads = await changePdfComments(filePath, { action: "comment", anchor: draft.anchor, text });
+
+    if (!threads) {
+      return;
+    }
+
+    cancelComment();
+    const created = threads.find((thread) => !before.has(thread.id));
+    if (created) selectPdfComment(filePath, created.id);
+    showCommentsRef.current?.();
   }
 
   const showMarkupStyle = tool === "highlight" || Boolean(selectedHighlight);
@@ -1810,7 +2075,7 @@ export function PdfViewer({
           event.currentTarget.focus({ preventScroll: true });
         }
       }}>
-      <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2">
+      <div className="libera-viewer-toolbar sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-input bg-card px-4 py-2" data-command-toolbar="PDF">
         {/* Contextual style controls scroll sideways instead of wrapping, so
             selecting an annotation never shifts the page under the pointer. */}
         <div className="libera-annotation-toolbar flex min-w-0 flex-1 items-center gap-1" data-pdf-annotation-ui onMouseDown={keepEditorFocus}>
@@ -1952,6 +2217,12 @@ export function PdfViewer({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          <button type="button" aria-label={openCommentCount ? `Comments, ${openCommentCount} open` : "Comments"} title="Comments: select text and choose Add comment"
+            className="relative inline-flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg border border-input px-1.5 hover:bg-muted"
+            onClick={() => review?.showComments()}>
+            <MessageSquare aria-hidden className="h-4 w-4" />
+            {openCommentCount ? <span className="text-xs tabular-nums">{openCommentCount}</span> : null}
+          </button>
           <button type="button" aria-label="Find in PDF" title="Find in PDF (Ctrl/Cmd+F)"
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input hover:bg-muted"
             onClick={pdfFind.openFind}>
@@ -2076,13 +2347,63 @@ export function PdfViewer({
               </button>
             ))}
             <span aria-hidden className="pdf-selection-menu-divider" />
+            <button type="button" className="pdf-selection-menu-action" aria-label="Add comment" title="Add comment (Ctrl/Cmd+Alt+M)" onClick={() => startComment()}>
+              <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
+            </button>
             <button type="button" className="pdf-selection-menu-action" aria-label="Copy selection" title="Copy" onClick={copySelection}>
               <Copy aria-hidden className="h-3.5 w-3.5" />
             </button>
             <button type="button" className="pdf-selection-menu-action" aria-label="Quote and cite" title="Quote and cite in the note" onClick={quoteSelection}>
               <Quote aria-hidden className="h-3.5 w-3.5" />
             </button>
+            <button type="button" className="pdf-selection-menu-action" aria-label="Read out loud" title="Read out loud" onClick={readSelectionAloud}>
+              <Volume2 aria-hidden className="h-3.5 w-3.5" />
+            </button>
           </div>
+        ) : null}
+
+        {commentDraft ? (
+          <form
+            className="pdf-comment-composer"
+            data-pdf-annotation-ui
+            role="dialog"
+            aria-label="New comment"
+            style={{ left: commentDraft.left, top: commentDraft.top, width: COMMENT_BOX_WIDTH }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitComment();
+            }}
+          >
+            {commentDraft.anchor.quote ? (
+              <blockquote className="pdf-comment-composer-quote">{commentDraft.anchor.quote}</blockquote>
+            ) : null}
+            <textarea
+              autoFocus
+              aria-label="New review comment"
+              className="review-textarea"
+              placeholder="Comment on this passage…"
+              rows={3}
+              value={commentText}
+              onChange={(event) => setCommentText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancelComment();
+                } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void submitComment();
+                }
+              }}
+            />
+            {comments.error && comments.busy === "" ? <p role="alert" className="text-xs text-destructive">{comments.error}</p> : null}
+            <div className="flex justify-end gap-1">
+              <button type="button" className="review-button" onClick={cancelComment}>Cancel</button>
+              <button type="submit" className="review-button" disabled={!commentText.trim() || Boolean(comments.busy)}>
+                <MessageSquarePlus aria-hidden size={14} /> Comment
+              </button>
+            </div>
+          </form>
         ) : null}
 
         {loading ? (
@@ -2098,6 +2419,7 @@ export function PdfViewer({
               <PdfPageView
                 key={`${filePath}-${layout.pageNumber}`}
                 annotations={annotationsByPage.get(layout.pageNumber) ?? EMPTY_ANNOTATIONS}
+                commentMarks={commentMarksByPage.get(layout.pageNumber) ?? EMPTY_COMMENT_MARKS}
                 documentPath={filePath}
                 drawingMode={drawingMode}
                 drawingStyle={drawingStyle}
@@ -2132,6 +2454,7 @@ export function PdfViewer({
                 onPageElement={setPageElement}
                 onScreenshotSnip={captureScreenshotSnip}
                 onSelectAnnotation={selectAnnotation}
+                onSelectComment={selectComment}
                 onUpdateAnnotation={updateAnnotation}
               />
             ))}
@@ -2144,6 +2467,7 @@ export function PdfViewer({
 
 type PdfPageContentProps = {
   annotations: PdfAnnotation[];
+  commentMarks: PdfCommentMark[];
   documentPath: string;
   drawingMode: PdfDrawingMode;
   drawingStyle: NewDrawingStyle;
@@ -2167,6 +2491,7 @@ type PdfPageContentProps = {
   onExitTextEditing: () => void;
   onScreenshotSnip: (pageNumber: number, rect: PdfAnnotationRect) => Promise<void>;
   onSelectAnnotation: (annotation: PdfAnnotation) => void;
+  onSelectComment: (id: string) => void;
   onUpdateAnnotation: (id: string, patch: Partial<PdfAnnotation>) => void;
 };
 
@@ -2210,6 +2535,7 @@ const PdfPageView = memo(function PdfPageView({
 
 function PdfPageContent({
   annotations,
+  commentMarks,
   documentPath,
   drawingMode,
   drawingStyle,
@@ -2233,6 +2559,7 @@ function PdfPageContent({
   onExitTextEditing,
   onScreenshotSnip,
   onSelectAnnotation,
+  onSelectComment,
   onUpdateAnnotation,
 }: PdfPageContentProps) {
   const pageNumber = pageLayout.pageNumber;
@@ -2402,7 +2729,7 @@ function PdfPageContent({
   // Highlights sit under the transparent text layer so text stays selectable
   // through them; clicks are hit-tested here instead.
   function selectHighlightAtPoint(event: React.MouseEvent<HTMLDivElement>) {
-    if (tool !== "select" || !pageRef.current || !highlights.length) {
+    if (tool !== "select" || !pageRef.current || (!highlights.length && !commentMarks.length)) {
       return;
     }
 
@@ -2434,6 +2761,22 @@ function PdfPageContent({
 
     if (hit) {
       onSelectAnnotation(hit);
+      return;
+    }
+
+    // A commented passage opens its card in the Comments panel.
+    const comment = [...commentMarks].reverse().find((mark) =>
+      mark.rects.some(
+        (rect) =>
+          x >= rect.x - slackX &&
+          x <= rect.x + rect.width + slackX &&
+          y >= rect.y - slackY &&
+          y <= rect.y + rect.height + slackY,
+      ),
+    );
+
+    if (comment) {
+      onSelectComment(comment.id);
     }
   }
 
@@ -2453,6 +2796,20 @@ function PdfPageContent({
         ))}
       </div>
 
+      {commentMarks.length ? (
+        <div className="pdf-comment-layer" aria-hidden>
+          {commentMarks.flatMap((mark) => mark.rects.map((rect, index) => (
+            <span
+              key={`${mark.id}:${index}`}
+              className="pdf-comment-mark"
+              data-selected={mark.selected || undefined}
+              data-pdf-comment-id={mark.id}
+              style={rectStyle(rect, pageLayout)}
+            />
+          )))}
+        </div>
+      ) : null}
+
       <div
         ref={textLayerRef}
         className="pdf-text-layer"
@@ -2460,6 +2817,28 @@ function PdfPageContent({
       />
 
       <div className="pdf-highlight-ui-layer">
+        {commentMarks.filter((mark) => mark.badge && mark.id !== DRAFT_COMMENT_ID).map((mark) => {
+          const first = mark.rects[0];
+          return (
+            <button
+              key={mark.id}
+              type="button"
+              className="pdf-comment-badge"
+              data-pdf-annotation-ui
+              data-selected={mark.selected || undefined}
+              aria-label={`Comment ${mark.number}`}
+              title={`Comment ${mark.number}`}
+              style={{ left: Math.min(pageLayout.width - 22, (first.x + first.width) * pageLayout.width + 2), top: Math.max(0, first.y * pageLayout.height - 14) }}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectComment(mark.id);
+              }}
+            >
+              <MessageSquare aria-hidden className="h-3 w-3" />
+              <span>{mark.number}</span>
+            </button>
+          );
+        })}
         {highlights.map((annotation) => (
           <PdfHighlightControl
             key={annotation.id}

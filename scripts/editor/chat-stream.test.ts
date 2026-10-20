@@ -39,11 +39,14 @@ test("chat route streams only answer text and carries model settings to OpenRout
     const events = [
       ': OPENROUTER PROCESSING\n\n',
       'data: {"choices":[{"delta":{"reasoning":"Private reasoning"}}]}\n\n',
-      'data: {"choices":[{"delta":{"content":"Hello 👋"}}]}\n\n',
+      'data: {"id":"gen-1","provider":"DeepInfra","choices":[{"delta":{"content":"Hello 👋"}}]}\n\n',
       fail ? 'data: {"error":{"message":"Provider failed"}}\n\n' : 'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":42,"prompt_tokens_details":{"cached_tokens":1000}}}\n\ndata: [DONE]\n\n',
     ];
     return new Response(byteStream(events.join('')), { headers: { "Content-Type": "text/event-stream" } });
   };
+  const oldInfo = console.info;
+  const logs: string[] = [];
+  console.info = (line: string) => { logs.push(line); };
   const request = () => new NextRequest("http://localhost/api/document-chat", { method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` }, body: JSON.stringify({ stream: true, sessionId: "chat-123", reasoningEffort: "max", messages: [{ id: "1", role: "user", text: "Hello" }] }) });
   try {
     const response = await POST(request());
@@ -57,11 +60,14 @@ test("chat route streams only answer text and carries model settings to OpenRout
     assert.equal(requests[0].session_id, "chat-123");
     assert.deepEqual(requests[0].stream_options, { include_usage: true });
     assert.deepEqual(requests[0].reasoning, { effort: "max" });
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /^\[document-chat\] model=\S+ session=chat-123 provider=DeepInfra generation=gen-1 input=1200 cached=1000 \(83%\)$/);
     fail = true;
     let partial = "";
     await assert.rejects(readChatResponse(await POST(request()), new AbortController().signal, (delta) => { partial += delta; }), /Provider failed/);
     assert.equal(partial, "Hello 👋");
   } finally {
+    console.info = oldInfo;
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = oldKey;
   }

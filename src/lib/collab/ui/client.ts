@@ -30,6 +30,8 @@ import {
   type ResolveReconciliationRequest,
   type ResolvedDoc,
   type ShareNotebookRequest,
+  type SharedSignInOffer,
+  type ContinueSharedSignInRequest,
   type SignInRequest,
   type UpdateAccountRequest,
 } from "@/lib/collab/local-api";
@@ -126,11 +128,15 @@ function queryString(query: Record<string, string | number | boolean | undefined
 export function createCollabClient(options: CollabClientOptions = {}) {
   const prefix = options.prefix ?? LOCAL_API_PREFIX;
 
-  async function request<T>(method: Method, route: string, body?: unknown): Promise<T> {
+  function request<T>(method: Method, route: string, body?: unknown): Promise<T> {
+    return requestUrl<T>(method, `${prefix}${route}`, body);
+  }
+
+  async function requestUrl<T>(method: Method, url: string, body?: unknown): Promise<T> {
     const fetchImpl = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init));
     let response: Response;
     try {
-      response = await fetchImpl(`${prefix}${route}`, {
+      response = await fetchImpl(url, {
         method,
         headers: body === undefined ? undefined : { "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -184,8 +190,14 @@ export function createCollabClient(options: CollabClientOptions = {}) {
     status: () => request<HostStatus>("GET", ControlRoutes.status),
     signIn: (body: SignInRequest) => request<HostStatus | undefined>("POST", ControlRoutes.signIn, body),
     register: (body: RegisterLocalRequest) => request<HostStatus | undefined>("POST", ControlRoutes.register, body),
-    signOut: () => request<void>("POST", ControlRoutes.signOut),
+    /** `everywhere` also stops automatic sign-in on the person's other computers. */
+    signOut: (options: { everywhere?: boolean } = {}) => request<void>("POST", ControlRoutes.signOut, { everywhere: options.everywhere === true }),
     account: () => request<LocalAccount | null>("GET", ControlRoutes.account),
+    /** What the synced data folder offers ("Continue as ..."); never the grant itself. */
+    sharedSignIn: () => request<SharedSignInOffer>("GET", ControlRoutes.sharedSignIn),
+    continueSharedSignIn: (body: ContinueSharedSignInRequest) => request<HostStatus | undefined>("POST", ControlRoutes.sharedSignIn, body),
+    /** Re-enters the master password (checked by Next) so the host can read the shared sign-in. */
+    unlockSharedSignIn: (password: string) => requestUrl<{ ok: true }>("POST", "/api/auth/collab-unlock", { password }),
     updateAccount: (body: UpdateAccountRequest) => request<LocalAccount | undefined>("PATCH", ControlRoutes.account, body),
 
     // ---------------------------------------------------------------- projects

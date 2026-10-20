@@ -1,12 +1,13 @@
 "use client";
 
-import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sparkles } from "lucide-react";
+import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sparkles, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
 import { IncludeDocumentContextCheckbox } from "../ai-document-context-preference";
 import { QuickPromptInput } from "../quick-prompt-input";
+import { PasteMenuItems, type MenuPasteMode } from "../paste-menu-items";
 
-/* The Source editor's right-click menu: AI Format, Indent/Unindent Headings,
+/* The Source editor's right-click menu: Paste, Paste with Peer Heading Level, Read Out Loud, AI Format, Indent/Unindent Headings,
  * AI Rewrite, Write with AI and AI Image to Markdown. Same items, labels and
  * keyboard behaviour as the textarea editor's menu, so either editor feels the
  * same and the same tests find the same controls. */
@@ -26,7 +27,7 @@ const MENU_WIDTH = 288;
 
 /** Where the menu opens: at the pointer, kept inside the window. */
 export function sourceContextMenuPosition(clientX: number, clientY: number, hasText: boolean, hasImage: boolean) {
-  const height = (hasText ? 340 : 114) + (hasImage ? 44 : 0);
+  const height = (hasText ? 384 : 114) + 90 + (hasImage ? 44 : 0);
   return {
     x: Math.max(8, Math.min(clientX, window.innerWidth - MENU_WIDTH - 8)),
     y: Math.max(8, Math.min(clientY, window.innerHeight - height - 8)),
@@ -45,6 +46,8 @@ export function MarkdownSourceContextMenu({
   onFormat,
   onHeadingLevels,
   onImageToMarkdown,
+  onPaste,
+  onReadAloud,
   onRewrite,
   onWrite,
 }: {
@@ -56,6 +59,8 @@ export function MarkdownSourceContextMenu({
   onFormat: () => void;
   onHeadingLevels: (direction: "indent" | "unindent") => void;
   onImageToMarkdown: () => void;
+  onPaste: (mode: MenuPasteMode) => void;
+  onReadAloud: () => void;
   onRewrite: (prompt: string) => void;
   onWrite: (prompt: string) => void;
 }) {
@@ -123,8 +128,13 @@ export function MarkdownSourceContextMenu({
       style={{ left: menu.x, top: menu.y }}
       onPointerDown={(event) => event.stopPropagation()}
     >
+      <PasteMenuItems className={ITEM_CLASS} onPaste={onPaste} />
       {menu.hasText ? (
         <>
+          <button className={ITEM_CLASS} type="button" role="menuitem" onClick={onReadAloud}>
+            <Volume2 aria-hidden className="h-4 w-4" />
+            Read Out Loud
+          </button>
           <button className={ITEM_CLASS} type="button" role="menuitem" disabled={aiWorking} onClick={onFormat}>
             {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
             {formatting ? "Formatting..." : "AI Format"}

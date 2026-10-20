@@ -149,6 +149,13 @@ export class CollabReplica {
 
   getSnapshot = (): ReplicaSnapshot => this.snapshot;
 
+  /** Preserve the last frame batch locally before making a deleted document read-only. */
+  markDeleted(): void {
+    if (this.snapshot.closed === "document-deleted") return;
+    this.flush();
+    this.publish({ closed: "document-deleted" });
+  }
+
   /** Whether local content edits are allowed (role, schema and access permitting). */
   canEditContent(): boolean {
     const { meta, status, closed } = this.snapshot;
@@ -291,6 +298,10 @@ export class CollabReplica {
         this.handleRejected(message.subdoc, message.reason, message.rejectedText ?? "");
         return;
       case "closed":
+        if (message.reason === "document-deleted") {
+          this.markDeleted();
+          return;
+        }
         this.queue = [];
         this.publish({ closed: message.reason });
         return;

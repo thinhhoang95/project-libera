@@ -10,6 +10,9 @@ import {
   highlightSpecialChars, keymap, lineNumbers, rectangularSelection,
 } from "@codemirror/view";
 import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { ClipboardPaste, Copy, Scissors, Volume2 } from "lucide-react";
+import { speakMarkdown } from "@/lib/tts/player";
 import { codeHighlightStyle, codeLanguageName, findCodeLanguage, loadCodeLanguage } from "@/lib/code-languages";
 import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { TextTabViewState } from "@/components/libera/types";
@@ -56,6 +59,7 @@ export function CodeEditor({
   const initialRef = useRef({ value, initialViewState, fileName, collab });
   const shared = !!collab;
   const [cursor, setCursor] = useState({ line: 1, column: 1, selected: 0 });
+  const [menu, setMenu] = useState<CodeEditorMenuState | null>(null);
 
   const publishDraft = useCallback(() => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
@@ -149,6 +153,17 @@ export function CodeEditor({
           }
         }),
         EditorView.domEventHandlers({
+          contextmenu: (event, target) => {
+            event.preventDefault();
+            const pos = target.posAtCoords({ x: event.clientX, y: event.clientY });
+            let { from, to } = target.state.selection.main;
+            if (pos !== null && (pos < from || pos > to)) {
+              from = to = pos;
+              target.dispatch({ selection: { anchor: pos } });
+            }
+            setMenu({ view: target, from, to, x: event.clientX, y: event.clientY });
+            return true;
+          },
           scroll: (_event, target) => {
             if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
             viewStateTimerRef.current = setTimeout(() => reportViewState(target), VIEW_STATE_DELAY_MS);
@@ -259,6 +274,7 @@ export function CodeEditor({
       >
         <div ref={hostRef} className="absolute inset-0" />
       </div>
+      {menu ? <CodeEditorMenu view={menu.view} menu={menu} onClose={() => setMenu(null)} /> : null}
       <div className="libera-code-editor-status flex shrink-0 items-center gap-4 border-t border-border bg-card px-3 py-1 text-xs text-muted-foreground">
         <span>{codeLanguageName(fileName)}</span>
         <span className="ml-auto tabular-nums">
@@ -266,5 +282,79 @@ export function CodeEditor({
         </span>
       </div>
     </div>
+  );
+}
+
+type CodeEditorMenuState = { view: EditorView; from: number; to: number; x: number; y: number };
+const MENU_WIDTH = 224;
+const menuItemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm font-medium text-foreground hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
+
+/** The code editor's right-click menu: Read Out Loud and the clipboard, as the LaTeX editor's menu has them. */
+function CodeEditorMenu({ view, menu, onClose }: { view: EditorView; menu: CodeEditorMenuState; onClose: () => void }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: menu.x, top: menu.y });
+  const hasText = !!view.state.sliceDoc(menu.from, menu.to).trim();
+
+  useLayoutEffect(() => {
+    const height = menuRef.current?.offsetHeight ?? 0;
+    setPosition({
+      left: Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8)),
+      top: Math.max(8, Math.min(menu.y, window.innerHeight - height - 8)),
+    });
+    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [menu.x, menu.y]);
+
+  useEffect(() => {
+    const close = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { onClose(); view.focus(); }
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", onClose);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose, view]);
+
+  async function clipboard(action: "cut" | "copy" | "paste") {
+    onClose();
+    view.focus();
+    const { from, to } = view.state.selection.main;
+    try {
+      if (action === "paste") {
+        const text = await navigator.clipboard.readText();
+        view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+        return;
+      }
+      await navigator.clipboard.writeText(view.state.sliceDoc(from, to));
+      if (action === "cut") view.dispatch({ changes: { from, to }, userEvent: "delete.cut" });
+    } catch {
+      // The clipboard can be unavailable here; the keyboard shortcuts still work.
+    }
+  }
+
+  return createPortal(
+    <div ref={menuRef} role="menu" aria-label="Editor actions"
+      className="fixed z-50 rounded-lg border border-border bg-card p-1 shadow-lg"
+      style={{ left: position.left, top: position.top, width: MENU_WIDTH }}
+      onContextMenu={(event) => event.preventDefault()}>
+      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText}
+        onClick={() => { onClose(); speakMarkdown(view.state.sliceDoc(menu.from, menu.to), { label: "Selection", format: "plain" }); }}>
+        <Volume2 aria-hidden className="h-4 w-4" />Read Out Loud
+      </button>
+      <div className="my-1 border-t border-border" />
+      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("cut")}><Scissors aria-hidden className="h-4 w-4" />Cut</button>
+      <button type="button" role="menuitem" className={menuItemClass} disabled={!hasText} onClick={() => void clipboard("copy")}><Copy aria-hidden className="h-4 w-4" />Copy</button>
+      <button type="button" role="menuitem" className={menuItemClass} onClick={() => void clipboard("paste")}><ClipboardPaste aria-hidden className="h-4 w-4" />Paste</button>
+    </div>,
+    document.body,
   );
 }

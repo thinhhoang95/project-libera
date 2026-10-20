@@ -297,3 +297,36 @@ test("tasks are tracked and reported", async () => {
     assert.match((await call(context, "TaskUpdate", { taskId: "9", status: "completed" })).text, /no task #9/);
   });
 });
+
+test("the agent finds and reads voice memos through their transcripts, never their audio", async () => {
+  await withLibrary(async (root) => {
+    const { writeTranscript } = await import("../../src/lib/storage/transcripts");
+    await writeFile(path.join(root, "Research/standup.m4a"), "ftyp audio bytes mention budget");
+    await writeFile(path.join(root, "Research/untranscribed.m4a"), "ftyp more audio budget");
+    await writeTranscript("Research/standup.m4a", {
+      version: 1,
+      createdAt: "2026-10-19T10:00:00.000Z",
+      audio: { size: 31, modifiedAt: "", duration: 200 },
+      engine: { kind: "local", model: "Parakeet TDT 0.6B v3" },
+      language: "en",
+      diarization: null,
+      speakers: [{ name: "Vy", talkSeconds: 100, share: 0.5, segments: 1 }, { name: "Speaker 2", talkSeconds: 100, share: 0.5, segments: 1 }],
+      segments: [
+        { start: 5, end: 9, speaker: 1, text: "Shall we start?" },
+        { start: 185, end: 190, speaker: 0, text: "The marketing budget doubles next quarter." },
+      ],
+      stats: { words: 9, chunks: 1, elapsedMs: 1 },
+    });
+    const { context } = makeContext("read-only");
+    const found = await call(context, "Grep", { pattern: "Vy:.*budget", output_mode: "content" });
+    assert.equal(found.isError, false);
+    assert.match(found.text, /Research\/standup\.m4a:\[3:05\] Vy: The marketing budget doubles next quarter\./);
+    assert.doesNotMatch(found.text, /audio bytes/);
+    assert.match(found.text, /1 recording had no transcript to search/);
+    assert.ok((await call(context, "Glob", { pattern: "*.m4a" })).text.includes("Research/standup.m4a"));
+    const read = await call(context, "Read", { file_path: "Research/standup.m4a" });
+    assert.match(read.text, /^Transcript of Research\/standup\.m4a \(3:20; Vy, Speaker 2\)\. Link to a moment as/);
+    assert.match(read.text, /\[0:05\] Speaker 2: Shall we start\?/);
+    assert.equal((await call(context, "Read", { file_path: "Research/untranscribed.m4a" })).isError, true);
+  });
+});

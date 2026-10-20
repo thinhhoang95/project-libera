@@ -9,7 +9,7 @@ import {
 } from "@/components/libera/markdown-editor";
 import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdown-boxes";
 import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
-import { smartPasteMarkdown } from "@/lib/markdown-smart-paste";
+import { smartPasteMarkdown, type SmartPasteMode } from "@/lib/markdown-smart-paste";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { TextareaLikeEdit } from "./textarea-adapter";
 
@@ -119,14 +119,17 @@ export function changeHeadingLevels(
 export type SourceClipboard = { html: string; markdown: string; plain: string };
 
 /** What a text paste does in the Source editor: rich HTML becomes Libera
- * Markdown, `text/markdown` is used as is, and Smart Paste aligns pasted
- * headings. Null means "let the editor paste the plain text itself", the same
- * cases in which the textarea leaves the paste to the browser. */
+ * Markdown, `text/markdown` is used as is, and Smart Paste places pasted
+ * headings under ("child", Ctrl+V) or beside ("peer") the heading before them.
+ * Null means "let the editor paste the plain text itself", the same cases in
+ * which the textarea leaves the paste to the browser; `insertPlain` (a paste
+ * from the right-click menu, with no browser paste behind it) inserts the
+ * plain text instead. */
 export function sourcePasteEdit(
   current: string,
   selection: { start: number; end: number },
   clipboard: SourceClipboard,
-  options: { mathMarkers?: MathMarkerSettings; smartPaste?: boolean } = {},
+  options: { insertPlain?: boolean; mathMarkers?: MathMarkerSettings; smartPaste?: SmartPasteMode | false } = {},
 ): TextareaLikeEdit | null {
   let replacement = clipboard.markdown;
   if (!replacement && clipboard.html) {
@@ -134,14 +137,17 @@ export function sourcePasteEdit(
       replacement = convertClipboardHtmlToMarkdown(clipboard.html, options.mathMarkers);
     } catch {
       // Preserve the plain-text fallback for malformed clipboard HTML.
-      if (!options.smartPaste) return null;
+      if (!options.smartPaste && !options.insertPlain) return null;
     }
   }
   const { start, end } = selection;
   const smartPasted = options.smartPaste
-    ? smartPasteMarkdown(current, { end, start }, replacement || clipboard.plain)
+    ? smartPasteMarkdown(current, { end, start }, replacement || clipboard.plain, options.smartPaste)
     : null;
-  if (!replacement && !smartPasted) return null;
+  if (!replacement && !smartPasted) {
+    if (!options.insertPlain || !clipboard.plain) return null;
+    replacement = clipboard.plain;
+  }
   const nextSelection = smartPasted?.selection.start ?? start + replacement.length;
   const edit = smartPasted
     ? getChangedTextRange(current, smartPasted.value)

@@ -367,6 +367,9 @@
             </button>
             <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
             <button class="nav-item" data-section-button="search" type="button" aria-selected="false">Search</button>
+            <button class="nav-item" data-section-button="speech" type="button" aria-selected="false">Speech</button>
+            <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false">Read Aloud</button>
+            <button class="nav-item" data-section-button="detection" type="button" aria-selected="false">Detection and Segmentation</button>
             <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
@@ -688,6 +691,30 @@
                 <input id="references-contact-email" type="email" autocomplete="off" spellcheck="false" placeholder="Optional" />
                 <p class="field-help">Sent with Crossref and OpenAlex lookups so they can contact you about heavy use, which gives faster service. Leave empty to send none.</p>
               </fieldset>
+              <fieldset class="ai-function-settings" id="where-was-i-settings">
+                <legend>Where Was I</legend>
+                <div class="switch-row">
+                  <label for="where-was-i-enabled">Show where you left off on notebook homes</label>
+                  <input id="where-was-i-enabled" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Remembers the files you opened and edited in each notebook, with short excerpts of your edits, and shows them on the notebook’s home the next time. Turn off to stop recording sessions and hide the card.</p>
+                <div class="switch-row">
+                  <label for="where-was-i-summarize">Summarize the last session with AI</label>
+                  <input id="where-was-i-summarize" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Adds a few bullet points about what you were doing. Sends the names of those files and the short excerpts to the model below, once per session.</p>
+                <label for="ai-whereWasI-model">Model</label>
+                <input id="ai-whereWasI-model" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek/deepseek-v4.1-flash" />
+                <label for="ai-whereWasI-effort">Reasoning effort</label>
+                <select id="ai-whereWasI-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <p class="field-help">A small, inexpensive model is enough. Changes apply without restarting.</p>
+              </fieldset>
               <p class="field-help">Enter or search OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
 
             </section>
@@ -701,36 +728,37 @@
 
               <h3>EmbeddingGemma 2 weights</h3>
               <p class="field-help">
-                Download the ONNX model from Hugging Face (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json,
-                tokenizer_config.json, processor_config.json and preprocessor_config.json, plus the weight files below, each with
-                its .onnx_data file. Keep the weights outside Libera; choose them here. On a CPU, the 8-bit files
-                (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
+                Leave both empty and Libera offers to download the 8-bit text model and vision encoder (about 540 MB) from the
+                Search panel, into its application data. To use other weights, download the ONNX model from Hugging Face
+                (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json, tokenizer_config.json, processor_config.json
+                and preprocessor_config.json, plus the weight files below, each with its .onnx_data file, and choose them here.
+                On a CPU, the 8-bit files (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
               </p>
               <label for="search-text-weights">Text model weights</label>
               <div class="directory-row">
-                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="…/embeddinggemma-2-ONNX/onnx/model_quantized.onnx" />
+                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
                 <button id="search-text-weights-button" class="secondary" type="button">Choose</button>
               </div>
               <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p>
 
               <label for="search-vision-weights">Vision encoder weights</label>
               <div class="directory-row">
-                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Optional: …/onnx/vision_encoder_quantized.onnx" />
+                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download, with the text model" />
                 <button id="search-vision-weights-button" class="secondary" type="button">Choose</button>
               </div>
-              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; leave empty for text only.</p>
+              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; with your own text model, leave empty for text only.</p>
 
               <h3>PDF reading model</h3>
               <p class="field-help">
                 Snip as Markdown and Convert PDF to Markdown read pages with IBM’s granite-docling-258M (Apache-2.0), running
-                on this computer. Choose a folder for it outside Libera. The first time you use either feature, Libera can
-                download it there (about 600 MB). Or put the files from Hugging Face
-                (onnx-community/granite-docling-258M-ONNX) there yourself, laid out like the repository: the configs and
+                on this computer. The first time you use either feature, Libera offers to download it (about 600 MB) into the
+                folder below, or into its application data when the field is empty. Or put the files from Hugging Face
+                (onnx-community/granite-docling-258M-ONNX) in a folder yourself, laid out like the repository: the configs and
                 tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.
               </p>
               <label for="reading-model-directory">Model folder</label>
               <div class="directory-row">
-                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="…/granite-docling-258M-ONNX" />
+                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
                 <button id="reading-model-directory-button" class="secondary" type="button">Choose</button>
               </div>
 
@@ -778,6 +806,185 @@
                 By default the index stays on this computer, outside the Master directory, so a notes folder synced to the cloud
                 never uploads it. To skip building it again, use an index Libera built before, for example copied from another
                 computer with the same notes. Keep the index on a local disk.
+              </p>
+            </section>
+
+            <section class="settings-section hidden" data-section="speech">
+              <h2>Speech</h2>
+              <p class="settings-section-description">
+                Turns speech into text: voice memos get timestamped transcripts that tell speakers apart, and the microphone in
+                AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite types what you say. Changes apply without restarting.
+              </p>
+
+              <h3>Models</h3>
+              <label for="transcription-model-directory">Speech models folder</label>
+              <div class="directory-row">
+                <input id="transcription-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
+                <button id="transcription-model-directory-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">
+                The first time you transcribe, Libera offers to download them here, or into its application data when the field
+                is empty: NVIDIA Parakeet TDT
+                0.6B v3 (sherpa-onnx 8-bit export, about 670 MB), and pyannote segmentation-3.0 with 3D-Speaker CAM++ to tell
+                speakers apart (34 MB together). Or put the files there yourself, in parakeet-tdt-0.6b-v3/ (encoder, decoder and
+                joiner .onnx files and tokens.txt), pyannote-segmentation-3.0/model.onnx and speaker-embedding/*.onnx.
+                Voice memos and dictation share them.
+              </p>
+              <label for="transcription-ffmpeg">ffmpeg</label>
+              <div class="directory-row">
+                <input id="transcription-ffmpeg" autocomplete="off" spellcheck="false" placeholder="Found automatically when installed" />
+                <button id="transcription-ffmpeg-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p class="field-help">Reads M4A, MP3, OGG, FLAC and other recording formats. Without it, macOS reads them with its own converter and other systems read WAV only. Dictation does not need it.</p>
+
+              <h3>Voice memos</h3>
+              <label for="transcription-engine">Transcribe with</label>
+              <select id="transcription-engine">
+                <option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+              <p class="field-help">Parakeet runs on the CPU and covers 25 European languages. OpenRouter receives the audio in pieces of a few minutes and bills per second.</p>
+              <label for="transcription-openrouter-model">OpenRouter speech-to-text model</label>
+              <input id="transcription-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/whisper-large-v3" />
+              <label for="transcription-language">Language</label>
+              <input id="transcription-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Detect automatically, or a code such as en, vi, fr" />
+              <div class="switch-row">
+                <label for="transcription-diarization">Tell speakers apart (pyannote)</label>
+                <input id="transcription-diarization" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="field-help">Runs on this computer with either engine: pyannote segmentation-3.0 finds who speaks when, and a speaker embedding groups the voices.</p>
+              <label for="transcription-speakers">Number of speakers</label>
+              <select id="transcription-speakers">
+                <option value="0">Detect automatically</option>
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+                <option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              </select>
+              <p class="field-help">A known count separates voices more reliably. Each recording can also be given its own when you transcribe it.</p>
+
+              <h3>Dictation</h3>
+              <label for="dictation-engine">Dictate with</label>
+              <select id="dictation-engine">
+                <option value="same">Same as voice memos</option>
+                <option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+              <p class="field-help">Spoken prompts are short, so a fast engine suits them even when voice memos use a more accurate one. Nothing is kept after a prompt is typed.</p>
+              <div id="dictation-openrouter-fields">
+                <label for="dictation-openrouter-model">OpenRouter speech-to-text model</label>
+                <input id="dictation-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as voice memos" />
+              </div>
+              <label for="dictation-language">Language</label>
+              <input id="dictation-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Same as voice memos" />
+              <p class="field-help">A code such as en or vi; empty uses the voice memo language (or detects it).</p>
+            </section>
+
+            <section class="settings-section hidden" data-section="read-aloud">
+              <h2>Read Aloud</h2>
+              <p class="settings-section-description">
+                Reads selected text in the editors and PDFs, and AI Chat replies, out loud: choose <strong>Read Out Loud</strong>
+                in an editor’s right-click menu, the speaker button in a PDF’s selection toolbar or under a reply, or turn on
+                <strong>Auto Read</strong> in the chat’s ⋯ menu. Changes apply without restarting.
+              </p>
+
+              <label for="tts-engine">Read with</label>
+              <select id="tts-engine">
+                <option value="openrouter">OpenRouter</option>
+                <option value="local">This computer: Kokoro 82M</option>
+              </select>
+              <p class="field-help">Kokoro runs on the CPU and nothing leaves the computer. OpenRouter receives the text a few sentences at a time and bills per character.</p>
+              <label for="tts-speed">Speed</label>
+              <select id="tts-speed">
+                <option value="0.75">0.75×</option><option value="0.9">0.9×</option><option value="1">1×</option>
+                <option value="1.1">1.1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option>
+              </select>
+              <p class="field-help">Kokoro on this computer always follows it; on OpenRouter only some providers do.</p>
+
+              <div id="tts-local-fields">
+                <h3>Kokoro 82M on this computer</h3>
+                <label for="tts-model-directory">Kokoro model folder</label>
+                <div class="directory-row">
+                  <input id="tts-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
+                  <button id="tts-model-directory-button" class="secondary" type="button">Choose</button>
+                </div>
+                <p id="tts-model-status" class="field-help" role="status"></p>
+                <p class="field-help">
+                  Leave it empty and the first time you read aloud, Libera offers to download kokoro-int8-multi-lang-v1_0 (about
+                  190 MB) into its application data. To use another release, such as the full-precision kokoro-multi-lang-v1_0
+                  or the English-only kokoro-en-v0_19, download it from sherpa-onnx’s tts-models release on GitHub, extract it,
+                  and choose the folder holding model.onnx, voices.bin, tokens.txt and espeak-ng-data/.
+                </p>
+                <label for="tts-local-voice">Voice</label>
+                <select id="tts-local-voice"></select>
+                <p class="field-help">Voices for kokoro-multi-lang-v1_0, grouped by accent. Other releases fall back to their first voice for names they do not have.</p>
+              </div>
+
+              <div id="tts-openrouter-fields">
+                <h3>OpenRouter</h3>
+                <label for="tts-openrouter-model">Text-to-speech model</label>
+                <input id="tts-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="hexgrad/kokoro-82m" />
+                <p class="field-help">hexgrad/kokoro-82m (the default) costs well under a dollar per million characters and has the same voices as Kokoro on this computer. Others, such as openai/gpt-4o-mini-tts or google/gemini-3.8-flash-lite-tts, sound more expressive for more.</p>
+                <label for="tts-openrouter-voice">Voice</label>
+                <input id="tts-openrouter-voice" type="text" autocomplete="off" spellcheck="false" placeholder="af_heart" list="tts-openrouter-voices" />
+                <datalist id="tts-openrouter-voices"></datalist>
+                <p id="tts-openrouter-voice-help" class="field-help">Each model has its own voices; the list suggests the chosen model’s. Empty uses the provider’s default, where it has one.</p>
+              </div>
+            </section>
+
+            <section class="settings-section hidden" data-section="detection">
+              <h2>Detection and Segmentation</h2>
+              <p class="settings-section-description">
+                Finds, outlines and counts objects in photos with Ultralytics’ YOLOE-26, on this computer. Describe what to find in
+                words, or draw examples on the photo or on a reference image. Open it with the scan button in the photo viewer and
+                the Image Gallery. Changes apply to the next run, without restarting.
+              </p>
+
+              <h3>Model</h3>
+              <label for="detection-variant">Default variant</label>
+              <select id="detection-variant">
+                <option value="n">YOLOE-26n: fastest (12 MB, text/visual mAP 24.7/21.9)</option>
+                <option value="s">YOLOE-26s: balanced (31 MB, 30.8/28.6)</option>
+                <option value="m">YOLOE-26m (70 MB, 35.4/33.9)</option>
+                <option value="l">YOLOE-26l (79 MB, 37.8/36.3)</option>
+                <option value="x">YOLOE-26x: most accurate (172 MB, 40.6/38.5)</option>
+              </select>
+              <p class="field-help">The prompt models (text and visual prompts). mAP50-95 on LVIS minival, from Ultralytics. The tool can switch variants for a run; each downloads the first time it is used.</p>
+
+              <label for="detection-device">Run on</label>
+              <select id="detection-device">
+                <option value="cpu">CPU</option>
+                <option value="mps">Apple GPU (Metal)</option>
+                <option value="cuda">NVIDIA GPU (CUDA)</option>
+              </select>
+              <p class="field-help">The CPU works everywhere and takes well under a second per photo for the smaller variants. The GPUs are faster for the larger variants, where PyTorch supports them.</p>
+
+              <h3>Inference</h3>
+              <label for="detection-confidence">Confidence threshold</label>
+              <input id="detection-confidence" type="number" min="0.01" max="0.99" step="0.01" />
+              <p class="field-help">Detections scoring below it are dropped (default 0.25). The tool can raise the threshold afterwards without running again.</p>
+              <label for="detection-iou">IoU threshold</label>
+              <input id="detection-iou" type="number" min="0.05" max="0.95" step="0.05" />
+              <p class="field-help">How much two boxes may overlap before the weaker is suppressed (default 0.7).</p>
+              <label for="detection-max-detections">Maximum detections per photo</label>
+              <input id="detection-max-detections" type="number" min="1" max="3000" step="1" />
+              <label for="detection-image-size">Inference size</label>
+              <select id="detection-image-size">
+                <option value="640">640 px (the model’s training size)</option>
+                <option value="960">960 px (small objects)</option>
+                <option value="1280">1280 px (very small objects; slower)</option>
+              </select>
+              <p class="field-help">The photo’s longer side is resized to this before detection; larger sizes find smaller objects such as cells or seeds.</p>
+
+              <h3>Downloads</h3>
+              <label for="detection-model-directory">Model folder</label>
+              <div class="directory-row">
+                <input id="detection-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
+                <button id="detection-model-directory-button" class="secondary" type="button">Choose</button>
+              </div>
+              <p id="detection-model-status" class="field-help" role="status"></p>
+              <p class="field-help">
+                The first time you detect, Libera offers to download a private Python runtime with PyTorch and Ultralytics (about
+                1 GB, installed by uv into this folder, nothing system-wide), MobileCLIP2-B for text prompts (254 MB) and the chosen
+                variant’s weights from Ultralytics’ GitHub releases. Ultralytics and the YOLOE-26 weights are licensed AGPL-3.0.
               </p>
             </section>
 
@@ -984,6 +1191,12 @@
         autoCreateForPdfs: document.querySelector("#references-auto-create-pdfs"),
         contactEmail: document.querySelector("#references-contact-email"),
       };
+      const whereWasIInputs = {
+        enabled: document.querySelector("#where-was-i-enabled"),
+        summarize: document.querySelector("#where-was-i-summarize"),
+        model: document.querySelector("#ai-whereWasI-model"),
+        effort: document.querySelector("#ai-whereWasI-effort"),
+      };
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
       const loadAiChatInstructionButton = document.querySelector("#load-ai-chat-instruction-button");
@@ -1027,6 +1240,37 @@
         "#markdown-pdf-base-line-height",
       );
       const searchTextWeightsInput = document.querySelector("#search-text-weights");
+      const transcriptionInputs = {
+        engine: document.querySelector("#transcription-engine"),
+        openRouterModel: document.querySelector("#transcription-openrouter-model"),
+        language: document.querySelector("#transcription-language"),
+        diarization: document.querySelector("#transcription-diarization"),
+        speakers: document.querySelector("#transcription-speakers"),
+        modelDirectory: document.querySelector("#transcription-model-directory"),
+        ffmpegPath: document.querySelector("#transcription-ffmpeg"),
+      };
+      const dictationInputs = {
+        engine: document.querySelector("#dictation-engine"),
+        openRouterModel: document.querySelector("#dictation-openrouter-model"),
+        language: document.querySelector("#dictation-language"),
+      };
+      const detectionInputs = {
+        variant: document.querySelector("#detection-variant"),
+        device: document.querySelector("#detection-device"),
+        confidence: document.querySelector("#detection-confidence"),
+        iou: document.querySelector("#detection-iou"),
+        maxDetections: document.querySelector("#detection-max-detections"),
+        imageSize: document.querySelector("#detection-image-size"),
+        modelDirectory: document.querySelector("#detection-model-directory"),
+      };
+      const ttsInputs = {
+        engine: document.querySelector("#tts-engine"),
+        openRouterModel: document.querySelector("#tts-openrouter-model"),
+        openRouterVoice: document.querySelector("#tts-openrouter-voice"),
+        modelDirectory: document.querySelector("#tts-model-directory"),
+        localVoice: document.querySelector("#tts-local-voice"),
+        speed: document.querySelector("#tts-speed"),
+      };
       const searchVisionWeightsInput = document.querySelector("#search-vision-weights");
       const readingModelDirectoryInput = document.querySelector("#reading-model-directory");
       const searchDimensionsInput = document.querySelector("#search-dimensions");
@@ -1036,6 +1280,8 @@
       const searchIndexFileInput = document.querySelector("#search-index-file");
       const searchIndexHelp = document.querySelector("#search-index-help");
       let searchDefaultIndexFile = "";
+      // Where Libera downloads each local model when its field is empty.
+      let modelFolders = {};
       const errorBox = document.querySelector("#error");
       const closeButton = document.querySelector("#close-button");
       const headerCloseButton = document.querySelector("#header-close-button");
@@ -1076,6 +1322,7 @@
         });
         activeModelCombobox?.close();
         if (sectionId === "ai") loadOpenRouterModels();
+        if (sectionId === "read-aloud" && ttsInputs.engine.value === "openrouter") loadOpenRouterSpeechModels();
       }
 
       function showError(message) {
@@ -1359,6 +1606,24 @@
         return openRouterModelsPromise;
       }
 
+      // Speech-to-text models come from their own listing; OpenRouter's default one leaves them out.
+      let openRouterTranscriptionModels = [];
+      let openRouterTranscriptionModelsPromise = null;
+      function loadOpenRouterTranscriptionModels() {
+        if (!window.liberaSetup?.listOpenRouterModels) return Promise.resolve(openRouterTranscriptionModels);
+        openRouterTranscriptionModelsPromise ??= window.liberaSetup.listOpenRouterModels({ kind: "transcription" })
+          .then((result) => {
+            if (result?.ok) openRouterTranscriptionModels = result.models;
+            return openRouterTranscriptionModels;
+          })
+          .catch(() => {
+            openRouterTranscriptionModelsPromise = null;
+            return openRouterTranscriptionModels;
+          })
+          .finally(() => activeModelCombobox?.render());
+        return openRouterTranscriptionModelsPromise;
+      }
+
       function appendHighlighted(parent, text, terms) {
         const escaped = terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
         const pattern = escaped.length ? new RegExp("(" + escaped.join("|") + ")", "gi") : null;
@@ -1374,7 +1639,26 @@
         });
       }
 
-      function attachModelCombobox(input, { visionOnly = false, onPick = null } = {}) {
+      // Text-to-speech models, for Read aloud, come from their own listing too.
+      let openRouterSpeechModels = [];
+      let openRouterSpeechModelsPromise = null;
+      function loadOpenRouterSpeechModels() {
+        if (!window.liberaSetup?.listOpenRouterModels) return Promise.resolve(openRouterSpeechModels);
+        openRouterSpeechModelsPromise ??= window.liberaSetup.listOpenRouterModels({ kind: "speech" })
+          .then((result) => {
+            if (result?.ok) openRouterSpeechModels = result.models;
+            updateTtsVoiceSuggestions();
+            return openRouterSpeechModels;
+          })
+          .catch(() => {
+            openRouterSpeechModelsPromise = null;
+            return openRouterSpeechModels;
+          })
+          .finally(() => activeModelCombobox?.render());
+        return openRouterSpeechModelsPromise;
+      }
+
+      function attachModelCombobox(input, { visionOnly = false, transcription = false, speech = false, onPick = null } = {}) {
         const list = document.createElement("ul");
         list.className = "model-suggestions";
         list.id = `${input.id}-suggestions`;
@@ -1393,7 +1677,11 @@
         function matches() {
           const query = showAll ? "" : input.value.trim().toLowerCase();
           const terms = query.split(/\s+/).filter(Boolean);
-          const pool = visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels;
+          const pool = speech
+            ? openRouterSpeechModels
+            : transcription
+            ? openRouterTranscriptionModels
+            : visionOnly ? openRouterModels.filter((model) => model.vision) : openRouterModels;
           const rank = (model) => {
             const id = model.id.toLowerCase();
             if (id === query) return 0;
@@ -1484,7 +1772,9 @@
           list.hidden = false;
           input.setAttribute("aria-expanded", "true");
           render();
-          loadOpenRouterModels();
+          if (speech) loadOpenRouterSpeechModels();
+          else if (transcription) loadOpenRouterTranscriptionModels();
+          else loadOpenRouterModels();
         }
 
         function close() {
@@ -1561,6 +1851,19 @@
         attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
       }
       attachModelCombobox(referenceInputs.model);
+      attachModelCombobox(whereWasIInputs.model);
+      // The AI settings only matter while the feature and its summaries are on.
+      function updateWhereWasIInputs() {
+        whereWasIInputs.summarize.disabled = !whereWasIInputs.enabled.checked;
+        const aiOff = !whereWasIInputs.enabled.checked || !whereWasIInputs.summarize.checked;
+        whereWasIInputs.model.disabled = aiOff;
+        whereWasIInputs.effort.disabled = aiOff;
+      }
+      whereWasIInputs.enabled.addEventListener("change", updateWhereWasIInputs);
+      whereWasIInputs.summarize.addEventListener("change", updateWhereWasIInputs);
+      attachModelCombobox(transcriptionInputs.openRouterModel, { transcription: true });
+      attachModelCombobox(dictationInputs.openRouterModel, { transcription: true });
+      attachModelCombobox(ttsInputs.openRouterModel, { speech: true });
       attachModelCombobox(aiChatAlternativeModelPicker, {
         onPick(modelId) {
           const models = aiChatAlternativeModelsInput.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -1600,6 +1903,12 @@
         referenceInputs.webSearch.checked = references.webSearch === true;
         referenceInputs.autoCreateForPdfs.checked = references.autoCreateForPdfs === true;
         referenceInputs.contactEmail.value = typeof references.contactEmail === "string" ? references.contactEmail : "";
+        const whereWasI = state.aiFunctions?.whereWasI || {};
+        whereWasIInputs.enabled.checked = whereWasI.enabled !== false;
+        whereWasIInputs.model.value = typeof whereWasI.model === "string" && whereWasI.model ? whereWasI.model : "deepseek/deepseek-v4.1-flash";
+        whereWasIInputs.effort.value = whereWasI.reasoningEffort || "low";
+        whereWasIInputs.summarize.checked = whereWasI.summarize !== false;
+        updateWhereWasIInputs();
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -1653,6 +1962,42 @@
         searchIndexFileInput.value = search.indexFile || "";
         searchDefaultIndexFile = state.searchDefaultIndexFile || "";
         if (searchDefaultIndexFile) searchIndexFileInput.placeholder = `Default: ${searchDefaultIndexFile}`;
+        modelFolders = state.modelFolders || {};
+        if (modelFolders.reading) readingModelDirectoryInput.placeholder = `Default: ${modelFolders.reading}`;
+
+        const transcription = state.transcription || {};
+        transcriptionInputs.engine.value = transcription.engine === "openrouter" ? "openrouter" : "local";
+        transcriptionInputs.openRouterModel.value = transcription.openRouterModel || "openai/whisper-large-v3";
+        transcriptionInputs.language.value = transcription.language || "";
+        transcriptionInputs.diarization.checked = transcription.diarization !== false;
+        transcriptionInputs.speakers.value = String(transcription.speakers || 0);
+        transcriptionInputs.modelDirectory.value = transcription.modelDirectory || "";
+        if (modelFolders.speech) transcriptionInputs.modelDirectory.placeholder = `Default: ${modelFolders.speech}`;
+        transcriptionInputs.ffmpegPath.value = transcription.ffmpegPath || "";
+        const dictation = transcription.dictation || {};
+        dictationInputs.engine.value = ["local", "openrouter"].includes(dictation.engine) ? dictation.engine : "same";
+        dictationInputs.openRouterModel.value = dictation.openRouterModel || "";
+        dictationInputs.language.value = dictation.language || "";
+        updateTranscriptionFields();
+        const tts = state.tts || {};
+        ttsInputs.engine.value = tts.engine === "local" ? "local" : "openrouter";
+        ttsInputs.openRouterModel.value = tts.openRouterModel || "hexgrad/kokoro-82m";
+        ttsInputs.openRouterVoice.value = typeof tts.openRouterVoice === "string" ? tts.openRouterVoice : "af_heart";
+        ttsInputs.modelDirectory.value = tts.modelDirectory || "";
+        setLocalVoice(tts.localVoice || "af_heart");
+        const speedOption = String(tts.speed || 1);
+        ttsInputs.speed.value = [...ttsInputs.speed.options].some((option) => option.value === speedOption) ? speedOption : "1";
+        updateTtsFields();
+        const detection = state.detection || {};
+        detectionInputs.variant.value = ["n", "s", "m", "l", "x"].includes(detection.variant) ? detection.variant : "s";
+        detectionInputs.device.value = ["cpu", "mps", "cuda"].includes(detection.device) ? detection.device : "cpu";
+        detectionInputs.confidence.value = String(detection.confidence ?? 0.25);
+        detectionInputs.iou.value = String(detection.iou ?? 0.7);
+        detectionInputs.maxDetections.value = String(detection.maxDetections ?? 300);
+        detectionInputs.imageSize.value = String(detection.imageSize ?? 640);
+        detectionInputs.modelDirectory.value = detection.modelDirectory || "";
+        if (modelFolders.detection) detectionInputs.modelDirectory.placeholder = `Default: ${modelFolders.detection}`;
+        void updateDetectionModelStatus();
 
         if (state.hasApiKey) {
           apiKeyInput.placeholder = "Saved API key";
@@ -1819,6 +2164,166 @@
         if (file) searchVisionWeightsInput.value = file;
       });
 
+      function updateTranscriptionFields() {
+        transcriptionInputs.openRouterModel.disabled = transcriptionInputs.engine.value !== "openrouter";
+        transcriptionInputs.speakers.disabled = !transcriptionInputs.diarization.checked;
+        // Dictation's model only matters when it uses OpenRouter, directly or through the voice memo engine.
+        const dictationEngine = dictationInputs.engine.value === "same" ? transcriptionInputs.engine.value : dictationInputs.engine.value;
+        document.querySelector("#dictation-openrouter-fields").hidden = dictationEngine !== "openrouter";
+        dictationInputs.openRouterModel.placeholder = transcriptionInputs.openRouterModel.value.trim() || "Same as voice memos";
+        dictationInputs.language.placeholder = transcriptionInputs.language.value.trim() ? `Same as voice memos (${transcriptionInputs.language.value.trim()})` : "Same as voice memos";
+      }
+      transcriptionInputs.engine.addEventListener("change", updateTranscriptionFields);
+      transcriptionInputs.diarization.addEventListener("change", updateTranscriptionFields);
+      transcriptionInputs.openRouterModel.addEventListener("change", updateTranscriptionFields);
+      transcriptionInputs.language.addEventListener("input", updateTranscriptionFields);
+      dictationInputs.engine.addEventListener("change", updateTranscriptionFields);
+
+      document.querySelector("#transcription-model-directory-button").addEventListener("click", async () => {
+        clearError();
+        const folder = await window.liberaSetup.selectSearchWeights("speech-models");
+        if (folder) transcriptionInputs.modelDirectory.value = folder;
+      });
+
+      // sherpa-onnx's kokoro-multi-lang-v1_0 voices, in speaker order.
+      const KOKORO_VOICES = [
+        "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa",
+        "bf_alice", "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+        "ef_dora", "em_alex", "ff_siwis", "hf_alpha", "hf_beta", "hm_omega", "hm_psi", "if_sara", "im_nicola",
+        "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo", "pf_dora", "pm_alex", "pm_santa",
+        "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi", "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
+      ];
+      // The first letter of a Kokoro voice is its accent, the second its gender.
+      const KOKORO_ACCENTS = {
+        a: "American English", b: "British English", e: "Spanish", f: "French", h: "Hindi",
+        i: "Italian", j: "Japanese", p: "Brazilian Portuguese", z: "Mandarin Chinese",
+      };
+      function kokoroVoiceLabel(voice) {
+        const name = voice.slice(3);
+        return `${name.charAt(0).toUpperCase()}${name.slice(1)}${voice === "af_heart" ? " (default)" : ""}`;
+      }
+      function fillDatalist(id, values) {
+        const list = document.getElementById(id);
+        list.replaceChildren(...values.map((value) => Object.assign(document.createElement("option"), { value })));
+      }
+      (function fillKokoroVoices() {
+        const groups = new Map();
+        for (const voice of KOKORO_VOICES) {
+          const label = `${KOKORO_ACCENTS[voice[0]] ?? "Other"} · ${voice[1] === "f" ? "female" : "male"}`;
+          if (!groups.has(label)) groups.set(label, []);
+          groups.get(label).push(voice);
+        }
+        ttsInputs.localVoice.replaceChildren(...[...groups].map(([label, voices]) => {
+          const group = document.createElement("optgroup");
+          group.label = label;
+          group.append(...voices.map((voice) => Object.assign(document.createElement("option"), { value: voice, textContent: kokoroVoiceLabel(voice) })));
+          return group;
+        }));
+      })();
+      /** Select a saved voice, keeping one this list does not have (another release's name, or a speaker number). */
+      function setLocalVoice(voice) {
+        const value = voice || "af_heart";
+        ttsInputs.localVoice.querySelector("[data-custom-voice]")?.remove();
+        if (!KOKORO_VOICES.includes(value)) {
+          const option = Object.assign(document.createElement("option"), {
+            value,
+            textContent: /^\d+$/.test(value) ? `Speaker ${value}` : value,
+          });
+          option.dataset.customVoice = "";
+          ttsInputs.localVoice.prepend(option);
+        }
+        ttsInputs.localVoice.value = value;
+      }
+
+      function updateTtsVoiceSuggestions() {
+        const model = openRouterSpeechModels.find((entry) => entry.id === ttsInputs.openRouterModel.value.trim());
+        const voices = model?.voices ?? (ttsInputs.openRouterModel.value.trim() === "hexgrad/kokoro-82m" ? KOKORO_VOICES : []);
+        fillDatalist("tts-openrouter-voices", voices);
+        document.querySelector("#tts-openrouter-voice-help").textContent = voices.length
+          ? `${voices.length} voices for this model; click the field to see them. Empty uses the provider’s default, where it has one.`
+          : "Each model has its own voices; the list suggests the chosen model’s. Empty uses the provider’s default, where it has one.";
+      }
+
+      let ttsModelCheck = 0;
+      async function updateTtsModelStatus() {
+        const status = document.querySelector("#tts-model-status");
+        const chosen = ttsInputs.modelDirectory.value.trim();
+        const folder = chosen || modelFolders.readAloud || "";
+        const check = ++ttsModelCheck;
+        if (!folder) {
+          status.textContent = "No folder chosen yet.";
+          return;
+        }
+        const report = await window.liberaSetup?.checkTtsModel?.(folder).catch(() => null);
+        if (check !== ttsModelCheck || !report) return;
+        if (!chosen && !report.ok) status.textContent = "Not downloaded yet. Libera offers the download the first time you read aloud.";
+        else if (!report.exists) status.textContent = "⚠ This folder does not exist.";
+        else if (!report.ok) status.textContent = `⚠ Missing ${report.missing.join(", ")}. Choose the extracted Kokoro folder.`;
+        else {
+          const release = report.voices === 53 ? "kokoro-multi-lang-v1_0" : report.voices === 11 ? "kokoro-en-v0_19 (choose voices by name: af, af_bella, bm_george…)" : report.voices === 103 ? "kokoro v1.1 (choose voices by speaker number)" : "an unknown release";
+          status.textContent = `✓ Ready: ${report.voices} voices, ${release}${report.quantized ? ", 8-bit" : ""}.`;
+        }
+      }
+
+      let detectionModelCheck = 0;
+      async function updateDetectionModelStatus() {
+        const status = document.querySelector("#detection-model-status");
+        const folder = detectionInputs.modelDirectory.value.trim() || modelFolders.detection || "";
+        const check = ++detectionModelCheck;
+        if (!folder) {
+          status.textContent = "";
+          return;
+        }
+        const report = await window.liberaSetup?.checkDetectionModel?.(folder).catch(() => null);
+        if (check !== detectionModelCheck || !report) return;
+        const variants = Object.entries(report.variants).filter(([, ready]) => ready).map(([id]) => `YOLOE-26${id}`);
+        if (!report.runtime && !variants.length) {
+          status.textContent = "Nothing downloaded yet. Libera offers the download the first time you detect.";
+          return;
+        }
+        status.textContent = [
+          report.runtime ? "✓ Python runtime installed" : "Python runtime not installed",
+          report.textEncoder ? "text encoder ready" : "text encoder not downloaded",
+          variants.length ? `weights: ${variants.join(", ")}` : "no weights yet",
+        ].join(" · ");
+      }
+      detectionInputs.modelDirectory.addEventListener("change", () => void updateDetectionModelStatus());
+      document.querySelector("#detection-model-directory-button").addEventListener("click", async () => {
+        const folder = await window.liberaSetup.selectSearchWeights("detection-model");
+        if (folder) {
+          detectionInputs.modelDirectory.value = folder;
+          void updateDetectionModelStatus();
+        }
+      });
+
+      function updateTtsFields() {
+        const local = ttsInputs.engine.value === "local";
+        document.querySelector("#tts-local-fields").hidden = !local;
+        document.querySelector("#tts-openrouter-fields").hidden = local;
+        updateTtsVoiceSuggestions();
+        if (local) void updateTtsModelStatus();
+        else loadOpenRouterSpeechModels();
+      }
+      ttsInputs.engine.addEventListener("change", updateTtsFields);
+      ttsInputs.openRouterModel.addEventListener("change", updateTtsVoiceSuggestions);
+      ttsInputs.modelDirectory.addEventListener("change", () => void updateTtsModelStatus());
+
+      document.querySelector("#tts-model-directory-button").addEventListener("click", async () => {
+        clearError();
+        const folder = await window.liberaSetup.selectSearchWeights("tts-model");
+        if (folder) {
+          ttsInputs.modelDirectory.value = folder;
+          void updateTtsModelStatus();
+        }
+      });
+
+      document.querySelector("#transcription-ffmpeg-button").addEventListener("click", async () => {
+        clearError();
+        const file = await window.liberaSetup.selectSearchWeights("ffmpeg");
+        if (file) transcriptionInputs.ffmpegPath.value = file;
+      });
+
       document.querySelector("#reading-model-directory-button").addEventListener("click", async () => {
         clearError();
         const folder = await window.liberaSetup.selectSearchWeights("reading");
@@ -1897,6 +2402,11 @@
               webSearch: referenceInputs.webSearch.checked,
               autoCreateForPdfs: referenceInputs.autoCreateForPdfs.checked,
               contactEmail: referenceInputs.contactEmail.value.trim(),
+            }], ["whereWasI", {
+              enabled: whereWasIInputs.enabled.checked,
+              summarize: whereWasIInputs.summarize.checked,
+              model: whereWasIInputs.model.value.trim(),
+              reasoningEffort: whereWasIInputs.effort.value,
             }]])),
             search: {
               textWeights: searchTextWeightsInput.value,
@@ -1907,6 +2417,37 @@
               backgroundIndexing: searchBackgroundIndexingInput.checked,
               indexFile: searchIndexFileInput.value,
               readingModelDirectory: readingModelDirectoryInput.value,
+            },
+            transcription: {
+              engine: transcriptionInputs.engine.value,
+              openRouterModel: transcriptionInputs.openRouterModel.value,
+              language: transcriptionInputs.language.value,
+              diarization: transcriptionInputs.diarization.checked,
+              speakers: transcriptionInputs.speakers.value,
+              modelDirectory: transcriptionInputs.modelDirectory.value,
+              ffmpegPath: transcriptionInputs.ffmpegPath.value,
+              dictation: {
+                engine: dictationInputs.engine.value,
+                openRouterModel: dictationInputs.openRouterModel.value,
+                language: dictationInputs.language.value,
+              },
+            },
+            tts: {
+              engine: ttsInputs.engine.value,
+              openRouterModel: ttsInputs.openRouterModel.value,
+              openRouterVoice: ttsInputs.openRouterVoice.value,
+              modelDirectory: ttsInputs.modelDirectory.value,
+              localVoice: ttsInputs.localVoice.value,
+              speed: ttsInputs.speed.value,
+            },
+            detection: {
+              variant: detectionInputs.variant.value,
+              device: detectionInputs.device.value,
+              confidence: detectionInputs.confidence.value,
+              iou: detectionInputs.iou.value,
+              maxDetections: detectionInputs.maxDetections.value,
+              imageSize: detectionInputs.imageSize.value,
+              modelDirectory: detectionInputs.modelDirectory.value,
             },
             quickPrompts: quickPromptCards().map((card) => ({
               identifier: card.querySelector(".quick-prompt-identifier").value,

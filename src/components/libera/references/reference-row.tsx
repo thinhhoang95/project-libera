@@ -27,6 +27,7 @@ import {
   highlightSegments,
   STATUS_LABELS,
 } from "@/components/libera/references/reference-display";
+import { popupReferenceMenu, type ReferenceMenuItem } from "./native-reference-menu";
 import { RetractionBadge } from "@/components/libera/references/retraction-badge";
 import type { ReferenceEntry, ReferenceStatus } from "@/lib/references/types";
 
@@ -193,6 +194,23 @@ type MenuProps = {
   onOpenPath: (path: string) => void;
   onClose: () => void;
 };
+
+export function openNativeReferenceActionsMenu({ entry, point, canCite, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
+  const action = (id: ReferenceMenuAction, label: string, enabled = true): ReferenceMenuItem => ({ id, label, enabled, onSelect: () => onAction(id) });
+  return popupReferenceMenu([
+    action("cite", "Cite at cursor", canCite),
+    ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
+    ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", "Open note")] : []),
+    action("copy-key", "Copy key"),
+    action("copy-formatted", "Copy formatted reference"),
+    { id: "citing", label: citing.length ? `Citing documents (${citing.length})` : "Not cited yet", enabled: citing.length > 0,
+      ...(citing.length ? { submenu: citing.map((path, index) => ({ id: `citing:${index}`, label: fileBaseName(path), onSelect: () => onOpenPath(path) })) } : {}) },
+    { type: "separator" },
+    action("reresolve", "Re-resolve…"),
+    action("edit", "Edit…"),
+    action("delete", "Delete…"),
+  ], point);
+}
 
 function MenuItem({ icon, label, onClick, disabled, title, tone }: { icon: ReactNode; label: string; onClick: () => void; disabled?: boolean; title?: string; tone?: "destructive" }) {
   return (
