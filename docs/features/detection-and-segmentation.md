@@ -168,7 +168,7 @@ A new run replaces the model's untouched detections and keeps every manual and e
   "format": "libera-detection",
   "version": 1,
   "createdAt": "2026-10-19T07:32:06.000Z",
-  "generator": { "app": "LiBERA for Vy Tran", "version": "7.0.0" },
+  "generator": { "app": "Libera for Vy Tran", "version": "7.0.0" },
   "image": { "name": "cells.jpg", "width": 2048, "height": 1536, "source": "Lab/cells.jpg" },
   "model": {                       // null when every object was tagged by hand
     "family": "YOLOE-26", "variant": "s", "name": "YOLOE-26s", "weights": "yoloe-26s-seg.pt",

@@ -1,0 +1,113 @@
+/* "Where you left off" on the notebook home. Tinted by the notebook's colour;
+   inherits the home's --home-* tokens. */
+.recap {
+  --recap-accent: #5b7cf6;
+  --recap-tint: color-mix(in srgb, var(--recap-accent) 7%, var(--home-surface, #fff));
+  --recap-border: color-mix(in srgb, var(--recap-accent) 20%, var(--home-line, #e8ecf5));
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid var(--recap-border);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--recap-accent) 13%, transparent), transparent 55%),
+    linear-gradient(160deg, var(--recap-tint), var(--home-surface, #fff) 70%);
+  box-shadow: 0 1px 0 #ffffffb0 inset, 0 10px 30px -18px color-mix(in srgb, var(--recap-accent) 55%, #17203966);
+  animation: recapIn 260ms ease-out both;
+}
+/* A thin accent rule down the left edge. */
+.recap::before {
+  content: "";
+  position: absolute;
+  inset: 14px auto 14px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(var(--recap-accent), color-mix(in srgb, var(--recap-accent) 30%, transparent));
+}
+
+.header { display: flex; align-items: center; gap: 13px; padding: 18px 18px 0 22px; }
+.badge {
+  display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 11px;
+  color: color-mix(in srgb, var(--recap-accent) 85%, #000);
+  background: color-mix(in srgb, var(--recap-accent) 14%, var(--home-surface, #fff));
+  border: 1px solid color-mix(in srgb, var(--recap-accent) 22%, transparent);
+}
+.heading { min-width: 0; flex: 1; }
+.heading h3 { font-size: 17px; font-weight: 650; letter-spacing: -.4px; line-height: 1.25; }
+.heading p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; font-size: 12px; color: var(--home-muted, #737e98); }
+.dismiss { display: grid; place-items: center; width: 28px; height: 28px; align-self: flex-start; border-radius: 8px; color: var(--home-muted, #737e98); opacity: .7; transition: background 150ms, opacity 150ms; }
+.dismiss:hover, .dismiss:focus-visible { opacity: 1; background: color-mix(in srgb, var(--recap-accent) 12%, transparent); }
+
+.body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 22px; padding: 14px 20px 18px 22px; }
+
+.summary { min-width: 0; }
+.bullets { display: flex; flex-direction: column; gap: 9px; }
+.bullets li { position: relative; padding-left: 18px; font-size: 14px; line-height: 1.5; color: var(--home-ink, #172039); animation: recapIn 320ms ease-out both; }
+.bullets li:nth-child(2) { animation-delay: 50ms; }
+.bullets li:nth-child(3) { animation-delay: 100ms; }
+.bullets li:nth-child(4) { animation-delay: 150ms; }
+.bullets li::before {
+  content: ""; position: absolute; left: 2px; top: .62em; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--recap-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--recap-accent) 18%, transparent);
+}
+
+.notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--home-muted, #737e98); }
+.notice button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 7px; font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--recap-accent) 80%, #000); background: color-mix(in srgb, var(--recap-accent) 12%, transparent); }
+.notice button:hover { background: color-mix(in srgb, var(--recap-accent) 20%, transparent); }
+
+.skeleton { display: flex; flex-direction: column; gap: 11px; padding-top: 4px; }
+.skeleton span {
+  display: block; height: 11px; border-radius: 6px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--recap-accent) 10%, transparent) 20%, color-mix(in srgb, var(--recap-accent) 22%, transparent) 50%, color-mix(in srgb, var(--recap-accent) 10%, transparent) 80%) 0 0 / 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+.skeleton span:nth-child(1) { width: 92%; }
+.skeleton span:nth-child(2) { width: 78%; }
+.skeleton span:nth-child(3) { width: 58%; }
+
+/* The files the session touched, as a compact column of rows. */
+.trail { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-left: 18px; border-left: 1px dashed var(--recap-border); }
+.trail button, .away button {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 5px 7px; border-radius: 9px; text-align: left;
+  transition: background 150ms;
+}
+.trail button:hover, .trail button:focus-visible, .away button:hover, .away button:focus-visible { background: color-mix(in srgb, var(--recap-accent) 9%, transparent); }
+.fileIcon { display: grid; place-items: center; width: 26px; height: 28px; flex-shrink: 0; border-radius: 7px; color: #5881d8; background: var(--home-surface, #fff); border: 1px solid var(--home-line, #e8ecf5); }
+.fileIcon svg { width: 15px; height: 15px; }
+.fileName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
+.state { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 650; letter-spacing: .1px; }
+.state[data-state=you], .state[data-state=mixed] { color: #116b45; background: #18ac641a; }
+.state[data-state=others] { color: #7a4fd0; background: #8a66dc1c; }
+.state[data-state=new] { color: #1d5fd1; background: #3478f61a; }
+.state[data-state=viewed] { color: var(--home-muted, #737e98); background: color-mix(in srgb, var(--home-muted, #737e98) 12%, transparent); }
+
+/* What changed while you were away. */
+.away { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 11px 20px 13px 22px; border-top: 1px solid var(--recap-border); background: color-mix(in srgb, var(--recap-accent) 4%, transparent); }
+.awayLabel { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--home-muted, #737e98); }
+.away ul { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.away li { max-width: 260px; min-width: 0; }
+.away time { flex-shrink: 0; font-size: 11px; color: var(--home-muted, #737e98); }
+
+@keyframes recapIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .recap, .bullets li { animation: none; }
+  .skeleton span { animation: none; }
+}
+
+@container (max-width: 760px) {
+  .body { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .trail { padding-left: 0; padding-top: 12px; border-left: 0; border-top: 1px dashed var(--recap-border); }
+}
+
+:global(.dark) .recap {
+  --recap-tint: color-mix(in srgb, var(--recap-accent) 10%, var(--home-surface));
+  --recap-border: color-mix(in srgb, var(--recap-accent) 28%, var(--home-line));
+  box-shadow: 0 1px 0 #ffffff0d inset, 0 12px 30px -18px #000000aa;
+}
+:global(.dark) .badge { color: color-mix(in srgb, var(--recap-accent) 50%, #fff); background: color-mix(in srgb, var(--recap-accent) 22%, var(--home-surface)); }
+:global(.dark) .notice button { color: color-mix(in srgb, var(--recap-accent) 45%, #fff); }
+:global(.dark) .fileIcon { color: #a9c1f0; }
+:global(.dark) .state[data-state=you], :global(.dark) .state[data-state=mixed] { color: #83d7aa; background: #18ac6426; }
+:global(.dark) .state[data-state=new] { color: #9fc2ff; background: #3478f633; }
+:global(.dark) .state[data-state=others] { color: #c6b3f5; background: #8a66dc33; }

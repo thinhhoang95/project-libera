@@ -204,7 +204,7 @@ function UpdateAction() {
               setState("done");
             })
             .catch(() => {
-              setMessage("The update check failed. Open About LiBERA to try again.");
+              setMessage("The update check failed. Open About Libera to try again.");
               setState("done");
             });
         }}

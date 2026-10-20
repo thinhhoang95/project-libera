@@ -18,6 +18,8 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   assert.deepEqual(legacy.references, { model: '', reasoningEffort: 'low', promptCaching: false, lookupOnline: true, useAi: true, webSearch: false, contactEmail: '', autoCreateForPdfs: false });
   assert.equal(normalizeAiPreferences({ references: { contactEmail: 'not an email', model: 'bad model' } }).references.contactEmail, '');
   assert.equal(normalizeAiPreferences({ references: { model: 'bad model' } }).references.model, '');
+  assert.deepEqual(legacy.whereWasI, { enabled: true, summarize: true, model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'low' });
+  assert.equal(normalizeAiPreferences({ whereWasI: { model: 'bad model', reasoningEffort: 'huge' } }).whereWasI.model, 'deepseek/deepseek-v4.1-flash');
   const efforts = { formatting: 'low', rewrite: 'high', chat: 'xhigh', imageToMarkdown: 'medium', latex: 'max' };
   const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
     model: name === "chat" ? "deepseek/deepseek-v4.1-flash" : `provider/${name}`,
@@ -27,6 +29,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     ...(name === 'chat' ? { alternativeModels: ['anthropic/claude-sonnet-4.5', 'google/gemini-3.5-pro'] } : {}),
   }]));
   aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', autoCreateForPdfs: true };
+  aiFunctions.whereWasI = { enabled: false, summarize: false, model: 'provider/recap', reasoningEffort: 'medium' };
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
     const configPath = path.join(directory, 'libera-electron-config.json');
@@ -41,6 +44,10 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     }
     assert.equal(env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS, JSON.stringify(aiFunctions.chat.alternativeModels));
     assert.equal(env.LIBERA_AI_REFERENCES_MODEL, 'provider/references');
+    assert.equal(env.LIBERA_WHERE_WAS_I_ENABLED, 'false');
+    assert.equal(env.LIBERA_WHERE_WAS_I_SUMMARIZE, 'false');
+    assert.equal(env.LIBERA_AI_WHERE_WAS_I_MODEL, 'provider/recap');
+    assert.equal(env.LIBERA_AI_WHERE_WAS_I_REASONING_EFFORT, 'medium');
     assert.equal(env.LIBERA_AI_REFERENCES_REASONING_EFFORT, 'high');
     assert.equal(env.LIBERA_AI_REFERENCES_PROMPT_CACHING, 'true');
     assert.equal(env.LIBERA_REFERENCES_LOOKUP_ONLINE, 'false');
@@ -119,6 +126,18 @@ test('Preferences UI loads and saves all five function settings', async () => {
     document.querySelector('#ai-references-model').value = ' custom/references ';
     document.querySelector('#references-lookup-online').checked = false;
     document.querySelector('#references-auto-create-pdfs').checked = true;
+    assert.equal(document.querySelector('#where-was-i-enabled').checked, true);
+    assert.equal(document.querySelector('#ai-whereWasI-model').value, 'deepseek/deepseek-v4.1-flash');
+    assert.equal(document.querySelector('#ai-whereWasI-effort').value, 'low');
+    assert.equal(document.querySelector('#where-was-i-summarize').checked, true);
+    assert.equal(document.querySelector('#ai-whereWasI-model').disabled, false);
+    document.querySelector('#where-was-i-summarize').checked = false;
+    document.querySelector('#where-was-i-summarize').dispatchEvent(new dom.window.Event('change'));
+    assert.equal(document.querySelector('#ai-whereWasI-model').disabled, true);
+    document.querySelector('#where-was-i-enabled').checked = false;
+    document.querySelector('#where-was-i-enabled').dispatchEvent(new dom.window.Event('change'));
+    assert.equal(document.querySelector('#where-was-i-summarize').disabled, true);
+    document.querySelector('#ai-whereWasI-model').value = ' custom/recap ';
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Prefer concise answers.');
     assert.equal(document.querySelector('#ai-chat-alternative-models').value, 'test/fast-model\ntest/deep-model');
     document.querySelector('#ai-chat-alternative-models').value = 'custom/chat\ncustom/fast\ncustom/fast';
@@ -148,6 +167,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
     assert.deepEqual(saved.aiFunctions.references, {
       model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org',
     });
+    assert.deepEqual(saved.aiFunctions.whereWasI, { enabled: false, summarize: false, model: 'custom/recap', reasoningEffort: 'low' });
     assert.deepEqual(saved.quickPrompts, [
       { identifier: 'summary', prompt: 'Summarize $1.' },
       { identifier: 'rewrite', prompt: 'Rewrite $1 for $2.' },

@@ -56,6 +56,8 @@ Direct child folders are notebooks. Files inside notebooks currently support:
 
 The API rejects unsafe paths that escape the admin master directory.
 
+Libera keeps its own per-notebook state in a hidden `.libera/` folder inside each notebook, for example the reference library (`references/`) and the Where Was I session records (`where-was-i/<device>.json`). Linked folders keep this state in the data directory instead of the folder.
+
 Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
 
 ## Math Rendering
@@ -396,6 +398,14 @@ Work on several files side by side by splitting the editor area into panels. Cho
 Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
 
 Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+
+## Where Was I
+
+Open a notebook's home to see **Where you left off**: two to four AI bullet points about what you did there in your last session, the files you edited, created, or viewed (hover for a short excerpt of each change), including uploads and other files added without being opened, and the files added or changed since you left, such as a collaborator's edits in a shared notebook or files copied in or synced from another computer.
+
+Libera keeps the session in memory and writes it only when you close a file you edited and when the app quits, never while you type. It keeps at most 12 files per notebook and two short excerpts per file, in the notebook's `.libera/where-was-i/` folder, one file per computer so synced folders never conflict. In shared notebooks, your record stays on your computer, and changes from collaborators are labelled as theirs. Each finished session is summarized once, with only file paths, change sizes, and the excerpts sent to the model.
+
+Preferences → AI → **Where Was I** turns the card off entirely (nothing is recorded) or just the AI summary, and sets the model (`deepseek/deepseek-v4.1-flash` by default) and reasoning effort. Changes apply without a restart. See [docs/features/where-was-i.md](docs/features/where-was-i.md) for details.
 
 ## Links between notes
 

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, jsonError } from "@/lib/api";
+import { randomUUID } from "node:crypto";
 import { generateReview } from "@/lib/markdown-review-ai";
-import { reviewString, syncReview, type ReviewThread } from "@/lib/markdown-review";
+import { dueReviewReplies, reviewString, syncReview, type ReviewDocument, type ReviewReply, type ReviewSession, type ReviewThread } from "@/lib/markdown-review";
+import { getAiFunctionOptions } from "@/lib/ai-preferences";
+import { replyToSharedThread, requireSharedDoc } from "@/lib/collab/shared-writes";
 import { validateChatMessages, type ChatContext } from "@/lib/document-chat";
 import { readReview, updateReview } from "@/lib/storage/markdown-reviews";
 import { StorageError } from "@/lib/storage/errors";
@@ -36,6 +39,47 @@ function reviewThreads(value: unknown, snapshot: string): ReviewThread[] {
     };
   });
 }
+/**
+ * Posts a confirmed plan's replies in the shared document's threads, as the
+ * user's AI actor. A reply that cannot be posted does not undo the plan; the
+ * review conversation says which ones were left out.
+ */
+async function postSharedReplies(path: string, session: ReviewSession, due: { commentId: string; text: string }[]): Promise<ReviewSession> {
+  const replies: ReviewReply[] = [], failed: string[] = [];
+  const model = getAiFunctionOptions("chat").model;
+  try {
+    const doc = await requireSharedDoc(path);
+    for (const reply of due) {
+      try {
+        const result = await replyToSharedThread(path, { threadId: reply.commentId, body: reply.text, doc, ai: { feature: "agentic-review", model, runId: session.id } });
+        replies.push({ commentId: reply.commentId, messageId: result.messageId, text: reply.text, ...(result.queued ? { queued: true } : {}) });
+      } catch (error) { failed.push(error instanceof Error ? error.message : String(error)); }
+    }
+  } catch (error) { failed.push(...due.map(() => error instanceof Error ? error.message : String(error))); }
+  return withReplyOutcome(session, replies, failed);
+}
+
+/** Posts a confirmed plan's replies in a local document's threads, marked as the agent's. */
+function postLocalReplies(doc: ReviewDocument, session: ReviewSession, due: { commentId: string; text: string }[]): ReviewDocument {
+  const createdAt = new Date().toISOString();
+  const replies: ReviewReply[] = due.map((reply) => ({ commentId: reply.commentId, messageId: randomUUID(), text: reply.text }));
+  const threads = doc.threads.map((thread) => {
+    const mine = replies.filter((reply) => reply.commentId === thread.id);
+    return mine.length ? { ...thread, messages: [...thread.messages, ...mine.map((reply) => ({ id: reply.messageId, text: reply.text, createdAt, author: "agent" as const }))] } : thread;
+  });
+  return { ...doc, threads, session: withReplyOutcome(session, replies, []) };
+}
+
+function withReplyOutcome(session: ReviewSession, replies: ReviewReply[], failed: string[]): ReviewSession {
+  const queued = replies.filter((reply) => reply.queued).length;
+  const notes = [
+    replies.length ? `Replied in ${replies.length} comment thread${replies.length === 1 ? "" : "s"}.${queued ? ` ${queued} ${queued === 1 ? "is" : "are"} queued until the collaboration server can be reached.` : ""}` : "",
+    failed.length ? `${failed.length} ${failed.length === 1 ? "reply" : "replies"} could not be posted: ${failed[0]}` : "",
+  ].filter(Boolean);
+  if (!notes.length) return session;
+  return { ...session, replies: [...(session.replies ?? []), ...replies], messages: [...session.messages, { role: "assistant" as const, text: notes.join(" ") }].slice(-100) };
+}
+
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request); if (authError) return authError;
   try {
@@ -60,9 +104,14 @@ export async function POST(request: NextRequest) {
     references = Array.from(new Map(references.filter((r) => r.path !== doc.key).map((r) => [r.path, r])).values());
     if (body.action !== "plan" && body.planVersion !== doc.session?.plan.version) throw new StorageError("Confirm the current plan version.", 409);
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(180_000)]);
-    const session = await generateReview(current, prompt, ids, references, body.action, signal, body.suggestionId);
+    let session = await generateReview(current, prompt, ids, references, body.action, signal, body.suggestionId);
     signal.throwIfAborted();
-    const result = await updateReview(doc.id, doc.revision, () => ({ ...synced, session }));
+    // Confirming the plan posts the replies it drafted for comments it
+    // settles without an edit. A plan is confirmed once per version, so they
+    // are posted once.
+    const due = body.action === "generate" ? dueReviewReplies(session.plan, current.threads) : [];
+    if (due.length && sharedThreads) session = await postSharedReplies(doc.key, session, due);
+    const result = await updateReview(doc.id, doc.revision, () => due.length && !sharedThreads ? postLocalReplies(synced, session, due) : { ...synced, session });
     return NextResponse.json(result);
   } catch (error) { return jsonError(error instanceof Error ? error.message : "Agentic review failed.", error instanceof StorageError ? error.status : 400); }
 }

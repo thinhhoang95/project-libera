@@ -116,6 +116,9 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-panel .libera-chat-header select { font-size: 13px; letter-spacing: -.3px; }
 .libera-chat-panel .libera-sidebar-icon-button { border-radius: 9px; color: var(--muted-foreground); }
 .libera-chat-panel .libera-sidebar-icon-button:not(:disabled):hover { background: var(--muted); color: var(--accent); }
+.libera-chat-panel .libera-agent-web-search { transition: background-color .15s, color .15s, box-shadow .15s; }
+.libera-chat-panel .libera-agent-web-search[aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent); }
+.libera-chat-panel .libera-agent-web-search[aria-pressed="true"]:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 16%, var(--card)); }
 .libera-chat-panel .libera-chat-log { padding: 12px; }
 .libera-chat-welcome { margin: auto; padding: 25px 6px; text-align: center; max-width: 310px; }
 .libera-ai-orb { width: 65px; height: 65px; display: grid; place-items: center; margin: 0 auto 22px; border-radius: 22px; color: #916ee9; background: linear-gradient(135deg, var(--surface-blue), var(--surface-lavender)); box-shadow: inset 0 1px 0 #ffffff55, 0 6px 16px #8263db0e; transform: rotate(-7deg); }

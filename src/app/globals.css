@@ -270,6 +270,12 @@ html.libera-glass .libera-glass-panel input {
   background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 
+/* The chat search draws its frost on the rounded field wrapper (so the icon and
+   count sit inside it); the bare input stays clear. */
+.libera-chat-search-field { background-color: var(--background); }
+html.libera-glass .libera-chat-search-field { background-color: color-mix(in srgb, var(--foreground) 5%, transparent); }
+html.libera-glass .libera-glass-panel .libera-chat-search-field input { background-color: transparent; }
+
 /* Notebook cards get a barely-there fill so each one lifts off the panel as its
    own glass tile; the softened `--border` above supplies the hairline edge. */
 html.libera-glass .libera-glass-card {

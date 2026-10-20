@@ -36,6 +36,8 @@ export interface UseSharedTabsOptions {
   onText(tabId: string, text: string): void;
   /** A tab's shared document finished attaching (once per replica generation). */
   onAttached?(tabId: string, session: SharedDocSession): void;
+  /** The shared text changed, by this window (`local`) or by someone else. Not debounced. */
+  onEdit?(tabId: string, local: boolean, text: string): void;
 }
 
 const noopSubscribe = () => () => {};
@@ -50,7 +52,7 @@ function useRegistryVersion() {
 interface Mirror {
   ytext: Y.Text;
   attachedReported: boolean;
-  observer: () => void;
+  observer: (event: Y.YTextEvent, transaction: Y.Transaction) => void;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -122,7 +124,8 @@ export function useSharedTabs(tabs: readonly TabLike[], options: UseSharedTabsOp
           ytext,
           attachedReported: false,
           timer: null,
-          observer: () => {
+          observer: (_event, transaction) => {
+            latest.current.onEdit?.(tabId, transaction.local, created.ytext.toString());
             if (created.timer) clearTimeout(created.timer);
             created.timer = setTimeout(() => {
               created.timer = null;

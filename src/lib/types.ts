@@ -97,6 +97,12 @@ export type LiberaFileNode = {
   createdAt: string;
   size: number;
   updatedAt: string;
+  /**
+   * The inode change time (ctime): also moves when a file is copied, moved or
+   * synced in with its original dates kept. Where Was I uses it to notice files
+   * that arrived while you were away.
+   */
+  changedAt?: string;
   /** Files this saved Markdown file links to, resolved against the tree. */
   linkedFilePaths?: string[];
 };

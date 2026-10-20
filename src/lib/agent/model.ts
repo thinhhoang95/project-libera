@@ -1,4 +1,4 @@
-import { getOpenRouterApiKey } from "@/lib/openrouter";
+import { getCostRouting, getOpenRouterApiKey } from "@/lib/openrouter";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint } from "@/lib/openrouter-prompt-cache";
 import { parseOpenRouterUsage, type TokenUsage } from "@/lib/chat-token-usage";
 import { readSseData } from "@/lib/text-stream";
@@ -185,6 +185,7 @@ async function openStream(options: CallModelOptions) {
     : caching?.breakpoints === "rolling" ? withAgentCacheBreakpoints(options.messages) : options.messages;
   const { reasoning, temperature } = optionalParameters(options.model, options.profile, caching?.provider.only);
   const provider = {
+    ...getCostRouting(),
     ...(caching ? caching.provider : {}),
     // Only route to providers that honor every parameter, tools included;
     // otherwise a request can land where tools are silently ignored.

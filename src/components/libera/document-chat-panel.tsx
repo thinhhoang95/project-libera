@@ -1087,16 +1087,18 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>
-      {searchOpen && <div role="search" className="libera-chat-search libera-window-no-drag flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
+      {searchOpen && <div role="search" className="libera-chat-search libera-window-no-drag flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-2">
+        <label className="libera-chat-search-field flex h-8 min-w-0 flex-1 cursor-text items-center gap-2 rounded-lg border border-input px-2.5 transition-shadow focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
         <Search aria-hidden size={14} className="shrink-0 text-muted-foreground" />
         <input ref={searchInputRef} type="search" aria-label="Search chat history" placeholder="Search all chats…" value={searchQuery}
-          className="min-w-0 flex-1 border-0 bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground"
+          className="min-w-0 flex-1 border-0 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
           onChange={(event) => setSearchQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") { event.preventDefault(); if (searchQuery) setSearchQuery(""); else closeSearch(); }
             else if (event.key === "Enter" && searchResults[0]) { event.preventDefault(); openSearchResult(searchResults[0]); }
           }} />
-        {showingSearchResults && <span className="shrink-0 text-xs tabular-nums text-muted-foreground" aria-live="polite">{searchResults.length >= MAX_CHAT_SEARCH_RESULTS ? `${MAX_CHAT_SEARCH_RESULTS}+` : searchResults.length} found</span>}
+        {showingSearchResults && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-live="polite">{searchResults.length >= MAX_CHAT_SEARCH_RESULTS ? `${MAX_CHAT_SEARCH_RESULTS}+` : searchResults.length} found</span>}
+        </label>
         <button type="button" className={buttonClass} aria-label="Close search" title="Close search" onClick={closeSearch}><X size={14} /></button>
       </div>}
       {showingSearchResults && <div role="list" aria-label="Search results" className="libera-chat-search-results min-h-0 min-w-0 flex-1 overflow-auto p-2">
@@ -1123,7 +1125,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </select>
           <ChevronDown aria-hidden size={13} />
         </label>}
-        {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search ${allowWebSearch ? "bg-accent text-foreground" : "text-muted-foreground"}`} aria-pressed={allowWebSearch} aria-label="Allow web search" disabled={!!pending} onClick={() => changeWebSearch(!allowWebSearch)}
+        {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search`} aria-pressed={allowWebSearch} aria-label="Web search" disabled={!!pending} onClick={() => changeWebSearch(!allowWebSearch)}
           title={allowWebSearch ? "Web search on: the agent can search the web (through OpenRouter's web plugin). Click to turn off" : "Web search off: click to let the agent search the web for facts that are not in your library"}><Globe aria-hidden size={14} /></button>}
       </div>}
         <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${showingSearchResults ? "hidden" : !chat?.messages.length ? "flex flex-col" : ""}`}

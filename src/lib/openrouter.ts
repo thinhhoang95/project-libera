@@ -54,6 +54,8 @@ type OpenRouterResponse = {
   }>;
   error?: {
     message?: string;
+    /** The upstream provider's own message, e.g. a rate limit. */
+    metadata?: { raw?: unknown };
   };
 };
 
@@ -108,7 +110,11 @@ async function readOpenRouterError(response: Response) {
   const payload = (await response.json().catch(() => null)) as OpenRouterResponse | null;
 
   if (payload?.error?.message) {
-    return payload.error.message;
+    // "Provider returned error" alone does not say what went wrong upstream.
+    const raw = payload.error.metadata?.raw;
+    return typeof raw === "string" && raw.trim() && !payload.error.message.includes(raw)
+      ? `${payload.error.message}: ${raw.trim().slice(0, 300)}`
+      : payload.error.message;
   }
 
   return response.statusText || "OpenRouter request failed.";
@@ -116,6 +122,24 @@ async function readOpenRouterError(response: Response) {
 
 /** A web page the model consulted through OpenRouter's web plugin. */
 export type WebCitation = { url: string; title?: string; content?: string };
+
+/**
+ * Provider routing that keeps OpenRouter on the cheapest eligible endpoint
+ * instead of load-balancing across all of them. Optional price ceilings (USD
+ * per million tokens) make a request fail rather than land on a pricey one.
+ */
+export function getCostRouting() {
+  const ceiling = (name: string) => {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  const prompt = ceiling("LIBERA_OPENROUTER_MAX_PROMPT_PRICE");
+  const completion = ceiling("LIBERA_OPENROUTER_MAX_COMPLETION_PRICE");
+  return {
+    sort: "price" as const,
+    ...(prompt || completion ? { max_price: { ...(prompt ? { prompt } : {}), ...(completion ? { completion } : {}) } } : {}),
+  };
+}
 
 /** Which OpenRouter generation served a request, and the provider OpenRouter routed it to. */
 export type OpenRouterGeneration = { id?: string; provider?: string };
@@ -153,7 +177,7 @@ async function requestOpenRouterCompletion(
     body: JSON.stringify({
       model,
       ...(options.sessionId ? { session_id: options.sessionId } : {}),
-      ...(caching ? { provider: caching.provider } : {}),
+      provider: { ...getCostRouting(), ...caching?.provider },
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       ...(options.webSearch ? { plugins: [{ id: "web", ...(options.webSearch.maxResults ? { max_results: options.webSearch.maxResults } : {}) }] } : {}),

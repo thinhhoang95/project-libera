@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
+import { anchorAt, applyReviewEdits, commentRange, commentsKey, decideSuggestions, dueReviewReplies, mapAnchor, newReview, paragraphRange, plainParagraphRange, reviewBlocks, reviewIntent, startReviewRound, syncReview, undoReview, validatePlan, validateSuggestions, type ReviewDocument } from "../../src/lib/markdown-review";
 
 const source = "# Title\r\n\r\nFirst **paragraph**.\r\n\r\nSecond paragraph.\r\n\r\nThird paragraph.";
 function fixture(): ReviewDocument {
@@ -187,4 +187,23 @@ test('shared semantic recovery preserves resolved orphan reattachment and ambigu
   const ambiguous = syncReview(doc, after + '\n\n__Old__ paragraph.');
   assert.ok(ambiguous.threads.every(thread => thread.anchor.state === 'ambiguous'));
   assert.equal(doc.threads[0].anchor.state, 'orphaned');
+});
+
+test("plan replies are optional, skip settled threads, and do not make the plan stale", () => {
+  const doc = fixture(), ids = doc.threads.map((t) => t.id);
+  const plan = validatePlan({ summary: "No edits", steps: [], dispositions: [
+    { commentId: "c1", reason: "Answered", reply: "  Yes, see section 2.  " },
+    { commentId: "c2", reason: "Withdrawn", reply: "" },
+    { commentId: "c3", reason: "Answered", reply: "Already said." },
+  ], blockingQuestions: [], revisionSummary: "" }, 1, ids, reviewBlocks(source));
+  assert.equal(plan.dispositions[0].reply, "Yes, see section 2.");
+  assert.equal("reply" in plan.dispositions[1], false);
+  doc.threads[2].messages.push({ id: "m3b", text: "Already  said.", createdAt: "2026-09-12" });
+  assert.deepEqual(dueReviewReplies(plan, doc.threads), [{ commentId: "c1", text: "Yes, see section 2." }]);
+  doc.threads[0].status = "resolved";
+  assert.deepEqual(dueReviewReplies(plan, doc.threads), []);
+  const key = commentsKey(doc.threads, ids);
+  doc.threads[1].messages.push({ id: "own", text: "Posted", createdAt: "2026-09-12", author: "agent" });
+  assert.notEqual(commentsKey(doc.threads, ids), key);
+  assert.equal(commentsKey(doc.threads, ids, [{ messageId: "own" }]), key);
 });

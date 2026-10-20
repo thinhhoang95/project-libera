@@ -6,6 +6,8 @@ import { AboutDialog } from "@/components/libera/about-dialog";
 import type { ThemePreference } from "@/lib/theme";
 import { applyThemePreference } from "@/components/libera/theme-sync";
 
+const LIBERA_BLOG_URL = "https://blog.intuelle.com";
+
 type SidebarAppMenuProps = {
   collapsed?: boolean;
   onLogout: () => Promise<void>;
@@ -84,7 +86,8 @@ export function SidebarAppMenu({
             checked: theme === "dark",
           },
           { type: "separator" },
-          { id: "about", label: "About LiBERA" },
+          { id: "visit-blog", label: "Visit Libera Blog" },
+          { id: "about", label: "About Libera" },
         ],
       })
       .catch(() => null);
@@ -95,6 +98,8 @@ export function SidebarAppMenu({
       void window.liberaPreferences?.open();
     } else if (selectedItemId === "toggle-dark-mode") {
       toggleDarkMode();
+    } else if (selectedItemId === "visit-blog") {
+      window.open(LIBERA_BLOG_URL, "_blank", "noopener,noreferrer");
     } else if (selectedItemId === "about") {
       openAboutDialog();
     }
@@ -112,9 +117,9 @@ export function SidebarAppMenu({
             <button
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              aria-label="LiBERA menu"
+              aria-label="Libera menu"
               className="libera-sidebar-icon-button inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-semibold"
-              title="LiBERA menu"
+              title="Libera menu"
               type="button"
               onClick={(event) => void openMenu(event)}
             >
@@ -139,7 +144,7 @@ export function SidebarAppMenu({
               type="button"
               onClick={(event) => void openMenu(event)}
             >
-              LiBERA
+              Libera
             </button>
             <button
               aria-label="Logout"

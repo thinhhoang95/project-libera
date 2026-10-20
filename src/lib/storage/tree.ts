@@ -194,6 +194,7 @@ export async function getFileNode(
     notebook,
     fileType,
     createdAt: stats.birthtime.toISOString(),
+    changedAt: stats.ctime.toISOString(),
     size: stats.size,
     updatedAt: await getFileUpdatedAt(
       notebook,

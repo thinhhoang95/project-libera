@@ -13,10 +13,18 @@ export type ReviewAnchor = ReviewRange & { quote: string; prefix: string; suffix
  */
 export type ReviewMessage = { id: string; text: string; createdAt: string; author?: "agent"; by?: string };
 export type ReviewThread = { id: string; anchor: ReviewAnchor; messages: ReviewMessage[]; status: "open" | "addressed" | "resolved" };
-export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string }[]; blockingQuestions: string[]; revisionSummary: string };
+export type ReviewPlan = { version: number; summary: string; steps: { commentIds: string[]; targetBlockIds: string[]; proposedChange: string; rationale: string }[]; dispositions: { commentId: string; reason: string; reply?: string }[]; blockingQuestions: string[]; revisionSummary: string };
 export type ReviewEdit = ReviewRange & { before: string; after: string };
 export type ReviewSuggestion = { id: string; version: number; title: string; reason: string; commentIds: string[]; edits: ReviewEdit[]; status: "pending" | "accepted" | "rejected" | "superseded" | "conflicted" };
-export type ReviewSession = { id: string; phase: "awaiting_confirmation" | "reviewing_changes" | "completed" | "stale"; snapshot: string; commentsKey: string; references: ChatContext[]; selectedIds: string[]; plan: ReviewPlan; suggestions: ReviewSuggestion[]; messages: { role: "user" | "assistant"; text: string }[]; confirmedVersion?: number };
+export type ReviewSession = { id: string; phase: "awaiting_confirmation" | "reviewing_changes" | "completed" | "stale"; snapshot: string; commentsKey: string; references: ChatContext[]; selectedIds: string[]; plan: ReviewPlan; suggestions: ReviewSuggestion[]; messages: { role: "user" | "assistant"; text: string }[]; confirmedVersion?: number; replies?: ReviewReply[] };
+/**
+ * A reply Agentic Review posted in a comment thread when its plan was
+ * confirmed: the plan's `reply` for a comment it settled without an edit.
+ * `messageId` is the posted message, which `commentsKey` skips so the
+ * session's own replies do not make its plan stale. `queued` when a shared
+ * document's server could not be reached and the host sends it later.
+ */
+export type ReviewReply = { commentId: string; messageId: string; text: string; queued?: boolean };
 /**
  * A suggested edit the agent left outside any Agentic Review session (the
  * SuggestEdit tool). Same shape as a ReviewSuggestion, plus one anchor per
@@ -221,8 +229,23 @@ function mapAgentSuggestions(suggestions: AgentSuggestion[], before: string, aft
     return { ...s, anchors, edits, status: open ? (intact ? "pending" as const : "conflicted" as const) : s.status };
   });
 }
-export function commentsKey(threads: ReviewThread[], ids: string[]) {
-  return JSON.stringify(threads.filter((t) => ids.includes(t.id)).map((t) => ({ id: t.id, messages: t.messages, status: t.status === "resolved" ? "resolved" : "open" })));
+export function commentsKey(threads: ReviewThread[], ids: string[], replies: readonly Pick<ReviewReply, "messageId">[] = []) {
+  const own = new Set(replies.map((reply) => reply.messageId));
+  return JSON.stringify(threads.filter((t) => ids.includes(t.id)).map((t) => ({ id: t.id, messages: t.messages.filter((m) => !own.has(m.id)), status: t.status === "resolved" ? "resolved" : "open" })));
+}
+/**
+ * The replies a confirmed plan still has to post: its dispositions' replies,
+ * except in threads that are gone or resolved (a resolved thread takes no
+ * more replies) and threads that already end with the same text.
+ */
+export function dueReviewReplies(plan: ReviewPlan, threads: readonly ReviewThread[]): { commentId: string; text: string }[] {
+  const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+  return plan.dispositions.flatMap((d) => {
+    const thread = threads.find((t) => t.id === d.commentId);
+    if (!d.reply || !thread || thread.status === "resolved") return [];
+    const last = thread.messages.at(-1);
+    return last && same(last.text, d.reply) ? [] : [{ commentId: d.commentId, text: d.reply }];
+  });
 }
 export function syncReview(doc: ReviewDocument, snapshot: string, detectHistory = true): ReviewDocument {
   if (doc.snapshot === snapshot) return doc;
@@ -359,7 +382,11 @@ export function validatePlan(value: unknown, version: number, ids: string[], blo
     const s = object(raw);
     return { commentIds: validIds(s.commentIds, ids), targetBlockIds: validIds(s.targetBlockIds, blocks.map((b) => b.id)), proposedChange: reviewString(s.proposedChange, "proposed change"), rationale: reviewString(s.rationale, "rationale") };
   });
-  const dispositions = list(p.dispositions).map((raw) => { const d = object(raw); return { commentId: validIds([d.commentId], ids)[0], reason: reviewString(d.reason, "disposition") }; });
+  const dispositions = list(p.dispositions).map((raw) => {
+    const d = object(raw);
+    const reply = d.reply === undefined || d.reply === null ? "" : reviewString(d.reply, "reply", 4_000).trim();
+    return { commentId: validIds([d.commentId], ids)[0], reason: reviewString(d.reason, "disposition"), ...(reply ? { reply } : {}) };
+  });
   if (ids.some((id) => !steps.some((s) => s.commentIds.includes(id)) && !dispositions.some((d) => d.commentId === id))) throw new Error("The plan must address every selected comment.");
   return { version, summary: reviewString(p.summary, "summary"), steps, dispositions, blockingQuestions: strings(p.blockingQuestions), revisionSummary: reviewString(p.revisionSummary, "revision summary") };
 }

@@ -96,6 +96,7 @@ import { rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
 import { announceReferenceLibraryChange } from "@/lib/references/import";
 import { referenceMoveSummary, type ReferenceMoveNoticeState } from "./references/reference-move-notice";
 import { searchNotebookTree } from "./notebook-search";
+import { useWhereWasITracker, whereWasITracker } from "./where-was-i-tracker";
 
 const TYPING: Provenance = { source: "typing" };
 /** Module-level, so the close and unload callbacks need no extra hook dependency. Shared tabs are never dirty. */
@@ -380,7 +381,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   // Shared documents (plan M1.4/M1.6): the replica of a shared tab lives in
   // the registry for as long as the tab is open; its text is the tab's draft.
   const sharedRegistry = getSharedDocRegistry();
-  const sharedTabIds = useSharedTabs(tabs, { onText: mirrorSharedText, onAttached: adoptPendingDraft });
+  // Register the recap before shared attachment effects can report a baseline.
+  useWhereWasITracker(tabs, (tabId) => sharedRegistry.isSharedTab(tabId), getTabDraft, tree.notebooks);
+  const sharedTabIds = useSharedTabs(tabs, {
+    onText: mirrorSharedText,
+    onAttached: (tabId, session) => {
+      // The recap's baseline is the shared text before a pending draft is applied.
+      whereWasITracker.sharedAttached(tabId, session.replica.ytext.toString());
+      adoptPendingDraft(tabId, session);
+    },
+    onEdit: (tabId, local, text) => whereWasITracker.sharedEdited(tabId, local, text),
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const openingFilePathsRef = useRef<Set<string>>(new Set());
