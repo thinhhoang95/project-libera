@@ -29,6 +29,7 @@ import {
 } from "react";
 import dynamic from "next/dynamic";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { expandMarkdownMacros } from "@/lib/markdown-macros";
 import { MarkdownWorkerPreview } from "./markdown-worker-preview";
 import { useNotebookCodeBlockRenderer } from "./slide-live-blocks";
 import { ExistingImageDialog } from "@/components/libera/existing-image-dialog";
@@ -985,6 +986,20 @@ function WorkspacePanelContent({
     return openMarkdownFileLinkRef.current(sourcePath, href);
   }, []);
 
+  // Expand macros: the document as plain Markdown in a new unsaved tab beside
+  // it, macros and counters replaced and macro blocks removed.
+  // Read at click time, so typing does not hand the editors a new callback.
+  const expandMacrosRef = useRef({ activeTab, markdownPreferences, onCreateUntitledMarkdown });
+  useLayoutEffect(() => { expandMacrosRef.current = { activeTab, markdownPreferences, onCreateUntitledMarkdown }; });
+  const handleExpandMacros = useCallback((markdown: string) => {
+    const { activeTab: tab, markdownPreferences: mathMarkers, onCreateUntitledMarkdown: open } = expandMacrosRef.current;
+    if (!tab || !open) return;
+    const path = tab.file.path;
+    const directory = tab.untitled ? tab.saveDirectory ?? "" : path.slice(0, Math.max(0, path.lastIndexOf("/")));
+    const stem = tab.file.name.replace(/\.(?:md|markdown)$/i, "") || "Untitled";
+    open(`${stem} (expanded).md`, expandMarkdownMacros(markdown, { mathMarkers })?.markdown ?? markdown, directory);
+  }, []);
+
   // Citation hover cards open an entry's attachment: a PDF at the cited page
   // (the viewState.pdf.reveal request Global Search uses), or the file.
   const openFileRef = useRef(onOpenFile);
@@ -1872,7 +1887,8 @@ function WorkspacePanelContent({
               canStartScreenshotSnip={canStartScreenshotSnip}
               onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "visual")}
               pendingInsertion={pendingVisualInsertion}
-              onPendingInsertionHandled={(id) => onFinishVisualInsertion(activeTab.id, id)} />
+              onPendingInsertionHandled={(id) => onFinishVisualInsertion(activeTab.id, id)}
+              onExpandMacros={handleExpandMacros} />
           ) : <>
           <MarkdownToolbar
             key={`${activeTab.id}-toolbar`}
@@ -1889,6 +1905,7 @@ function WorkspacePanelContent({
             onNumberHeadings={numberActiveMarkdownHeadings}
             onRemoveHeadingNumbers={removeActiveMarkdownHeadingNumbers}
             onFixChatGptEquations={fixActiveChatGptEquations}
+            onExpandMacros={handleExpandMacros}
             onInsert={onInsertMarkdown}
             onInsertTable={onInsertMarkdownTable}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}

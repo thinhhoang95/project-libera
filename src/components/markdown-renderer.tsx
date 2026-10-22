@@ -8,6 +8,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import type { Root } from "hast";
 import type { PluggableList } from "unified";
 import { markdownRehypeOptions, markdownRemarkPlugins } from "@/lib/markdown-rendering";
+import type { MarkdownMacroScope } from "@/lib/markdown-macros";
 import rehypeKatex from "rehype-katex";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
@@ -70,6 +71,8 @@ type MarkdownRendererProps = {
    * notebook is a shared project counts as shared.
    */
   contentTrust?: ContentTrust;
+  /** Macro definitions and counters from the rest of the document, for a part of it (a slide). */
+  macroScope?: MarkdownMacroScope;
 };
 
 export type MarkdownCodeBlock = {
@@ -258,6 +261,7 @@ function MarkdownRendererContent({
   renderImages = true,
   contentTrust,
   renderCodeBlock,
+  macroScope,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trust = useContentTrust(documentPath, contentTrust);
@@ -267,7 +271,7 @@ function MarkdownRendererContent({
   // Read at click time so heading links do not rebuild the component table.
   const contentRef = useRef(content);
   useLayoutEffect(() => { contentRef.current = content; }, [content]);
-  const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
+  const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers, macroScope), [mathMarkers, macroScope, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
     [content, preparedTree],

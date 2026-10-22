@@ -12,6 +12,7 @@ import { remarkMarkdownBoxes } from "./remark-markdown-boxes";
 import { remarkCitations } from "./remark-citations";
 import { remarkHideFrontMatter } from "./remark-front-matter";
 import { citationRehypeHandlers, remarkBibliography } from "./remark-bibliography";
+import { remarkMarkdownMacros, type MarkdownMacroScope } from "./markdown-macros";
 
 // Share the exact grammar between the synchronous renderer and preview worker.
 // Citations come after the math markers, as in the syntax lane's tests (math
@@ -19,9 +20,11 @@ import { citationRehypeHandlers, remarkBibliography } from "./remark-bibliograph
 // characters), and must follow remark-parse, which every user of this list
 // adds first. remarkBibliography runs after the source map, whose positions
 // the citation and bibliography elements keep. YAML front matter (a
-// document's `citation-style`) is metadata and is not rendered.
-export function markdownRemarkPlugins(mathMarkers?: MathMarkerSettings): PluggableList {
-  return [remarkGfm, remarkMarkdownBoxes, remarkMarkdownHighlights, remarkMarkdownTextColors,
+// document's `citation-style`) is metadata and is not rendered. Markdown
+// macros come first: they expand the source before it is parsed and point
+// the tree back at the source (markdown-macros.ts).
+export function markdownRemarkPlugins(mathMarkers?: MathMarkerSettings, macroScope?: MarkdownMacroScope): PluggableList {
+  return [[remarkMarkdownMacros, { mathMarkers, scope: macroScope }], remarkGfm, remarkMarkdownBoxes, remarkMarkdownHighlights, remarkMarkdownTextColors,
     remarkMarkdownUnderlines, remarkMarkdownTextStyles, remarkMarkdownSourceMap,
     ...(mathMarkers ? [[remarkMathMarkers, mathMarkers] as [typeof remarkMathMarkers, MathMarkerSettings]] : [remarkMath]),
     remarkCitations, remarkHideFrontMatter, remarkBibliography];

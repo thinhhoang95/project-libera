@@ -292,6 +292,24 @@ series: [32, 41, 38, 57]
 
 See [Charts and live HTML in slides](#charts-and-live-html-in-slides) for the settings, and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md) for the full guide.
 
+### Markdown macros
+
+Define LaTeX-style macros in a note's own ```` ```libera-macro ```` block, and use them anywhere in the note. A body wrapped in `$…$` is math: `$\fset$` and a bare `\fset` both render as $\mathcal{F}$. `\newcommand` macros take arguments and expand to Markdown, and `\counter-name` numbers itself in document order with no definition needed:
+
+````markdown
+```libera-macro
+\fset = $\mathcal{F}$
+\norm = $\lVert #1 \rVert$
+\newcommand{\theorem}[2]{**Theorem \counter-theorem (#1).** *#2*}
+```
+
+Let \fset be closed under $\norm{\cdot}$.
+
+\theorem{Pythagoras}{Given a right triangle with legs $a, b$ and hypotenuse $c$, $a^2 + b^2 = c^2$.}
+````
+
+The file keeps the macros as written; the preview, slides, PDF and LaTeX exports show them expanded. In the Visual editor a macro shows its expansion until the caret reaches it, and the macro block folds to **Macros: 3 definitions**. **Expand macros** (the `{}` button in both toolbars) opens a plain-Markdown copy, with every macro replaced and the definitions removed, in a new unsaved tab. See [docs/features/markdown-macros.md](docs/features/markdown-macros.md) for the full guide.
+
 ## Markdown Slides
 
 A file named `*.slides.md` is a slide deck. **New slides** in a notebook's menu creates one. Decks open in the source editor with the slides beside it. The preview follows the caret, and clicking a slide puts the caret on it. Each slide is laid out on a fixed 16:9 canvas and scaled to fit, so the preview, the presentation, and the PDF all show the same slide. When a slide has too much content, its body shrinks to fit, down to about half size. Past that, the preview flags the slide. Slides render math, citations, highlights, and links like notes do, using the same inline and display math markers as your notes.

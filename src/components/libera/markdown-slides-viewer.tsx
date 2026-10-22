@@ -25,6 +25,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownRenderer, type MarkdownCodeBlock } from "@/components/markdown-renderer";
+import { markdownMacroScopes, mayUseMarkdownMacros, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { SlideLiveBlock, isLiveCodeBlock } from "@/components/libera/slide-live-blocks";
 import {
   CitationScope,
@@ -133,6 +134,21 @@ export function SlideDeckReferences({
   return <ReferenceRenderProvider notebook={referenceNotebookForPath(documentPath)}>{scoped}</ReferenceRenderProvider>;
 }
 
+const deckMacroScopes = new WeakMap<MarkdownSlideDeck, MarkdownMacroScope[] | null>();
+
+/**
+ * Each segment's macro scope, so a deck's macro block applies to every slide
+ * and counters run on from slide to slide (markdown-macros.ts).
+ */
+function slideMacroScopes(deck: MarkdownSlideDeck, mathMarkers?: MathMarkerSettings) {
+  if (!deckMacroScopes.has(deck)) {
+    const sources = deck.slides.flatMap((slide) => slide.segments.map((segment) => segment.content));
+    const document = sources.join("\n\n");
+    deckMacroScopes.set(deck, mayUseMarkdownMacros(document) ? markdownMacroScopes(document, sources, mathMarkers) : null);
+  }
+  return deckMacroScopes.get(deck) ?? null;
+}
+
 type SlideRenderOptions = MarkdownSlidesViewerProps & {
   mode: MarkdownSlideTemplateMode;
   slide: MarkdownSlide;
@@ -165,8 +181,10 @@ export function MarkdownSlideSheet({
     },
     [documentPath, fontFamily, mode, theme],
   );
+  const macroScopes = slideMacroScopes(deck, mathMarkers);
   const renderSegment = (segment: MarkdownSlideSegment) => (
     <MarkdownRenderer
+      macroScope={macroScopes?.[segment.citationIndex]}
       baseFontSize={fontSize}
       baseLineHeight={baseLineHeight}
       citationScopeIndex={segment.citationIndex}
@@ -183,6 +201,7 @@ export function MarkdownSlideSheet({
       className="markdown-slide-inline"
       content={inlineMarkdown(markdown)}
       documentPath={documentPath}
+      macroScope={macroScopes?.[0]}
       mathMarkers={mathMarkers}
       onOpenFileLink={onOpenFileLink}
       renderImages={false}

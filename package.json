@@ -1,7 +1,7 @@
 {
   "name": "project-libera",
   "productName": "Libera for Vy Tran",
-  "version": "7.0.0",
+  "version": "7.5.0",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {

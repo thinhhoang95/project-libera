@@ -12,8 +12,10 @@ import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownT
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
+import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
+import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
+import { Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -86,6 +88,8 @@ type Props = {
    */
   collab?: SharedVisualSource;
   readSelectionLinks?: () => MarkdownSelectionLinkOption[];
+  /** Opens the document with its macros expanded in a new tab (markdown-macros.ts). */
+  onExpandMacros?: (markdown: string) => void;
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -140,7 +144,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, onExpandMacros }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const [error, setError] = useState("");
@@ -219,6 +223,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     TiptapChanges.configure({ documentPath }),
     TiptapHeadingNumbering,
     TiptapBoldLeadIns,
+    // Shows ```libera-macro macros and counters expanded where they are used.
+    TiptapMarkdownMacros.configure({ mathMarkers }),
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -382,7 +388,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     // directly so EditorContent can mount without waiting for that transaction.
     const current = observedEditor ?? editor;
     return current ? {
-    bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"),
+    bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"), strike: current.isActive("strike"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     table: current.isActive("table"),
@@ -843,6 +849,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
+          { title: "Strikethrough", icon: Strikethrough, active: state.strike, run: () => editor.chain().focus().toggleStrike().run() },
           { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
@@ -890,6 +897,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
         <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
+        <ExpandMacrosButton className={buttonClass} markdown={value} getMarkdown={readMarkdown} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />

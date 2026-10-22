@@ -1,4 +1,4 @@
-import { Extension, mergeAttributes, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
+import { Extension, mergeAttributes, textblockTypeInputRule, type JSONContent, type NodeViewRenderer } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import CodeBlock from "@tiptap/extension-code-block";
@@ -73,6 +73,11 @@ const LiberaMarkdown = Markdown.extend({
     const manager = this.storage.manager;
     const serialize = manager.serialize.bind(manager);
     manager.serialize = (content) => mergeHighlightSeams(serialize(content));
+    // A backslash only escapes punctuation, so `\fset` or `\theorem{…}` (Markdown
+    // macros, markdown-macros.ts) is written as typed instead of as `\\fset`.
+    const escaping = manager as unknown as { escapeMarkdownSyntax(text: string): string };
+    const escape = escaping.escapeMarkdownSyntax.bind(manager);
+    escaping.escapeMarkdownSyntax = (text) => escape(text).replace(/\\\\(?=[A-Za-z])/g, "\\");
   },
 });
 
@@ -154,6 +159,17 @@ const LiberaLink = Link.extend({
   },
 });
 
+// Typing ```libera-macro (or any language with a hyphen or digit) starts a code block.
+const LiberaCodeBlock = CodeBlock.extend({
+  addInputRules() {
+    return (["`", "~"] as const).map((fence) => textblockTypeInputRule({
+      find: new RegExp(`^${fence.repeat(3)}([a-z][\\w-]*)?[\\s\\n]$`),
+      type: this.type,
+      getAttributes: (match) => ({ language: match[1] }),
+    }));
+  },
+});
+
 export type MarkdownExtensionOptions = {
   /** The Visual editor's citation node view (references/tiptap-citation-view.tsx). */
   citationNodeView?: NodeViewRenderer;
@@ -167,7 +183,7 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
   return [
     StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, codeBlock: false }),
     // The language attribute keeps the whole info string (`html live`), so it round-trips.
-    options.codeBlockNodeView ? CodeBlock.extend({ addNodeView: () => options.codeBlockNodeView! }) : CodeBlock,
+    LiberaCodeBlock.extend(options.codeBlockNodeView ? { addNodeView: () => options.codeBlockNodeView! } : {}),
     LiberaLink.configure({ openOnClick: false }),
     CitationNode.configure({ nodeView: options.citationNodeView ?? null }),
     FrontMatterNode.configure({ documentPath }),

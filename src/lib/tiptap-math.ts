@@ -2,6 +2,8 @@ import { InputRule } from '@tiptap/core';
 import { Fragment, Slice, type Node as ProseMirrorNode, type Schema } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import { InlineMath, BlockMath } from '@tiptap/extension-mathematics';
+import katex from 'katex';
+import { macroLatexAt, onMacrosChange } from './tiptap-macros';
 import { highlightMarkdownOpening } from './tiptap-markdown';
 import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from './math-markers';
 
@@ -43,6 +45,59 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
     return extension.extend({
       addAttributes() {
         return { ...this.parent?.(), mathOpen: { default: null }, mathClose: { default: null } };
+      },
+      // The extension's view, plus the document's Markdown macros (tiptap-macros.ts),
+      // re-rendered when the formula or the macros it uses change.
+      addNodeView() {
+        const { katexOptions, onClick } = this.options;
+        const editor = this.editor;
+        return ({ node, getPos, view }) => {
+          const wrapper = document.createElement(display ? 'div' : 'span');
+          const target = display ? document.createElement('div') : wrapper;
+          wrapper.className = 'tiptap-mathematics-render';
+          if (editor.isEditable) wrapper.classList.add('tiptap-mathematics-render--editable');
+          wrapper.dataset.type = display ? 'block-math' : 'inline-math';
+          if (display) { target.className = 'block-math-inner'; wrapper.appendChild(target); }
+          let current = node;
+          let rendered: string | null = null;
+          const render = () => {
+            const pos = getPos();
+            const latex = (pos === undefined ? undefined : macroLatexAt(view.state, pos)) ?? String(current.attrs.latex ?? '');
+            wrapper.setAttribute('data-latex', String(current.attrs.latex ?? ''));
+            if (latex === rendered) return;
+            rendered = latex;
+            try {
+              if (display && !target.isConnected) wrapper.replaceChildren(target);
+              katex.render(latex, target, katexOptions);
+              wrapper.classList.remove(display ? 'block-math-error' : 'inline-math-error');
+            } catch {
+              wrapper.textContent = latex;
+              wrapper.classList.add(display ? 'block-math-error' : 'inline-math-error');
+            }
+          };
+          const handleClick = (event: Event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const pos = getPos();
+            if (pos !== undefined) onClick?.(current, pos);
+          };
+          if (onClick) wrapper.addEventListener('click', handleClick);
+          render();
+          const unsubscribe = onMacrosChange(view, render);
+          return {
+            dom: wrapper,
+            update(next) {
+              if (next.type !== current.type) return false;
+              current = next;
+              render();
+              return true;
+            },
+            destroy() {
+              unsubscribe();
+              wrapper.removeEventListener('click', handleClick);
+            },
+          };
+        };
       },
       parseMarkdown(token) {
         return { type: name, attrs: { latex: token.latex, mathOpen: token.open, mathClose: token.close } };
