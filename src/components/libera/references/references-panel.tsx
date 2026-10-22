@@ -5,6 +5,9 @@ import { DocumentStylePicker } from "@/components/libera/references/document-sty
 import { retractionTone } from "@/components/libera/references/retraction-badge";
 import {
   AlertCircle,
+  BookCheck,
+  BookOpen,
+  Braces,
   Check,
   Copy,
   Download,
@@ -15,11 +18,15 @@ import {
   MoreVertical,
   Palette,
   Plus,
+  Quote,
   RefreshCw,
+  ScrollText,
   Search,
   ShieldCheck,
   Table2,
+  Tag,
   TextQuote,
+  Trash2,
   Undo2,
   X,
 } from "lucide-react";
@@ -54,15 +61,21 @@ import {
 } from "@/components/libera/references/bibliography-actions";
 import { ReferenceCard } from "@/components/libera/references/reference-card";
 import {
+  changedTags,
+  citationText,
   citingPaths,
   entrySearchText,
   entryMatchesWords,
   fileBaseName,
   hasPdf,
+  hasTag,
   keyLookup,
+  libraryTags,
   REFERENCE_SORTS,
   searchWords,
   sortEntries,
+  tagChangeText,
+  type CitationCopyFormat,
   type ReferenceSort,
 } from "@/components/libera/references/reference-display";
 import { ReferenceEditForm } from "@/components/libera/references/reference-edit-form";
@@ -74,6 +87,7 @@ import {
   ReferenceRow,
   type ReferenceMenuAction,
 } from "@/components/libera/references/reference-row";
+import type { CitationSnippet } from "@/lib/references/occurrences";
 import {
   DeleteReferencesDialog,
   DuplicateGroupsList,
@@ -109,6 +123,7 @@ import {
   type ReferenceEntryInput,
   type ReferenceLibraryOp,
   type FactCheckRequestDetail,
+  type ReadingState,
   type ReferenceLibrary,
   type ReferencesAddRequestDetail,
   type ReferencesRevealDetail,
@@ -123,12 +138,13 @@ import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 // entry point and the Manage references dialog. See docs/references/plan.md
 // §1.1 and §4.4.
 
-export type ReferenceFilter = "all" | "cited" | "review" | "uncited" | "duplicates" | "missing-pdf";
+export type ReferenceFilter = "all" | "cited" | "review" | "to-read" | "uncited" | "duplicates" | "missing-pdf";
 
 export const REFERENCE_FILTERS: Array<{ id: ReferenceFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "cited", label: "Cited in this document" },
   { id: "review", label: "Needs review" },
+  { id: "to-read", label: "To read" },
   { id: "uncited", label: "Uncited" },
   { id: "duplicates", label: "Duplicates" },
   { id: "missing-pdf", label: "Missing PDF" },
@@ -141,13 +157,71 @@ export type ReferencesPanelRequest =
   | { id: number; kind: "reveal"; notebook: string; entryId?: string; key?: string }
   | { id: number; kind: "add"; notebook: string; query: string };
 
-type PanelViewState = { query: string; filter: ReferenceFilter; sort: ReferenceSort };
-const DEFAULT_VIEW: PanelViewState = { query: "", filter: "all", sort: "author" };
-/** Search, filter and sort per notebook, kept for the session. */
+type PanelViewState = { query: string; filter: ReferenceFilter; sort: ReferenceSort; tag: string | null };
+const DEFAULT_VIEW: PanelViewState = { query: "", filter: "all", sort: "author", tag: null };
+/** Search, filter, sort and tag per notebook: kept for the session, and in localStorage across restarts. */
 const viewStates = new Map<string, PanelViewState>();
+const VIEW_STORAGE_PREFIX = "libera:references-view:";
+
+function storedView(notebook: string): PanelViewState | null {
+  try {
+    const raw = window.localStorage.getItem(`${VIEW_STORAGE_PREFIX}${notebook}`);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PanelViewState>;
+    return {
+      query: typeof value.query === "string" ? value.query : "",
+      filter: REFERENCE_FILTERS.some((filter) => filter.id === value.filter) ? value.filter as ReferenceFilter : "all",
+      sort: REFERENCE_SORTS.some((sort) => sort.id === value.sort) ? value.sort as ReferenceSort : "author",
+      tag: typeof value.tag === "string" && value.tag ? value.tag : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeView(notebook: string, view: PanelViewState) {
+  try {
+    window.localStorage.setItem(`${VIEW_STORAGE_PREFIX}${notebook}`, JSON.stringify(view));
+  } catch {
+    // Storage unavailable: the view is kept for the session only.
+  }
+}
+
+function initialView(notebook: string) {
+  return viewStates.get(notebook) ?? storedView(notebook) ?? DEFAULT_VIEW;
+}
 
 export function resetReferencesPanelState() {
   viewStates.clear();
+  try {
+    for (const key of Object.keys(window.localStorage)) if (key.startsWith(VIEW_STORAGE_PREFIX)) window.localStorage.removeItem(key);
+  } catch {
+    // Nothing stored.
+  }
+}
+
+/** A `:::bibliography` marker anywhere in a document (remark-bibliography's BIBLIOGRAPHY_MARKER, per line). */
+const BIBLIOGRAPHY_MARKER_LINES = /^:::bibliography[ \t]*\r?\n[ \t]*:::[ \t]*$/m;
+
+/** Files that can be imported as text when dropped from the computer. */
+const IMPORTABLE_FILE = /\.(bib|ris|nbib|json)$/i;
+
+/** The text of a citing document: its open draft, else the saved file. */
+async function documentText(path: string, openDrafts: OpenReferenceDraft[]) {
+  const draft = openDrafts.find((item) => item.path === path);
+  if (draft) return draft.text;
+  const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${fileBaseName(path)} could not be read.`);
+  const body = await response.json() as { content?: unknown };
+  if (typeof body.content !== "string") throw new Error(`${fileBaseName(path)} could not be read.`);
+  return body.content;
+}
+
+/** True when keys typed into this element are text, not shortcuts. */
+function isEditableTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  if (!element?.tagName) return false;
+  return element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
 }
 
 let nextRequestId = 1;
@@ -201,7 +275,13 @@ export type ReferencesPanelProps = {
   /** A Markdown editor is active, so Cite at cursor can insert. */
   canCite: boolean;
   onCite: (key: string) => void;
+  /** Cite several works at the cursor as one citation, `[@a; @b]`. */
+  onCiteMany?: (keys: string[]) => void;
   onOpenPath: (path: string) => void;
+  /** Open a Markdown document with a citation in it selected. */
+  onOpenCitation?: (path: string, range: { start: number; end: number; line: number }) => void;
+  /** Insert a `:::bibliography` marker at the cursor of the active Markdown editor. */
+  onInsertBibliography?: () => void;
   /** Upload OS files into the notebook root with the app's usual naming; resolves to the uploaded files. */
   onUploadFiles?: (notebook: string, files: File[]) => Promise<LiberaFileNode[] | void>;
   request?: ReferencesPanelRequest | null;
@@ -316,7 +396,10 @@ function ReferencesPanelBody({
   openDrafts,
   canCite,
   onCite,
+  onCiteMany,
   onOpenPath,
+  onOpenCitation,
+  onInsertBibliography,
   onUploadFiles,
   request,
   onRequestHandled,
@@ -330,13 +413,17 @@ function ReferencesPanelBody({
   // With the library, resolved narrative citations (`@key`) count too.
   const activeKeys = useDocumentCitedKeys(activeMarkdownDraft, undefined, library);
 
-  const [view, setViewState] = useState<PanelViewState>(() => viewStates.get(notebook) ?? DEFAULT_VIEW);
+  const [view, setViewState] = useState<PanelViewState>(() => initialView(notebook));
   const setView = useCallback((patch: Partial<PanelViewState>) => setViewState((current) => {
     const next = { ...current, ...patch };
     viewStates.set(notebook, next);
+    storeView(notebook, next);
     return next;
   }), [notebook]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Entries selected together (⌘/Ctrl-click, Shift-click, Shift+↑/↓, ⌘/Ctrl+A), for bulk actions. */
+  const [multi, setMulti] = useState<Set<string>>(() => new Set());
+  const [bulkTags, setBulkTags] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [addBox, setAddBox] = useState<{ id: number; query: string; path?: string } | null>(null);
   const [menu, setMenu] = useState<{ entryId: string; point: { x: number; y: number } } | null>(null);
@@ -360,6 +447,20 @@ function ReferencesPanelBody({
   const [factCheckOpen, setFactCheckOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Opening a card unmounts the list (or the previous card) and with it the
+  // focused element; the card takes focus so its keys keep working. Focus
+  // elsewhere, such as an editor, is left alone.
+  useEffect(() => {
+    if (!openId) return;
+    const frame = window.requestAnimationFrame?.(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body && !panelRef.current?.contains(active)) return;
+      panelRef.current?.querySelector<HTMLElement>(".libera-reference-card")?.focus({ preventScroll: true });
+    });
+    return () => { if (frame !== undefined) window.cancelAnimationFrame?.(frame); };
+  }, [openId]);
 
   const reloadLibrary = useCallback(() => void reload().catch(() => undefined), [reload]);
   const jobs = useReferenceJobs(notebook, reloadLibrary);
@@ -392,6 +493,48 @@ function ReferencesPanelBody({
   const duplicateGroups = useMemo(() => findDuplicateGroups(entries), [entries]);
   const duplicateIds = useMemo(() => new Set(duplicateGroups.flat().map((entry) => entry.id)), [duplicateGroups]);
   const searchTexts = useMemo(() => new Map(entries.map((entry) => [entry.id, entrySearchText(entry)])), [entries]);
+  const tags = useMemo(() => libraryTags(entries), [entries]);
+  const knownTags = useMemo(() => tags.map((item) => item.tag), [tags]);
+  // A tag no entry carries any more is not a filter.
+  const activeTag = view.tag && tags.some((item) => item.tag.toLowerCase() === view.tag!.toLowerCase()) ? view.tag : null;
+
+  // "Recently cited": when a document citing each entry last changed. Open drafts count as now.
+  const citedAt = useMemo(() => {
+    const changed = new Map<string, string>();
+    const walk = (nodes: LiberaTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "folder") walk(node.children);
+        else if (node.fileType === "markdown") changed.set(node.path, node.updatedAt);
+      }
+    };
+    walk(tree.notebooks.find((item) => item.name === notebook)?.children ?? []);
+    const now = new Date().toISOString();
+    for (const draft of openDrafts) changed.set(draft.path, now);
+    const result = new Map<string, string>();
+    for (const [id, paths] of citingById) {
+      let latest = "";
+      for (const path of paths) {
+        const stamp = changed.get(path) ?? "";
+        if (stamp > latest) latest = stamp;
+      }
+      if (paths.length) result.set(id, latest || "0");
+    }
+    return result;
+  }, [tree, notebook, openDrafts, citingById]);
+
+  // PDFs and notes of the notebook, for the card's Attach file.
+  const attachableFiles = useMemo(() => {
+    const files: Array<{ path: string; kind: "pdf" | "markdown" }> = [];
+    const walk = (nodes: LiberaTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "folder") walk(node.children);
+        else if (node.fileType === "pdf") files.push({ path: node.path, kind: "pdf" });
+        else if (node.fileType === "markdown") files.push({ path: node.path, kind: "markdown" });
+      }
+    };
+    walk(tree.notebooks.find((item) => item.name === notebook)?.children ?? []);
+    return files.sort((a, b) => a.path.localeCompare(b.path));
+  }, [tree, notebook]);
 
   // Keys the active document cites, resolved through keys and aliases.
   const { activeIds, missingKeys } = useMemo(() => {
@@ -409,19 +552,21 @@ function ReferencesPanelBody({
   const listed = useMemo(() => {
     const matching = entries.filter((entry) => {
       if (words.length && !entryMatchesWords(searchTexts.get(entry.id) ?? "", words)) return false;
+      if (activeTag && !hasTag(entry, activeTag)) return false;
       // The temporary filter of a job's new entries replaces the chosen filter while it is on.
       if (reviewFilter) return reviewFilter.ids.has(entry.id);
       switch (view.filter) {
         case "cited": return activeIds.has(entry.id);
         case "review": return entry.status !== "confirmed";
+        case "to-read": return entry.reading === "to-read";
         case "uncited": return !(citingById.get(entry.id)?.length);
         case "duplicates": return duplicateIds.has(entry.id);
         case "missing-pdf": return !hasPdf(entry);
         default: return true;
       }
     });
-    return sortEntries(matching, view.sort);
-  }, [entries, words, searchTexts, view.filter, view.sort, activeIds, citingById, duplicateIds, reviewFilter]);
+    return sortEntries(matching, view.sort, { citedAt });
+  }, [entries, words, searchTexts, activeTag, view.filter, view.sort, citedAt, activeIds, citingById, duplicateIds, reviewFilter]);
   const listedMissing = view.filter === "cited" && !reviewFilter
     ? missingKeys.filter((key) => !words.length || words.every((word) => key.toLowerCase().includes(word)))
     : [];
@@ -433,6 +578,7 @@ function ReferencesPanelBody({
     all: entries.length,
     cited: activeIds.size + missingKeys.length,
     review: entries.filter((entry) => entry.status !== "confirmed").length,
+    "to-read": entries.filter((entry) => entry.reading === "to-read").length,
     uncited: entries.filter((entry) => !(citingById.get(entry.id)?.length)).length,
     duplicates: duplicateGroups.length,
     "missing-pdf": entries.filter((entry) => !hasPdf(entry)).length,
@@ -466,7 +612,7 @@ function ReferencesPanelBody({
     if (!revealTarget || !library?.entries[revealTarget]) return;
     // Show it even when the search or filter would hide it.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!listed.some((item) => item.id === revealTarget)) setView({ query: "", filter: "all" });
+    if (!listed.some((item) => item.id === revealTarget)) setView({ query: "", filter: "all", tag: null });
     setSelectedId(revealTarget);
     setOpenId(revealTarget);
     setRevealTarget(null);
@@ -512,6 +658,85 @@ function ReferencesPanelBody({
     onCite(entry.key);
   }
 
+  /** Selected entries in list order: the multi-selection, else the focused row. */
+  const selection = useMemo(() => {
+    if (multi.size) return listed.filter((entry) => multi.has(entry.id));
+    const focused = selectedId ? library?.entries[selectedId] : undefined;
+    return focused ? [focused] : [];
+  }, [multi, listed, selectedId, library]);
+  const multiSelection = multi.size ? selection : [];
+
+  function clearMulti() {
+    setMulti((current) => current.size ? new Set() : current);
+    setBulkTags(false);
+  }
+
+  function citeMany(group: ReferenceEntry[]) {
+    if (group.length === 1) return cite(group[0]);
+    if (!canCite) {
+      setNotice({ tone: "error", text: "Open a Markdown document to cite into it." });
+      return;
+    }
+    if (onCiteMany) onCiteMany(group.map((entry) => entry.key));
+    else for (const entry of group) onCite(entry.key);
+  }
+
+  function copyCitation(group: ReferenceEntry[], format: CitationCopyFormat) {
+    if (group.length) void copy(citationText(group.map((entry) => entry.key), format), group.length === 1 ? "Citation" : `Citation of ${group.length} references`);
+  }
+
+  async function copyFormattedMany(group: ReferenceEntry[]) {
+    if (group.length === 1) return copyFormatted(group[0]);
+    try {
+      const parts = await Promise.all(group.map((entry) => formattedReferenceForCopy(notebook, library?.style ?? "", entry)));
+      await writeRichClipboard(parts.map((part) => part.text).join("\n"), parts.map((part) => `<p>${part.html}</p>`).join(""));
+      setNotice({ tone: "info", text: `${group.length} references copied.` });
+    } catch {
+      setNotice({ tone: "error", text: "The references could not be copied." });
+    }
+  }
+
+  function setReading(group: ReferenceEntry[], reading: ReadingState | null) {
+    const changing = group.filter((entry) => (entry.reading ?? null) !== reading);
+    if (!changing.length) return;
+    const what = reading === "to-read" ? "To read" : reading === "read" ? "read" : "without a reading flag";
+    const label = changing.length === 1 ? `Mark ${changing[0].key} ${what}` : `Mark ${changing.length} references ${what}`;
+    void run(changing.map((entry) => ({ op: "update", id: entry.id, reading })), label, changing.length === 1 ? undefined : `${changing.length} references marked ${what}.`).catch(() => undefined);
+  }
+
+  function toggleReading(entry: ReferenceEntry, reading: ReadingState) {
+    setReading([entry], entry.reading === reading ? null : reading);
+  }
+
+  function changeTags(group: ReferenceEntry[], add: string[], remove: string[]) {
+    const ops: ReferenceLibraryOp[] = [];
+    for (const entry of group) {
+      const next = changedTags(entry, add, remove);
+      if (next) ops.push({ op: "update", id: entry.id, tags: next });
+    }
+    if (!ops.length) return;
+    const { label, message } = tagChangeText(ops.length, add, remove);
+    void run(ops, label, message).catch(() => undefined);
+  }
+
+  function confirmMany(group: ReferenceEntry[]) {
+    const ops: ReferenceLibraryOp[] = group.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" }));
+    if (!ops.length) return;
+    void run(ops, ops.length === 1 ? "Confirm 1 reference" : `Confirm ${ops.length} references`, `${ops.length} marked confirmed.`).catch(() => undefined);
+  }
+
+  function deleteMany(group: ReferenceEntry[]) {
+    if (!group.length) return;
+    if (group.length === 1) return requestDelete(group[0]);
+    setDeleting(group);
+  }
+
+  function showTag(tag: string) {
+    clearMulti();
+    setOpenId(null);
+    setView({ tag });
+  }
+
   async function copy(text: string, what: string) {
     try {
       await copyText(text);
@@ -547,29 +772,103 @@ function ReferencesPanelBody({
       case "open-pdf": { const pdf = attachment("pdf"); if (pdf && pdf.kind !== "url") onOpenPath(pdf.path); return; }
       case "open-note": { const note = attachment("markdown"); if (note && note.kind !== "url") onOpenPath(note.path); return; }
       case "copy-key": return void copy(entry.key, "Key");
+      case "copy-citation": return copyCitation([entry], "pandoc");
+      case "copy-latex": return copyCitation([entry], "latex");
       case "copy-formatted": return void copyFormatted(entry);
+      case "to-read": return toggleReading(entry, "to-read");
+      case "read": return toggleReading(entry, "read");
       case "reresolve": return setReresolving(entry);
       case "edit": return setEditing({ entry });
       case "delete": return requestDelete(entry);
     }
   }
 
-  function moveSelection(step: number) {
+  /** Select from the anchor (the focused row) to `entryId`, in list order. */
+  function selectRange(entryId: string) {
+    const from = listed.findIndex((entry) => entry.id === (selectedId ?? entryId));
+    const to = listed.findIndex((entry) => entry.id === entryId);
+    if (from < 0 || to < 0) return;
+    const [low, high] = from < to ? [from, to] : [to, from];
+    setMulti(new Set(listed.slice(low, high + 1).map((entry) => entry.id)));
+  }
+
+  function moveSelection(step: number, extend = false) {
     if (!listed.length) return;
     const index = listed.findIndex((entry) => entry.id === selectedId);
     const next = index < 0 ? (step > 0 ? 0 : listed.length - 1) : Math.max(0, Math.min(listed.length - 1, index + step));
-    setSelectedId(listed[next].id);
+    const nextId = listed[next].id;
+    if (extend && selectedId) {
+      setMulti((current) => {
+        const updated = new Set(current.size ? current : [selectedId]);
+        // Moving back over a selected row deselects the row being left.
+        if (updated.has(nextId) && updated.size > 1) updated.delete(selectedId);
+        else updated.add(nextId);
+        return updated;
+      });
+    } else if (!extend) {
+      clearMulti();
+    }
+    setSelectedId(nextId);
+  }
+
+  function openRow(entry: ReferenceEntry, modifiers: { range: boolean; toggle: boolean }) {
+    if (modifiers.range && selectedId) {
+      selectRange(entry.id);
+      return;
+    }
+    if (modifiers.toggle) {
+      setMulti((current) => {
+        const next = new Set(current.size ? current : selectedId && selectedId !== entry.id ? [selectedId] : []);
+        if (next.has(entry.id)) next.delete(entry.id);
+        else next.add(entry.id);
+        return next;
+      });
+      setSelectedId(entry.id);
+      return;
+    }
+    clearMulti();
+    setSelectedId(entry.id);
+    setOpenId(entry.id);
   }
 
   function listKeyDown(event: ReactKeyboardEvent) {
     if (event.nativeEvent.isComposing) return;
+    const mod = event.metaKey || event.ctrlKey;
+    // Letter shortcuts only from the list itself: in the search field they are typing.
+    const fromList = event.target === listRef.current;
+    const focused = selectedId ? library?.entries[selectedId] : undefined;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      moveSelection(event.key === "ArrowDown" ? 1 : -1);
-    } else if (event.key === "Enter" && selectedId && library?.entries[selectedId]) {
+      moveSelection(event.key === "ArrowDown" ? 1 : -1, event.shiftKey);
+    } else if (event.key === "Enter" && focused) {
       event.preventDefault();
-      if (event.metaKey || event.ctrlKey) cite(library.entries[selectedId]);
-      else setOpenId(selectedId);
+      if (mod) citeMany(selection);
+      else {
+        clearMulti();
+        setOpenId(focused.id);
+      }
+    } else if (!fromList) {
+      return;
+    } else if (event.key === " " && focused) {
+      event.preventDefault();
+      setOpenId(focused.id);
+    } else if (mod && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      setMulti(new Set(listed.map((entry) => entry.id)));
+    } else if (mod && event.key.toLowerCase() === "c" && selection.length) {
+      event.preventDefault();
+      if (event.shiftKey) void copyFormattedMany(selection);
+      else void copy(selection.map((entry) => entry.key).join(", "), selection.length === 1 ? "Key" : `${selection.length} keys`);
+    } else if ((event.key === "Delete" || event.key === "Backspace") && selection.length) {
+      event.preventDefault();
+      deleteMany(selection);
+    } else if (!mod && !event.altKey && event.key.toLowerCase() === "e" && focused) {
+      event.preventDefault();
+      setEditing({ entry: focused });
+    } else if (event.key === "Escape" && multi.size) {
+      event.preventDefault();
+      event.stopPropagation();
+      clearMulti();
     }
   }
 
@@ -577,7 +876,86 @@ function ReferencesPanelBody({
     if (isReferenceUndoShortcut({ ...event, target: event.target })) {
       event.preventDefault();
       void runUndo();
+      return;
     }
+    if (event.nativeEvent.isComposing) return;
+    const mod = event.metaKey || event.ctrlKey;
+    if (openEntry) {
+      if (mod && event.shiftKey && event.key === "Enter" && openEntry.status !== "confirmed") {
+        event.preventDefault();
+        void confirmAndNext();
+        return;
+      }
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        stepCard(event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Escape" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCard();
+      }
+      return;
+    }
+    if ((event.key === "/" && !isEditableTarget(event.target)) || (mod && !event.shiftKey && event.key.toLowerCase() === "f")) {
+      if (!searchRef.current) return;
+      event.preventDefault();
+      searchRef.current.focus();
+      searchRef.current.select();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // The card: previous/next and review
+  // -------------------------------------------------------------------------
+
+  const openEntry = openId ? library?.entries[openId] : undefined;
+  const openIndex = openEntry ? listed.findIndex((entry) => entry.id === openEntry.id) : -1;
+  const reviewLeft = openEntry ? listed.filter((entry) => entry.status !== "confirmed" && entry.id !== openEntry.id).length : 0;
+
+  function closeCard() {
+    setOpenId(null);
+    window.requestAnimationFrame?.(() => listRef.current?.focus());
+  }
+
+  function stepCard(step: number) {
+    if (openIndex < 0) return;
+    const next = listed[openIndex + step];
+    if (!next) return;
+    setSelectedId(next.id);
+    setOpenId(next.id);
+  }
+
+  /** The next entry after `fromId` in the list that still needs review, wrapping around. */
+  function nextToReview(fromId: string) {
+    const index = listed.findIndex((entry) => entry.id === fromId);
+    for (let step = 1; step <= listed.length; step += 1) {
+      const entry = listed[(Math.max(index, 0) + step) % listed.length];
+      if (entry.id !== fromId && entry.status !== "confirmed") return entry;
+    }
+    return undefined;
+  }
+
+  async function confirmAndNext() {
+    if (!openEntry) return;
+    const next = nextToReview(openEntry.id);
+    try {
+      if (openEntry.status !== "confirmed") await run([{ op: "update", id: openEntry.id, status: "confirmed" }], `Confirm ${openEntry.key}`);
+    } catch {
+      return;
+    }
+    if (next) {
+      setSelectedId(next.id);
+      setOpenId(next.id);
+    } else {
+      closeCard();
+      setNotice({ tone: "info", text: "Every reference in this list is confirmed.", undo: true });
+    }
+  }
+
+  function openCitation(path: string, snippet: CitationSnippet) {
+    if (onOpenCitation) onOpenCitation(path, { start: snippet.start, end: snippet.end, line: snippet.line });
+    else onOpenPath(path);
   }
 
   // -------------------------------------------------------------------------
@@ -667,9 +1045,18 @@ function ReferencesPanelBody({
       }
       const files = Array.from(event.dataTransfer.files ?? []);
       const pdfs = files.filter((file) => file.name.toLowerCase().endsWith(".pdf"));
+      const referenceFiles = files.filter((file) => IMPORTABLE_FILE.test(file.name));
       if (!files.length) return;
+      // .bib, .ris, .nbib and CSL-JSON files are imported from their text; nothing is uploaded.
+      for (const file of referenceFiles) {
+        const before = library;
+        const result = await importReferences({ notebook, text: await file.text() });
+        if (before) undo.record(before, result.library, `Import ${file.name}`, result.added);
+        announceLibraryChange(notebook, result.library.revision);
+        setNotice({ tone: result.errors.length || !result.added.length ? "error" : "info", text: `Imported ${result.added.length} reference${result.added.length === 1 ? "" : "s"} from ${file.name}${result.duplicates.length ? `; ${result.duplicates.length} possible duplicate${result.duplicates.length === 1 ? "" : "s"}` : ""}${result.errors.length ? `; ${result.errors.length} problem${result.errors.length === 1 ? "" : "s"}` : ""}.` });
+      }
       if (!pdfs.length) {
-        setNotice({ tone: "error", text: "Only PDFs can be dropped from your computer. Paste BibTeX or RIS into Add instead." });
+        if (!referenceFiles.length) setNotice({ tone: "error", text: "Drop PDFs, or .bib, .ris, .nbib or CSL-JSON files." });
         return;
       }
       if (!onUploadFiles) {
@@ -755,7 +1142,6 @@ function ReferencesPanelBody({
   const styleFiles = useMemo(() => notebookStyleFiles(tree, notebook), [tree, notebook]);
   const currentStyle = library?.style ?? "";
   const styleLabel = BUNDLED_CSL_STYLES.find((style) => style.id === currentStyle)?.label ?? (currentStyle ? fileBaseName(currentStyle) : "");
-  const openEntry = openId ? library?.entries[openId] : undefined;
   const menuEntry = menu ? library?.entries[menu.entryId] : undefined;
 
   const first = windowed ? Math.max(0, Math.floor(Math.max(0, scroll.top - offset) / REFERENCE_ROW_HEIGHT) - 8) : 0;
@@ -787,6 +1173,12 @@ function ReferencesPanelBody({
     documentBlocker,
     onCopyDocument: () => void copyList(true),
     onExportDocument: (format) => void exportList(format, true),
+    bibliographyBlocker: !onInsertBibliography || activeMarkdownDraft === null || !canCite
+      ? "Open a Markdown document and place the cursor to insert its bibliography."
+      : BIBLIOGRAPHY_MARKER_LINES.test(activeMarkdownDraft)
+        ? "This document already places its bibliography."
+        : null,
+    onInsertBibliography: () => onInsertBibliography?.(),
   };
 
   async function openPanelMenu(button: HTMLButtonElement) {
@@ -841,14 +1233,17 @@ function ReferencesPanelBody({
       entry,
       words,
       selected: entry.id === selectedId,
+      inSelection: multi.has(entry.id),
       citedByActive: activeIds.has(entry.id),
       citingCount: citingById.get(entry.id)?.length ?? 0,
       duplicate: duplicateIds.has(entry.id),
       canCite,
-      onOpen: () => { setSelectedId(entry.id); setOpenId(entry.id); },
+      onOpen: (modifiers: { range: boolean; toggle: boolean }) => openRow(entry, modifiers),
+      onTag: showTag,
       onCite: () => cite(entry),
       onOpenAttachment: onOpenPath,
       onMenu: async (point: { x: number; y: number }) => {
+        if (!multi.has(entry.id)) clearMulti();
         setSelectedId(entry.id);
         if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
           setMenu({ entryId: entry.id, point });
@@ -885,6 +1280,7 @@ function ReferencesPanelBody({
 
   return (
     <div
+      ref={panelRef}
       className="libera-references-panel relative flex min-h-0 flex-1 flex-col overflow-hidden"
       data-drag-active={dragActive || undefined}
       onKeyDown={panelKeyDown}
@@ -984,10 +1380,17 @@ function ReferencesPanelBody({
           citing={citingOf(openEntry)}
           canCite={canCite}
           apply={run}
-          onBack={() => {
-            setOpenId(null);
-            window.requestAnimationFrame?.(() => listRef.current?.focus());
-          }}
+          onBack={closeCard}
+          position={openIndex >= 0 ? { index: openIndex, total: listed.length } : undefined}
+          onPrevious={() => stepCard(-1)}
+          onNext={() => stepCard(1)}
+          reviewLeft={reviewLeft}
+          onConfirmNext={() => void confirmAndNext()}
+          attachableFiles={attachableFiles}
+          knownTags={knownTags}
+          onTag={showTag}
+          loadDocument={(path) => documentText(path, openDrafts)}
+          onOpenCitation={openCitation}
           onCite={() => cite(openEntry)}
           onCopy={(text, what) => void copy(text, what)}
           onCopyFormatted={() => void copyFormatted(openEntry)}
@@ -1031,25 +1434,62 @@ function ReferencesPanelBody({
                   </button>
                 ) : null}
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
                 <select
                   aria-label="Filter references"
-                  className="libera-sidebar-search-input h-8 min-w-0 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                  className="libera-sidebar-search-input h-8 min-w-32 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
                   value={view.filter}
                   onChange={(event) => setView({ filter: event.target.value as ReferenceFilter })}
                 >
                   {REFERENCE_FILTERS.map((filter) => <option key={filter.id} value={filter.id}>{filter.label} ({counts[filter.id]})</option>)}
                 </select>
+                {tags.length ? (
+                  <select
+                    aria-label="Filter by tag"
+                    className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                    value={activeTag ?? ""}
+                    onChange={(event) => setView({ tag: event.target.value || null })}
+                  >
+                    <option value="">All tags</option>
+                    {tags.map((item) => <option key={item.tag} value={item.tag}>#{item.tag} ({item.count})</option>)}
+                  </select>
+                ) : null}
                 <select
                   aria-label="Sort references"
-                  className="libera-sidebar-search-input h-8 w-28 shrink-0 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
+                  className="libera-sidebar-search-input h-8 min-w-24 flex-1 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring"
                   value={view.sort}
                   onChange={(event) => setView({ sort: event.target.value as ReferenceSort })}
                 >
                   {REFERENCE_SORTS.map((sort) => <option key={sort.id} value={sort.id}>{sort.label}</option>)}
                 </select>
               </div>
+              {activeTag ? (
+                <div className="flex items-center gap-1.5" aria-label="Tag filter">
+                  <span className="libera-reference-tag">
+                    <Tag aria-hidden className="h-3 w-3" /> {activeTag}
+                    <button type="button" aria-label="Clear the tag filter" onClick={() => setView({ tag: null })}><X aria-hidden className="h-3 w-3" /></button>
+                  </span>
+                </div>
+              ) : null}
             </div>
+          ) : null}
+          {multiSelection.length ? (
+            <BulkActionsBar
+              count={multiSelection.length}
+              canCite={canCite}
+              entries={multiSelection}
+              knownTags={knownTags}
+              tagsOpen={bulkTags}
+              onTagsOpen={setBulkTags}
+              onCite={() => citeMany(multiSelection)}
+              onCopyCitation={(format) => copyCitation(multiSelection, format)}
+              onCopyFormatted={() => void copyFormattedMany(multiSelection)}
+              onTags={(add, remove) => changeTags(multiSelection, add, remove)}
+              onReading={(reading) => setReading(multiSelection, reading)}
+              onConfirm={() => confirmMany(multiSelection)}
+              onDelete={() => deleteMany(multiSelection)}
+              onClear={clearMulti}
+            />
           ) : null}
           {renderList()}
         </>
@@ -1093,6 +1533,7 @@ function ReferencesPanelBody({
         onClose={() => setDeleting(null)}
         onDelete={async (ids) => {
           if (openId && ids.includes(openId)) setOpenId(null);
+          clearMulti();
           await undo.apply(ids.map((id) => ({ op: "delete", id })), ids.length === 1 ? `Delete ${library?.entries[ids[0]]?.key ?? "reference"}` : `Delete ${ids.length} references`);
           setNotice({ tone: "info", text: `Deleted ${ids.length === 1 ? library?.entries[ids[0]]?.key ?? "the reference" : `${ids.length} references`}.`, undo: true });
         }}
@@ -1283,6 +1724,9 @@ type PanelMenuProps = {
   documentBlocker: string | null;
   onCopyDocument: () => void;
   onExportDocument: (format: DocumentExportFormat) => void;
+  /** Why a bibliography marker cannot be inserted, or null. */
+  bibliographyBlocker: string | null;
+  onInsertBibliography: () => void;
 };
 
 function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: number }) {
@@ -1302,6 +1746,7 @@ function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: numbe
     { id: "export-list", label: "Export reference list…", submenu: BIBLIOGRAPHY_FORMATS.map((format) => ({
       id: `export-list:${format.id}`, label: format.label, onSelect: () => props.onExportList(format.id),
     })) },
+    { id: "insert-bibliography", label: "Insert bibliography here", enabled: !props.bibliographyBlocker, onSelect: props.onInsertBibliography },
     { id: "copy-document", label: "Copy bibliography", enabled: !props.documentBlocker, onSelect: props.onCopyDocument },
     { id: "export-document", label: "Export bibliography as", enabled: !props.documentBlocker, submenu: DOCUMENT_EXPORT_FORMATS.map((format) => ({
       id: `export-document:${format.id}`, label: format.label, onSelect: () => props.onExportDocument(format.id),
@@ -1344,6 +1789,8 @@ function PanelMenu({
   documentBlocker,
   onCopyDocument,
   onExportDocument,
+  bibliographyBlocker,
+  onInsertBibliography,
 }: PanelMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1404,6 +1851,9 @@ function PanelMenu({
         ))}
       </div>
       <p className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">For this document</p>
+      <button type="button" role="menuitem" className={item} disabled={Boolean(bibliographyBlocker)} title={bibliographyBlocker ?? "Place the generated bibliography at the cursor instead of at the end"} onClick={act(onInsertBibliography)}>
+        <ScrollText aria-hidden className="h-4 w-4" /> Insert bibliography here
+      </button>
       <button type="button" role="menuitem" className={item} disabled={Boolean(documentBlocker)} title={documentBlocker ?? "What the active document cites, formatted in the citation style"} onClick={act(onCopyDocument)}>
         <Copy aria-hidden className="h-4 w-4" /> Copy bibliography
       </button>
@@ -1445,3 +1895,85 @@ function PanelMenu({
     </div>
   );
 }
+
+/** Actions for several selected entries, above the list. */
+function BulkActionsBar({ count, canCite, entries, knownTags, tagsOpen, onTagsOpen, onCite, onCopyCitation, onCopyFormatted, onTags, onReading, onConfirm, onDelete, onClear }: {
+  count: number;
+  canCite: boolean;
+  entries: ReferenceEntry[];
+  knownTags: string[];
+  tagsOpen: boolean;
+  onTagsOpen: (open: boolean) => void;
+  onCite: () => void;
+  onCopyCitation: (format: CitationCopyFormat) => void;
+  onCopyFormatted: () => void;
+  onTags: (add: string[], remove: string[]) => void;
+  onReading: (reading: ReadingState | null) => void;
+  onConfirm: () => void;
+  onDelete: () => void;
+  onClear: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const button = "libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg disabled:opacity-40";
+  // Tags carried by any selected entry, with how many of them carry it.
+  const present = libraryTags(entries);
+  const unconfirmed = entries.filter((entry) => entry.status !== "confirmed").length;
+  const allToRead = entries.every((entry) => entry.reading === "to-read");
+  const allRead = entries.every((entry) => entry.reading === "read");
+
+  function addTags() {
+    const add = draft.split(",").map((tag) => tag.trim()).filter(Boolean);
+    setDraft("");
+    if (add.length) onTags(add, []);
+  }
+
+  return (
+    <div className="libera-panel-card mx-3 mb-2 space-y-1.5 p-1.5" role="toolbar" aria-label={`${count} selected references`}>
+      <div className="flex flex-wrap items-center gap-0.5">
+        <span className="mr-auto px-1 text-[11px] font-semibold">{count} selected</span>
+        <button type="button" className={button} aria-label="Cite the selection at the cursor" title={canCite ? "Cite all at the cursor as one citation (⌘/Ctrl+Enter)" : "Open a Markdown document to cite into it"} disabled={!canCite} onClick={onCite}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Copy as one citation" title="Copy as [@a; @b]" onClick={() => onCopyCitation("pandoc")}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Copy as a LaTeX citation" title={"Copy as \\cite{a,b}"} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Copy formatted references" title="Copy formatted references (⌘/Ctrl+Shift+C)" onClick={onCopyFormatted}><ScrollText aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Edit tags of the selection" title="Add or remove tags" aria-expanded={tagsOpen} onClick={() => onTagsOpen(!tagsOpen)}><Tag aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={allToRead ? "Remove from To read" : "Mark as To read"} title={allToRead ? "Remove from To read" : "Mark as To read"} aria-pressed={allToRead} onClick={() => onReading(allToRead ? null : "to-read")}><BookOpen aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label={allRead ? "Mark as unread" : "Mark as read"} title={allRead ? "Mark as unread" : "Mark as read"} aria-pressed={allRead} onClick={() => onReading(allRead ? null : "read")}><BookCheck aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Confirm the selection" title={unconfirmed ? `Mark ${unconfirmed} as confirmed` : "All are confirmed"} disabled={!unconfirmed} onClick={onConfirm}><Check aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} data-tone="destructive" aria-label="Delete the selection" title="Delete… (Delete)" onClick={onDelete}><Trash2 aria-hidden className="h-3.5 w-3.5" /></button>
+        <button type="button" className={button} aria-label="Clear the selection" title="Clear the selection (Esc)" onClick={onClear}><X aria-hidden className="h-3.5 w-3.5" /></button>
+      </div>
+      {tagsOpen ? (
+        <div className="space-y-1.5 px-1 pb-0.5" role="group" aria-label="Tags of the selection">
+          {present.length ? (
+            <div className="flex flex-wrap gap-1">
+              {present.map((item) => (
+                <span key={item.tag} className="libera-reference-tag" title={`${item.count} of ${count} selected`}>
+                  {item.tag}{item.count < count ? <span className="text-muted-foreground"> {item.count}/{count}</span> : null}
+                  {item.count < count ? <button type="button" aria-label={`Add tag ${item.tag} to all selected`} title="Add to all selected" onClick={() => onTags([item.tag], [])}>+</button> : null}
+                  <button type="button" aria-label={`Remove tag ${item.tag} from the selection`} onClick={() => onTags([], [item.tag])}><X aria-hidden className="h-3 w-3" /></button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <form className="flex gap-1.5" onSubmit={(event) => { event.preventDefault(); addTags(); }}>
+            <input
+              className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-[12px]"
+              aria-label="Tag to add to the selection"
+              placeholder="Add a tag to all selected"
+              list="libera-reference-bulk-tags"
+              value={draft}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onTagsOpen(false); } }}
+            />
+            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!draft.trim()}>Add</button>
+          </form>
+          <datalist id="libera-reference-bulk-tags">
+            {knownTags.map((tag) => <option key={tag} value={tag} />)}
+          </datalist>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+

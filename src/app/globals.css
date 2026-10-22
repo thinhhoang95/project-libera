@@ -2243,6 +2243,16 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap-live-block .markdown-notebook-block { margin: 0; }
 .libera-tiptap a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 .libera-tiptap img { display: block; max-width: 100%; max-height: 560px; object-fit: contain; border-radius: .5rem; margin: 1em 0; }
+/* A figure made by the note's Python, with Re-run and Code on hover (tiptap-python-figure-view.ts). */
+.libera-python-figure { position: relative; margin: 1em 0; width: fit-content; max-width: 100%; }
+.libera-python-figure img { margin: 0; }
+.libera-python-figure.is-running img { opacity: .55; transition: opacity .2s; }
+.libera-python-figure-bar { position: absolute; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .25rem; padding: .2rem .25rem .2rem .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 500 .75rem/1.2 var(--font-sans); box-shadow: 0 2px 8px rgb(0 0 0 / .08); opacity: 0; transition: opacity .15s; }
+.libera-python-figure:hover .libera-python-figure-bar, .libera-python-figure:focus-within .libera-python-figure-bar, .libera-python-figure.is-running .libera-python-figure-bar { opacity: 1; }
+.libera-python-figure-bar button { border-radius: .35rem; padding: .2rem .45rem; color: var(--foreground); background: transparent; cursor: pointer; }
+.libera-python-figure-bar button:hover:not(:disabled) { background: var(--muted); }
+.libera-python-figure-bar button:disabled { color: var(--muted-foreground); cursor: progress; }
+.libera-tiptap .libera-python-figure-message { margin: .5em 0 0; padding: .6em .8em; font-size: .8em; white-space: pre-wrap; color: var(--destructive); background: var(--muted); }
 .libera-tiptap hr { border-color: var(--border); margin: 1.5em 0; }
 .libera-tiptap table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 1em 0; }
 .libera-tiptap :is(td,th) { border: 1px solid var(--border); padding: .5em .75em; vertical-align: top; position: relative; }
@@ -2254,6 +2264,55 @@ button.border[class*="border-white"]:hover {
 .markdown-renderer blockquote[data-box-color] li::marker,
 .libera-tiptap blockquote[data-box-color] a { color: inherit; }
 .libera-tiptap blockquote[data-box-color] :is(pre, code, th, [data-type="block-math"]) { color: var(--foreground); }
+
+/* Heading accent from Preferences → Markdown (use-markdown-accents.ts), with a
+   lighter shade for the dark theme. Bold lead-ins (markdown-lead-in.ts) and
+   list bullets and numbers share it. Colored boxes and text colored by hand keep their own color. */
+:root[data-heading-color="blue"] { --libera-heading-accent: #1d4ed8; }
+:root[data-heading-color="indigo"] { --libera-heading-accent: #4338ca; }
+:root[data-heading-color="teal"] { --libera-heading-accent: #0f766e; }
+:root[data-heading-color="green"] { --libera-heading-accent: #15803d; }
+:root[data-heading-color="purple"] { --libera-heading-accent: #7e22ce; }
+:root[data-heading-color="rose"] { --libera-heading-accent: #be123c; }
+:root[data-heading-color="orange"] { --libera-heading-accent: #c2410c; }
+:root.dark[data-heading-color="blue"] { --libera-heading-accent: #93c5fd; }
+:root.dark[data-heading-color="indigo"] { --libera-heading-accent: #a5b4fc; }
+:root.dark[data-heading-color="teal"] { --libera-heading-accent: #5eead4; }
+:root.dark[data-heading-color="green"] { --libera-heading-accent: #86efac; }
+:root.dark[data-heading-color="purple"] { --libera-heading-accent: #d8b4fe; }
+:root.dark[data-heading-color="rose"] { --libera-heading-accent: #fda4af; }
+:root.dark[data-heading-color="orange"] { --libera-heading-accent: #fdba74; }
+/* Spectrum: a color per heading level; lists and lead-ins take the H2 blue. */
+:root[data-heading-color="spectrum"] { --libera-heading-accent: #1d4ed8; }
+:root.dark[data-heading-color="spectrum"] { --libera-heading-accent: #93c5fd; }
+:root[data-heading-color="spectrum"] h1 { --libera-level-accent: #4338ca; }
+:root[data-heading-color="spectrum"] h3 { --libera-level-accent: #0f766e; }
+:root[data-heading-color="spectrum"] h4 { --libera-level-accent: #15803d; }
+:root[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #475569; }
+:root.dark[data-heading-color="spectrum"] h1 { --libera-level-accent: #a5b4fc; }
+:root.dark[data-heading-color="spectrum"] h3 { --libera-level-accent: #5eead4; }
+:root.dark[data-heading-color="spectrum"] h4 { --libera-level-accent: #86efac; }
+:root.dark[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #cbd5e1; }
+/* Custom: the palette from Preferences (use-markdown-accents.ts) is chosen for
+   the light theme; the dark theme mixes each color halfway to white. */
+:root[data-heading-color="custom"] { --libera-heading-accent: var(--libera-custom-lists); }
+:root[data-heading-color="custom"] h1 { --libera-level-accent: var(--libera-custom-h1); }
+:root[data-heading-color="custom"] h2 { --libera-level-accent: var(--libera-custom-h2); }
+:root[data-heading-color="custom"] h3 { --libera-level-accent: var(--libera-custom-h3); }
+:root[data-heading-color="custom"] h4 { --libera-level-accent: var(--libera-custom-h4); }
+:root[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: var(--libera-custom-h5); }
+:root.dark[data-heading-color="custom"] { --libera-heading-accent: color-mix(in oklab, var(--libera-custom-lists) 50%, white); }
+:root.dark[data-heading-color="custom"] h1 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h1) 50%, white); }
+:root.dark[data-heading-color="custom"] h2 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h2) 50%, white); }
+:root.dark[data-heading-color="custom"] h3 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h3) 50%, white); }
+:root.dark[data-heading-color="custom"] h4 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h4) 50%, white); }
+:root.dark[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h5) 50%, white); }
+:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+  :is(h1, h2, h3, h4, h5, h6, [role="heading"]):not(blockquote[data-box-color] *) { color: var(--libera-level-accent, var(--libera-heading-accent)); }
+:root[data-heading-color][data-bold-lead-ins] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+  .libera-lead-in:not(blockquote[data-box-color] *, span[style^="color:"] *, span[style*="; color:"] *) { color: var(--libera-heading-accent); }
+:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+  li:not(blockquote[data-box-color] *)::marker { color: var(--libera-heading-accent); }
 .libera-tiptap .selectedCell { background: var(--muted); }
 .libera-tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .libera-tiptap ul[data-type="taskList"] li { display: flex; gap: .5em; }
@@ -2321,6 +2380,13 @@ button.border[class*="border-white"]:hover {
 .review-comment-card { overflow-wrap: anywhere; }
 .review-comment-card[data-selected="false"]:hover { background: #ffffff66; }
 html.dark .review-comment-card[data-selected="false"]:hover { background: #a3bbef12; }
+/* Comment bodies render Markdown (CommentBody): tight spacing for a narrow card. */
+.review-comment-body > :first-child { margin-top: 0; }
+.review-comment-body > :last-child { margin-bottom: 0; }
+.review-comment-body :where(p, ul, ol, blockquote, pre, table, .katex-display) { margin-block: .35rem; }
+.review-comment-body :where(h1, h2, h3, h4, h5, h6) { margin-block: .5rem .25rem; }
+.review-comment-body .katex-display { overflow-x: auto; overflow-y: hidden; }
+.review-comment-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; pointer-events: none; }
 .review-comment-actions { display: flex; align-items: center; gap: .5rem; }
 .review-comment-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 2rem; height: 2rem; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: .55rem; background: color-mix(in srgb, currentColor 8%, var(--card)); cursor: pointer; transition: background .15s, opacity .15s; }
 /* Explicit light and dark values: the CSS pipeline compiles light-dark() into a
@@ -2578,6 +2644,21 @@ html.dark .libera-reference-chip[data-low="true"] { color: #f0c26b; }
 .libera-reference-tag button { display: inline-flex; border-radius: 999px; padding: 1px; opacity: 0.7; }
 .libera-reference-tag button:hover { opacity: 1; background: #3979e81a; }
 html.dark .libera-reference-tag { background: #678dcc26; color: #a2c9ff; }
+.libera-reference-tag-link { max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3979e8; border-radius: 4px; }
+.libera-reference-tag-link:hover { text-decoration: underline; }
+html.dark .libera-reference-tag-link { color: #a2c9ff; }
+.libera-reference-row[data-in-selection="true"] { background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 0 0 0 1px #3979e855; }
+html.dark .libera-reference-row[data-in-selection="true"] { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.libera-reference-reading { display: inline-flex; color: #a86a0c; }
+.libera-reference-reading[data-reading="read"] { color: #17855a; }
+html.dark .libera-reference-reading { color: #f0c26b; }
+html.dark .libera-reference-reading[data-reading="read"] { color: #5fd3a0; }
+.libera-reference-reading-option { color: var(--muted-foreground); }
+.libera-reference-reading-option + .libera-reference-reading-option { border-left: 1px solid var(--input); }
+.libera-reference-reading-option:hover { background: color-mix(in srgb, var(--muted) 70%, transparent); color: var(--foreground); }
+.libera-reference-reading-option[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 500; }
+.libera-reference-snippet:hover { background: color-mix(in srgb, var(--muted) 70%, transparent); }
+.libera-reference-snippet mark { padding: 0 1px; border-radius: 3px; }
 .libera-reference-dropzone {
   z-index: 20; border: 1.5px dashed color-mix(in srgb, var(--accent) 70%, transparent);
   background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); backdrop-filter: blur(2px);

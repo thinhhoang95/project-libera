@@ -29,7 +29,17 @@ import {
   movePdfTextCache,
   movePdfTextCacheDirectory,
 } from "@/lib/storage/pdf-text-cache";
-import { cleanupMarkdownImageAssets, copyMarkdownImageAssets, pruneUnusedMarkdownImageAssets, readMarkdownAssetDocuments } from "@/lib/storage/markdown-assets";
+import {
+  cleanupMarkdownImageAssets,
+  copyMarkdownImageAssets,
+  copyPythonSidecar,
+  deletePythonSidecar,
+  markdownPathsInFolder,
+  movePythonSidecar,
+  migratePythonSidecar,
+  pruneUnusedMarkdownImageAssets,
+  readMarkdownAssetDocuments,
+} from "@/lib/storage/markdown-assets";
 import {
   assertSafeSegment,
   audioSidecarDirectories,
@@ -203,6 +213,7 @@ export async function moveFile(relativePath: string, nextNotebook: string, nextN
 }
 
 async function prepareMarkdownImageMove(from: string, to: string, currentType: string, nextType: string) {
+  if (currentType === "markdown") await migratePythonSidecar(from);
   if (currentType !== "markdown" || nextType !== "markdown" || splitFilePath(from).notebook === splitFilePath(to).notebook) return null;
   const source = splitFilePath(from);
   const previous = await readFile(filePathFromParts(source.notebook, source.pathParts), "utf8");
@@ -293,10 +304,13 @@ export async function renameFolder(relativePath: string, nextName: string) {
 
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
+  const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
+  for (const note of notes) await migratePythonSidecar(note);
   await rename(currentPath, nextPath);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
+  await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
@@ -361,10 +375,13 @@ export async function archiveFolder(relativePath: string) {
 
   await migratePdfAnnotationDirectory(current.notebook, current.pathParts);
   await migrateImageAnnotationDirectory(current.notebook, current.pathParts);
+  const notes = await markdownPathsInFolder(current.notebook, current.pathParts);
+  for (const note of notes) await migratePythonSidecar(note);
   await rename(currentPath, available.path);
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
+  await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -397,6 +414,7 @@ export async function deleteFolder(relativePath: string) {
   for (const directory of audioSidecarDirectories(current.notebook, current.pathParts)) {
     await rm(directory, { force: true, recursive: true });
   }
+  for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
   await detachReferenceAttachments(relativeFilePath(current.notebook, current.pathParts));
@@ -489,6 +507,7 @@ export async function archiveFile(relativePath: string) {
 
   if (currentFileType === "pdf") await migratePdfAnnotations(current.notebook, current.pathParts);
   if (currentFileType === "image") await migrateImageAnnotations(current.notebook, current.pathParts);
+  if (currentFileType === "markdown") await migratePythonSidecar(currentRelativePath);
   await rename(currentPath, available.path);
   await moveRelatedMetadata(
     current.notebook,
@@ -590,7 +609,10 @@ export async function deleteFile(relativePath: string) {
     for (const sidecar of audioSidecarPaths(notebook, pathParts)) await rm(sidecar, { force: true });
   }
 
-  if (markdown !== null) await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
+  if (markdown !== null) {
+    await deletePythonSidecar(relativeFilePath(notebook, pathParts));
+    await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
+  }
   await deleteReviewPath(relativeFilePath(notebook, pathParts));
   await detachReferenceAttachments(relativeFilePath(notebook, pathParts));
   await removeFileMetadataPath(relativeFilePath(notebook, pathParts));
@@ -691,6 +713,11 @@ export async function locateRawFile(relativePath: string) {
   return { absolutePath: filePathFromParts(notebook, pathParts), contentType: getContentType(name, fileType), fileType, node };
 }
 
+/** The Python sidecars of a moved folder's notes, whose paths follow the notes' (markdown-assets.ts). */
+async function moveFolderPythonSidecars(notes: string[], from: string, to: string) {
+  for (const note of notes) await movePythonSidecar(note, `${to}${note.slice(from.length)}`);
+}
+
 async function moveAudioSidecarDirectories(notebook: string, currentParts: string[], nextParts: string[]) {
   const next = audioSidecarDirectories(notebook, nextParts);
   for (const [index, directory] of audioSidecarDirectories(notebook, currentParts).entries()) {
@@ -739,6 +766,12 @@ async function moveRelatedMetadata(
       else await rm(sidecar, { force: true });
     }
   }
+
+  if (currentFileType === "markdown") {
+    const current = relativeFilePath(currentNotebook, currentPathParts);
+    if (nextFileType === "markdown") await movePythonSidecar(current, relativeFilePath(nextNotebook, nextPathParts));
+    else await deletePythonSidecar(current);
+  }
 }
 
 async function copyRelatedMetadata(
@@ -767,5 +800,9 @@ async function copyRelatedMetadata(
     // The waveform is a local cache; the transcript may be a shared notebook's companion.
     await copyFileIfExists(audioPeaksPath(currentNotebook, currentPathParts), audioPeaksPath(nextNotebook, nextPathParts));
     await copyTranscript(relativeFilePath(currentNotebook, currentPathParts), relativeFilePath(nextNotebook, nextPathParts));
+  }
+
+  if (currentFileType === "markdown") {
+    await copyPythonSidecar(relativeFilePath(currentNotebook, currentPathParts), relativeFilePath(nextNotebook, nextPathParts));
   }
 }

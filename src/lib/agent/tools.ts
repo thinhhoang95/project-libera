@@ -6,6 +6,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ARCHIVE_DIR, MAX_TEXT_FILE_BYTES } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
+import { pathExists } from "@/lib/storage/fs-utils";
+import { filePathFromParts, splitFilePath } from "@/lib/storage/paths";
+import { legacyPythonSidecarPath, pythonSidecarPath } from "@/lib/python/sidecar";
 import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-cache";
 import { readTranscript } from "@/lib/storage/transcripts";
 import { formatClock, speakerName, transcriptLine } from "@/lib/transcription/format";
@@ -387,6 +390,15 @@ async function readPdf(context: ToolContext, resolved: ResolvedPath, pagesArgume
   return ok(text, `Pages ${describePageRanges(selected)} of ${pages.length}`, preview(body));
 }
 
+/** Points from a note to its Python sidecar, which sits in the note's assets folder, out of sight. */
+async function pythonSidecarNote(resolved: ResolvedPath) {
+  if (getFileType(resolved.path) !== "markdown" || isSharedNotebookPath(resolved.path)) return "";
+  for (const sidecar of [pythonSidecarPath(resolved.path), legacyPythonSidecarPath(resolved.path)]) {
+    if (await pathExists(filePathFromParts(resolved.notebook, splitFilePath(sidecar).pathParts))) return `(This note's Python figures are made by the code in its sidecar, ${sidecar}; the python-results skill runs it.)`;
+  }
+  return "";
+}
+
 const readTool: AgentTool = {
   name: "Read",
   kind: "read",
@@ -446,6 +458,7 @@ Usage:
     const notes = [
       partial ? `(Showing lines ${offset}-${shownEnd} of ${lines.length}. Use offset and limit to read more.)` : "",
       current.fromDraft ? "(This file is open in the editor with unsaved changes; you are reading the unsaved version.)" : "",
+      await pythonSidecarNote(resolved),
       current.shared ? `(This file is in a shared notebook; you are reading the live shared document. Collaborators may change it while you work.${canSuggestShared(current.shared) ? " Your Edit and Write become suggestions, attributed to “AI on behalf of” the user, that others accept or reject; the text changes only when one is accepted." : ` The user's role (${current.shared.role}) cannot change or suggest changes to it.`})` : "",
     ].filter(Boolean).join("\n");
     return ok(notes ? `${body}\n\n${notes}` : body, partial ? `Lines ${offset}-${shownEnd} of ${lines.length}` : plural(lines.length, "line"));
@@ -460,7 +473,7 @@ const globTool: AgentTool = {
 Usage:
 - Patterns: "**/*.md" (all Markdown files), "projects/**/meeting-*.md", "*.{tex,bib}", "**/*budget*". A pattern without "/" matches file names in any folder, so "*.pdf" finds every PDF.
 - path is the folder to search: a notebook name ("Research"), a folder ("Research/projects"), or "/" for every notebook in the library. Without path, the current notebook is searched.
-- Hidden folders, the _assets folder and the _archive folder are skipped unless path points inside them.
+- Hidden folders and the _archive folder are skipped unless path points inside them. Of a notebook's _assets folder (images of notes), only notes' Python sidecars (.py) are listed.
 - At most ${GLOB_LIMIT} paths are returned; narrow the pattern or path when there are more.
 - Use Glob to discover what exists before reading. To search file contents, use Grep.`,
   parameters: {
@@ -825,7 +838,7 @@ export function closestLines(content: string, oldString: string) {
   return `\nThe closest lines in the file are:\n${scored.map(({ index }) => numberLine(index + 1, lines[index])).join("\n")}`;
 }
 
-function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating }: { creating: boolean }) {
+export function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating }: { creating: boolean }) {
   if (context.permission === "read-only") throw new ToolError("You are in Read Only mode and cannot change files. Describe the change to the user instead.");
   const fileType = getFileType(resolved.path);
   if (!isTextFileType(fileType ?? undefined)) {
@@ -837,7 +850,9 @@ function assertWritable(context: ToolContext, resolved: ResolvedPath, { creating
     // file would need a manifest suggestion, which does not exist yet.
     throw new ToolError(`${resolved.path} would be a new file in a shared notebook, and the agent cannot create files there: its changes to shared files are suggestions others review. Suggest the content in an existing file, or give it to the user in your reply.`);
   }
-  if (context.permission === "open-files") {
+  // A note's Python sidecar belongs to the note: whoever may change the note may write it.
+  const sidecarOfOpenNote = [...context.openFiles].some((open) => getFileType(open) === "markdown" && pythonSidecarPath(open) === resolved.path);
+  if (context.permission === "open-files" && !sidecarOfOpenNote) {
     if (creating) throw new ToolError("You can only modify files that are open in the editor, so you cannot create new files. Tell the user what file you would create, or ask them to switch the permission to \"Modify all files in Notebook/Folder\".");
     if (!context.openFiles.has(resolved.path)) {
       const open = [...context.openFiles];
@@ -901,7 +916,7 @@ function suggestionNote(resolved: ResolvedPath, suggestion: SharedSuggestion): s
   return `Suggested a change to ${resolved.path}: suggested, pending review (${plural(ids.length, "suggestion")}: ${ids.join(", ")}).${stale}\n${SHARED_SUGGEST_NOTE}`;
 }
 
-async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }): Promise<SharedSuggestion | null> {
+export async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, content: string, previous: { content: string | null; fromDraft: boolean; shared?: ResolvedDoc }, verifyUnchanged = false): Promise<SharedSuggestion | null> {
   const shared = previous.shared ?? await assertSharedWritable(context, resolved);
   if (shared) return suggestSharedAgentFile(context, resolved, shared, content, previous);
   // A notebook shared since the check: writing here would bypass the host
@@ -915,6 +930,10 @@ async function writeAgentFile(context: ToolContext, resolved: ResolvedPath, cont
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     await context.snapshots.recordOriginal(resolved.path, disk, previous.fromDraft ? previous.content ?? undefined : undefined);
+  }
+  if (verifyUnchanged) {
+    const latest = await readCurrentText(context, resolved);
+    if (!latest || latest.content !== previous.content || latest.fromDraft !== previous.fromDraft) throw new ToolError(`${resolved.path} changed while Python was updating its figures. Run it again; your edits were kept.`);
   }
   await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
   await writeFile(resolved.absolutePath, content, "utf8");

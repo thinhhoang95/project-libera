@@ -3,6 +3,7 @@
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
+import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
@@ -88,6 +89,7 @@ export function LiberaApp({
   quickPrompts = NO_QUICK_PROMPTS,
 }: LiberaAppProps) {
   const aiActive = useAiActivity();
+  useMarkdownAccents(markdownPreferences);
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -243,7 +245,17 @@ export function LiberaApp({
     openDrafts: openReferenceDrafts,
     canCite: workspace.activeTab?.file.fileType === "markdown",
     onCite: (key) => { workspace.insertCitation(key); },
+    onCiteMany: (keys) => { workspace.insertCitation(keys); },
+    onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
     onOpenPath: agentWorkspace.openFile,
+    // The citation is selected and revealed, as a Global Search hit is.
+    onOpenCitation: (path, { start, end, line }) => {
+      const open = (file: LiberaFileNode) => void workspace.openFile(file, { viewState: { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } } });
+      const file = workspace.files.find((item) => item.path === path);
+      if (file) { open(file); return; }
+      void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)
+        .then((payload) => open(payload.file)).catch(() => undefined);
+    },
     onUploadFiles: workspace.uploadFiles,
     request: referenceRequests.request,
     onRequestHandled: referenceRequests.handled,
@@ -308,6 +320,16 @@ export function LiberaApp({
       window.clearTimeout(first);
       window.clearInterval(interval);
     };
+  }, [authenticated]);
+
+  // Python in notes is part of the app: on a new computer its runtime is set
+  // up in the background soon after opening (nothing happens once it is ready).
+  useEffect(() => {
+    if (!authenticated) return;
+    const timer = window.setTimeout(() => {
+      void apiRequest("/api/python?ensure=1").catch(() => undefined);
+    }, 5_000);
+    return () => window.clearTimeout(timer);
   }, [authenticated]);
 
   // Only the desktop app has a Preferences window. The Search page renders on the client only.

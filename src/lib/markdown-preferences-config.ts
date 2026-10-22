@@ -16,5 +16,8 @@ export function getConfiguredMarkdownPreferences(): MarkdownPreferences {
     pdfExportBaseLineHeight: process.env.LIBERA_MARKDOWN_PDF_BASE_LINE_HEIGHT,
     smartPaste: process.env.LIBERA_SMART_PASTE,
     sourceEditor: process.env.LIBERA_SOURCE_EDITOR,
+    headingColor: process.env.LIBERA_MARKDOWN_HEADING_COLOR,
+    headingPalette: process.env.LIBERA_MARKDOWN_HEADING_PALETTE,
+    boldLeadIns: process.env.LIBERA_MARKDOWN_BOLD_LEAD_INS,
   });
 }

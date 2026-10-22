@@ -2,6 +2,9 @@
 
 import {
   AlertCircle,
+  BookCheck,
+  BookOpen,
+  Braces,
   Copy,
   FileText,
   FileType2,
@@ -25,6 +28,7 @@ import {
   entryVenue,
   fileBaseName,
   highlightSegments,
+  READING_LABELS,
   STATUS_LABELS,
 } from "@/components/libera/references/reference-display";
 import { popupReferenceMenu, type ReferenceMenuItem } from "./native-reference-menu";
@@ -77,27 +81,50 @@ type RowProps = {
   citingCount: number;
   duplicate: boolean;
   canCite: boolean;
+  /** Part of a selection of several entries. */
+  inSelection?: boolean;
   top?: number;
-  onOpen: () => void;
+  /** A plain click opens the entry; Shift extends the selection and ⌘/Ctrl toggles it. */
+  onOpen: (modifiers: { range: boolean; toggle: boolean }) => void;
+  onTag?: (tag: string) => void;
   onCite: () => void;
   onOpenAttachment: (path: string) => void;
   onMenu: (point: { x: number; y: number }) => void;
 };
 
-export function ReferenceRow({ entry, words, selected, citedByActive, citingCount, duplicate, canCite, top, onOpen, onCite, onOpenAttachment, onMenu }: RowProps) {
+/** Rows show at most this many tags. */
+const ROW_TAGS = 2;
+
+export function ReadingBadge({ entry }: { entry: Pick<ReferenceEntry, "reading"> }) {
+  if (!entry.reading) return null;
+  const label = READING_LABELS[entry.reading];
+  return (
+    <span className="libera-reference-reading shrink-0" data-reading={entry.reading} title={label} aria-label={label}>
+      {entry.reading === "to-read" ? <BookOpen aria-hidden className="h-3.5 w-3.5" /> : <BookCheck aria-hidden className="h-3.5 w-3.5" />}
+    </span>
+  );
+}
+
+export function ReferenceRow({ entry, words, selected, inSelection, citedByActive, citingCount, duplicate, canCite, top, onOpen, onTag, onCite, onOpenAttachment, onMenu }: RowProps) {
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
+  const tags = entry.tags ?? [];
   const venue = entryVenue(entry.csl);
   const countLabel = `Cited by ${citingCount} document${citingCount === 1 ? "" : "s"}`;
   return (
     <div
       id={`reference-row-${entry.id}`}
       role="option"
-      aria-selected={selected}
+      aria-selected={selected || Boolean(inSelection)}
       data-entry-id={entry.id}
       data-cited={citedByActive || undefined}
+      data-in-selection={inSelection || undefined}
       className="libera-reference-row group"
       style={{ height: REFERENCE_ROW_HEIGHT, ...(top !== undefined ? { position: "absolute", top, left: 0, right: 0 } : {}) }}
-      onClick={onOpen}
+      onMouseDown={(event) => {
+        // Shift-click selects a range, not text.
+        if (event.shiftKey) event.preventDefault();
+      }}
+      onClick={(event) => onOpen({ range: event.shiftKey, toggle: event.metaKey || event.ctrlKey })}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY });
@@ -112,6 +139,7 @@ export function ReferenceRow({ entry, words, selected, citedByActive, citingCoun
             <Link2 aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
+        <ReadingBadge entry={entry} />
         <StatusBadge status={entry.status} />
         <RetractionBadge status={entry.retraction} compact />
         {duplicate ? <StatusBadge status="duplicate" /> : null}
@@ -125,6 +153,12 @@ export function ReferenceRow({ entry, words, selected, citedByActive, citingCoun
           {venue ? <><Highlighted text={venue} words={words} />{" · "}</> : null}
           <span className="font-mono"><Highlighted text={entry.key} words={words} /></span>
         </span>
+        {tags.slice(0, ROW_TAGS).map((tag) => onTag ? (
+          <button key={tag} type="button" className="libera-reference-tag-link shrink-0" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
+            #<Highlighted text={tag} words={words} />
+          </button>
+        ) : <span key={tag} className="libera-reference-tag-link shrink-0">#{tag}</span>)}
+        {tags.length > ROW_TAGS ? <span className="shrink-0" title={tags.slice(ROW_TAGS).join(", ")}>+{tags.length - ROW_TAGS}</span> : null}
         <span className="ml-auto flex shrink-0 items-center gap-0.5 group-hover:hidden group-focus-within:hidden" data-selected={selected || undefined}>
           <AttachmentIcons entry={entry} />
         </span>
@@ -183,7 +217,14 @@ export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: strin
 }
 
 export type ReferenceMenuAction =
-  | "cite" | "open-pdf" | "open-note" | "copy-key" | "copy-formatted" | "reresolve" | "edit" | "delete";
+  | "cite" | "open-pdf" | "open-note" | "copy-key" | "copy-citation" | "copy-latex" | "copy-formatted"
+  | "to-read" | "read" | "reresolve" | "edit" | "delete";
+
+/** Menu labels of the reading actions: they toggle the flag. */
+export function readingActionLabel(entry: Pick<ReferenceEntry, "reading">, action: "to-read" | "read") {
+  if (action === "to-read") return entry.reading === "to-read" ? "Remove from To read" : "Mark as To read";
+  return entry.reading === "read" ? "Mark as unread" : "Mark as read";
+}
 
 type MenuProps = {
   entry: ReferenceEntry;
@@ -202,7 +243,12 @@ export function openNativeReferenceActionsMenu({ entry, point, canCite, citing, 
     ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
     ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", "Open note")] : []),
     action("copy-key", "Copy key"),
+    action("copy-citation", `Copy as [@${entry.key}]`),
+    action("copy-latex", `Copy as \\cite{${entry.key}}`),
     action("copy-formatted", "Copy formatted reference"),
+    { type: "separator" },
+    action("to-read", readingActionLabel(entry, "to-read")),
+    action("read", readingActionLabel(entry, "read")),
     { id: "citing", label: citing.length ? `Citing documents (${citing.length})` : "Not cited yet", enabled: citing.length > 0,
       ...(citing.length ? { submenu: citing.map((path, index) => ({ id: `citing:${index}`, label: fileBaseName(path), onSelect: () => onOpenPath(path) })) } : {}) },
     { type: "separator" },
@@ -266,7 +312,12 @@ export function ReferenceActionsMenu({ entry, point, canCite, citing, onAction, 
       {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label="Open PDF" onClick={act("open-pdf")} /> : null}
       {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label="Open note" onClick={act("open-note")} /> : null}
       <MenuItem icon={<Copy aria-hidden className="h-4 w-4" />} label="Copy key" onClick={act("copy-key")} />
+      <MenuItem icon={<Quote aria-hidden className="h-4 w-4" />} label={`Copy as [@${entry.key}]`} onClick={act("copy-citation")} />
+      <MenuItem icon={<Braces aria-hidden className="h-4 w-4" />} label={`Copy as \\cite{${entry.key}}`} onClick={act("copy-latex")} />
       <MenuItem icon={<ScrollText aria-hidden className="h-4 w-4" />} label="Copy formatted reference" onClick={act("copy-formatted")} />
+      <div className="my-1 h-px bg-border" />
+      <MenuItem icon={<BookOpen aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "to-read")} onClick={act("to-read")} />
+      <MenuItem icon={<BookCheck aria-hidden className="h-4 w-4" />} label={readingActionLabel(entry, "read")} onClick={act("read")} />
       <MenuItem
         icon={<Link2 aria-hidden className="h-4 w-4" />}
         label={citing.length ? `Citing documents (${citing.length})` : "Not cited yet"}

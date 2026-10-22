@@ -248,14 +248,20 @@ export function highlightSegments(text: string, words: string[]): Array<{ text: 
 // Sorting and lookup
 // ---------------------------------------------------------------------------
 
-export type ReferenceSort = "author" | "year" | "title" | "added";
+export type ReferenceSort = "author" | "year" | "title" | "added" | "cited";
 
 export const REFERENCE_SORTS: Array<{ id: ReferenceSort; label: string }> = [
   { id: "author", label: "Author" },
   { id: "year", label: "Year" },
   { id: "title", label: "Title" },
   { id: "added", label: "Recently added" },
+  { id: "cited", label: "Recently cited" },
 ];
+
+export type SortContext = {
+  /** Entry id → when a document citing it was last changed (ISO), for "Recently cited". */
+  citedAt?: Map<string, string>;
+};
 
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
@@ -265,7 +271,7 @@ function firstAuthorSortName(csl: CslItem) {
 }
 
 /** Entries sorted for the list. Ties fall back to author, year, title, then key, so the order is stable. */
-export function sortEntries(entries: ReferenceEntry[], sort: ReferenceSort) {
+export function sortEntries(entries: ReferenceEntry[], sort: ReferenceSort, context: SortContext = {}) {
   const tieBreak = (a: ReferenceEntry, b: ReferenceEntry) =>
     collator.compare(firstAuthorSortName(a.csl) || "￿", firstAuthorSortName(b.csl) || "￿")
     || (dateYear(a.csl.issued) ?? 99999) - (dateYear(b.csl.issued) ?? 99999)
@@ -277,6 +283,8 @@ export function sortEntries(entries: ReferenceEntry[], sort: ReferenceSort) {
     year: (a, b) => (dateYear(b.csl.issued) ?? -99999) - (dateYear(a.csl.issued) ?? -99999) || tieBreak(a, b),
     title: (a, b) => collator.compare(entryTitle(a), entryTitle(b)) || tieBreak(a, b),
     added: (a, b) => b.createdAt.localeCompare(a.createdAt) || tieBreak(a, b),
+    // Uncited entries last.
+    cited: (a, b) => (context.citedAt?.get(b.id) ?? "").localeCompare(context.citedAt?.get(a.id) ?? "") || tieBreak(a, b),
   };
   return [...entries].sort(compare[sort]);
 }
@@ -297,6 +305,50 @@ export function citingPaths(entry: ReferenceEntry, byKey: Map<string, Set<string
   const paths = new Set<string>();
   for (const key of [entry.key, ...entry.aliases]) for (const path of byKey.get(key.toLowerCase()) ?? []) paths.add(path);
   return [...paths].sort(collator.compare);
+}
+
+/** Every tag in the library with how many entries carry it, most used first. Tags differing only in case count as one. */
+export function libraryTags(entries: ReferenceEntry[]): Array<{ tag: string; count: number }> {
+  const tags = new Map<string, { tag: string; count: number }>();
+  for (const entry of entries) {
+    for (const tag of new Set((entry.tags ?? []).map((item) => item.trim()).filter(Boolean))) {
+      const lower = tag.toLowerCase();
+      const current = tags.get(lower);
+      if (current) current.count += 1;
+      else tags.set(lower, { tag, count: 1 });
+    }
+  }
+  return [...tags.values()].sort((a, b) => b.count - a.count || collator.compare(a.tag, b.tag));
+}
+
+export function hasTag(entry: ReferenceEntry, tag: string) {
+  const lower = tag.toLowerCase();
+  return (entry.tags ?? []).some((item) => item.toLowerCase() === lower);
+}
+
+/** `entry`'s tags with `add` added and `remove` removed, case-insensitively; null when nothing changes. */
+export function changedTags(entry: ReferenceEntry, add: string[], remove: string[]) {
+  const current = entry.tags ?? [];
+  const removing = new Set(remove.map((tag) => tag.toLowerCase()));
+  const next = current.filter((tag) => !removing.has(tag.toLowerCase()));
+  for (const tag of add) if (!next.some((item) => item.toLowerCase() === tag.toLowerCase())) next.push(tag);
+  return next.length === current.length && next.every((tag, index) => tag === current[index]) ? null : next;
+}
+
+/** The undo label and the notice for adding or removing tags on `count` entries. */
+export function tagChangeText(count: number, add: string[], remove: string[]) {
+  const tags = (add.length ? add : remove).map((tag) => `“${tag}”`).join(", ");
+  const entries = `${count} reference${count === 1 ? "" : "s"}`;
+  return add.length
+    ? { label: `Add ${tags} to ${entries}`, message: `Added ${tags} to ${entries}.` }
+    : { label: `Remove ${tags} from ${entries}`, message: `Removed ${tags} from ${entries}.` };
+}
+
+export type CitationCopyFormat = "pandoc" | "latex";
+
+/** Keys as a citation to paste: `[@a; @b]` or `\cite{a,b}`. */
+export function citationText(keys: string[], format: CitationCopyFormat) {
+  return format === "latex" ? `\\cite{${keys.join(",")}}` : `[${keys.map((key) => `@${key}`).join("; ")}]`;
 }
 
 export function hasPdf(entry: ReferenceEntry) {
@@ -472,6 +524,11 @@ export const INPUT_KIND_LABELS: Record<ReferenceInputKind, string> = {
   "reference-text": "Reference text",
   bibliography: "Bibliography",
 };
+
+export const READING_LABELS = {
+  "to-read": "To read",
+  read: "Read",
+} as const;
 
 export const STATUS_LABELS = {
   confirmed: "Confirmed",

@@ -13,6 +13,26 @@ import { useMarkdownReview } from "./markdown-review-context";
 
 const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
 
+type Review = NonNullable<ReturnType<typeof useMarkdownReview>>;
+
+/**
+ * Escape in an editor leaves Review mode. A press that closes an open passage
+ * selection does only that (`escapeSelection`, in the capture phase, ahead of
+ * the editor). Otherwise `escapeReview` turns the mode off in the bubble
+ * phase, after the editor's own handlers, so popups, menus and selection
+ * collapsing that claim Escape keep it.
+ */
+function escapeSelection(event: KeyboardEvent, review: Review) {
+  if (event.key !== "Escape" || !review.selection) return false;
+  review.clearSelection();
+  return true;
+}
+function escapeReview(event: KeyboardEvent, review: Review | null | undefined, claimed: Event | null) {
+  if (event.key !== "Escape" || event === claimed || event.defaultPrevented || event.isComposing || !review?.enabled || review.busy) return;
+  event.preventDefault();
+  void review.action("toggle", { enabled: false });
+}
+
 /**
  * Reports the source range an editor shows while it scrolls, so the Comments
  * panel of a shared document can line its cards up with the text (plan M2.1).
@@ -53,6 +73,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
       input.focus(); input.setSelectionRange(range.start, range.end); scrollTextareaToOffset(input, range.start);
     } });
     const start = () => { composing = true; }, end = () => { composing = false; };
+    let claimed: Event | null = null;
     function select(event: MouseEvent) {
       if (!latest.current.r?.enabled || composing) return;
       latest.current.r.select({ start: input!.selectionStart, end: input!.selectionEnd }, event.clientX, event.clientY);
@@ -65,12 +86,13 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
       }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === input!.value) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === input!.value) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
-      if (event.key === "Escape") review.clearSelection();
+      if (escapeSelection(event, review)) claimed = event;
     }
+    const escape = (event: KeyboardEvent) => escapeReview(event, latest.current.r, claimed);
     const changed = () => latest.current.r?.clearSelection();
     input.addEventListener("input", changed);
-    input.addEventListener("compositionstart", start); input.addEventListener("compositionend", end); input.addEventListener("mouseup", select); input.addEventListener("keydown", key, true);
-    return () => { unregister(); input.removeEventListener("input", changed); input.removeEventListener("compositionstart", start); input.removeEventListener("compositionend", end); input.removeEventListener("mouseup", select); input.removeEventListener("keydown", key, true); };
+    input.addEventListener("compositionstart", start); input.addEventListener("compositionend", end); input.addEventListener("mouseup", select); input.addEventListener("keydown", key, true); input.addEventListener("keydown", escape);
+    return () => { unregister(); input.removeEventListener("input", changed); input.removeEventListener("compositionstart", start); input.removeEventListener("compositionend", end); input.removeEventListener("mouseup", select); input.removeEventListener("keydown", key, true); input.removeEventListener("keydown", escape); };
   }, [register, textareaRef]);
   return r;
 }
@@ -84,6 +106,7 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     installCodeMirrorReview(view);
     const root = view.contentDOM;
     const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
+    let claimed: Event | null = null;
     const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
       selection: () => { const { from, to } = view.state.selection.main; return to > from ? { start: from, end: to } : null; }, focus: (target) => {
       const length = view.state.doc.length;
@@ -106,11 +129,12 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
       }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
-      if (event.key === "Escape") review.clearSelection();
+      if (escapeSelection(event, review)) claimed = event;
     }
+    const escape = (event: KeyboardEvent) => escapeReview(event, latest.current.r, claimed);
     const changed = () => latest.current.r?.clearSelection();
-    root.addEventListener("input", changed); root.addEventListener("mouseup", select); root.addEventListener("keydown", key, true);
-    return () => { unregister(); root.removeEventListener("input", changed); root.removeEventListener("mouseup", select); root.removeEventListener("keydown", key, true); };
+    root.addEventListener("input", changed); root.addEventListener("mouseup", select); root.addEventListener("keydown", key, true); root.addEventListener("keydown", escape);
+    return () => { unregister(); root.removeEventListener("input", changed); root.removeEventListener("mouseup", select); root.removeEventListener("keydown", key, true); root.removeEventListener("keydown", escape); };
   }, [view, register]);
   useEffect(() => { if (view) { installCodeMirrorReview(view); setCodeMirrorReviewLocked(view, !!r?.locked); } }, [view, r?.locked]);
   const sharedDoc = !!r?.shared;
@@ -147,6 +171,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
   useEffect(() => {
     if (!editor || !register) return;
     const root = editor.view.dom;
+    let claimed: Event | null = null;
     const unregister = register({ isComposing: () => editor.view.composing, snapshot: () => { if (editor.view.composing) throw new Error("Finish composing text before reviewing."); return read(); }, apply: (text) => {
       editor.view.dispatch(closeHistory(editor.state.tr));
       replace(text);
@@ -177,7 +202,7 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "m") { event.preventDefault(); event.stopImmediatePropagation(); const rect = editor!.view.coordsAtPos(editor!.state.selection.from); select(rect.left, rect.bottom); }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === read()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
-      if (event.key === "Escape") review.clearSelection();
+      if (escapeSelection(event, review)) claimed = event;
     }
     // Only the user's own edits invalidate the selection. The shared Visual
     // bridge also dispatches document changes (a collaborator's typing, the
@@ -187,9 +212,10 @@ export function useTiptapReview(editor: Editor | null, lastValue: RefObject<stri
       if (transaction.getMeta(TIPTAP_BRIDGE_META)) return;
       latest.current?.clearSelection();
     };
+    const escape = (event: KeyboardEvent) => escapeReview(event, latest.current, claimed);
     editor.on("update", changed);
-    root.addEventListener("mouseup", mouse); root.addEventListener("keydown", key, true);
-    return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); };
+    root.addEventListener("mouseup", mouse); root.addEventListener("keydown", key, true); root.addEventListener("keydown", escape);
+    return () => { unregister(); editor.off("update", changed); root.removeEventListener("mouseup", mouse); root.removeEventListener("keydown", key, true); root.removeEventListener("keydown", escape); };
   }, [editor, register, lastValue, read, replace]);
   useEffect(() => { if (editor && editor.isEditable !== !r?.locked) editor.setEditable(!r?.locked, false); }, [editor, r?.locked]);
   const sharedDoc = !!r?.shared;

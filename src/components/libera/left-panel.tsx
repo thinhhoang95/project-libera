@@ -215,6 +215,9 @@ export function LeftPanel({
                 openDrafts={references?.openDrafts ?? NO_DRAFTS}
                 canCite={references?.canCite ?? false}
                 onCite={references?.onCite ?? (() => undefined)}
+                onCiteMany={references?.onCiteMany}
+                onOpenCitation={references?.onOpenCitation}
+                onInsertBibliography={references?.onInsertBibliography}
                 onOpenPath={references?.onOpenPath ?? ((path) => {
                   const file = findFileNode(notebookPanelProps.tree, path);
                   if (file) notebookPanelProps.onOpenFile(file);

@@ -2,6 +2,7 @@ import { InputRule } from '@tiptap/core';
 import { Fragment, Slice, type Node as ProseMirrorNode, type Schema } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import { InlineMath, BlockMath } from '@tiptap/extension-mathematics';
+import { highlightMarkdownOpening } from './tiptap-markdown';
 import { mathMarkerPairs, matchMath, escapedAt, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from './math-markers';
 
 /** Turns literal, delimited math in text (outside code) into math nodes. */
@@ -49,7 +50,11 @@ export function createMathExtensions(settings: MathMarkerSettings = {}) {
       renderMarkdown(node) {
         const open = node.attrs?.mathOpen ?? preferred?.open ?? (display ? '$$' : '$');
         const close = node.attrs?.mathClose ?? preferred?.close ?? open;
-        return display ? `${open}\n${node.attrs?.latex ?? ''}\n${close}` : `${open}${node.attrs?.latex ?? ''}${close}`;
+        if (display) return `${open}\n${node.attrs?.latex ?? ''}\n${close}`;
+        // Marks are closed around atoms, so a highlight is written here (tiptap-markdown.ts).
+        const highlight = node.marks?.find(mark => mark.type === 'highlight');
+        const math = `${open}${node.attrs?.latex ?? ''}${close}`;
+        return highlight ? `${highlightMarkdownOpening(highlight.attrs?.color)}${math}<<<` : math;
       },
       markdownTokenizer: {
         name, level: display ? 'block' : 'inline',

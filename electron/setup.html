@@ -306,6 +306,11 @@
       .io-button svg { flex: 0 0 auto; }
       .io-warning { border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #f59e0b 9%, transparent); margin-top: 16px; padding: 12px; }
       .io-status { margin-top: 14px; min-height: 20px; }
+      .heading-palette { border: 1px solid var(--border, #d4d4d8); border-radius: 8px; display: grid; gap: 8px 16px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 12px 0 0; padding: 10px 14px 12px; }
+      .heading-palette.hidden { display: none; }
+      .heading-palette label { align-items: center; display: flex; font-weight: 400; gap: 8px; margin: 0; }
+      .heading-palette input[type="color"] { block-size: 28px; border: 0; cursor: pointer; inline-size: 40px; padding: 0; }
+      .heading-palette :is(button, p) { grid-column: 1 / -1; justify-self: start; margin: 0; }
       .switch-row { align-items: center; display: flex; gap: 12px; justify-content: space-between; margin-top: 18px; }
       .switch-row label { margin: 0; }
       .libera-dialog input.switch { appearance: none; background: var(--input, #d4d4d8); border: 0; border-radius: 999px; cursor: pointer; flex: 0 0 auto; height: 22px; margin: 0; padding: 0; position: relative; transition: background 0.15s; width: 38px; }
@@ -1073,6 +1078,49 @@
                 Use a unitless line-height ratio. The default is 1.75.
               </p>
 
+              <h3>Accent color</h3>
+              <label for="markdown-heading-color">Heading color</label>
+              <select id="markdown-heading-color">
+                <option value="blue">Blue (default)</option>
+                <option value="indigo">Indigo</option>
+                <option value="teal">Teal</option>
+                <option value="green">Green</option>
+                <option value="purple">Purple</option>
+                <option value="rose">Rose</option>
+                <option value="orange">Orange</option>
+                <option value="spectrum">Spectrum (a color per heading level)</option>
+                <option value="custom">Custom…</option>
+                <option value="none">None</option>
+              </select>
+              <p class="field-help">
+                Colors headings, list bullets and numbers in the visual editor and rendered
+                Markdown previews. Each color has a lighter shade for the dark theme. PDF
+                export is not affected.
+              </p>
+
+              <fieldset id="markdown-heading-palette" class="heading-palette hidden">
+                <legend>Custom colors</legend>
+                <label><input type="color" data-palette-key="h1" /> Heading 1</label>
+                <label><input type="color" data-palette-key="h2" /> Heading 2</label>
+                <label><input type="color" data-palette-key="h3" /> Heading 3</label>
+                <label><input type="color" data-palette-key="h4" /> Heading 4</label>
+                <label><input type="color" data-palette-key="h5" /> Heading 5 and smaller</label>
+                <label><input type="color" data-palette-key="lists" /> Bullets, numbers and lead-ins</label>
+                <button id="reset-heading-palette" class="secondary" type="button">Reset to Spectrum</button>
+                <p class="field-help">
+                  Pick the colors for the light theme; the dark theme uses a lighter shade of each.
+                </p>
+              </fieldset>
+
+              <div class="switch-row">
+                <label for="markdown-bold-lead-ins">Color bold lead-ins</label>
+                <input id="markdown-bold-lead-ins" class="switch" type="checkbox" role="switch" aria-describedby="markdown-bold-lead-ins-help" />
+              </div>
+              <p id="markdown-bold-lead-ins-help" class="field-help">
+                Bold text at the start of a paragraph or list item (after -, * or 1.)
+                takes the heading color too.
+              </p>
+
               <h3>PDF export</h3>
               <label for="markdown-pdf-base-font-size">Base font size</label>
               <input
@@ -1161,6 +1209,27 @@
       const yourNameInput = document.querySelector("#your-name");
       const smartPasteInput = document.querySelector("#smart-paste");
       const sourceEditorInput = document.querySelector("#source-editor");
+      const markdownHeadingColorInput = document.querySelector("#markdown-heading-color");
+      const markdownBoldLeadInsInput = document.querySelector("#markdown-bold-lead-ins");
+      const markdownHeadingPaletteFieldset = document.querySelector("#markdown-heading-palette");
+      const markdownHeadingPaletteInputs = Array.from(
+        markdownHeadingPaletteFieldset.querySelectorAll("input[data-palette-key]"),
+      );
+      // Matches DEFAULT_MARKDOWN_HEADING_PALETTE in markdown-accents.cjs.
+      const defaultHeadingPalette = {
+        h1: "#4338ca", h2: "#1d4ed8", h3: "#0f766e", h4: "#15803d", h5: "#475569", lists: "#1d4ed8",
+      };
+      function setHeadingPalette(palette) {
+        for (const input of markdownHeadingPaletteInputs) {
+          const color = palette?.[input.dataset.paletteKey];
+          input.value = /^#[0-9a-f]{6}$/i.test(color ?? "") ? color : defaultHeadingPalette[input.dataset.paletteKey];
+        }
+      }
+      function updateHeadingPaletteVisibility() {
+        markdownHeadingPaletteFieldset.classList.toggle("hidden", markdownHeadingColorInput.value !== "custom");
+      }
+      markdownHeadingColorInput.addEventListener("change", updateHeadingPaletteVisibility);
+      document.querySelector("#reset-heading-palette").addEventListener("click", () => setHeadingPalette(defaultHeadingPalette));
       const wysiwygEditorFontFamilyInput = document.querySelector(
         "#wysiwyg-editor-font-family",
       );
@@ -1882,6 +1951,13 @@
         yourNameInput.value = state.yourName || "";
         smartPasteInput.checked = state.smartPaste === true;
         sourceEditorInput.value = state.sourceEditor === "codemirror" ? "codemirror" : "classic";
+        markdownHeadingColorInput.value = Array.from(markdownHeadingColorInput.options)
+          .some((option) => option.value === state.markdownHeadingColor)
+          ? state.markdownHeadingColor
+          : "blue";
+        markdownBoldLeadInsInput.checked = state.markdownBoldLeadIns !== false;
+        setHeadingPalette(state.markdownHeadingPalette);
+        updateHeadingPaletteVisibility();
         dataDirInput.value = state.dataDir || "";
         openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
         for (const name of aiFunctionNames) {
@@ -2382,6 +2458,11 @@
             markdownBaseLineHeight: markdownBaseLineHeightInput.value,
             markdownPdfBaseFontSize: markdownPdfBaseFontSizeInput.value,
             markdownPdfBaseLineHeight: markdownPdfBaseLineHeightInput.value,
+            markdownHeadingColor: markdownHeadingColorInput.value,
+            markdownHeadingPalette: Object.fromEntries(
+              markdownHeadingPaletteInputs.map((input) => [input.dataset.paletteKey, input.value]),
+            ),
+            markdownBoldLeadIns: markdownBoldLeadInsInput.checked,
             openaiApiKey: apiKeyInput.value,
             openRouterModel: openRouterModelInput.value,
             aiFunctions: Object.fromEntries(aiFunctionNames.map((name) => [name, {

@@ -144,6 +144,10 @@ Loaded when you ask the agent to visualize data, make or change a chart, graph o
 
 Both skills take the live-block reference and the finish pass from `src/lib/agent/skills/live-blocks.ts`. When the agent finishes a reply, the pass parses every Markdown file it changed in the run. It sends back any ```` ```chart ```` block whose settings do not parse and, for decks, the deck's warnings (an unknown theme, layout or aspect, a malformed setting), with line numbers, for the agent to fix. Each version of a file is checked once, even when both skills are loaded, so a problem the agent cannot fix is not reported again. The check cannot see the page: Mermaid syntax errors, script errors in live HTML and overfull slides show in the preview instead. The module is `src/lib/agent/skills/visualization-interactivity-in-markdown.ts`.
 
+### python-results
+
+Loaded when you ask the agent to calculate, analyze data, simulate, fit or plot something that needs code, or to re-run or change a note's Python figures. The code goes in the note's sidecar, a `.py` file in the note's assets folder that the sidebar hides (`growth.md` → `_assets/growth.md/growth.py`, cells marked `# %% [id]`); with **Modify open files only**, the agent may create and change the sidecar of an open note. **RunPython** writes a cell and runs it on Libera's private Python. It updates images of that cell already in the note and returns new figures as Markdown for the agent to insert with Edit. **InstallPythonPackages** adds PyPI packages (wheels only). The skill needs a permission that can change files, and it is not available in shared notebooks yet. See [Python in notes](python-in-notes.md).
+
 ## Child runs
 
 A tool can hand self-contained jobs to child runs of the agent loop (`runSubagents` in `src/lib/agent/subagents.ts`), for example to check several sources at once. Each child has its own system prompt, prompt, tools and limits (by default 15 turns, 5 minutes and 1 million input tokens), and up to four run at a time.

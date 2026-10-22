@@ -26,6 +26,12 @@ When you edit an existing chart, diagram or applet, Read it first and keep its s
 
 In read-only permission you cannot change files: put the block in your answer as a fenced block the user can paste, and name the note it belongs in.
 
+## Python figures
+
+Besides these blocks, Libera can run Python (NumPy, SciPy, pandas, Matplotlib, seaborn, SymPy) and put its figures into a note as images; the code is kept in the note's \`.py\` sidecar, so the user can re-run and change it. That is the **python-results** skill: load it with the Skill tool, and follow it, when the visual needs code to compute: statistics, a regression or curve fit, a simulation, plotting a function or equation, a heat map, contour or 3-D surface from computed values, a scientific or publication-style plot, or a schematic easier to draw with Matplotlib than with Mermaid. Also load it when the user asks for Python, Matplotlib or a "plot" of something to calculate, or to re-run or change a figure named \`py-….png\`.
+
+Use a block from this skill instead when the numbers are already there and the reader may want to hover them (\`chart\`), for a diagram of boxes and arrows (\`mermaid\`), and for anything the reader drags or types into (\`html live\`). Python figures are static images. They are not available in shared notebooks or in Read Only mode; use a block there.
+
 ${LIVE_BLOCKS_GUIDE}
 ## Notes
 
@@ -37,7 +43,7 @@ ${LIVE_BLOCKS_CHECK}`;
 
 export const visualizationInteractivitySkill: AgentSkill = {
   name: VISUALIZATION_SKILL,
-  description: "Add or edit charts (```chart), Mermaid diagrams (```mermaid: flowcharts, sequence, class, ER, Gantt, mind maps, timelines) and interactive HTML/JavaScript applets (```html live: calculators, sliders, simulations, custom charts) in Markdown notes and slides. Use when the user asks to visualize data, make or change a chart, graph, plot or diagram, draw a process or structure, or build a small interactive widget, calculator or applet.",
+  description: "Add or edit charts (```chart), Mermaid diagrams (```mermaid: flowcharts, sequence, class, ER, Gantt, mind maps, timelines) and interactive HTML/JavaScript applets (```html live: calculators, sliders, simulations, custom charts) in Markdown notes and slides. Use when the user asks to visualize data, make or change a chart, graph, plot or diagram, draw a process or structure, or build a small interactive widget, calculator or applet. Plots that need computing are drawn with Python (python-results skill).",
   instructions,
   finishPass: finishLiveBlocks,
 };

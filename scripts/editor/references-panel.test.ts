@@ -905,3 +905,161 @@ test("References native panel menu preserves styles, export choices and disabled
     assert.ok(document.querySelector('[role="menu"][aria-label="References menu"]'), "IPC failure falls back to the web menu");
   } finally { delete window.liberaMenu; }
 });
+
+
+// ---------------------------------------------------------------------------
+// Selection, bulk actions, tags, reading, review and citing documents
+// ---------------------------------------------------------------------------
+
+async function modifiedClick(element: Element, init: MouseEventInit) {
+  await act(async () => { element.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, ...init })); });
+  await settle();
+}
+
+test("⌘/Ctrl-click and Shift-click select several rows; the bulk bar cites, tags and clears them", async () => {
+  const server = fakeServer(sampleLibrary());
+  const many: string[][] = [];
+  const { host } = await renderPanel({ onCiteMany: (keys) => many.push(keys) });
+  const row = (id: string) => host.querySelector(`[data-entry-id="${id}"]`)!;
+  const inSelection = () => [...host.querySelectorAll('[data-in-selection="true"]')].map((item) => item.getAttribute("data-entry-id"));
+
+  await modifiedClick(row("ref_godel"), { ctrlKey: true });
+  await modifiedClick(row("ref_anon"), { metaKey: true });
+  assert.deepEqual(inSelection(), ["ref_godel", "ref_anon"]);
+  assert.equal(host.querySelector('[aria-label="Reference godel1931"]'), null, "a modified click does not open the card");
+  assert.ok(byLabel(host, "2 selected references"));
+  await click(byLabel(host, "Cite the selection at the cursor"));
+  assert.deepEqual(many, [["godel1931", "uncited2019"]], "one citation, in list order");
+
+  // Shift-click selects from the focused row (the last ⌘/Ctrl-clicked one) to the clicked row.
+  await modifiedClick(row("ref_preprint"), { shiftKey: true });
+  assert.deepEqual(inSelection(), ["ref_preprint", "ref_anon"]);
+
+  await click(byLabel(host, "Edit tags of the selection"));
+  await type(byLabel(host, "Tag to add to the selection"), "batch");
+  await click(host.querySelector('[aria-label="Tags of the selection"] button[type="submit"]'));
+  assert.deepEqual(server.library.entries.ref_preprint.tags, ["batch"]);
+  assert.deepEqual(server.library.entries.ref_anon.tags, ["batch"]);
+  assert.equal(server.library.entries.ref_godel.tags?.includes("batch"), false);
+  assert.match(host.textContent ?? "", /Added “batch” to 2 references\./);
+
+  await click(byLabel(host, "Mark as To read"));
+  assert.equal(server.library.entries.ref_preprint.reading, "to-read");
+  assert.equal(server.library.entries.ref_anon.reading, "to-read");
+
+  await key(byLabel(host, "References")!, "Escape");
+  assert.deepEqual(inSelection(), []);
+  assert.equal(byLabel(host, "2 selected references"), null);
+});
+
+test("list keys: ⌘/Ctrl+A selects all, Shift+↓ extends, Delete asks to delete the selection, / focuses search", async () => {
+  fakeServer(sampleLibrary());
+  const { host } = await renderPanel();
+  const list = byLabel(host, "References")!;
+  await key(list, "ArrowDown");
+  await key(list, "ArrowDown", { shiftKey: true });
+  assert.deepEqual([...host.querySelectorAll('[data-in-selection="true"]')].map((item) => item.getAttribute("data-entry-id")), ["ref_godel", "ref_smith"]);
+  await key(list, "a", { ctrlKey: true });
+  assert.equal(host.querySelectorAll('[data-in-selection="true"]').length, 4);
+  await key(list, "Delete");
+  assert.match(document.querySelector("[role=dialog]")?.textContent ?? "", /Delete 4 references\?/);
+  await click(buttonByText(document.querySelector("[role=dialog]")!, "Cancel"));
+  await key(list, "/");
+  assert.equal(document.activeElement, byLabel(host, "Search references"));
+});
+
+test("tags filter the list from a row, the tag menu and a removable chip, and the view is remembered", async () => {
+  fakeServer(sampleLibrary());
+  const first = await renderPanel();
+  await click(first.host.querySelector('[data-entry-id="ref_godel"] [title="Show references tagged logic"]'));
+  assert.deepEqual(rowKeys(first.host), ["godel1931"]);
+  assert.equal((byLabel(first.host, "Filter by tag") as HTMLSelectElement).value, "logic");
+  assert.ok(byLabel(first.host, "Clear the tag filter"));
+  assert.match(window.localStorage.getItem("libera:references-view:Notes") ?? "", /"tag":"logic"/);
+  await click(byLabel(first.host, "Clear the tag filter"));
+  assert.equal(rowKeys(first.host).length, 4);
+  await type(byLabel(first.host, "Filter by tag"), "logic");
+  assert.deepEqual(rowKeys(first.host), ["godel1931"]);
+});
+
+test("the card steps through the list, confirms and moves to the next entry to review, and sets the reading flag", async () => {
+  const server = fakeServer(sampleLibrary());
+  const { host } = await renderPanel();
+  await type(byLabel(host, "Filter references"), "review");
+  assert.deepEqual(rowKeys(host), ["smith2020sparse", "smith2020sparsea"]);
+  await click(host.querySelector('[data-entry-id="ref_smith"]'));
+  assert.ok(byLabel(host, "Reference 1 of 2"));
+  await click(buttonByText(host, /Confirm & next/));
+  assert.equal(server.library.entries.ref_smith.status, "confirmed");
+  assert.ok(host.querySelector('[aria-label="Reference smith2020sparsea"]'), "the next entry to review opens");
+  assert.equal(buttonByText(host, /Confirm & next/), undefined, "nothing else is left to review");
+
+  await click(byLabel(host, "Reading")!.querySelector("button"));
+  assert.equal(server.library.entries.ref_preprint.reading, "to-read");
+  assert.equal(byLabel(host, "Next reference"), null, "a list of one has no previous/next");
+  await click(byLabel(host, "Back to references"));
+  await type(byLabel(host, "Filter references"), "to-read");
+  assert.deepEqual(rowKeys(host), ["smith2020sparsea"]);
+});
+
+test("the card attaches notebook files and links, removes attachments, and lists where it is cited", async () => {
+  const server = fakeServer(sampleLibrary());
+  server.citations = { byFile: { "Notes/paper.md": ["godel1931"] }, byKey: { godel1931: ["Notes/paper.md"] } };
+  const opened: Array<{ path: string; start: number; end: number; line: number }> = [];
+  const text = "# Paper\n\nAs shown [@godel1931, p. 3], it holds.";
+  const { host } = await renderPanel({
+    tree: treeWith(["Notes/papers/godel.pdf", "Notes/papers/other.pdf", "Notes/paper.md"]),
+    openDrafts: [{ path: "Notes/paper.md", text }],
+    onOpenCitation: (path, range) => opened.push({ path, ...range }),
+  });
+  await click(host.querySelector('[data-entry-id="ref_godel"]'));
+
+  await click(byLabel(host, "Show citations in paper.md"));
+  const snippet = host.querySelector('[aria-label="Citations in paper.md"] button')!;
+  assert.match(snippet.textContent ?? "", /As shown \[@godel1931, p\. 3\], it holds\./);
+  await click(snippet);
+  assert.deepEqual(opened, [{ path: "Notes/paper.md", start: text.indexOf("[@"), end: text.indexOf("],") + 1, line: 3 }]);
+
+  await click(buttonByText(host, /Attach file/));
+  const choices = [...host.querySelectorAll('[aria-label="Files to attach"] button')].map((button) => button.textContent?.trim());
+  assert.deepEqual(choices, ["paper.md", "other.pdf"], "attached files are not offered");
+  await click(buttonByText(host.querySelector('[aria-label="Files to attach"]')!, "other.pdf"));
+  assert.deepEqual(server.patches().at(-1), [{ op: "attach", id: "ref_godel", attachment: { kind: "pdf", path: "Notes/papers/other.pdf" } }]);
+
+  await click(buttonByText(host, /Add link/));
+  await type(byLabel(host, "Web address to attach"), "not a link");
+  assert.match(host.textContent ?? "", /Enter a web address/);
+  await type(byLabel(host, "Web address to attach"), "https://example.org/paper");
+  await click(buttonByText(host, "Add"));
+  assert.deepEqual(server.patches().at(-1), [{ op: "attach", id: "ref_godel", attachment: { kind: "url", url: "https://example.org/paper" } }]);
+
+  await click(byLabel(host, "Remove attachment other.pdf"));
+  assert.deepEqual(server.patches().at(-1), [{ op: "detach", id: "ref_godel", attachment: { kind: "pdf", path: "Notes/papers/other.pdf" } }]);
+});
+
+test("reference files dropped from the computer are imported from their text without uploading", async () => {
+  const server = fakeServer(sampleLibrary());
+  const uploads: File[][] = [];
+  server.importResult = () => ({ library: server.library, added: ["ref_x"], errors: [], duplicates: [] });
+  const { host } = await renderPanel({ onUploadFiles: async (_notebook, files) => { uploads.push(files); } });
+  await drop(host.querySelector(".libera-references-panel")!, { types: ["Files"], files: [new File(["@article{a, title={A}}"], "refs.bib")] });
+  assert.deepEqual(server.requests.find((request) => request.url === "/api/references/import")?.body, { notebook: "Notes", format: "auto", text: "@article{a, title={A}}" });
+  assert.equal(uploads.length, 0);
+  assert.match(host.textContent ?? "", /Imported 1 reference from refs\.bib\./);
+});
+
+test("Insert bibliography here is offered for a Markdown document without a marker", async () => {
+  fakeServer(sampleLibrary());
+  let inserted = 0;
+  const { host, update } = await renderPanel({ activeMarkdownDraft: "Text [@godel1931].", onInsertBibliography: () => { inserted += 1; } });
+  await click(byLabel(host, "References menu"));
+  const item = buttonByText(document.querySelector('[role="menu"][aria-label="References menu"]')!, /Insert bibliography here/) as HTMLButtonElement;
+  assert.equal(item.disabled, false);
+  await click(item);
+  assert.equal(inserted, 1);
+  await update({ activeMarkdownDraft: "Text [@godel1931].\n\n:::bibliography\n:::\n" });
+  await click(byLabel(host, "References menu"));
+  const again = buttonByText(document.querySelector('[role="menu"][aria-label="References menu"]')!, /Insert bibliography here/) as HTMLButtonElement;
+  assert.equal(again.disabled, true);
+  assert.match(again.title, /already places its bibliography/);
+});

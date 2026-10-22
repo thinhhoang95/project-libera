@@ -52,3 +52,26 @@ test("preferences backups reject unrelated and unsupported JSON", () => {
     /missing its preferences object/,
   );
 });
+
+test("preferences backups carry the Markdown accent color, custom palette and lead-in switch", () => {
+  const { normalizeMarkdownHeadingPalette, normalizeMarkdownHeadingColor } = require("../../electron/markdown-accents.cjs");
+  const palette = { h1: "#aa0000", h2: "#00aa00", h3: "#0000aa", h4: "#123456", h5: "#654321", lists: "#abcdef" };
+  const backup = createPreferencesBackup({
+    markdownHeadingColor: "custom",
+    markdownHeadingPalette: palette,
+    markdownBoldLeadIns: false,
+  });
+
+  assert.deepEqual(parsePreferencesBackup(JSON.parse(JSON.stringify(backup))), {
+    markdownHeadingColor: "custom",
+    markdownHeadingPalette: palette,
+    markdownBoldLeadIns: false,
+  });
+  assert.equal(normalizeMarkdownHeadingColor("custom"), "custom");
+  // A hand-edited backup cannot inject CSS; bad entries fall back per color.
+  assert.deepEqual(
+    normalizeMarkdownHeadingPalette({ ...palette, h2: "red; background: url(x)", lists: "#ABCDEF" }),
+    { ...palette, h2: "#1d4ed8", lists: "#abcdef" },
+  );
+  assert.deepEqual(normalizeMarkdownHeadingPalette(JSON.stringify(palette)), palette);
+});

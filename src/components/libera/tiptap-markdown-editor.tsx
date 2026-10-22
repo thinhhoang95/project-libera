@@ -45,11 +45,13 @@ import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
 import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import { TableInsertButton } from "./table-grid-picker";
 import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "@/lib/tiptap-heading-numbering";
+import { TiptapBoldLeadIns } from "@/lib/tiptap-bold-lead-ins";
 import type { EditorRange } from "@/lib/tiptap-editor-actions";
 import { detectMarkdownHeadingNumbering, type HeadingNumberingSettings } from "@/lib/markdown-heading-numbering";
 import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import { useHeadingNumbering } from "./heading-numbering-state";
 import { LIVE_BLOCK_TEMPLATES, createLiveCodeBlockNodeView } from "./tiptap-live-code-block-view";
+import { PYTHON_FIGURE_OPEN_CODE_EVENT, createPythonFigureNodeView } from "./tiptap-python-figure-view";
 import type { ClipboardText, MenuPasteMode } from "./paste-menu-items";
 
 type Props = {
@@ -198,13 +200,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const citations = useTiptapCitations();
   // ```chart and ```html live blocks draw under their code, as in the preview.
   const codeBlockNodeView = useMemo(() => createLiveCodeBlockNodeView(documentPath), [documentPath]);
+  // Figures made by the note's Python get Re-run and Code (lib/python/sidecar.ts).
+  const imageNodeView = useMemo(() => createPythonFigureNodeView(documentPath), [documentPath]);
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
   const referenceNotebook = useReferenceRender()?.notebook ?? null;
   const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView }),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
@@ -214,6 +218,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     TiptapReview,
     TiptapChanges.configure({ documentPath }),
     TiptapHeadingNumbering,
+    TiptapBoldLeadIns,
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -224,7 +229,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView]);
+  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView]);
 
   const editor = useEditor({
     extensions,
@@ -333,6 +338,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
     },
   });
+
+  // A Python figure's Code button opens the note's sidecar like a link to it.
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!dom) return;
+    const open = (event: Event) => void onOpenFileLink((event as CustomEvent<{ href: string }>).detail.href);
+    dom.addEventListener(PYTHON_FIGURE_OPEN_CODE_EVENT, open);
+    return () => dom.removeEventListener(PYTHON_FIGURE_OPEN_CODE_EVENT, open);
+  }, [editor, onOpenFileLink]);
 
   useLayoutEffect(() => {
     if (!editor || !collab) return;
@@ -793,7 +807,11 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         openFind();
         return;
       }
-      if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
+      if (event.key === "Escape" && state.highlightTool.active) {
+        // Claimed, so Review mode's Escape waits for the next press.
+        event.preventDefault();
+        editor.commands.setHighlightToolActive(false);
+      }
     }}>
       <div ref={toolbarRef} aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
         className="libera-editor-toolbar libera-horizontal-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [&>*]:shrink-0">

@@ -84,7 +84,11 @@ export const HighlightTool = Extension.create({
         if (tool.active && state.selection.$from.parent.type.allowsMarkType(type)) {
           if (current?.attrs.color !== tool.color) return state.tr.addStoredMark(type.create({ color: tool.color }));
         } else if (current) {
-          return state.tr.removeStoredMark(type);
+          // Typing inside highlighted text keeps the highlight; at its edges
+          // the highlight does not spread to new text.
+          const { nodeBefore, nodeAfter } = state.selection.$from;
+          const inside = nodeBefore && nodeAfter && current.isInSet(nodeBefore.marks) && current.isInSet(nodeAfter.marks);
+          if (!inside) return state.tr.removeStoredMark(type);
         }
       },
       view(view) {

@@ -15,18 +15,45 @@ import { LiberaBlockquote } from "./tiptap-boxes";
 import { CitationNode, CITATION_NODE_NAME } from "./tiptap-citation";
 import { FrontMatterNode } from "./tiptap-front-matter";
 
+/** The `y>>>` … `<<<` delimiters of a highlight in the given color. */
+export function highlightMarkdownOpening(color: unknown) {
+  return `${MARKDOWN_HIGHLIGHT_COLORS.find((item) => item.value === color)?.shortcut ?? "y"}>>>`;
+}
+
+/**
+ * Tiptap's serializer closes every mark around an inline atom, so highlighted
+ * math is written as its own run (see tiptap-math.ts). Joins the seams it
+ * leaves between runs of one color: `y>>>a <<<y>>>$x$<<<y>>> b<<<` becomes
+ * `y>>>a $x$ b<<<`.
+ */
+export function mergeHighlightSeams(markdown: string) {
+  if (!markdown.includes("<<<")) return markdown;
+  let previous;
+  do {
+    previous = markdown;
+    markdown = markdown.replace(/([yroagtbvps])>>>((?:(?!<<<)[\s\S])*?)<<<\1>>>/g, "$1>>>$2");
+  } while (markdown !== previous);
+  return markdown;
+}
+
+// Inline math takes the highlight too, so a highlighted formula has no hole.
+function applyHighlight(content: JSONContent[], color: string): JSONContent[] {
+  return content.map((node) => node.type === "text" || node.type === "inlineMath"
+    ? { ...node, marks: [...(node.marks ?? []), { type: "highlight", attrs: { color } }] }
+    : node.content ? { ...node, content: applyHighlight(node.content, color) } : node);
+}
+
 const LiberaHighlight = Highlight.extend({
   renderHTML({ HTMLAttributes }) {
     const color = MARKDOWN_HIGHLIGHT_COLORS.find((item) => item.value === HTMLAttributes["data-color"]);
     return ["mark", mergeAttributes(HTMLAttributes, { style: `color: ${color?.foreground ?? "inherit"}` }), 0];
   },
   renderMarkdown(node, h) {
-    const color = MARKDOWN_HIGHLIGHT_COLORS.find((item) => item.value === node.attrs?.color);
-    return `${color?.shortcut ?? "y"}>>>${h.renderChildren(node)}<<<`;
+    return `${highlightMarkdownOpening(node.attrs?.color)}${h.renderChildren(node)}<<<`;
   },
   parseMarkdown(token, h) {
     const color = MARKDOWN_HIGHLIGHT_COLORS.find((item) => item.shortcut === token.color);
-    return h.applyMark("highlight", h.parseInline(token.tokens ?? []), { color: color?.value ?? "#fef08a" });
+    return applyHighlight(h.parseInline(token.tokens ?? []), color?.value ?? "#fef08a");
   },
   markdownTokenizer: {
     name: "highlight",
@@ -39,6 +66,15 @@ const LiberaHighlight = Highlight.extend({
     },
   },
 }).configure({ multicolor: true });
+
+const LiberaMarkdown = Markdown.extend({
+  onBeforeCreate(event) {
+    this.parent?.(event);
+    const manager = this.storage.manager;
+    const serialize = manager.serialize.bind(manager);
+    manager.serialize = (content) => mergeHighlightSeams(serialize(content));
+  },
+});
 
 const LiberaTextStyle = TextStyle.extend({
   renderMarkdown(node, h) {
@@ -123,6 +159,8 @@ export type MarkdownExtensionOptions = {
   citationNodeView?: NodeViewRenderer;
   /** The Visual editor's code block view, which draws ```chart, ```mermaid and ```html live blocks (tiptap-live-code-block-view.tsx). */
   codeBlockNodeView?: NodeViewRenderer;
+  /** The Visual editor's image view, which adds Re-run and Code to figures made by a note's Python (tiptap-python-figure-view.ts). */
+  imageNodeView?: NodeViewRenderer;
 };
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
@@ -162,10 +200,11 @@ export function createMarkdownExtensions(documentPath: string, options: Markdown
       },
       parseMarkdown: (token, h) => ({ type: "paragraph", content: h.parseInline(token.tokens ?? []) }),
     }),
-    Markdown, LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
+    LiberaMarkdown, LiberaHighlight, LiberaTextStyle, LiberaFontSize, LiberaLineHeight, Color,
     TableKit, TaskList, TaskItem.configure({ nested: true }),
     Image.extend({
       addNodeView() {
+        if (options.imageNodeView) return options.imageNodeView;
         return ({ node }) => {
           const image = document.createElement("img");
           image.src = markdownAssetSource(documentPath, String(node.attrs.src ?? ""));

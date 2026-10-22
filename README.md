@@ -516,6 +516,12 @@ The model is IBM's granite-docling-258M (Apache-2.0), run on the CPU through Tra
 
 See [docs/features/pdf-to-markdown.md](docs/features/pdf-to-markdown.md) for setup, file layout, and how it works.
 
+## Python in notes
+
+Ask the AI agent to compute something, such as a statistic, a fit, a simulation or a plot of a CSV. It writes Python into the note's sidecar (`growth.md` → `growth.py`, cells marked `# %% [id]`), runs it, and puts the figures in the note as ordinary images. In the Visual editor, hover a figure for **Re-run** and **Code**. Python is part of Libera: on a new computer it installs a private Python 3.12 with NumPy, SciPy, pandas, Matplotlib and more (about 450 MB, by uv, into Libera's application data) in the background after opening. On macOS, code runs without network access and can write only to its scratch folder. Set `LIBERA_PYTHON` to use your own interpreter.
+
+See [docs/features/python-in-notes.md](docs/features/python-in-notes.md) for the sidecar format, the runtime and how runs are contained.
+
 ## Detection and Segmentation
 
 Find, outline, and count objects in photos with Ultralytics' YOLOE-26, on this computer. Open it with the scan button in an image tab or the Image Gallery's photo viewer.

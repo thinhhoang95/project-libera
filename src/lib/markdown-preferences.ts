@@ -1,4 +1,9 @@
 import { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } from "../../electron/math-markers.cjs";
+import {
+  normalizeMarkdownBoldLeadIns, normalizeMarkdownHeadingColor, normalizeMarkdownHeadingPalette,
+  type MarkdownHeadingColor, type MarkdownHeadingPalette,
+} from "../../electron/markdown-accents.cjs";
+export type { MarkdownHeadingColor, MarkdownHeadingPalette };
 export type MarkdownPreferences = {
   inlineMathMarkers?: string;
   blockMathMarkers?: string;
@@ -12,6 +17,12 @@ export type MarkdownPreferences = {
   smartPaste: boolean;
   /** Which Markdown Source editor to mount; CodeMirror is in beta (D8). */
   sourceEditor: MarkdownSourceEditorKind;
+  /** Accent for headings in the visual editor and rendered Markdown. */
+  headingColor: MarkdownHeadingColor;
+  /** Per-level colors used when headingColor is "custom". */
+  headingPalette: MarkdownHeadingPalette;
+  /** Bold text opening a paragraph or list item takes the heading accent. */
+  boldLeadIns: boolean;
 };
 
 export type MarkdownSourceEditorKind = "classic" | "codemirror";
@@ -137,6 +148,9 @@ export function normalizeMarkdownPreferences(
     pdfExportBaseLineHeight?: unknown;
     smartPaste?: unknown;
     sourceEditor?: unknown;
+    headingColor?: unknown;
+    headingPalette?: unknown;
+    boldLeadIns?: unknown;
   } = {},
 ): MarkdownPreferences {
   return {
@@ -159,5 +173,8 @@ export function normalizeMarkdownPreferences(
     ),
     smartPaste: input.smartPaste === true || input.smartPaste === "1" || input.smartPaste === "true",
     sourceEditor: normalizeMarkdownSourceEditor(input.sourceEditor),
+    headingColor: normalizeMarkdownHeadingColor(input.headingColor),
+    headingPalette: normalizeMarkdownHeadingPalette(input.headingPalette),
+    boldLeadIns: normalizeMarkdownBoldLeadIns(input.boldLeadIns),
   };
 }

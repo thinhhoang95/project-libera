@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { useNotebookCodeBlockRenderer } from "@/components/libera/slide-live-blocks";
+import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { ReferenceRenderProvider, referenceNotebookForPath } from "@/components/libera/references/reference-render-context";
 import {
   getRenderedMarkdownFontStack,
@@ -24,6 +25,7 @@ export function MarkdownPreviewPage({
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const fontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
   const renderCodeBlock = useNotebookCodeBlockRenderer(snapshot?.documentPath, fontFamily);
+  useMarkdownAccents(markdownPreferences);
 
   const refresh = useCallback(() => {
     if (!window.opener || window.opener.closed) {
@@ -75,7 +77,7 @@ export function MarkdownPreviewPage({
       </header>
       {error ? <p role="alert" className="px-5 py-2 text-sm text-destructive">{error}</p> : null}
       <div className="min-h-0 flex-1 overflow-auto" aria-busy={busy}>
-        <article className="mx-auto max-w-4xl p-8">
+        <article className="markdown-preview-window mx-auto max-w-4xl p-8">
           {snapshot ? (
             <ReferenceRenderProvider notebook={referenceNotebookForPath(snapshot.documentPath)}>
               <MarkdownRenderer

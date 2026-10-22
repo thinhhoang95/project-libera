@@ -21,6 +21,7 @@ import {
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
 import { rehypeLiberaSanitize, type ContentTrust } from "@/lib/markdown-sanitize";
+import { rehypeBoldLeadIns } from "@/lib/markdown-lead-in";
 import { getCollabBridge } from "@/lib/collab/ui/bridge";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 import {
@@ -232,7 +233,7 @@ function markdownUrlTransform(url: string, key: string) {
 // this document's trust (the worker does not know whether it is shared).
 const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components, trust }: { node: Root["children"][number]; components: Components; trust: ContentTrust }) {
   const plugins = useMemo<PluggableList>(
-    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }]],
+    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns],
     [node, trust],
   );
   return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
@@ -262,7 +263,7 @@ function MarkdownRendererContent({
   const trust = useContentTrust(documentPath, contentTrust);
   const citationDocument = useCitationDocumentValue({ content, mathMarkers, preparedTree, preparedCitations, citationScopeIndex });
   // KaTeX first: its output is part of what the sanitizer allows.
-  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }]], [trust]);
+  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns], [trust]);
   // Read at click time so heading links do not rebuild the component table.
   const contentRef = useRef(content);
   useLayoutEffect(() => { contentRef.current = content; }, [content]);
