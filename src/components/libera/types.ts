@@ -47,6 +47,11 @@ export type MarkdownTabViewState = {
   slideIndex?: number;
   visualScrollLeft?: number;
   visualScrollTop?: number;
+  /** The block at the top of the Visual viewport (ProseMirror position) and its
+   * pixel offset, so a restore survives content above it changing height.
+   * Flat numbers keep unchanged positions shallow-equal. */
+  visualScrollAnchorPos?: number;
+  visualScrollAnchorOffset?: number;
   /** ProseMirror selection JSON, independent of source-text offsets. */
   visualSelection?: Record<string, unknown>;
   zoom?: number;
