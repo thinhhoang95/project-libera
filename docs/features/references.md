@@ -11,20 +11,59 @@ Open **References** in the left rail (⌘/Ctrl+7). It shows the library of the n
   - **All**
   - **Cited in this document**: the open note, including unsaved text. Keys the note cites but the library lacks appear at the top in red, with **Add to library…**.
   - **Needs review**
+  - **To read**
   - **Uncited**
   - **Duplicates**
   - **Missing PDF**
-- **Rows** show authors and year, title, venue, key, attachments, status and how many notes cite the entry. Entries cited by the open note are tinted like backlinks.
-- ↑/↓ move through the list, Enter opens an entry and ⌘/Ctrl+Enter cites it at the cursor.
+- **Tags** filter the list too, together with the filter above: choose one in the tag menu next to the filters, or click a `#tag` on a row or in a card. The active tag shows as a chip; × clears it.
+- **Sort** by author, year, title, **Recently added** or **Recently cited** (the latest change to a note that cites the entry; uncited entries last).
+- Search, filter, tag and sort are remembered per notebook, also after Libera restarts.
+- **Rows** show authors and year, title, venue, key, up to two tags, attachments, status, the reading flag and how many notes cite the entry. Entries cited by the open note are tinted like backlinks.
+
+### Keyboard
+
+In the list:
+
+| Key | Action |
+| --- | --- |
+| ↑/↓ | Move through the list |
+| Shift+↑/↓ | Extend the selection |
+| Enter or Space | Open the entry |
+| ⌘/Ctrl+Enter | Cite the entry, or the selection, at the cursor |
+| ⌘/Ctrl+A | Select every listed entry |
+| ⌘/Ctrl+C | Copy the key (or keys) |
+| ⌘/Ctrl+Shift+C | Copy the formatted reference (or references) |
+| E | Edit all fields |
+| Delete | Delete the entry or the selection, after confirming when anything cites it |
+| Esc | Clear the selection |
+| / or ⌘/Ctrl+F | Search |
+
+In a card, ↑/↓ open the previous and next entry of the list, Esc or Space returns to the list, and ⌘/Ctrl+Shift+Enter confirms the entry and opens the next one to review.
+
+### Selecting several entries
+
+⌘/Ctrl-click adds or removes an entry, and Shift-click selects a range. A bar above the list then acts on the whole selection:
+
+- cite all of them at the cursor as one citation, `[@a; @b]`;
+- copy them as `[@a; @b]`, as `\cite{a,b}` or formatted;
+- add a tag to all of them, or remove a tag they carry;
+- mark them **To read** or **Read**;
+- confirm or delete them.
+
+### The card
 
 Selecting an entry opens its card. It shows:
 
 - the reference formatted in the notebook's style;
-- the abstract, identifiers as links, attachments and the notes that cite it;
-- your own notes and tags;
+- the abstract, identifiers as links and attachments;
+- the notes that cite it. The arrow next to a note lists each citation with the text around it; clicking one opens the note with that citation selected;
+- your own notes and tags. The tag field suggests the library's tags;
+- the reading flag: **To read** or **Read**, or neither;
 - where every field came from ("Crossref", "PDF", "LLM + web", "You"), with confidence on hover.
 
-When sources disagree, the card shows each alternative and you choose one. Fields with low confidence can be edited in place. **Confirm** marks the entry as checked. **Edit all fields** opens the full form.
+The arrows at the top move to the previous and next entry of the list, with its position ("3/17"). When sources disagree, the card shows each alternative and you choose one. Fields with low confidence can be edited in place. **Confirm** marks the entry as checked. While others in the list still need review, **Confirm & next** confirms it and opens the next one. **Edit all fields** opens the full form.
+
+**Attach file…** picks a PDF or note of the notebook to attach, and **Add link** attaches a web address. × next to an attachment removes it; the file itself is kept. Next to the key, buttons copy the key, the citation `[@key]` and `\cite{key}`.
 
 **Manage…** opens a table of the whole library for bulk work:
 
@@ -32,6 +71,7 @@ When sources disagree, the card shows each alternative and you choose one. Field
 - select ranges;
 - edit titles, years and venues in place;
 - merge, delete, confirm, change type, re-resolve or export the selection;
+- add a tag to the selection, or remove one;
 - review duplicates.
 
 **Undo** reverses the last 20 changes made in this window.
@@ -41,7 +81,7 @@ When sources disagree, the card shows each alternative and you choose one. Field
 Paste into the **Add** box or drop onto the panel:
 
 - **A DOI, arXiv ID, ISBN, PubMed ID or URL.** Libera looks it up on Crossref, DataCite, arXiv, OpenAlex, PubMed or Open Library. For a URL it reads the page's citation tags.
-- **BibTeX, BibLaTeX, RIS or CSL-JSON text, or such a file.** It is imported directly. `.bib`, `.ris`, `.nbib` and `.json` files in a notebook can also be imported from the file's context menu (**Import into References**).
+- **BibTeX, BibLaTeX, RIS or CSL-JSON text, or such a file.** It is imported directly. `.bib`, `.ris`, `.nbib` and `.json` files dropped from your computer are imported from their text, without being added to the notebook. Such files in a notebook can also be imported from the file's context menu (**Import into References**).
 - **A reference as text, or a whole bibliography.** Each reference is matched against the databases.
 - **A PDF or Markdown note.** Libera reads the PDF's first pages and metadata, finds its DOI or arXiv ID, and checks that the identifier belongs to this paper rather than to one in its reference list. Without an identifier, AI reads the title and authors from the first page, and the databases are searched for them. Several dropped files are processed as one background job.
 - **A screenshot or photo of a reference list.** It is read with the local OCR model, then handled like a pasted bibliography.
@@ -88,7 +128,7 @@ The syntax:
 - A bare `@word` is a citation only when the word is a key in the library. Email addresses and handles stay text.
 - Citations are formatted in the notebook's style, chosen in the panel menu. The bundled styles are APA 7, Chicago author-date, IEEE, Vancouver, Nature and Harvard; any `.csl` file in the notebook also works.
 - A note can choose its own style with **Document style** at the top of the References panel. This writes `citation-style: ieee` into the note's front matter; slide decks use a `$citation-style = "ieee"` line instead. **Notebook default** removes it.
-- The bibliography is generated at the end of the note, or wherever a `:::bibliography` line followed by `:::` appears.
+- The bibliography is generated at the end of the note, or wherever a `:::bibliography` line followed by `:::` appears. **Insert bibliography here**, in the panel menu, adds that marker after the paragraph at the cursor.
 - Hover a citation to see the reference, abstract, notes, how many highlights its PDF has, and **Open PDF at p. 12**. Keys missing from the library are shown in red.
 - **Quote and cite**, in a PDF's selection menu or a highlight's menu, inserts the passage as a quote with its citation into the last note you edited. The page is the printed page number, taken from the PDF's page labels or from the entry's page range. You can also drag a selection from the PDF into a note. If the note is in another notebook, the entry is copied into that notebook's library first.
 - References are also part of **Global Search**, under the References filter. Your PDF highlights are indexed with their PDFs.

@@ -279,7 +279,7 @@ Run the editor's Markdown round-trip regression tests with `npm run test:editor`
 
 ### Charts and live HTML in notes
 
-Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
+Notes can hold the same charts and interactive HTML as slides. A fenced block tagged `chart` draws a chart from a few lines of settings, one tagged `mermaid` draws a Mermaid diagram (flowcharts, sequence diagrams, Gantt charts, mind maps and more), and one tagged `html live` runs its HTML, CSS, and JavaScript in a sandboxed frame, with Chart.js loaded. In the Visual editor the drawing appears under the block's code, which stays editable; **Insert chart**, **Insert diagram** and **Insert interactive HTML** in the toolbar add a starter block. The Source editor shows them in its preview, and they print in PDF exports. In notes they follow the app's light or dark theme. Shared notebooks get the same protection as slides: a live block waits for **Run** and never has network access. The AI chat and search results show these blocks as code.
 
 ````markdown
 ```chart
@@ -291,6 +291,24 @@ series: [32, 41, 38, 57]
 ````
 
 See [Charts and live HTML in slides](#charts-and-live-html-in-slides) for the settings, and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md) for the full guide.
+
+### Markdown macros
+
+Define LaTeX-style macros in a note's own ```` ```libera-macro ```` block, and use them anywhere in the note. A body wrapped in `$…$` is math: `$\fset$` and a bare `\fset` both render as $\mathcal{F}$. `\newcommand` macros take arguments and expand to Markdown, and `\counter-name` numbers itself in document order with no definition needed:
+
+````markdown
+```libera-macro
+\fset = $\mathcal{F}$
+\norm = $\lVert #1 \rVert$
+\newcommand{\theorem}[2]{**Theorem \counter-theorem (#1).** *#2*}
+```
+
+Let \fset be closed under $\norm{\cdot}$.
+
+\theorem{Pythagoras}{Given a right triangle with legs $a, b$ and hypotenuse $c$, $a^2 + b^2 = c^2$.}
+````
+
+The file keeps the macros as written; the preview, slides, PDF and LaTeX exports show them expanded. In the Visual editor a macro shows its expansion until the caret reaches it, and the macro block folds to **Macros: 3 definitions**. **Expand macros** (the `{}` button in both toolbars) opens a plain-Markdown copy, with every macro replaced and the definitions removed, in a new unsaved tab. AI Chat and the AI Agent render their replies with the macros of the open note and the documents in the conversation, and the Agent keeps a note's macros as written when it edits it. See [docs/features/markdown-macros.md](docs/features/markdown-macros.md) for the full guide.
 
 ## Markdown Slides
 
@@ -372,6 +390,8 @@ A responsive Chart.js canvas is half as tall as it is wide, so a full-width one 
 </script>
 ```
 ````
+
+A fenced block tagged `mermaid` draws a [Mermaid](https://mermaid.js.org/intro/) diagram in the slide's theme: flowcharts, sequence, class, state and ER diagrams, Gantt charts, pies, mind maps, timelines and more. Mermaid runs in strict mode (no scripted clicks or HTML labels), so diagrams render in every notebook, shared ones included.
 
 In a shared notebook, a live block shows a **Run** button instead of running on its own. Once run, it still has no network access. Charts and live blocks print in PDF exports; Libera waits for them to finish drawing first. The same blocks work in notes (see [Charts and live HTML in notes](#charts-and-live-html-in-notes) and [docs/features/charts-and-live-html.md](docs/features/charts-and-live-html.md)).
 
@@ -513,6 +533,12 @@ Read PDF pages, scanned books, and images into Markdown on this computer, with n
 The model is IBM's granite-docling-258M (Apache-2.0), run on the CPU through Transformers.js in a background worker process. The first time you use either feature, Libera offers to download it (about 600 MB) into its application data, or into a folder chosen in Preferences → Search → **PDF reading model**, where you can also put the files from Hugging Face yourself. Expect several seconds for a small snip and one to three minutes for a full page. Small print such as footnotes can be missed; pages the model could not finish are listed when the conversion ends.
 
 See [docs/features/pdf-to-markdown.md](docs/features/pdf-to-markdown.md) for setup, file layout, and how it works.
+
+## Python in notes
+
+Ask the AI agent to compute something, such as a statistic, a fit, a simulation or a plot of a CSV. It writes Python into the note's sidecar (`growth.md` → `growth.py`, cells marked `# %% [id]`), runs it, and puts the figures in the note as ordinary images. In the Visual editor, hover a figure for **Re-run** and **Code**. Python is part of Libera: on a new computer it installs a private Python 3.12 with NumPy, SciPy, pandas, Matplotlib and more (about 450 MB, by uv, into Libera's application data) in the background after opening. On macOS, code runs without network access and can write only to its scratch folder. Set `LIBERA_PYTHON` to use your own interpreter.
+
+See [docs/features/python-in-notes.md](docs/features/python-in-notes.md) for the sidecar format, the runtime and how runs are contained.
 
 ## Detection and Segmentation
 

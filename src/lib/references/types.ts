@@ -109,6 +109,10 @@ export type FieldProvenance = {
 
 export type ReferenceStatus = "confirmed" | "needs-review" | "unresolved";
 
+/** The user's reading flag for an entry. Unset means no flag. */
+export const READING_STATES = ["to-read", "read"] as const;
+export type ReadingState = typeof READING_STATES[number];
+
 /** A competing value for a field, from a source that disagrees with the entry's current value. */
 export type FieldAlternative = { value: unknown; provenance: FieldProvenance };
 
@@ -153,6 +157,7 @@ export type ReferenceEntry = {
   /** Markdown. */
   notes?: string;
   tags?: string[];
+  reading?: ReadingState;
   createdAt: string;
   updatedAt: string;
   /** Field-level clocks (ISO strings) for a later collaborative merge. */
@@ -251,7 +256,7 @@ export type ReferenceEntryInput = {
 
 export type ReferenceLibraryOp =
   | { op: "add"; entry: ReferenceEntryInput }
-  | { op: "update"; id: string; csl?: Partial<CslItem>; removeFields?: string[]; identifiers?: ReferenceIdentifiers; provenance?: Partial<Record<CslField, FieldProvenance>>; /** Per field; null or [] clears that field's conflict. */ conflicts?: Partial<Record<CslField, FieldAlternative[] | null>>; status?: ReferenceStatus; notes?: string; tags?: string[]; versions?: ReferenceVersionLink[]; retraction?: RetractionStatus }
+  | { op: "update"; id: string; csl?: Partial<CslItem>; removeFields?: string[]; identifiers?: ReferenceIdentifiers; provenance?: Partial<Record<CslField, FieldProvenance>>; /** Per field; null or [] clears that field's conflict. */ conflicts?: Partial<Record<CslField, FieldAlternative[] | null>>; status?: ReferenceStatus; notes?: string; tags?: string[]; /** null clears the flag. */ reading?: ReadingState | null; versions?: ReferenceVersionLink[]; retraction?: RetractionStatus }
   | { op: "rename-key"; id: string; key: string }
   | { op: "delete"; id: string }
   | { op: "merge"; keepId: string; mergeIds: string[] }

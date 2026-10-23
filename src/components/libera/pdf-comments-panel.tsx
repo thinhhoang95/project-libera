@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, PencilLine, RotateCcw, Save, Search, Send, Sparkles, Trash2, X } from "lucide-react";
 import { pdfCommentPages, sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { timeAgo } from "@/lib/collab/ui/wording";
-import { useNow } from "./markdown-review-ui";
+import { CommentBody, useNow } from "./markdown-review-ui";
 import { changePdfComments, clearPdfCommentsError, focusPdfComment, loadPdfComments, selectPdfComment, usePdfComments } from "./pdf-comments-store";
 import type { PdfCommentMessage, PdfCommentThread } from "@/lib/types";
 
@@ -93,7 +93,7 @@ export function PdfReviewComments({ path }: { path: string }) {
               <span className="text-[11px] capitalize text-muted-foreground">{thread.status}</span>
             </span>
             {thread.anchor.quote && <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>}
-            <span className="block whitespace-pre-wrap">{thread.messages[0]?.text}</span>
+            {!selected && thread.messages[0] && <CommentBody text={thread.messages[0].text} preview />}
             {!selected && replies.length > 0 && <span className="mt-2 block text-xs text-muted-foreground">{replies.length} {replies.length === 1 ? "reply" : "replies"}{replies.some((m) => m.author === "agent") ? " · Agent replied" : ""}</span>}
           </button>
           {selected && <div className="mt-2 space-y-2">
@@ -101,12 +101,13 @@ export function PdfReviewComments({ path }: { path: string }) {
               <MessageMeta message={thread.messages[0]} now={now} />
               <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit comment" title="Edit comment" disabled={busy} onClick={() => { setEditing(thread.messages[0].id); setDraft(thread.messages[0].text); }}><PencilLine aria-hidden size={16} /></button>
             </div>
+            <CommentBody text={thread.messages[0].text} />
             {replies.map((message) => <div key={message.id} className="space-y-1 border-l-2 border-border pl-2" data-author={message.author ?? "user"}>
               <div className="flex items-center justify-between gap-2">
                 <MessageMeta message={message} now={now} />
                 {message.author !== "agent" && <button type="button" className="review-comment-icon" data-tone="blue" aria-label="Edit reply" title="Edit reply" disabled={busy} onClick={() => { setEditing(message.id); setDraft(message.text); }}><PencilLine aria-hidden size={16} /></button>}
               </div>
-              <p className="whitespace-pre-wrap">{message.text}</p>
+              <CommentBody text={message.text} />
             </div>)}
             <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(thread); }

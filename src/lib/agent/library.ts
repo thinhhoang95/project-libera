@@ -1,5 +1,6 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { isAssetSidecarPath } from "@/lib/storage/asset-names";
 import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { getFileType } from "@/lib/storage/file-types";
 import { StorageError } from "@/lib/storage/errors";
@@ -67,8 +68,9 @@ async function libraryPathFromAbsolute(input: string, notebooks: string[]) {
 /**
  * Resolve a model-supplied path to a library path inside a notebook. Accepts
  * "Notebook/a.md", an absolute path inside a notebook, or a path relative to
- * `defaultNotebook` ("folder/a.md"). Hidden entries, `_assets` and anything
- * outside the library are rejected, including through symlinks.
+ * `defaultNotebook` ("folder/a.md"). Hidden entries, `_assets` (except notes'
+ * Python sidecars) and anything outside the library are rejected, including
+ * through symlinks.
  */
 export async function resolveLibraryPath(input: string, { defaultNotebook, notebooks }: { defaultNotebook?: string; notebooks?: string[] } = {}): Promise<ResolvedPath> {
   const raw = input.trim();
@@ -124,14 +126,16 @@ export function isSkippedEntry(name: string) {
 
 /**
  * Walk supported files under a library folder ("" for every notebook). The
- * archive folder is skipped unless the walk starts inside it.
+ * archive folder is skipped unless the walk starts inside it; of a notebook's
+ * _assets folder, only notes' Python sidecars are listed.
  */
 export async function* walkLibraryFiles(root: ResolvedPath | null, signal?: AbortSignal): AsyncGenerator<LibraryEntry> {
   const starts = root ? [root] : await Promise.all((await listNotebookNames()).map((notebook) => resolveLibraryPath(notebook)));
   let visited = 0;
   for (const start of starts) {
     const insideArchive = start.pathParts[0] === ARCHIVE_DIR;
-    const queue: { absolute: string; relative: string; depth: number }[] = [{ absolute: start.absolutePath, relative: start.path, depth: start.pathParts.length }];
+    // In _assets only notes' Python sidecars are files the agent works with.
+    const queue: { absolute: string; relative: string; depth: number; assets: boolean }[] = [{ absolute: start.absolutePath, relative: start.path, depth: start.pathParts.length, assets: start.pathParts[0] === MARKDOWN_ASSETS_DIR }];
     while (queue.length) {
       signal?.throwIfAborted();
       const directory = queue.shift()!;
@@ -141,14 +145,15 @@ export async function* walkLibraryFiles(root: ResolvedPath | null, signal?: Abor
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
         if (++visited > MAX_WALK_ENTRIES) return;
-        if (isSkippedEntry(entry.name) || (entry.name === ARCHIVE_DIR && directory.depth === 0 && !insideArchive)) continue;
+        const assets = directory.assets || (entry.name === MARKDOWN_ASSETS_DIR && directory.depth === 0);
+        if (entry.name.startsWith(".") || (isSkippedEntry(entry.name) && !assets) ||(entry.name === ARCHIVE_DIR && directory.depth === 0 && !insideArchive)) continue;
         const absolute = path.join(directory.absolute, entry.name);
         const relative = `${directory.relative}/${entry.name}`;
         if (entry.isDirectory()) {
-          queue.push({ absolute, relative, depth: directory.depth + 1 });
+          queue.push({ absolute, relative, depth: directory.depth + 1, assets });
           continue;
         }
-        if (!entry.isFile()) continue;
+        if (!entry.isFile() || (assets && !isAssetSidecarPath(relative.split("/").slice(1)))) continue;
         const fileType = getFileType(entry.name);
         if (!fileType) continue;
         try {

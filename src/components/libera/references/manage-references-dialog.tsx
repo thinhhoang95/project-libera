@@ -6,6 +6,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import {
   authorsLabel,
+  changedTags,
   chooseKeptEntry,
   citingPaths,
   CSL_TYPE_LABELS,
@@ -19,7 +20,9 @@ import {
   foldSearchText,
   formatFieldValue,
   fullAuthorList,
+  libraryTags,
   STATUS_LABELS,
+  tagChangeText,
   typeLabel,
   venueField,
 } from "@/components/libera/references/reference-display";
@@ -418,6 +421,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tagDraft, setTagDraft] = useState("");
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
   const [bulk, setBulk] = useState<{ done: number; total: number; key: string } | null>(null);
   const bulkRef = useRef<AbortController | null>(null);
@@ -487,6 +491,17 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Add tags to, or remove them from, every selected entry that changes. */
+  function tagSelected(selection: ReferenceEntry[], add: string[], remove: string[]) {
+    const ops: ReferenceLibraryOp[] = [];
+    for (const entry of selection) {
+      const tags = changedTags(entry, add, remove);
+      if (tags) ops.push({ op: "update", id: entry.id, tags });
+    }
+    const { label, message } = tagChangeText(ops.length, add, remove);
+    return run(ops, label, message);
   }
 
   function toggleRow(id: string, event: { shiftKey: boolean }) {
@@ -623,6 +638,26 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
               }}>
                 <option value="">Change type…</option>
                 {[...CSL_ITEM_TYPES].sort((a, b) => CSL_TYPE_LABELS[a].localeCompare(CSL_TYPE_LABELS[b])).map((type) => <option key={type} value={type}>{CSL_TYPE_LABELS[type]}</option>)}
+              </select>
+              <form className="flex items-center gap-1" onSubmit={(event) => {
+                event.preventDefault();
+                const add = tagDraft.split(",").map((tag) => tag.trim()).filter(Boolean);
+                if (!add.length) return;
+                setTagDraft("");
+                void tagSelected(selectedEntries, add, []);
+              }}>
+                <input className="h-7 w-28 rounded-lg border border-input bg-transparent px-2 text-xs" aria-label="Tag for selected" placeholder="Tag" list="manage-references-tags" disabled={!selectedEntries.length || busy} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} />
+                <button type="submit" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy || !tagDraft.trim()}>Add tag</button>
+                <datalist id="manage-references-tags">
+                  {libraryTags(Object.values(library.entries)).map((item) => <option key={item.tag} value={item.tag} />)}
+                </datalist>
+              </form>
+              <select className="h-7 px-2 text-xs" aria-label="Remove tag from selected" disabled={!selectedEntries.some((entry) => entry.tags?.length) || busy} value="" onChange={(event) => {
+                const tag = event.target.value;
+                if (tag) void tagSelected(selectedEntries, [], [tag]);
+              }}>
+                <option value="">Remove tag…</option>
+                {libraryTags(selectedEntries).map((item) => <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>)}
               </select>
               <select className="h-7 px-2 text-xs" aria-label="Export selected" disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
                 const format = event.target.value as ExportFormat;

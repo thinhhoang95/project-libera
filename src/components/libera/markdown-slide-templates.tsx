@@ -60,10 +60,11 @@ function FitBody({ children, enabled }: { children: ReactNode; enabled: boolean 
     function fits(scale: number) {
       const scaled = scale < 1;
 
-      // Live HTML frames keep their natural width: a responsive chart is as
-      // tall as it is wide, so widening it to reflow would only grow it.
+      // Live HTML frames and diagrams keep their natural width: a responsive
+      // chart or a diagram scaled to the column is as tall as it is wide, so
+      // widening it to reflow would only grow it.
       if (!scaled) {
-        const liveFrames = zoom!.querySelectorAll<HTMLElement>(".markdown-slide-live-frame");
+        const liveFrames = zoom!.querySelectorAll<HTMLElement>(".markdown-slide-live-frame, .markdown-slide-diagram");
         liveFrames.forEach((liveFrame) => liveFrame.style.removeProperty("max-width"));
         zoom!.style.width = "";
         liveFrames.forEach((liveFrame) => liveFrame.style.setProperty("max-width", `${liveFrame.offsetWidth}px`));
@@ -79,6 +80,9 @@ function FitBody({ children, enabled }: { children: ReactNode; enabled: boolean 
     function fit() {
       let scale = 1;
       let overflow = false;
+      // Diagrams are capped at the body's height, so a tall one shrinks on
+      // its own instead of shrinking the slide's text with it.
+      frame!.style.setProperty("--markdown-slide-body-height", `${frame!.clientHeight}px`);
 
       if (enabled && !fits(1)) {
         let low = MIN_FIT_SCALE;

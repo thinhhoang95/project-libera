@@ -1,15 +1,17 @@
 "use client";
 
-import { ArrowLeft, Check, Copy, ExternalLink, FileText, FileType2, Globe, Pencil, Quote, RotateCw, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, BookCheck, BookOpen, Braces, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsRight, Copy, ExternalLink, FileText, FileType2, Globe, Link2, Loader2, Paperclip, Pencil, Quote, RotateCw, Trash2, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   authorYearLabel,
+  citationText,
   entryTitle,
   fieldLabel,
   fileBaseName,
   formatFieldValue,
   PROVENANCE_LABELS,
+  READING_LABELS,
   STATUS_LABELS,
   typeLabel,
 } from "@/components/libera/references/reference-display";
@@ -18,12 +20,15 @@ import { RetractionBadge } from "@/components/libera/references/retraction-badge
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
 import { CITE_UNAVAILABLE, StatusBadge } from "@/components/libera/references/reference-row";
 import { isValidCitationKey } from "@/lib/references/keys";
+import { citationSnippets, type CitationSnippet } from "@/lib/references/occurrences";
 import { formatNameForDisplay, parsePersonList } from "@/lib/references/names";
 import { parseDateText } from "@/lib/references/normalize";
 import type {
   CslName,
   FieldAlternative,
   FieldProvenance,
+  ReadingState,
+  ReferenceAttachment,
   ReferenceEntry,
   ReferenceLibrary,
   ReferenceLibraryOp,
@@ -124,9 +129,27 @@ type CardProps = {
   onDelete: () => void;
   /** After a key rename: offer to rewrite the citations that still use the old key (now an alias). */
   onUpdateCitations?: (from: string, to: string) => void;
+  /** Where the entry is in the panel's list, for the previous/next buttons. */
+  position?: { index: number; total: number };
+  onPrevious?: () => void;
+  onNext?: () => void;
+  /** Other entries in the list that still need review; with any, Confirm offers to go on to the next. */
+  reviewLeft?: number;
+  onConfirmNext?: () => void;
+  /** PDFs and notes of the notebook that can be attached. */
+  attachableFiles?: Array<{ path: string; kind: "pdf" | "markdown" }>;
+  /** Every tag in the library, for completion. */
+  knownTags?: string[];
+  onTag?: (tag: string) => void;
+  /** The Markdown text of a citing document: its open draft, else the saved file. */
+  loadDocument?: (path: string) => Promise<string>;
+  /** Open a citing document at a citation. */
+  onOpenCitation?: (path: string, snippet: CitationSnippet) => void;
 };
 
-export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations }: CardProps) {
+export const CONFIRM_NEXT_SHORTCUT = "⌘/Ctrl+Shift+Enter";
+
+export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations, position, onPrevious, onNext, reviewLeft = 0, onConfirmNext, attachableFiles, knownTags, onTag, loadDocument, onOpenCitation }: CardProps) {
   const [error, setError] = useState("");
   const reviewing = entry.status !== "confirmed";
 
@@ -149,22 +172,34 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
   const identifiers = identifierLinks(entry);
 
   return (
-    <div className="libera-reference-card flex min-h-0 flex-1 flex-col overflow-hidden" aria-label={`Reference ${entry.key}`} role="region">
+    <div className="libera-reference-card flex min-h-0 flex-1 flex-col overflow-hidden outline-none" aria-label={`Reference ${entry.key}`} role="region" tabIndex={-1}>
       <div className="flex items-center gap-1 px-2 pb-1 pt-1">
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs" aria-label="Back to references" onClick={onBack}>
-          <ArrowLeft aria-hidden className="h-3.5 w-3.5" /> References
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs" aria-label="Back to references" title="Back to references (Esc)" onClick={onBack}>
+          {/* With the previous/next buttons there is room for the arrow only. */}
+          <ArrowLeft aria-hidden className="h-3.5 w-3.5" />{position && position.total > 1 ? null : " References"}
         </button>
+        {position && position.total > 1 ? (
+          <div className="flex items-center" role="group" aria-label="Move through the list">
+            <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-6 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Previous reference" title="Previous reference (↑)" disabled={!onPrevious || position.index <= 0} onClick={onPrevious}>
+              <ChevronLeft aria-hidden className="h-4 w-4" />
+            </button>
+            <span className="min-w-10 text-center text-[11px] tabular-nums text-muted-foreground" aria-label={`Reference ${position.index + 1} of ${position.total}`}>{position.index + 1}/{position.total}</span>
+            <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-6 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Next reference" title="Next reference (↓)" disabled={!onNext || position.index >= position.total - 1} onClick={onNext}>
+              <ChevronRight aria-hidden className="h-4 w-4" />
+            </button>
+          </div>
+        ) : null}
         <div className="flex-1" />
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Cite at cursor" title={canCite ? "Cite at cursor" : CITE_UNAVAILABLE} disabled={!canCite} onClick={onCite}>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Cite at cursor" title={canCite ? "Cite at cursor" : CITE_UNAVAILABLE} disabled={!canCite} onClick={onCite}>
           <Quote aria-hidden className="h-4 w-4" />
         </button>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label="Re-resolve" title="Look this reference up again" onClick={onReresolve}>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg" aria-label="Re-resolve" title="Look this reference up again" onClick={onReresolve}>
           <RotateCw aria-hidden className="h-4 w-4" />
         </button>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" aria-label="Edit all fields" title="Edit all fields" onClick={onEditAll}>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg" aria-label="Edit all fields" title="Edit all fields" onClick={onEditAll}>
           <Pencil aria-hidden className="h-4 w-4" />
         </button>
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-8 items-center justify-center rounded-lg" data-tone="destructive" aria-label="Delete reference" title="Delete reference" onClick={onDelete}>
+        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg" data-tone="destructive" aria-label="Delete reference" title="Delete reference" onClick={onDelete}>
           <Trash2 aria-hidden className="h-4 w-4" />
         </button>
       </div>
@@ -180,18 +215,35 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
           </div>
           <RetractionBadge status={entry.retraction} />
           <FormattedReference className="text-[12px] leading-relaxed text-muted-foreground" notebook={notebook} setting={library.style} entry={entry} />
-          <p className="text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
+            <ReadingToggle reading={entry.reading} onChange={(reading) => void run([{ op: "update", id: entry.id, reading }], reading ? `Mark ${entry.key} ${READING_LABELS[reading]}` : `Clear the reading flag of ${entry.key}`)} />
+          </div>
           {reviewing ? (
             <div className="flex items-center gap-2 pt-1">
-              <button type="button" className="libera-panel-primary h-8 flex-1 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], `Confirm ${entry.key}`)}>
-                <Check aria-hidden className="h-4 w-4" /> Confirm
-              </button>
-              <button type="button" className="libera-panel-button h-8 px-3" onClick={onEditAll}>Edit all fields</button>
+              {onConfirmNext && reviewLeft > 0 ? (
+                <>
+                  <button type="button" className="libera-panel-primary h-8 flex-1 px-3" title={`Confirm, then open the next reference to review (${CONFIRM_NEXT_SHORTCUT})`} onClick={onConfirmNext}>
+                    <ChevronsRight aria-hidden className="h-4 w-4" /> Confirm &amp; next
+                  </button>
+                  <button type="button" className="libera-panel-button h-8 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], `Confirm ${entry.key}`)}>
+                    <Check aria-hidden className="h-4 w-4" /> Confirm
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="libera-panel-primary h-8 flex-1 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], `Confirm ${entry.key}`)}>
+                    <Check aria-hidden className="h-4 w-4" /> Confirm
+                  </button>
+                  <button type="button" className="libera-panel-button h-8 px-3" onClick={onEditAll}>Edit all fields</button>
+                </>
+              )}
             </div>
           ) : null}
           {reviewing ? (
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               {STATUS_LABELS[entry.status]}: check the fields below, correct any that are wrong, then confirm.
+              {onConfirmNext && reviewLeft > 0 ? ` ${reviewLeft} more to review in this list.` : ""}
             </p>
           ) : null}
         </div>
@@ -203,6 +255,7 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
           library={library}
           onRename={(key) => run([{ op: "rename-key", id: entry.id, key }], `Rename ${entry.key}`)}
           onCopy={() => onCopy(entry.key, "Key")}
+          onCopyCitation={(format) => onCopy(citationText([entry.key], format), "Citation")}
           onUpdateCitations={onUpdateCitations}
         />
 
@@ -256,44 +309,17 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
           </Section>
         ) : null}
 
-        <Section title="Attachments">
-          {entry.attachments.length ? (
-            <ul className="space-y-0.5">
-              {entry.attachments.map((attachment) => attachment.kind === "url" ? (
-                <li key={`url:${attachment.url}`}>
-                  <a className="libera-notebook-row flex items-center gap-2 px-2 py-1 text-[12px]" href={attachment.url} target="_blank" rel="noreferrer">
-                    <Globe aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 truncate">{attachment.url}</span>
-                  </a>
-                </li>
-              ) : (
-                <li key={`${attachment.kind}:${attachment.path}`}>
-                  <button type="button" className="libera-notebook-row flex w-full items-center gap-2 px-2 py-1 text-left text-[12px]" title={attachment.path} onClick={() => onOpenPath(attachment.path)}>
-                    {attachment.kind === "pdf" ? <FileType2 aria-hidden className="h-3.5 w-3.5 shrink-0 text-[#d08178]" /> : <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                    <span className="min-w-0 truncate">{fileBaseName(attachment.path)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : <p className="px-0.5 text-[12px] text-muted-foreground">Drop a PDF from the notebook on the panel to attach it.</p>}
-        </Section>
+        <AttachmentsSection
+          entry={entry}
+          files={attachableFiles}
+          onOpenPath={onOpenPath}
+          onAttach={(attachment) => run([{ op: "attach", id: entry.id, attachment }], `Attach to ${entry.key}`)}
+          onDetach={(attachment) => run([{ op: "detach", id: entry.id, attachment }], `Remove an attachment of ${entry.key}`)}
+        />
 
-        <Section title={`Cited in ${citing.length} document${citing.length === 1 ? "" : "s"}`}>
-          {citing.length ? (
-            <ul className="space-y-0.5" aria-label="Citing documents">
-              {citing.map((path) => (
-                <li key={path}>
-                  <button type="button" className="libera-notebook-row flex w-full items-center gap-2 px-2 py-1 text-left text-[12px]" title={path} onClick={() => onOpenPath(path)}>
-                    <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 truncate">{fileBaseName(path)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : <p className="px-0.5 text-[12px] text-muted-foreground">No document cites this reference yet.</p>}
-        </Section>
+        <CitingSection entry={entry} citing={citing} onOpenPath={onOpenPath} loadDocument={loadDocument} onOpenCitation={onOpenCitation} />
 
-        <TagEditor tags={entry.tags ?? []} onChange={(tags) => run([{ op: "update", id: entry.id, tags }], `Edit tags of ${entry.key}`)} />
+        <TagEditor tags={entry.tags ?? []} knownTags={knownTags} onTag={onTag} onChange={(tags) => run([{ op: "update", id: entry.id, tags }], `Edit tags of ${entry.key}`)} />
         <NotesEditor entry={entry} onSave={(notes) => run([{ op: "update", id: entry.id, notes }], `Edit notes of ${entry.key}`)} />
 
         <div className="flex justify-end">
@@ -306,11 +332,12 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
   );
 }
 
-function KeyEditor({ entry, library, onRename, onCopy, onUpdateCitations }: {
+function KeyEditor({ entry, library, onRename, onCopy, onCopyCitation, onUpdateCitations }: {
   entry: ReferenceEntry;
   library: ReferenceLibrary;
   onRename: (key: string) => Promise<boolean>;
   onCopy: () => void;
+  onCopyCitation: (format: "pandoc" | "latex") => void;
   onUpdateCitations?: (from: string, to: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -353,10 +380,12 @@ function KeyEditor({ entry, library, onRename, onCopy, onUpdateCitations }: {
           )}
         </form>
       ) : (
-        <div className="flex items-center gap-1.5">
-          <code className="min-w-0 flex-1 truncate font-mono text-[12px]">{entry.key}</code>
+        <div className="flex flex-wrap items-center gap-1">
+          <code className="min-w-0 basis-full truncate font-mono text-[12px]" title={entry.key}>{entry.key}</code>
           <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label="Copy key" title="Copy key" onClick={onCopy}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
-          <button type="button" className="libera-panel-button h-7 px-2.5" onClick={() => { setDraft(entry.key); setEditing(true); }}>Rename key</button>
+          <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={`Copy as [@${entry.key}]`} title={`Copy as [@${entry.key}]`} onClick={() => onCopyCitation("pandoc")}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
+          <button type="button" className="libera-sidebar-icon-button inline-flex h-7 w-7 items-center justify-center rounded-lg" aria-label={`Copy as \\cite{${entry.key}}`} title={`Copy as \\cite{${entry.key}}`} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
+          <button type="button" className="libera-panel-button ml-auto h-7 px-2.5" onClick={() => { setDraft(entry.key); setEditing(true); }}>Rename key</button>
         </div>
       )}
       {offer && onUpdateCitations ? (
@@ -449,8 +478,10 @@ function FieldRow({ entry, field, editable, onCommit, onChoose, onKeep }: {
   );
 }
 
-function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+function TagEditor({ tags, knownTags = [], onTag, onChange }: { tags: string[]; knownTags?: string[]; onTag?: (tag: string) => void; onChange: (tags: string[]) => void }) {
   const [draft, setDraft] = useState("");
+  const listId = `reference-tags-${useId()}`;
+  const suggestions = knownTags.filter((tag) => !tags.some((current) => current.toLowerCase() === tag.toLowerCase()));
   function add() {
     const next = draft.split(",").map((tag) => tag.trim()).filter(Boolean);
     setDraft("");
@@ -463,7 +494,7 @@ function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string
       <div className="flex flex-wrap items-center gap-1" aria-label="Tags" role="group">
         {tags.map((tag) => (
           <span key={tag} className="libera-reference-tag">
-            {tag}
+            {onTag ? <button type="button" className="hover:underline" title={`Show references tagged ${tag}`} onClick={() => onTag(tag)}>{tag}</button> : tag}
             <button type="button" aria-label={`Remove tag ${tag}`} onClick={() => onChange(tags.filter((current) => current !== tag))}><X aria-hidden className="h-3 w-3" /></button>
           </span>
         ))}
@@ -471,6 +502,7 @@ function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string
           className="libera-panel-field h-7 min-w-24 flex-1 px-2 text-[12px]"
           aria-label="Add tag"
           placeholder="Add tag"
+          list={suggestions.length ? listId : undefined}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => { if (draft.trim()) add(); }}
@@ -483,7 +515,230 @@ function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string
             }
           }}
         />
+        {suggestions.length ? (
+          <datalist id={listId}>
+            {suggestions.map((tag) => <option key={tag} value={tag} />)}
+          </datalist>
+        ) : null}
       </div>
+    </Section>
+  );
+}
+
+function ReadingToggle({ reading, onChange }: { reading?: ReadingState; onChange: (reading: ReadingState | null) => void }) {
+  const option = (value: ReadingState, icon: ReactNode) => (
+    <button
+      type="button"
+      className="libera-reference-reading-option inline-flex h-6 items-center gap-1 px-2 text-[11px]"
+      aria-pressed={reading === value}
+      title={reading === value ? `Clear “${READING_LABELS[value]}”` : `Mark as ${READING_LABELS[value]}`}
+      onClick={() => onChange(reading === value ? null : value)}
+    >
+      {icon} {READING_LABELS[value]}
+    </button>
+  );
+  return (
+    <div className="libera-reference-reading-toggle flex shrink-0 overflow-hidden rounded-md border border-input" role="group" aria-label="Reading">
+      {option("to-read", <BookOpen aria-hidden className="h-3 w-3" />)}
+      {option("read", <BookCheck aria-hidden className="h-3 w-3" />)}
+    </div>
+  );
+}
+
+const WEB_ADDRESS = /^https?:\/\/\S+$/i;
+
+function AttachmentsSection({ entry, files = [], onOpenPath, onAttach, onDetach }: {
+  entry: ReferenceEntry;
+  files?: Array<{ path: string; kind: "pdf" | "markdown" }>;
+  onOpenPath: (path: string) => void;
+  onAttach: (attachment: ReferenceAttachment) => Promise<boolean>;
+  onDetach: (attachment: ReferenceAttachment) => Promise<boolean>;
+}) {
+  const [adding, setAdding] = useState<"file" | "link" | null>(null);
+  const [query, setQuery] = useState("");
+  const [link, setLink] = useState("");
+  const attached = new Set(entry.attachments.map((attachment) => attachment.kind === "url" ? attachment.url : attachment.path));
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const choices = files
+    .filter((file) => !attached.has(file.path) && words.every((word) => file.path.toLowerCase().includes(word)))
+    .slice(0, 50);
+  const linkProblem = link.trim() && !WEB_ADDRESS.test(link.trim()) ? "Enter a web address starting with http:// or https://." : "";
+
+  async function attachFile(file: { path: string; kind: "pdf" | "markdown" }) {
+    if (await onAttach({ kind: file.kind, path: file.path })) setAdding(null);
+  }
+
+  async function addLink() {
+    const url = link.trim();
+    if (!url || linkProblem) return;
+    if (await onAttach({ kind: "url", url })) {
+      setLink("");
+      setAdding(null);
+    }
+  }
+
+  const removeButton = (attachment: ReferenceAttachment, name: string) => (
+    <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md opacity-0 group-hover:opacity-100 focus-visible:opacity-100" aria-label={`Remove attachment ${name}`} title="Remove the attachment (the file is kept)" onClick={() => void onDetach(attachment)}>
+      <X aria-hidden className="h-3 w-3" />
+    </button>
+  );
+
+  return (
+    <Section title="Attachments">
+      {entry.attachments.length ? (
+        <ul className="space-y-0.5">
+          {entry.attachments.map((attachment) => attachment.kind === "url" ? (
+            <li key={`url:${attachment.url}`} className="group flex items-center">
+              <a className="libera-notebook-row flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-[12px]" href={attachment.url} target="_blank" rel="noreferrer">
+                <Globe aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 truncate">{attachment.url}</span>
+              </a>
+              {removeButton(attachment, attachment.url)}
+            </li>
+          ) : (
+            <li key={`${attachment.kind}:${attachment.path}`} className="group flex items-center">
+              <button type="button" className="libera-notebook-row flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left text-[12px]" title={attachment.path} onClick={() => onOpenPath(attachment.path)}>
+                {attachment.kind === "pdf" ? <FileType2 aria-hidden className="h-3.5 w-3.5 shrink-0 text-[#d08178]" /> : <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                <span className="min-w-0 truncate">{fileBaseName(attachment.path)}</span>
+              </button>
+              {removeButton(attachment, fileBaseName(attachment.path))}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {adding === "file" ? (
+        <div className="space-y-1 rounded-lg border border-input p-1.5" role="group" aria-label="Attach a file">
+          <div className="flex gap-1.5">
+            <input
+              className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-[12px]"
+              aria-label="Find a file to attach"
+              placeholder="Find a PDF or note in this notebook"
+              value={query}
+              autoFocus
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  setAdding(null);
+                } else if (event.key === "Enter" && choices[0]) {
+                  event.preventDefault();
+                  void attachFile(choices[0]);
+                }
+              }}
+            />
+            <button type="button" className="libera-panel-button h-7 px-2" aria-label="Cancel attaching a file" onClick={() => setAdding(null)}><X aria-hidden className="h-3.5 w-3.5" /></button>
+          </div>
+          <ul className="max-h-40 overflow-auto" aria-label="Files to attach">
+            {choices.map((file) => (
+              <li key={file.path}>
+                <button type="button" className="libera-notebook-row flex w-full items-center gap-2 px-2 py-1 text-left text-[12px]" title={file.path} onClick={() => void attachFile(file)}>
+                  {file.kind === "pdf" ? <FileType2 aria-hidden className="h-3.5 w-3.5 shrink-0 text-[#d08178]" /> : <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                  <span className="min-w-0 truncate">{fileBaseName(file.path)}</span>
+                </button>
+              </li>
+            ))}
+            {!choices.length ? <li className="px-2 py-1 text-[11px] text-muted-foreground">{files.length ? "No file matches." : "This notebook has no PDFs or notes to attach."}</li> : null}
+          </ul>
+        </div>
+      ) : adding === "link" ? (
+        <form className="space-y-1" onSubmit={(event) => { event.preventDefault(); void addLink(); }}>
+          <div className="flex gap-1.5">
+            <input className="libera-panel-field h-7 min-w-0 flex-1 px-2 text-[12px]" aria-label="Web address to attach" placeholder="https://" value={link} autoFocus onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setAdding(null); } }} />
+            <button type="submit" className="libera-panel-button h-7 px-2.5" disabled={!link.trim() || Boolean(linkProblem)}>Add</button>
+            <button type="button" className="libera-panel-button h-7 px-2" aria-label="Cancel adding a link" onClick={() => setAdding(null)}><X aria-hidden className="h-3.5 w-3.5" /></button>
+          </div>
+          {linkProblem ? <p role="alert" className="text-[11px] text-destructive">{linkProblem}</p> : null}
+        </form>
+      ) : (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button type="button" className="libera-panel-button h-7 px-2.5 text-[12px]" onClick={() => { setQuery(""); setAdding("file"); }}>
+            <Paperclip aria-hidden className="h-3.5 w-3.5" /> Attach file…
+          </button>
+          <button type="button" className="libera-panel-button h-7 px-2.5 text-[12px]" onClick={() => { setLink(""); setAdding("link"); }}>
+            <Link2 aria-hidden className="h-3.5 w-3.5" /> Add link
+          </button>
+          {!entry.attachments.length ? <span className="text-[11px] text-muted-foreground">or drop a PDF on the panel</span> : null}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+type SnippetState = { state: "loading" } | { state: "error"; message: string } | { state: "done"; snippets: CitationSnippet[] };
+
+function CitingSection({ entry, citing, onOpenPath, loadDocument, onOpenCitation }: {
+  entry: ReferenceEntry;
+  citing: string[];
+  onOpenPath: (path: string) => void;
+  loadDocument?: (path: string) => Promise<string>;
+  onOpenCitation?: (path: string, snippet: CitationSnippet) => void;
+}) {
+  const [shown, setShown] = useState<Record<string, SnippetState>>({});
+  const keys = useMemo(() => [entry.key, ...entry.aliases], [entry.key, entry.aliases]);
+  const canExpand = Boolean(loadDocument && onOpenCitation);
+
+  async function toggle(path: string) {
+    if (shown[path]) {
+      setShown((current) => {
+        const next = { ...current };
+        delete next[path];
+        return next;
+      });
+      return;
+    }
+    if (!loadDocument) return;
+    setShown((current) => ({ ...current, [path]: { state: "loading" } }));
+    try {
+      const text = await loadDocument(path);
+      setShown((current) => current[path] ? { ...current, [path]: { state: "done", snippets: citationSnippets(text, keys) } } : current);
+    } catch (loadError) {
+      setShown((current) => current[path] ? { ...current, [path]: { state: "error", message: loadError instanceof Error ? loadError.message : "The document could not be read." } } : current);
+    }
+  }
+
+  return (
+    <Section title={`Cited in ${citing.length} document${citing.length === 1 ? "" : "s"}`}>
+      {citing.length ? (
+        <ul className="space-y-0.5" aria-label="Citing documents">
+          {citing.map((path) => {
+            const state = shown[path];
+            return (
+              <li key={path}>
+                <div className="flex items-center">
+                  {canExpand ? (
+                    <button type="button" className="libera-sidebar-icon-button inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md" aria-expanded={Boolean(state)} aria-label={state ? `Hide citations in ${fileBaseName(path)}` : `Show citations in ${fileBaseName(path)}`} onClick={() => void toggle(path)}>
+                      {state ? <ChevronDown aria-hidden className="h-3.5 w-3.5" /> : <ChevronRight aria-hidden className="h-3.5 w-3.5" />}
+                    </button>
+                  ) : null}
+                  <button type="button" className="libera-notebook-row flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left text-[12px]" title={path} onClick={() => onOpenPath(path)}>
+                    <FileText aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 truncate">{fileBaseName(path)}</span>
+                  </button>
+                </div>
+                {state?.state === "loading" ? (
+                  <p className="flex items-center gap-1.5 py-1 pl-8 text-[11px] text-muted-foreground"><Loader2 aria-hidden className="h-3 w-3 animate-spin" /> Finding citations…</p>
+                ) : state?.state === "error" ? (
+                  <p role="alert" className="py-1 pl-8 text-[11px] text-destructive">{state.message}</p>
+                ) : state?.state === "done" ? (
+                  state.snippets.length ? (
+                    <ul className="space-y-0.5 pb-1 pl-6" aria-label={`Citations in ${fileBaseName(path)}`}>
+                      {state.snippets.map((snippet) => (
+                        <li key={snippet.start}>
+                          <button type="button" className="libera-reference-snippet w-full rounded-md px-2 py-1 text-left text-[11px] leading-relaxed" title={`Go to line ${snippet.line}`} onClick={() => onOpenCitation?.(path, snippet)}>
+                            <span className="text-muted-foreground">{snippet.before}</span>
+                            <mark className="libera-links-match font-mono">{snippet.match}</mark>
+                            <span className="text-muted-foreground">{snippet.after}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="py-1 pl-8 text-[11px] text-muted-foreground">No citation of it was found in this document.</p>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : <p className="px-0.5 text-[12px] text-muted-foreground">No document cites this reference yet.</p>}
     </Section>
   );
 }

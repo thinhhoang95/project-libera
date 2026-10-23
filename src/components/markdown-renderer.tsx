@@ -8,6 +8,7 @@ import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markd
 import type { Root } from "hast";
 import type { PluggableList } from "unified";
 import { markdownRehypeOptions, markdownRemarkPlugins } from "@/lib/markdown-rendering";
+import type { MarkdownMacroScope } from "@/lib/markdown-macros";
 import rehypeKatex from "rehype-katex";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import {
@@ -21,6 +22,7 @@ import {
   isLikelyWorkspaceMarkdownLink,
 } from "@/lib/markdown-file-links";
 import { rehypeLiberaSanitize, type ContentTrust } from "@/lib/markdown-sanitize";
+import { rehypeBoldLeadIns } from "@/lib/markdown-lead-in";
 import { getCollabBridge } from "@/lib/collab/ui/bridge";
 import { getCollabStatusStore } from "@/lib/collab/ui/status-store";
 import {
@@ -69,6 +71,8 @@ type MarkdownRendererProps = {
    * notebook is a shared project counts as shared.
    */
   contentTrust?: ContentTrust;
+  /** Macro definitions and counters from the rest of the document, for a part of it (a slide). */
+  macroScope?: MarkdownMacroScope;
 };
 
 export type MarkdownCodeBlock = {
@@ -232,7 +236,7 @@ function markdownUrlTransform(url: string, key: string) {
 // this document's trust (the worker does not know whether it is shared).
 const PreparedMarkdownBlock = memo(function PreparedMarkdownBlock({ node, components, trust }: { node: Root["children"][number]; components: Components; trust: ContentTrust }) {
   const plugins = useMemo<PluggableList>(
-    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }]],
+    () => [() => () => ({ type: "root", children: [structuredClone(node)] }), [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns],
     [node, trust],
   );
   return <ReactMarkdown urlTransform={markdownUrlTransform} rehypePlugins={plugins} components={components}>{""}</ReactMarkdown>;
@@ -257,16 +261,17 @@ function MarkdownRendererContent({
   renderImages = true,
   contentTrust,
   renderCodeBlock,
+  macroScope,
 }: MarkdownRendererProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trust = useContentTrust(documentPath, contentTrust);
   const citationDocument = useCitationDocumentValue({ content, mathMarkers, preparedTree, preparedCitations, citationScopeIndex });
   // KaTeX first: its output is part of what the sanitizer allows.
-  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }]], [trust]);
+  const rehypePlugins = useMemo<PluggableList>(() => [rehypeKatex, [rehypeLiberaSanitize, { trust }], rehypeBoldLeadIns], [trust]);
   // Read at click time so heading links do not rebuild the component table.
   const contentRef = useRef(content);
   useLayoutEffect(() => { contentRef.current = content; }, [content]);
-  const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers), [mathMarkers, preparedTree]);
+  const configuredRemarkPlugins = useMemo(() => preparedTree ? [] : markdownRemarkPlugins(mathMarkers, macroScope), [mathMarkers, macroScope, preparedTree]);
   const normalizedContent = useMemo(
     () => preparedTree ? "" : normalizeMarkdownHighlightDelimiters(content),
     [content, preparedTree],

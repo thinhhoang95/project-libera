@@ -1,10 +1,12 @@
 "use client";
 
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { MACRO_BLOCK_LANGUAGE, isMacroBlockLanguage, parseMacroDefinitions } from "@/lib/markdown-macros";
 import { NotebookLiveBlock, isLiveCodeBlock } from "./slide-live-blocks";
 
-// The Visual editor's code blocks. A ```chart or ```html live block keeps
+// The Visual editor's code blocks. A ```chart, ```mermaid or ```html live block keeps
 // its code editable and shows what it draws underneath, as the preview does;
 // every other code block renders as the plain <pre><code> it always was.
 
@@ -20,7 +22,43 @@ function codeBlockInfo(value: unknown) {
   return { language: language || undefined, meta: meta.join(" ") || undefined };
 }
 
-function LiveCodeBlockView({ documentPath, node }: ReactNodeViewProps & { documentPath: string }) {
+/**
+ * A ```libera-macro block (docs/features/markdown-macros.md): a header that
+ * counts its definitions and folds the block away. It starts folded when it
+ * has definitions, open when it is new.
+ */
+function MacroBlockView({ node }: ReactNodeViewProps) {
+  const code = node.textContent;
+  const definitions = useMemo(() => parseMacroDefinitions(code), [code]);
+  const count = definitions.macros.size;
+  const [open, setOpen] = useState(() => count === 0);
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <NodeViewWrapper className="libera-macro-block" data-open={open ? "true" : "false"}>
+      <button type="button" contentEditable={false} className="libera-macro-block-header" aria-expanded={open} onClick={() => setOpen(!open)}
+        title={open ? "Fold the macro definitions" : "Show the macro definitions"}>
+        <Chevron className="size-3.5" aria-hidden />
+        <span>Macros: {count} definition{count === 1 ? "" : "s"}</span>
+        {definitions.errors.length ? <span className="libera-macro-block-problems">· {definitions.errors.length} problem{definitions.errors.length === 1 ? "" : "s"}</span> : null}
+      </button>
+      <pre hidden={!open}>
+        <NodeViewContent<"code"> as="code" className={`language-${MACRO_BLOCK_LANGUAGE}`} />
+      </pre>
+      {open && definitions.errors.length ? (
+        <ul className="libera-macro-block-errors" contentEditable={false}>
+          {definitions.errors.map((error) => <li key={`${error.line}:${error.message}`}>Line {error.line}: {error.message}</li>)}
+        </ul>
+      ) : null}
+    </NodeViewWrapper>
+  );
+}
+
+function LiveCodeBlockView(props: ReactNodeViewProps & { documentPath: string }) {
+  if (isMacroBlockLanguage(props.node.attrs.language)) return <MacroBlockView {...props} />;
+  return <CodeBlockWithLiveView {...props} />;
+}
+
+function CodeBlockWithLiveView({ documentPath, node }: ReactNodeViewProps & { documentPath: string }) {
   const { language, meta } = codeBlockInfo(node.attrs.language);
   const live = isLiveCodeBlock(language, meta);
   const code = node.textContent;
@@ -50,8 +88,15 @@ function codeBlockContent(language: string, code: string) {
   return { type: "codeBlock", attrs: { language }, content: [{ type: "text", text: code }] };
 }
 
-/** Starting points for the toolbar's Insert chart and Insert interactive HTML. */
+/** Starting points for the toolbar's Insert chart, Insert diagram and Insert interactive HTML. */
 export const LIVE_BLOCK_TEMPLATES = {
+  diagram: codeBlockContent("mermaid", [
+    "flowchart LR",
+    "  idea[Idea] --> draft[Draft]",
+    "  draft --> review{Review}",
+    "  review -->|Changes| draft",
+    "  review -->|Approved| publish[Publish]",
+  ].join("\n")),
   chart: codeBlockContent("chart", [
     "type: bar",
     "title: Revenue by quarter",

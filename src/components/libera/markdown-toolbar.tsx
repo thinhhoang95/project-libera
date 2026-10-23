@@ -21,6 +21,7 @@ import {
   GalleryHorizontalEnd,
   Sigma,
   Sparkles,
+  Strikethrough,
   Underline,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,6 +29,7 @@ import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
+import { ExpandMacrosButton } from "./expand-macros-button";
 import {
   MARKDOWN_HIGHLIGHT_COLORS,
   MARKDOWN_TEXT_COLORS,
@@ -78,12 +80,14 @@ type MarkdownToolbarProps = {
   /** An unsaved draft: fact-checking needs a saved file. */
   untitled?: boolean;
   readSelectionLinks?: () => MarkdownSelectionLinkOption[];
+  /** Opens the document with its macros expanded in a new tab (markdown-macros.ts). */
+  onExpandMacros?: (markdown: string) => void;
 };
 
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 22;
+const FULL_TOOLBAR_BUTTON_COUNT = 23;
 
 /**
  * Whether Markdown may contain a citation ([@key], [-@key], @key): a cheap
@@ -154,6 +158,7 @@ export function MarkdownToolbar({
   previewFullscreen,
   untitled = false,
   readSelectionLinks,
+  onExpandMacros,
 }: MarkdownToolbarProps) {
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const toolbarRootRef = useRef<HTMLDivElement>(null);
@@ -607,6 +612,15 @@ export function MarkdownToolbar({
           <Underline aria-hidden className="h-4 w-4" />
         </button>
         <button
+          aria-label="Strikethrough"
+          className="toolbar-button"
+          title="Strikethrough"
+          type="button"
+          onClick={() => onInsert("~~", "~~")}
+        >
+          <Strikethrough aria-hidden className="h-4 w-4" />
+        </button>
+        <button
           ref={highlightButtonRef}
           aria-expanded={highlightMenuOpen}
           aria-haspopup="listbox"
@@ -730,6 +744,7 @@ export function MarkdownToolbar({
         )}
         {renderFullscreenButton()}
         <FactCheckButton documentPath={documentPath} markdown={markdownContent} disabled={untitled} />
+        <ExpandMacrosButton className="toolbar-button" markdown={markdownContent} getMarkdown={() => markdownContent} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => markdownContent} />
       </div>
       {toolbarCollapsed && toolbarExpanded ? (

@@ -5,7 +5,8 @@ import { act, createElement, createRef, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Editor } from "@tiptap/core";
 import { Mathematics } from "@tiptap/extension-mathematics";
-import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
+import { createMarkdownExtensions, mergeHighlightSeams } from "../../src/lib/tiptap-markdown";
+import { createMathExtensions } from "../../src/lib/tiptap-math";
 import { HighlightTool, highlightToolKey } from "../../src/lib/tiptap-highlight-tool";
 import { findTiptapTextMatches } from "../../src/lib/tiptap-find";
 import { findTextMatches, replaceTextMatches } from "../../src/lib/text-find";
@@ -242,6 +243,49 @@ test("highlight toggle removes selected highlights and breaks highlighting while
     assert.equal(colorAt(9), undefined);
     assert.equal(highlightToolKey.getState(editor.state)?.color, "#15803d");
   } finally { editor.destroy(); }
+});
+
+test("typing inside a saved highlight keeps it, but not at its edges", () => {
+  const editor = new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), HighlightTool], content: "a g>>>one two<<< b", contentType: "markdown" });
+  const colorAt = (pos: number) => editor.state.doc.nodeAt(pos)?.marks.find((mark) => mark.type.name === "highlight")?.attrs.color;
+  try {
+    editor.commands.setTextSelection(6);
+    editor.view.dispatch(editor.state.tr.insertText("X"));
+    assert.equal(colorAt(6), "#15803d");
+    assert.match(editor.getMarkdown(), /g>>>oneX two<<</);
+    editor.commands.setTextSelection(12);
+    editor.view.dispatch(editor.state.tr.insertText("!"));
+    assert.equal(colorAt(12), undefined, "The highlight does not spread past its end");
+  } finally { editor.destroy(); }
+});
+
+test("highlighted inline math stays highlighted across save and reopen", () => {
+  const [InlineMath, BlockMath] = createMathExtensions();
+  const open = (markdown: string) => new Editor({ extensions: [...createMarkdownExtensions("Notebook/note.md"), InlineMath, BlockMath], content: markdown, contentType: "markdown" });
+  const highlighted = (editor: Editor) => {
+    const nodes: string[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.isInline && node.marks.some((mark) => mark.type.name === "highlight")) nodes.push(node.isText ? node.text! : `$${node.attrs.latex}$`);
+    });
+    return nodes;
+  };
+  const first = open("before y>>>alpha $x^2$ beta<<< after");
+  const second = open(first.getMarkdown());
+  const painted = open("plain alpha $y$ beta end");
+  try {
+    assert.deepEqual(highlighted(first), ["alpha ", "$x^2$", " beta"]);
+    assert.equal(first.getMarkdown(), "before y>>>alpha $x^2$ beta<<< after");
+    assert.deepEqual(highlighted(second), ["alpha ", "$x^2$", " beta"]);
+    painted.commands.setTextSelection({ from: 7, to: 19 });
+    painted.commands.setHighlight({ color: "#dc2626" });
+    assert.equal(painted.getMarkdown(), "plain r>>>alpha $y$ beta<<< end");
+  } finally { first.destroy(); second.destroy(); painted.destroy(); }
+});
+
+test("highlight seams merge only between runs of one color", () => {
+  assert.equal(mergeHighlightSeams("y>>>a <<<y>>>$x$<<<y>>> b<<<"), "y>>>a $x$ b<<<");
+  assert.equal(mergeHighlightSeams("r>>>a<<<y>>>b<<<"), "r>>>a<<<y>>>b<<<");
+  assert.equal(mergeHighlightSeams("y>>>a<<<r>>>b<<<r>>>c<<<"), "y>>>a<<<r>>>bc<<<");
 });
 
 test("visual find matches case-insensitively across inline formatting but not across blocks", () => {

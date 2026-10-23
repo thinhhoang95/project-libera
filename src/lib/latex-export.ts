@@ -5,6 +5,7 @@ import { prepareLatexImages, type LatexImage } from "./latex-images";
 import os from "node:os";
 import path from "node:path";
 import { convertMarkdownToLatex } from "./latex-generation";
+import { expandMarkdownMacros } from "./markdown-macros";
 import { findTexToolchain, texEnvironment, texExecutable } from "./latex/toolchain";
 import { notebookOfDocument, prepareLatexCitations, type LatexCitationPlan } from "./references/latex-citations";
 
@@ -120,7 +121,9 @@ export async function compileLatex(source: string, executable: string, signal: A
   }
 }
 
-export async function exportLatexPdf(markdown: string, signal: AbortSignal, progress: (message: string) => void, options: LatexOptions = DEFAULT_LATEX_OPTIONS, documentPath = "") {
+export async function exportLatexPdf(original: string, signal: AbortSignal, progress: (message: string) => void, options: LatexOptions = DEFAULT_LATEX_OPTIONS, documentPath = "") {
+  // The model converts plain Markdown: macros are expanded and their blocks dropped first.
+  const markdown = expandMarkdownMacros(original)?.markdown ?? original;
   progress("Checking pdflatex…");
   const executable = await findPdfLatex(signal);
   // Citations become placeholders the model copies; a document without any takes the plain path.

@@ -141,11 +141,11 @@ export function ReviewComments() {
         <button className="w-full text-left" aria-expanded={active?.id === thread.id} onClick={() => { r.selectThread(active?.id === thread.id ? null : thread.id); setReply(""); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
           <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{thread.messages[0]?.author === "agent" && <span className="review-comment-author inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground" title="Left by the AI agent"><Sparkles aria-hidden size={10} /> Agent</span>}</span><span className="text-[11px] capitalize text-muted-foreground">{thread.status === "addressed" ? "completed" : thread.status}{thread.status === "open" && thread.anchor.state !== "attached" && ` · ${thread.anchor.state}`}</span></span>
           <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
-          <span className="block whitespace-pre-wrap">{thread.messages[0]?.text}</span>
-          {thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
+          {active?.id !== thread.id && thread.messages[0] && <CommentBody text={thread.messages[0].text} preview />}
+          {active?.id !== thread.id && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
         </button>
         {active?.id === thread.id && <div className="mt-2 space-y-2">
-          {thread.messages.map((m, i) => <div key={m.id}>{i > 0 && <p className="whitespace-pre-wrap">{m.text}</p>}<button type="button" className="review-comment-icon" data-tone="blue" aria-label={i === 0 ? "Edit comment" : "Edit reply"} title={i === 0 ? "Edit comment" : "Edit reply"} disabled={!!r.busy} onClick={() => { setEditing(m.id); setReply(m.text); }}><PencilLine aria-hidden size={16} /></button></div>)}
+          {thread.messages.map((m, i) => <div key={m.id}><CommentBody text={m.text} /><button type="button" className="review-comment-icon" data-tone="blue" aria-label={i === 0 ? "Edit comment" : "Edit reply"} title={i === 0 ? "Edit comment" : "Edit reply"} disabled={!!r.busy} onClick={() => { setEditing(m.id); setReply(m.text); }}><PencilLine aria-hidden size={16} /></button></div>)}
           <textarea aria-label={editing ? "Edit comment" : "Reply to comment"} className="review-textarea" placeholder={editing ? "Edit your comment…" : "Write a reply…"} rows={2} value={reply} onChange={(e) => setReply(e.target.value)} />
           <div className="review-comment-actions"><button type="button" className="review-comment-icon" data-tone="blue" aria-label={editing ? "Save comment" : "Reply"} title={editing ? "Save comment" : "Reply"} disabled={!reply.trim() || !!r.busy} onClick={async () => { if (await r.action(editing ? "edit" : "reply", { threadId: thread.id, messageId: editing, text: reply })) { setReply(""); setEditing(null); } }}>{editing ? <Save aria-hidden size={16} /> : <Send aria-hidden size={16} />}</button>
           <button type="button" className="review-comment-icon" data-tone="green" aria-label={thread.status === "open" ? "Resolve" : "Reopen"} title={thread.status === "open" ? "Resolve" : "Reopen"} disabled={!!r.busy} onClick={() => void r.action("resolve", { threadId: thread.id, resolved: thread.status === "open" })}>{thread.status === "open" ? <Check aria-hidden size={16} /> : <RotateCcw aria-hidden size={16} />}</button>
@@ -362,6 +362,14 @@ export function ReviewChatPanel({ files, tabs }: { files: LiberaFileNode[]; tabs
 // detached anchors and the one-time move of local comments.
 
 /** The time, refreshed every minute, for "5 min ago" labels. */
+/**
+ * A comment or reply as Markdown with KaTeX math. `preview` clamps it for a
+ * collapsed card, whose toggle button takes the clicks instead of its links.
+ */
+export function CommentBody({ text, preview = false, shared = false }: { text: string; preview?: boolean; shared?: boolean }) {
+  return <MarkdownRenderer content={text} baseFontSize={13} baseLineHeight={1.5} renderImages={false} contentTrust={shared ? "shared" : "local"} className={`review-comment-body min-w-0 break-words${preview ? " review-comment-preview" : ""}`} />;
+}
+
 export function useNow(intervalMs = 60_000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -410,7 +418,7 @@ function SharedMessageView({ message, first, now, busy, onEdit, onDelete, onRetr
         {info.canDelete && !first && <button type="button" className="review-comment-icon review-comment-delete" data-tone="red" aria-label="Delete reply" title="Delete reply" disabled={busy} onClick={onDelete}><Trash2 aria-hidden size={14} /></button>}
       </span>
     </div>
-    {info.deleted ? <p className="text-xs italic text-muted-foreground">This message was deleted.</p> : <MarkdownRenderer content={message.text} className="review-comment-body min-w-0 break-words text-[13px]" renderImages={false} />}
+    {info.deleted ? <p className="text-xs italic text-muted-foreground">This message was deleted.</p> : <CommentBody text={message.text} shared />}
     {info.pending && <PendingChip pending={info.pending} onRetry={() => onRetry(info.pending!.commandId)} onDiscard={() => onDiscard(info.pending!.commandId)} />}
   </div>;
 }
@@ -434,7 +442,7 @@ function SharedThreadCard({ thread, index, shared, selected, cardRef, reply, set
     <button className="w-full text-left" aria-expanded={selected} onClick={() => { r.selectThread(selected ? null : thread.id); setReply(""); setMentions([]); setEditing(null); if (thread.anchor.state === "attached") r.focus(thread.anchor); }}>
       <span className="flex flex-wrap items-center justify-between gap-1"><span className="flex min-w-0 items-center gap-1.5"><strong className="text-xs font-semibold">Comment {index + 1}</strong>{first && <AuthorLine message={first} now={now} />}</span><span className="text-[11px] capitalize text-muted-foreground">{status}</span></span>
       <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{thread.anchor.quote}</span>
-      {!selected && <span className="block line-clamp-4 whitespace-pre-wrap">{first?.shared.deleted ? "This comment was deleted." : first?.text}</span>}
+      {!selected && (first?.shared.deleted ? <span className="block text-xs italic text-muted-foreground">This comment was deleted.</span> : first && <CommentBody text={first.text} preview shared />)}
       {!selected && thread.messages.length > 1 && <span className="mt-2 block text-xs text-muted-foreground">{thread.messages.length - 1} {thread.messages.length === 2 ? "reply" : "replies"}</span>}
     </button>
     {info.pending && <PendingChip pending={info.pending} onRetry={() => retry(info.pending!.commandId)} onDiscard={() => discard(info.pending!.commandId)} />}

@@ -4,6 +4,7 @@ import { Play, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { encodeFilePath } from "@/components/libera/api-client";
 import { useContentTrust, type MarkdownCodeBlock } from "@/components/markdown-renderer";
+import { safeImageUrl, type ContentTrust } from "@/lib/markdown-sanitize";
 import {
   SLIDE_THEME_TOKENS,
   buildSlideChartConfig,
@@ -14,6 +15,7 @@ import {
   slideSeriesPalette,
   type SlideChartTable,
 } from "@/lib/slide-charts";
+import { buildSlideDiagramConfig, slideDiagramErrorMessage } from "@/lib/slide-diagrams";
 
 export type SlideBlockMode = "export" | "presenter" | "preview";
 
@@ -175,6 +177,100 @@ export function SlideChart({ documentPath, fontFamily, mode, source, theme }: Sl
     >
       <canvas ref={canvasRef} role="img" aria-label={spec?.title ?? "Chart"} />
       {table ? <ChartDataTable table={table} title={spec?.title} /> : null}
+    </div>
+  );
+}
+
+let diagramQueue: Promise<unknown> = Promise.resolve();
+let diagramSequence = 0;
+
+const DIAGRAM_IMAGE_ATTRIBUTES = ["src", "href", "xlink:href"];
+
+/**
+ * Whether an image in a diagram label may load. Strict mode still allows
+ * <img> in labels, so a shared notebook's diagrams load only https: images
+ * (as with its Markdown images, a collaborator cannot make readers fetch a
+ * local route); a relative path would resolve against the app, not the
+ * notebook, so it never loads.
+ */
+function diagramImageAllowed(url: string, trust: ContentTrust) {
+  if (trust === "shared") return /^https:\/\//i.test(url.trim());
+  return safeImageUrl(url, "local") !== null;
+}
+
+/**
+ * One diagram's SVG. Mermaid's configuration is global, so renders take
+ * turns: configure for this block's theme, then draw. The SVG goes into the
+ * page, so on top of Mermaid's strict mode it is sanitized again here.
+ */
+function renderDiagram(source: string, config: ReturnType<typeof buildSlideDiagramConfig>, trust: ContentTrust) {
+  const run = diagramQueue.then(async () => {
+    const [{ default: mermaid }, { default: DOMPurify }] = await Promise.all([import("mermaid"), import("dompurify")]);
+    mermaid.initialize(config);
+    const { svg } = await mermaid.render(`libera-diagram-${++diagramSequence}`, source);
+    // The hook is DOMPurify's global state; sanitizing is synchronous, so it applies to this call only.
+    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      if (!/^(img|image)$/i.test(node.nodeName)) return;
+      for (const name of DIAGRAM_IMAGE_ATTRIBUTES) {
+        const value = node.getAttribute(name);
+        if (value !== null && !diagramImageAllowed(value, trust)) node.removeAttribute(name);
+      }
+    });
+    try {
+      return DOMPurify.sanitize(svg, {
+        ADD_TAGS: ["foreignObject"],
+        HTML_INTEGRATION_POINTS: { foreignobject: true },
+        USE_PROFILES: { html: true, svg: true, svgFilters: true },
+      });
+    } finally {
+      DOMPurify.removeHook("afterSanitizeAttributes");
+    }
+  });
+  diagramQueue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * A ```mermaid block: a flowchart, sequence, class, state, ER, Gantt, pie,
+ * mind map, timeline or other Mermaid diagram, drawn as SVG in the slide's
+ * theme. Mermaid runs in strict mode (no scripts, click handlers or HTML in
+ * labels), so diagrams render in every notebook, shared ones included.
+ */
+export function SlideDiagram({ documentPath, fontFamily, source, theme }: SlideBlockProps) {
+  const trust = useContentTrust(documentPath);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const key = `${theme}\n${trust}\n${fontFamily ?? ""}\n${source}`;
+  // The last drawing stays up while the next one renders, so editing does not flicker.
+  const [result, setResult] = useState<{ key: string; svg?: string; error?: string } | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    // Lettered like the text around it: a slide's body size, or a note's.
+    const style = wrapperRef.current ? getComputedStyle(wrapperRef.current) : null;
+    const family = fontFamily ?? style?.fontFamily ?? "sans-serif";
+
+    renderDiagram(source, buildSlideDiagramConfig(themeTokens(theme), family, style?.fontSize), trust).then(
+      (svg) => {
+        if (!canceled) setResult({ key, svg });
+      },
+      (reason: unknown) => {
+        if (!canceled) setResult({ key, error: slideDiagramErrorMessage(reason) });
+      },
+    );
+
+    return () => {
+      canceled = true;
+    };
+  }, [fontFamily, key, source, theme, trust]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      className="markdown-slide-diagram"
+      {...(result?.key === key ? {} : { [SLIDE_BLOCK_PENDING_ATTRIBUTE]: "true" })}
+    >
+      {result?.error ? <BlockMessage>{result.error}</BlockMessage> : null}
+      {result?.svg ? <div dangerouslySetInnerHTML={{ __html: result.svg }} /> : null}
     </div>
   );
 }
@@ -473,9 +569,16 @@ export function SlideLiveHtml({ context = "slide", documentPath, fontFamily, met
 
 const LIVE_META = /(?:^|\s)live(?:\s|$)/;
 
-/** Whether a fenced block renders live: ```chart, or ```html with `live` in its info string. */
+/** Whether a fenced block renders live: ```chart, ```mermaid, or ```html with `live` in its info string. */
 export function isLiveCodeBlock(language: string | undefined, meta: string | undefined) {
-  return language === "chart" || (language === "html" && LIVE_META.test(meta ?? ""));
+  return language === "chart" || language === "mermaid" || (language === "html" && LIVE_META.test(meta ?? ""));
+}
+
+/** The renderer for a live block (see isLiveCodeBlock), in a slide or a note. */
+export function SlideLiveBlock({ language, meta, ...props }: SlideBlockProps & { language?: string; meta?: string }) {
+  if (language === "chart") return <SlideChart {...props} />;
+  if (language === "mermaid") return <SlideDiagram {...props} />;
+  return <SlideLiveHtml {...props} meta={meta} />;
 }
 
 function subscribeAppTheme(listener: () => void) {
@@ -495,8 +598,8 @@ function useAppSlideTheme() {
 }
 
 /**
- * A ```chart or ```html live block in a note: the slide renderers, themed
- * like the app instead of a deck.
+ * A ```chart, ```mermaid or ```html live block in a note: the slide
+ * renderers, themed like the app instead of a deck.
  */
 export function NotebookLiveBlock({
   block,
@@ -514,7 +617,7 @@ export function NotebookLiveBlock({
 
   return (
     <div className="markdown-notebook-block">
-      {block.language === "chart" ? <SlideChart {...props} /> : <SlideLiveHtml {...props} meta={block.meta} />}
+      <SlideLiveBlock {...props} language={block.language} meta={block.meta} />
     </div>
   );
 }

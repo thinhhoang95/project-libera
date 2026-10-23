@@ -1,4 +1,5 @@
 const { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } = require("./math-markers.cjs");
+const { normalizeMarkdownHeadingColor, normalizeMarkdownHeadingPalette, normalizeMarkdownBoldLeadIns } = require("./markdown-accents.cjs");
 const {
   app,
   BrowserWindow,
@@ -394,6 +395,9 @@ function normalizedImportedPreferences(input) {
     markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(
       input.markdownPdfBaseLineHeight,
     ),
+    markdownHeadingColor: normalizeMarkdownHeadingColor(input.markdownHeadingColor),
+    markdownHeadingPalette: normalizeMarkdownHeadingPalette(input.markdownHeadingPalette),
+    markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(input.markdownBoldLeadIns),
     openaiApiKey,
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input.aiFunctions, openRouterModel),
@@ -507,6 +511,9 @@ function getConfigStatus(config = readConfig()) {
     markdownBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownBaseLineHeight),
     markdownPdfBaseFontSize: normalizeMarkdownBaseFontSize(config.markdownPdfBaseFontSize),
     markdownPdfBaseLineHeight: normalizeMarkdownBaseLineHeight(config.markdownPdfBaseLineHeight),
+    markdownHeadingColor: normalizeMarkdownHeadingColor(config.markdownHeadingColor),
+    markdownHeadingPalette: normalizeMarkdownHeadingPalette(config.markdownHeadingPalette),
+    markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(config.markdownBoldLeadIns),
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
@@ -771,6 +778,9 @@ function validateSetupInput(input, existingConfig) {
     markdownBaseLineHeight,
     markdownPdfBaseFontSize,
     markdownPdfBaseLineHeight,
+    markdownHeadingColor: normalizeMarkdownHeadingColor(input?.markdownHeadingColor),
+    markdownHeadingPalette: normalizeMarkdownHeadingPalette(input?.markdownHeadingPalette),
+    markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(input?.markdownBoldLeadIns),
     openaiApiKey,
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
@@ -903,6 +913,9 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         markdownBaseLineHeight: validated.markdownBaseLineHeight,
         markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
         markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
+        markdownHeadingColor: validated.markdownHeadingColor,
+        markdownHeadingPalette: validated.markdownHeadingPalette,
+        markdownBoldLeadIns: validated.markdownBoldLeadIns,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
@@ -1203,6 +1216,12 @@ async function openConfigurationWindow(section = "") {
           ? updatedConfig.smartPaste !== normalizeSmartPaste(previousConfig.smartPaste)
         : key === "sourceEditor"
           ? updatedConfig.sourceEditor !== normalizeSourceEditor(previousConfig.sourceEditor)
+        : key === "markdownHeadingColor"
+          ? updatedConfig.markdownHeadingColor !== normalizeMarkdownHeadingColor(previousConfig.markdownHeadingColor)
+        : key === "markdownHeadingPalette"
+          ? JSON.stringify(updatedConfig.markdownHeadingPalette) !== JSON.stringify(normalizeMarkdownHeadingPalette(previousConfig.markdownHeadingPalette))
+        : key === "markdownBoldLeadIns"
+          ? updatedConfig.markdownBoldLeadIns !== normalizeMarkdownBoldLeadIns(previousConfig.markdownBoldLeadIns)
         : updatedConfig[key] !== previousConfig[key]),
     );
     if (!requiresRestart) return;
@@ -1848,10 +1867,14 @@ async function startNextServer(config) {
     LIBERA_TRANSCRIPTION_WORKER_PATH: path.join(__dirname, "transcription-worker.mjs"),
     LIBERA_TTS_WORKER_PATH: path.join(__dirname, "tts-worker.mjs"),
     LIBERA_DETECTION_WORKER_PATH: path.join(__dirname, "detection-worker.py"),
+    LIBERA_PYTHON_RUNNER_PATH: path.join(__dirname, "python-runner.py"),
     ...collabHost.environment(),
     LIBERA_YOUR_NAME: normalizeYourName(config.yourName),
     LIBERA_SMART_PASTE: normalizeSmartPaste(config.smartPaste) ? "1" : "0",
     LIBERA_SOURCE_EDITOR: normalizeSourceEditor(config.sourceEditor),
+    LIBERA_MARKDOWN_HEADING_COLOR: normalizeMarkdownHeadingColor(config.markdownHeadingColor),
+    LIBERA_MARKDOWN_HEADING_PALETTE: JSON.stringify(normalizeMarkdownHeadingPalette(config.markdownHeadingPalette)),
+    LIBERA_MARKDOWN_BOLD_LEAD_INS: normalizeMarkdownBoldLeadIns(config.markdownBoldLeadIns) ? "1" : "0",
     LIBERA_MARKDOWN_INLINE_MATH_MARKERS: normalizeMathMarkers(config.markdownInlineMathMarkers, DEFAULT_INLINE_MATH_MARKERS),
     LIBERA_MARKDOWN_BLOCK_MATH_MARKERS: normalizeMathMarkers(config.markdownBlockMathMarkers, DEFAULT_BLOCK_MATH_MARKERS),
     LIBERA_MARKDOWN_EDITOR_FONT_FAMILY: normalizeMarkdownEditorFontFamily(
@@ -1932,7 +1955,9 @@ async function startNextServer(config) {
     }
   });
 
-  await waitForServer(url, { child: serverProcess });
+  // `next dev` compiles on the first request; a cold webpack build of "/" takes
+  // over 2 minutes on a slow disk, so allow far longer than a production start.
+  await waitForServer(url, { child: serverProcess, timeoutMs: mode === "dev" ? 600_000 : undefined });
   serverReady = true;
 
   return url;

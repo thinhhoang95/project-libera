@@ -1,424 +1,252 @@
 # Markdown Slides
 
-Markdown Slides is a Libera Markdown mode for writing a slide deck as a single
-Markdown file. A deck stays inside the normal notebook filesystem, uses normal
-Markdown rendering for slide content, and can be previewed as individual 16:9
-sheets or presented full screen.
+A slide deck in Libera is one Markdown file named `*.slides.md` (or
+`*.slides.markdown`). It is stored, saved, synced and searched like any other
+note, and it opens in the source editor with the slides beside it. Each slide
+is laid out on a fixed canvas and scaled to fit wherever it is shown, so the
+preview, the presentation and the PDF show the same slide.
 
-## File naming
-
-Libera detects a slide deck by filename:
-
-```text
-my-talk.slides.md
-my-talk.slides.markdown
-```
-
-These files are still Markdown files internally. They use the same storage,
-saving, downloading, image insertion, math rendering, and workspace link
-behavior as other Markdown notes.
-
-Files named `my-talk.md` or `my-talk.markdown` continue to render as regular
-Markdown notes, even if their content contains slide metadata or `---`
-separators.
+A file named `talk.md` stays a normal note, even if it contains `---` lines or
+`$key = value` lines.
 
 ## Creating a deck
 
-Use **New slides** from a notebook action menu, notebook home, or the empty
-workspace state. Libera opens the normal creation dialog in slide mode and
-defaults the name to:
+**New slides** in a notebook's menu, on a notebook's home, or in the empty
+workspace creates a deck. The name defaults to `Untitled.slides.md`, and a
+name typed without the marker gets it: `Lecture 01` and `Lecture 01.md` both
+become `Lecture 01.slides.md`.
 
-```text
-Untitled.slides.md
-```
-
-If you type a name without the slide marker, Libera normalizes it:
-
-```text
-Lecture 01        -> Lecture 01.slides.md
-Lecture 01.md     -> Lecture 01.slides.md
-Lecture 01.markdown -> Lecture 01.slides.markdown
-Lecture 01.slides -> Lecture 01.slides.md
-```
-
-New decks start with a minimal default template:
-
-```markdown
-$title = "Untitled"
-$subtitle = ""
-$author = []
-$affiliation = []
-$date = ""
-$template = "default"
-$fontsize = 21
----
-$title = "First Slide"
-
-Start your slide content here.
-```
-
-## Deck structure
-
-A slide deck has two parts:
-
-1. A title slide block before the first `---`
-2. One or more content slide blocks after `---` separators
-
-Example:
-
-```markdown
-$title = "Presentation Title"
-$subtitle = "Optional Presentation Subtitle"
-$author = ["Slide Author 1", "Slide Author 2"]
-$affiliation = ["Affiliation of Author 1", "Affiliation of Author 2"]
-$date = "01/01/2024"
-$template = "default"
-$fontsize = 21
----
-$title = "Slide Title"
-
-This is the first slide.
-
-- Bullet one
-- Bullet two
----
-$title = "Second Slide"
-
-This is the second slide.
-```
-
-The block before the first separator is the title slide. Its metadata configures
-the whole deck and is also rendered by the default template as the first visible
-slide. If that block includes body Markdown after its metadata lines, the body is
-rendered on the title slide.
-
-Every block after a separator is a normal content slide.
-
-## Separators
-
-A slide separator is a line containing only:
-
-```markdown
----
-```
-
-Separators inside fenced code blocks are ignored:
+## A complete example
 
 ````markdown
+$title = Results from the field
+$subtitle = Spring survey, $n = 412$
+$author = ["Ada Lovelace", "Grace Hopper"]
+$affiliation = Analytical Engine Lab
+$date = October 2026
+$theme = light
 ---
-$title = "Code Example"
+## What we measured
 
-```text
+- Response time
+- Error rate
+
+--
+
+- This appears on the next click
+
+???
+Speaker notes: only the presenter sees these.
 ---
-This line is rendered as code, not treated as a slide separator.
+$layout = section
+## Part 2: Results
+---
+$columns = [2, 3]
+## Text beside a diagram
+
+- Ideas start small
+- Review loops back
+
+|||
+
+```mermaid
+flowchart TD
+  idea[Idea] --> draft[Draft] --> review{Review}
+  review -->|Changes| draft
+  review -->|Approved| publish[Publish]
+```
+---
+## Revenue
+
+```chart
+type: bar
+labels: [Q1, Q2, Q3, Q4]
+series:
+  2025: [12, 19, 8, 15]
+  2026: [14, 22, 11, 18]
 ```
 ````
 
-Empty slide blocks are ignored unless they contain a title or content.
+## Structure
 
-## Metadata syntax
+- A line containing only `---` starts a new slide.
+- The block above the first `---` is the deck: its settings, and the title
+  slide drawn from `$title`, `$subtitle`, `$author`, `$affiliation` and
+  `$date`. Body text in that block also appears on the title slide.
+- A deck may open with YAML-style front matter instead (`---`, then
+  `title: …` lines and `- item` lists, then `---`).
+- A slide with no title and no content is skipped.
+- Markers (`---`, `--`, `|||`, `???`) inside code fences and multi-line HTML
+  comments are ignored, so `<!-- … -->` comments out a whole slide.
 
-Metadata uses dollar assignments:
+### Slide titles
 
-```markdown
-$key = JSON_LITERAL
-```
+A leading `#` or `##` heading becomes the slide's title, drawn in the slide
+header with an accent rule under it. `$title = …` works too. On the deck block,
+a leading `#` heading names the deck.
 
-The value must be valid JSON. Strings need double quotes, arrays use JSON array
-syntax, and booleans or numbers use normal JSON literals.
+### Settings
 
-Valid examples:
+`$key = value` lines go at the top of a block, or right under a slide's title
+heading. A value is a JSON literal (`"text"`, `21`, `true`, `["a", "b"]`) or
+plain text (`$theme = night`). Settings stop at the first line of content, so
+later `$…` lines are content (inline math such as `$x$` is never a setting).
 
-```markdown
-$title = "Aerospace Systems"
-$subtitle = "Flight Mechanics and Design"
-$author = ["Nguyen An", "Tran Binh"]
-$affiliation = ["VLU", "VLU"]
-$date = "2026-06-05"
-$template = "default"
-$fontsize = 21
-$draft = true
-$duration = 20
-```
+A value that cannot be used (an unknown theme, a malformed list) is listed
+above the preview; the deck still renders with the rest.
 
-Invalid examples:
+**Deck settings** (in the deck block):
 
-```markdown
-$title = Aerospace Systems
-$author = ['Nguyen An']
-```
-
-Invalid metadata does not stop the deck from rendering. Libera shows a compact
-warning above the slide preview and continues with the metadata it could parse.
-
-## Deck metadata
-
-Supported deck-level fields:
-
-| Field | Type | Purpose |
+| Setting | Values | Default |
 | --- | --- | --- |
-| `$title` | string | Deck title shown on the title slide and used as a fallback footer label. |
-| `$subtitle` | string | Optional subtitle shown under the cover slide title. |
-| `$author` | string or string array | Author list shown on the title slide and bottom-right slide footer. |
-| `$affiliation` | string or string array | Affiliation list shown on the title slide. |
-| `$date` | string | Date shown on the title slide. |
-| `$template` | string | Built-in template id. Defaults to `"default"`. |
-| `$fontsize` | number | Base font size for slide body Markdown across the deck. Defaults to `21`. |
+| `$title`, `$subtitle`, `$date` | text | |
+| `$author`, `$affiliation` | text, or a list | |
+| `$theme` | `light`, `dark`, `paper`, `night` | `light` |
+| `$accent` | any CSS color, for title rules, links and focus rings | the theme's |
+| `$aspect` | `16:9`, `16:10`, `4:3` | `16:9` |
+| `$fontsize` | body text size in canvas pixels (the canvas is 540 high) | `21` |
+| `$footer` | text, or `false` to hide it | title and authors |
+| `$paginate` | `false` hides slide numbers | `true` |
+| `$transition` | `fade`, `slide`, `none` | `fade` |
+| `$fit` | `false` turns off shrink-to-fit | `true` |
+| `citation-style` | a citation style such as `ieee`, as in notes (usually in front matter: `citation-style: ieee`) | the notebook's |
 
-Unknown fields are preserved by the parser for future templates, but the current
-default template does not display them.
+**Slide settings** (at the top of a slide):
 
-## Slide metadata
+| Setting | Values |
+| --- | --- |
+| `$title` | the slide title, instead of a heading |
+| `$layout` | `default`, `top`, `center`, `section`, `blank` (see Layouts) |
+| `$columns` | relative column widths, such as `[2, 1]` (see Columns) |
+| `$fontsize` | body text size for this slide |
+| `$background` | a CSS color |
+| `$fit` | `false` turns off shrink-to-fit for this slide |
+| `$hidden` | `true` keeps a backup slide in the file but out of the presentation and the PDF |
 
-Supported slide-level fields:
+## Layouts
 
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `$title` | string | Slide title shown at the top of the slide sheet. |
-| `$fontsize` | number | Base font size for this slide's body Markdown, overriding the deck font size. |
+| `$layout` | What it does |
+| --- | --- |
+| `default` | Title at the top; the body is centered vertically in the space below. |
+| `top` | Like `default`, but the body starts right under the title. Use it for dense slides. |
+| `center` | Title and body centered horizontally and vertically. Lists stay left-aligned inside. Good for a statement, a quote or a big number. |
+| `section` | A divider: a large title with an accent rule, and any body as a muted subtitle. |
+| `blank` | No header, footer or padding. An image alone in the body fills the slide. Use it for a full-bleed photo. |
 
-Unknown slide metadata is preserved for templates. It is not displayed by the
-default template.
+Images that are alone in a paragraph are centered.
 
-Slide metadata must appear at the top of the slide block, before the slide
-content:
+## Columns
 
-```markdown
----
-$title = "Methods"
-$fontsize = 18
-
-The slide body starts here.
-```
-
-Once regular Markdown content starts, later `$key = ...` lines are treated as
-content rather than metadata.
-
-## Markdown content
-
-Slide body content uses the same renderer as regular Markdown notes:
-
-- GitHub-flavored Markdown
-- Tables
-- Inline and block math through KaTeX
-- Images
-- Workspace-relative Markdown links
-- External links
-- ```` ```chart ```` and ```` ```html live ```` blocks, which draw charts and
-  interactive HTML (see [Charts and live HTML](features/charts-and-live-html.md))
-
-Example with math and an image:
+A line containing only `|||` starts a new column. A slide can have any number
+of columns, side by side under the title. They are equal width unless
+`$columns` lists relative widths:
 
 ```markdown
 ---
-$title = "Lift Equation"
+$columns = [2, 3]
+## Text beside a picture
 
-$$
-L = \frac{1}{2}\rho V^2 S C_L
-$$
+- Ideas start small
+- Review loops back
 
-![Wing section](wing-section.png)
+|||
+
+![Workflow](workflow.png)
 ```
 
-Relative images are resolved against the slide deck file, the same way they are
-for normal Markdown notes.
+- An empty column keeps its place, which leaves a gap.
+- Build steps carry across columns: put `--` before a `|||` to make the next
+  column appear on a click.
+- Charts, diagrams and live HTML take the width of their column. A diagram is
+  never taller than the slide body, so a tall one shrinks on its own instead
+  of shrinking the slide's text.
 
-## Font size
+## Builds
 
-Set `$fontsize` in the title slide block to control body Markdown across the
-whole deck:
+`--` on its own line, after a blank line, is a build step: what follows appears
+on the next click. Hidden steps keep their space, so nothing moves when they
+appear. (Right under a line of text, `--` would make that text a heading, so it
+only counts after a blank line.)
 
-```markdown
-$title = "Large Type Deck"
-$fontsize = 18
----
-$title = "Overview"
+## Speaker notes
 
-This slide uses the deck font size.
-```
+`???` on its own line starts the slide's speaker notes: everything after it on
+that slide. Notes show under each slide in the preview and in the presenter's
+speaker view, never on the slide or in the PDF.
 
-Set `$fontsize` in an individual slide block to override the deck value:
+## Content
 
-```markdown
----
-$title = "Dense Appendix"
-$fontsize = 12
+Slide bodies use the same Markdown renderer as notes:
 
-This slide uses a smaller base font size.
-```
+- GitHub-flavored Markdown: lists, tables, task lists, links, images, code.
+- Math with the notebook's inline and display markers (KaTeX).
+- Libera's highlights, colored text and colored boxes.
+- Citations (`[@key]`) from the notebook's References. They are numbered across
+  the whole deck; put `:::bibliography` on a slide to place the reference list.
+- Images and links relative to the deck file, as in notes.
+- ```` ```chart ```` blocks: charts from a few lines of YAML or CSV.
+- ```` ```mermaid ```` blocks: flowcharts, sequence, class, state and ER
+  diagrams, Gantt charts, pies, mind maps, timelines and more.
+- ```` ```html live ```` blocks: HTML, CSS and JavaScript run in a sandboxed
+  frame, for interactive figures, calculators or custom charts.
 
-The value must be a positive JSON number. Libera applies it to Markdown body
-content only. Template chrome such as slide titles, title-slide metadata,
-counters, and footers stays fixed.
+The three live blocks follow the deck's `$theme` and print in the PDF. See
+[Charts, diagrams and live HTML](features/charts-and-live-html.md) for their
+settings and safety rules.
 
-In the default template, fixed chrome sizes are:
+### Fitting
 
-- Cover slide title: 48pt
-- Cover slide subtitle: 32pt
-- Cover slide metadata/body chrome outside the title: 24pt
-- Content slide title: 32pt
-- Header and footer chrome: at least 18pt
+When a slide has more content than fits, its body shrinks, down to about half
+size, reflowing at a wider width so text gets smaller rather than just cut. Past
+that, the preview flags the slide as overfull. `$fit = false` turns this off.
+Long slides are better split in two, or set to `$layout = top` with a smaller
+`$fontsize`.
 
-## Preview behavior
+## Preview
 
-When a `.slides.md` file is open, the editor remains on the left and the preview
-pane changes from document preview to slide preview.
+The preview beside the source shows every slide, follows the caret, and puts
+the caret on a slide when you click it. Warnings about settings show above the
+slides, and speaker notes under each one. Slides use the deck's theme, not the
+app's light or dark mode.
 
-The preview pane shows:
+## Presenting
 
-- Each slide as a separate fixed-width sheet with natural content height
-- Deck warnings above the sheets, if any exist
-- The currently remembered slide outlined in the preview
-- Markdown content spanning the slide interior with the same left margin as the title
-
-All preview sheets use the same width in the preview canvas. Slide height is
-automatic, so larger fonts or longer content can expand the sheet and remain
-visible in the preview.
-
-Slide sheets always use a light presentation theme, even when the Libera app is
-in dark mode. This keeps slide background, text, code blocks, and borders
-consistent between preview and presentation. The default template renders slide
-text in black regardless of the surrounding app theme.
-
-Regular `.md` files keep the existing Markdown preview behavior, including
-editor/preview scroll sync and double-click source positioning.
-
-Slide decks intentionally do not use editor/preview scroll sync in this first
-version. The source text and slide sheets have different structures, so scroll
-sync would be misleading.
-
-## Fullscreen presentation
-
-For regular Markdown notes, the toolbar fullscreen button still enters preview
-only mode.
-
-For slide decks, the same toolbar button becomes **Present slides**. It opens a
-slide presenter using the current unsaved editor draft. Saving is not required
-before presenting.
-
-The presenter asks the browser or Electron shell for fullscreen. If fullscreen
-is not available, it falls back to an app-filling overlay.
-
-In presentation mode, the active slide uses the largest fixed 16:9 rectangle
-that fits inside the fullscreen viewport. The presenter does not reserve layout
-space for a header bar or side navigation; slide count, navigation, and exit
-controls float over the slide.
-
-## Presenter controls
-
-Keyboard controls:
+**Present slides** in the toolbar, or **Present from here** above any slide,
+starts the presentation in full screen, using the editor's current text (no
+need to save first).
 
 | Key | Action |
 | --- | --- |
-| Space | Next slide |
-| Enter | Next slide |
-| ArrowRight | Next slide |
-| PageDown | Next slide |
-| ArrowLeft | Previous slide |
-| PageUp | Previous slide |
-| Backspace | Previous slide |
-| Home | First slide |
-| End | Last slide |
-| Escape | Exit presentation |
+| →, Space, PageDown, N, click | Next step or slide |
+| ←, PageUp, P, right-click | Previous step or slide |
+| ↓ / ↑ | Next / previous slide, skipping build steps |
+| Home / End | First / last slide |
+| a number, then Enter | Jump to that slide |
+| G | Overview of every slide |
+| S | Speaker view: current slide, next step, notes, timer and clock (T resets the timer) |
+| B or `.` / W or `,` | Blank the screen black / white |
+| ? | List the shortcuts |
+| Esc | Close an overlay, or end the presentation |
 
-The presenter uses keyboard navigation for slide changes. A visible exit button
-is available in the bottom-right corner.
+Keys pressed inside a live HTML block still move the slides, unless focus is in
+a text field.
 
-Libera remembers the active slide index in the open tab view state. If you leave
-the presenter and return later, the same tab can reopen at the last slide.
+## PDF export
 
-## Templates
+**Download → PDF file** in the file actions menu (desktop app) prints the deck
+one slide per page, at the slide's own size, with every build step shown and
+hidden slides left out. Libera waits for charts, diagrams and live blocks to
+finish drawing first.
 
-Version 1 ships with one built-in template:
+## How it works
 
-```markdown
-$template = "default"
-```
-
-The default template provides:
-
-- A fixed-width white slide sheet with natural height in preview
-- A fixed 16:9 slide sheet fitted to the viewport in presentation mode
-- A title slide rendered from the first block before `---`
-- A fixed 32pt slide title header
-- Body content aligned with the slide title and spanning the slide interior
-- A footer with the slide title on the left and author names on the right
-- A slide counter
-
-If `$template` is missing, Libera uses `default`.
-
-If `$template` names an unknown template, Libera shows a warning and falls back
-to `default`.
-
-User-editable template folders and arbitrary raw HTML templates are not part of
-the first version.
-
-## Warnings and diagnostics
-
-Warnings appear above the slide preview. Common warnings include:
-
-- Invalid metadata value
-- Invalid metadata line
-- Unknown template id
-
-Content before the first separator is rendered on the title slide:
-
-```markdown
-$title = "Title Slide Example"
-
-This text appears on the title slide.
----
-$title = "First Visible Slide"
-
-This text appears on the next slide.
-```
-
-## Complete example
-
-```markdown
-$title = "Markdown Slides in Libera"
-$subtitle = "A single-file deck format"
-$author = ["A. Researcher", "B. Engineer"]
-$affiliation = ["Libera Lab", "Libera Lab"]
-$date = "2026-06-05"
-$template = "default"
----
-$title = "Motivation"
-
-Write a presentation as one Markdown file.
-
-- Easy to edit
-- Easy to version
-- Uses normal Libera Markdown rendering
----
-$title = "Equation Support"
-
-Inline math works: $E = mc^2$.
-
-Block math works too:
-
-$$
-\nabla \cdot \vec{V} = 0
-$$
----
-$title = "Workspace Assets"
-
-Images and local links resolve like normal Markdown notes.
-
-![Diagram](diagram.png)
-
-[Open supporting note](supporting-note.md)
-```
-
-## Current limitations
-
-The first version intentionally keeps the feature small:
-
-- No PDF export
-- No speaker notes
-- No animations or fragments
-- No per-slide layout metadata
-- No custom user template folders
-- No raw HTML template loading
-
-These can be added later without changing the `.slides.md` file convention.
+- `src/lib/markdown-slides.ts` parses a deck into slides, segments (build steps
+  and columns), notes and settings, with the warnings shown above the preview.
+- `src/components/libera/markdown-slide-templates.tsx` draws a slide: the
+  header, layouts, columns and shrink-to-fit (`FitBody`).
+- `src/components/libera/markdown-slides-viewer.tsx` holds the preview, the
+  presenter and the PDF export pages.
+- `src/components/libera/slide-live-blocks.tsx` renders charts, diagrams and
+  live HTML.
+- The Libera agent's `slide-deck` skill (`src/lib/agent/skills/slide-deck.ts`)
+  teaches the agent this format; see [the agent's skills](features/ai-agent.md#slide-deck).

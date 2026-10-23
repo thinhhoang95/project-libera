@@ -16,6 +16,7 @@ import type {
   PdfAnnotationsPayload,
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
+import { pythonSidecarHref } from "@/lib/python/sidecar";
 import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import type {
   MarkdownFileLinkRange,
@@ -1102,6 +1103,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return openMarkdownHeading(sourceTab.file, markdown, href);
     }
 
+    // A note's Python sidecar is in its assets folder, which the file tree leaves out.
+    if (href === pythonSidecarHref(sourcePath)) {
+      const sidecar = await apiRequest<{ path: string }>(`/api/python/run?document=${encodeURIComponent(sourcePath)}`).catch(() => null);
+      if (!sidecar) return false;
+      const payload = await apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(sidecar.path)}`).catch(() => null);
+      if (!payload) return false;
+      await openFile(payload.file);
+      return true;
+    }
+
     const resolvedLink = resolveMarkdownFileLink(href, sourcePath, files);
 
     if (!resolvedLink) {
@@ -1605,13 +1616,50 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
-  /** Cites `key` at the caret of the active Markdown editor as `[@key]`, in the source or the visual editor. */
-  function insertCitation(key: string) {
+  /** Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of the active Markdown editor, in the source or the visual editor. */
+  function insertCitation(key: string | string[]) {
     if (!activeTab || activeTab.file.fileType !== "markdown") return false;
-    const citation = `[@${key}]`;
+    const keys = typeof key === "string" ? [key] : key;
+    if (!keys.length) return false;
+    const citation = `[${keys.map((item) => `@${item}`).join("; ")}]`;
     const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
     if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });
     else insertMarkdown(citation, "", "");
+    return true;
+  }
+
+  /** Places the generated bibliography: a `:::bibliography` marker as its own block after the caret's paragraph. */
+  function insertBibliographyMarker() {
+    if (!activeTab || activeTab.file.fileType !== "markdown") return false;
+    const marker = ":::bibliography\n:::";
+    const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
+    if (visual) {
+      queueVisualInsertion(activeTab.id, marker);
+      return true;
+    }
+    const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
+    const position = findMarkdownBlockInsertionOffset(draft, textarea?.selectionEnd ?? draft.length);
+    const insertion = insertMarkdownBlock(draft, position, marker);
+    const replacement = insertion.value.slice(position, position + insertion.value.length - draft.length);
+    const caret = position + replacement.length;
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        nextSelectionEnd: caret,
+        nextSelectionStart: caret,
+        replacement,
+        selectionEnd: position,
+        selectionStart: position,
+      })
+    ) {
+      restoreMarkdownTextarea({ ...scrollState, selectionStart: caret, selectionEnd: caret });
+      return true;
+    }
+    setActiveDraft(insertion.value);
+    restoreMarkdownTextarea({ ...scrollState, selectionStart: caret, selectionEnd: caret });
     return true;
   }
 
@@ -4224,6 +4272,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       insertMarkdownImage,
       insertMarkdown,
       insertCitation,
+      insertBibliographyMarker,
       activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,
       insertMarkdownTable,
       moveFileFromPrompt,

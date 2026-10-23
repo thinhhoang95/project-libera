@@ -12,8 +12,10 @@ import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownT
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import { createMathExtensions } from "@/lib/tiptap-math";
+import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
+import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, List, ListOrdered, Code2, ChartColumn, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
+import { Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -45,11 +47,13 @@ import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
 import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import { TableInsertButton } from "./table-grid-picker";
 import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "@/lib/tiptap-heading-numbering";
+import { TiptapBoldLeadIns } from "@/lib/tiptap-bold-lead-ins";
 import type { EditorRange } from "@/lib/tiptap-editor-actions";
 import { detectMarkdownHeadingNumbering, type HeadingNumberingSettings } from "@/lib/markdown-heading-numbering";
 import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import { useHeadingNumbering } from "./heading-numbering-state";
 import { LIVE_BLOCK_TEMPLATES, createLiveCodeBlockNodeView } from "./tiptap-live-code-block-view";
+import { PYTHON_FIGURE_OPEN_CODE_EVENT, createPythonFigureNodeView } from "./tiptap-python-figure-view";
 import type { ClipboardText, MenuPasteMode } from "./paste-menu-items";
 
 type Props = {
@@ -84,6 +88,8 @@ type Props = {
    */
   collab?: SharedVisualSource;
   readSelectionLinks?: () => MarkdownSelectionLinkOption[];
+  /** Opens the document with its macros expanded in a new tab (markdown-macros.ts). */
+  onExpandMacros?: (markdown: string) => void;
 };
 
 /** Smart Paste takes over only when the clipboard holds headings; rich HTML
@@ -138,7 +144,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, onExpandMacros }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const [error, setError] = useState("");
@@ -198,13 +204,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const citations = useTiptapCitations();
   // ```chart and ```html live blocks draw under their code, as in the preview.
   const codeBlockNodeView = useMemo(() => createLiveCodeBlockNodeView(documentPath), [documentPath]);
+  // Figures made by the note's Python get Re-run and Code (lib/python/sidecar.ts).
+  const imageNodeView = useMemo(() => createPythonFigureNodeView(documentPath), [documentPath]);
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
   const referenceNotebook = useReferenceRender()?.notebook ?? null;
   const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
   const extensions = useMemo(() => {
     const [InlineMath, BlockMath] = createMathExtensions(mathMarkers);
     return [
-    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView }),
+    ...createMarkdownExtensions(documentPath, { citationNodeView: citations.nodeView, codeBlockNodeView, imageNodeView }),
     ...citations.extensions,
     // Routes undo to the bridge's Y.UndoManager and keeps ProseMirror history
     // from recording remote edits (shared tabs only).
@@ -214,6 +222,9 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     TiptapReview,
     TiptapChanges.configure({ documentPath }),
     TiptapHeadingNumbering,
+    TiptapBoldLeadIns,
+    // Shows ```libera-macro macros and counters expanded where they are used.
+    TiptapMarkdownMacros.configure({ mathMarkers }),
     InlineMath.configure({
       katexOptions: { displayMode: false, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: false, from: pos, to: pos + node.nodeSize, existing: true }),
@@ -224,7 +235,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       katexOptions: { displayMode: true, throwOnError: false, trust: false },
       onClick: (node, pos) => setMathDraft({ latex: node.attrs.latex, display: true, from: pos, to: pos + node.nodeSize, existing: true }),
     }),
-  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView]);
+  ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView]);
 
   const editor = useEditor({
     extensions,
@@ -334,6 +345,15 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     },
   });
 
+  // A Python figure's Code button opens the note's sidecar like a link to it.
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!dom) return;
+    const open = (event: Event) => void onOpenFileLink((event as CustomEvent<{ href: string }>).detail.href);
+    dom.addEventListener(PYTHON_FIGURE_OPEN_CODE_EVENT, open);
+    return () => dom.removeEventListener(PYTHON_FIGURE_OPEN_CODE_EVENT, open);
+  }, [editor, onOpenFileLink]);
+
   useLayoutEffect(() => {
     if (!editor || !collab) return;
     const handle = collab.attach(editor);
@@ -368,7 +388,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     // directly so EditorContent can mount without waiting for that transaction.
     const current = observedEditor ?? editor;
     return current ? {
-    bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"),
+    bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"), strike: current.isActive("strike"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     table: current.isActive("table"),
@@ -793,7 +813,11 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         openFind();
         return;
       }
-      if (event.key === "Escape" && state.highlightTool.active) editor.commands.setHighlightToolActive(false);
+      if (event.key === "Escape" && state.highlightTool.active) {
+        // Claimed, so Review mode's Escape waits for the next press.
+        event.preventDefault();
+        editor.commands.setHighlightToolActive(false);
+      }
     }}>
       <div ref={toolbarRef} aria-label="Visual editor formatting" role="toolbar" tabIndex={0}
         className="libera-editor-toolbar libera-horizontal-toolbar flex min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden whitespace-nowrap border-b border-border px-3 py-1.5 [&>*]:shrink-0">
@@ -825,6 +849,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Bold", icon: Bold, active: state.bold, run: () => editor.chain().focus().toggleBold().run() },
           { title: "Italic", icon: Italic, active: state.italic, run: () => editor.chain().focus().toggleItalic().run() },
           { title: "Underline", icon: Underline, active: state.underline, run: () => editor.chain().focus().toggleUnderline().run() },
+          { title: "Strikethrough", icon: Strikethrough, active: state.strike, run: () => editor.chain().focus().toggleStrike().run() },
           { title: "Highlight", icon: Highlighter, active: state.highlightTool.active || state.highlight, run: () => editor.chain().focus().toggleHighlightTool().run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Highlight color" className={selectClass} value={state.highlightTool.color} onChange={(event) => editor.commands.setHighlightToolColor(event.target.value)}>
@@ -836,6 +861,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Quote", icon: Quote, active: state.blockquote, run: () => editor.chain().focus().toggleBlockquote().run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
           { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
+          { title: "Insert diagram", icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
           { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
@@ -871,6 +897,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <button type="button" aria-label="Save document" title="Save document" className={buttonClass} onClick={() => { readMarkdown(); void onSave(); }}><Save className="h-4 w-4" /></button>
         <button type="button" aria-label="Fix ChatGPT equations" title="Fix ChatGPT equations" className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={fixChatGptEquations}><Sparkles aria-hidden className="h-4 w-4" /></button>
         <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
+        <ExpandMacrosButton className={buttonClass} markdown={value} getMarkdown={readMarkdown} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
         <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />

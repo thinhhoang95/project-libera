@@ -21,6 +21,7 @@ import {
   WORKSPACE_METADATA_FILE,
 } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
+import { isAssetSidecarPath, markdownAssetSafeSegment, markdownAssetsDirectoryName, markdownAssetsFolder } from "@/lib/storage/asset-names";
 import { joinPath, workingDirectory } from "@/lib/runtime-path";
 
 export function getDataRoot() {
@@ -211,8 +212,7 @@ export function itemPath(
   itemLabel = "Path segment",
 ) {
   const safeNotebook = assertSafeSegment(notebook, "Notebook name");
-  const safePathParts = pathParts.map((part) => assertSafeUserSegment(part, itemLabel));
-  return notebookChildPath(safeNotebook, ...safePathParts);
+  return notebookChildPath(safeNotebook, ...safeUserPathParts(pathParts, itemLabel));
 }
 
 export function filePath(notebook: string, name: string) {
@@ -329,19 +329,7 @@ export function legacyImageAnnotationsPath(notebook: string, name: string) {
   return notebookChildPath(safeNotebook, `.${safeName}${IMAGE_ANNOTATIONS_SUFFIX}`);
 }
 
-export function markdownAssetsDirectoryName(markdownName: string) {
-  const stem = path.basename(markdownName, path.extname(markdownName));
-  return markdownAssetSafeSegment(stem, "note");
-}
-
-function markdownAssetSafeSegment(segment: string, fallback = "asset") {
-  const normalized = segment
-    .trim()
-    .replace(/[^a-z0-9._-]+/gi, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return normalized || fallback;
-}
+export { markdownAssetsDirectoryName };
 
 export function markdownAssetsDirectoryPathFromParts(
   notebook: string,
@@ -378,11 +366,7 @@ export function markdownAssetsPathPrefix(markdownPathParts: string[]) {
     throw new StorageError("Markdown asset path is invalid.");
   }
 
-  return [
-    MARKDOWN_ASSETS_DIR,
-    ...markdownPathParts.slice(0, -1).map((part) => markdownAssetSafeSegment(part)),
-    markdownAssetsDirectoryName(markdownPathParts.at(-1) ?? ""),
-  ].join("/");
+  return markdownAssetsFolder(markdownPathParts);
 }
 
 export function markdownAssetsDirectoryPath(notebook: string, markdownName: string) {
@@ -419,8 +403,14 @@ export function splitStoragePath(relativePath: string) {
 
   return {
     notebook: assertSafeSegment(notebook, "Notebook name"),
-    pathParts: pathParts.map((part) => assertSafeUserSegment(part, "Path segment")),
+    pathParts: safeUserPathParts(pathParts, "Path segment"),
   };
+}
+
+/** User path segments; `_assets` only leads a note's Python sidecar (isAssetSidecarPath). */
+function safeUserPathParts(pathParts: string[], label: string) {
+  const sidecar = isAssetSidecarPath(pathParts);
+  return pathParts.map((part, index) => sidecar && index === 0 ? part : assertSafeUserSegment(part, label));
 }
 
 export function splitFilePath(relativePath: string) {

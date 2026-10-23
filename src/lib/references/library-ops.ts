@@ -4,6 +4,7 @@ import {
   CSL_ITEM_TYPES,
   DEFAULT_CSL_STYLE,
   PROVENANCE_SOURCES,
+  READING_STATES,
   REFERENCE_LIBRARY_VERSION,
   type CslItem,
   type FieldAlternative,
@@ -16,6 +17,7 @@ import {
   type ReferenceLibraryOp,
   type ReferenceLibrarySettings,
   type ReferenceLibrarySettingsPatch,
+  type ReadingState,
   type ReferenceStatus,
   type ReferenceVersionLink,
   type RetractionStatus,
@@ -405,6 +407,8 @@ function updateEntry(library: Library, op: Extract<ReferenceLibraryOp, { op: "up
   if (op.status !== undefined) entry.status = validateStatus(op.status);
   if (op.notes !== undefined) entry.notes = assertString(op.notes, "Notes");
   if (op.tags !== undefined) entry.tags = uniqueStrings(assertStringArray(op.tags, "Tags"));
+  if (op.reading === null) delete entry.reading;
+  else if (op.reading !== undefined) entry.reading = validateReading(op.reading);
   if (op.versions !== undefined) entry.versions = uniqueVersions(structuredClone(validateVersions(op.versions)));
   if (op.retraction !== undefined) entry.retraction = structuredClone(validateRetraction(op.retraction));
 
@@ -455,6 +459,7 @@ function mergeEntries(library: Library, keepId: string, mergeIds: unknown, now: 
     if (entry.tags?.length) keep.tags = uniqueStrings([...keep.tags ?? [], ...entry.tags]);
     if (entry.versions?.length) keep.versions = uniqueVersions([...keep.versions ?? [], ...structuredClone(entry.versions)]);
     if (!keep.retraction && entry.retraction) keep.retraction = structuredClone(entry.retraction);
+    if (!keep.reading && entry.reading) keep.reading = entry.reading;
   }
   const notes = [keep, ...merged].map((entry) => entry.notes?.trim()).filter(Boolean);
   if (notes.length) keep.notes = notes.join("\n\n");
@@ -462,6 +467,11 @@ function mergeEntries(library: Library, keepId: string, mergeIds: unknown, now: 
   keep.updatedAt = now;
   for (const entry of merged) delete library.entries[entry.id];
   library.entries[keep.id] = keep;
+}
+
+function validateReading(value: unknown): ReadingState {
+  if (typeof value !== "string" || !(READING_STATES as readonly string[]).includes(value)) fail("Reading flag is invalid.");
+  return value as ReadingState;
 }
 
 function attach(library: Library, id: string, input: unknown, now: string) {
@@ -502,6 +512,7 @@ function validateEntry(value: unknown): ReferenceEntry {
   if (value.retraction !== undefined) validateRetraction(value.retraction);
   if (value.notes !== undefined) assertString(value.notes, "Notes");
   if (value.tags !== undefined) assertStringArray(value.tags, "Tags");
+  if (value.reading !== undefined) validateReading(value.reading);
   assertTimestamp(value.createdAt, "Creation time");
   assertTimestamp(value.updatedAt, "Update time");
   if (!isRecord(value.fieldUpdatedAt)) fail("Field clocks are invalid.");
