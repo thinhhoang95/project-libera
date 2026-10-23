@@ -2,6 +2,7 @@
 
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
+import { DefinitionsPaletteCommands } from "@/components/libera/definitions-panel";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
@@ -511,6 +512,7 @@ export function LiberaApp({
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
+    <DefinitionsPaletteCommands activeTab={workspace.activeTab} onShow={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); }} />
     <CollabProvider
       onNotebookJoined={async (notebook) => {
         await workspace.refreshTree(notebook).catch(() => undefined);

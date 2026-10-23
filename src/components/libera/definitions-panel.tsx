@@ -3,6 +3,8 @@
 import { AlertTriangle, BookA, ChevronDown, Loader2, RefreshCw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
+import { usePaletteCommands } from "@/components/libera/command-palette/commands";
+import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import type { OpenTab } from "@/components/libera/types";
 import { normalizeChatResponseMarkdown } from "@/lib/document-chat";
@@ -44,6 +46,8 @@ let runVersion = 0;
 let lastRunError: { path: string; message: string } | null = null;
 /** The documents whose last run has ended, so an empty result can be explained. */
 const finishedRuns = new Set<string>();
+/** Cards each document had when the tab last read them, for the palette's wording. */
+const knownCardCounts = new Map<string, number>();
 
 function notifyRuns() {
   runVersion++;
@@ -71,7 +75,8 @@ function useRunningRequest(path: string) {
   return { running: runningRequests.has(path), finished: finishedRuns.has(path), error: lastRunError?.path === path ? lastRunError.message : "" };
 }
 
-function requestDefinitions(path: string) {
+/** Asks the AI Agent to (re)generate a document's cards; the AI panel starts the run. */
+export function requestDefinitions(path: string) {
   const requestId = crypto.randomUUID();
   runningRequests.set(path, requestId);
   finishedRuns.delete(path);
@@ -80,8 +85,54 @@ function requestDefinitions(path: string) {
   window.dispatchEvent(new CustomEvent<DefinitionsRequestDetail>(DEFINITIONS_REQUEST_EVENT, { detail: { path, requestId } }));
 }
 
-function supportsDefinitions(tab?: OpenTab) {
+export function supportsDefinitions(tab?: OpenTab | null) {
   return Boolean(tab && !tab.untitled && !tab.gallery && DEFINITIONS_FILE_TYPES.some((type) => type === tab.file.fileType));
+}
+
+/**
+ * Definitions commands for the command palette; renders nothing. `onShow`
+ * opens the Outlines panel, which is then switched to its Definitions view.
+ */
+export function DefinitionsPaletteCommands({ activeTab, onShow }: { activeTab?: OpenTab | null; onShow: () => void }) {
+  usePaletteCommands(null, () => {
+    const group = "Definitions";
+    const show = () => {
+      onShow();
+      showOutlineView("definitions");
+    };
+    const supported = supportsDefinitions(activeTab);
+    const path = supported && activeTab ? activeTab.file.path : "";
+    const running = Boolean(path && runningRequests.has(path));
+    const hasCards = Boolean(path && knownCardCounts.get(path));
+    const unavailable = activeTab?.untitled
+      ? "Save this document to a notebook first"
+      : "Open a Markdown, LaTeX or PDF document";
+    return [
+      {
+        id: "definitions:generate",
+        title: running ? "Generating definitions…" : hasCards ? "Regenerate definitions" : "Generate definitions",
+        group,
+        icon: hasCards ? RefreshCw : Sparkles,
+        detail: !supported ? unavailable : `The AI Agent reads ${activeTab?.file.name} and saves its definitions, notation and conventions as cards${hasCards ? ", replacing the current ones" : ""}`,
+        keywords: "ai agent extract notation symbols glossary conventions create cards outline",
+        disabled: !supported || running,
+        run: () => {
+          show();
+          requestDefinitions(path);
+        },
+      },
+      {
+        id: "definitions:show",
+        title: "Show definitions",
+        group,
+        icon: BookA,
+        detail: supported ? undefined : unavailable,
+        keywords: "notation symbols glossary cards outline search",
+        run: show,
+      },
+    ];
+  });
+  return null;
 }
 
 export function DefinitionsPanel({ activeTab, mathMarkers, onOpenFile }: DefinitionsPanelProps) {
@@ -117,6 +168,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
     const controller = new AbortController();
     apiRequest<DefinitionsPayload>(`/api/definitions?path=${encodeURIComponent(path)}`, { signal: controller.signal })
       .then((next) => {
+        knownCardCounts.set(path, next.definitions?.entries.length ?? 0);
         setPayload(next);
         setLoadError("");
       })
@@ -154,6 +206,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
     setDeleting(true);
     try {
       setPayload(await apiRequest<DefinitionsPayload>(`/api/definitions?path=${encodeURIComponent(path)}`, { method: "DELETE" }));
+      knownCardCounts.set(path, 0);
       setLoadError("");
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not delete the definitions.");

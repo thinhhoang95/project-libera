@@ -419,7 +419,7 @@ Work on several files side by side by splitting the editor area into panels. Cho
 
 Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
 
-Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. The **Definitions** commands have the AI Agent generate (or regenerate) the definitions and notation of the document in view, or open its Definitions tab. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
 
 ## Where Was I
 
@@ -488,7 +488,7 @@ See [docs/features/ai-agent.md](docs/features/ai-agent.md) for permissions, tool
 
 Math documents introduce many symbols and terms before the interesting part. **Outlines → Definitions** collects a Markdown, LaTeX or PDF document's definitions, notation and conventions as searchable cards with typeset math.
 
-- **Generate definitions** has the AI Agent read the whole document and save the cards as it goes; they appear while it works. The document never changes, so it works in Read Only.
+- **Generate definitions** has the AI Agent read the whole document and save the cards as it goes; they appear while it works. The document never changes, so it works in Read Only. The command palette (⌘/Ctrl+Shift+P) offers **Generate definitions** and **Show definitions** too.
 - Each card has the term or symbol, its kind, its meaning in this document, aliases, and where it is introduced. Click the location to jump there in the editor or the PDF.
 - Search matches terms, meanings, aliases and LaTeX command names (`mathcal` finds $\mathcal{F}_t$); **Show** narrows the list to one kind.
 - The agent's cards are checked and sent back when wrong: math must typeset in KaTeX, excerpts must be in the document, and passages that look like definitions need a card.

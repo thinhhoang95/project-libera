@@ -1,5 +1,7 @@
 import {
   BookCheck,
+  Braces,
+  ChartColumn,
   Bold,
   ChevronDown,
   ChevronUp,
@@ -23,6 +25,7 @@ import {
   Sparkles,
   Strikethrough,
   Underline,
+  Workflow,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
@@ -133,6 +136,33 @@ function getFloatingMenuPosition(button: HTMLElement | null, width: number) {
     ),
   };
 }
+
+const MARKDOWN_BLOCK_TEMPLATES = [
+  {
+    id: "chart",
+    title: "Insert chart",
+    icon: ChartColumn,
+    keywords: "graph plot bar line pie",
+    language: "chart",
+    placeholder: "type: bar\ntitle: Revenue by quarter\nlabels: [Q1, Q2, Q3, Q4]\nseries:\n  2025: [12, 19, 8, 15]",
+  },
+  {
+    id: "diagram",
+    title: "Insert diagram",
+    icon: Workflow,
+    keywords: "mermaid flowchart",
+    language: "mermaid",
+    placeholder: "flowchart LR\n  idea[Idea] --> draft[Draft]\n  draft --> publish[Publish]",
+  },
+  {
+    id: "macro-block",
+    title: "Insert macro block",
+    icon: Braces,
+    keywords: "libera-macro latex newcommand counter",
+    language: "libera-macro",
+    placeholder: "\\R = $\\mathbb{R}$\n\\lab = Libera Lab",
+  },
+];
 
 export function MarkdownToolbar({
   files,
@@ -328,6 +358,14 @@ export function MarkdownToolbar({
       group: "Markdown formatting",
       icon: Palette,
       run: () => insertTextColor(color),
+    })),
+    ...MARKDOWN_BLOCK_TEMPLATES.map((block) => ({
+      id: `markdown:insert-${block.id}`,
+      title: block.title,
+      group: "Markdown formatting",
+      icon: block.icon,
+      keywords: block.keywords,
+      run: () => onInsert(`\n\`\`\`${block.language}\n`, "\n```\n", block.placeholder),
     })),
     {
       id: "markdown:enumerate-all-headings",

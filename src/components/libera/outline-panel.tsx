@@ -1,6 +1,7 @@
 "use client";
 
 import { DefinitionsPanel } from "@/components/libera/definitions-panel";
+import { OUTLINE_VIEW_EVENT, readStoredOutlineView, storeOutlineView, type OutlinePanelView } from "@/components/libera/outline-view";
 import { LatexOutline } from "@/components/libera/latex/latex-outline";
 import {
   ChevronDown,
@@ -50,15 +51,6 @@ type OutlinePanelProps = {
   onSetDraft: (value: string) => void;
   mathMarkers?: MathMarkerSettings;
 };
-
-type OutlinePanelView = "outline" | "definitions";
-const OUTLINE_VIEW_STORAGE_KEY = "libera.outlinePanelView";
-
-function readStoredOutlineView(): OutlinePanelView {
-  try {
-    return window.localStorage.getItem(OUTLINE_VIEW_STORAGE_KEY) === "definitions" ? "definitions" : "outline";
-  } catch { return "outline"; }
-}
 
 type MarkdownHeading = {
   id: string;
@@ -496,8 +488,18 @@ export function OutlinePanel({
 
   function chooseView(next: OutlinePanelView) {
     setView(next);
-    try { window.localStorage.setItem(OUTLINE_VIEW_STORAGE_KEY, next); } catch { /* A convenience only. */ }
+    storeOutlineView(next);
   }
+
+  // The command palette can switch the view while the panel is open.
+  useEffect(() => {
+    function handleView(event: Event) {
+      const next = (event as CustomEvent<OutlinePanelView>).detail;
+      if (next === "outline" || next === "definitions") setView(next);
+    }
+    window.addEventListener(OUTLINE_VIEW_EVENT, handleView);
+    return () => window.removeEventListener(OUTLINE_VIEW_EVENT, handleView);
+  }, []);
 
   const viewTab = (id: OutlinePanelView, label: string) => (
     <button

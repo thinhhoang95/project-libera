@@ -10,6 +10,11 @@ The agent reads the whole document, unsaved changes included: a text file window
 
 If the run ends without saving a card (the model cannot call tools, the API key is rejected, or you stopped it), the tab says so; the agent's reply in the AI panel gives the reason. Wait for a reply to finish, or stop it, before you generate: the AI panel runs one request at a time.
 
+The command palette (⌘/Ctrl+Shift+P) has the same actions under **Definitions**, for the document in view:
+
+- **Generate definitions** opens the Definitions tab and starts the run. It reads **Regenerate definitions** when the document already has cards, and **Generating definitions…** (unavailable) while a run for it is going on.
+- **Show definitions** opens the Outlines panel at the Definitions tab.
+
 You can also ask the agent yourself, for example "collect the notation in thesis.pdf". It loads the same skill, and the cards show up in the tab.
 
 ## The cards
@@ -63,10 +68,10 @@ The refresh button generates the cards again at any time: the first save of the 
 - `src/lib/agent/skills/extract-definitions.ts`: the skill's instructions, the SaveDefinitions tool and the finish pass.
 - `src/lib/storage/definitions.ts`: reading, writing and deleting the side-car, and the staleness check. `src/lib/storage/files.ts` moves, copies and deletes it with the document; `definitionsPath` and `definitionsDirectoryPath` in `src/lib/storage/paths.ts` place it.
 - `src/app/api/definitions/route.ts`: `GET ?path=` reads the cards and whether the document changed; `DELETE ?path=` deletes the file.
-- `src/components/libera/definitions-panel.tsx`: the tab. `outline-panel.tsx` holds the Outline and Definitions switch, and `document-chat-panel.tsx` starts the run when the tab asks (`libera:definitions-request`) and reports saves (`definitions_saved` agent events) and the end of the run back to it.
+- `src/components/libera/definitions-panel.tsx`: the tab, and `DefinitionsPaletteCommands`, the palette commands (rendered in `libera-app.tsx`). `outline-panel.tsx` holds the Outline and Definitions switch, which `outline-view.ts` remembers and lets the palette set, and `document-chat-panel.tsx` starts the run when the tab asks (`libera:definitions-request`) and reports saves (`definitions_saved` agent events) and the end of the run back to it.
 
 ## Checks
 
-`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/definitions.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/definitions.test.ts scripts/editor/definitions-palette.test.ts`
 
-The tests cover the math checks, excerpt and line checks, PDF page correction, the search for uncovered passages, search, and a SaveDefinitions run in Read Only: rejected cards and their feedback, the finish pass, merging later saves, staleness, and the side-car following a renamed and a deleted document.
+The tests cover the math checks, excerpt and line checks, PDF page correction, the search for uncovered passages, search, and a SaveDefinitions run in Read Only: rejected cards and their feedback, the finish pass, merging later saves, staleness, and the side-car following a renamed and a deleted document. The palette test covers when Generate is offered, the request it sends, the switch to the Definitions tab, and Generate waiting while a run goes on.

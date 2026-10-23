@@ -105,6 +105,11 @@ export const LIVE_BLOCK_TEMPLATES = {
     "  2025: [12, 19, 8, 15]",
     "  2026: [14, 22, 11, 18]",
   ].join("\n")),
+  macro: codeBlockContent("libera-macro", [
+    "% Math macros wrap the body in math markers; text macros are Markdown",
+    "\\R = $\\mathbb{R}$",
+    "\\lab = Libera Lab",
+  ].join("\n")),
   // Chart.js is loaded as `Chart`; `libera.colors` and `libera.theme` follow the app theme.
   html: codeBlockContent("html live", [
     "<label>Value: <input id=\"value\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label>",
