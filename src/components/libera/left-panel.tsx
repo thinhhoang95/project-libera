@@ -28,6 +28,7 @@ import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import type { OpenTab } from "@/components/libera/types";
 
 import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
 export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search" | "references";
@@ -49,6 +50,8 @@ type LeftPanelProps = NotebookPanelProps & {
   onGeneratedFilesSaved: (files: LiberaFileNode[]) => void;
   onOpenSearchPreferences?: () => void;
   references?: LeftPanelReferences;
+  /** Math markers for Markdown the panels render (Outlines → Definitions). */
+  mathMarkers?: MathMarkerSettings;
 };
 
 type LeftPanelRailTab = {
@@ -84,6 +87,7 @@ export function LeftPanel({
   onGeneratedFilesSaved,
   onOpenSearchPreferences,
   references,
+  mathMarkers,
   ...notebookPanelProps
 }: LeftPanelProps) {
   function selectPanel(panel: LeftPanelTab) {
@@ -240,6 +244,7 @@ export function LeftPanel({
                 textareaRef={textareaRef}
                 onOpenFile={notebookPanelProps.onOpenFile}
                 onSetDraft={onSetDraft}
+                mathMarkers={mathMarkers}
               />
             )}
           </div>

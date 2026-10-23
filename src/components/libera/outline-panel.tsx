@@ -1,5 +1,7 @@
 "use client";
 
+import { DefinitionsPanel } from "@/components/libera/definitions-panel";
+import { OUTLINE_VIEW_EVENT, readStoredOutlineView, storeOutlineView, type OutlinePanelView } from "@/components/libera/outline-view";
 import { LatexOutline } from "@/components/libera/latex/latex-outline";
 import {
   ChevronDown,
@@ -36,6 +38,7 @@ import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import { PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail } from "@/lib/references/pdf-quote";
+import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload, PdfHighlightAnnotation } from "@/lib/types";
 
 type OutlinePanelProps = {
@@ -46,6 +49,7 @@ type OutlinePanelProps = {
     options?: { viewState?: OpenTab["viewState"] },
   ) => Promise<void>;
   onSetDraft: (value: string) => void;
+  mathMarkers?: MathMarkerSettings;
 };
 
 type MarkdownHeading = {
@@ -477,18 +481,55 @@ export function OutlinePanel({
   textareaRef,
   onOpenFile,
   onSetDraft,
+  mathMarkers,
 }: OutlinePanelProps) {
   const { preferences: { outlineExpansionLevel }, updatePreferences, flushPreferences } = useMarkdownDisplayPreferences();
+  const [view, setView] = useState<OutlinePanelView>(readStoredOutlineView);
+
+  function chooseView(next: OutlinePanelView) {
+    setView(next);
+    storeOutlineView(next);
+  }
+
+  // The command palette can switch the view while the panel is open.
+  useEffect(() => {
+    function handleView(event: Event) {
+      const next = (event as CustomEvent<OutlinePanelView>).detail;
+      if (next === "outline" || next === "definitions") setView(next);
+    }
+    window.addEventListener(OUTLINE_VIEW_EVENT, handleView);
+    return () => window.removeEventListener(OUTLINE_VIEW_EVENT, handleView);
+  }, []);
+
+  const viewTab = (id: OutlinePanelView, label: string) => (
+    <button
+      type="button"
+      role="tab"
+      id={`outline-view-tab-${id}`}
+      aria-controls="outline-view-panel"
+      aria-selected={view === id}
+      className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs font-medium ${view === id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+      onClick={() => chooseView(id)}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex min-h-[52px] items-center justify-between px-3 py-3">
+      <div className="flex min-h-[52px] items-center justify-between gap-2 px-3 py-3">
         <h2 className="text-sm font-semibold text-foreground">
           Outlines
         </h2>
+        <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Outline views">
+          {viewTab("outline", "Outline")}
+          {viewTab("definitions", "Definitions")}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto px-3 py-3">
-        {activeTab?.file.fileType === "markdown" &&
+      <div id="outline-view-panel" role="tabpanel" aria-labelledby={`outline-view-tab-${view}`} className="min-h-0 flex-1 space-y-4 overflow-auto px-3 py-3">
+        {view === "definitions" ? (
+          <DefinitionsPanel activeTab={activeTab} mathMarkers={mathMarkers} onOpenFile={onOpenFile} />
+        ) : activeTab?.file.fileType === "markdown" &&
         isMarkdownSlidesPath(activeTab.file.path) ? (
           <MarkdownSlidesOutlinePreview
             activeTab={activeTab}

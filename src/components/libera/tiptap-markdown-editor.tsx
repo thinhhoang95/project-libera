@@ -15,7 +15,7 @@ import { createMathExtensions } from "@/lib/tiptap-math";
 import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
 import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
+import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
 import katex from "katex";
 import { Selection } from "@tiptap/pm/state";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
@@ -862,6 +862,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
           { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
           { title: "Insert diagram", icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
+          { title: "Insert macro block", icon: Braces, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
           { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {

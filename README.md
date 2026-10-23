@@ -56,7 +56,7 @@ Direct child folders are notebooks. Files inside notebooks currently support:
 
 The API rejects unsafe paths that escape the admin master directory.
 
-Libera keeps its own per-notebook state in a hidden `.libera/` folder inside each notebook, for example the reference library (`references/`) and the Where Was I session records (`where-was-i/<device>.json`). Linked folders keep this state in the data directory instead of the folder.
+Libera keeps its own per-notebook state in a hidden `.libera/` folder inside each notebook, for example the reference library (`references/`), the Where Was I session records (`where-was-i/<device>.json`) and the cards of the Definitions tab (`definitions/`). Linked folders keep this state in the data directory instead of the folder.
 
 Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
 
@@ -275,6 +275,8 @@ Both editors can snip a region of an open image or PDF tab, either as a picture 
 
 Libera highlights (`y>>>text<<<`) and text colors (`[color=#2563eb]text[/color]`) retain their existing syntax. Underlines use `<u>text</u>`. Font size and line spacing use safe numeric span attributes, for example `<span data-font-size="24" data-line-height="2">text</span>`, supported by both the visual editor and Markdown preview/export. Other Markdown viewers may ignore these presentation attributes.
 
+Preferences → Markdown → **Accent color** colors headings, list bullets and numbers, and bold text that opens a paragraph or list item (`**Term:** …`, `- **Step** …`) in the Visual editor and rendered previews: one of seven colors, **Spectrum** (a color per heading level), or **Custom…** with your own colors, each with a lighter shade in the dark theme. **Color bold lead-ins** turns the bold text off separately, and **None** leaves headings plain. Colors are display only; the Markdown, PDF export and hand-colored text are unchanged. See [docs/features/heading-colors.md](docs/features/heading-colors.md) for the full guide.
+
 Run the editor's Markdown round-trip regression tests with `npm run test:editor`.
 
 ### Charts and live HTML in notes
@@ -417,7 +419,7 @@ Work on several files side by side by splitting the editor area into panels. Cho
 
 Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
 
-Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. The **Definitions** commands have the AI Agent generate (or regenerate) the definitions and notation of the document in view, or open its Definitions tab. Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
 
 ## Where Was I
 
@@ -481,6 +483,19 @@ Paste answers from ChatGPT, Claude, Gemini, or other AI chats straight into eith
 Switch the AI panel from **Chat** to **Agent** to have the AI work on your library itself: it searches notes and PDFs, reads what it needs, and edits files, showing each step as it goes. Choose what it may change next to the switch: **Read Only**, **Modify opened files only**, or **Modify all files in Notebook/Folder**. PDFs are read from their cached extracted text, page by page, never sent whole. Edits appear in open tabs at once, and every changed file can be undone from the reply. Put conventions for the agent in an `AGENT_NOTES.md` file at a notebook's root.
 
 See [docs/features/ai-agent.md](docs/features/ai-agent.md) for permissions, tools, undo and limits.
+
+### Definitions and notation
+
+Math documents introduce many symbols and terms before the interesting part. **Outlines → Definitions** collects a Markdown, LaTeX or PDF document's definitions, notation and conventions as searchable cards with typeset math.
+
+- **Generate definitions** has the AI Agent read the whole document and save the cards as it goes; they appear while it works. The document never changes, so it works in Read Only. The command palette (⌘/Ctrl+Shift+P) offers **Generate definitions** and **Show definitions** too.
+- Each card has the term or symbol, its kind, its meaning in this document, aliases, and where it is introduced.
+- The cards look like the comment cards; click one to jump to where it is introduced.
+- Search lists matching terms first, then aliases, then meanings, and matches math the way it reads: `Qfg` finds $\mathcal{Q}_{f,g}$, `PiK` or `πK` finds $\Pi_K$, and `mathcal` finds every $\mathcal{…}$. **Show** narrows the list to one kind.
+- The agent's cards are checked and sent back when wrong: math must typeset in KaTeX, excerpts must be in the document, and passages that look like definitions need a card.
+- The cards are a side-car file that follows the document. The tab tells you when the document has changed, and you can regenerate or delete the cards at any time.
+
+See [docs/features/definitions.md](docs/features/definitions.md) for the full guide.
 
 ## Global Search
 

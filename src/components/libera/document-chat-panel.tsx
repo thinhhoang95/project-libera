@@ -31,6 +31,10 @@ import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type Chat
 import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
 import { useIsSharedNotebook } from "@/lib/collab/ui/shared-notebook-hook";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
+import {
+  DEFINITIONS_REQUEST_EVENT, DEFINITIONS_RUN_FINISHED_EVENT, DEFINITIONS_UPDATED_EVENT, definitionsPrompt,
+  type DefinitionsRequestDetail, type DefinitionsRunFinishedDetail, type DefinitionsUpdatedDetail,
+} from "@/lib/definitions";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -113,6 +117,8 @@ const AUTO_READ_STORAGE_KEY = "libera.chatAutoRead";
 const isStoredFlag = (value: unknown): value is "true" | "false" => value === "true" || value === "false";
 /** The agent skill a Fact-check citations request preloads (src/lib/agent/skills/fact-check-citations.ts). */
 const FACT_CHECK_SKILL = "fact-check-citations";
+/** The agent skill the Definitions tab preloads (src/lib/agent/skills/extract-definitions.ts). */
+const DEFINITIONS_SKILL = "extract-definitions";
 
 /** The first message of a run started by a Fact-check citations button. */
 export function factCheckPrompt(path: string) {
@@ -663,42 +669,65 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
-  // A Fact-check citations button (References panel, Markdown toolbars) asks
-  // for an Agent run: open the panel, start a new Agent chat with the request
-  // as its prompt, and send it with the fact-check skill preloaded.
-  const factCheckRequestRef = useRef<{ chatId: string; prompt: string } | null>(null);
+  // A Fact-check citations button (References panel, Markdown toolbars) or the
+  // Definitions tab asks for an Agent run: open the panel, start a new Agent
+  // chat with the request as its prompt, and send it with the skill preloaded.
+  const skillRequestRef = useRef<{ chatId: string; prompt: string; skill: string; definitionsRequestId?: string } | null>(null);
   const sendRef = useRef<typeof send | null>(null);
   // Before the effect below, so it sends with this render's chat and settings.
   useEffect(() => { sendRef.current = send; });
   useEffect(() => {
-    function requestFactCheck(event: Event) {
-      const detail = (event as CustomEvent<FactCheckRequestDetail>).detail;
-      if (!detail?.path || !store) return;
+    /** Starts the request's chat; returns why it cannot start, or "". */
+    function startSkillRun(request: { prompt: string; skill: string; webSearch?: boolean; definitionsRequestId?: string }) {
+      if (!store) return "The AI panel is still loading.";
       onCollapsedChange(false);
       review?.setChatReview(false);
-      if (requestRef.current) { setError("Wait for the current reply to finish, or stop it, before starting a fact-check."); return; }
-      if (typeof detail.webSearch === "boolean") setAllowWebSearch(detail.webSearch);
-      const prompt = factCheckPrompt(detail.path);
+      if (requestRef.current) {
+        const message = "Wait for the current reply to finish, or stop it, before starting a new agent run.";
+        setError(message);
+        return message;
+      }
+      if (typeof request.webSearch === "boolean") setAllowWebSearch(request.webSearch);
       const active = store.chats.find((item) => item.id === store.activeId);
       // An untouched chat is reused rather than left behind empty.
       const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length ? active : null;
-      const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt };
-      factCheckRequestRef.current = { chatId: next.id, prompt };
+      const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt: request.prompt };
+      skillRequestRef.current = { chatId: next.id, prompt: request.prompt, skill: request.skill, ...(request.definitionsRequestId ? { definitionsRequestId: request.definitionsRequestId } : {}) };
       setStore((current) => current && (reuse
         ? { ...current, chats: current.chats.map((item) => item.id === next.id ? next : item) }
         : { chats: [next, ...current.chats], activeId: next.id }));
       setError("");
       setNotice("");
+      return "";
+    }
+    function requestFactCheck(event: Event) {
+      const detail = (event as CustomEvent<FactCheckRequestDetail>).detail;
+      if (!detail?.path) return;
+      startSkillRun({ prompt: factCheckPrompt(detail.path), skill: FACT_CHECK_SKILL, webSearch: detail.webSearch });
+    }
+    function requestDefinitions(event: Event) {
+      const detail = (event as CustomEvent<DefinitionsRequestDetail>).detail;
+      if (!detail?.path) return;
+      const error = startSkillRun({ prompt: definitionsPrompt(detail.path), skill: DEFINITIONS_SKILL, definitionsRequestId: detail.requestId });
+      if (error) window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: detail.requestId, error } }));
     }
     window.addEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
-    return () => window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
-  }, [store, defaultPermission, onCollapsedChange, review]);
+    window.addEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+    return () => {
+      window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
+      window.removeEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+    };
+  }, [store, defaultPermission, onCollapsedChange, review, setStore]);
 
   useEffect(() => {
-    const request = factCheckRequestRef.current;
+    const request = skillRequestRef.current;
     if (!request || !chat || pending || chat.id !== request.chatId || chat.mode !== "agent" || chat.prompt !== request.prompt) return;
-    factCheckRequestRef.current = null;
-    void sendRef.current?.(undefined, undefined, { skill: FACT_CHECK_SKILL });
+    skillRequestRef.current = null;
+    const run = sendRef.current?.(undefined, undefined, { skill: request.skill }) ?? Promise.resolve();
+    const { definitionsRequestId } = request;
+    if (definitionsRequestId) {
+      void run.finally(() => window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: definitionsRequestId } })));
+    }
   }, [chat, pending]);
 
   async function send(retryMessageId?: string, edit?: { id: string; text: string }, options: { skill?: string } = {}) {
@@ -847,6 +876,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               if (/\.pdf$/i.test(event.path)) refreshPdfComments(event.path);
               schedule();
             }
+          } else if (event.type === "definitions_saved") {
+            window.dispatchEvent(new CustomEvent<DefinitionsUpdatedDetail>(DEFINITIONS_UPDATED_EVENT, { detail: { path: event.path } }));
           } else if (event.type === "suggestions_added") {
             if (event.count) {
               const existing = run.suggestions?.find((entry) => entry.path === event.path);
