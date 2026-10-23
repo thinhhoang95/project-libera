@@ -562,6 +562,7 @@ export function LiberaApp({
           selectedNotebookName={workspace.selectedNotebook?.name ?? ""}
           tree={workspace.tree}
           textareaRef={workspace.textareaRef}
+          mathMarkers={markdownPreferences}
           uploadInputRef={workspace.uploadInputRef}
           onArchiveFile={workspace.archiveFileNode}
           onArchiveFolder={workspace.archiveFolderNode}

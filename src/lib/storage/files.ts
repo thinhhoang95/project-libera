@@ -45,6 +45,8 @@ import {
   audioSidecarDirectories,
   audioPeaksPath,
   audioSidecarPaths,
+  definitionsDirectoryPath,
+  definitionsPath,
   ensureAdminRoot,
   filePathFromParts,
   imageAnnotationsPath,
@@ -70,6 +72,8 @@ import {
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
+import { supportsDefinitions } from "@/lib/storage/definitions";
+import { DEFINITIONS_FILE_TYPES } from "@/lib/definitions";
 import { notifyReferenceFilesAdded } from "@/lib/references/jobs";
 import { assertNotSharedItem } from "@/lib/collab/shared-notebook";
 
@@ -310,6 +314,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
+  await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
@@ -381,6 +386,7 @@ export async function archiveFolder(relativePath: string) {
   await moveFileIfExists(pdfAnnotationsDirectoryPath(current.notebook, current.pathParts), pdfAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
+  await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -414,6 +420,7 @@ export async function deleteFolder(relativePath: string) {
   for (const directory of audioSidecarDirectories(current.notebook, current.pathParts)) {
     await rm(directory, { force: true, recursive: true });
   }
+  await rm(definitionsDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
@@ -609,6 +616,8 @@ export async function deleteFile(relativePath: string) {
     for (const sidecar of audioSidecarPaths(notebook, pathParts)) await rm(sidecar, { force: true });
   }
 
+  if (supportsDefinitions(relativePath)) await rm(definitionsPath(notebook, pathParts), { force: true });
+
   if (markdown !== null) {
     await deletePythonSidecar(relativeFilePath(notebook, pathParts));
     await cleanupMarkdownImageAssets(notebook, [{ documentPath: relativePath, content: markdown }]);
@@ -772,6 +781,11 @@ async function moveRelatedMetadata(
     if (nextFileType === "markdown") await movePythonSidecar(current, relativeFilePath(nextNotebook, nextPathParts));
     else await deletePythonSidecar(current);
   }
+
+  if (supportsDefinitionsType(currentFileType)) {
+    if (nextFileType === currentFileType) await moveFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
+    else await rm(definitionsPath(currentNotebook, currentPathParts), { force: true });
+  }
 }
 
 async function copyRelatedMetadata(
@@ -805,4 +819,12 @@ async function copyRelatedMetadata(
   if (currentFileType === "markdown") {
     await copyPythonSidecar(relativeFilePath(currentNotebook, currentPathParts), relativeFilePath(nextNotebook, nextPathParts));
   }
+
+  if (supportsDefinitionsType(currentFileType)) {
+    await copyFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
+  }
+}
+
+function supportsDefinitionsType(fileType: string) {
+  return DEFINITIONS_FILE_TYPES.some((type) => type === fileType);
 }

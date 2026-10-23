@@ -122,6 +122,8 @@ export type AgentEvent =
   | { type: "file_changed"; path: string; created: boolean; shared?: boolean; suggested?: boolean }
   | { type: "comments_added"; path: string; count: number }
   | { type: "suggestions_added"; path: string; count: number }
+  /** Definitions and notation cards saved to a document's side-car; `count` is its total. */
+  | { type: "definitions_saved"; path: string; count: number }
   /** Child runs: only their tool steps and usage reach the parent, never their text. */
   | { type: "subagent_started"; id: string; label: string }
   | { type: "subagent_step"; id: string; step: AgentSubagentStep }
