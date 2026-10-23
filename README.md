@@ -489,8 +489,9 @@ See [docs/features/ai-agent.md](docs/features/ai-agent.md) for permissions, tool
 Math documents introduce many symbols and terms before the interesting part. **Outlines → Definitions** collects a Markdown, LaTeX or PDF document's definitions, notation and conventions as searchable cards with typeset math.
 
 - **Generate definitions** has the AI Agent read the whole document and save the cards as it goes; they appear while it works. The document never changes, so it works in Read Only. The command palette (⌘/Ctrl+Shift+P) offers **Generate definitions** and **Show definitions** too.
-- Each card has the term or symbol, its kind, its meaning in this document, aliases, and where it is introduced. Click the location to jump there in the editor or the PDF.
-- Search matches terms, meanings, aliases and LaTeX command names (`mathcal` finds $\mathcal{F}_t$); **Show** narrows the list to one kind.
+- Each card has the term or symbol, its kind, its meaning in this document, aliases, and where it is introduced.
+- The cards look like the comment cards; click one to jump to where it is introduced.
+- Search lists matching terms first, then aliases, then meanings, and matches math the way it reads: `Qfg` finds $\mathcal{Q}_{f,g}$, `PiK` or `πK` finds $\Pi_K$, and `mathcal` finds every $\mathcal{…}$. **Show** narrows the list to one kind.
 - The agent's cards are checked and sent back when wrong: math must typeset in KaTeX, excerpts must be in the document, and passages that look like definitions need a card.
 - The cards are a side-car file that follows the document. The tab tells you when the document has changed, and you can regenerate or delete the cards at any time.
 

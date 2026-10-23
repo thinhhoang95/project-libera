@@ -25,13 +25,15 @@ Each card has:
 - its **kind**: Definition, Notation or Convention (standing assumptions and usage rules, such as "throughout, $G$ is a finite group" or "$\log$ is natural");
 - its **meaning** in this document, in Markdown with math, in the document's own symbols;
 - **aliases** to search by, such as the spoken name of a symbol ("script F", "filtration");
-- where it is **introduced**: the document's label ("Definition 2.3", "§1.2") or a line or page. Click it to jump there: a Markdown editor selects the passage, a LaTeX editor goes to the line, and a PDF opens at the page and finds the excerpt.
+- where it is **introduced**: the document's label ("Definition 2.3", "§1.2") or a line or page, and the excerpt that introduces it.
+
+The cards look like the cards in the Comments panel: the term and its kind on top with the location at the right, the excerpt in italics, then the meaning and the aliases. Click a card to select it and jump to where it is introduced: a Markdown editor selects the passage, a LaTeX editor goes to the line, and a PDF opens at the page and finds the excerpt.
 
 An overloaded symbol gets one card per meaning, each with its own location. A symbol the document uses without defining gets a card only when its meaning is clear from the document, marked "used without definition".
 
 Cards use the math markers set in Preferences. In a Markdown note they may use the note's [Markdown macros](markdown-macros.md), which are expanded when the cards are shown.
 
-**Search** matches terms, meanings, aliases, locations and LaTeX command names, so `mathcal` finds $\mathcal{F}_t$ and `Pi` finds $\Pi_K$. Press Enter to jump to the first match, or Escape to clear the search. **Show** narrows the list to one kind and counts each kind. Long lists show 60 cards at a time.
+**Search** puts the best matches first: cards whose term is the query, then terms that start with it, then terms that contain it, then aliases, then meanings, locations and kinds; ties keep the document's order. Math is matched the way it reads, ignoring spacing, punctuation, braces and the `_` and `^` marks: `Qfg`, `Q f g` and `Q_{f,g}` all find $\mathcal{Q}_{f,g}$, Greek letters can be typed as letters or names (`πK` and `PiK` find $\Pi_K$), and LaTeX command names match too, so `mathcal` finds every $\mathcal{…}$ symbol. In aliases and meanings, a query squeezed this way must be at least three characters long or match whole words, so short queries do not match by accident. Press Enter to jump to the first match, or Escape to clear the search. **Show** narrows the list to one kind and counts each kind. Long lists show 60 cards at a time.
 
 ## Checks
 
@@ -74,4 +76,4 @@ The refresh button generates the cards again at any time: the first save of the 
 
 `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/definitions.test.ts scripts/editor/definitions-palette.test.ts`
 
-The tests cover the math checks, excerpt and line checks, PDF page correction, the search for uncovered passages, search, and a SaveDefinitions run in Read Only: rejected cards and their feedback, the finish pass, merging later saves, staleness, and the side-car following a renamed and a deleted document. The palette test covers when Generate is offered, the request it sends, the switch to the Definitions tab, and Generate waiting while a run goes on.
+The tests cover search ranking and LaTeX matching, the math checks, excerpt and line checks, PDF page correction, the search for uncovered passages, search, and a SaveDefinitions run in Read Only: rejected cards and their feedback, the finish pass, merging later saves, staleness, and the side-car following a renamed and a deleted document. The palette test covers when Generate is offered, the request it sends, the switch to the Definitions tab, and Generate waiting while a run goes on.

@@ -147,24 +147,84 @@ export function definitionKey(entry: Pick<DefinitionEntry, "kind" | "term" | "lo
   return `${entry.kind}:${squash(entry.term)}:${squash(entry.location)}`;
 }
 
-/** Searchable text of a card: its term, aliases, meaning and location, with LaTeX commands spelled out. */
-export function definitionSearchText(entry: DefinitionEntry) {
-  return [entry.term, ...(entry.aliases ?? []), entry.meaning, entry.location ?? "", DEFINITION_KIND_LABELS[entry.kind]]
-    .join(" ")
-    .replace(/\\([a-zA-Z]+)/g, " $1 ")
-    .replace(/[{}$^_\\]/g, " ")
-    .toLowerCase();
+// Search. Cards are found by their term first, then their aliases, then
+// their meaning and location. LaTeX is matched loosely, because a reader types
+// what they see: "Qfg" finds $\mathcal{Q}_{f,g}$, "PiK" and "πK" find $\Pi_K$,
+// and "mathcal" finds every $\mathcal{…}$.
+
+const GREEK_LETTERS: Record<string, string> = {
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε", zeta: "ζ", eta: "η", theta: "θ", vartheta: "θ",
+  iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π", varpi: "π", rho: "ρ", varrho: "ρ", sigma: "σ",
+  varsigma: "σ", tau: "τ", upsilon: "υ", phi: "φ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω", Gamma: "Γ", Delta: "Δ",
+  Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ", Upsilon: "Υ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+};
+
+const squeeze = (text: string) => text.normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+
+/**
+ * Compact forms of a term, with spacing, punctuation, braces, sub- and
+ * superscript marks removed: one with LaTeX commands dropped (Greek letters
+ * kept as letters), one with their names kept. `\mathcal{Q}_{f,g}` gives
+ * "qfg" and "mathcalqfg"; `\Pi_K` gives "πk" and "pik".
+ */
+export function compactSearchForms(text: string) {
+  const symbols = squeeze(text.replace(/\\([a-zA-Z]+)/g, (_, name: string) => GREEK_LETTERS[name] ?? " "));
+  const names = squeeze(text.replace(/\\([a-zA-Z]+)/g, " $1 "));
+  return [...new Set([symbols, names].filter(Boolean))];
 }
 
-/** Cards matching every word of the query. */
+/** Words of a text, with LaTeX command names as words of their own: `\mathcal{F}_t` gives "mathcal", "f", "t". */
+function searchWords(text: string) {
+  return text.normalize("NFKD").replace(/\\([a-zA-Z]+)/g, " $1 ").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+type SearchQuery = { forms: string[]; words: string[] };
+
+/** How well a text matches: 0 the same, 1 starts with the query, 2 contains it, null not at all. */
+function matchStrength(text: string, query: SearchQuery, { loose }: { loose: boolean }): number | null {
+  const forms = compactSearchForms(text);
+  if (query.forms.some((form) => forms.includes(form))) return 0;
+  if (query.forms.some((form) => forms.some((candidate) => candidate.startsWith(form)))) return 1;
+  // Inside long text a short squeezed query matches by accident ("ab" in "a, b"); there it must be words.
+  if (query.forms.some((form) => (loose || form.length >= 3) && forms.some((candidate) => candidate.includes(form)))) return 2;
+  const words = searchWords(text);
+  if (query.words.length && query.words.every((word) => words.some((candidate) => candidate.startsWith(word)))) return 2;
+  return null;
+}
+
+/**
+ * How well a card matches a query, lower is better, or null: its term
+ * (0 exact, 1 prefix, 2 anywhere), its aliases (3–5), then its meaning,
+ * location or kind (6).
+ */
+export function definitionMatchRank(entry: DefinitionEntry, query: string): number | null {
+  const parsed: SearchQuery = { forms: compactSearchForms(query), words: searchWords(query) };
+  if (!parsed.forms.length) return 0;
+  const term = matchStrength(entry.term, parsed, { loose: true });
+  if (term !== null) return term;
+  const aliases: number[] = [];
+  for (const alias of entry.aliases ?? []) {
+    // Aliases are phrases: like meanings, a short query must match a word.
+    const rank = matchStrength(alias, parsed, { loose: false });
+    if (rank !== null) aliases.push(rank);
+  }
+  if (aliases.length) return 3 + Math.min(...aliases);
+  const rest = [entry.meaning, entry.location ?? "", DEFINITION_KIND_LABELS[entry.kind]].join(" \n ");
+  if (matchStrength(rest, parsed, { loose: false }) !== null) return 6;
+  // Words spread over the fields: "lipschitz definition 2" across term, kind and location.
+  const words = searchWords([entry.term, ...(entry.aliases ?? []), rest].join(" "));
+  return parsed.words.length && parsed.words.every((word) => words.some((candidate) => candidate.startsWith(word))) ? 6 : null;
+}
+
+/** Cards matching the query, best first: term matches, then aliases, then meanings; ties keep document order. */
 export function filterDefinitions(entries: DefinitionEntry[], query: string, kind: DefinitionKind | "all" = "all") {
-  const words = query.toLowerCase().replace(/\\([a-zA-Z]+)/g, " $1 ").split(/[\s{}$^_\\]+/).filter(Boolean);
-  return entries.filter((entry) => {
-    if (kind !== "all" && entry.kind !== kind) return false;
-    if (!words.length) return true;
-    const haystack = definitionSearchText(entry);
-    return words.every((word) => haystack.includes(word));
+  const ranked: { entry: DefinitionEntry; rank: number; index: number }[] = [];
+  entries.forEach((entry, index) => {
+    if (kind !== "all" && entry.kind !== kind) return;
+    const rank = query.trim() ? definitionMatchRank(entry, query) : 0;
+    if (rank !== null) ranked.push({ entry, rank, index });
   });
+  return ranked.sort((left, right) => left.rank - right.rank || left.index - right.index).map(({ entry }) => entry);
 }
 
 /**

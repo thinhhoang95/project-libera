@@ -158,6 +158,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const { running, finished, error: runError } = useRunningRequest(path);
 
   // Bumped when a run saves cards for this document, to read them again.
@@ -216,6 +217,11 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
     }
   }
 
+  function selectEntry(entry: DefinitionEntry) {
+    setSelectedId(entry.id);
+    void revealEntry(entry);
+  }
+
   async function revealEntry(entry: DefinitionEntry) {
     const nonce = Date.now();
     if (activeTab.file.fileType === "pdf") {
@@ -256,7 +262,7 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
                 if (event.key === "Escape") setQuery("");
                 else if (event.key === "Enter" && filtered[0]) {
                   event.preventDefault();
-                  void revealEntry(filtered[0]);
+                  selectEntry(filtered[0]);
                 }
               }}
             />
@@ -378,8 +384,9 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
               mathMarkers={mathMarkers}
               macroScope={macroScope}
               documentPath={path}
+              selected={selectedId === entry.id}
               canReveal={activeTab.file.fileType === "pdf" ? Boolean(entry.page) : Boolean(entry.quote || entry.line)}
-              onReveal={() => void revealEntry(entry)}
+              onSelect={selectEntry}
             />
           ))}
           {filtered.length > limit ? (
@@ -400,59 +407,53 @@ function DocumentDefinitions({ activeTab, mathMarkers, onOpenFile }: Definitions
   );
 }
 
-const DefinitionCard = memo(function DefinitionCard({ entry, mathMarkers, macroScope, documentPath, canReveal, onReveal }: {
+/** A card styled like the Comments panel's: click it to select it and show where it is introduced. */
+const DefinitionCard = memo(function DefinitionCard({ entry, mathMarkers, macroScope, documentPath, selected, canReveal, onSelect }: {
   entry: DefinitionEntry;
   mathMarkers?: MathMarkerSettings;
   macroScope?: MarkdownMacroScope;
   documentPath: string;
+  selected: boolean;
   canReveal: boolean;
-  onReveal: () => void;
+  onSelect: (entry: DefinitionEntry) => void;
 }) {
   const term = useMemo(() => normalizeChatResponseMarkdown(entry.term, false, mathMarkers), [entry.term, mathMarkers]);
   const meaning = useMemo(() => normalizeChatResponseMarkdown(entry.meaning, false, mathMarkers), [entry.meaning, mathMarkers]);
   const where = entry.location ?? (entry.page ? `p. ${entry.page}` : entry.line ? `line ${entry.line}` : "");
+  const markdown = { documentPath, mathMarkers, macroScope, renderImages: false, baseFontSize: 13, baseLineHeight: 1.5 } as const;
 
   return (
-    <article className="rounded-lg border border-border bg-card px-3 py-2.5 text-sm">
-      <header className="mb-1 flex items-start gap-2">
-        <div className="min-w-0 flex-1 font-semibold text-foreground">
-          <MarkdownRenderer
-            content={term}
-            documentPath={documentPath}
-            mathMarkers={mathMarkers}
-            macroScope={macroScope}
-            renderImages={false}
-            baseFontSize={14}
-            baseLineHeight={1.4}
-            className="min-w-0 break-words [&_p]:my-0"
-          />
-        </div>
-        <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-          {DEFINITION_KIND_LABELS[entry.kind]}
+    <article
+      data-selected={selected}
+      className="review-comment-card libera-panel-card p-3 text-[13px] transition"
+      aria-label={`${DEFINITION_KIND_LABELS[entry.kind]}: ${entry.term}`}
+    >
+      <button
+        type="button"
+        className="w-full text-left"
+        aria-pressed={selected}
+        title={canReveal ? "Show where it is introduced" : undefined}
+        onClick={() => onSelect(entry)}
+      >
+        <span className="flex flex-wrap items-center justify-between gap-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <MarkdownRenderer {...markdown} content={term} className="review-comment-body min-w-0 break-words font-semibold text-foreground" />
+            <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground">
+              {DEFINITION_KIND_LABELS[entry.kind]}
+            </span>
+          </span>
+          {where ? <span className="text-[11px] text-muted-foreground">{where}</span> : null}
         </span>
-      </header>
-      <MarkdownRenderer
-        content={meaning}
-        documentPath={documentPath}
-        mathMarkers={mathMarkers}
-        macroScope={macroScope}
-        renderImages={false}
-        baseFontSize={13}
-        baseLineHeight={1.5}
-        className="min-w-0 break-words text-muted-foreground [&_p]:my-1 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0"
-      />
-      {where || entry.aliases?.length ? (
-        <footer className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-          {where ? (
-            canReveal ? (
-              <button type="button" className="rounded font-medium text-foreground underline-offset-2 hover:underline" title="Show where it is introduced" onClick={onReveal}>
-                {where}
-              </button>
-            ) : <span>{where}</span>
-          ) : null}
-          {entry.aliases?.length ? <span className="min-w-0 truncate" title={entry.aliases.join(", ")}>{entry.aliases.join(" · ")}</span> : null}
-        </footer>
-      ) : null}
+        {entry.quote ? (
+          <span className="my-2 line-clamp-3 text-xs italic text-muted-foreground">{entry.quote}</span>
+        ) : <span className="block h-1.5" />}
+        <MarkdownRenderer {...markdown} content={meaning} className="review-comment-body min-w-0 break-words" />
+        {entry.aliases?.length ? (
+          <span className="mt-2 block truncate text-[11px] text-muted-foreground" title={entry.aliases.join(", ")}>
+            {entry.aliases.join(" · ")}
+          </span>
+        ) : null}
+      </button>
     </article>
   );
 });

@@ -81,6 +81,29 @@ test("search matches terms, aliases and spelled-out LaTeX", () => {
   assert.deepEqual(filterDefinitions(entries, "script f").map((entry) => entry.id), ["a"]);
   assert.deepEqual(filterDefinitions(entries, "", "definition").map((entry) => entry.id), ["b"]);
   assert.deepEqual(findQuoteRange("a  b\nc", "a b c"), { start: 0, end: 6 });
+});
+
+test("search ranks term matches first and matches LaTeX the way it reads", () => {
+  const entries = [
+    card({ id: "uses", kind: "notation", term: "$h$", meaning: "A function bounded by $\\mathcal{Q}_{f,g}$.", quote: undefined }),
+    card({ id: "alias", kind: "notation", term: "$\\star$", meaning: "Convolution.", aliases: ["Qfg product"] }),
+    card({ id: "Q", kind: "notation", term: "$\\mathcal{Q}_{f,g}$", meaning: "The quadratic form of $f$ and $g$." }),
+    card({ id: "Qf", kind: "notation", term: "$\\mathcal{Q}_{f,g,h}$", meaning: "Its three-argument version." }),
+    card({ id: "Pi", kind: "notation", term: "$\\Pi_K$", meaning: "The Euclidean projection onto $K$." }),
+  ];
+  const ids = (query: string) => filterDefinitions(entries, query).map((entry) => entry.id);
+  // Exact term, then a term it starts, then an alias, then a meaning.
+  assert.deepEqual(ids("Qfg"), ["Q", "Qf", "alias", "uses"]);
+  assert.deepEqual(ids("\\mathcal{Q}_{f,g}"), ["Q", "Qf", "alias", "uses"]);
+  assert.deepEqual(ids("Q_{f,g}"), ["Q", "Qf", "alias", "uses"]);
+  assert.deepEqual(ids("Q f g"), ["Q", "Qf", "alias", "uses"]);
+  assert.deepEqual(ids("PiK"), ["Pi"]);
+  assert.deepEqual(ids("πK"), ["Pi"]);
+  assert.deepEqual(ids("projection"), ["Pi"]);
+  assert.deepEqual(ids("mathcal"), ["Q", "Qf", "uses"]);
+  // Short squeezed queries do not match by accident inside meanings.
+  assert.deepEqual(ids("fg"), ["Q", "Qf"]);
+  assert.deepEqual(ids("nothing here"), []);
   assert.equal(parseDefinitionsFile({ version: 2, documentPath: "x", entries: [] }), null);
 });
 
