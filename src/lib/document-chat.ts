@@ -1,5 +1,6 @@
 import { normalizeChatGptCopiedMarkdown } from "./chatgpt-markdown-normalizer";
 import type { MathMarkerSettings } from "./math-markers";
+import { expandMarkdownMacros, type MarkdownMacroScope } from "./markdown-macros";
 import { validateUsageRequests, type ChatUsageRequest } from "./chat-token-usage";
 import { isAgentPermission, validateAgentRunRecord, type AgentPermission, type AgentRunRecord } from "./agent/types";
 
@@ -149,10 +150,15 @@ export function messagesWithoutExcludedDocuments(messages: ChatMessage[], exclud
     context.kind === "document" ? !excludedPaths.includes(context.path) : context.kind === "comments" ? !excludedCommentPaths.includes(context.path) : true) }));
 }
 
-export function exportChatMarkdown(chat: DocumentChat, mathMarkers: MathMarkerSettings = {}) {
+/**
+ * The chat as a Markdown note. Macros the messages use from the conversation's
+ * documents are expanded, so the note reads the same without their definitions.
+ */
+export function exportChatMarkdown(chat: DocumentChat, mathMarkers: MathMarkerSettings = {}, macroScope?: MarkdownMacroScope) {
   const title = chat.title.replace(/[\r\n]+/g, " ").replace(/([\\`*_[\]<>#])/g, "\\$1");
   const messages = chat.messages.map((message) => {
-    const content = message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, false, mathMarkers) : message.text;
+    const text = message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, false, mathMarkers) : message.text;
+    const content = macroScope ? expandMarkdownMacros(text, { mathMarkers, scope: macroScope })?.markdown ?? text : text;
     const photos = (message.photos ?? []).map((photo) => `![${photo.name.replace(/[\[\]\r\n]/g, " ")}](${photo.dataUrl})`).join("\n\n");
     return `## ${message.role === "user" ? "User" : "Assistant"}\n\n${[content, photos].filter(Boolean).join("\n\n")}`;
   });

@@ -19,6 +19,7 @@ import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/l
 import type { OpenTab } from "./types";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
+import { combinedMacroScope, macroScopeKey, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { PythonSetupStatus } from "./python-setup-status";
 import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
@@ -172,12 +173,12 @@ function requestMessages(messages: ChatMessage[], agent: boolean) {
   });
 }
 
-const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, fontSize, onOpenFileLink }: {
-  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean>;
+const ChatMessageMarkdown = memo(function ChatMessageMarkdown({ message, mathMarkers, macroScope, fontSize, onOpenFileLink }: {
+  message: DocumentChat["messages"][number]; mathMarkers: MathMarkerSettings; macroScope?: MarkdownMacroScope; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean>;
 }) {
   const content = useMemo(() => message.role === "assistant" ? normalizeChatResponseMarkdown(message.text, message.status === "streaming", mathMarkers) : message.text,
     [message.role, message.text, message.status, mathMarkers]);
-  return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
+  return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} macroScope={macroScope} className="libera-chat-markdown min-w-0 break-normal"
     baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} onOpenFileLink={onOpenFileLink} />;
 });
 
@@ -277,6 +278,16 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const document = useMemo<ChatContext | null>(() => !viewedPhoto && !activeTab?.recording && (isTextFileType(activeTab?.file.fileType) || activeTab?.file.fileType === "pdf" || activeTab?.file.fileType === "audio") ? { kind: "document", path: activeTab.untitled ? activeTab.id : activeTab.file.path, name: activeTab.file.name, text: activeTab.file.fileType === "pdf" || activeTab.file.fileType === "audio" ? "" : activeTab.draft } : null, [activeTab, viewedPhoto]);
   const viewingRecording = activeTab?.file.fileType === "audio" && !activeTab.recording;
   const viewedPath = document?.path;
+  // Replies use the Markdown macros of the documents in the conversation and of
+  // the note in view (markdown-macros.ts); the scope only changes with them.
+  const chatMessages = chat?.messages;
+  const latestMacroScope = useMemo(() => combinedMacroScope([
+    ...(chatMessages ?? []).flatMap((message) => (message.contexts ?? []).filter((context) => context.kind === "document").map((context) => context.text)),
+    document?.text ?? "",
+  ]), [chatMessages, document?.text]);
+  const macroKey = macroScopeKey(latestMacroScope);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the definitions, not on each keystroke's scope object.
+  const macroScope = useMemo(() => latestMacroScope ?? undefined, [macroKey]);
 
   const includedDocument = document && !chat?.excludedDocumentPaths?.includes(document.path) ? document : null;
   // The review comments on the document in view, live from the Comments panel's state.
@@ -1001,7 +1012,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (action === "search") { setSearchOpen(true); searchInputRef.current?.focus(); return; }
     if (action === "auto-read") { changeAutoRead(!autoRead); return; }
     if (!selectedChat?.messages.length || (action !== "save-md" && action !== "save-notebook" && action !== "create-draft")) return;
-    const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat, mathMarkers) };
+    const snapshot = { fileName: chatExportFileName(selectedChat.title), content: exportChatMarkdown(selectedChat, mathMarkers, macroScope) };
     if (action === "create-draft") { onCreateDraft(snapshot); return; }
     if (action === "save-notebook") { setExportSnapshot(snapshot); return; }
     setExporting(true);
@@ -1199,9 +1210,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </div>)}{editing?.id === message.id ? <div className="space-y-2">
             <textarea autoFocus aria-label="Edit message" className="min-h-20 w-full resize-y rounded-lg border border-input bg-card p-2 text-sm outline-none focus:border-ring" value={editing.text} onChange={(event) => setEditing({ id: message.id, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setEditing(null); else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submitEdit(); } }} />
             <div className="flex items-center justify-end gap-2"><span className="mr-auto text-xs text-muted-foreground">Later messages will be replaced.</span><button type="button" className="rounded-lg border border-border px-3 py-1 text-xs hover:bg-muted" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="rounded-lg bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!editing.text.trim() && !message.photos?.length} onClick={submitEdit}>Save &amp; regenerate</button></div>
-          </div> : message.agent ? <AgentRunView run={message.agent} streaming={message.status === "streaming"} mathMarkers={mathMarkers} fontSize={fontSize}
+          </div> : message.agent ? <AgentRunView run={message.agent} streaming={message.status === "streaming"} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize}
             undoing={undoingRunId === message.agent.runId} onUndo={(paths) => void undoAgentChanges(message.id, message.agent!, paths)} onOpenFile={(path) => agentWorkspace?.openFile(path)} onOpenFileLink={openChatFileLink} />
-            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={openChatFileLink} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
+            : <ChatMessageMarkdown message={message} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize} onOpenFileLink={openChatFileLink} />}{message.status === "interrupted" && <p className="text-xs text-muted-foreground">Response interrupted</p>}
           {message.role === "assistant" && message.status !== "streaming" && <div className="flex items-center gap-1 text-muted-foreground">
             <button type="button" className={buttonClass} aria-label="Copy response as Markdown" title="Copy response as Markdown" onClick={() => void copyResponse(message)}>{copiedId === message.id ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}</button>
             {(() => {

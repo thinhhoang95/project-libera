@@ -93,7 +93,23 @@ Saving writes the macros as typed: the Visual editor no longer escapes a backsla
 - The Visual editor (see above).
 - Slides: a deck's macro block applies to every slide, and counters continue from slide to slide.
 - PDF export, and LaTeX PDF export (the note is expanded before it is converted, so the LaTeX holds no macros).
+- AI Chat and the AI Agent (see below).
 - Anything else that renders Markdown with Libera's renderer, such as global search previews.
+
+## In AI Chat and the AI Agent
+
+Assistants tend to write a note's macros back: asked about the note above, a reply may say "every \fset is closed". The Chat panel, in both Chat and Agent mode, renders messages with the macros of:
+
+- every document attached to the conversation (as it was when it was attached), and
+- the note open in the editor, as it is now.
+
+If two of them define the same macro, the open note wins, then the most recently attached document. Your own messages expand too, so you can ask "what is \fset?". Counters number within each message.
+
+Both assistants are told how macros work. They may use a note's macros in replies. When the Agent edits a note, it keeps the macros and macro blocks as written, and uses the note's macros for new text instead of expanding them.
+
+**Copy response as Markdown** copies the reply as written, with its macros, so it reads correctly when pasted into the note. Exporting a chat (to a new note or into a notebook) expands the macros, so the exported note reads the same without the definitions.
+
+The Agent can read files that are neither attached nor open. Macros from such a file are not expanded in its replies; open the note, or attach it with @, to use its macros.
 
 ## Implementation
 
@@ -102,9 +118,10 @@ Saving writes the macros as typed: the Visual editor no longer escapes a backsla
 - `src/components/libera/tiptap-live-code-block-view.tsx`: the folding macro block. `src/lib/tiptap-markdown.ts`: the ```` ``` ```` input rule for languages with hyphens, and writing `\name` without an escape.
 - `src/components/libera/expand-macros-button.tsx`, used by `markdown-toolbar.tsx` and `tiptap-markdown-editor.tsx`; `workspace-panel.tsx` opens the expanded copy.
 - `src/lib/latex-export.ts` expands macros before conversion.
+- AI: `combinedMacroScope` and `macroScopeKey` (`markdown-macros.ts`) build the Chat panel's scope in `document-chat-panel.tsx`, passed to chat messages and to `agent-activity.tsx`. `exportChatMarkdown` (`document-chat.ts`) expands exports. `MARKDOWN_MACROS_INSTRUCTION` is a constant in the chat route's and the agent's (`agent/prompt.ts`) system prompts, so they stay cacheable.
 
 ## Checks
 
 `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/markdown-macros.test.ts`
 
-The tests cover the definition forms and problems, math and text expansion, counters, code and escapes left alone, display macros, expansions in lists and quotes, nested and recursive macros, rendering with source positions kept (renderer and preview worker), slide scopes, and the Visual editor: expansions, revealing the source at the caret, re-rendering math when a definition changes, saving macros unchanged, and the ```` ```libera-macro ```` input rule.
+The tests cover the definition forms and problems, math and text expansion, counters, code and escapes left alone, display macros, expansions in lists and quotes, nested and recursive macros, rendering with source positions kept (renderer and preview worker), slide scopes, and the Visual editor: expansions, revealing the source at the caret, re-rendering math when a definition changes, saving macros unchanged, and the ```` ```libera-macro ```` input rule. They also cover chat scopes (which document wins, a stable key), chat replies rendered with and without a scope, chat export, and the macro instruction in the system prompts.

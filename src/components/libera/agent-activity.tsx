@@ -5,6 +5,7 @@ import { BookOpen, Bot, Check, ChevronRight, Circle, CircleDot, FilePenLine, Fil
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { normalizeChatResponseMarkdown } from "@/lib/document-chat";
 import type { MathMarkerSettings } from "@/lib/math-markers";
+import type { MarkdownMacroScope } from "@/lib/markdown-macros";
 import type { AgentRunRecord, AgentStep, SubagentOutcome } from "@/lib/agent/types";
 
 const TOOL_ICONS: Record<string, LucideIcon> = {
@@ -26,9 +27,9 @@ const OUTCOME_NOTES: Record<string, string> = {
 type ToolStep = Extract<AgentStep, { kind: "tool" }>;
 type SubagentStep = Extract<AgentStep, { kind: "subagent" }>;
 
-const AgentText = memo(function AgentText({ text, streaming, mathMarkers, fontSize, onOpenFileLink }: { text: string; streaming: boolean; mathMarkers: MathMarkerSettings; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean> }) {
+const AgentText = memo(function AgentText({ text, streaming, mathMarkers, macroScope, fontSize, onOpenFileLink }: { text: string; streaming: boolean; mathMarkers: MathMarkerSettings; macroScope?: MarkdownMacroScope; fontSize: number; onOpenFileLink: (href: string) => Promise<boolean> }) {
   const content = useMemo(() => normalizeChatResponseMarkdown(text, streaming, mathMarkers), [text, streaming, mathMarkers]);
-  return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} className="libera-chat-markdown min-w-0 break-normal"
+  return <MarkdownRenderer copyAsMarkdown mathMarkers={mathMarkers} macroScope={macroScope} className="libera-chat-markdown min-w-0 break-normal"
     baseFontSize={fontSize} baseLineHeight={1.6} renderImages={false} content={content} onOpenFileLink={onOpenFileLink} />;
 });
 
@@ -84,10 +85,12 @@ function SubagentLine({ step }: { step: SubagentStep }) {
   </li>;
 }
 
-export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, onUndo, onOpenFile, onOpenFileLink }: {
+export function AgentRunView({ run, streaming, mathMarkers, macroScope, fontSize, undoing, onUndo, onOpenFile, onOpenFileLink }: {
   run: AgentRunRecord;
   streaming: boolean;
   mathMarkers: MathMarkerSettings;
+  /** Macros of the documents in the conversation (markdown-macros.ts). */
+  macroScope?: MarkdownMacroScope;
   fontSize: number;
   undoing: boolean;
   onUndo: (paths?: string[]) => void;
@@ -114,7 +117,7 @@ export function AgentRunView({ run, streaming, mathMarkers, fontSize, undoing, o
 
   return <div className="libera-agent-run space-y-3">
     {blocks.map((block, index) => block.kind === "text"
-      ? <AgentText key={block.index} text={block.text} streaming={streaming && index === lastTextIndex} mathMarkers={mathMarkers} fontSize={fontSize} onOpenFileLink={onOpenFileLink} />
+      ? <AgentText key={block.index} text={block.text} streaming={streaming && index === lastTextIndex} mathMarkers={mathMarkers} macroScope={macroScope} fontSize={fontSize} onOpenFileLink={onOpenFileLink} />
       : <ol key={block.index} className="libera-agent-tools" aria-label="Agent activity">{block.steps.map((step) => step.kind === "subagent" ? <SubagentLine key={step.id} step={step} /> : <ToolLine key={step.id} step={step} />)}</ol>)}
     {working && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Working…</p>}
     {!!run.tasks.length && <section className="libera-agent-tasks" aria-label="Agent tasks">

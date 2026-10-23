@@ -308,7 +308,7 @@ Let \fset be closed under $\norm{\cdot}$.
 \theorem{Pythagoras}{Given a right triangle with legs $a, b$ and hypotenuse $c$, $a^2 + b^2 = c^2$.}
 ````
 
-The file keeps the macros as written; the preview, slides, PDF and LaTeX exports show them expanded. In the Visual editor a macro shows its expansion until the caret reaches it, and the macro block folds to **Macros: 3 definitions**. **Expand macros** (the `{}` button in both toolbars) opens a plain-Markdown copy, with every macro replaced and the definitions removed, in a new unsaved tab. See [docs/features/markdown-macros.md](docs/features/markdown-macros.md) for the full guide.
+The file keeps the macros as written; the preview, slides, PDF and LaTeX exports show them expanded. In the Visual editor a macro shows its expansion until the caret reaches it, and the macro block folds to **Macros: 3 definitions**. **Expand macros** (the `{}` button in both toolbars) opens a plain-Markdown copy, with every macro replaced and the definitions removed, in a new unsaved tab. AI Chat and the AI Agent render their replies with the macros of the open note and the documents in the conversation, and the Agent keeps a note's macros as written when it edits it. See [docs/features/markdown-macros.md](docs/features/markdown-macros.md) for the full guide.
 
 ## Markdown Slides
 

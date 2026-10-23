@@ -18,6 +18,12 @@ import { escapedAt, mathMarkerPairs, matchMath, preferredMathMarkerPair, type Ma
  */
 export const MACRO_BLOCK_LANGUAGE = "libera-macro";
 
+/**
+ * What the AI chat and agent are told about macros (a constant, so system
+ * prompts stay byte-identical for provider prompt caches).
+ */
+export const MARKDOWN_MACROS_INSTRUCTION = "A Markdown note may define macros in a ```libera-macro block, LaTeX style: `\\name = $LaTeX$` is a math macro, `\\name = text` and `\\newcommand{\\name}[2]{Markdown with #1 and #2}` are text macros, and `\\counter-name` (no definition needed) numbers itself in document order. Libera expands a note's macros when it is shown, and expands the macros of the documents in this conversation in your replies, so you may use them as the note does: `\\name` or `$\\name$` for a math macro, `\\name{…}{…}` for one with arguments. When you edit a note, keep its macros and macro blocks as written and use its macros for new text where they fit; do not expand them unless the user asks.";
+
 export type MarkdownMacro = {
   name: string;
   /** Number of `{…}` arguments, `#1` … `#9` in the body. */
@@ -400,6 +406,23 @@ export function expandMacroText(text: string, definitions: MarkdownMacroDefiniti
 /** Expands macros and counters in a formula (a math node's LaTeX). */
 export function expandMacroLatex(latex: string, definitions: MarkdownMacroDefinitions, counters: Map<string, number>) {
   return expandMath(latex, { ...expandContext(definitions), counters }, 0);
+}
+
+/**
+ * The macros of several documents together (later documents win), for text
+ * written about them, such as AI chat replies. Null when none defines any.
+ */
+export function combinedMacroScope(documents: string[]): MarkdownMacroScope | null {
+  let definitions: MarkdownMacroDefinitions | undefined;
+  for (const document of documents) {
+    if (document.includes(MACRO_BLOCK_LANGUAGE)) definitions = collectMarkdownMacros(document, definitions);
+  }
+  return definitions?.macros.size ? { definitions } : null;
+}
+
+/** Equal for scopes with the same definitions, so renderers can keep a scope that did not change. */
+export function macroScopeKey(scope: MarkdownMacroScope | null | undefined) {
+  return scope ? JSON.stringify([...scope.definitions.macros.values()].map(({ name, arity, body, math }) => [name, arity, body, math])) : "";
 }
 
 /** Successive scopes for the parts of one document (slides), so counters continue across them. */

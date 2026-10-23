@@ -11,7 +11,9 @@ import { prepareMarkdownPreview } from "../../src/lib/markdown-preview";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { createMathExtensions } from "../../src/lib/tiptap-math";
 import { TiptapMarkdownMacros, tiptapMacrosKey } from "../../src/lib/tiptap-macros";
-import { collectMarkdownMacros, expandMarkdownMacros, markdownMacroScopes, parseMacroDefinitions } from "../../src/lib/markdown-macros";
+import { MARKDOWN_MACROS_INSTRUCTION, collectMarkdownMacros, combinedMacroScope, expandMarkdownMacros, macroScopeKey, markdownMacroScopes, parseMacroDefinitions } from "../../src/lib/markdown-macros";
+import { exportChatMarkdown } from "../../src/lib/document-chat";
+import { buildAgentSystemPrompt } from "../../src/lib/agent/prompt";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
 for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "DOMParser", "MutationObserver", "getComputedStyle"] as const) Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
@@ -196,4 +198,35 @@ test("typing ```libera-macro starts a macro block", () => {
   } finally {
     editor.destroy();
   }
+});
+
+test("chat replies use the macros of the conversation's documents, and exports expand them", () => {
+  const later = `${FENCE}libera-macro\n${String.raw`\lab = Libera Research`}\n${FENCE}`;
+  const scope = combinedMacroScope(["# Notes without macros", DOCUMENT, later])!;
+  assert.equal(scope.definitions.macros.get("lab")!.body, "Libera Research", "later documents win");
+  assert.equal(combinedMacroScope(["plain", ""]), null);
+  assert.equal(macroScopeKey(scope), macroScopeKey(combinedMacroScope([DOCUMENT, later])));
+
+  const reply = String.raw`By \theorem{Pythagoras}{$a^2+b^2=c^2$}, every \fset is bounded in $\R$.`;
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content: reply, macroScope: scope }));
+  assert.ok(html.includes("Theorem 1 (Pythagoras)."));
+  assert.ok(html.includes("mathcal") && html.includes("mathbb"));
+  assert.ok(renderToStaticMarkup(createElement(MarkdownRenderer, { content: reply })).includes(String.raw`\theorem{Pythagoras}`), "without a scope nothing expands");
+
+  const chat = { id: "c", title: "Proofs", prompt: "", selections: [], messages: [
+    { id: "1", role: "user" as const, text: String.raw`What is \fset?` },
+    { id: "2", role: "assistant" as const, text: reply },
+  ] };
+  const exported = exportChatMarkdown(chat, {}, scope);
+  assert.ok(exported.includes(String.raw`What is $\mathcal{F}$?`));
+  assert.ok(exported.includes("**Theorem 1 (Pythagoras).**"));
+  assert.ok(exportChatMarkdown(chat).includes(String.raw`\theorem{Pythagoras}`));
+});
+
+test("the chat and agent prompts explain macros, unchanged from run to run", () => {
+  const prompt = buildAgentSystemPrompt({ permission: "open-files", mathInstruction: "Use $." });
+  assert.ok(prompt.includes(MARKDOWN_MACROS_INSTRUCTION));
+  assert.equal(prompt, buildAgentSystemPrompt({ permission: "open-files", mathInstruction: "Use $." }));
+  assert.match(MARKDOWN_MACROS_INSTRUCTION, /libera-macro/);
+  assert.match(MARKDOWN_MACROS_INSTRUCTION, /keep its macros and macro blocks as written/);
 });
