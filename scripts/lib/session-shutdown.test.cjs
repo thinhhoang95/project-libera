@@ -46,9 +46,11 @@ function shutdownHarness() {
   const server = { pid: 123 };
   const scope = vm.createContext({
     mainWindow: window, rendererStateReady: true, quitRequested: false,
-    shutdownComplete: false, shutdownPromise: null, isQuitting: false,
+    statefulContents: new Set(), childWindows: new Set(), startupInProgress: false,
+    shutdownComplete: false, shutdownPromise: null, isQuitting: false, pendingProfileSwitch: null,
     nextProcess: server, ipcMain, requestStateFlush, app, process: new EventEmitter(), console,
     updaterService: { dispose() {} }, stopProcessTree: async (child) => { stops.push(child); },
+    collabHost: { stop: async () => {} },
     dialog: { showErrorBox: (title, message) => errors.push({ title, message }) },
   });
   const closeStart = source.indexOf("  let closingAfterFlush = false;");
@@ -62,7 +64,32 @@ function shutdownHarness() {
     assert.ok(requests.length, "close requests a session save");
     ipcMain.emit("state:flushed", { sender: contents, senderFrame: contents.mainFrame }, requests.at(-1), error);
   };
-  return { window, contents, scope, requests, acknowledge, errors, stops, server, app, get exits() { return exits; } };
+  function addChild() {
+    const child = new EventEmitter();
+    const contents = new EventEmitter();
+    const requests = [];
+    contents.mainFrame = {};
+    contents.isDestroyed = () => Boolean(child.destroyed);
+    contents.send = (_channel, id) => requests.push(id);
+    child.webContents = contents;
+    child.isDestroyed = () => Boolean(child.destroyed);
+    child.close = () => {
+      const event = { prevented: false, preventDefault() { this.prevented = true; } };
+      child.emit("close", event);
+      if (event.prevented) return;
+      if (child.cancelClose) { contents.emit("will-prevent-unload"); return; }
+      child.destroyed = true;
+      contents.emit("destroyed");
+      child.emit("closed");
+    };
+    scope.trackChildWindow(child);
+    scope.statefulContents.add(contents);
+    return { child, contents, requests, acknowledge(error) {
+      assert.ok(requests.length);
+      ipcMain.emit("state:flushed", { sender: contents, senderFrame: contents.mainFrame }, requests.at(-1), error);
+    } };
+  }
+  return { window, contents, scope, requests, acknowledge, addChild, errors, stops, server, app, get exits() { return exits; } };
 }
 const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
@@ -108,4 +135,72 @@ test("a failed session save leaves the window and server available for a success
   assert.equal(h.window.destroyed, true);
   assert.deepEqual(h.stops, [h.server]);
   assert.equal(h.errors.length, 1, "a successful retry adds no destroyed-object error");
+});
+
+test("shutdown waits for every popped-out window and their accepted closes before stopping servers", async () => {
+  const h = shutdownHarness();
+  const pdf = h.addChild();
+  const image = h.addChild();
+  h.app.quit();
+  assert.equal(pdf.requests.length, 1);
+  assert.equal(image.requests.length, 1);
+  h.acknowledge(); pdf.acknowledge(); await settle();
+  assert.equal(h.window.destroyed, false);
+  assert.equal(h.stops.length, 0);
+  image.acknowledge(); await settle();
+  assert.equal(pdf.requests.length, 2, "the child also flushes its own close");
+  pdf.acknowledge(); await settle();
+  assert.equal(pdf.child.destroyed, true);
+  assert.equal(image.requests.length, 2);
+  image.acknowledge(); await settle();
+  assert.equal(image.child.destroyed, true);
+  assert.equal(h.window.destroyed, true);
+  assert.deepEqual(h.stops, [h.server]);
+  assert.deepEqual(h.errors, []);
+});
+
+test("a failed pop-out save cancels main closure and leaves every server available for retry", async () => {
+  const h = shutdownHarness();
+  const pdf = h.addChild();
+  h.window.close();
+  h.acknowledge(); pdf.acknowledge("Annotation disk unavailable"); await settle();
+  assert.equal(h.window.destroyed, false);
+  assert.equal(pdf.child.destroyed, undefined);
+  assert.equal(h.stops.length, 0);
+  assert.equal(h.errors[0]?.message, "Annotation disk unavailable");
+  h.window.close(); h.acknowledge(); pdf.acknowledge(); await settle();
+  pdf.acknowledge(); await settle();
+  assert.equal(h.window.destroyed, true);
+  assert.deepEqual(h.stops, [h.server]);
+});
+
+test("closing a pop-out alone flushes annotations and a cancelled child close cancels main closure", async () => {
+  const h = shutdownHarness();
+  const pdf = h.addChild();
+  pdf.child.close();
+  assert.equal(pdf.child.destroyed, undefined);
+  pdf.acknowledge(); await settle();
+  assert.equal(pdf.child.destroyed, true);
+  assert.equal(h.window.destroyed, false);
+  const image = h.addChild();
+  image.child.cancelClose = true;
+  let cancelled = 0;
+  h.window.on("profile-close-failed", () => cancelled++);
+  h.window.close(); h.acknowledge(); image.acknowledge(); await settle();
+  image.acknowledge(); await settle();
+  assert.equal(cancelled, 1);
+  assert.equal(h.window.destroyed, false);
+  assert.equal(h.stops.length, 0);
+});
+
+test("prepareToQuit flushes pop-outs even after the main renderer has gone", async () => {
+  const h = shutdownHarness();
+  const image = h.addChild();
+  h.scope.mainWindow = null;
+  h.scope.rendererStateReady = false;
+  const quit = h.scope.prepareToQuit();
+  assert.equal(image.requests.length, 1);
+  assert.equal(h.stops.length, 0);
+  image.acknowledge(); await quit;
+  assert.deepEqual(h.stops, [h.server]);
 });

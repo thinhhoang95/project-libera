@@ -41,6 +41,29 @@ const {
 const { maintainWindowsBackdrop } = require("./windows-backdrop.cjs");
 const { waitForServer, stopProcessTree } = require("./server-lifecycle.cjs");
 const { createCollabHost } = require("./collab-host.cjs");
+const {
+  DEFAULT_PROFILE_ID,
+  MAX_PROFILES,
+  addProfile,
+  assertOutsideUserData,
+  chooseNextProfile,
+  createProfileQueue,
+  effectiveIndexFile,
+  findStorageConflict,
+  isProfileConfigComplete,
+  moveProfileAside,
+  profileConfigPath,
+  profileRoot,
+  profileSessionPartition,
+  readProfiles,
+  recordSignIn,
+  removeProfile,
+  renameProfile,
+  resolveStartupProfile,
+  validateNewProfile,
+  verifyProfileSession,
+  writeProfiles,
+} = require("./profiles.cjs");
 
 const CONFIG_FILE_NAME = "libera-electron-config.json";
 const MARKDOWN_EXPORT_READY_TIMEOUT_MS = 15_000;
@@ -82,17 +105,27 @@ let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
 let rendererStateReady = false;
+const statefulContents = new Set();
+const childWindows = new Set();
+let startupInProgress = true;
 let quitRequested = false;
 let shutdownPromise = null;
 let shutdownComplete = false;
+const queueProfileMutation = createProfileQueue();
+let profileSignedIn = false;
+let profileAuthVersion = 0;
+let runningSessionSecret = "";
+let pendingProfileSwitch = null;
 const updaterService = createUpdaterService({
   getMainWindow: () => mainWindow,
   onBeforeInstall: prepareToQuit,
 });
-// Collaboration host (on unless LIBERA_COLLAB=0; when off every call is a no-op).
+// The instance lock also protects profiles when collaboration is off.
 const collabHost = createCollabHost({
   getMainWindow: () => mainWindow,
-  isTrustedFrame: (frame) => Boolean(nextServerUrl) && isSameOrigin(frame.url, nextServerUrl),
+  getUserData: () => getProfileUserData(),
+  isTrustedFrame: (frame) => Boolean(nextServerUrl) && isSameOrigin(frame.url, nextServerUrl) &&
+    BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.webContents.session === getProfileSession() && window.webContents.mainFrame === frame.top),
   onUpdateRequired: () => void updaterService.check(),
 });
 const hasInstanceLock = collabHost.claimSingleInstance();
@@ -102,8 +135,208 @@ function getAppRoot() {
   return app.getAppPath();
 }
 
+let runningProfileId = null;
+let startupProfileError = null;
+
+function readProfileConfig(id) {
+  try {
+    const config = JSON.parse(fs.readFileSync(profileConfigPath(app.getPath("userData"), id, CONFIG_FILE_NAME), "utf8"));
+    return config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  } catch {
+    return {};
+  }
+}
+
+function readProfileState() {
+  return readProfiles(app.getPath("userData"), normalizeYourName(readProfileConfig(DEFAULT_PROFILE_ID).yourName), CONFIG_FILE_NAME);
+}
+
+/** The profile this run of the app serves. It is fixed at startup: switching users restarts the app. */
+function getRunningProfileId() {
+  if (runningProfileId) return runningProfileId;
+  const original = readProfileState();
+  const startup = resolveStartupProfile(original, (id) => isProfileConfigComplete(readProfileConfig(id)));
+  runningProfileId = startup.profileId;
+  startupProfileError = startup.failedProfile;
+  if (startup.changed) {
+    void queueProfileMutation(() => {
+      const state = readProfileState();
+      if (state.nextProfileId === original.nextProfileId && state.lastSignedInProfileId === original.lastSignedInProfileId) {
+        writeProfiles(app.getPath("userData"), { ...state, nextProfileId: null, lastSignedInProfileId: startup.state.lastSignedInProfileId });
+      }
+    }).catch((error) => { console.error(`Could not save the user choice: ${error.message}`); });
+  }
+  return runningProfileId;
+}
+
+function getProfileSession() {
+  const partition = profileSessionPartition(getRunningProfileId());
+  return partition ? session.fromPartition(partition) : session.defaultSession;
+}
+
+/** Plays the role of userData for the running profile (collaboration, workspace recovery). */
+function getProfileUserData() {
+  return profileRoot(app.getPath("userData"), getRunningProfileId());
+}
+
 function getConfigPath() {
-  return path.join(app.getPath("userData"), CONFIG_FILE_NAME);
+  return profileConfigPath(app.getPath("userData"), getRunningProfileId(), CONFIG_FILE_NAME);
+}
+
+function listProfiles({ withDataDirs = false } = {}) {
+  const state = readProfileState();
+  return {
+    activeProfileId: getRunningProfileId(),
+    maxProfiles: MAX_PROFILES,
+    profiles: state.profiles.map(({ id, name }) => {
+      if (!withDataDirs) return { id, name };
+      const { dataDir } = readProfileConfig(id);
+      return { id, name, dataDir: typeof dataDir === "string" ? dataDir : "" };
+    }),
+  };
+}
+
+async function hasProfileSession() {
+  if (!mainWindow || mainWindow.isDestroyed() || !nextServerUrl) return false;
+  const cookies = await getProfileSession().cookies.get({ url: nextServerUrl, name: "libera_session" });
+  return cookies.some((cookie) => verifyProfileSession(cookie.value, runningSessionSecret));
+}
+
+async function canManageProfiles() {
+  return profileSignedIn && await hasProfileSession() && profileSignedIn;
+}
+
+async function assertProfileSignedIn() {
+  if (!await canManageProfiles()) throw new Error("Sign in first to manage users.");
+}
+
+function assertProfilePassword(id, password) {
+  if (id === getRunningProfileId()) return;
+  if (typeof password !== "string" || !verifyPasswordHash(password, readProfileConfig(id).passwordHash)) {
+    throw new Error("Enter that user's correct master password to rename or remove them.");
+  }
+}
+
+/** Only an accepted window close commits the choice and schedules a restart. */
+async function switchToProfile(id) {
+  const state = readProfileState();
+  if (!state.profiles.some((profile) => profile.id === id)) throw new Error("This user does not exist.");
+  if (id === getRunningProfileId() || pendingProfileSwitch || !mainWindow || mainWindow.isDestroyed()) return { switched: false };
+  let finish;
+  const closed = new Promise((resolve) => { finish = resolve; });
+  pendingProfileSwitch = closed;
+  const window = mainWindow;
+  const contents = window.webContents;
+  const accepted = () => finish(true);
+  const cancelled = () => finish(false);
+  window.once("closed", accepted);
+  window.once("profile-close-failed", cancelled);
+  contents.once("will-prevent-unload", cancelled);
+  try {
+    window.close();
+    if (!await closed) return { switched: false };
+    await queueProfileMutation(() => {
+      writeProfiles(app.getPath("userData"), chooseNextProfile(readProfileState(), id));
+      isQuitting = true;
+      app.relaunch();
+    });
+    return { switched: true };
+  } finally {
+    window.removeListener("closed", accepted);
+    window.removeListener("profile-close-failed", cancelled);
+    contents.removeListener("will-prevent-unload", cancelled);
+    pendingProfileSwitch = null;
+    if (!mainWindow) app.quit();
+  }
+}
+
+/** A new user starts with default preferences, their own folder and password. */
+async function createProfile(input) {
+  return queueProfileMutation(async () => {
+    await assertProfileSignedIn();
+    const userData = app.getPath("userData");
+    const state = readProfileState();
+    const { profile } = addProfile(state, input?.name);
+    const dataDir = typeof input?.dataDir === "string" ? input.dataDir.trim() : "";
+    const password = typeof input?.password === "string" ? input.password : "";
+    const openaiApiKey = typeof input?.openaiApiKey === "string" ? input.openaiApiKey.trim() : "";
+
+    if (!dataDir || !path.isAbsolute(dataDir)) throw new Error("Choose a master directory for this user.");
+    assertProfileStorageAvailable({ dataDir }, profile.id);
+    if (password.length < 8) throw new Error("Use a master password with at least 8 characters.");
+    if (password !== input?.passwordConfirmation) throw new Error("The master password confirmation does not match.");
+    // Leaving the key empty shares the running user's key with the new user.
+    const apiKey = openaiApiKey || readConfig().openaiApiKey;
+    if (!apiKey) throw new Error("Enter an OPENAI_API_KEY for this user.");
+
+    const configPath = profileConfigPath(userData, profile.id, CONFIG_FILE_NAME);
+    await fsp.mkdir(dataDir, { recursive: true });
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+    const config = {
+      themePreference: "system",
+      yourName: normalizeYourName(profile.name),
+      dataDir,
+      openaiApiKey: apiKey,
+      passwordHash: createPasswordHash(password),
+      sessionSecret: createSessionSecret(),
+    };
+    await assertProfileSignedIn();
+    assertProfileStorageAvailable(config, profile.id);
+    await fsp.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await assertProfileSignedIn();
+    const current = readProfileState();
+    validateNewProfile(current, profile.name);
+    assertProfileStorageAvailable(config, profile.id);
+    writeProfiles(userData, { ...current, profiles: [...current.profiles, profile] });
+    return listProfiles({ withDataDirs: true });
+  });
+}
+
+async function removeProfileWithConfirmation(parentWindow, id, password) {
+  const state = readProfileState();
+  const profile = state.profiles.find((item) => item.id === id);
+  removeProfile(state, id, getRunningProfileId());
+  assertProfilePassword(id, password);
+  const dataDir = readProfileConfig(id).dataDir;
+  const confirmation = await showMessageBox(parentWindow, {
+    type: "warning",
+    buttons: ["Remove User", "Cancel"],
+    cancelId: 1,
+    defaultId: 1,
+    noLink: true,
+    title: "Remove User?",
+    message: `Remove ${profile.name} from ${APP_DISPLAY_NAME}?`,
+    detail: `Their notebooks stay in their master directory${typeof dataDir === "string" && dataDir ? ` (${dataDir})` : ""}. Their preferences and collaboration sign-in are moved out of ${APP_DISPLAY_NAME}.`,
+  });
+  if (confirmation.response !== 0) return { canceled: true };
+  return queueProfileMutation(async () => {
+    await assertProfileSignedIn();
+    assertProfilePassword(id, password);
+    const nextState = removeProfile(readProfileState(), id, getRunningProfileId());
+    writeProfiles(app.getPath("userData"), nextState);
+    try {
+      moveProfileAside(app.getPath("userData"), id);
+    } catch (error) {
+      console.error(`Could not move the removed user's settings aside: ${error.message}`);
+    }
+    return { canceled: false, ...listProfiles({ withDataDirs: true }) };
+  });
+}
+
+/** Each person's library must be a folder of its own, apart from every other user's. */
+function assertProfileStorageAvailable(config, profileId = getRunningProfileId()) {
+  const userData = app.getPath("userData");
+  assertOutsideUserData(config.dataDir, userData);
+  const state = readProfileState();
+  const entries = state.profiles.map((profile) => {
+    const other = readProfileConfig(profile.id);
+    return { ...profile, dataDir: other.dataDir, indexFile: effectiveIndexFile(other, profileConfigPath(userData, profile.id, CONFIG_FILE_NAME)) };
+  });
+  const candidate = { dataDir: config.dataDir, indexFile: effectiveIndexFile(config, profileConfigPath(userData, profileId, CONFIG_FILE_NAME)) };
+  const conflict = findStorageConflict(entries, profileId, candidate);
+  if (conflict) {
+    throw new Error(`This master directory or search index overlaps storage used by ${conflict.name}. Choose separate folders and index files for each user.`);
+  }
 }
 
 function assertSafePathSegment(segment, label) {
@@ -224,12 +457,7 @@ function createSessionSecret() {
 }
 
 function readConfig() {
-  try {
-    const rawConfig = fs.readFileSync(getConfigPath(), "utf8");
-    return JSON.parse(rawConfig);
-  } catch {
-    return {};
-  }
+  return readProfileConfig(getRunningProfileId());
 }
 
 function normalizeYourName(value) {
@@ -470,20 +698,23 @@ async function importPreferences(parentWindow) {
   });
 
   if (confirmation.response !== 0) return { canceled: true };
+  return queueProfileMutation(async () => {
+    const existingConfig = readConfig();
+    const nextConfig = {
+      ...existingConfig,
+      ...importedPreferences,
+      sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
+    };
 
-  const existingConfig = readConfig();
-  const nextConfig = {
-    ...existingConfig,
-    ...importedPreferences,
-    sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
-  };
+    assertProfileStorageAvailable(nextConfig);
+    await fsp.mkdir(nextConfig.dataDir, { recursive: true });
+    assertProfileStorageAvailable(nextConfig);
+    await writeConfig(nextConfig);
+    nativeTheme.themeSource = nextConfig.themePreference;
+    mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
 
-  await fsp.mkdir(nextConfig.dataDir, { recursive: true });
-  await writeConfig(nextConfig);
-  nativeTheme.themeSource = nextConfig.themePreference;
-  mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
-
-  return { canceled: false, config: nextConfig, fileName: path.basename(filePath) };
+    return { canceled: false, config: nextConfig, fileName: path.basename(filePath) };
+  });
 }
 
 function getConfigStatus(config = readConfig()) {
@@ -533,9 +764,7 @@ function getConfigStatus(config = readConfig()) {
 }
 
 function isConfigComplete(config) {
-  const status = getConfigStatus(config);
-
-  return Boolean(status.dataDir && status.hasApiKey && status.hasPasswordHash);
+  return isProfileConfigComplete(config);
 }
 
 async function selectDataDir(parentWindow) {
@@ -680,10 +909,13 @@ function revealSearchIndex(filePath) {
 
 /** Save the index file in Preferences → Search; the server picks it up on its next request. */
 async function useSearchIndexFile(filePath) {
-  const config = readConfig();
-  const search = normalizeSearchPreferences({ ...normalizeSearchPreferences(config.search), indexFile: filePath });
-  await writeConfig({ ...config, search });
-  return search.indexFile;
+  return queueProfileMutation(async () => {
+    const config = readConfig();
+    const search = normalizeSearchPreferences({ ...normalizeSearchPreferences(config.search), indexFile: filePath });
+    assertProfileStorageAvailable({ ...config, search });
+    await writeConfig({ ...config, search });
+    return search.indexFile;
+  });
 }
 
 function showMessageBox(parentWindow, options) {
@@ -808,6 +1040,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ? createPreferencesOverlay(parentWindow, {
           WebContentsView,
           preload: path.join(__dirname, "preload.cjs"),
+          session: getProfileSession(),
         })
       : null;
     const setupWindow = overlay ? parentWindow : new BrowserWindow({
@@ -822,6 +1055,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
           ? `${APP_DISPLAY_NAME} Preferences`
           : `Set Up ${APP_DISPLAY_NAME}`,
       webPreferences: {
+        session: getProfileSession(),
         contextIsolation: true,
         nodeIntegration: false,
         // Same preload as the main window; it only needs sandbox-safe APIs.
@@ -850,7 +1084,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       return true;
     });
 
-    ipcMain.handle("setup:get-state", () => getConfigStatus());
+    ipcMain.handle("setup:get-state", async () => ({ ...getConfigStatus(), canManageProfiles: await canManageProfiles() }));
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
 
@@ -895,6 +1129,37 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       return { canceled: result.canceled, fileName: result.fileName };
     });
 
+    // Users: only Preferences (not first-run setup) manages them.
+    const assertConfiguration = async (event) => {
+      if (mode !== "configuration" || event.sender !== setupHost.webContents) throw new Error("Users can be managed only in Preferences.");
+      await assertProfileSignedIn();
+    };
+    ipcMain.handle("setup:list-profiles", async (event) => {
+      await assertConfiguration(event);
+      return listProfiles({ withDataDirs: true });
+    });
+    ipcMain.handle("setup:add-profile", async (event, input) => {
+      await assertConfiguration(event);
+      return createProfile(input);
+    });
+    ipcMain.handle("setup:rename-profile", async (event, id, name, password) => {
+      await assertConfiguration(event);
+      return queueProfileMutation(async () => {
+        await assertProfileSignedIn();
+        assertProfilePassword(id, password);
+        writeProfiles(app.getPath("userData"), renameProfile(readProfileState(), id, name));
+        return listProfiles({ withDataDirs: true });
+      });
+    });
+    ipcMain.handle("setup:remove-profile", async (event, id, password) => {
+      await assertConfiguration(event);
+      return removeProfileWithConfirmation(setupWindow, id, password);
+    });
+    ipcMain.handle("setup:switch-profile", async (event, id) => {
+      await assertConfiguration(event);
+      return switchToProfile(id);
+    });
+
     ipcMain.handle("setup:load-ai-chat-custom-instruction-file", () =>
       loadAiChatCustomInstructionFile(setupWindow),
     );
@@ -903,9 +1168,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       loadAiRewriteCustomInstructionFile(setupWindow),
     );
 
-    ipcMain.handle("setup:save", async (_event, input) => {
+    ipcMain.handle("setup:save", (_event, input) => queueProfileMutation(async () => {
       const existingConfig = readConfig();
       const validated = validateSetupInput(input, existingConfig);
+      assertProfileStorageAvailable(validated);
 
       await fsp.mkdir(validated.dataDir, { recursive: true });
 
@@ -940,6 +1206,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         sessionSecret: existingConfig.sessionSecret || createSessionSecret(),
       };
 
+      assertProfileStorageAvailable(nextConfig);
       await writeConfig(nextConfig);
       // Re-encrypts the collaboration sign-in shared with the person's other computers.
       if (existingConfig.passwordHash && nextConfig.passwordHash !== existingConfig.passwordHash) {
@@ -951,7 +1218,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       setupHost.close();
 
       return { ok: true };
-    });
+    }));
 
     setupHost.on("closed", () => {
       ipcMain.removeHandler("setup:close");
@@ -966,6 +1233,11 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:export-preferences");
       ipcMain.removeHandler("setup:list-openrouter-models");
       ipcMain.removeHandler("setup:import-preferences");
+      ipcMain.removeHandler("setup:list-profiles");
+      ipcMain.removeHandler("setup:add-profile");
+      ipcMain.removeHandler("setup:rename-profile");
+      ipcMain.removeHandler("setup:remove-profile");
+      ipcMain.removeHandler("setup:switch-profile");
       ipcMain.removeHandler("setup:load-ai-chat-custom-instruction-file");
       ipcMain.removeHandler("setup:load-ai-rewrite-custom-instruction-file");
       ipcMain.removeHandler("setup:save");
@@ -1107,6 +1379,7 @@ async function exportMarkdownPdf(event, input) {
     parent: parentWindow && !parentWindow.isDestroyed() ? parentWindow : undefined,
     show: false,
     webPreferences: {
+      session: getProfileSession(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -1730,9 +2003,10 @@ function installWindowControlHandlers() {
     return stateRoot;
   }
   ipcMain.on("state:ready", (event, ready) => {
-    if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === event.sender.mainFrame) {
-      rendererStateReady = ready === true;
-    }
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed() || (window !== mainWindow && !childWindows.has(window)) || event.senderFrame !== event.sender.mainFrame) return;
+    if (ready === true) statefulContents.add(event.sender); else statefulContents.delete(event.sender);
+    if (window === mainWindow) rendererStateReady = ready === true;
   });
   ipcMain.on("workspaces:checkpoint", (event, body, contextRoot) => {
     try {
@@ -1746,13 +2020,13 @@ function installWindowControlHandlers() {
   ipcMain.on("workspaces:remember", (event, body, contextRoot) => {
     try {
       const stateRoot = checkpointRoot(event, contextRoot);
-      const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), stateRoot);
+      const localRoot = localWorkspaceRecoveryRoot(getProfileUserData(), stateRoot);
       writeWorkspaceRecovery(localRoot, body, stateRoot);
       event.returnValue = { saved: true };
     } catch (error) { event.returnValue = { saved: false, error: error.message }; }
   });
   ipcMain.handle("workspaces:read-recovery", async (event, contextRoot) => {
-    const localRoot = localWorkspaceRecoveryRoot(app.getPath("userData"), checkpointRoot(event, contextRoot));
+    const localRoot = localWorkspaceRecoveryRoot(getProfileUserData(), checkpointRoot(event, contextRoot));
     try { return await fsp.readFile(path.join(localRoot, ".libera-workspaces-recovery.json"), "utf8"); }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
   });
@@ -1768,6 +2042,39 @@ function installWindowControlHandlers() {
   ipcMain.handle("preferences:open", (event, section) => {
     if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return;
     void openConfigurationWindow(section);
+  });
+
+  // The sign-in screen lists the users and switches between them.
+  function assertProfilesSender(event) {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !nextServerUrl ||
+        !isSameOrigin(event.senderFrame?.url ?? "", nextServerUrl)) {
+      throw new Error("This page cannot switch users.");
+    }
+  }
+  ipcMain.handle("profiles:list", (event) => {
+    assertProfilesSender(event);
+    return listProfiles();
+  });
+  ipcMain.handle("profiles:switch", (event, id) => {
+    assertProfilesSender(event);
+    return switchToProfile(id);
+  });
+  // Normal starts open the last user who signed in.
+  ipcMain.handle("profiles:signed-in", async (event) => {
+    assertProfilesSender(event);
+    const version = profileAuthVersion;
+    if (!await hasProfileSession() || version !== profileAuthVersion) throw new Error("Sign in first to manage users.");
+    profileSignedIn = true;
+    await queueProfileMutation(async () => {
+      await assertProfileSignedIn();
+      writeProfiles(app.getPath("userData"), recordSignIn(readProfileState(), getRunningProfileId()));
+    });
+  });
+  ipcMain.handle("profiles:signed-out", async (event) => {
+    assertProfilesSender(event);
+    profileAuthVersion += 1;
+    profileSignedIn = false;
+    await clearLoginCookie(getProfileSession(), nextServerUrl);
   });
 
   ipcMain.handle("window:minimize", (event) => {
@@ -1994,7 +2301,7 @@ function getDesktopGlass() {
 
 async function createMainWindow(url) {
   // Require a fresh sign-in without erasing host-scoped appearance preferences.
-  await clearLoginCookie(session.defaultSession, url);
+  await clearLoginCookie(getProfileSession(), url);
 
   const glass = getDesktopGlass();
   const isMacGlass = glass.enabled && glass.platform === "darwin";
@@ -2034,6 +2341,7 @@ async function createMainWindow(url) {
     visualEffectState: isMacGlass ? "active" : undefined,
     backgroundMaterial: isWindowsGlass ? "acrylic" : undefined,
     webPreferences: {
+      session: getProfileSession(),
       contextIsolation: true,
       nodeIntegration: false,
       // The renderer shows collaborators' content (security §7): keep it in
@@ -2067,25 +2375,32 @@ async function createMainWindow(url) {
   let closingAfterFlush = false;
   let closeFlush = null;
   mainWindow.on("close", (event) => {
-    if (shutdownComplete || closingAfterFlush || !rendererStateReady) return;
+    if (shutdownComplete || closingAfterFlush || (!rendererStateReady && !statefulContents.size)) return;
     event.preventDefault();
     if (closeFlush) return;
     const closingWindow = mainWindow;
-    closeFlush = requestStateFlush(closingWindow.webContents, ipcMain).then(() => {
+    closeFlush = flushAppState().then(async () => {
+      if (!await closeChildWindows()) { closingWindow.emit("profile-close-failed"); return; }
       if (closingWindow.isDestroyed()) return;
       closingAfterFlush = true;
-      closingWindow.close();
-      // beforeunload may cancel closing because an editor has unsaved text.
-      closingAfterFlush = false;
+      try {
+        closingWindow.close();
+      } finally {
+        // beforeunload may cancel closing because an editor has unsaved text.
+        closingAfterFlush = false;
+      }
     }).catch((error) => {
+      closingWindow.emit("profile-close-failed");
       dialog.showErrorBox("Could not save session", error.message);
     }).finally(() => { closeFlush = null; });
   });
-  mainWindow.webContents.on("did-start-loading", () => { rendererStateReady = false; });
+  const mainContents = mainWindow.webContents;
+  mainContents.on("did-start-loading", () => { rendererStateReady = false; statefulContents.delete(mainContents); });
   mainWindow.on("closed", () => {
     // BrowserWindow.webContents throws after destruction, even with optional
     // chaining. Clear both references before quit re-enters the save path.
     rendererStateReady = false;
+    statefulContents.delete(mainContents);
     mainWindow = null;
     if (quitRequested) app.quit();
   });
@@ -2132,12 +2447,12 @@ async function createMainWindow(url) {
           titleBarStyle: "default",
           autoHideMenuBar: true,
           webPreferences: {
+            session: getProfileSession(),
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
-            // Overriding webPreferences drops the opener's preload. With
-            // collaboration on, pop-outs need window.liberaCollab for shared files.
-            ...(collabHost.enabled ? { preload: path.join(__dirname, "preload.cjs") } : {}),
+            // Pop-outs need persistence even when collaboration is off.
+            preload: path.join(__dirname, "preload.cjs"),
           },
         },
       };
@@ -2149,6 +2464,7 @@ async function createMainWindow(url) {
     return { action: "deny" };
   });
   mainWindow.webContents.on("did-create-window", (child) => {
+    trackChildWindow(child);
     enableNativePinch(child.webContents);
     child.setMenuBarVisibility(false);
     child.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
@@ -2179,6 +2495,25 @@ async function createMainWindow(url) {
   mainWindow.loadURL(url);
 }
 
+async function validateStartupStorage(config) {
+  try {
+    assertProfileStorageAvailable(config);
+    return config;
+  } catch (error) {
+    const result = await showMessageBox(null, {
+      type: "error", title: "User folders overlap", message: "Libera cannot open this user's folders.",
+      detail: error.message, buttons: ["Open Preferences", "Quit"], defaultId: 0, cancelId: 1, noLink: true,
+    });
+    if (result.response !== 0) throw new Error("Setup was canceled.");
+    const repaired = await createSetupWindow({ mode: "configuration", section: "general" });
+    if (!repaired) throw new Error("Setup was canceled.");
+    // One repair attempt, then stop. Never restart servers or reopen a dialog
+    // repeatedly if external changes keep the configuration invalid.
+    assertProfileStorageAvailable(repaired);
+    return repaired;
+  }
+}
+
 async function bootstrap() {
   if (!hasInstanceLock) return;
   try {
@@ -2189,10 +2524,14 @@ async function bootstrap() {
     }
 
     let config = readConfig();
+    if (startupProfileError) {
+      dialog.showErrorBox("Could not open user settings", `Settings for ${startupProfileError.name} could not be opened or are incomplete. Libera will open another user. The damaged user's folder has been kept unchanged.`);
+    }
 
     if (!isConfigComplete(config)) {
       config = await createSetupWindow({ mode: "setup" });
     }
+    config = await validateStartupStorage(config);
 
     // Before Next, so the control API's URL and token are in Next's env.
     await collabHost.start(config).catch((error) => {
@@ -2202,6 +2541,7 @@ async function bootstrap() {
     const url = await startNextServer(config);
     if (isQuitting) return;
     nextServerUrl = url;
+    runningSessionSecret = config.sessionSecret;
     installExportHandlers();
     installNativeMenuHandlers();
     installFileExplorerHandlers();
@@ -2209,6 +2549,7 @@ async function bootstrap() {
     installWindowControlHandlers();
     installApplicationMenu();
     await createMainWindow(url);
+    startupInProgress = false;
     updaterService.initialize();
   } catch (error) {
     if (isQuitting) return;
@@ -2225,9 +2566,7 @@ app.on("ready", bootstrap);
 function prepareToQuit() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
-    if (rendererStateReady && mainWindow && !mainWindow.isDestroyed()) {
-      await requestStateFlush(mainWindow.webContents, ipcMain);
-    }
+    await flushAppState();
     isQuitting = true;
     updaterService.dispose();
     // The host flushes its SQLite work and closes before Next goes away.
@@ -2247,9 +2586,63 @@ function prepareToQuit() {
   return shutdownPromise;
 }
 
+async function flushAppState() {
+  const contents = new Set(statefulContents);
+  if (rendererStateReady && mainWindow && !mainWindow.isDestroyed()) contents.add(mainWindow.webContents);
+  const results = await Promise.allSettled([...contents].map((item) => requestStateFlush(item, ipcMain)));
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
+}
+
+function trackChildWindow(child) {
+  childWindows.add(child);
+  const contents = child.webContents;
+  let closingAfterFlush = false;
+  let closeFlush = null;
+  contents.on("did-start-loading", () => statefulContents.delete(contents));
+  child.on("closed", () => { childWindows.delete(child); statefulContents.delete(contents); });
+  child.on("close", (event) => {
+    if (shutdownComplete || closingAfterFlush || !statefulContents.has(contents)) return;
+    event.preventDefault();
+    if (closeFlush) return;
+    closeFlush = requestStateFlush(contents, ipcMain).then(() => {
+      if (child.isDestroyed()) return;
+      closingAfterFlush = true;
+      try { child.close(); } finally { closingAfterFlush = false; }
+    }).catch((error) => {
+      child.emit("profile-close-failed");
+      dialog.showErrorBox("Could not save session", error.message);
+    }).finally(() => { closeFlush = null; });
+  });
+}
+
+async function closeChildWindows() {
+  for (const child of childWindows) {
+    if (child.isDestroyed()) continue;
+    const accepted = await new Promise((resolve, reject) => {
+      const contents = child.webContents;
+      const cleanup = () => {
+        child.removeListener("closed", closed);
+        child.removeListener("profile-close-failed", cancelled);
+        contents.removeListener("will-prevent-unload", cancelled);
+      };
+      const finish = (value) => { cleanup(); resolve(value); };
+      const closed = () => finish(true);
+      const cancelled = () => finish(false);
+      child.once("closed", closed);
+      child.once("profile-close-failed", cancelled);
+      contents.once("will-prevent-unload", cancelled);
+      try { child.close(); } catch (error) { cleanup(); reject(error); }
+    });
+    if (!accepted) return false;
+  }
+  return true;
+}
+
 app.on("before-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
+  if (pendingProfileSwitch) return;
   // Let beforeunload accept or cancel closing while the server still runs.
   // Once the main window closes, the next quit finishes server shutdown.
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2267,5 +2660,5 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 }
 
 app.on("window-all-closed", () => {
-  app.quit();
+  if (!startupInProgress) app.quit();
 });

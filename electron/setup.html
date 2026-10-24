@@ -321,6 +321,17 @@
       .io-button svg { flex: 0 0 auto; }
       .io-warning { border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #f59e0b 9%, transparent); margin-top: 16px; padding: 12px; }
       .io-status { margin-top: 14px; min-height: 20px; }
+      .users-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+      .user-row { align-items: center; border: 1px solid var(--border, #e4e4e7); border-radius: 12px; display: flex; gap: 12px; padding: 10px 12px; }
+      .user-avatar { align-items: center; background: var(--muted, #f4f4f5); border-radius: 50%; color: var(--muted-foreground, #71717a); display: flex; flex: 0 0 36px; font-size: 13px; font-weight: 650; height: 36px; justify-content: center; }
+      .user-text { flex: 1; min-width: 0; }
+      .user-name { align-items: center; display: flex; font-weight: 600; gap: 8px; }
+      .user-badge { background: var(--muted, #f4f4f5); border-radius: 999px; color: var(--muted-foreground, #71717a); font-size: 11px; font-weight: 600; padding: 1px 8px; }
+      .user-text .field-help { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .user-text input { padding: 6px 10px; }
+      .user-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+      .user-actions button { padding: 6px 10px; }
+      .users-add { margin-top: 18px; }
       .heading-palette { border: 1px solid var(--border, #d4d4d8); border-radius: 8px; display: grid; gap: 8px 16px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 12px 0 0; padding: 10px 14px 12px; }
       .heading-palette.hidden { display: none; }
       .heading-palette label { align-items: center; display: flex; font-weight: 400; gap: 8px; margin: 0; }
@@ -398,6 +409,7 @@
             <button class="nav-item" data-section-button="speech" type="button" aria-selected="false">Speech</button>
             <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false">Read Aloud</button>
             <button class="nav-item" data-section-button="detection" type="button" aria-selected="false">Detection and Segmentation</button>
+            <button class="nav-item configuration-only hidden" data-section-button="users" type="button" aria-selected="false">Users</button>
             <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
           </nav>
 
@@ -1270,6 +1282,45 @@
               <p class="field-help">
                 Use a unitless line-height ratio for exported PDFs.
               </p>
+            </section>
+
+            <section class="settings-section configuration-only hidden" data-section="users">
+              <h2>Users</h2>
+              <p class="settings-section-description">
+                Everyone who shares this computer can have their own master directory, preferences, password and collaboration sign-in. To change user, sign out and choose a name on the sign-in screen.
+              </p>
+
+              <ul id="users-list" class="users-list" aria-label="Users"></ul>
+              <p id="users-status" class="io-status field-help" role="status" aria-live="polite"></p>
+
+              <article id="add-user-card" class="io-card users-add">
+                <h3>Add a user</h3>
+                <p class="field-help">They start with default preferences and can change them after signing in.</p>
+
+                <label for="new-user-name">Name</label>
+                <input id="new-user-name" type="text" autocomplete="off" maxlength="60" />
+
+                <label for="new-user-data-dir">Master directory</label>
+                <div class="directory-row">
+                  <input id="new-user-data-dir" autocomplete="off" readonly aria-describedby="new-user-data-dir-help" />
+                  <button id="new-user-browse-button" class="secondary" type="button">Choose</button>
+                </div>
+                <p id="new-user-data-dir-help" class="field-help">A folder of their own, apart from every other user’s.</p>
+
+                <label for="new-user-password">Master password</label>
+                <input id="new-user-password" autocomplete="new-password" type="password" />
+
+                <label for="new-user-password-confirmation">Confirm master password</label>
+                <input id="new-user-password-confirmation" autocomplete="new-password" type="password" />
+
+                <label for="new-user-api-key">OPENAI_API_KEY</label>
+                <input id="new-user-api-key" autocomplete="off" spellcheck="false" type="password" aria-describedby="new-user-api-key-help" />
+                <p id="new-user-api-key-help" class="field-help">Optional. Leave blank to share your API key with this user.</p>
+
+                <div class="textarea-actions">
+                  <button id="add-user-button" type="button">Add User</button>
+                </div>
+              </article>
             </section>
 
             <section class="settings-section configuration-only hidden" data-section="io">
@@ -2315,6 +2366,200 @@
 
         if (loaded) window.liberaSetup.close();
       });
+
+      // Users (electron/profiles.cjs). Each change is saved at once, apart from Save Preferences.
+      const usersList = document.querySelector("#users-list");
+      const usersStatus = document.querySelector("#users-status");
+      const addUserCard = document.querySelector("#add-user-card");
+      const addUserButton = document.querySelector("#add-user-button");
+      const newUserInputs = {
+        name: document.querySelector("#new-user-name"),
+        dataDir: document.querySelector("#new-user-data-dir"),
+        password: document.querySelector("#new-user-password"),
+        passwordConfirmation: document.querySelector("#new-user-password-confirmation"),
+        openaiApiKey: document.querySelector("#new-user-api-key"),
+      };
+      let usersBusy = false;
+
+      function userInitials(name) {
+        const words = name.split(" ").filter(Boolean);
+        return (words.length > 1 ? words[0][0] + words[words.length - 1][0] : name.slice(0, 2)).toLocaleUpperCase();
+      }
+
+      function errorText(error, fallback) {
+        return String(error?.message || fallback).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+      }
+
+      async function runUsersAction(action, fallback) {
+        if (usersBusy) return;
+        usersBusy = true;
+        clearError();
+        usersStatus.textContent = "";
+        document.querySelectorAll("[data-section='users'] button").forEach((button) => { button.disabled = true; });
+        try {
+          await action();
+        } catch (error) {
+          showError(errorText(error, fallback));
+        } finally {
+          usersBusy = false;
+          document.querySelectorAll("[data-section='users'] button").forEach((button) => { button.disabled = false; });
+        }
+      }
+
+      function renderUsers({ activeProfileId, maxProfiles, profiles }) {
+        usersStatus.textContent = "";
+        usersList.replaceChildren(...profiles.map((profile) => {
+          const row = document.createElement("li");
+          row.className = "user-row";
+          const avatar = document.createElement("span");
+          avatar.className = "user-avatar";
+          avatar.setAttribute("aria-hidden", "true");
+          avatar.textContent = userInitials(profile.name);
+          const text = document.createElement("div");
+          text.className = "user-text";
+          const name = document.createElement("div");
+          name.className = "user-name";
+          name.append(profile.name);
+          if (profile.id === activeProfileId) {
+            const badge = document.createElement("span");
+            badge.className = "user-badge";
+            badge.textContent = "You";
+            name.append(badge);
+          }
+          const folder = document.createElement("p");
+          folder.className = "field-help";
+          folder.textContent = profile.dataDir || "Master directory not set";
+          folder.title = profile.dataDir;
+          text.append(name, folder);
+          const password = document.createElement("input");
+          password.type = "password";
+          password.autocomplete = "off";
+          password.placeholder = `${profile.name}'s master password (rename or remove)`;
+          password.setAttribute("aria-label", `${profile.name}'s master password`);
+          if (profile.id !== activeProfileId) text.append(password);
+          const actions = document.createElement("div");
+          actions.className = "user-actions";
+          const button = (label, onClick) => {
+            const element = document.createElement("button");
+            element.type = "button";
+            element.className = "secondary";
+            element.textContent = label;
+            element.addEventListener("click", onClick);
+            actions.append(element);
+            return element;
+          };
+          if (profile.id !== activeProfileId) {
+            button("Switch", () => runUsersAction(async () => {
+              usersStatus.textContent = `Restarting as ${profile.name}…`;
+              const result = await window.liberaSetup.switchProfile(profile.id);
+              if (!result.switched) usersStatus.textContent = "Switch cancelled. You can keep using this user.";
+            }, "Could not switch user."));
+          }
+          button("Rename", () => startRename(row, text, profile, profile.id !== activeProfileId ? password : null));
+          // The first user owns the original settings files; the running user cannot remove themself.
+          if (profile.id !== activeProfileId && profile.id !== "default") {
+            button("Remove", () => runUsersAction(async () => {
+              const result = await window.liberaSetup.removeProfile(profile.id, password.value);
+              password.value = "";
+              if (result.canceled) return;
+              renderUsers(result);
+              usersStatus.textContent = `Removed ${profile.name}.`;
+            }, "Could not remove this user."));
+          }
+          row.append(avatar, text, actions);
+          return row;
+        }));
+        addUserCard.classList.toggle("hidden", profiles.length >= maxProfiles);
+      }
+
+      function startRename(row, text, profile, password) {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 60;
+        input.value = profile.name;
+        input.setAttribute("aria-label", `New name for ${profile.name}`);
+        // Removing the input blurs it, so a finished rename must not save again.
+        let finished = false;
+        const save = () => {
+          if (finished) return;
+          finished = true;
+          if (input.value.trim() === profile.name) return loadUsers();
+          return runUsersAction(async () => {
+            renderUsers(await window.liberaSetup.renameProfile(profile.id, input.value, password?.value || ""));
+            usersStatus.textContent = "Name saved.";
+          }, "Could not rename this user.").finally(() => { if (usersList.contains(input)) void loadUsers(); });
+        };
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") { event.preventDefault(); void save(); }
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finished = true; void loadUsers(); }
+        });
+        if (!password) input.addEventListener("blur", () => void save());
+        text.replaceChildren(input, ...(password ? [password] : []));
+        const actions = row.querySelector(".user-actions");
+        actions.replaceChildren();
+        if (password) {
+          password.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") { event.preventDefault(); void save(); }
+          });
+          for (const [label, action] of [["Save name", save], ["Cancel", () => { finished = true; void loadUsers(); }]]) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = label;
+            button.addEventListener("click", action);
+            actions.append(button);
+          }
+        }
+        input.focus();
+        input.select();
+      }
+
+      async function loadUsers() {
+        if (!window.liberaSetup.listProfiles) return;
+        try {
+          const state = await window.liberaSetup.getState();
+          if (!state.canManageProfiles) {
+            usersList.replaceChildren();
+            addUserCard.classList.add("hidden");
+            usersStatus.textContent = "Sign in first to manage users. Close Preferences and enter your master password on the sign-in screen.";
+            return;
+          }
+          renderUsers(await window.liberaSetup.listProfiles());
+        } catch (error) {
+          const message = errorText(error, "Could not load the users.");
+          if (message === "Sign in first to manage users.") {
+            usersList.replaceChildren();
+            addUserCard.classList.add("hidden");
+            usersStatus.textContent = message;
+          } else showError(message);
+        }
+      }
+
+      document.querySelector("#new-user-browse-button").addEventListener("click", async () => {
+        const directory = await window.liberaSetup.selectDataDir();
+        if (directory) newUserInputs.dataDir.value = directory;
+      });
+
+      // Enter in these fields adds the user instead of saving Preferences.
+      addUserCard.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.target.tagName !== "INPUT") return;
+        event.preventDefault();
+        addUserButton.click();
+      });
+
+      addUserButton.addEventListener("click", () => runUsersAction(async () => {
+        const name = newUserInputs.name.value.trim();
+        renderUsers(await window.liberaSetup.addProfile({
+          name,
+          dataDir: newUserInputs.dataDir.value,
+          password: newUserInputs.password.value,
+          passwordConfirmation: newUserInputs.passwordConfirmation.value,
+          openaiApiKey: newUserInputs.openaiApiKey.value,
+        }));
+        Object.values(newUserInputs).forEach((input) => { input.value = ""; });
+        usersStatus.textContent = `Added ${name}. Sign out and choose ${name} on the sign-in screen to start.`;
+      }, "Could not add this user."));
+
+      if (configurationMode) void loadUsers();
 
       loadAiChatInstructionButton.addEventListener("click", async () => {
         clearError();

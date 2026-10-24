@@ -195,10 +195,52 @@
 
 .hint { min-height: 18px; margin-top: 12px; text-align: center; font-size: 12.5px; font-weight: 500; color: var(--ink-soft); text-shadow: var(--shadow); }
 .hint[data-error] { color: var(--ink); }
+
+/* The logo and the user bubbles share one slot. "Switch user" swaps them, so the
+   stack below never moves. Choosing another person restarts the app as them. */
+.identity { display: grid; place-items: end center; min-height: calc(84px * 564 / 516); }
+.identity > * { grid-area: 1 / 1; transition: opacity 220ms ease, transform 320ms cubic-bezier(.2, .8, .2, 1); }
+.identity .logo { transition: --logo-from 700ms ease, --logo-to 700ms ease, opacity 220ms ease, transform 320ms cubic-bezier(.2, .8, .2, 1); }
+.identity[data-choosing] .logo { opacity: 0; transform: scale(.9); }
+.users { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 4px; width: max-content; max-width: min(640px, calc(100vw - 48px)); opacity: 0; transform: scale(.94); pointer-events: none; }
+.identity[data-choosing] .users { opacity: 1; transform: none; pointer-events: auto; }
+.user { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 76px; padding: 2px; border-radius: 12px; color: var(--ink-soft); cursor: pointer; transition: color 150ms, opacity 200ms; }
+.user:hover:not(:disabled), .user[aria-current="true"] { color: var(--ink); }
+.user:disabled { opacity: .5; cursor: default; }
+.user:focus-visible { outline: 2px solid color-mix(in srgb, var(--ink) 70%, transparent); outline-offset: 2px; }
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--field-border);
+  border-radius: 50%;
+  background: var(--field);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  box-shadow: 0 8px 24px -10px #0000002e, inset 0 1px 0 #ffffff26;
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  transition: background 200ms, box-shadow 200ms;
+}
+.user:hover:not(:disabled) .avatar { background: var(--field-focus); }
+/* The user whose password field is showing. */
+.user[aria-current="true"] .avatar { background: var(--field-focus); box-shadow: 0 8px 24px -10px #0000002e, 0 0 0 2px color-mix(in srgb, var(--ink) 55%, transparent); }
+.userName { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; text-shadow: var(--shadow); }
+.user[aria-current="true"] .userName { font-weight: 650; }
+
+/* A small text button under the password field. */
+.switchUser { margin-top: 2px; padding: 2px 8px; border-radius: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink-soft); text-shadow: var(--shadow); cursor: pointer; transition: color 150ms; }
+.switchUser:hover:not(:disabled) { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.switchUser:disabled { opacity: .5; cursor: default; }
+.switchUser:focus-visible { outline: 2px solid color-mix(in srgb, var(--ink) 70%, transparent); outline-offset: 2px; }
 .screen[data-tone="light"] .hint[data-error] { color: #b42336; }
 
 
 @media (prefers-reduced-motion: reduce) {
   .account, .logo, .passwordField { transition: none; transform: none; }
+  .identity > *, .identity .logo, .identity[data-choosing] .logo, .users { transition: none; transform: none; }
   .spinner { animation-duration: 2s; }
 }

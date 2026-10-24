@@ -7,6 +7,13 @@ import { detectWallpaperLook, type WallpaperLook } from "./login-wallpaper-tone"
 
 const FALLBACK_LOOK: WallpaperLook = { tone: "light", logo: ["#106660", "#106660"] };
 
+type Profile = { id: string; name: string };
+
+function initials(name: string) {
+  const words = name.split(" ").filter(Boolean);
+  return (words.length > 1 ? `${words[0][0]}${words.at(-1)![0]}` : name.slice(0, 2)).toLocaleUpperCase();
+}
+
 type LoginScreenProps = {
   yourName: string;
   authError: string;
@@ -30,8 +37,15 @@ export function LoginScreen({
   const [imageVersion, setImageVersion] = useState(0);
   const [hasCustomImage, setHasCustomImage] = useState(false);
   const [look, setLook] = useState<WallpaperLook>();
+  const [users, setUsers] = useState<{ currentId: string; profiles: Profile[] }>();
+  const [choosingUser, setChoosingUser] = useState(false);
+  const [switchingTo, setSwitchingTo] = useState<Profile>();
+  const [switchError, setSwitchError] = useState("");
   const imageInput = useRef<HTMLInputElement>(null);
   const field = useRef<HTMLDivElement>(null);
+  const passwordInput = useRef<HTMLInputElement>(null);
+  const usersGroup = useRef<HTMLDivElement>(null);
+  const canSwitchUser = (users?.profiles.length ?? 0) > 1;
   const wallpaper = useSyncExternalStore(subscribeLoginWallpaper, readLoginWallpaper, defaultLoginWallpaper);
   const customBackground = `url("/api/preferences/login-wallpaper?v=${imageVersion}") center / cover no-repeat`;
   const background = wallpaper.id === "custom" ? customBackground : wallpaper.background;
@@ -52,6 +66,41 @@ export function LoginScreen({
       { duration: 420, easing: "ease-out" },
     );
   }, [busy, authError]);
+
+  // Everyone who uses Libera on this computer (Electron only).
+  useEffect(() => {
+    let active = true;
+    void window.liberaProfiles?.list()
+      .then(({ activeProfileId, profiles }) => { if (active) setUsers({ currentId: activeProfileId, profiles }); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  function setUserChooserOpen(open: boolean) {
+    setChoosingUser(open);
+    setSwitchError("");
+    // Move focus into the bubbles, or back to the password once they close.
+    requestAnimationFrame(() => {
+      if (open) usersGroup.current?.querySelector<HTMLButtonElement>("button[aria-current='true']")?.focus();
+      else passwordInput.current?.focus();
+    });
+  }
+
+  async function switchUser(profile: Profile) {
+    if (profile.id === users?.currentId) {
+      setUserChooserOpen(false);
+      return;
+    }
+    setSwitchingTo(profile);
+    setSwitchError("");
+    try {
+      // On success the app restarts with this user's settings.
+      if (!(await window.liberaProfiles!.switchTo(profile.id)).switched) setSwitchingTo(undefined);
+    } catch {
+      setSwitchingTo(undefined);
+      setSwitchError(`Could not switch to ${profile.name}. Please try again.`);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -140,12 +189,48 @@ export function LoginScreen({
         {wallpaperError && <p role="alert" className={styles.error}>{wallpaperError}</p>}
       </div>
       <div className={styles.scrim} aria-hidden />
-      <section className={styles.account} aria-labelledby="login-heading">
-        <div className={styles.logo} role="img" aria-label="Libera">
-          <span className={styles.logoInk} />
+      <section
+        className={styles.account}
+        aria-labelledby="login-heading"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && choosingUser && !switchingTo) {
+            event.preventDefault();
+            setUserChooserOpen(false);
+          }
+        }}
+      >
+        {/* The logo and the user bubbles share one slot; "Switch user" swaps them. */}
+        <div className={styles.identity} data-choosing={choosingUser ? "" : undefined}>
+          <div className={styles.logo} role="img" aria-label="Libera" aria-hidden={choosingUser} inert={choosingUser}>
+            <span className={styles.logoInk} />
+          </div>
+          {canSwitchUser && (
+            <div ref={usersGroup} id="login-users" className={styles.users} role="group" aria-label="Choose a user" inert={!choosingUser}>
+              {users!.profiles.map((profile) => {
+                const current = profile.id === users!.currentId;
+                return (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    className={styles.user}
+                    disabled={busy || Boolean(switchingTo)}
+                    aria-current={current ? "true" : undefined}
+                    aria-label={current ? `Sign in as ${profile.name}` : `Switch to ${profile.name}`}
+                    title={profile.name}
+                    onClick={() => void switchUser(profile)}
+                  >
+                    <span className={styles.avatar} aria-hidden>
+                      {switchingTo?.id === profile.id ? <LoaderCircle size={18} className={styles.spinner} /> : initials(profile.name)}
+                    </span>
+                    <span className={styles.userName}>{profile.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <h1 id="login-heading" className={styles.heading}>
-          {yourName ? `Welcome, ${yourName}` : "Welcome to Libera"}
+          {choosingUser ? "Who is signing in?" : yourName ? `Welcome, ${yourName}` : "Welcome to Libera"}
         </h1>
         <form className={styles.form} onSubmit={onLogin} aria-busy={busy}>
           <label className={styles.label} htmlFor="password">
@@ -157,6 +242,7 @@ export function LoginScreen({
               type={showPassword ? "text" : "password"}
               placeholder="Enter password"
               autoComplete="current-password"
+              ref={passwordInput}
               aria-invalid={Boolean(authError)}
               aria-describedby={authError ? "login-error" : undefined}
               value={password}
@@ -176,10 +262,22 @@ export function LoginScreen({
               {busy ? <LoaderCircle aria-hidden size={16} className={styles.spinner} /> : <ArrowRight aria-hidden size={16} strokeWidth={2.5} />}
             </button>
           </div>
-          <p id="login-error" role="alert" className={styles.hint} data-error={authError ? "" : undefined}>
-            {authError || (busy ? "Signing in…" : " ")}
+          <p id="login-error" role="alert" className={styles.hint} data-error={authError || switchError ? "" : undefined}>
+            {switchingTo ? `Switching to ${switchingTo.name}…` : authError || switchError || (busy ? "Signing in…" :" ")}
           </p>
         </form>
+        {canSwitchUser && (
+          <button
+            type="button"
+            className={styles.switchUser}
+            aria-expanded={choosingUser}
+            aria-controls="login-users"
+            disabled={busy || Boolean(switchingTo)}
+            onClick={() => setUserChooserOpen(!choosingUser)}
+          >
+            {choosingUser ? "Cancel" : "Switch user"}
+          </button>
+        )}
       </section>
     </main>
   );

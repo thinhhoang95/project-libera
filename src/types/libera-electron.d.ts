@@ -104,6 +104,15 @@ declare global {
       /** Choose an existing index file and save it in Preferences; "" when canceled. */
       useExistingIndex: () => Promise<string>;
     };
+    /** The users who share this computer; each has their own preferences and library. */
+    liberaProfiles?: {
+      list: () => Promise<{ activeProfileId: string; profiles: Array<{ id: string; name: string }> }>;
+      /** Restarts the app with the other user's settings; switched is false for the running user. */
+      switchTo: (id: string) => Promise<{ switched: boolean }>;
+      /** Remembers the running user as the one the next normal start opens. */
+      signedIn: () => Promise<void>;
+      signedOut: () => Promise<void>;
+    };
     liberaPreferences?: {
       /** Open Preferences at a section, e.g. "search". */
       open: (section?: string) => Promise<void>;

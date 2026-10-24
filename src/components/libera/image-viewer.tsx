@@ -43,7 +43,8 @@ import {
 import { TextAnnotationStyleControls } from "@/components/libera/annotation-style-controls";
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
-import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { useAnnotationWriter } from "./use-annotation-writer";
+import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
 import {
   DEFAULT_PDF_TEXT_COLOR,
@@ -62,7 +63,6 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
 const ZOOM_FACTOR = 1.5;
 const DOUBLE_CLICK_ZOOM = 2.5;
-const SAVE_DEBOUNCE_MS = 350;
 const SLIDESHOW_MS = 4000;
 const INFO_STORAGE_KEY = "libera.imageViewer.infoOpen";
 const iconButton = "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
@@ -144,7 +144,6 @@ export function ImageViewer({
   const stageRef = useRef<HTMLDivElement>(null);
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
   // The file whose annotations have finished loading (successfully or not).
@@ -232,20 +231,6 @@ export function ImageViewer({
 
     return () => {
       active = false;
-
-      // Leaving the image (another tab, or the next photo) still saves the
-      // last edit instead of dropping it with the debounce.
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = null;
-        const pending = latestAnnotationsRef.current;
-        apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({ path: filePath, annotations: pending }),
-        })
-          .then((payload) => broadcastSavedAnnotations("image", filePath, payload.annotations))
-          .catch(() => undefined);
-      }
     };
   }, [annotatable, filePath]);
 
@@ -282,6 +267,7 @@ export function ImageViewer({
   // Another window showing this image saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.
   const localSavePendingRef = useRef(false);
+  useEffect(() => { localSavePendingRef.current = false; }, [filePath]);
   useAnnotationSync<PdfTextAnnotation>("image", filePath, (remoteAnnotations) => {
     if (!annotatable || localSavePendingRef.current) {
       return;
@@ -291,45 +277,24 @@ export function ImageViewer({
     setAnnotations(remoteAnnotations);
   });
 
+  const scheduleAnnotations = useAnnotationWriter<PdfTextAnnotation>("image", filePath, (savedAnnotations) => {
+    localSavePendingRef.current = false;
+    latestAnnotationsRef.current = savedAnnotations;
+    setAnnotations(savedAnnotations);
+    setSaveStatus("saved");
+  }, (saveError) => {
+    setSaveStatus("error");
+    setError(saveError instanceof Error ? saveError.message : "Could not save image annotations.");
+  });
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfTextAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       setSaveStatus("saving");
       localSavePendingRef.current = true;
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-
-      saveTimeoutRef.current = setTimeout(() => {
-        saveTimeoutRef.current = null;
-        apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({
-            path: filePath,
-            annotations: latestAnnotationsRef.current,
-          }),
-        })
-          .then((payload) => {
-            localSavePendingRef.current = false;
-            latestAnnotationsRef.current = payload.annotations;
-            setAnnotations(payload.annotations);
-            setSaveStatus("saved");
-            broadcastSavedAnnotations("image", filePath, payload.annotations);
-          })
-          .catch((saveError) => {
-            localSavePendingRef.current = false;
-            setSaveStatus("error");
-            setError(
-              saveError instanceof Error
-                ? saveError.message
-                : "Could not save image annotations.",
-            );
-          });
-      }, SAVE_DEBOUNCE_MS);
+      scheduleAnnotations(nextAnnotations);
     },
-    [filePath],
+    [scheduleAnnotations],
   );
 
   function resetView() {

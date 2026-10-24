@@ -39,6 +39,11 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
   listOpenRouterModels: (options) => ipcRenderer.invoke("setup:list-openrouter-models", options),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
+  listProfiles: () => ipcRenderer.invoke("setup:list-profiles"),
+  addProfile: (input) => ipcRenderer.invoke("setup:add-profile", input),
+  renameProfile: (id, name, password) => ipcRenderer.invoke("setup:rename-profile", id, name, password),
+  removeProfile: (id, password) => ipcRenderer.invoke("setup:remove-profile", id, password),
+  switchProfile: (id) => ipcRenderer.invoke("setup:switch-profile", id),
   openPage: (page) => ipcRenderer.invoke("setup:open-page", page),
   loadAiChatCustomInstructionFile: () =>
     ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),
@@ -64,6 +69,14 @@ contextBridge.exposeInMainWorld("liberaFileExplorer", {
 contextBridge.exposeInMainWorld("liberaSearch", {
   revealIndex: (filePath) => ipcRenderer.invoke("search:reveal-index", filePath),
   useExistingIndex: () => ipcRenderer.invoke("search:use-existing-index"),
+});
+
+// The users who share this computer (electron/profiles.cjs), for the sign-in screen.
+contextBridge.exposeInMainWorld("liberaProfiles", {
+  list: () => ipcRenderer.invoke("profiles:list"),
+  switchTo: (id) => ipcRenderer.invoke("profiles:switch", id),
+  signedIn: () => ipcRenderer.invoke("profiles:signed-in"),
+  signedOut: () => ipcRenderer.invoke("profiles:signed-out"),
 });
 
 contextBridge.exposeInMainWorld("liberaPreferences", {

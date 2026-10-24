@@ -2,9 +2,9 @@ const { EventEmitter } = require("node:events");
 
 // Keep the settings renderer isolated, but compose it over the workspace rather
 // than placing a second native window (and its frame) around the dialog.
-function createPreferencesOverlay(parentWindow, { WebContentsView, preload }) {
+function createPreferencesOverlay(parentWindow, { WebContentsView, preload, session = parentWindow.webContents.session }) {
   const view = new WebContentsView({
-    webPreferences: { contextIsolation: true, nodeIntegration: false, preload },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, preload, session },
   });
   const host = new EventEmitter();
   const container = parentWindow.contentView;

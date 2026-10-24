@@ -65,7 +65,8 @@ import { changePdfComments, onPdfCommentFocus, pdfCommentsState, selectPdfCommen
 import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
-import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { useAnnotationWriter } from "./use-annotation-writer";
+import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
   pngFileFromBlob,
@@ -700,7 +701,6 @@ export function PdfViewer({
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
   );
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfAnnotation[]>([]);
   const viewStateSelectedAnnotationId = initialViewState?.selectedAnnotationId;
   const activeSelectedAnnotationId =
@@ -1013,10 +1013,6 @@ export function PdfViewer({
       controller.abort();
       destroyLoadingTask();
       forgetPdfAnnotations(filePath);
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
     };
   }, [filePath, src]);
 
@@ -1230,6 +1226,7 @@ export function PdfViewer({
   // Another window showing this PDF saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.
   const localSavePendingRef = useRef(false);
+  useEffect(() => { localSavePendingRef.current = false; }, [filePath]);
   useAnnotationSync<PdfAnnotation>("pdf", filePath, (remoteAnnotations) => {
     if (localSavePendingRef.current) {
       return;
@@ -1243,6 +1240,16 @@ export function PdfViewer({
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: remoteAnnotations });
   });
 
+  const scheduleAnnotations = useAnnotationWriter<PdfAnnotation>("pdf", filePath, (savedAnnotations) => {
+    localSavePendingRef.current = false;
+    latestAnnotationsRef.current = savedAnnotations;
+    setAnnotations(savedAnnotations);
+    dispatchPdfAnnotationsUpdated({ path: filePath, annotations: savedAnnotations });
+    setSaveStatus("saved");
+  }, (saveError) => {
+    setSaveStatus("error");
+    setError(saveError instanceof Error ? saveError.message : "Could not save PDF annotations.");
+  });
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
@@ -1250,42 +1257,9 @@ export function PdfViewer({
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
       setSaveStatus("saving");
       localSavePendingRef.current = true;
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-
-      saveTimeoutRef.current = setTimeout(() => {
-        apiRequest<PdfAnnotationsPayload>("/api/pdf-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({
-            path: filePath,
-            annotations: latestAnnotationsRef.current,
-          }),
-        })
-          .then((payload) => {
-            localSavePendingRef.current = false;
-            latestAnnotationsRef.current = payload.annotations;
-            setAnnotations(payload.annotations);
-            dispatchPdfAnnotationsUpdated({
-              path: filePath,
-              annotations: payload.annotations,
-            });
-            setSaveStatus("saved");
-            broadcastSavedAnnotations("pdf", filePath, payload.annotations);
-          })
-          .catch((saveError) => {
-            localSavePendingRef.current = false;
-            setSaveStatus("error");
-            setError(
-              saveError instanceof Error
-                ? saveError.message
-                : "Could not save PDF annotations.",
-            );
-          });
-      }, 350);
+      scheduleAnnotations(nextAnnotations);
     },
-    [filePath],
+    [filePath, scheduleAnnotations],
   );
 
   function applyZoom(nextValue: number) {

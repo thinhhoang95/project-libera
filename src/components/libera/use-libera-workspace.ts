@@ -759,6 +759,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       setAuthenticated(true);
       setPassword("");
+      // The desktop app opens this user's sign-in screen at the next start.
+      void window.liberaProfiles?.signedIn().catch(() => {});
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Login failed.");
     } finally {
@@ -769,6 +771,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function handleLogout() {
     try { await workspaceManager.checkpoint(); await flushPendingState(); }
     catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
+    await window.liberaProfiles?.signedOut();
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
     }).catch(() => null);
