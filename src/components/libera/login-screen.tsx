@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from "react";
-import { ArrowRight, Check, Eye, EyeOff, ImagePlus, LockKeyhole, MoreHorizontal } from "lucide-react";
+import { ArrowRight, Check, Eye, EyeOff, ImagePlus, LoaderCircle, MoreHorizontal } from "lucide-react";
 import { WindowControls } from "@/components/libera/window-controls";
 import styles from "./login-screen.module.css";
 import { defaultLoginWallpaper, LOGIN_WALLPAPERS, readLoginWallpaper, saveLoginWallpaper, subscribeLoginWallpaper } from "./login-wallpaper";
+import { detectWallpaperLook, type WallpaperLook } from "./login-wallpaper-tone";
+
+const FALLBACK_LOOK: WallpaperLook = { tone: "light", logo: ["#106660", "#106660"] };
 
 type LoginScreenProps = {
   yourName: string;
@@ -26,9 +29,29 @@ export function LoginScreen({
   const [uploading, setUploading] = useState(false);
   const [imageVersion, setImageVersion] = useState(0);
   const [hasCustomImage, setHasCustomImage] = useState(false);
+  const [look, setLook] = useState<WallpaperLook>();
   const imageInput = useRef<HTMLInputElement>(null);
+  const field = useRef<HTMLDivElement>(null);
   const wallpaper = useSyncExternalStore(subscribeLoginWallpaper, readLoginWallpaper, defaultLoginWallpaper);
   const customBackground = `url("/api/preferences/login-wallpaper?v=${imageVersion}") center / cover no-repeat`;
+  const background = wallpaper.id === "custom" ? customBackground : wallpaper.background;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    detectWallpaperLook(background, controller.signal)
+      .catch(() => FALLBACK_LOOK)
+      .then((value) => { if (!controller.signal.aborted) setLook(value); });
+    return () => controller.abort();
+  }, [background]);
+
+  // Shake the field after a rejected attempt, as macOS does.
+  useEffect(() => {
+    if (busy || !authError || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    field.current?.animate(
+      [0, -10, 9, -7, 5, -3, 0].map((x) => ({ transform: `translateX(${x}px)` })),
+      { duration: 420, easing: "ease-out" },
+    );
+  }, [busy, authError]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -60,7 +83,16 @@ export function LoginScreen({
   }
 
   return (
-    <main className={`libera-login-screen ${styles.screen}`} style={{ "--login-wallpaper": wallpaper.id === "custom" ? customBackground : wallpaper.background } as CSSProperties}>
+    <main
+      className={`libera-login-screen ${styles.screen}`}
+      data-tone={look?.tone ?? "light"}
+      data-ready={look ? "" : undefined}
+      style={{
+        "--login-wallpaper": background,
+        "--logo-from": (look ?? FALLBACK_LOOK).logo[0],
+        "--logo-to": (look ?? FALLBACK_LOOK).logo[1],
+      } as CSSProperties}
+    >
       <div className="libera-window-drag-region fixed inset-x-0 top-0 h-12" aria-hidden />
       <div className={`libera-window-no-drag fixed right-3 top-3 z-50 ${styles.toolbar}`}>
         <button type="button" className={styles.wallpaperTrigger} popoverTarget="login-wallpapers" aria-label="Choose login wallpaper" title="Choose login wallpaper">
@@ -107,23 +139,23 @@ export function LoginScreen({
         <p>PNG, JPEG or WebP · up to 10 MB</p>
         {wallpaperError && <p role="alert" className={styles.error}>{wallpaperError}</p>}
       </div>
-      <section className={styles.card} aria-labelledby="login-heading">
-        <div className={styles.brand}>
-          <img className={styles.brandIcon} src="/libera-icon.png" alt="Libera" width={96} height={96} draggable={false} />
+      <div className={styles.scrim} aria-hidden />
+      <section className={styles.account} aria-labelledby="login-heading">
+        <div className={styles.logo} role="img" aria-label="Libera">
+          <span className={styles.logoInk} />
         </div>
         <h1 id="login-heading" className={styles.heading}>
-          {yourName ? `Welcome, ${yourName}` : "Sign in"}
+          {yourName ? `Welcome, ${yourName}` : "Welcome to Libera"}
         </h1>
         <form className={styles.form} onSubmit={onLogin} aria-busy={busy}>
           <label className={styles.label} htmlFor="password">
             Password
           </label>
-          <div className={styles.passwordField}>
-            <LockKeyhole aria-hidden size={21} />
+          <div ref={field} className={styles.passwordField}>
             <input
               id="password"
               type={showPassword ? "text" : "password"}
-              placeholder="Enter your password"
+              placeholder="Enter password"
               autoComplete="current-password"
               aria-invalid={Boolean(authError)}
               aria-describedby={authError ? "login-error" : undefined}
@@ -132,23 +164,21 @@ export function LoginScreen({
               autoFocus
             />
             <button
-              className={styles.visibilityButton}
+              className={styles.fieldButton}
               type="button"
               aria-label={showPassword ? "Hide password" : "Show password"}
+              title={showPassword ? "Hide password" : "Show password"}
               onClick={() => setShowPassword((visible) => !visible)}
             >
-              {showPassword ? <Eye aria-hidden size={21} /> : <EyeOff aria-hidden size={21} />}
+              {showPassword ? <EyeOff aria-hidden size={15} /> : <Eye aria-hidden size={15} />}
+            </button>
+            <button className={styles.submit} type="submit" disabled={busy || !password} aria-label={busy ? "Signing in" : "Sign in"} title="Sign in">
+              {busy ? <LoaderCircle aria-hidden size={16} className={styles.spinner} /> : <ArrowRight aria-hidden size={16} strokeWidth={2.5} />}
             </button>
           </div>
-          {authError ? <p id="login-error" role="alert" className={styles.error}>{authError}</p> : null}
-          <button
-            className={styles.submit}
-            type="submit"
-            disabled={busy}
-          >
-            {busy ? "Signing in" : "Sign in"}
-            <ArrowRight aria-hidden size={20} />
-          </button>
+          <p id="login-error" role="alert" className={styles.hint} data-error={authError ? "" : undefined}>
+            {authError || (busy ? "Signing in…" : " ")}
+          </p>
         </form>
       </section>
     </main>
