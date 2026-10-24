@@ -58,7 +58,7 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
           ? projects.find((project) => project.projectId === result.projectId) ?? result
           : undefined) ?? projects.find((project) => !before.has(project.projectId));
       if (!joined) {
-        setError("You joined, but the notebook has not appeared yet. It shows up in the Library once it has downloaded.");
+        setError("You joined, but it has not appeared yet. A notebook shows up in the Library, and an album in the gallery, once it has downloaded.");
         return;
       }
       onJoined(joined);
@@ -72,8 +72,8 @@ export function JoinNotebookDialog({ onClose, onJoined, onSignIn, initialInvitat
   return (
     <ModalDialog
       open
-      title="Join a shared notebook"
-      description="Paste the invitation link or code someone sent you. The notebook is downloaded into your Library and keeps syncing."
+      title="Join a shared notebook or album"
+      description="Paste the invitation link or code someone sent you. A notebook is downloaded into your Library and an album into your gallery, and both keep syncing."
       onClose={onClose}
       footer={
         <>

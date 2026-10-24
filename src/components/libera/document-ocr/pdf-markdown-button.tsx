@@ -7,9 +7,11 @@ import {
   cancelPdfMarkdownJob,
   dismissPdfMarkdownJob,
   getPdfMarkdownJobs,
+  getPdfReadingSettings,
   startPdfMarkdownJob,
   subscribePdfMarkdownJobs,
   type PdfMarkdownConversion,
+  type PdfReadingSettings,
 } from "@/components/libera/document-ocr/pdf-markdown-jobs";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 
@@ -48,6 +50,16 @@ export function PdfMarkdownButton({
   const lastPage = Math.max(firstPage, Math.min(pageCount, Number.parseInt(to, 10) || pageCount));
   const running = job?.state === "running";
   const [now, setNow] = useState(() => Date.now());
+  const [settings, setSettings] = useState<PdfReadingSettings | null>(null);
+  const engine = job?.engine ?? settings?.engine ?? "local";
+
+  // Preferences can change between conversions, so ask each time the dialog opens.
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    getPdfReadingSettings(controller.signal).then(setSettings, () => undefined);
+    return () => controller.abort();
+  }, [open]);
 
   useEffect(() => {
     if (!running || !open) return;
@@ -85,7 +97,7 @@ export function PdfMarkdownButton({
       <button
         type="button"
         aria-label="Convert PDF to Markdown"
-        title={running ? `Reading page ${job.current} of ${job.lastPage}…` : "Convert PDF to Markdown"}
+        title={running ? (job.engine === "openrouter" ? `Read ${job.done} of ${total} pages…` : `Reading page ${job.current} of ${job.lastPage}…`) : "Convert PDF to Markdown"}
         className={className}
         onClick={() => setOpen(true)}
       >
@@ -95,7 +107,9 @@ export function PdfMarkdownButton({
       <ModalDialog
         open={open}
         title="Convert PDF to Markdown"
-        description="Reads each page on this computer and writes a Markdown file next to the PDF."
+        description={engine === "openrouter"
+          ? `Sends each page to ${settings?.model ?? "the OpenRouter model"} and writes a Markdown file next to the PDF.`
+          : "Reads each page on this computer and writes a Markdown file next to the PDF."}
         onClose={close}
         footer={footer}
       >
@@ -110,9 +124,15 @@ export function PdfMarkdownButton({
                 <span className="text-muted-foreground">of {pageCount}</span>
               </div>
               <p className="text-xs text-muted-foreground">
-                Expect one to three minutes per page on the CPU. Pages are saved as they finish, so you can stop at any time and
-                keep what was read. Works on scanned PDFs too.
+                {engine === "openrouter"
+                  ? `Reads ${settings?.concurrency ?? "several"} pages at once with your OpenRouter key${settings?.cleanup ? ", then makes the heading levels consistent" : ""}.`
+                  : "Expect one to three minutes per page on the CPU."}{" "}
+                Pages are saved as they finish, so you can stop at any time and keep what was read. Works on scanned PDFs too.
+                Choose the model in Preferences → AI.
               </p>
+              {engine === "openrouter" && settings && !settings.available ? (
+                <p role="alert" className="text-xs text-destructive">Add an OpenRouter API key in Preferences first.</p>
+              ) : null}
               {job?.state === "cancelled" && job.file ? <p className="text-xs">Stopped after {job.done} of {total} pages; they are saved in {job.file.name}.</p> : null}
             </>
           ) : null}
@@ -122,7 +142,8 @@ export function PdfMarkdownButton({
                 <div className="h-full bg-primary transition-[width]" style={{ width: `${total ? (job.done / total) * 100 : 0}%` }} />
               </div>
               <p className="text-xs text-muted-foreground">
-                Reading page {job.current} of {job.lastPage}. {job.done} done in {duration(elapsed)}
+                {job.tidying ? "Making heading levels consistent. " : job.engine === "openrouter" ? `Reading pages from ${job.current}. ` : `Reading page ${job.current} of ${job.lastPage}. `}
+                {job.done} done in {duration(elapsed)}
                 {job.done ? `, about ${duration(remaining)} left` : ""}. You can close this dialog and keep working.
               </p>
             </div>

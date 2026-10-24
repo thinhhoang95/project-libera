@@ -1,6 +1,11 @@
 import type { ReferenceMoveResult } from "@/lib/references/moves";
 
-export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf" | "audio";
+/**
+ * What a file is. "page" is never a file on disk: it marks an app page that
+ * opens in a tab of its own, such as Spending (components/libera/page-tabs.ts),
+ * so that nothing that handles files by type treats the tab as one.
+ */
+export type LiberaFileType = "markdown" | "latex" | "text" | "image" | "pdf" | "audio" | "page";
 
 /** File types whose content is edited as text in a tab. */
 export function isTextFileType(fileType: LiberaFileType | undefined): fileType is "markdown" | "latex" | "text" {

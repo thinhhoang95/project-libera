@@ -36,7 +36,7 @@ import type {
 } from "./protocol/api";
 import type { AiActorHint, AiFeature, Provenance } from "./protocol/actor";
 import type { Role } from "./protocol/roles";
-import type { DocKind, SuggestionStatus } from "./protocol/schema";
+import type { DocKind, ProjectKind, SuggestionStatus } from "./protocol/schema";
 import type { SyncStatus } from "./protocol/local";
 
 export type HostConnection =
@@ -63,12 +63,125 @@ export interface LocalProject {
   projectId: string;
   name: string;
   role: Role;
-  /** Top-level notebook folder name under the master directory. */
+  /**
+   * Top-level notebook folder name under the master directory (for a shared
+   * album: its folder in the gallery).
+   */
   notebook: string;
   /** Set when access was revoked; the folder is kept read-only. */
   revoked: boolean;
   /** Files whose disk copy conflicts with the shared document. */
   reconcilePending: number;
+  /** "album" for a shared album; missing for notebooks. */
+  kind?: ProjectKind;
+}
+
+// ---------------------------------------------------------------- shared albums
+
+/** One photo of a shared album on this device. */
+export interface LocalAlbumPhoto {
+  fileId: string;
+  /** File name in the album's gallery folder. */
+  name: string;
+  caption?: string;
+  prompt?: string;
+  model?: string;
+  /** PhotoEdits applied to the original (the file on disk is the edited photo). */
+  edits?: Record<string, unknown>;
+  /** The original is on the server: the photo can be reverted or edited again from it. */
+  edited: boolean;
+  /** Lets the gallery verify a local backup before reusing it offline. */
+  originalHash?: string;
+  order?: number;
+  /** Account id of the member who added it. */
+  addedBy: string;
+  /** Whether the file is on disk yet. */
+  downloaded: boolean;
+  updatedAt: number;
+}
+
+/** GET ControlRoutes.albums: the shared albums on this device. */
+export interface LocalAlbum {
+  projectId: string;
+  name: string;
+  /** The album's folder in the gallery. */
+  folder: string;
+  /** Comments on photos are threads on this document (anchor: the photo's fileId). */
+  manifestDocId: string;
+  role: Role;
+  revoked: boolean;
+  /** One photo shared on its own (shown as a photo, not an album). */
+  direct: boolean;
+  keepLocation: boolean;
+  sharePrompts: boolean;
+  /** File name of the cover photo. */
+  cover?: string;
+  photos: LocalAlbumPhoto[];
+}
+
+export interface ShareAlbumPhoto {
+  name: string;
+  caption?: string;
+  /** Shared only when the album shares prompts. */
+  prompt?: string;
+  model?: string;
+}
+
+/** POST ControlRoutes.albumShare: shares a gallery folder as an album. */
+export interface ShareAlbumRequest {
+  /** The album's folder in the gallery; Libera has moved the photos into it. */
+  folder: string;
+  /** Album name shown to members; defaults to the folder name. */
+  name?: string;
+  direct?: boolean;
+  keepLocation?: boolean;
+  sharePrompts?: boolean;
+  photos?: ShareAlbumPhoto[];
+}
+
+export interface ShareAlbumResult {
+  projectId: string;
+  name: string;
+  folder: string;
+  photos: number;
+  /** Files left local: not photos an album takes (SVG, other files). */
+  skipped: string[];
+  synced: boolean;
+}
+
+/** POST ControlRoutes.album(projectId): changes captions, order, edits and settings. */
+export interface UpdateAlbumRequest {
+  /** null clears a field. */
+  photos?: Array<{
+    name: string;
+    caption?: string | null;
+    order?: number | null;
+    edits?: Record<string, unknown> | null;
+    prompt?: string | null;
+    model?: string | null;
+  }>;
+  /** File name of the cover photo, or null for the newest. Editors and owners. */
+  cover?: string | null;
+  /** Renames the album for every member. Owner only. */
+  name?: string;
+  /** Owner only. */
+  keepLocation?: boolean;
+  /** Owner only. */
+  sharePrompts?: boolean;
+}
+
+/**
+ * POST ControlRoutes.albumOriginal(projectId): writes an edited photo's
+ * original into the gallery's originals folder, so it can be edited again
+ * from it or reverted.
+ */
+export interface AlbumOriginalRequest {
+  name: string;
+}
+
+export interface AlbumOriginalResponse {
+  /** File name in the gallery's `.originals` folder. */
+  original: string;
 }
 
 /** GET ControlRoutes.sharedSignIn: what the synced data folder offers this computer. */
@@ -472,6 +585,14 @@ export const ControlRoutes = {
   project: (projectId: string) => `/projects/${encodeURIComponent(projectId)}`,
   share: "/projects/share",
   join: "/projects/join",
+  /** GET → LocalAlbum[]. */
+  albums: "/albums",
+  /** POST ShareAlbumRequest → ShareAlbumResult. */
+  albumShare: "/albums/share",
+  /** POST UpdateAlbumRequest → LocalAlbum. */
+  album: (projectId: string) => `/albums/${encodeURIComponent(projectId)}`,
+  /** POST AlbumOriginalRequest → AlbumOriginalResponse. */
+  albumOriginal: (projectId: string) => `/albums/${encodeURIComponent(projectId)}/original`,
   members: (projectId: string) => `/projects/${encodeURIComponent(projectId)}/members`,
   member: (projectId: string, userId: string) =>
     `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,

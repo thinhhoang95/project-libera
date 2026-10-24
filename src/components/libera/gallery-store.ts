@@ -88,3 +88,28 @@ export function subscribeReferenceRequests(listener: (photos: Array<{ name: stri
   referenceListeners.add(listener);
   return () => { referenceListeners.delete(listener); };
 }
+
+/** A shared album to show: joined just now, or named by a notification (at a comment thread or photo). */
+export type SharedAlbumRequest = { projectId: string; threadId?: string; fileId?: string };
+
+let pendingAlbumRequest: SharedAlbumRequest | null = null;
+const albumRequestListeners = new Set<(request: SharedAlbumRequest) => void>();
+
+/** Asks the gallery to open a shared album; kept until a gallery view takes it (the panel may be opening). */
+export function requestSharedAlbum(request: SharedAlbumRequest) {
+  pendingAlbumRequest = request;
+  void refreshGallery();
+  albumRequestListeners.forEach((listener) => listener(request));
+}
+
+/** The gallery view takes requests as they come, and the one waiting when it mounts. */
+export function subscribeSharedAlbumRequests(listener: (request: SharedAlbumRequest) => void) {
+  albumRequestListeners.add(listener);
+  if (pendingAlbumRequest) listener(pendingAlbumRequest);
+  return () => { albumRequestListeners.delete(listener); };
+}
+
+/** The request was handled (its album is showing). */
+export function settleSharedAlbumRequest(request: SharedAlbumRequest) {
+  if (pendingAlbumRequest === request) pendingAlbumRequest = null;
+}

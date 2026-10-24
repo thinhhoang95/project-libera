@@ -14,7 +14,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { Reconciliation } from "../../../src/lib/collab/local-api";
-import type { DocKind, ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
+import type { DocKind, ManifestEntryKind, ProjectKind } from "../../../src/lib/collab/protocol/schema";
 import { SHARED_MARKER_FILE, SHARE_PENDING_FILE, STATE_DIRECTORY, readIfExists, writeFileAtomic } from "./fs-ops";
 
 export interface SharedMarker {
@@ -23,6 +23,8 @@ export interface SharedMarker {
   accountId: string;
   manifestDocId: string;
   sharedAt: string;
+  /** "album": a shared album's folder in the gallery. Missing for notebooks. */
+  kind?: ProjectKind;
   /**
    * The installation that keeps this folder in sync. A folder synced to
    * other devices (OneDrive and the like) carries the marker there too; their
@@ -183,15 +185,34 @@ export interface SharePlan {
   files: PlannedFile[];
 }
 
+const SHARE_UPLOADS_FILE = ".libera-share-uploaded.jsonl";
+
 export async function readSharePlan(root: string): Promise<SharePlan | null> {
   const value = await readJson<SharePlan>(path.join(root, SHARE_PENDING_FILE));
-  return value && value.version === 1 && Array.isArray(value.files) ? value : null;
+  if (!value || value.version !== 1 || !Array.isArray(value.files)) return null;
+  const journal = await readIfExists(path.join(root, SHARE_UPLOADS_FILE));
+  const byId = new Map(value.files.map((file) => [file.fileId, file]));
+  for (const line of journal?.toString("utf8").split("\n") ?? []) {
+    try {
+      const upload = JSON.parse(line) as { fileId: string; blobHash: string };
+      const file = byId.get(upload.fileId);
+      if (file?.kind === "blob" && file.blobHash === upload.blobHash) file.uploaded = true;
+    } catch { /* An interrupted append must not prevent resuming the other uploads. */ }
+  }
+  return value;
 }
 
 export async function writeSharePlan(root: string, plan: SharePlan): Promise<void> {
   await writeJson(path.join(root, SHARE_PENDING_FILE), plan);
 }
 
+/** One small checkpoint per album photo, instead of rewriting every planned photo. */
+export async function recordShareUpload(root: string, file: PlannedFile): Promise<void> {
+  // The leading newline separates a prior interrupted record from this one.
+  await fs.appendFile(path.join(root, SHARE_UPLOADS_FILE), `\n${JSON.stringify({ fileId: file.fileId, blobHash: file.blobHash })}\n`);
+}
+
 export async function deleteSharePlan(root: string): Promise<void> {
+  await fs.rm(path.join(root, SHARE_UPLOADS_FILE), { force: true });
   await fs.rm(path.join(root, SHARE_PENDING_FILE), { force: true });
 }

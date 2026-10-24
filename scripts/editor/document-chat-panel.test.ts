@@ -33,6 +33,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
   } };
   window.liberaExport = { saveMarkdownFile: async (input) => { exported = input; return { canceled: false }; }, exportMarkdownPdf: async () => ({ canceled: true }) };
   let savedFontSize: number | null = null;
+  let savedModel: { model: string; defaultModel: string } | null = null;
   let savedHistory: ChatStore | null = null;
   let fileReads = 0;
   let historyWrites = 0;
@@ -41,7 +42,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     if (String(input) === "/api/tree") return Response.json({ notebooks: [{ name: "Notes", children: [{ kind: "folder", path: "Notes/Exports", children: [] }] }] });
     if (String(input) === "/api/files") { notebookExport = JSON.parse(String(init?.body)); return Response.json({}); }
     if (String(input).endsWith("/state")) {
-      if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else { savedHistory = body.value; historyWrites++; } return Response.json({ saved: true }); }
+      if (init?.method === "PUT") { const body = JSON.parse(String(init.body)); if (body.kind === "font-size") savedFontSize = body.value; else if (body.kind === "model") savedModel = body.value; else { savedHistory = body.value; historyWrites++; } return Response.json({ saved: true }); }
       return Response.json({ history: savedHistory, panel: null, fontSize: savedFontSize, model: "test/provider-model", alternativeModels: ["test/alternative-model"], defaultReasoningEffort: "max" });
     }
     requests.push(JSON.parse(String(init?.body))); return Response.json({ text: [
@@ -82,6 +83,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     menuAction = "chat-model-1";
     await click("Model: test/provider-model");
     assert.equal(host.querySelector('[aria-label="Model: test/alternative-model"]')?.textContent, "alternative-model");
+    assert.equal(savedModel?.model, "test/alternative-model", "The picked model is remembered across restarts");
     menuAction = "manage-chats";
     assert.ok(!host.textContent?.includes("Enter to send"));
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "max");
@@ -217,7 +219,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     assert.equal(stored().activeId, firstId);
     assert.equal(host.querySelector<HTMLSelectElement>('[aria-label="Reasoning effort"]')?.value, "high");
     assert.ok(host.textContent?.includes("A helpful answer"));
-    assert.ok(host.textContent?.includes("already included"));
+    assert.ok(host.querySelector('.libera-context-chip[data-sent]'));
     await click("Chat settings");
     assert.ok(document.querySelector('[role="dialog"]'));
     await act(async () => {
@@ -293,9 +295,9 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => photoInput.dispatchEvent(new dom.window.Event("change", { bubbles: true })));
     await settle();
     assert.equal(stored().chats[0].photos?.[0].name, "photo.png");
-    assert.ok(host.querySelector('img[alt="photo.png"]'));
+    assert.ok(host.querySelector('[aria-label="Remove photo: photo.png"]'));
     await click("Remove document context");
-    assert.ok(!host.textContent?.includes("Context:"));
+    assert.ok(!host.querySelector('.libera-context-chip[data-kind="document"]'));
     await click("Send message");
     await settle();
     const photoRequest = requests.at(-1)!;
@@ -306,7 +308,7 @@ test("chat captures both editors, sends the draft, and restores saved conversati
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
-    assert.ok(!host.textContent?.includes("Context:"));
+    assert.ok(!host.querySelector('.libera-context-chip[data-kind="document"]'));
     assert.ok(host.querySelector('img[alt="photo.png"]'));
 
 

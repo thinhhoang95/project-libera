@@ -10,6 +10,7 @@ import { FileTypeIcon } from "./file-type";
 import { isGalleryTab } from "./gallery-tabs";
 import { announceImageSaved, imageSaveMenuItems, runImageSaveMenuAction } from "./image-save";
 import { isRecordingTab } from "./recording/recording-tabs";
+import { isPageTab, PAGES } from "./page-tabs";
 import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
@@ -171,7 +172,7 @@ export function TabStrip({
         ...nativeMenuPointFromMouseEvent(event),
         items: [
           // A recording in progress has no file for AI Chat or another window to open.
-          ...(isRecordingTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
+          ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
           ...(onOpenTabInSplit
             ? [
                 { id: "open-split-right", label: "Open to the Right" },
@@ -180,7 +181,7 @@ export function TabStrip({
               ]
             : []),
           // Gallery photos have no notebook file for another window to open.
-          ...(isGalleryTab(tab) || isRecordingTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
+          ...(isGalleryTab(tab) || isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
           { id: "close-tab", label: "Close Tab" },
           {
             id: "close-others",
@@ -284,7 +285,7 @@ export function TabStrip({
                 }}
               >
                 <span aria-hidden className="libera-tab-file-icon" data-type={tab.file.fileType}>
-                  <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />
+                  {isPageTab(tab) ? <PageTabIcon kind={tab.page.kind} /> : <FileTypeIcon fileType={tab.file.fileType} name={tab.file.name} />}
                 </span>
                 <span className="truncate">{tab.file.name}</span>
                 {isDragTarget ? (
@@ -379,8 +380,8 @@ function ActiveFileActions({
   const canvasActions = { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels };
   const canvasItems = canvasMenuItems(canvasPanelCount, canvasActions);
 
-  if (!activeTab || isRecordingTab(activeTab)) {
-    // An empty split panel, or a recording in progress, has no file, but its layout can still be changed.
+  if (!activeTab || isRecordingTab(activeTab) || isPageTab(activeTab)) {
+    // An empty split panel, a recording in progress or an app page has no file, but its layout can still be changed.
     if (canvasPanelCount < 2 || !canvasItems.length) {
       return null;
     }
@@ -585,4 +586,9 @@ function FileActionsMenuButton({
   );
 
   return bare ? button : <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">{button}</div>;
+}
+
+function PageTabIcon({ kind }: { kind: keyof typeof PAGES }) {
+  const Icon = PAGES[kind].icon;
+  return <Icon aria-hidden className="h-4 w-4" />;
 }

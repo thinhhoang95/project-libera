@@ -14,13 +14,25 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   assert.equal(legacy.chat.model, 'existing/model');
   assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
   assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true, customInstruction: '', alternativeModels: [] });
+  assert.deepEqual(legacy.write, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
+  assert.deepEqual(legacy.review, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true });
+  assert.deepEqual(legacy.recordingRecap, { model: 'existing/model', reasoningEffort: 'low', promptCaching: false });
+  // Split-off functions keep the settings of the one they shared until set.
+  const split = normalizeAiPreferences({ rewrite: { model: 'own/rewrite', reasoningEffort: 'high', promptCaching: true }, chat: { model: 'own/chat', reasoningEffort: 'xhigh' }, formatting: { model: 'own/formatting', reasoningEffort: 'max' } }, 'existing/model');
+  assert.deepEqual(split.write, { model: 'own/rewrite', reasoningEffort: 'high', promptCaching: true });
+  assert.deepEqual(split.review, { model: 'own/chat', reasoningEffort: 'xhigh', promptCaching: true });
+  assert.deepEqual(split.recordingRecap, { model: 'own/formatting', reasoningEffort: 'low', promptCaching: false });
+  assert.equal(normalizeAiPreferences({ rewrite: { model: 'own/rewrite' }, write: { model: 'own/write' } }).write.model, 'own/write');
+  assert.equal(normalizeAiPreferences(undefined).formatting.model, 'openai/gpt-6-luna');
   assert.deepEqual(legacy.latex, { model: 'openai/gpt-5.6-luna', reasoningEffort: 'low', promptCaching: false });
   assert.deepEqual(legacy.references, { model: '', reasoningEffort: 'low', promptCaching: false, lookupOnline: true, useAi: true, webSearch: false, contactEmail: '', autoCreateForPdfs: false });
   assert.equal(normalizeAiPreferences({ references: { contactEmail: 'not an email', model: 'bad model' } }).references.contactEmail, '');
   assert.equal(normalizeAiPreferences({ references: { model: 'bad model' } }).references.model, '');
   assert.deepEqual(legacy.whereWasI, { enabled: true, summarize: true, model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'low' });
   assert.equal(normalizeAiPreferences({ whereWasI: { model: 'bad model', reasoningEffort: 'huge' } }).whereWasI.model, 'deepseek/deepseek-v4.1-flash');
-  const efforts = { formatting: 'low', rewrite: 'high', chat: 'xhigh', imageToMarkdown: 'medium', latex: 'max' };
+  assert.deepEqual(legacy.pdfToMarkdown, { engine: 'local', model: 'openai/gpt-6-luna', reasoningEffort: 'low', concurrency: 6, cleanup: true });
+  assert.deepEqual(normalizeAiPreferences({ pdfToMarkdown: { engine: 'cloud', model: 'bad model', concurrency: 40, cleanup: 'no' } }).pdfToMarkdown, legacy.pdfToMarkdown);
+  const efforts = { formatting: 'low', rewrite: 'high', write: 'medium', chat: 'xhigh', review: 'high', recordingRecap: 'low', imageToMarkdown: 'medium', latex: 'max' };
   const aiFunctions = Object.fromEntries(AI_FUNCTIONS.map((name) => [name, {
     model: name === "chat" ? "deepseek/deepseek-v4.1-flash" : `provider/${name}`,
     reasoningEffort: efforts[name],
@@ -30,6 +42,7 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   }]));
   aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', autoCreateForPdfs: true };
   aiFunctions.whereWasI = { enabled: false, summarize: false, model: 'provider/recap', reasoningEffort: 'medium' };
+  aiFunctions.pdfToMarkdown = { engine: 'openrouter', model: 'provider/pdf', reasoningEffort: 'medium', concurrency: 3, cleanup: false };
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
     const configPath = path.join(directory, 'libera-electron-config.json');
@@ -48,6 +61,10 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     assert.equal(env.LIBERA_WHERE_WAS_I_SUMMARIZE, 'false');
     assert.equal(env.LIBERA_AI_WHERE_WAS_I_MODEL, 'provider/recap');
     assert.equal(env.LIBERA_AI_WHERE_WAS_I_REASONING_EFFORT, 'medium');
+    assert.equal(env.LIBERA_PDF_TO_MARKDOWN_ENGINE, 'openrouter');
+    assert.equal(env.LIBERA_AI_PDF_TO_MARKDOWN_MODEL, 'provider/pdf');
+    assert.equal(env.LIBERA_PDF_TO_MARKDOWN_CONCURRENCY, '3');
+    assert.equal(env.LIBERA_PDF_TO_MARKDOWN_CLEANUP, 'false');
     assert.equal(env.LIBERA_AI_REFERENCES_REASONING_EFFORT, 'high');
     assert.equal(env.LIBERA_AI_REFERENCES_PROMPT_CACHING, 'true');
     assert.equal(env.LIBERA_REFERENCES_LOOKUP_ONLINE, 'false');
@@ -65,7 +82,7 @@ test('alternative models are trimmed, deduplicated, and exclude the default mode
   assert.deepEqual(normalizeAlternativeModels('one/model\r\ntwo/model\none/model', 'default/model'), ['one/model', 'two/model']);
 });
 
-test('Preferences UI loads and saves all five function settings', async () => {
+test('Preferences UI loads and saves every function setting', async () => {
   const aiFunctions = normalizeAiPreferences({
     chat: { customInstruction: 'Prefer concise answers.', model: 'test/default-model', alternativeModels: ['test/fast-model', 'test/deep-model'] },
     rewrite: { customInstruction: 'Preserve the author voice.' },
@@ -111,7 +128,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
     for (const name of AI_FUNCTIONS) {
       assert.equal(document.querySelector(`#ai-${name}-model`).value, aiFunctions[name].model);
       assert.deepEqual(Array.from(document.querySelector(`#ai-${name}-effort`).options, (option) => option.value), ['low', 'medium', 'high', 'xhigh', 'max']);
-      assert.equal(document.querySelector(`#ai-${name}-caching`).value, String(name === "chat"));
+      assert.equal(document.querySelector(`#ai-${name}-caching`).value, String(name === "chat" || name === "review"));
       document.querySelector(`#ai-${name}-caching`).value = String(name !== "chat");
       document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
       document.querySelector(`#ai-${name}-effort`).value = 'max';
@@ -138,6 +155,14 @@ test('Preferences UI loads and saves all five function settings', async () => {
     document.querySelector('#where-was-i-enabled').dispatchEvent(new dom.window.Event('change'));
     assert.equal(document.querySelector('#where-was-i-summarize').disabled, true);
     document.querySelector('#ai-whereWasI-model').value = ' custom/recap ';
+    assert.equal(document.querySelector('#pdf-to-markdown-engine').value, 'local');
+    assert.equal(document.querySelector('#ai-pdfToMarkdown-model').value, 'openai/gpt-6-luna');
+    assert.equal(document.querySelector('#ai-pdfToMarkdown-model').disabled, true);
+    document.querySelector('#pdf-to-markdown-engine').value = 'openrouter';
+    document.querySelector('#pdf-to-markdown-engine').dispatchEvent(new dom.window.Event('change'));
+    assert.equal(document.querySelector('#ai-pdfToMarkdown-model').disabled, false);
+    document.querySelector('#ai-pdfToMarkdown-model').value = ' custom/pdf ';
+    document.querySelector('#pdf-to-markdown-concurrency').value = '4';
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Prefer concise answers.');
     assert.equal(document.querySelector('#ai-chat-alternative-models').value, 'test/fast-model\ntest/deep-model');
     document.querySelector('#ai-chat-alternative-models').value = 'custom/chat\ncustom/fast\ncustom/fast';
@@ -157,6 +182,7 @@ test('Preferences UI loads and saves all five function settings', async () => {
     assert.equal(document.querySelector('#ai-chat-custom-instruction').value, 'Instruction loaded from a file.');
     document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(saved.aiFunctions.pdfToMarkdown, { engine: 'openrouter', model: 'custom/pdf', reasoningEffort: 'low', concurrency: 4, cleanup: true });
     for (const name of AI_FUNCTIONS) assert.deepEqual(saved.aiFunctions[name], {
       model: `custom/${name}`,
       reasoningEffort: 'max',
@@ -168,6 +194,12 @@ test('Preferences UI loads and saves all five function settings', async () => {
       model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org',
     });
     assert.deepEqual(saved.aiFunctions.whereWasI, { enabled: false, summarize: false, model: 'custom/recap', reasoningEffort: 'low' });
+    document.querySelector('#ai-all-models').value = ' every/model ';
+    document.querySelector('#ai-all-models-apply').click();
+    for (const selector of ['#openrouter-model', ...AI_FUNCTIONS.map((name) => `#ai-${name}-model`), '#ai-references-model', '#ai-whereWasI-model']) {
+      assert.equal(document.querySelector(selector).value, 'every/model', selector);
+    }
+    assert.equal(document.querySelector('#ai-chat-alternative-models').value, 'custom/chat\ncustom/fast\ncustom/fast');
     assert.deepEqual(saved.quickPrompts, [
       { identifier: 'summary', prompt: 'Summarize $1.' },
       { identifier: 'rewrite', prompt: 'Rewrite $1 for $2.' },

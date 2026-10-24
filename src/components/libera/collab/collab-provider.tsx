@@ -39,6 +39,8 @@ export interface CollabProviderProps {
   onNotebookJoined: (notebook: string) => void | Promise<void>;
   /** Opens a Libera path ("Notebook/sub/file.md") in the canvas. */
   onOpenPath: (path: string) => void;
+  /** Opens a shared album in the gallery (joined, or named by a notification), at a comment thread when given. */
+  onOpenAlbum?: (target: { projectId: string; threadId?: string; fileId?: string }) => void;
 }
 
 /**
@@ -46,10 +48,10 @@ export interface CollabProviderProps {
  * actions that open them to the shell through context, so the notebook panel
  * and the rail need no extra props.
  */
-export function CollabProvider({ children, onNotebookJoined, onOpenPath }: CollabProviderProps) {
+export function CollabProvider({ children, onNotebookJoined, onOpenPath, onOpenAlbum }: CollabProviderProps) {
   useForwardSharedFileChanges();
   const collab = useCollabStatus();
-  const { projectForNotebook } = useCollabProjects();
+  const { projectForNotebook, projectById } = useCollabProjects();
   const [accountOpen, setAccountOpen] = useState(false);
   const [shareNotebook, setShareNotebook] = useState<string | null>(null);
   const [join, setJoin] = useState<{ invitation: string } | null>(null);
@@ -59,13 +61,25 @@ export function CollabProvider({ children, onNotebookJoined, onOpenPath }: Colla
   // The shell passes fresh callbacks on every render; reading them through
   // refs keeps the context value stable so the Notebooks panel does not
   // re-render for nothing.
-  const callbacks = useRef({ onNotebookJoined, onOpenPath });
+  const callbacks = useRef({ onNotebookJoined, onOpenPath, onOpenAlbum, projectById });
   useEffect(() => {
-    callbacks.current = { onNotebookJoined, onOpenPath };
+    callbacks.current = { onNotebookJoined, onOpenPath, onOpenAlbum, projectById };
   });
 
   const openNotificationTarget = useCallback((notification: NotificationInfo & { docId: string }) => {
     const reviewId = notification.kind === "review-requested" || notification.kind === "review-decided" ? notification.payload?.reviewId : undefined;
+    // Album activity and comments on photos open the album in the gallery.
+    if (notification.kind === "album-photos-added" || callbacks.current.projectById(notification.projectId)?.kind === "album") {
+      if (!notification.projectId) return;
+      const threadId = typeof notification.payload?.threadId === "string" ? notification.payload.threadId : undefined;
+      const fileIds = Array.isArray(notification.payload?.fileIds) ? notification.payload.fileIds : [];
+      callbacks.current.onOpenAlbum?.({
+        projectId: notification.projectId,
+        ...(threadId ? { threadId } : {}),
+        ...(fileIds.length === 1 && typeof fileIds[0] === "string" ? { fileId: fileIds[0] } : {}),
+      });
+      return;
+    }
     void collabClient
       .doc(notification.docId)
       .then((doc) => {
@@ -119,7 +133,8 @@ export function CollabProvider({ children, onNotebookJoined, onOpenPath }: Colla
               onClose={() => setJoin(null)}
               onJoined={(project) => {
                 setJoin(null);
-                void callbacks.current.onNotebookJoined(project.notebook);
+                if (project.kind === "album") callbacks.current.onOpenAlbum?.({ projectId: project.projectId });
+                else void callbacks.current.onNotebookJoined(project.notebook);
               }}
               onSignIn={() => {
                 setJoin(null);

@@ -1,6 +1,7 @@
 import type { FormEvent, RefObject } from "react";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
 import type { MathMarkerSettings } from "@/lib/math-markers";
+import type { PageKind } from "./page-tabs";
 import type {
   LiberaFileNode,
   LiberaFolderNode,
@@ -25,6 +26,8 @@ export type OpenTab = {
   gallery?: { photoId: string };
   /** Set on the tab of a recording in progress, which is not a notebook file yet. */
   recording?: { id: string };
+  /** Set on the tab of an app page, such as Spending (page-tabs.ts), which is not a file. */
+  page?: { kind: PageKind };
   untitled?: boolean;
   standaloneSaveId?: string;
   saveDirectory?: string;
@@ -47,6 +50,11 @@ export type MarkdownTabViewState = {
   slideIndex?: number;
   visualScrollLeft?: number;
   visualScrollTop?: number;
+  /** The block at the top of the Visual viewport (ProseMirror position) and its
+   * pixel offset, so a restore survives content above it changing height.
+   * Flat numbers keep unchanged positions shallow-equal. */
+  visualScrollAnchorPos?: number;
+  visualScrollAnchorOffset?: number;
   /** ProseMirror selection JSON, independent of source-text offsets. */
   visualSelection?: Record<string, unknown>;
   zoom?: number;

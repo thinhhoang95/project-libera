@@ -357,12 +357,12 @@ export function joinDocumentPages(pages: DocumentBlock[][]): string {
   return output.map((block) => block.markdown).join("\n\n");
 }
 
-function continuesParagraph(previous: string, next: string) {
+export function continuesParagraph(previous: string, next: string) {
   if (/^\p{Ll}/u.test(next)) return true;
   return !SENTENCE_END.test(previous.trimEnd()) && !/^\\?[#>]/.test(next);
 }
 
-function mergeParagraphs(previous: string, next: string) {
+export function mergeParagraphs(previous: string, next: string) {
   const text = previous.trimEnd();
   if (/\p{L}-$/u.test(text) && /^\p{Ll}/u.test(next)) return `${text.slice(0, -1)}${next}`;
   return `${text} ${next.replace(/^\\(?=[#>\-+*\d])/, "")}`;

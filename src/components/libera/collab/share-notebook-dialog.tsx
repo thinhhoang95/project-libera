@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Copy, LoaderCircle, LogOut, Mail, ShieldAlert, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import type { Invitation, LocalProject, Member, ShareProgress } from "@/lib/collab/local-api";
@@ -20,6 +20,35 @@ const SMALL_BUTTON =
   "inline-flex items-center justify-center gap-1 rounded-md border border-input px-2 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60";
 const PRIMARY_BUTTON =
   "inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60";
+/** Words for what is shared: a notebook (the default) or a gallery album, whose editors are contributors. */
+export interface ShareWording {
+  noun: string;
+  roleLabel: Record<Role, string>;
+  roleDescription: Record<Role, string>;
+  takeDown: string;
+  leave: string;
+}
+
+const NOTEBOOK_WORDING: ShareWording = {
+  noun: "notebook",
+  roleLabel: ROLE_LABEL,
+  roleDescription: ROLE_DESCRIPTION,
+  takeDown:
+    "This permanently deletes the shared notebook and its collaboration history from the server. Everyone loses access and invitation links stop working. Your local notebook stays on this device and can be edited or shared again; collaborators keep their local copies as read-only.",
+  leave: "You lose access to the shared version. The folder stays on this device as a read-only copy.",
+};
+
+const Wording = createContext<ShareWording>(NOTEBOOK_WORDING);
+
+/** Members, invitations, take down and leave, for any shared project (album dialogs pass their wording). */
+export function ManageSharedProject({ project, onLeft, wording }: { project: LocalProject; onLeft: () => void; wording?: ShareWording }) {
+  return (
+    <Wording.Provider value={wording ?? NOTEBOOK_WORDING}>
+      <ManageProject project={project} onLeft={onLeft} />
+    </Wording.Provider>
+  );
+}
+
 const DANGER_SMALL = "inline-flex items-center justify-center gap-1 rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white disabled:opacity-60";
 
 export interface ShareNotebookDialogProps {
@@ -325,6 +354,7 @@ function ManageProject({ project, onLeft }: { project: LocalProject; onLeft: () 
 function InviteSection({ projectId, onInvited }: { projectId: string; onInvited: (invitation: Invitation) => void }) {
   const id = useId();
   const [email, setEmail] = useState("");
+  const wording = useContext(Wording);
   const [role, setRole] = useState<Exclude<Role, "owner">>("editor");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -374,8 +404,8 @@ function InviteSection({ projectId, onInvited }: { projectId: string; onInvited:
             <label key={value} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-muted">
               <input checked={role === value} className="mt-1" name={`${id}-role`} type="radio" value={value} onChange={() => setRole(value)} />
               <span className="min-w-0">
-                <span className="block text-sm font-medium">{ROLE_LABEL[value]}</span>
-                <span className="block text-xs text-muted-foreground">{ROLE_DESCRIPTION[value]}</span>
+                <span className="block text-sm font-medium">{wording.roleLabel[value]}</span>
+                <span className="block text-xs text-muted-foreground">{wording.roleDescription[value]}</span>
               </span>
             </label>
           ))}
@@ -427,6 +457,7 @@ function formatDate(value: string) {
 }
 
 function InvitationRow({ invitation, onRevoke }: { invitation: Invitation; onRevoke: () => Promise<boolean> }) {
+  const wording = useContext(Wording);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, copy] = useCopyFeedback();
@@ -438,7 +469,7 @@ function InvitationRow({ invitation, onRevoke }: { invitation: Invitation; onRev
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">{invitation.email}</span>
         <span className="block text-xs text-muted-foreground">
-          {ROLE_LABEL[invitation.role]}
+          {wording.roleLabel[invitation.role]}
           {expires ? ` · expires ${expires}` : ""}
         </span>
       </span>
@@ -493,6 +524,7 @@ function MemberRow({
   onChangeRole: (role: Role) => Promise<boolean>;
   onRemove: () => Promise<boolean>;
 }) {
+  const wording = useContext(Wording);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
@@ -538,7 +570,7 @@ function MemberRow({
               aria-label={`Role for ${member.displayName}`}
               className="h-7 rounded-md border border-input bg-card px-1.5 text-xs"
               disabled={busy}
-              title={ROLE_DESCRIPTION[member.role]}
+              title={wording.roleDescription[member.role]}
               value={member.role}
               onChange={(event) => {
                 setBusy(true);
@@ -547,7 +579,7 @@ function MemberRow({
             >
               {INVITABLE_ROLES.map((role) => (
                 <option key={role} value={role}>
-                  {ROLE_LABEL[role]}
+                  {wording.roleLabel[role]}
                 </option>
               ))}
             </select>
@@ -557,8 +589,8 @@ function MemberRow({
           </span>
         )
       ) : (
-        <span className="shrink-0 text-xs text-muted-foreground" title={ROLE_DESCRIPTION[member.role]}>
-          {ROLE_LABEL[member.role]}
+        <span className="shrink-0 text-xs text-muted-foreground" title={wording.roleDescription[member.role]}>
+          {wording.roleLabel[member.role]}
         </span>
       )}
     </li>
@@ -566,16 +598,15 @@ function MemberRow({
 }
 
 function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () => Promise<void> }) {
+  const wording = useContext(Wording);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
-    <section aria-label="Take down notebook" className="libera-dialog-section space-y-2">
+    <section aria-label={`Take down ${wording.noun}`} className="libera-dialog-section space-y-2">
       {confirming ? (
         <>
           <p className="text-sm">
-            Take down “{name}”? This permanently deletes the shared notebook and its collaboration history from the server.
-            Everyone loses access and invitation links stop working. Your local notebook stays on this device and can be edited
-            or shared again; collaborators keep their local copies as read-only.
+            Take down “{name}”? {wording.takeDown}
           </p>
           <div className="flex gap-2">
             <button
@@ -588,7 +619,7 @@ function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () =>
               }}
             >
               {busy ? <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" /> : <Trash2 aria-hidden className="h-3.5 w-3.5" />}
-              {busy ? "Taking down…" : "Take down notebook"}
+              {busy ? "Taking down…" : `Take down ${wording.noun}`}
             </button>
             <button className={SECONDARY_BUTTON} disabled={busy} type="button" onClick={() => setConfirming(false)}>
               Cancel
@@ -597,7 +628,7 @@ function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () =>
         </>
       ) : (
         <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
-          <Trash2 aria-hidden className="h-3.5 w-3.5" /> Take down notebook…
+          <Trash2 aria-hidden className="h-3.5 w-3.5" /> Take down {wording.noun}…
         </button>
       )}
     </section>
@@ -605,6 +636,7 @@ function TakeDownSection({ name, onTakeDown }: { name: string; onTakeDown: () =>
 }
 
 function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<void> }) {
+  const wording = useContext(Wording);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   return (
@@ -612,7 +644,7 @@ function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<
       {confirming ? (
         <>
           <p className="text-sm">
-            Leave “{name}”? You lose access to the shared version. The folder stays on this device as a read-only copy.
+            Leave “{name}”? {wording.leave}
           </p>
           <div className="flex gap-2">
             <button
@@ -624,7 +656,7 @@ function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<
                 void onLeave().finally(() => setBusy(false));
               }}
             >
-              {busy ? "Leaving…" : "Leave notebook"}
+              {busy ? "Leaving…" : `Leave ${wording.noun}`}
             </button>
             <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(false)}>
               Cancel
@@ -633,7 +665,7 @@ function LeaveSection({ name, onLeave }: { name: string; onLeave: () => Promise<
         </>
       ) : (
         <button className={SECONDARY_BUTTON} type="button" onClick={() => setConfirming(true)}>
-          <LogOut aria-hidden className="h-3.5 w-3.5" /> Leave this notebook…
+          <LogOut aria-hidden className="h-3.5 w-3.5" /> Leave this {wording.noun}…
         </button>
       )}
     </section>

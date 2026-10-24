@@ -772,6 +772,61 @@ test("reveal and add events switch to the panel, select the notebook and open th
   assert.match(host.textContent ?? "", /Detected: DOI/);
 });
 
+test("palette commands show the panel and run its actions: search to cite, style, filter, export and Manage", async () => {
+  const server = fakeServer(sampleLibrary());
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = m.createRoot(host);
+  mounted = { root, host };
+  const shown: string[] = [];
+  function Harness() {
+    const [notebook, setNotebook] = useState("");
+    const requests = m.useReferencesPanelRequests((name) => {
+      shown.push(name);
+      setNotebook(name);
+    });
+    return createElement(m.ReferencesPanel, {
+      notebook, tree: treeWith(["Notes/a.md"]), activeMarkdownDraft: "No citations yet.", activeDocumentPath: "Notes/a.md", openDrafts: [], canCite: true,
+      onCite: () => undefined, onOpenPath: () => undefined, request: requests.request, onRequestHandled: requests.handled,
+    });
+  }
+  await act(async () => root.render(createElement(Harness)));
+  await settle();
+  const command = async (detail: Parameters<typeof m.runReferencesCommand>[1]) => {
+    await act(async () => m.runReferencesCommand("Notes", detail));
+    await settle();
+  };
+
+  await command({ action: "search" });
+  assert.deepEqual(shown, ["Notes"]);
+  await act(async () => { await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined))); });
+  assert.equal(document.activeElement, byLabel(host, "Search references"), "the search box takes focus, ready to find and cite");
+
+  await command({ action: "style", style: "ieee" });
+  assert.deepEqual(server.patches().at(-1), [{ op: "set-style", style: "ieee" }]);
+
+  await command({ action: "filter", filter: "uncited" });
+  assert.equal((byLabel(host, "Filter references") as HTMLSelectElement).value, "uncited");
+
+  // What needs a citing document says why it cannot run.
+  await command({ action: "copy-bibliography" });
+  assert.match(host.textContent ?? "", /This document cites nothing yet\./);
+
+  const downloads: string[] = [];
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click;
+  dom.window.HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { downloads.push(this.download); };
+  try {
+    await command({ action: "export-library", format: "ris" });
+    assert.deepEqual(server.requests.find((request) => request.url === "/api/references/export")?.body, { notebook: "Notes", format: "ris" });
+  } finally {
+    dom.window.HTMLAnchorElement.prototype.click = originalClick;
+  }
+
+  await command({ action: "manage" });
+  const dialogs = [...document.querySelectorAll('[role="dialog"][aria-labelledby]')];
+  assert.ok(dialogs.some((dialog) => document.getElementById(dialog.getAttribute("aria-labelledby")!)?.textContent === "Manage references"), "Manage references opens");
+});
+
 test("empty, loading and error states", async () => {
   const server = fakeServer(libraryOf([]));
   const empty = await renderPanel();

@@ -32,7 +32,84 @@ export const ManifestKeys = {
   files: "files",
   /** Y.Map with project-level settings (name is server-side). */
   settings: "settings",
+  /** Shared albums only: Y.Map<AlbumPhotoRecord> keyed by the photo's fileId. */
+  photos: "photos",
 } as const;
+
+/**
+ * What a project shares. A notebook is a folder of documents and files; an
+ * album is a flat folder of photos in the gallery, with per-photo details
+ * (captions, edits) in the manifest's `photos` map.
+ */
+export type ProjectKind = "notebook" | "album";
+
+export const PROJECT_KINDS: readonly ProjectKind[] = ["notebook", "album"];
+
+export function isProjectKind(value: unknown): value is ProjectKind {
+  return typeof value === "string" && (PROJECT_KINDS as readonly string[]).includes(value);
+}
+
+/** Keys of an album's `settings` map. */
+export const AlbumSettingKeys = {
+  /** fileId of the cover photo; the newest photo when unset. */
+  cover: "cover",
+  /** A single photo shared on its own: shown as a photo, not an album. */
+  direct: "direct",
+  /** Photos keep their location and camera details (off: they are removed before upload). */
+  keepLocation: "keepLocation",
+  /** Image-generation prompts and models are shared with the photos. */
+  sharePrompts: "sharePrompts",
+} as const;
+
+/**
+ * Details of one photo in a shared album, beside its manifest entry. Edits
+ * are applied to the file (the entry's blob is the edited photo); the
+ * unedited photo stays on the server as `originalHash`, so anyone can
+ * revert or edit again from the original.
+ */
+export interface AlbumPhotoRecord {
+  fileId: string;
+  caption?: string;
+  /** Only when the album shares prompts. */
+  prompt?: string;
+  model?: string;
+  /** PhotoEdits (src/lib/photo-edits.ts) applied to `originalHash`. */
+  edits?: Record<string, unknown>;
+  /** SHA-256 of the unedited photo's bytes. */
+  originalHash?: string;
+  /** Sort position; photos without one follow, oldest first. */
+  order?: number;
+  /** Account that added the photo. */
+  addedBy: string;
+  updatedBy?: string;
+  updatedAt: number;
+}
+
+/** Photos a shared album accepts. SVG is refused: it can carry scripts. */
+export const ALBUM_IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+export const MAX_ALBUM_CAPTION_LENGTH = 2000;
+
+/** The media type of an album photo by its name, or null when albums do not take that file. */
+export function albumImageType(path: string): string | null {
+  const match = /\.[^./\\]+$/.exec(path.toLowerCase());
+  return (match && ALBUM_IMAGE_TYPES[match[0]]) || null;
+}
+
+/** Validates an album manifest path: one safe file name with a photo extension. */
+export function albumPathError(path: string): string | null {
+  const problem = manifestPathError(path);
+  if (problem) return problem;
+  if (path.includes("/")) return "Albums hold photos only, without folders.";
+  if (!albumImageType(path)) return "Albums hold PNG, JPEG, WebP and GIF photos only.";
+  return null;
+}
 
 export type DocKind = "markdown" | "latex" | "text";
 

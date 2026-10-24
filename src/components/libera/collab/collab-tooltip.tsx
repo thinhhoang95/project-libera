@@ -13,7 +13,7 @@ export interface TooltipTriggerProps {
   onMouseLeave: (event: MouseEvent<HTMLElement>) => void;
 }
 
-type Placement = "below" | "right";
+type Placement = "below" | "above" | "right";
 
 /**
  * A tooltip that, unlike `title`, also appears on keyboard focus and can hold
@@ -30,7 +30,7 @@ export function CollabTooltip({
   placement?: Placement;
 }) {
   const id = useId();
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [position, setPosition] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
 
   function show(target: HTMLElement) {
     const bounds = target.getBoundingClientRect();
@@ -39,7 +39,9 @@ export function CollabTooltip({
     setPosition(
       placement === "right"
         ? { left: Math.min(bounds.right + 8, width - 16), top: Math.max(8, Math.min(bounds.top, height - 64)) }
-        : { left: Math.max(8, Math.min(bounds.left, width - 296)), top: Math.min(bounds.bottom + 6, height - 64) },
+        : placement === "above"
+          ? { left: Math.max(8, Math.min(bounds.left, width - 296)), bottom: height - bounds.top + 6 }
+          : { left: Math.max(8, Math.min(bounds.left, width - 296)), top: Math.min(bounds.bottom + 6, height - 64) },
     );
   }
 
@@ -60,7 +62,7 @@ export function CollabTooltip({
               className="pointer-events-none fixed z-[110] max-w-72 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed text-foreground shadow-lg"
               id={id}
               role="tooltip"
-              style={{ left: position.left, top: position.top }}
+              style={position}
             >
               {content}
             </div>,

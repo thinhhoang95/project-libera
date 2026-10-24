@@ -51,7 +51,8 @@ const NO_PROJECTS: LocalProject[] = [];
 export function useCollabProjects(): CollabProjectsState {
   const { status, refreshProjects } = useCollabStatus();
   const projects = status?.projects ?? NO_PROJECTS;
-  const byNotebook = useMemo(() => new Map(projects.map((project) => [project.notebook, project])), [projects]);
+  // Shared albums are gallery folders, not notebooks, even when a notebook has the same name.
+  const byNotebook = useMemo(() => new Map(projects.filter((project) => project.kind !== "album").map((project) => [project.notebook, project])), [projects]);
   const byId = useMemo(() => new Map(projects.map((project) => [project.projectId, project])), [projects]);
   return {
     projects,

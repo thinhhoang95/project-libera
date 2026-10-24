@@ -64,7 +64,7 @@ export async function generateReview(doc: ReviewDocument, prompt: string, ids: s
   if (stage === "generate" && !planned.length) {
     return { ...previous!, confirmedVersion: previous!.plan.version, phase: previous!.suggestions.some((s) => s.status === "pending") ? "reviewing_changes" : "completed", messages: [...previous!.messages, { role: "user" as const, text: prompt || "Confirm plan and generate changes." }, { role: "assistant" as const, text: "The plan needs no edits, so there are no changes to propose." }].slice(-100) };
   }
-  const options = getAiFunctionOptions("chat");
+  const options = getAiFunctionOptions("review");
   const context = { target: { name: doc.key, markdown: doc.snapshot, blocks: reviewBlocks(doc.snapshot) }, comments: commentsForModel(selected), references, previousPlan: previous?.plan, history: previous?.messages, decisions: previous?.suggestions, reviseOnly: targetSuggestion, userRequest: prompt };
   const messages: { role: "system" | "user"; content: string }[] = [{ role: "system", content: stage === "plan" ? REVIEW_PLAN_PROMPT : REVIEW_CHANGES_PROMPT }, { role: "user", content: JSON.stringify(context) }];
   const outputBudget = await preflight(messages, options.model, signal);

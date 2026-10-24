@@ -28,6 +28,8 @@ export type FileKind = "markdown" | "slides" | "latex" | "bibtex" | "text" | "im
 export function fileKind(file: Pick<LiberaFileNode, "fileType" | "name">): FileKind {
   if (file.fileType === "markdown") return isMarkdownSlidesPath(file.name) ? "slides" : "markdown";
   if (file.fileType === "latex") return /\.bib$/i.test(file.name) ? "bibtex" : "latex";
+  // App pages are tabs, never files in a notebook.
+  if (file.fileType === "page") return "text";
   return file.fileType;
 }
 

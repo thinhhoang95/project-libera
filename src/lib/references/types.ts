@@ -275,6 +275,9 @@ export type ReferencesUpdatedDetail = { notebook: string; revision: number };
 export const REFERENCES_ADD_REQUEST_EVENT = "libera:references-add-request";
 export type ReferencesAddRequestDetail = { notebook: string; query: string };
 
+/** Window event asking the References panel to run one of its actions, such as from the command palette (see ReferencesCommandDetail in references-panel.tsx). */
+export const REFERENCES_COMMAND_EVENT = "libera:references-command";
+
 /** Window event asking the References panel to show an entry, by id or by key/alias. */
 export const REFERENCES_REVEAL_EVENT = "libera:references-reveal";
 export type ReferencesRevealDetail = { notebook: string; entryId?: string; key?: string };

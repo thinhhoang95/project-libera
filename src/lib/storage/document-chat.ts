@@ -4,7 +4,7 @@ import { filterGalleryChatPhotos, validateChatStore } from "@/lib/document-chat"
 import { getAdminRoot, getDataRoot } from "./paths";
 import { writeJsonState } from "./json-state";
 
-export type ChatStateKind = "history" | "panel" | "font-size";
+export type ChatStateKind = "history" | "panel" | "font-size" | "model";
 function statePath(kind: ChatStateKind) { return path.join(getAdminRoot(), ".libera", `document-chat-${kind}.json`); }
 async function readState(target: string): Promise<unknown> {
   try { return JSON.parse(await readFile(target, "utf8")); }

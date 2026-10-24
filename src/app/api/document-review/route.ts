@@ -46,7 +46,7 @@ function reviewThreads(value: unknown, snapshot: string): ReviewThread[] {
  */
 async function postSharedReplies(path: string, session: ReviewSession, due: { commentId: string; text: string }[]): Promise<ReviewSession> {
   const replies: ReviewReply[] = [], failed: string[] = [];
-  const model = getAiFunctionOptions("chat").model;
+  const model = getAiFunctionOptions("review").model;
   try {
     const doc = await requireSharedDoc(path);
     for (const reply of due) {

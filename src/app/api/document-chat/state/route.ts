@@ -10,9 +10,9 @@ export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    const [history, panel, fontSize] = await Promise.all([readChatState("history"), readChatState("panel"), readChatState("font-size")]);
+    const [history, panel, fontSize, savedModel] = await Promise.all([readChatState("history"), readChatState("panel"), readChatState("font-size"), readChatState("model")]);
     const options = getAiFunctionOptions("chat");
-    return NextResponse.json({ history, panel, fontSize, model: options.model, alternativeModels: getAiChatModels().slice(1), defaultReasoningEffort: options.reasoning.effort });
+    return NextResponse.json({ history, panel, fontSize, model: options.model, alternativeModels: getAiChatModels().slice(1), savedModel, defaultReasoningEffort: options.reasoning.effort });
   } catch { return jsonError("Could not read saved document chats.", 500); }
 }
 export async function PUT(request: NextRequest) {
@@ -24,6 +24,10 @@ export async function PUT(request: NextRequest) {
       if (!validateChatStore(body.value)) return jsonError("Invalid chat history.");
     } else if (body?.kind === "font-size") {
       if (!isChatFontSize(body.value)) return jsonError("Invalid chat font size.");
+    } else if (body?.kind === "model") {
+      // The panel's pick, with the default it was made against: a new default in Preferences wins over it.
+      const { model, defaultModel } = body.value ?? {};
+      if (typeof model !== "string" || !model.trim() || model.length > 200 || typeof defaultModel !== "string" || defaultModel.length > 200) return jsonError("Invalid chat model.");
     } else if (body?.kind === "panel") {
       if (!body.value || !Number.isFinite(body.value.width) || body.value.width < 280 || body.value.width > 560 || typeof body.value.collapsed !== "boolean") return jsonError("Invalid panel preferences.");
     } else return jsonError("Invalid chat state.");

@@ -8,7 +8,7 @@ import type { Kysely } from "kysely";
 import * as Y from "yjs";
 
 import type { DB } from "../db/types.js";
-import type { Actor, DocKind, Provenance, Subdoc } from "../protocol.js";
+import type { Actor, DocKind, ProjectKind, Provenance, Subdoc } from "../protocol.js";
 
 export type DocumentKind = DocKind | "manifest";
 
@@ -65,6 +65,7 @@ export async function loadSubdocState(
 
 export interface LoadedDocument {
   projectId: string;
+  projectKind: ProjectKind;
   kind: DocumentKind;
   schemaVersion: number;
   serverSeq: number;
@@ -76,8 +77,9 @@ export async function loadDocument(db: Kysely<DB>, docId: string): Promise<Loade
   return consistentRead(db, async (trx) => {
     const row = await trx
       .selectFrom("documents")
-      .select(["project_id", "kind", "schema_version", "last_server_seq", "deleted_at"])
-      .where("id", "=", docId)
+      .innerJoin("projects", "projects.id", "documents.project_id")
+      .select(["documents.project_id", "documents.kind", "documents.schema_version", "documents.last_server_seq", "documents.deleted_at", "projects.kind as project_kind"])
+      .where("documents.id", "=", docId)
       .executeTakeFirst();
     if (!row || row.deleted_at) return null;
     const docs = new Map<Subdoc, Y.Doc>();
@@ -86,6 +88,7 @@ export async function loadDocument(db: Kysely<DB>, docId: string): Promise<Loade
     }
     return {
       projectId: row.project_id,
+      projectKind: row.project_kind,
       kind: row.kind,
       schemaVersion: row.schema_version,
       serverSeq: row.last_server_seq,

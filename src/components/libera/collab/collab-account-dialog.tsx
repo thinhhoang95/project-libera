@@ -587,10 +587,10 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
   return (
     <section aria-label="Shared notebooks" className="libera-dialog-section space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium">Shared notebooks</h3>
+        <h3 className="text-sm font-medium">Shared notebooks and albums</h3>
         {onJoin ? (
           <button className={SECONDARY_BUTTON} type="button" onClick={onJoin}>
-            <Users aria-hidden className="h-3.5 w-3.5" /> Join a shared notebook…
+            <Users aria-hidden className="h-3.5 w-3.5" /> Join with an invitation…
           </button>
         ) : null}
       </div>
@@ -599,7 +599,7 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
           {status.projects.map((project) => (
             <li key={project.projectId} className="flex items-center gap-2 py-1.5">
               <Users aria-hidden className={`h-3.5 w-3.5 shrink-0 ${project.revoked ? "text-destructive" : "text-muted-foreground"}`} />
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
+              <span className="min-w-0 flex-1 truncate">{project.kind === "album" ? <span className="text-muted-foreground">Album · </span> : null}{project.name}</span>
               <span className="shrink-0 text-xs text-muted-foreground">
                 {project.revoked ? "No longer shared" : ROLE_LABEL[project.role]}
                 {project.reconcilePending > 0 ? ` · ${project.reconcilePending} to review` : ""}
@@ -608,7 +608,7 @@ function ProjectsSection({ status, onJoin }: { status: HostStatus; onJoin?: () =
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-muted-foreground">None yet. Share a notebook from its menu in the Library.</p>
+        <p className="text-xs text-muted-foreground">None yet. Share a notebook from its menu in the Library, or an album from the gallery.</p>
       )}
     </section>
   );

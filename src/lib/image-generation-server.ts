@@ -3,6 +3,7 @@ import path from "node:path";
 import { getOpenRouterApiKey } from "./openrouter";
 import { joinPath, resolvePath, workingDirectory } from "./runtime-path";
 import { writeJsonState } from "./storage/json-state";
+import { recordOpenRouterUsage } from "./storage/usage-ledger";
 import {
   DEFAULT_IMAGE_GENERATION_SETTINGS,
   DEFAULT_IMAGE_MODEL,
@@ -168,6 +169,7 @@ export async function generateImages(
       if (match) images.push({ body: Buffer.from(match[3], match[2] ? "base64" : "utf8"), mediaType: match[1] ?? "image/png" });
     }
   }
+  recordOpenRouterUsage(model.id, payload?.usage);
   if (!images.length) throw new Error("OpenRouter returned no image. Try a different prompt or model.");
   return { images, cost: payload?.usage?.cost };
 }

@@ -40,6 +40,18 @@ In the list:
 
 In a card, ↑/↓ open the previous and next entry of the list, Esc or Space returns to the list, and ⌘/Ctrl+Shift+Enter confirms the entry and opens the next one to review.
 
+### Command palette
+
+The command palette (⌘/Ctrl+Shift+P) has the panel's actions under **References**, from anywhere in the app. They act on the library of the active document's notebook, or the selected notebook, and show the panel when it is closed:
+
+- **Cite a reference…** puts the cursor in the panel's search. Type, press ↓ to pick an entry, and ⌘/Ctrl+Enter cites it at the cursor of the Markdown document you were in. In the editor itself, typing `@` does the same. With an empty library it opens the Add box instead.
+- **Add references…**, **Insert bibliography here**, **Manage references…**, **Generate entries for PDFs without one**, **Fact-check citations…** and **Undo last reference change**.
+- **Copy reference list**, **Copy bibliography of this document**, **Export library as** BibTeX, BibLaTeX, CSL-JSON or RIS, **Export reference list as** plain text, Markdown or HTML, and **Export bibliography of this document as** any of these.
+- **Citation style:** each bundled style. A notebook's own `.csl` styles are in the panel's menu.
+- **References: show** all, cited in this document, needs review, to read, uncited, duplicates or missing PDF.
+
+Actions that need a citing document, such as **Copy bibliography of this document**, say in the panel why they cannot run.
+
 ### Selecting several entries
 
 ⌘/Ctrl-click adds or removes an entry, and Shift-click selects a range. A bar above the list then acts on the whole selection:

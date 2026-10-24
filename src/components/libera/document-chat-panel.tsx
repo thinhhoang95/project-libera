@@ -5,7 +5,7 @@ import { ReviewChatPanel } from "./markdown-review-ui";
 import { readRegisteredEditorSelection } from "./editor-selection-registry";
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type SetStateAction } from "react";
-import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Image as ImageIcon, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2 } from "lucide-react";
+import { ChevronDown, Plus, MoreHorizontal, ArrowUp, Paperclip, Sparkles, BookOpen, Lightbulb, ListChecks, FileText, TextSelect, Square, X, CheckCheck, AudioLines, ImagePlus, RotateCcw, GitBranch, Pencil, Copy, Check, Eye, Tag, Bot, MessagesSquare, MessageSquareText, Search, SpellCheck, FilePlus2, Globe, Volume2 } from "lucide-react";
 import { speakMarkdown, toggleSpeech } from "@/lib/tts/player";
 import { useSpeech } from "./read-aloud";
 import { DocumentChatExportDialog, type ChatExport, type ChatNotebookExport } from "./document-chat-export-dialog";
@@ -42,7 +42,7 @@ import type { QuickPrompt } from "@/lib/quick-prompts";
 import { transcriptContextText } from "@/lib/transcription/format";
 import type { TranscriptPayload } from "@/lib/transcription/types";
 import { loadPdfComments, pdfCommentsState, refreshPdfComments, usePdfComments } from "./pdf-comments-store";
-import { commentsContext, commentsContextSummary, pdfCommentChatThreads, reviewCommentThreads } from "@/lib/chat-comments";
+import { commentsContext, commentsContextCount, commentsContextSummary, pdfCommentChatThreads, reviewCommentThreads } from "@/lib/chat-comments";
 
 const AUDIO_FILE = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
 
@@ -53,6 +53,31 @@ const buttonClass = "libera-window-no-drag libera-sidebar-icon-button inline-fle
 function selectionExcerpt(text: string) {
   const lines = text.split(/\r\n|\r|\n/);
   return `${lines.slice(0, 2).join(" ")}${lines.length > 2 ? "…" : ""}`;
+}
+
+/** One pill in the composer's context tray: an icon, a short name and a remove button; details live in the tooltip. */
+function ContextChip({ kind, icon: Icon, thumbnail, title, badge, tooltip, sent, removeLabel, onRemove }: {
+  kind: "document" | "comments" | "selection" | "photo";
+  icon?: typeof FileText;
+  thumbnail?: string;
+  title: string;
+  /** A count or short tag shown after the name. */
+  badge?: string;
+  tooltip: string;
+  /** Already in the conversation, so it adds nothing new to the next message. */
+  sent?: boolean;
+  removeLabel: string;
+  onRemove: () => void;
+}) {
+  const label = sent ? `${tooltip} (already included)` : tooltip;
+  return <div className="libera-context-chip" data-kind={kind} data-sent={sent || undefined} title={label} aria-label={label}>
+    {/* eslint-disable-next-line @next/next/no-img-element -- Local photo thumbnail. */}
+    {thumbnail ? <img src={thumbnail} alt="" className="libera-context-chip-icon object-cover" /> : Icon && <span aria-hidden className="libera-context-chip-icon"><Icon size={12} /></span>}
+    <span aria-hidden className="libera-context-chip-title">{title}</span>
+    {badge && <span aria-hidden className="libera-context-chip-badge">{badge}</span>}
+    {sent && <CheckCheck aria-hidden size={12} className="libera-context-chip-sent" />}
+    <button type="button" className="libera-window-no-drag libera-context-chip-remove" aria-label={removeLabel} title={removeLabel} onClick={onRemove}><X aria-hidden size={11} /></button>
+  </div>;
 }
 
 /** A photo on screen outside the chat, such as in the gallery viewer. `source` names its version. */
@@ -207,6 +232,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<"low" | "medium" | "high" | "xhigh" | "max">("medium");
   const [model, setModel] = useState<string>();
   const [models, setModels] = useState<string[]>([]);
+  const configuredModelRef = useRef("");
+  const changeModel = useCallback((next: string) => {
+    setModel(next);
+    void apiRequest("/api/document-chat/state", { method: "PUT", body: JSON.stringify({ kind: "model", value: { model: next, defaultModel: configuredModelRef.current } }) })
+      .catch(() => setError("Could not remember the chosen model."));
+  }, []);
   const [fontSize, setFontSize] = useState(DEFAULT_CHAT_FONT_SIZE);
   const [fontSizeSaving, setFontSizeSaving] = useState(false);
   const [fontSizeError, setFontSizeError] = useState("");
@@ -273,7 +304,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const permission: AgentPermission = chat?.agentPermission ?? defaultPermission;
   const lastMessageText = chat?.messages.at(-1)?.text;
   const lastMessageSteps = chat?.messages.at(-1)?.agent?.steps.length;
-  const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file : null;
+  const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery && !activeTab.page ? activeTab.file : null;
   // "Modify all files in Notebook/Folder" applies to the notebook of the file in view, else the selected one.
   const agentNotebook = viewedFile?.notebook ?? agentWorkspace?.notebook;
   // In a shared notebook the agent's changes are suggestions (plan M3.4).
@@ -312,6 +343,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const includedPhoto = viewedPhoto && (!viewedGalleryId || keepGalleryChatPhoto(viewedGalleryId)) && !chat?.excludedPhotoSources?.includes(viewedPhoto.source) ? viewedPhoto : null;
   // Sent once per conversation; a copy waiting in the composer (a restored unsent message) counts too.
   const photoAlreadyIncluded = !!includedPhoto && !!chat && (chatHasPhotoSource(chat.messages, includedPhoto.source) || !!chat.photos?.some((photo) => photo.source === includedPhoto.source));
+  const hasContextTray = !!chat && ((!agentMode && !!includedDocument) || !!includedComments || !!viewedPhoto || !!chat.selections.length || !!chat.photos?.length);
   const pendingPhoto = photoAlreadyIncluded ? null : includedPhoto;
 
   useEffect(() => {
@@ -321,14 +353,17 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
 
   useEffect(() => {
     let disposed = false;
-    void apiRequest<{ history: ChatStore | null; fontSize?: unknown; model?: unknown; alternativeModels?: unknown; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, fontSize: savedFontSize, model: configuredModel, alternativeModels, defaultReasoningEffort: configuredEffort }) => {
+    void apiRequest<{ history: ChatStore | null; fontSize?: unknown; model?: unknown; alternativeModels?: unknown; savedModel?: { model?: unknown; defaultModel?: unknown } | null; defaultReasoningEffort?: unknown }>("/api/document-chat/state").then(({ history, fontSize: savedFontSize, model: configuredModel, alternativeModels, savedModel, defaultReasoningEffort: configuredEffort }) => {
       if (disposed) return;
       if (isChatFontSize(savedFontSize)) setFontSize(savedFontSize);
       if (typeof configuredModel === "string" && configuredModel.trim()) {
         const availableModels = Array.from(new Set([configuredModel, ...(Array.isArray(alternativeModels) ? alternativeModels : [])]
           .filter((candidate): candidate is string => typeof candidate === "string" && !!candidate.trim())
           .map((candidate) => candidate.trim())));
-        setModel(configuredModel.trim());
+        configuredModelRef.current = configuredModel.trim();
+        // Keep the model picked here across restarts while it is still offered and the default has not changed since.
+        const picked = savedModel?.defaultModel === configuredModelRef.current && typeof savedModel.model === "string" && availableModels.includes(savedModel.model) ? savedModel.model : null;
+        setModel(picked ?? configuredModelRef.current);
         setModels(availableModels);
       }
       if (isChatReasoningEffort(configuredEffort)) setDefaultReasoningEffort(configuredEffort);
@@ -1270,38 +1305,34 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               : agentNotebook ? `Can modify files in ${agentNotebook}` : "No notebook selected"}${allowWebSearch ? " · Web search on" : ""}`}</p>
           </div>}
           {agentMode && <PythonSetupStatus />}
-          {!agentMode && includedDocument && <div className="libera-chat-context flex items-center gap-1"><BookOpen aria-hidden size={13} className="shrink-0" />
-            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedDocument.path}>{`Context: ${includedDocument.name}${newDocumentContext(chat?.messages ?? [], includedDocument).length ? (activeTab?.file.fileType === "pdf" ? " (PDF text)" : viewingRecording ? " (transcript)" : " (current draft)") : " (already included)"}`}</p>
-            <button type="button" className={buttonClass} aria-label="Remove document context" title="Remove document context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))}><X size={12} /></button>
-          </div>}
-          {includedComments && !chat?.selections.some((item) => item.kind === "comments" && item.path === includedComments.path) && <div className="libera-chat-context flex items-center gap-1"><MessageSquareText aria-hidden size={13} className="shrink-0" />
-            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={`Review comments on ${includedComments.path}`}>{`Comments: ${commentsContextSummary(includedComments)} on ${includedComments.name}${commentsAlreadySent ? " (already included)" : ""}`}</p>
-            <button type="button" className={buttonClass} aria-label="Remove review comments" title="Remove review comments" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedCommentPaths: [...(current.excludedCommentPaths ?? []), includedComments.path] }))}><X size={12} /></button>
-          </div>}
-          {viewedComments && commentsExcluded && <div className="libera-chat-context flex items-center gap-1"><MessageSquareText aria-hidden size={13} className="shrink-0" />
-            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{`Comments on ${viewedComments.name} are not included`}</p>
-            <button type="button" className="libera-window-no-drag rounded-full px-2 py-1 text-xs font-medium hover:bg-muted" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedCommentPaths: current.excludedCommentPaths?.filter((path) => path !== viewedComments.path) }))}>Include</button>
-          </div>}
-          {viewedPhoto && (includedPhoto ? <div className="libera-chat-context flex items-center gap-1">
-            {/* eslint-disable-next-line @next/next/no-img-element -- Thumbnail of the photo being viewed. */}
-            <img src={includedPhoto.url} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
-            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={includedPhoto.name}>{`Context: ${includedPhoto.name}${photoAlreadyIncluded ? " (already included)" : " (photo)"}`}</p>
-            <button type="button" className={buttonClass} aria-label="Remove photo context" title="Remove photo context" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: [...(current.excludedPhotoSources ?? []), includedPhoto.source] }))}><X size={12} /></button>
-          </div> : <div className="libera-chat-context flex items-center gap-1"><ImageIcon aria-hidden size={13} className="shrink-0" />
-            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedPhoto.name}>{`${viewedPhoto.name} is not included`}</p>
-            <button type="button" className="libera-window-no-drag rounded-full px-2 py-1 text-xs font-medium hover:bg-muted" onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: current.excludedPhotoSources?.filter((source) => source !== viewedPhoto.source) }))}>Include</button>
-          </div>)}
-          {!!chat?.photos?.length && <div className="flex gap-2 overflow-x-auto">
-            {chat.photos.map((photo) => <div key={photo.id} className="relative shrink-0">
-              {/* eslint-disable-next-line @next/next/no-img-element -- User-attached local data URL. */}
-              <img src={photo.dataUrl} alt={photo.name} className="h-16 w-16 rounded-lg object-cover" />
-              <button type="button" aria-label={`Remove photo: ${photo.name}`} className="absolute right-0 top-0 rounded-full bg-card p-1" onClick={() => updateChat(chat.id, (current) => ({ ...current, photos: current.photos?.filter((item) => item.id !== photo.id) }))}><X size={12} /></button>
-            </div>)}
-          </div>}
           <input ref={photoInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" aria-label="Attach photos" onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attachPhotos(files); }} />
-
-          {chat?.selections.map((context, index) => <div key={index} className="flex items-center gap-1 rounded-md bg-muted px-2 text-xs"><span className="min-w-0 flex-1 truncate" title={context.kind === "selection" ? context.text : context.path}>{context.kind === "document" ? `File: ${context.name}` : context.kind === "comments" ? `Comments: ${context.name} (${commentsContextSummary(context)})` : `${context.name}: ${context.text}`}</span><button type="button" className={buttonClass} aria-label={context.kind === "document" ? `Remove file: ${context.name}` : context.kind === "comments" ? `Remove comments: ${context.name}` : `Remove selection ${index + 1}`} onClick={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))}><X size={12} /></button></div>)}
           <div className="libera-chat-composer flex flex-col gap-0.5">
+          {hasContextTray && <div className="libera-context-tray" role="group" aria-label="Context for the next message">
+            {!agentMode && includedDocument && (() => {
+              const sent = !newDocumentContext(chat?.messages ?? [], includedDocument).length;
+              const what = activeTab?.file.fileType === "pdf" ? "PDF text" : viewingRecording ? "Transcript" : "Current draft";
+              return <ContextChip kind="document" icon={viewingRecording ? AudioLines : Eye} title={includedDocument.name} sent={sent} tooltip={`${what} of ${includedDocument.path}`}
+                removeLabel="Remove document context" onRemove={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedDocumentPaths: [...(current.excludedDocumentPaths ?? []), includedDocument.path] }))} />;
+            })()}
+            {includedComments && !chat?.selections.some((item) => item.kind === "comments" && item.path === includedComments.path) && <ContextChip kind="comments" icon={MessageSquareText}
+              title={includedComments.name} badge={commentsContextCount(includedComments)} sent={commentsAlreadySent} tooltip={`Review comments on ${includedComments.path}: ${commentsContextSummary(includedComments)}`}
+              removeLabel="Remove review comments" onRemove={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedCommentPaths: [...(current.excludedCommentPaths ?? []), includedComments.path] }))} />}
+            {includedPhoto && <ContextChip kind="photo" thumbnail={includedPhoto.url} title={includedPhoto.name} sent={photoAlreadyIncluded} tooltip={`Photo in view: ${includedPhoto.name}`}
+              removeLabel="Remove photo context" onRemove={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: [...(current.excludedPhotoSources ?? []), includedPhoto.source] }))} />}
+            {viewedPhoto && !includedPhoto && <button type="button" className="libera-window-no-drag libera-context-chip libera-context-chip-add" aria-label={`Include photo: ${viewedPhoto.name}`} title={`Include ${viewedPhoto.name}`}
+              onClick={() => chat && updateChat(chat.id, (current) => ({ ...current, excludedPhotoSources: current.excludedPhotoSources?.filter((source) => source !== viewedPhoto.source) }))}>
+              <span aria-hidden className="libera-context-chip-icon"><ImagePlus size={12} /></span><span aria-hidden className="libera-context-chip-title">Include</span>
+            </button>}
+            {chat?.selections.map((context, index) => <ContextChip key={index} kind={context.kind}
+              icon={context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect}
+              title={context.kind === "selection" ? selectionExcerpt(context.text) : context.name}
+              badge={context.kind === "comments" ? commentsContextCount(context) : undefined}
+              tooltip={context.kind === "document" ? context.path : context.kind === "comments" ? `Review comments on ${context.path}: ${commentsContextSummary(context)}` : `${context.name}: ${context.text}`}
+              removeLabel={context.kind === "document" ? `Remove file: ${context.name}` : context.kind === "comments" ? `Remove comments: ${context.name}` : `Remove selection ${index + 1}`}
+              onRemove={() => updateChat(chat.id, (current) => ({ ...current, selections: current.selections.filter((_, i) => i !== index) }))} />)}
+            {chat?.photos?.map((photo) => <ContextChip key={photo.id} kind="photo" thumbnail={photo.dataUrl} title={photo.name} tooltip={`Photo: ${photo.name}`}
+              removeLabel={`Remove photo: ${photo.name}`} onRemove={() => updateChat(chat.id, (current) => ({ ...current, photos: current.photos?.filter((item) => item.id !== photo.id) }))} />)}
+          </div>}
           <ChatFileComposer key={chat?.id ?? "loading"} chatId={chat?.id ?? "loading"} composerRef={composerRef} value={chat?.prompt ?? ""} disabled={!chat} files={files} quickPrompts={quickPrompts}
             {...(agentMode ? { placeholder: "Ask the agent to find, read or edit… Type @ for files" } : {})}
             onChange={(prompt) => chat && updateChat(chat.id, (current) => ({ ...current, prompt }), false)}
@@ -1314,7 +1345,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
           >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
           </div>
-          {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={setModel} />}
+          {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={changeModel} />}
         </form>
     </div>
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>

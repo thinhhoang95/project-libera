@@ -33,6 +33,8 @@ export interface CollabRuntimeOptions {
   collabDir: string;
   /** `<LIBERA_DATA_DIR>/users/admin`. */
   libraryRoot: string;
+  /** `<LIBERA_DATA_DIR>/gallery`, where shared albums live (default: beside users/). */
+  galleryRoot?: string;
   appVersion: string;
   installationId: string;
   secrets: SecretCodec;
@@ -201,6 +203,7 @@ export class CollabRuntime {
     const notebooks = factory({
       host,
       libraryRoot: this.options.libraryRoot,
+      ...(this.options.galleryRoot ? { galleryRoot: this.options.galleryRoot } : {}),
       emit: (event) => {
         this.options.emit(event);
         // Shares, joins, revocations and reconciliations change HostStatus.projects.

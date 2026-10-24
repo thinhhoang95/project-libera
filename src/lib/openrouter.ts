@@ -1,10 +1,11 @@
 import { readSseData } from "./text-stream";
 import { parseOpenRouterUsage, type TokenUsage } from "./chat-token-usage";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
+import { recordOpenRouterUsage } from "./storage/usage-ledger";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna";
 
 const OPENROUTER_API_KEY_ENV_NAMES = [
   "OPENROUTER_API_KEY",
@@ -24,6 +25,10 @@ type OpenRouterContentPart =
       image_url: {
         url: string;
       };
+    }
+  | {
+      type: "file";
+      file: { filename: string; file_data: string };
     };
 
 export type OpenRouterMessage = {
@@ -199,6 +204,7 @@ export async function createOpenRouterCompletion(messages: OpenRouterMessage[], 
   const response = await requestOpenRouterCompletion(messages, options);
   const payload = (await response.json()) as OpenRouterResponse;
   if (payload.error) throw new Error(payload.error.message || "OpenRouter request failed.");
+  recordOpenRouterUsage(options.model ?? getOpenRouterModel(), payload.usage, payload.provider);
   const message = payload.choices?.[0]?.message;
   const webCitations = (message?.annotations ?? []).flatMap((annotation) => {
     const citation = annotation.type === "url_citation" ? annotation.url_citation : undefined;
@@ -234,7 +240,10 @@ export async function* streamOpenRouterCompletion(messages: OpenRouterMessage[],
     if (typeof payload.id === "string") generation.id ??= payload.id;
     if (typeof payload.provider === "string") generation.provider ??= payload.provider;
     const usage = parseOpenRouterUsage(payload.usage);
-    if (usage) options.onUsage?.(usage, { ...generation });
+    if (usage) {
+      recordOpenRouterUsage(options.model ?? getOpenRouterModel(), payload.usage, generation.provider);
+      options.onUsage?.(usage, { ...generation });
+    }
     const choice = payload.choices?.[0];
     if (choice?.finish_reason === "error") throw new Error("The model stream failed.");
     const text = extractMessageContent(choice?.delta?.content);

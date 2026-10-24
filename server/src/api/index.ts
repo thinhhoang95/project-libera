@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 
 import { registerAdminRoutes } from "../admin/routes.js";
 import type { ServerContext } from "../context.js";
+import { registerAlbumRoutes } from "./albums.js";
 import { registerAuthRoutes } from "./auth.js";
 import { registerBlobRoutes } from "./blobs.js";
 import { registerCommandRoutes } from "./commands.js";
@@ -24,6 +25,7 @@ export async function registerApi(app: FastifyInstance, context: ServerContext):
   registerInvitationRoutes(app, context);
   registerDocumentRoutes(app, context);
   registerBlobRoutes(app, context);
+  registerAlbumRoutes(app, context);
   registerThreadRoutes(app, context);
   registerRevisionRoutes(app, context);
   registerSuggestionRoutes(app, context);

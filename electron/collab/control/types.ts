@@ -47,6 +47,11 @@ export interface ControlDeps {
   host: CollabHost;
   /** Master directory (`<LIBERA_DATA_DIR>/users/admin`); notebooks are its direct children. */
   libraryRoot: string;
+  /**
+   * The gallery folder (`<LIBERA_DATA_DIR>/gallery`); shared albums are its
+   * direct children. Defaults to the gallery beside `users/`.
+   */
+  galleryRoot?: string;
   /** Pushes an event to every window (through main and the preload). */
   emit(event: HostEvent): void;
   notebooks: NotebookService;

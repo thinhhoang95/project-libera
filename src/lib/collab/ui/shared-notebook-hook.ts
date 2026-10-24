@@ -15,7 +15,7 @@ export function useIsSharedNotebook(notebook: string | null | undefined): boolea
   const store = getCollabBridge() ? getCollabStatusStore() : null;
   return useSyncExternalStore(
     store?.subscribe ?? noopSubscribe,
-    () => !!notebook && !!store?.getSnapshot().status?.projects.some((project) => project.notebook === notebook),
+    () => !!notebook && !!store?.getSnapshot().status?.projects.some((project) => project.kind !== "album" && project.notebook === notebook),
     () => false,
   );
 }

@@ -23,7 +23,7 @@ async function main() {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     assert.ok(typeof config.openaiApiKey === "string" && config.openaiApiKey.trim(), "Desktop settings have no API key.");
     process.env.OPENROUTER_API_KEY = config.openaiApiKey.trim();
-    process.env.LIBERA_AI_CHAT_MODEL = config.aiFunctions?.chat?.model || config.openRouterModel || "google/gemini-3.5-flash";
+    process.env.LIBERA_AI_CHAT_MODEL = config.aiFunctions?.chat?.model || config.openRouterModel || "openai/gpt-6-luna";
     process.env.LIBERA_AI_CHAT_REASONING_EFFORT = config.aiFunctions?.chat?.reasoningEffort || "medium";
   }
   assert.ok(getOpenRouterApiKey(), "No compatible OpenRouter key is configured.");

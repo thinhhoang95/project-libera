@@ -3,7 +3,7 @@
 
 import type { ColumnType, Generated, Insertable, Selectable, Updateable } from "kysely";
 
-import type { Actor, Provenance } from "../protocol.js";
+import type { Actor, ProjectKind, Provenance } from "../protocol.js";
 
 type CreatedAt = ColumnType<Date, Date | string | undefined, Date | string>;
 type NullableTime = ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
@@ -36,6 +36,7 @@ export interface ProjectsTable {
   name: string;
   owner_id: string;
   manifest_doc_id: string;
+  kind: ColumnType<ProjectKind, ProjectKind | undefined, ProjectKind>;
   created_at: CreatedAt;
   deleted_at: NullableTime;
 }

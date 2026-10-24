@@ -7,6 +7,10 @@ import type { ArchiveContents, GalleryAlbum, GalleryContents, GalleryPhoto } fro
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import { StorageError } from "@/lib/storage/errors";
+import { fetchSharedOriginal, inviteToProject, shareAlbum as shareAlbumOnHost, updateSharedAlbum } from "@/lib/collab/host-client";
+import type { InviteRequest } from "@/lib/collab/local-api";
+import { albumImageType } from "@/lib/collab/protocol/schema";
+import { assertCanChangeFolder, assertNotSharedFolder, forgetHostAlbums, sharedAlbumMarker, sharedFolder, sharingError } from "@/lib/storage/gallery-sharing";
 import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@/lib/storage/fs-utils";
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
@@ -390,6 +394,46 @@ async function moveRecordInto(record: PhotoRecord, folder: string) {
   record.path = folder ? `${folder}/${destination.name}` : destination.name;
 }
 
+/** Whether a photo's file sits in a shared album's folder. */
+function inSharedFolder(record: PhotoRecord) {
+  const folder = folderOf(record.path);
+  return Boolean(folder) && sharedAlbumMarker(getGalleryRoot(), folder) !== null;
+}
+
+/** A copy of a photo in `folder` ("" for the top level), with its own id; returns the id. */
+async function copyRecordInto(index: GalleryIndex, id: string, folder: string, name?: string) {
+  const record = index.photos[id];
+  const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), name ?? path.posix.basename(record.path));
+  await copyFile(absolutePath(record.path), destination.path);
+  const stats = await stat(destination.path);
+  const copyId = randomUUID();
+  index.photos[copyId] = {
+    path: folder ? `${folder}/${destination.name}` : destination.name,
+    createdAt: record.createdAt,
+    prompt: record.prompt,
+    model: record.model,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    width: record.width,
+    height: record.height,
+  };
+  return copyId;
+}
+
+/**
+ * Puts a photo in a shared album's `folder`: moved, unless that would take it
+ * out of another shared album or another album, in which case it is copied
+ * (members may remove or edit it). Returns the id of the photo now there.
+ */
+async function placeRecordIn(index: GalleryIndex, id: string, folder: string, { exceptAlbumId }: { exceptAlbumId?: string } = {}) {
+  const record = index.photos[id];
+  if (folderOf(record.path) === folder) return id;
+  const otherAlbums = index.albums.some((album) => album.id !== exceptAlbumId && album.photoIds.includes(id));
+  if (inSharedFolder(record) || otherAlbums) return copyRecordInto(index, id, folder);
+  await moveRecordInto(record, folder);
+  return id;
+}
+
 export function getGallery() {
   return withGallery(toContents);
 }
@@ -405,10 +449,9 @@ export async function createAlbum(name: string, photoIds: string[] = []) {
     const album: AlbumRecord = { id: randomUUID(), name: albumName, folder, createdAt: new Date().toISOString(), photoIds: [] };
     index.albums.push(album);
     for (const id of new Set(photoIds)) {
-      const record = index.photos[id];
-      if (!record) continue;
-      await moveRecordInto(record, folder);
-      album.photoIds.push(id);
+      if (!index.photos[id]) continue;
+      // A photo in a shared album stays there; the new album gets a copy.
+      album.photoIds.push(inSharedFolder(index.photos[id]) ? await copyRecordInto(index, id, folder) : (await moveRecordInto(index.photos[id], folder), id));
     }
     return { album, gallery: toContents(index) };
   });
@@ -420,6 +463,15 @@ export async function renameAlbum(id: string, name: string) {
   return withGallery(async (index) => {
     const album = findAlbum(index, id);
     assertUniqueAlbumName(index, albumName, id);
+    const shared = await sharedFolder(getGalleryRoot(), album.folder);
+    if (shared) {
+      // The folder is the host's; only the name everyone sees changes.
+      if (shared.role !== "owner") throw new StorageError("Only the album's owner can rename it.", 403);
+      await updateSharedAlbum(shared.projectId, { name: albumName }).catch((error: unknown) => { throw sharingError(error); });
+      forgetHostAlbums();
+      album.name = albumName;
+      return toContents(index);
+    }
     album.name = albumName;
     const current = path.join(getGalleryRoot(), album.folder);
     const target = path.join(getGalleryRoot(), albumName);
@@ -439,18 +491,50 @@ export async function renameAlbum(id: string, name: string) {
 /** Delete an album. Its photos stay where they are on disk and in the gallery. */
 export function deleteAlbum(id: string) {
   return withGallery((index) => {
-    findAlbum(index, id);
-    index.albums = index.albums.filter((album) => album.id !== id);
+    const album = findAlbum(index, id);
+    if (sharedAlbumMarker(getGalleryRoot(), album.folder)) {
+      throw new StorageError("This album is shared. Stop sharing it, or leave it, before deleting it.", 409);
+    }
+    index.albums = index.albums.filter((entry) => entry.id !== id);
     return toContents(index);
   });
 }
 
-/** Add photos to or remove them from an existing album; files do not move. */
+/**
+ * Add photos to or remove them from an existing album; files do not move.
+ * A shared album's photos are the files in its folder: added photos are
+ * copied in, and removed ones move out to the top of the gallery, so they
+ * stay in this gallery while leaving the album for everyone.
+ */
 export function updateAlbumPhotos(id: string, { add = [], remove = [] }: { add?: string[]; remove?: string[] }) {
-  return withGallery((index) => {
+  return withGallery(async (index) => {
     const album = findAlbum(index, id);
+    if (await assertCanChangeFolder(getGalleryRoot(), album.folder)) {
+      const added: string[] = [];
+      for (const photoId of new Set(add)) {
+        if (!index.photos[photoId] || album.photoIds.includes(photoId)) continue;
+        added.push(await placeRecordIn(index, photoId, album.folder, { exceptAlbumId: album.id }));
+      }
+      for (const photoId of new Set(remove)) {
+        const record = index.photos[photoId];
+        if (record && folderOf(record.path) === album.folder) await moveRecordInto(record, "");
+      }
+      const removed = new Set(remove);
+      album.photoIds = [...new Set([...album.photoIds.filter((photoId) => !removed.has(photoId)), ...added])];
+      return toContents(index);
+    }
     const removed = new Set(remove);
-    album.photoIds = [...new Set([...album.photoIds.filter((photoId) => !removed.has(photoId)), ...add.filter((photoId) => index.photos[photoId])])];
+    const added: string[] = [];
+    for (const photoId of new Set(add)) {
+      const record = index.photos[photoId];
+      if (!record || album.photoIds.includes(photoId)) continue;
+      // A local album must own a copy that survives shared deletion or revocation.
+      if (inSharedFolder(record)) {
+        await mkdir(path.join(getGalleryRoot(), album.folder), { recursive: true });
+        added.push(await copyRecordInto(index, photoId, album.folder));
+      } else added.push(photoId);
+    }
+    album.photoIds = [...new Set([...album.photoIds.filter((photoId) => !removed.has(photoId)), ...added])];
     return toContents(index);
   });
 }
@@ -471,7 +555,12 @@ async function thumbnailPathFor(relative: string, root = getGalleryRoot()) {
 export function deletePhotos(ids: string[]) {
   return withGallery(async (index) => {
     let deleted = 0;
-    for (const id of new Set(ids)) {
+    const unique = [...new Set(ids)];
+    // A shared album's photo is deleted for everyone: check every role first.
+    for (const folder of new Set(unique.map((id) => index.photos[id]).filter(Boolean).map((record) => folderOf(record.path)))) {
+      if (folder) await assertCanChangeFolder(getGalleryRoot(), folder);
+    }
+    for (const id of unique) {
       const record = index.photos[id];
       if (!record) continue;
       await rm(absolutePath(record.path), { force: true });
@@ -529,6 +618,10 @@ async function reconcileArchive(index: GalleryIndex) {
 export function archivePhotos(ids: string[]) {
   return withGallery(async (index) => {
     let archived = 0;
+    for (const id of new Set(ids)) {
+      const record = index.photos[id];
+      if (record && folderOf(record.path)) assertNotSharedFolder(getGalleryRoot(), folderOf(record.path), "archive");
+    }
     for (const id of new Set(ids)) {
       const record = index.photos[id];
       if (!record) continue;
@@ -607,6 +700,10 @@ export async function writeGalleryPhoto(albumRef: string, fileName: string, body
     // Settings from the first version named the album instead of using its id.
     const album = reference ? index.albums.find((entry) => entry.id === albumRef || entry.name.toLowerCase() === reference) : undefined;
     const folder = album?.folder ?? "";
+    // A new photo in a shared album is shared with its members.
+    if (folder && await assertCanChangeFolder(getGalleryRoot(), folder) && path.extname(safeName).toLowerCase() === ".svg") {
+      throw new StorageError("Shared albums take PNG, JPEG, WebP and GIF photos.", 415);
+    }
     await mkdir(path.join(getGalleryRoot(), folder), { recursive: true });
     if (folder && !index.folders.includes(folder)) index.folders.push(folder);
     const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), safeName);
@@ -672,10 +769,17 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     if (path.extname(record.path).toLowerCase() === ".svg") throw new StorageError("Vector images cannot be edited here.");
     if (!hasEdits(edits)) throw new StorageError("There are no changes to save.");
     const { format, extension } = editedPhotoFormat(record.path);
+    const shared = await sharedFolder(getGalleryRoot(), folderOf(record.path));
+    const canChange = !shared || shared.role === "owner" || shared.role === "editor";
+    if (shared && mode === "replace") {
+      if (!canChange) throw new StorageError("You can view this shared album but not edit its photos. Save the edits as a copy instead.", 403);
+      if (extension !== path.extname(record.path).toLowerCase()) throw new StorageError("Edited GIFs become PNGs; in a shared album, save the edits as a copy instead.", 409);
+    }
     const body = await renderEditedPhoto(absolutePath(record.path), edits, format);
 
     if (mode === "copy") {
-      const folder = folderOf(record.path);
+      // A member who cannot add photos to the shared album gets the copy in their own gallery.
+      const folder = canChange ? folderOf(record.path) : "";
       const stem = path.posix.basename(record.path, path.extname(record.path));
       const destination = await findAvailableFilePath(path.join(getGalleryRoot(), folder), `${stem} (edited)${extension}`);
       await writeFile(destination.path, body, { flag: "wx" });
@@ -691,16 +795,21 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
         mtimeMs: stats.mtimeMs,
         ...await imageSize(destination.path),
       };
-      for (const album of index.albums) if (album.photoIds.includes(id)) album.photoIds.push(copyId);
+      if (canChange) for (const album of index.albums) if (album.photoIds.includes(id)) album.photoIds.push(copyId);
       return { id: copyId, gallery: toContents(index) };
     }
 
     const current = absolutePath(record.path);
     if (!record.original) {
-      const backupName = `${id}${path.extname(record.path).toLowerCase()}`;
-      await mkdir(path.join(getGalleryRoot(), ORIGINALS_DIR), { recursive: true });
-      await copyFile(current, path.join(getGalleryRoot(), ORIGINALS_DIR, backupName));
-      record.original = backupName;
+      const alreadyEdited = shared?.album?.photos.find((photo) => photo.name.toLowerCase() === path.posix.basename(record.path).toLowerCase())?.edited;
+      // Another member's edit already has its original on the host. Do not
+      // save the intermediate version as an "original", or require a download to edit offline.
+      if (!alreadyEdited) {
+        const backupName = `${id}${path.extname(record.path).toLowerCase()}`;
+        await mkdir(path.join(getGalleryRoot(), ORIGINALS_DIR), { recursive: true });
+        await copyFile(current, path.join(getGalleryRoot(), ORIGINALS_DIR, backupName));
+        record.original = backupName;
+      }
     }
     const nextRelative = withExtension(record.path, extension);
     const temporary = `${absolutePath(nextRelative)}.${randomUUID()}.tmp`;
@@ -713,6 +822,11 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     if (nextRelative !== record.path) await rm(current, { force: true });
     const stats = await stat(absolutePath(nextRelative));
     Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    // The album's members see what was done (the watcher shares the edited file).
+    if (shared) {
+      void updateSharedAlbum(shared.projectId, { photos: [{ name: path.posix.basename(nextRelative), edits: edits as unknown as Record<string, unknown> }] })
+        .then(forgetHostAlbums, () => undefined);
+    }
     return { id, gallery: toContents(index) };
   });
 }
@@ -721,12 +835,25 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
 export function revertPhoto(id: string) {
   return withGallery(async (index) => {
     const record = findPhoto(index, id);
-    if (!record.original) throw new StorageError("This photo has no earlier version.");
-    const backup = path.join(getGalleryRoot(), ORIGINALS_DIR, record.original);
-    const restored = withExtension(record.path, path.extname(record.original));
+    const shared = await assertCanChangeFolder(getGalleryRoot(), folderOf(record.path));
+    const previousOriginal = record.original;
+    let original = previousOriginal;
+    const albumPhoto = shared?.album?.photos.find((photo) => photo.name.toLowerCase() === path.posix.basename(record.path).toLowerCase());
+    if (shared && albumPhoto?.edited) {
+      // The album's original is authoritative, including for backups made by older clients.
+      const local = original && albumPhoto.originalHash ? await readFile(path.join(getGalleryRoot(), ORIGINALS_DIR, original)).catch(() => null) : null;
+      if (!local || createHash("sha256").update(local).digest("hex") !== albumPhoto.originalHash) {
+        const fetched = await fetchSharedOriginal(shared.projectId, path.posix.basename(record.path)).catch((error: unknown) => { throw sharingError(error); });
+        original = fetched.original;
+      }
+    }
+    if (!original) throw new StorageError("This photo has no earlier version.");
+    const backup = path.join(getGalleryRoot(), ORIGINALS_DIR, original);
+    const restored = withExtension(record.path, path.extname(original));
     await copyFile(backup, absolutePath(restored));
     if (restored !== record.path) await rm(absolutePath(record.path), { force: true });
     await rm(backup, { force: true });
+    if (previousOriginal && previousOriginal !== original) await removeOriginal(record);
     const stats = await stat(absolutePath(restored));
     Object.assign(record, { path: restored, original: undefined, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(restored)));
     return toContents(index);
@@ -790,4 +917,116 @@ export async function readArchivedThumbnail(name: string) {
   const photo = resolveArchivedPath(name);
   const root = protectedRoot();
   return queuedThumbnail(() => readThumbnail(photo, root));
+}
+
+// ------------------------------------------------------------ sharing (collaboration)
+
+export type ShareOptions = {
+  /** Album name members see; defaults to the album's (or the photo's) name. */
+  name?: string;
+  keepLocation?: boolean;
+  sharePrompts?: boolean;
+  invitations?: InviteRequest[];
+};
+
+/** Hands a prepared folder to the collab host, then sends the invitations. */
+async function shareFolder(folder: string, details: Array<{ name: string; prompt?: string; model?: string }>, options: ShareOptions & { name: string; direct?: boolean }) {
+  try {
+    const result = await shareAlbumOnHost({
+      folder,
+      name: options.name,
+      direct: options.direct === true,
+      keepLocation: options.keepLocation === true,
+      sharePrompts: options.sharePrompts === true,
+      photos: details.map((photo) => (options.sharePrompts ? photo : { name: photo.name })),
+    });
+    const invited: string[] = [];
+    const failed: Array<{ email: string; error: string }> = [];
+    for (const invitation of options.invitations ?? []) {
+      try {
+        await inviteToProject(result.projectId, invitation);
+        invited.push(invitation.email);
+      } catch (error) {
+        failed.push({ email: invitation.email, error: error instanceof Error ? error.message : "The invitation could not be sent." });
+      }
+    }
+    forgetHostAlbums();
+    return { ...result, invited, failed };
+  } catch (error) {
+    throw sharingError(error);
+  }
+}
+
+/**
+ * Share an album. Its photos are gathered into its folder first: moved when
+ * they belong to no other album, copied otherwise, so other albums keep
+ * theirs. Location details are removed by the host, in the folder, unless
+ * the album keeps them.
+ */
+export async function shareGalleryAlbum(albumId: string, options: ShareOptions = {}) {
+  const prepared = await withGallery(async (index) => {
+    const album = findAlbum(index, albumId);
+    if (sharedAlbumMarker(getGalleryRoot(), album.folder)) throw new StorageError("This album is already shared.", 409);
+    await mkdir(path.join(getGalleryRoot(), album.folder), { recursive: true });
+    const selected = new Set(album.photoIds);
+    // Local membership is independent of disk placement. Photos removed from
+    // this album must leave its folder before the host starts watching it.
+    for (const [id, record] of Object.entries(index.photos)) {
+      if (!selected.has(id) && folderOf(record.path) === album.folder && albumImageType(path.posix.basename(record.path))) {
+        await moveRecordInto(record, "");
+      }
+    }
+    const ids: string[] = [];
+    for (const id of album.photoIds) {
+      if (!index.photos[id]) continue;
+      ids.push(await placeRecordIn(index, id, album.folder, { exceptAlbumId: album.id }));
+    }
+    album.photoIds = ids;
+    const details = ids.map((id) => index.photos[id]).map((record) => ({ name: path.posix.basename(record.path), prompt: record.prompt, model: record.model }));
+    return { folder: album.folder, name: album.name, details };
+  });
+  const result = await shareFolder(prepared.folder, prepared.details, { ...options, name: options.name?.trim() || prepared.name });
+  return { ...result, gallery: await getGallery() };
+}
+
+/** Share one photo on its own: a copy goes into a new album folder only that photo is in. */
+export async function shareGalleryPhoto(photoId: string, options: ShareOptions = {}) {
+  const prepared = await withGallery(async (index) => {
+    const record = findPhoto(index, photoId);
+    if (path.extname(record.path).toLowerCase() === ".svg") throw new StorageError("Vector images cannot be shared. Share a PNG, JPEG, WebP or GIF photo.", 415);
+    const name = path.posix.basename(record.path, path.extname(record.path));
+    const folder = await freeFolderName(assertSafeUserSegment(`${name} (shared)`, "Album name"));
+    await mkdir(path.join(getGalleryRoot(), folder));
+    index.folders.push(folder);
+    const copyId = await copyRecordInto(index, photoId, folder);
+    index.albums.push({ id: randomUUID(), name: folder, folder, createdAt: new Date().toISOString(), photoIds: [copyId] });
+    const copy = index.photos[copyId];
+    return { folder, name, details: [{ name: path.posix.basename(copy.path), prompt: copy.prompt, model: copy.model }] };
+  });
+  let result;
+  try {
+    result = await shareFolder(prepared.folder, prepared.details, { ...options, name: options.name?.trim() || prepared.name, direct: true });
+  } catch (error) {
+    // Nothing was shared: the copy and its folder go again (unless the host already marked the folder).
+    await withGallery(async (index) => {
+      if (sharedAlbumMarker(getGalleryRoot(), prepared.folder)) return;
+      await rm(path.join(getGalleryRoot(), prepared.folder), { recursive: true, force: true });
+      index.albums = index.albums.filter((album) => album.folder !== prepared.folder);
+    }).catch(() => undefined);
+    throw error;
+  }
+  return { ...result, gallery: await getGallery() };
+}
+
+/** Copies photos out of shared albums into this gallery, where they stay whatever happens to the album. */
+export function savePhotosToGallery(ids: string[]) {
+  return withGallery(async (index) => {
+    const saved: string[] = [];
+    for (const id of new Set(ids)) {
+      const record = index.photos[id];
+      if (!record || !inSharedFolder(record)) continue;
+      saved.push(await copyRecordInto(index, id, ""));
+    }
+    return { saved, gallery: toContents(index) };
+  });
 }

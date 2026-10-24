@@ -9,13 +9,14 @@ Related documents:
 
 - [source-plan.md](source-plan.md): the original product and architecture plan. Section numbers like "§3.2" in these documents refer to it.
 - [implementation-plan.md](implementation-plan.md): the delivery plan for this repo, Phase 0 through Phase 4.
+- [gallery-sharing.md](gallery-sharing.md): shared albums and photos in the image gallery.
 - `SETUP.md` (repo root, written in M1.0): how to run the collaboration server locally and in production.
 
 ---
 
 ## 1. Scope
 
-The unit of sharing is a **shared notebook**. Its owner shares an existing notebook, or creates a new one, and invites members by email.
+The unit of sharing is a **shared project**: a **shared notebook**, or a **shared album** of the image gallery. Its owner shares an existing notebook or album (or one photo, which becomes an album of its own), and invites members by email. Albums use the same projects, roles, invitations, blobs, manifest and comment threads as notebooks; [gallery-sharing.md](gallery-sharing.md) describes what differs.
 
 Inside a shared notebook:
 
@@ -27,10 +28,19 @@ Inside a shared notebook:
 | Folder tree, file names, file IDs | The **project manifest** document |
 | Comments, suggestions, reviews, history | Server API, plus anchors in the document's `annotations` sub-document |
 
+Inside a shared album:
+
+| Kind | How it is shared |
+|---|---|
+| PNG, JPEG, WebP and GIF photos at the top of the album's gallery folder | Immutable blobs, with location and camera details removed unless the owner keeps them |
+| Captions, who added each photo, edits (with the original's hash), cover, privacy settings | The manifest's `photos` and `settings` maps |
+| Comments on a photo or an area of it | Server threads on the manifest document, anchored by the photo's file id |
+
 Not shared in v1:
 
 - PDF and image annotations (`.libera/annotations`)
-- Tags, stars, notebook view options, AI chat history, image-generation settings
+- Tags, stars, notebook view options, AI chat history, image-generation settings, the gallery's Protected Archive
+- SVG images and other non-photo files in an album's folder
 - Notebooks that are not shared, and linked (directory-mode) folders
 
 All of these keep working locally exactly as they do today.
@@ -345,7 +355,7 @@ Proposed defaults. The implementation plan records each one's spike and fallback
 | D8 | Markdown Source editor | Port the textarea editor to CodeMirror 6 (`@codemirror/lang-markdown` is installed) |
 | D9 | Server stack | Node 22 + TypeScript, Fastify, `ws`, Postgres via Kysely, S3-compatible blobs (MinIO in development) |
 | D10 | Hosting | Self-hosted on the existing Libera VPS behind nginx (`libera-collab.intuelle.com`) |
-| D11 | Sharing unit | Shared notebook |
+| D11 | Sharing unit | Shared notebook, or shared gallery album (project kind `album`, [gallery-sharing.md](gallery-sharing.md)) |
 | D12 | AI in shared notebooks | Runs locally with the user's key. AI is an attributed actor that may comment and suggest, never decide. |
 
 ---

@@ -13,10 +13,12 @@ import {
   ApiRoutes,
   bindActor,
   EventKind,
+  isProjectKind,
   isRole,
   type AuditEntry,
   type FolderLease,
   type Member,
+  type ProjectKind,
   type ProjectSummary,
   type Role,
 } from "../protocol.js";
@@ -24,7 +26,10 @@ import { aiHintSchema, iso, notifyRooms, pathId, publish, requireAccount, route 
 
 const projectName = z.string().trim().min(1).max(200);
 
-const createProjectBody = z.object({ name: projectName });
+const createProjectBody = z.object({
+  name: projectName,
+  kind: z.string().refine(isProjectKind, "Unknown project kind.").optional(),
+});
 const renameProjectBody = z.object({ name: projectName, ai: aiHintSchema });
 const changeRoleBody = z.object({
   role: z.string().refine(isRole, "Unknown role."),
@@ -45,14 +50,14 @@ const MIN_LEASE_MS = 500;
 const MAX_LEASE_MS = 10 * 60_000;
 
 /** Creates a project, its owner membership and its empty manifest document. */
-export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name: string): Promise<ProjectSummary> {
+export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name: string, kind: ProjectKind = "notebook"): Promise<ProjectSummary> {
   const projectId = newId("prj");
   const manifestDocId = newId("doc");
   const createdAt = new Date();
   await db.transaction().execute(async (trx) => {
     await trx
       .insertInto("projects")
-      .values({ id: projectId, name, owner_id: ownerId, manifest_doc_id: manifestDocId, created_at: createdAt })
+      .values({ id: projectId, name, owner_id: ownerId, manifest_doc_id: manifestDocId, kind, created_at: createdAt })
       .execute();
     await trx
       .insertInto("memberships")
@@ -63,14 +68,14 @@ export async function createProjectRecord(db: Kysely<DB>, ownerId: string, name:
       .values({ id: manifestDocId, project_id: projectId, kind: "manifest", file_id: null, created_by: ownerId, created_at: createdAt })
       .execute();
   });
-  return { id: projectId, name, role: "owner", ownerId, manifestDocId, createdAt: createdAt.toISOString() };
+  return { id: projectId, name, role: "owner", ownerId, manifestDocId, createdAt: createdAt.toISOString(), kind };
 }
 
 export async function projectSummary(db: Kysely<DB>, projectId: string, accountId: string): Promise<ProjectSummary> {
   const row = await db
     .selectFrom("projects")
     .innerJoin("memberships", "memberships.project_id", "projects.id")
-    .select(["projects.id", "projects.name", "projects.owner_id", "projects.manifest_doc_id", "projects.created_at", "memberships.role"])
+    .select(["projects.id", "projects.name", "projects.owner_id", "projects.manifest_doc_id", "projects.created_at", "projects.kind", "memberships.role"])
     .where("projects.id", "=", projectId)
     .where("memberships.account_id", "=", accountId)
     .where("projects.deleted_at", "is", null)
@@ -83,6 +88,7 @@ export async function projectSummary(db: Kysely<DB>, projectId: string, accountI
     ownerId: row.owner_id,
     manifestDocId: row.manifest_doc_id,
     createdAt: iso(row.created_at),
+    kind: row.kind,
   };
 }
 
@@ -122,14 +128,14 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
   app.post(ApiRoutes.projects, async (request, reply) => {
     const { accountId } = await requireAccount(context, request);
     const body = createProjectBody.parse(request.body);
-    const project = await createProjectRecord(db, accountId, body.name);
+    const project = await createProjectRecord(db, accountId, body.name, body.kind as ProjectKind | undefined);
     await writeAudit(db, {
       projectId: project.id,
       actor: bindActor(accountId, undefined),
       accountId,
       action: "project.create",
       target: project.id,
-      details: { name: project.name },
+      details: { name: project.name, kind: project.kind },
     });
     return reply.status(201).send(project);
   });
@@ -139,7 +145,7 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
     const rows = await db
       .selectFrom("projects")
       .innerJoin("memberships", "memberships.project_id", "projects.id")
-      .select(["projects.id", "projects.name", "projects.owner_id", "projects.manifest_doc_id", "projects.created_at", "memberships.role"])
+      .select(["projects.id", "projects.name", "projects.owner_id", "projects.manifest_doc_id", "projects.created_at", "projects.kind", "memberships.role"])
       .where("memberships.account_id", "=", accountId)
       .where("projects.deleted_at", "is", null)
       .orderBy("projects.created_at")
@@ -151,6 +157,7 @@ export function registerProjectRoutes(app: FastifyInstance, context: ServerConte
       ownerId: row.owner_id,
       manifestDocId: row.manifest_doc_id,
       createdAt: iso(row.created_at),
+      kind: row.kind,
     }));
   });
 

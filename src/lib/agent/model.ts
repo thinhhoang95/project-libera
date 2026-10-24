@@ -1,6 +1,7 @@
 import { getCostRouting, getOpenRouterApiKey } from "@/lib/openrouter";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint } from "@/lib/openrouter-prompt-cache";
 import { parseOpenRouterUsage, type TokenUsage } from "@/lib/chat-token-usage";
+import { recordOpenRouterUsage } from "@/lib/storage/usage-ledger";
 import { readSseData } from "@/lib/text-stream";
 
 // OpenAI-compatible chat completions with tool calls, streamed from
@@ -257,6 +258,7 @@ async function readReply(body: ReadableStream<Uint8Array>, options: CallModelOpt
   for await (const data of readSseData(body, options.signal)) {
     if (data.trim() === "[DONE]") { done = true; break; }
     let payload: {
+      provider?: string;
       usage?: unknown;
       error?: { message?: string; code?: number };
       choices?: { delta?: { content?: unknown; reasoning_details?: unknown; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string | null }[];
@@ -264,7 +266,11 @@ async function readReply(body: ReadableStream<Uint8Array>, options: CallModelOpt
     try { payload = JSON.parse(data); }
     catch { continue; }
     if (payload.error) throw new ModelRequestError(payload.error.message || "The model stream failed.", !content && (payload.error.code === undefined || payload.error.code === 429 || payload.error.code >= 500));
-    usage = parseOpenRouterUsage(payload.usage) ?? usage;
+    const reported = parseOpenRouterUsage(payload.usage);
+    if (reported) {
+      usage = reported;
+      recordOpenRouterUsage(options.model, payload.usage, typeof payload.provider === "string" ? payload.provider : undefined);
+    }
     const choice = payload.choices?.[0];
     if (!choice) continue;
     const delta = choice.delta;

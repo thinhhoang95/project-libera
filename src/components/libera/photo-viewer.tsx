@@ -1,22 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, RefObject } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
   AppWindow,
   ArchiveRestore,
   ArrowLeft,
+  ChevronFirst,
+  ChevronLast,
   ChevronLeft,
   ChevronRight,
   Copy,
   Download,
+  FolderDown,
   FolderInput,
   ImagePlus,
   Info,
   Lock,
   Maximize,
+  Maximize2,
   Minimize,
+  Minimize2,
   Minus,
   Pause,
   Pencil,
@@ -27,12 +32,15 @@ import {
   Sparkles,
   Star,
   Trash2,
+  UserPlus,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
 import { PhotoEditor } from "@/components/libera/photo-editor";
-import { galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
+import type { PhotoRegion } from "@/lib/collab/album-comments";
+import { canChangeSharedPhotos, galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
 const MAX_ZOOM = 8;
 const SLIDESHOW_MS = 4000;
@@ -69,19 +77,43 @@ export type PhotoViewerViewState = { transform: Transform; infoOpen: boolean; in
 type Transform = { scale: number; x: number; y: number };
 const FIT: Transform = { scale: 1, x: 0, y: 0 };
 
+/** Areas drawn over the photo (comments on part of a shared photo), and drawing a new one. */
+export type PhotoOverlay = {
+  regions: Array<{ id: string; region: PhotoRegion; active: boolean }>;
+  /** While set, dragging over the photo draws an area instead of panning. */
+  onPick?: (region: PhotoRegion | null) => void;
+};
+
 /** Zoomable, pannable photo. `scale` 1 fits the photo in the stage. */
-function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale }: {
+function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, overlay }: {
   photo: GalleryPhoto;
   rawUrl: PhotoUrl;
   transform: Transform;
   onTransform: (transform: Transform) => void;
   onFitScale: (fitScale: number) => void;
+  overlay?: PhotoOverlay | null;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const dragRef = useRef<{ x: number; y: number; start: Transform } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Where the photo is inside the stage (after zoom and pan), for the overlay.
+  const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [drawing, setDrawing] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const measureBox = useCallback(() => {
+    const stage = stageRef.current?.getBoundingClientRect();
+    const image = imageRef.current?.getBoundingClientRect();
+    if (!stage || !image || !image.width) return setBox(null);
+    setBox({ left: image.left - stage.left, top: image.top - stage.top, width: image.width, height: image.height });
+  }, []);
+  // The transform animates for 80 ms; measure again once it has settled.
+  useLayoutEffect(() => {
+    if (!overlay) return;
+    measureBox();
+    const timer = window.setTimeout(measureBox, 120);
+    return () => window.clearTimeout(timer);
+  }, [measureBox, overlay, transform, loaded]);
 
   const clampPan = useCallback((next: Transform): Transform => {
     const stage = stageRef.current?.getBoundingClientRect();
@@ -121,7 +153,8 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale }: {
   const reportFit = useCallback(() => {
     const image = imageRef.current;
     if (image?.naturalWidth) onFitScale(image.offsetWidth / image.naturalWidth);
-  }, [onFitScale]);
+    measureBox();
+  }, [measureBox, onFitScale]);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -160,6 +193,36 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale }: {
       className={`max-h-[calc(100%-3rem)] max-w-[calc(100%-3rem)] select-none object-contain transition-opacity ${loaded ? "opacity-100" : "opacity-0"}`}
       style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transition: dragging ? "none" : "transform 80ms ease-out, opacity 150ms" }}
       onLoad={() => { setLoaded(true); reportFit(); }} />
+    {overlay && box && <div className="pointer-events-none absolute" style={box} data-photo-overlay>
+      {overlay.regions.map((item) => <span key={item.id} aria-hidden
+        className={`absolute rounded-sm border-2 ${item.active ? "border-amber-300 bg-amber-300/15" : "border-white/70 bg-white/5"}`}
+        style={{ left: `${item.region.x * 100}%`, top: `${item.region.y * 100}%`, width: `${item.region.width * 100}%`, height: `${item.region.height * 100}%` }} />)}
+      {overlay.onPick && <div role="application" aria-label="Drag over the photo to choose the area to comment on" className="pointer-events-auto absolute inset-0 cursor-crosshair bg-black/20"
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x = (event.clientX - rect.left) / rect.width;
+          const y = (event.clientY - rect.top) / rect.height;
+          setDrawing({ x0: x, y0: y, x1: x, y1: y });
+        }}
+        onPointerMove={(event) => {
+          if (!drawing) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          setDrawing({ ...drawing, x1: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), y1: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)) });
+        }}
+        onPointerUp={() => {
+          if (!drawing) return;
+          const region = { x: Math.min(drawing.x0, drawing.x1), y: Math.min(drawing.y0, drawing.y1), width: Math.abs(drawing.x1 - drawing.x0), height: Math.abs(drawing.y1 - drawing.y0) };
+          setDrawing(null);
+          // A click without a drag means the whole photo.
+          overlay.onPick?.(region.width > 0.01 && region.height > 0.01 ? region : null);
+        }}
+        onDoubleClick={(event) => event.stopPropagation()}>
+        {drawing && <span className="absolute rounded-sm border-2 border-amber-300 bg-amber-300/20"
+          style={{ left: `${Math.min(drawing.x0, drawing.x1) * 100}%`, top: `${Math.min(drawing.y0, drawing.y1) * 100}%`, width: `${Math.abs(drawing.x1 - drawing.x0) * 100}%`, height: `${Math.abs(drawing.y1 - drawing.y0) * 100}%` }} />}
+      </div>}
+    </div>}
   </div>;
 }
 
@@ -181,7 +244,17 @@ export type PhotoViewerActions = {
   onArchive?: (photo: GalleryPhoto) => void;
   /** Puts an archived photo back in the gallery. */
   onRestore?: (photo: GalleryPhoto) => void;
+  /** Shares the photo on its own (collaboration). */
+  onShare?: (photo: GalleryPhoto) => void;
+  /** Copies a shared album's photo into this gallery. */
+  onSaveToGallery?: (photo: GalleryPhoto) => void;
 };
+
+/**
+ * A shared album photo's details in the Info panel (caption, who added it,
+ * comments). It can draw comment areas over the photo.
+ */
+export type PhotoViewerShared = (photo: GalleryPhoto, setOverlay: (overlay: PhotoOverlay | null) => void) => ReactNode;
 
 /** The AI chat panel, offered beside the viewer for photos it may see. */
 export type PhotoViewerChat = { open: boolean; onToggle: () => void };
@@ -202,7 +275,7 @@ function useChatPanelInset(rootRef: RefObject<HTMLDivElement | null>, open: bool
   }, [rootRef, open]);
 }
 
-export function PhotoViewer({ photos, index, albums, onNavigate, onClose, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl }: {
+export function PhotoViewer({ photos, index, albums, onNavigate, onClose, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl, sharedDetails }: {
   photos: GalleryPhoto[];
   index: number;
   albums: GalleryAlbum[];
@@ -213,8 +286,12 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   rawUrl?: PhotoUrl;
   initialViewState?: PhotoViewerViewState;
   onViewStateChange?: (state: PhotoViewerViewState) => void;
+  sharedDetails?: PhotoViewerShared;
 }) {
   const photo = photos[index];
+  const [overlay, setOverlay] = useState<PhotoOverlay | null>(null);
+  // A viewer or commenter of a shared album only looks.
+  const locked = Boolean(photo?.shared) && !canChangeSharedPhotos(photo?.shared);
   const [transformState, setTransformState] = useState({ id: photo.id, value: initialViewState?.transform ?? FIT });
   const transform = transformState.id === photo.id ? transformState.value : initialViewState?.transform ?? FIT;
   const setTransform = useCallback((action: Transform | ((value: Transform) => Transform)) => {
@@ -316,12 +393,32 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
       else if (key === "i" || key === "I") setInfoOpen((open) => !open);
       else if (key === "f" || key === "F") toggleFullscreen();
       else if (key === " ") setPlaying((value) => !value);
-      else if (key === "Delete" || key === "Backspace") actions.onDelete(photo);
+      else if ((key === "Delete" || key === "Backspace") && !locked) actions.onDelete(photo);
       else return;
       event.preventDefault();
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
+  });
+
+  // Moving between photos and the Info panel's actions, for the command palette; the toolbar's buttons are read from the page.
+  usePaletteCommands(rootRef, () => {
+    if (!photo || editing || detecting) return [];
+    const group = "Photo";
+    return [
+      { id: "photo:previous", title: "Previous photo", group, icon: ChevronLeft, shortcut: "←", disabled: !hasPrevious, run: () => go(-1) },
+      { id: "photo:next", title: "Next photo", group, icon: ChevronRight, shortcut: "→", disabled: !hasNext, run: () => go(1) },
+      { id: "photo:first", title: "First photo", group, icon: ChevronFirst, disabled: !hasPrevious, run: () => onNavigate(photos[0]) },
+      { id: "photo:last", title: "Last photo", group, icon: ChevronLast, disabled: !hasNext, run: () => onNavigate(photos[photos.length - 1]) },
+      { id: "photo:fit", title: "Fit to screen", group, icon: Minimize2, shortcut: "0", checked: transform.scale <= 1, run: () => setTransform(FIT) },
+      { id: "photo:actual-size", title: "Actual size", group, icon: Maximize2, keywords: "100% zoom pixels", run: () => setTransform({ scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 }) },
+      ...(photo.prompt && actions.onReusePrompt ? [{ id: "photo:reuse-prompt", title: "Reuse prompt", group, icon: Sparkles, keywords: "generate again", run: () => actions.onReusePrompt?.(photo) }] : []),
+      ...(actions.onUseAsReference ? [{ id: "photo:use-as-reference", title: "Use as reference", group, icon: ImagePlus, run: () => actions.onUseAsReference?.(photo) }] : []),
+      ...(photo.edited && actions.onRevert && !locked ? [{
+        id: "photo:revert", title: "Revert to original", group, icon: RotateCcw, keywords: "undo edits",
+        run: () => void actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo")),
+      }] : []),
+    ];
   });
 
   if (!photo) return null;
@@ -345,7 +442,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         </div>
         <div className="flex items-center rounded-lg bg-white/5" role="group" aria-label="Zoom">
           <button className={toolButton} aria-label="Zoom out" title="Zoom out (−)" disabled={transform.scale <= 1} onClick={() => zoomBy(1 / 1.5)}><Minus className="h-4 w-4" /></button>
-          <button className="min-w-14 rounded-lg px-1 text-xs tabular-nums text-white/80 hover:bg-white/10" title={transform.scale > 1 ? "Fit to screen (0)" : "Actual size"}
+          {/* The palette lists Fit to screen and Actual size on their own. */}
+          <button className="min-w-14 rounded-lg px-1 text-xs tabular-nums text-white/80 hover:bg-white/10" title={transform.scale > 1 ? "Fit to screen (0)" : "Actual size"} data-command-skip=""
             onClick={() => setTransform(transform.scale > 1 ? FIT : { scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 })}>{transform.scale > 1 ? `${percent}%` : "Fit"}</button>
           <button className={toolButton} aria-label="Zoom in" title="Zoom in (+)" disabled={transform.scale >= MAX_ZOOM} onClick={() => zoomBy(1.5)}><Plus className="h-4 w-4" /></button>
         </div>
@@ -357,7 +455,9 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         <button className={toolButton} aria-label="Detection and Segmentation" title="Detection and Segmentation: find, outline and count objects"
           onClick={() => { setPlaying(false); if (document.fullscreenElement) void document.exitFullscreen(); setDetecting(true); }}><ScanSearch className="h-4 w-4" /></button>
         {actions.onAddToAlbum && <button className={toolButton} aria-label="Add to album" title="Add to album" onClick={(event) => actions.onAddToAlbum?.(photo, event.currentTarget)}><FolderInput className="h-4 w-4" /></button>}
-        {actions.onArchive && <button className={toolButton} aria-label="Move to Protected Archive" title="Move to Protected Archive" onClick={() => { setPlaying(false); actions.onArchive?.(photo); }}><Lock className="h-4 w-4" /></button>}
+        {actions.onShare && !photo.shared && editable && <button className={toolButton} aria-label="Share photo" title="Share this photo with other people" onClick={() => { setPlaying(false); actions.onShare?.(photo); }}><UserPlus className="h-4 w-4" /></button>}
+        {actions.onSaveToGallery && photo.shared && <button className={toolButton} aria-label="Save to my gallery" title="Save a copy in your gallery, which stays whatever happens to the album" onClick={() => actions.onSaveToGallery?.(photo)}><FolderDown className="h-4 w-4" /></button>}
+        {actions.onArchive && !photo.shared && <button className={toolButton} aria-label="Move to Protected Archive" title="Move to Protected Archive" onClick={() => { setPlaying(false); actions.onArchive?.(photo); }}><Lock className="h-4 w-4" /></button>}
         {actions.onRestore && <button className={toolButton} aria-label="Restore to gallery" title="Restore to gallery" onClick={() => { setPlaying(false); actions.onRestore?.(photo); }}><ArchiveRestore className="h-4 w-4" /></button>}
         {actions.onOpenInCanvas && <button className={toolButton} aria-label="Open in tab" aria-haspopup="menu" title="Open in an editor tab, or beside the current one"
           onClick={(event) => { setPlaying(false); actions.onOpenInCanvas?.(photo, event.currentTarget); }}><AppWindow className="h-4 w-4" /></button>}
@@ -368,11 +468,11 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         <button className={toolButton} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title="Full screen (F)" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</button>
         {chat && <button className={toolButton} aria-label="Ask AI about this photo" aria-pressed={chat.open} title="Ask AI about this photo (⌘/Ctrl+Shift+B)" onClick={toggleChat}><Sparkles className={`h-4 w-4 ${chat.open ? "text-white" : ""}`} /></button>}
         <button className={toolButton} aria-label="Info" aria-pressed={infoOpen} title="Info (I)" onClick={() => setInfoOpen((open) => !open)}><Info className={`h-4 w-4 ${infoOpen ? "text-white" : ""}`} /></button>
-        <button className={toolButton} aria-label="Delete photo" title="Delete (Del)" onClick={() => actions.onDelete(photo)}><Trash2 className="h-4 w-4" /></button>
+        {!locked && <button className={toolButton} aria-label="Delete photo" title={photo.shared ? "Delete from the shared album, for everyone (Del)" : "Delete (Del)"} onClick={() => actions.onDelete(photo)}><Trash2 className="h-4 w-4" /></button>}
       </header>
       <div className="relative flex min-h-0 flex-1">
         <div className="relative flex min-w-0 flex-1">
-          <ZoomableImage key={photo.id} photo={photo} rawUrl={rawUrl} transform={transform} onTransform={setTransform} onFitScale={setFitScale} />
+          <ZoomableImage key={photo.id} photo={photo} rawUrl={rawUrl} transform={transform} onTransform={setTransform} onFitScale={setFitScale} overlay={photo.shared ? overlay : null} />
           {hasPrevious && <button className="absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60" aria-label="Previous photo" title="Previous (←)" onClick={() => go(-1)}><ChevronLeft className="h-6 w-6" /></button>}
           {hasNext && <button className="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60" aria-label="Next photo" title="Next (→)" onClick={() => go(1)}><ChevronRight className="h-6 w-6" /></button>}
           {notice && <div role="status" className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-white px-4 py-2 text-sm text-black shadow-lg">{notice}</div>}
@@ -393,10 +493,11 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
             {photo.model && <div><dt className="text-xs uppercase tracking-wider text-white/50">Model</dt><dd className="break-all">{photo.model}</dd></div>}
             {photo.prompt && <div><dt className="text-xs uppercase tracking-wider text-white/50">Prompt</dt><dd className="whitespace-pre-wrap leading-relaxed">{photo.prompt}</dd></div>}
           </dl>
+          {photo.shared && sharedDetails?.(photo, setOverlay)}
           <div className="flex flex-col gap-2">
             {photo.prompt && actions.onReusePrompt && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10" onClick={() => actions.onReusePrompt?.(photo)}><Sparkles className="h-4 w-4" />Reuse prompt</button>}
             {actions.onUseAsReference && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10" onClick={() => actions.onUseAsReference?.(photo)}><ImagePlus className="h-4 w-4" />Use as reference</button>}
-            {photo.edited && actions.onRevert && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
+            {photo.edited && actions.onRevert && !locked && <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm hover:bg-white/10"
               onClick={() => actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo"))}><RotateCcw className="h-4 w-4" />Revert to original</button>}
           </div>
         </aside>}

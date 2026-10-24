@@ -62,6 +62,7 @@ import { captureCanvasViewState } from "./canvas-view-state";
 import { useGallery } from "./gallery-store";
 import { createGalleryTab, isGalleryTab, reconcileGalleryTabs, type GalleryTabPlacement } from "./gallery-tabs";
 import { createRecordingTab, isRecordingTab, recordingTabId } from "./recording/recording-tabs";
+import { createPageTab, isPageTab, type PageKind } from "./page-tabs";
 import { focusedCanvasPane } from "@/lib/canvas-layout";
 import type { GalleryPhoto } from "@/lib/image-generation";
 import type { PhotoEdits } from "@/lib/photo-edits";
@@ -1022,6 +1023,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
 
     canvas.splitPane(canvas.layout.focusedPaneId, placement, tab.id);
+  }
+
+  /** Opens an app page such as Spending in its own tab, or brings its tab to the front. */
+  function openPageTab(kind: PageKind) {
+    setWorkspaceError("");
+    const tab = createPageTab(kind);
+    setTabs((currentTabs) => currentTabs.some((currentTab) => currentTab.id === tab.id) ? currentTabs : [...currentTabs, tab]);
+    setActiveTabId(tab.id);
   }
 
   /** Opens the tab of a recording in progress, or brings it to the front. */
@@ -4039,8 +4048,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     if (tabId !== activeTabId) captureCanvasViewState();
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    // Gallery photos and recordings in progress belong to no notebook file and stay out of recent files.
-    if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
+    // Gallery photos, recordings in progress and app pages belong to no notebook file and stay out of recent files.
+    if (tab && !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab)) {
       setSelectedNotebookName(tab.file.notebook);
       recordFileInteraction(tab.file);
     }
@@ -4069,7 +4078,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     function activateShortcutTab(tabId: string) {
       const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-      if (tab && !isGalleryTab(tab) && !isRecordingTab(tab)) {
+      if (tab && !isGalleryTab(tab) && !isRecordingTab(tab) && !isPageTab(tab)) {
         const interactedAt = new Date().toISOString();
 
         setSelectedNotebookName(tab.file.notebook);
@@ -4280,6 +4289,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       openFile,
       openGalleryPhoto,
       openRecordingTab,
+      openPageTab,
       renameRecordingTab,
       replaceRecordingTab,
       closeRecordingTab,
