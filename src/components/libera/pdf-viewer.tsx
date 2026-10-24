@@ -3,6 +3,10 @@
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
 import {
+  ChevronDown,
+  ChevronUp,
+  ChevronsDown,
+  ChevronsUp,
   Circle,
   Copy,
   Eraser,
@@ -55,6 +59,7 @@ import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
+import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { useMarkdownReview } from "@/components/libera/markdown-review-context";
 import { changePdfComments, onPdfCommentFocus, pdfCommentsState, selectPdfComment, usePdfComments } from "@/components/libera/pdf-comments-store";
 import { sortPdfCommentThreads } from "@/lib/pdf-comments";
@@ -105,6 +110,8 @@ import {
   PDF_HIGHLIGHT_COLORS,
   PDF_INK_COLORS,
   PDF_STROKE_WIDTHS,
+  PDF_TEXT_COLORS,
+  PDF_TEXT_FONTS,
   isHexColor,
   markupPalette,
   mergeHighlightRects,
@@ -2056,6 +2063,62 @@ export function PdfViewer({
   const shownShapeKind = selectedDrawing?.type === "shape" ? selectedDrawing.shape : shapeKind;
   const markupChoice = MARKUP_CHOICES.find((choice) => choice.value === markupStyle) ?? MARKUP_CHOICES[0];
   const shapeChoice = SHAPE_CHOICES.find((choice) => choice.value === shapeKind) ?? SHAPE_CHOICES[0];
+
+  // Annotation styles and page moves for the command palette. The toolbar's
+  // buttons are read from the page, but its style pickers show only for the
+  // tool or annotation in use; these use the same names, so they replace the
+  // pickers' entries and are there whatever is selected.
+  usePaletteCommands(viewerRef, () => {
+    const group = "PDF";
+    const pageCount = pageLayouts.length;
+    const page = Math.min(currentPage, pageCount);
+    const goToPage = (target: number) => pageElementRefs.current.get(clamp(target, 1, pageCount))?.scrollIntoView({ block: "start", inline: "nearest" });
+    const highlightSelected = selectedHighlight && markupStyleOf(selectedHighlight) === "highlight";
+    const otherMarkupSelected = selectedHighlight && !highlightSelected;
+    return [
+      ...MARKUP_CHOICES.map((choice) => ({
+        id: `pdf:markup:${choice.value}`, title: `Markup style: ${choice.label}`, group, icon: choice.icon, keywords: "annotate text highlighter",
+        checked: showMarkupStyle && shownMarkupStyle === choice.value, run: () => chooseMarkupStyle(choice.value),
+      })),
+      ...PDF_HIGHLIGHT_COLORS.map((color) => ({
+        id: `pdf:highlight-color:${color.value}`, title: `Highlight color: ${color.label}`, group, icon: Highlighter, keywords: "annotate markup",
+        checked: (highlightSelected ? selectedHighlight.color : highlightColor).toLowerCase() === color.value.toLowerCase(),
+        run: () => { if (highlightSelected) applyMarkupColor(color.value); else updateHighlightColor(color.value); },
+      })),
+      ...markupPalette("underline").map((color) => ({
+        id: `pdf:markup-color:${color.value}`, title: `Markup color: ${color.label}`, group, icon: Underline, keywords: "annotate underline strikethrough squiggly",
+        checked: (otherMarkupSelected ? selectedHighlight.color : markupColor).toLowerCase() === color.value.toLowerCase(),
+        run: () => { if (otherMarkupSelected) applyMarkupColor(color.value); else updateMarkupColor(color.value); },
+      })),
+      ...SHAPE_CHOICES.map((choice) => ({
+        id: `pdf:shape:${choice.value}`, title: `Shape: ${choice.label}`, group, icon: choice.icon, keywords: "draw annotate",
+        checked: (tool === "shape" || selectedDrawing?.type === "shape") && shownShapeKind === choice.value, run: () => chooseShapeKind(choice.value),
+      })),
+      ...PDF_INK_COLORS.map((color) => ({
+        id: `pdf:ink-color:${color.value}`, title: `Ink color: ${color.label}`, group, icon: PenLine, keywords: "pen shape draw annotate",
+        checked: drawingStyleValues.color.toLowerCase() === color.value.toLowerCase(), run: () => applyInkColor(color.value),
+      })),
+      ...PDF_STROKE_WIDTHS.map((width) => ({
+        id: `pdf:stroke-width:${width.value}`, title: `Stroke width: ${width.label} stroke`, group, icon: PenLine, keywords: "pen shape line thickness",
+        checked: drawingStyleValues.strokeWidth === width.value, run: () => applyStrokeWidth(width.value),
+      })),
+      ...PDF_TEXT_COLORS.map((color) => ({
+        id: `pdf:note-color:${color.value}`, title: `Note color: ${color.label}`, group, icon: Type, keywords: "text annotation",
+        checked: textStyleValues.color.toLowerCase() === color.value.toLowerCase(), run: () => updateTextColor(color.value),
+      })),
+      ...PDF_TEXT_FONTS.map((font) => ({
+        id: `pdf:note-font:${font.value}`, title: `Note font: ${font.label}`, group, icon: Type, keywords: "text annotation typeface",
+        checked: textStyleValues.fontFamily === font.value, run: () => updateFontFamily(font.value),
+      })),
+      { id: "pdf:note-font-larger", title: "Note font size: larger", group, icon: Type, keywords: "text annotation bigger increase", disabled: fontSize >= MAX_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize + 2) },
+      { id: "pdf:note-font-smaller", title: "Note font size: smaller", group, icon: Type, keywords: "text annotation decrease", disabled: fontSize <= MIN_TEXT_ANNOTATION_FONT_SIZE, run: () => updateFontSize(fontSize - 2) },
+      { id: "pdf:add-comment", title: "Add comment", group, icon: MessageSquarePlus, shortcut: "Ctrl/Cmd+Alt+M", keywords: "review selected text", run: () => { startCommentRef.current(); } },
+      { id: "pdf:next-page", title: "Next page", group, icon: ChevronDown, disabled: !pageCount || page >= pageCount, run: () => goToPage(page + 1) },
+      { id: "pdf:previous-page", title: "Previous page", group, icon: ChevronUp, disabled: !pageCount || page <= 1, run: () => goToPage(page - 1) },
+      { id: "pdf:first-page", title: "First page", group, icon: ChevronsUp, keywords: "top start", disabled: !pageCount || page <= 1, run: () => goToPage(1) },
+      { id: "pdf:last-page", title: "Last page", group, icon: ChevronsDown, keywords: "bottom end", disabled: !pageCount || page >= pageCount, run: () => goToPage(pageCount) },
+    ];
+  });
   const drawingMode: PdfDrawingMode = screenshotSnipping
     ? "idle"
     : tool === "draw" || tool === "shape" || tool === "eraser" || tool === "select"

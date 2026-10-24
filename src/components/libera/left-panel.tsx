@@ -25,13 +25,19 @@ import { ReviewComments } from "@/components/libera/markdown-review-ui";
 import { PdfReviewComments } from "@/components/libera/pdf-comments-panel";
 import { ReferencesPanel, type ReferencesPanelProps } from "@/components/libera/references/references-panel";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
+import { SpendingPanel } from "@/components/libera/spending/spending-panel";
+import { contextualPanelTabs, type ContextualPanelTab } from "@/components/libera/page-tabs";
 import type { OpenTab } from "@/components/libera/types";
 
 import { WorkspacesPanel, type WorkspaceManager } from "./workspaces-panel";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode, LiberaTree, LiberaTreeNode } from "@/lib/types";
 
-export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search" | "references";
+/**
+ * The rail's tabs. Contextual ones (page-tabs.ts) appear only while the page
+ * they belong to is the active tab, in a group of their own below the others.
+ */
+export type LeftPanelTab = "notebook" | "outlines" | "comments" | "workspaces" | "gallery" | "search" | "references" | ContextualPanelTab;
 
 /** What the References panel needs beyond the notebook and tree. */
 export type LeftPanelReferences = Omit<ReferencesPanelProps, "notebook" | "tree">;
@@ -108,6 +114,8 @@ export function LeftPanel({
     void window.liberaWindow?.setButtonsVisible(true);
   }, []);
 
+  const contextualTabs = contextualPanelTabs(activeTab);
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (
@@ -181,6 +189,7 @@ export function LeftPanel({
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         <LeftPanelRail
           activePanel={activePanel}
+          contextualTabs={contextualTabs}
           collapsed={collapsed}
           onLogout={onLogout}
           onSelectPanel={selectPanel}
@@ -188,7 +197,9 @@ export function LeftPanel({
         />
         {!collapsed ? (
           <div role="tabpanel" id={`left-panel-${activePanel}`} aria-labelledby={`left-panel-tab-${activePanel}`} className="flex min-h-0 min-w-0 flex-1 flex-col pr-1.5">
-            {activePanel === "workspaces" ? (
+            {activePanel === "spending" ? (
+              <SpendingPanel />
+            ) : activePanel === "workspaces" ? (
               <WorkspacesPanel manager={workspaceManager} tree={fullTree} />
             ) : activePanel === "notebook" ? (
               <>
@@ -272,12 +283,14 @@ function findFileNode(tree: LiberaTree, path: string): LiberaFileNode | undefine
 
 function LeftPanelRail({
   activePanel,
+  contextualTabs,
   collapsed,
   onLogout,
   onSelectPanel,
   onToggleCollapsed,
 }: {
   activePanel: LeftPanelTab;
+  contextualTabs: LeftPanelRailTab[];
   collapsed: boolean;
   onLogout: () => Promise<void>;
   onSelectPanel: (panel: LeftPanelTab) => void;
@@ -332,6 +345,12 @@ function LeftPanelRail({
         <div className="flex flex-col items-center gap-1">
           {TOP_PANEL_TABS.map(renderTab)}
         </div>
+        {contextualTabs.length ? (
+          // Like a contextual ribbon tab: shown only while its page is the active tab.
+          <div className="libera-rail-contextual flex flex-col items-center gap-1">
+            {contextualTabs.map(renderTab)}
+          </div>
+        ) : null}
         <div className="min-h-0 flex-1" />
         <div className="flex flex-col items-center gap-1">
           {BOTTOM_PANEL_TABS.map(renderTab)}

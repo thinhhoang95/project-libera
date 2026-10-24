@@ -9,7 +9,7 @@ import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookMarked, BookOpen, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, X } from "lucide-react";
+import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
@@ -22,6 +22,7 @@ import type { SearchEntry } from "@/components/libera/global-search/search-resul
 import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/components/libera/left-panel";
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
+import { useReferencePaletteCommands } from "@/components/libera/references/reference-palette-commands";
 import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
 import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
@@ -55,6 +56,7 @@ import { ReadAloudBar } from "@/components/libera/read-aloud";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
+import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -97,13 +99,25 @@ export function LiberaApp({
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
   // Opening a gallery photo or a search result in the canvas returns to the
   // panel used before the gallery or the Search page covered it.
-  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery" | "search">>("notebook");
+  // Contextual panels come and go with their page, so they are never returned to.
+  const lastCanvasPanelRef = useRef<Exclude<LeftPanelTab, "gallery" | "search" | ContextualPanelTab>>("notebook");
   const [searchFocusRequest, setSearchFocusRequest] = useState(0);
   const changeLeftPanel = useCallback((panel: LeftPanelTab) => {
     if (panel === "search") setSearchFocusRequest((request) => request + 1);
-    else if (panel !== "gallery") lastCanvasPanelRef.current = panel;
+    else if (panel !== "gallery" && !isContextualPanelTab(panel)) lastCanvasPanelRef.current = panel;
     setActiveLeftPanel(panel);
   }, []);
+  // A page's contextual rail tab opens with the page, as Word shows Table Design
+  // for a new table, and goes when another tab takes over, returning the
+  // panel to the one in use before.
+  const contextualPanels = contextualPanelTabs(workspace.activeTab).map((tab) => tab.id);
+  const contextualPanelKey = contextualPanels.join(" ");
+  useEffect(() => {
+    const available = contextualPanelKey ? contextualPanelKey.split(" ") : [];
+    setActiveLeftPanel((current) => available.length
+      ? available[0] as ContextualPanelTab
+      : isContextualPanelTab(current) ? lastCanvasPanelRef.current : current);
+  }, [contextualPanelKey]);
   const openComments = useCallback(() => {
     changeLeftPanel("comments");
     setNotebooksCollapsed(false);
@@ -264,6 +278,11 @@ export function LiberaApp({
     onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
     onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
   };
+  useReferencePaletteCommands({
+    notebook: (workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file.notebook : "") || workspace.selectedNotebookName,
+    canCite: references.canCite,
+    onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
+  });
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.
@@ -332,6 +351,26 @@ export function LiberaApp({
       void apiRequest("/api/python?ensure=1").catch(() => undefined);
     }, 5_000);
     return () => window.clearTimeout(timer);
+  }, [authenticated]);
+
+  // App pages (Spending) open from the palette, menus and Preferences → AI.
+  const openPageRef = useRef<(kind: PageKind) => void>(() => undefined);
+  useEffect(() => {
+    openPageRef.current = (kind: PageKind) => {
+      workspace.openPageTab(kind);
+      setNotebooksCollapsed(false);
+    };
+  });
+  useEffect(() => {
+    if (!authenticated) return;
+    const open = (kind: unknown) => { if (isPageKind(kind)) openPageRef.current(kind); };
+    const onEvent = (event: Event) => open((event as CustomEvent<unknown>).detail);
+    window.addEventListener(OPEN_PAGE_EVENT, onEvent);
+    const stopListening = window.liberaPreferences?.onOpenPage?.(open);
+    return () => {
+      window.removeEventListener(OPEN_PAGE_EVENT, onEvent);
+      stopListening?.();
+    };
   }, [authenticated]);
 
   // Only the desktop app has a Preferences window. The Search page renders on the client only.
@@ -427,6 +466,7 @@ export function LiberaApp({
       { id: "app:panel-workspaces", title: "Show workspaces", group: general, icon: Layers3, shortcut: "Ctrl/⌘+4", run: showPanel("workspaces") },
       { id: "app:panel-gallery", title: "Show image gallery", group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
       { id: "app:panel-references", title: "Show references", group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
+      { id: "app:page-spending", title: "Show OpenRouter spending", group: general, icon: ChartColumnStacked, detail: "Token use and cost by period, model and component", keywords: "usage cost tokens billing credits statistics money price", run: () => openPageRef.current("spending") },
     ];
   });
 

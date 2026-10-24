@@ -56,6 +56,8 @@ test("the palette reads only the active scope's toolbars, offstage ones included
         <button aria-label="Bold" title="Bold (Ctrl/Cmd+B)"><svg></svg></button>
         <button aria-label="Snip" title="Open an image to snip" disabled></button>
         <select aria-label="Text style"><option value="" disabled>Style</option><option value="1">Heading 1</option></select>
+        <div role="radiogroup" aria-label="Ink color"><button role="radio" aria-checked="true" aria-label="Red"></button></div>
+        <div role="radiogroup" aria-label="Note color"><button role="radio" aria-checked="false" aria-label="Red"></button></div>
       </div>
       <div hidden data-command-toolbar="Formatting" data-command-reveal><button aria-label="Insert table"></button></div>
     </section>
@@ -72,7 +74,9 @@ test("the palette reads only the active scope's toolbars, offstage ones included
 
   const commands = collectPaletteCommands(null);
   const titles = commands.map((command) => command.title);
-  assert.deepEqual(titles, ["Bold", "Snip", "Text style: Heading 1", "Insert table"]);
+  // Swatches with the same name in two pickers are told apart, and show which is chosen.
+  assert.deepEqual(titles, ["Bold", "Snip", "Text style: Heading 1", "Ink color: Red", "Note color: Red", "Insert table"]);
+  assert.deepEqual(commands.slice(3, 5).map((command) => command.checked), [true, false]);
   const bold = commands[0];
   assert.equal(bold.shortcut, "Ctrl/Cmd+B");
   assert.equal(bold.group, "Formatting");

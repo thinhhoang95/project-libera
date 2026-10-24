@@ -45,6 +45,7 @@ import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { ImageViewer } from "@/components/libera/image-viewer";
 import { VoiceMemoViewer } from "@/components/libera/audio/voice-memo-viewer";
 import { RecordingTabView } from "@/components/libera/recording/recording-tab-view";
+import { PageTabView } from "@/components/libera/page-tab-view";
 import { isGalleryTab } from "@/components/libera/gallery-tabs";
 import { NoteMathMarkersProvider } from "@/components/libera/note-math-context";
 import { MarkdownEditor } from "@/components/libera/markdown-editor";
@@ -1834,6 +1835,8 @@ function WorkspacePanelContent({
         <div className="flex min-h-0 flex-1 items-center justify-center bg-card text-sm text-muted-foreground" role="status">
           Opening shared document…
         </div>
+      ) : activeTab.page ? (
+        <PageTabView key={activeTab.id} kind={activeTab.page.kind} />
       ) : activeTab.file.fileType === "latex" ? (
         <LatexWorkspace
           key={editorKey}

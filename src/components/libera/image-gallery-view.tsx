@@ -9,6 +9,8 @@ import {
   ArrowUpWideNarrow,
   AppWindow,
   ArchiveRestore,
+  CalendarDays,
+  CalendarSearch,
   Check,
   FolderDown,
   FolderInput,
@@ -17,6 +19,7 @@ import {
   ImagePlus,
   Images,
   LayoutGrid,
+  ListFilter,
   Lock,
   PanelBottom,
   PanelRight,
@@ -35,16 +38,18 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { ArchiveUnlock, moveToArchive, useProtectedArchive } from "@/components/libera/gallery-archive";
 import {
   applyGallery, refreshGallery, reusePrompt, sendToReferences, settleSharedAlbumRequest, subscribeSharedAlbumRequests, useGallery,
 } from "@/components/libera/gallery-store";
 import { useCollabShell } from "@/components/libera/collab/collab-provider";
-import { SharedPhotoDetails, ShareGalleryDialog } from "@/components/libera/gallery-sharing";
+import { SharedPhotoDetails, ShareGalleryDialog, useAlbumMembers } from "@/components/libera/gallery-sharing";
+import { contributorName, describeFilter, FilterButton, GroupingButton, JumpToDateButton, TimelineSeeker, type Contributor } from "@/components/libera/gallery-timeline";
 import { parsePhotoAnchor } from "@/lib/collab/album-comments";
 import type { Thread } from "@/lib/collab/protocol/api";
 import { collabClient } from "@/lib/collab/ui/client";
-import { useHostEvents } from "@/lib/collab/ui/hooks";
+import { useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { ALBUM_ROLE_LABEL } from "@/lib/collab/ui/wording";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { PhotoViewer, type PhotoViewerChat, type PhotoViewerViewState } from "@/components/libera/photo-viewer";
@@ -57,6 +62,9 @@ import {
   photoRatio,
   type GalleryLayoutMode,
 } from "@/lib/gallery-layout";
+import {
+  filterCount, filterPhotos, GALLERY_GROUPINGS, GROUPING_LABEL, groupPhotos, ME, nearestPhoto, NO_FILTER, photoContributor, toDay, type GalleryFilter, type GalleryGrouping,
+} from "@/lib/gallery-timeline";
 import { archiveRawUrl, canChangeSharedPhotos, galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
 type GalleryView = { kind: "photos" } | { kind: "starred" } | { kind: "albums" } | { kind: "shared" } | { kind: "album"; id: string } | { kind: "archive" };
@@ -67,6 +75,7 @@ const session = {
   view: { kind: "photos" } as GalleryView, viewingId: null as string | null,
   scroll: new Map<string, number>(), photoViews: new Map<string, PhotoViewerViewState>(),
   selection: new Set<string>(), anchor: null as string | null,
+  filter: NO_FILTER as GalleryFilter,
 };
 type SortOrder = "newest" | "oldest";
 type LayoutPreferences = { mode: GalleryLayoutMode; zoom: number };
@@ -110,6 +119,7 @@ function uploadBatches(files: File[]) {
 
 const SORT_STORAGE_KEY = "libera.gallery.sort";
 const LAYOUT_STORAGE_KEY = "libera.gallery.layout";
+const GROUPING_STORAGE_KEY = "libera.gallery.grouping";
 const iconButton = "libera-sidebar-icon-button inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg disabled:opacity-40";
 const toolbarButton = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm hover:bg-muted disabled:opacity-50";
 const secondary = "rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50";
@@ -139,33 +149,6 @@ function parseLayout(value: string): LayoutPreferences | null {
   return { mode: parsed.mode, zoom: clampZoom(parsed.zoom) };
 }
 
-function dayKey(date: Date) {
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
-function dayLabel(date: Date, now = new Date()) {
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (dayKey(date) === dayKey(now)) return "Today";
-  if (dayKey(date) === dayKey(yesterday)) return "Yesterday";
-  return date.toLocaleDateString(undefined, {
-    weekday: "short", month: "short", day: "numeric",
-    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-  });
-}
-
-function groupByDay(photos: GalleryPhoto[]) {
-  const groups: Array<{ key: string; label: string; photos: GalleryPhoto[] }> = [];
-  for (const photo of photos) {
-    const date = new Date(photo.createdAt);
-    const key = dayKey(date);
-    const last = groups.at(-1);
-    if (last?.key === key) last.photos.push(photo);
-    else groups.push({ key, label: dayLabel(date), photos: [photo] });
-  }
-  return groups;
-}
-
 async function galleryRequest<T extends { gallery?: GalleryContents }>(url: string, method: string, body: unknown) {
   const response = await apiRequest<T>(url, { method, body: JSON.stringify(body) });
   applyGallery(response.gallery);
@@ -188,6 +171,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const gallery = useGallery();
   const [requestedView, setView] = useState<GalleryView>(() => session.view);
   const [sort, setSort] = useState<SortOrder>(() => readStored(SORT_STORAGE_KEY, (value) => (value === "oldest" ? "oldest" : value === "newest" ? "newest" : null), "newest"));
+  const [grouping, setGrouping] = useState<GalleryGrouping>(() => readStored(GROUPING_STORAGE_KEY, (value) => (GALLERY_GROUPINGS.includes(value as GalleryGrouping) ? value as GalleryGrouping : null), "day"));
+  const [filter, setFilterState] = useState<GalleryFilter>(() => session.filter);
+  /** A photo Jump to date landed on, outlined for a moment. */
+  const [landedId, setLandedId] = useState<string | null>(null);
   const [layout, setLayout] = useState<LayoutPreferences>(() => readStored(LAYOUT_STORAGE_KEY, parseLayout, { mode: "grid", zoom: DEFAULT_GALLERY_ZOOM }));
   const [selection, setSelected] = useState<Set<string>>(() => new Set(session.selection));
   const [anchor, setAnchor] = useState<string | null>(() => session.anchor);
@@ -208,7 +195,9 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const dragDepthRef = useRef(0);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [width, setWidth] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const wheelRef = useRef(0);
   const restoredScrollRef = useRef<string | null>(null);
 
@@ -227,7 +216,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const inArchive = view.kind === "archive";
   const archive = useProtectedArchive(inArchive);
 
-  const photos = useMemo(() => {
+  const viewPhotos = useMemo(() => {
     const all = viewKey === "archive" ? archive.photos : contents?.photos ?? [];
     const albumId = viewKey.startsWith("album:") ? viewKey.slice(6) : null;
     const visible = albumId ? all.filter((photo) => photo.albumIds.includes(albumId))
@@ -237,7 +226,109 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       ? second.createdAt.localeCompare(first.createdAt) || second.name.localeCompare(first.name)
       : first.createdAt.localeCompare(second.createdAt) || first.name.localeCompare(second.name));
   }, [archive.photos, contents, sort, viewKey]);
-  const groups = useMemo(() => groupByDay(photos), [photos]);
+  const myAccountId = useCollabStatus().status?.account?.id;
+  const photos = useMemo(() => filterPhotos(viewPhotos, filter, myAccountId), [filter, myAccountId, viewPhotos]);
+  const groups = useMemo(() => groupPhotos(photos, grouping), [grouping, photos]);
+  const filtering = filterCount(filter) > 0;
+
+  // Everyone who added photos to this view, yourself first, for the filter.
+  const members = useAlbumMembers(useMemo(() => [...new Set(viewPhotos.flatMap((photo) => (photo.shared ? [photo.shared.projectId] : [])))], [viewPhotos]));
+  const memberNames = useMemo(() => new Map([...members].map(([id, member]) => [id, member.displayName])), [members]);
+  const contributors = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const photo of viewPhotos) {
+      const id = photoContributor(photo, myAccountId);
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    for (const id of filter.contributors) if (!counts.has(id)) counts.set(id, 0);
+    return [...counts].map(([id, count]): Contributor => ({ id, count, name: contributorName(id, memberNames) }))
+      .sort((first, second) => (first.id === ME ? -1 : second.id === ME ? 1 : first.name.localeCompare(second.name)));
+  }, [filter.contributors, memberNames, myAccountId, viewPhotos]);
+  const viewDays = useMemo(() => {
+    if (!viewPhotos.length) return { min: "", max: "" };
+    const times = viewPhotos.map((photo) => Date.parse(photo.createdAt));
+    return { min: toDay(new Date(Math.min(...times))), max: toDay(new Date(Math.max(...times))) };
+  }, [viewPhotos]);
+  const shownTimes = useMemo(() => photos.map((photo) => Date.parse(photo.createdAt)), [photos]);
+
+  function setFilter(next: GalleryFilter) {
+    session.filter = next;
+    setFilterState(next);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }
+
+  function changeGrouping(next: GalleryGrouping) {
+    setGrouping(next);
+    store(GROUPING_STORAGE_KEY, next);
+  }
+
+  /** Scrolls to the photo taken closest to `day`, and outlines it for a moment. */
+  function jumpToDate(day: string) {
+    jumpToPhoto(nearestPhoto(photos, day));
+  }
+
+  function jumpToPhoto(photo: GalleryPhoto | undefined) {
+    const scroller = scrollRef.current;
+    const tile = photo && scroller?.querySelector<HTMLElement>(`[data-photo-id="${CSS.escape(photo.id)}"]`);
+    if (!photo || !scroller || !tile) return;
+    const top = (element: Element) => element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    // Show the section's heading too when the photo is near the top of its section.
+    const section = tile.closest("section");
+    const sectionTop = section ? top(section) : -Infinity;
+    const tileTop = top(tile);
+    scroller.scrollTop = tileTop - sectionTop < scroller.clientHeight / 2 ? sectionTop : tileTop - 16;
+    setLandedId(photo.id);
+  }
+
+  // The choices inside Group by, Jump to and Filter, for the command palette; the toolbar's buttons are read from the page.
+  usePaletteCommands(rootRef, () => {
+    if (!showGrid || !contents || viewingId) return [];
+    const group = "Gallery";
+    const byTime = [...photos].sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+    const years = [...new Set(viewPhotos.map((photo) => new Date(photo.createdAt).getFullYear()))].sort((first, second) => second - first);
+    const chosen = new Set(filter.contributors);
+    const toggleContributor = (id: string) => {
+      const next = new Set(chosen);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      setFilter({ ...filter, contributors: [...next] });
+    };
+    const lastDays = (days: number) => {
+      const from = new Date();
+      from.setDate(from.getDate() - days + 1);
+      return { from: toDay(from), to: toDay(new Date()) };
+    };
+    return [
+      ...GALLERY_GROUPINGS.map((option) => ({
+        id: `gallery:group-by:${option}`, title: `Group by ${GROUPING_LABEL[option].toLowerCase()}`, group, icon: CalendarDays, checked: grouping === option,
+        keywords: option === "auto" ? "date sections events changepoints" : "date sections", run: () => changeGrouping(option),
+      })),
+      { id: "gallery:jump-newest", title: "Jump to newest photo", group, icon: CalendarSearch, keywords: "date latest recent top", disabled: !photos.length, run: () => jumpToPhoto(byTime.at(-1)) },
+      { id: "gallery:jump-oldest", title: "Jump to oldest photo", group, icon: CalendarSearch, keywords: "date earliest first", disabled: !photos.length, run: () => jumpToPhoto(byTime[0]) },
+      ...years.map((year) => ({
+        id: `gallery:jump-year:${year}`, title: `Jump to ${year}`, group, icon: CalendarSearch, keywords: "date year",
+        // The first photo of the year as shown, so the year's top is in view.
+        disabled: !photos.some((photo) => new Date(photo.createdAt).getFullYear() === year),
+        run: () => jumpToPhoto(photos.find((photo) => new Date(photo.createdAt).getFullYear() === year)),
+      })),
+      ...(contributors.length > 1 || chosen.size ? contributors.map((contributor) => ({
+        id: `gallery:filter-contributor:${contributor.id}`, title: `Filter: added by ${contributor.name}`, group, icon: ListFilter, checked: chosen.has(contributor.id),
+        keywords: contributor.id === ME ? "contributor member mine my own" : "contributor member people", run: () => toggleContributor(contributor.id),
+      })) : []),
+      { id: "gallery:filter-30-days", title: "Filter: taken in the last 30 days", group, icon: ListFilter, keywords: "date range recent month", run: () => setFilter({ ...filter, ...lastDays(30) }) },
+      { id: "gallery:filter-12-months", title: "Filter: taken in the last 12 months", group, icon: ListFilter, keywords: "date range recent year", run: () => setFilter({ ...filter, ...lastDays(365) }) },
+      ...years.map((year) => ({
+        id: `gallery:filter-year:${year}`, title: `Filter: taken in ${year}`, group, icon: ListFilter, keywords: "date range year",
+        checked: filter.from === `${year}-01-01` && filter.to === `${year}-12-31`, run: () => setFilter({ ...filter, from: `${year}-01-01`, to: `${year}-12-31` }),
+      })),
+      { id: "gallery:filter-clear", title: "Clear filter", group, icon: X, keywords: "show all photos reset", disabled: !filtering, run: () => setFilter(NO_FILTER) },
+    ];
+  });
+
+  useEffect(() => {
+    if (!landedId) return;
+    const timer = window.setTimeout(() => setLandedId(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [landedId]);
   const starredCount = useMemo(() => contents?.photos.filter((photo) => photo.starred).length ?? 0, [contents]);
 
   // Selections for photos that left the view no longer count.
@@ -576,8 +667,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
 
   const title = view.kind === "album" ? currentAlbum?.name ?? "" : view.kind === "albums" ? "Albums" : view.kind === "shared" ? "Shared" : view.kind === "starred" ? "Starred" : inArchive ? "Protected Archive" : "Photos";
   const size = GALLERY_ZOOM_LEVELS[layout.zoom];
+  // The seeker takes the place of the scroll bar beside the photos.
+  const seeking = Boolean(contents) && showGrid && photos.length > 0;
 
-  return <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background" {...(inArchive ? {} : dropHandlers)}>
+  return <div ref={rootRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background" {...(inArchive ? {} : dropHandlers)}>
     <input ref={uploadInputRef} type="file" multiple accept={UPLOAD_ACCEPT} className="hidden" aria-hidden tabIndex={-1}
       onChange={(event) => {
         const files = [...(event.target.files ?? [])];
@@ -609,7 +702,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
         {view.kind === "album" && <button className={iconButton} aria-label="Back to albums" title="Back to albums" onClick={() => openView({ kind: "albums" })}><ArrowLeft className="h-4 w-4" /></button>}
         <div className="mr-auto min-w-0">
           <h2 className="truncate text-sm font-semibold">{title}</h2>
-          {showGrid && contents && <p className="truncate text-xs text-muted-foreground">{photos.length} {photos.length === 1 ? "photo" : "photos"}{currentAlbum?.shared ? ` · Shared · ${ALBUM_ROLE_LABEL[currentAlbum.shared.role]}${currentAlbum.shared.unavailable ? " · not syncing right now" : ""}` : currentAlbum ? ` · gallery/${currentAlbum.folder}` : inArchive ? " · Hidden from the gallery" : ""}</p>}
+          {showGrid && contents && <p className="truncate text-xs text-muted-foreground">{filtering ? `${photos.length} of ${viewPhotos.length}` : photos.length} {viewPhotos.length === 1 ? "photo" : "photos"}{currentAlbum?.shared ? ` · Shared · ${ALBUM_ROLE_LABEL[currentAlbum.shared.role]}${currentAlbum.shared.unavailable ? " · not syncing right now" : ""}` : currentAlbum ? ` · gallery/${currentAlbum.folder}` : inArchive ? " · Hidden from the gallery" : ""}</p>}
         </div>
         {view.kind !== "album" && <div className="flex gap-1 rounded-lg bg-muted p-1" role="tablist" aria-label="Gallery sections">
           {(["photos", "starred", "albums", ...(canShare || contents?.albums.some((album) => album.shared) ? ["shared" as const] : []), "archive"] as const).map((kind) => <button key={kind} role="tab" aria-selected={view.kind === kind}
@@ -617,6 +710,9 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
             onClick={() => openView({ kind })}>{kind === "photos" ? "Photos" : kind === "starred" ? <><Star className="h-3 w-3" />Starred</> : kind === "albums" ? "Albums" : kind === "shared" ? <><Users className="h-3 w-3" />Shared</> : <><Lock className="h-3 w-3" />Archive</>}</button>)}
         </div>}
         {showGrid && <>
+          <GroupingButton grouping={grouping} onChange={changeGrouping} />
+          <JumpToDateButton times={shownTimes} onJump={jumpToDate} />
+          <FilterButton filter={filter} contributors={contributors} min={viewDays.min} max={viewDays.max} onChange={setFilter} />
           <div className="flex items-center rounded-lg border border-border" role="group" aria-label="Thumbnail size">
             <button className={iconButton} aria-label="Smaller thumbnails" title="Show more photos (−)" disabled={layout.zoom === 0} onClick={() => changeLayout((current) => ({ zoom: current.zoom - 1 }))}><ZoomOut className="h-4 w-4" /></button>
             <input type="range" aria-label="Thumbnail size" className="w-20 accent-[var(--primary)] max-sm:hidden" min={0} max={GALLERY_ZOOM_LEVELS.length - 1} value={layout.zoom}
@@ -644,6 +740,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
     </header>
 
     {(error || gallery.error) && <div role="alert" className="flex items-center gap-2 border-b border-destructive/30 bg-destructive-muted px-4 py-2 text-sm text-destructive"><span className="mr-auto">{error || gallery.error}</span><button aria-label="Dismiss" onClick={() => setError("")}><X className="h-4 w-4" /></button></div>}
+    {showGrid && filtering && <div className="flex items-center gap-2 border-b border-border bg-primary/5 px-4 py-1.5 text-xs">
+      <span className="mr-auto truncate"><span className="text-muted-foreground">Filtered: </span>{describeFilter(filter, memberNames)}</span>
+      <button type="button" className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setFilter(NO_FILTER)}><X className="h-3.5 w-3.5" />Clear</button>
+    </div>}
     {notice && <div role="status" className="pointer-events-none absolute bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-foreground px-4 py-2 text-sm text-background shadow-lg">{notice}</div>}
     {upload && <div role="status" aria-live="polite" className="sr-only">Adding {upload.done} of {upload.total} photos</div>}
     {/* Over the album list the cards stay visible, so each one can take a drop. */}
@@ -652,14 +752,21 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       {view.kind === "albums" ? "Drop on an album to add photos to it, or anywhere to add them to Photos" : `Drop to add photos to ${uploadTargetAlbum ? uploadTargetAlbum.name : "Photos"}`}
     </div>}
 
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-4 pb-8" onScroll={(event) => { if (restoredScrollRef.current === viewKey) session.scroll.set(viewKey, event.currentTarget.scrollTop); }}>
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div ref={scrollRef} className={`min-h-0 flex-1 overflow-auto pb-8 pl-4 ${seeking ? "pr-12" : "pr-4"}`} style={seeking ? { scrollbarWidth: "none" } : undefined} onScroll={(event) => { if (restoredScrollRef.current === viewKey) session.scroll.set(viewKey, event.currentTarget.scrollTop); }}>
       {!contents ? <p role="status" className="py-10 text-center text-sm text-muted-foreground">{gallery.loading ? "Opening your gallery…" : ""}</p>
         : view.kind === "albums" ? <AlbumGrid contents={contents} albums={contents.albums.filter((album) => !album.shared?.direct)} photoById={photoById} onOpen={(id) => openView({ kind: "album", id })} onCreate={() => setDialog({ kind: "create-album", photoIds: [] })}
           onDropFiles={(albumId, files) => { dragDepthRef.current = 0; setDropping(false); void uploadPhotos(files, albumId); }} />
         : view.kind === "shared" ? <SharedAlbums contents={contents} photoById={photoById} canJoin={canShare} onJoin={() => collabShell?.openJoin()} onOpen={(id) => openView({ kind: "album", id })} />
         : inArchive && !archive.unlocked ? <ArchiveUnlock onUnlock={archive.unlock} />
-        : !photos.length ? <EmptyPhotos view={view.kind} onUpload={view.kind === "starred" || inArchive ? undefined : () => uploadInputRef.current?.click()} />
-        : groups.map((group) => {
+        : !viewPhotos.length ? <EmptyPhotos view={view.kind} onUpload={view.kind === "starred" || inArchive ? undefined : () => uploadInputRef.current?.click()} />
+        : !photos.length ? <div className="mx-auto mt-16 max-w-sm text-center">
+          <ListFilter className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">No photos match the filter</p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{describeFilter(filter, memberNames)}</p>
+          <button type="button" className={`${secondary} mt-4`} onClick={() => setFilter(NO_FILTER)}>Clear filter</button>
+        </div>
+        : <div ref={contentRef}>{groups.map((group) => {
           const allSelected = group.photos.every((photo) => selected.has(photo.id));
           return <section key={group.key} className="pt-5">
             <div className="group/day mb-2 flex items-center gap-2">
@@ -671,9 +778,11 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
             <PhotoGroup photos={group.photos} mode={layout.mode} size={size} width={width - 32} selected={selected} selecting={selecting}
               thumbnailUrl={inArchive ? archiveRawUrl : galleryRawUrl}
               onToggle={toggleSelection} onOpen={(photo) => setViewingId(photo.id)} onStar={inArchive ? undefined : (photo) => void setStarred([photo.id], !photo.starred)}
-              onContextMenu={openPhotoMenu} />
+              onContextMenu={openPhotoMenu} landedId={landedId} />
           </section>;
-        })}
+        })}</div>}
+    </div>
+    {seeking && <TimelineSeeker scrollRef={scrollRef} contentRef={contentRef} layoutKey={`${viewKey}:${grouping}:${layout.mode}:${layout.zoom}:${width}:${photos.length}:${photos[0]?.id}`} />}
     </div>
 
     {viewingIndex >= 0 && contents && <PhotoViewer initialViewState={inArchive ? undefined : session.photoViews.get(photos[viewingIndex].id)}
@@ -759,7 +868,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   </div>;
 }
 
-function PhotoGroup({ photos, mode, size, width, selected, selecting, thumbnailUrl, onToggle, onOpen, onStar, onContextMenu }: {
+function PhotoGroup({ photos, mode, size, width, selected, selecting, thumbnailUrl, onToggle, onOpen, onStar, onContextMenu, landedId }: {
   photos: GalleryPhoto[];
   mode: GalleryLayoutMode;
   size: number;
@@ -771,8 +880,9 @@ function PhotoGroup({ photos, mode, size, width, selected, selecting, thumbnailU
   onOpen: (photo: GalleryPhoto) => void;
   onStar?: (photo: GalleryPhoto) => void;
   onContextMenu?: (photo: GalleryPhoto, event: ReactMouseEvent) => void;
+  landedId?: string | null;
 }) {
-  const tile = (photo: GalleryPhoto, style: CSSProperties) => <PhotoTile key={photo.id} photo={photo} thumbnail={thumbnailUrl(photo, true)} style={style} compact={size < 100}
+  const tile = (photo: GalleryPhoto, style: CSSProperties) => <PhotoTile key={photo.id} photo={photo} thumbnail={thumbnailUrl(photo, true)} style={style} compact={size < 100} landed={photo.id === landedId}
     selected={selected.has(photo.id)} selecting={selecting}
     onToggle={(event) => onToggle(photo, event)} onOpen={() => onOpen(photo)} onStar={onStar && (() => onStar(photo))}
     onContextMenu={onContextMenu && ((event) => onContextMenu(photo, event))} />;
@@ -791,8 +901,10 @@ function PhotoGroup({ photos, mode, size, width, selected, selecting, thumbnailU
   </div>;
 }
 
-function PhotoTile({ photo, thumbnail, style, compact, selected, selecting, onToggle, onOpen, onStar, onContextMenu }: {
+function PhotoTile({ photo, thumbnail, style, compact, landed, selected, selecting, onToggle, onOpen, onStar, onContextMenu }: {
   photo: GalleryPhoto;
+  /** Jump to date landed here. */
+  landed?: boolean;
   thumbnail: string;
   style: CSSProperties;
   compact: boolean;
@@ -803,7 +915,9 @@ function PhotoTile({ photo, thumbnail, style, compact, selected, selecting, onTo
   onStar?: () => void;
   onContextMenu?: (event: ReactMouseEvent) => void;
 }) {
-  return <div className={`group/tile relative overflow-hidden ${selected ? "rounded-lg bg-primary/10" : "bg-muted"}`} style={style} onContextMenu={onContextMenu}>
+  return <div className={`group/tile relative overflow-hidden ${selected ? "rounded-lg bg-primary/10" : "bg-muted"}`} style={style} onContextMenu={onContextMenu}
+    data-photo-id={photo.id} data-photo-time={photo.createdAt}>
+    {landed && <span aria-hidden className="pointer-events-none absolute inset-0 z-10 animate-pulse ring-4 ring-inset ring-primary" />}
     <button type="button" className="block h-full w-full" aria-label={photo.prompt ? `Open “${photo.prompt.slice(0, 80)}”` : `Open ${photo.name}`}
       onClick={(event) => (selecting || event.shiftKey || event.metaKey || event.ctrlKey ? onToggle(event) : onOpen())}>
       {/* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */}

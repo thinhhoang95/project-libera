@@ -689,6 +689,50 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.equal(host.querySelector<HTMLInputElement>('input[aria-label="Find in PDF"]')?.value, "selectable");
       await unmount();
     });
+    await t.test("the command palette offers annotation styles and page moves whatever tool is in use", async () => {
+      normalLoad();
+      // The palette reads the topmost shown scope; jsdom lays nothing out.
+      const getClientRects = dom.window.Element.prototype.getClientRects;
+      dom.window.Element.prototype.getClientRects = function (this: Element) {
+        return (this.closest("[hidden]") ? [] : [{}]) as unknown as DOMRectList;
+      };
+      host.setAttribute("data-command-scope", "1");
+      Object.defineProperty(globalThis, "HTMLSelectElement", { configurable: true, value: dom.window.HTMLSelectElement });
+      try {
+        await mount({ tool: "select" });
+        const { collectPaletteCommands } = await import("../../src/components/libera/command-palette/commands");
+        const commands = () => collectPaletteCommands(null).filter((command) => command.group === "PDF");
+        const find = (title: string) => {
+          const found = commands().find((command) => command.title === title);
+          assert.ok(found, `Expected ${title}`);
+          return found;
+        };
+        // The toolbar's tools are read from the page, with their shortcut keys.
+        assert.equal(find("Pen").shortcut, "P");
+        // Pickers for other tools are hidden, but their choices are still listed.
+        assert.equal(host.querySelector('[aria-label="Ink color"]'), null);
+        assert.equal(find("Ink color: Red").checked, true);
+        await act(async () => find("Shape: Ellipse").run());
+        assert.equal(host.querySelector("[data-pdf-path]")!.getAttribute("data-pdf-tool"), "shape");
+        assert.equal(find("Shape: Ellipse").checked, true);
+        // With the picker shown, the registered entries replace its harvested ones.
+        assert.equal(commands().filter((command) => command.title === "Ink color: Blue").length, 1);
+        await act(async () => find("Ink color: Blue").run());
+        assert.equal(find("Ink color: Blue").checked, true);
+        await act(async () => find("Markup style: Underline").run());
+        assert.equal(host.querySelector("[data-pdf-path]")!.getAttribute("data-pdf-markup"), "underline");
+        assert.ok(find("Highlight color: Yellow"));
+        assert.ok(find("Note font size: larger"));
+        assert.equal(find("Previous page").disabled, true);
+        scrolled.length = 0;
+        find("Last page").run();
+        assert.equal(scrolled.at(-1)?.getAttribute("data-pdf-page-number"), "5");
+      } finally {
+        await unmount();
+        host.removeAttribute("data-command-scope");
+        dom.window.Element.prototype.getClientRects = getClientRects;
+      }
+    });
     await t.test("closing during fetch aborts both requests and never starts PDF.js", async () => {
       signals = [];
       const response = deferred<Response>();

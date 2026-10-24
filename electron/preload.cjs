@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
   listOpenRouterModels: (options) => ipcRenderer.invoke("setup:list-openrouter-models", options),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
+  openPage: (page) => ipcRenderer.invoke("setup:open-page", page),
   loadAiChatCustomInstructionFile: () =>
     ipcRenderer.invoke("setup:load-ai-chat-custom-instruction-file"),
   loadAiRewriteCustomInstructionFile: () =>
@@ -67,6 +68,11 @@ contextBridge.exposeInMainWorld("liberaSearch", {
 
 contextBridge.exposeInMainWorld("liberaPreferences", {
   open: (section) => ipcRenderer.invoke("preferences:open", section),
+  onOpenPage: (listener) => {
+    const handler = (_event, page) => listener(page);
+    ipcRenderer.on("app:open-page", handler);
+    return () => ipcRenderer.removeListener("app:open-page", handler);
+  },
 });
 
 contextBridge.exposeInMainWorld("liberaClipboard", {

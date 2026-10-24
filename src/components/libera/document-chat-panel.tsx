@@ -304,7 +304,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const permission: AgentPermission = chat?.agentPermission ?? defaultPermission;
   const lastMessageText = chat?.messages.at(-1)?.text;
   const lastMessageSteps = chat?.messages.at(-1)?.agent?.steps.length;
-  const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file : null;
+  const viewedFile = activeTab && !activeTab.untitled && !activeTab.gallery && !activeTab.page ? activeTab.file : null;
   // "Modify all files in Notebook/Folder" applies to the notebook of the file in view, else the selected one.
   const agentNotebook = viewedFile?.notebook ?? agentWorkspace?.notebook;
   // In a shared notebook the agent's changes are suggestions (plan M3.4).

@@ -56,6 +56,7 @@ import {
   DOCUMENT_EXPORT_FORMATS,
   downloadBibliography,
   unresolvedNote,
+  type BibliographyFormat,
   type BibliographyRequest,
   type DocumentExportFormat,
 } from "@/components/libera/references/bibliography-actions";
@@ -118,6 +119,7 @@ import {
   BUNDLED_CSL_STYLES,
   FACT_CHECK_REQUEST_EVENT,
   REFERENCES_ADD_REQUEST_EVENT,
+  REFERENCES_COMMAND_EVENT,
   REFERENCES_REVEAL_EVENT,
   type ReferenceEntry,
   type ReferenceEntryInput,
@@ -153,9 +155,32 @@ export const REFERENCE_FILTERS: Array<{ id: ReferenceFilter; label: string }> = 
 /** Lists longer than this render only the rows in view. */
 export const REFERENCE_WINDOW_THRESHOLD = 300;
 
+/** An action of the panel run from outside it, such as the command palette. */
+export type ReferencesPanelCommand =
+  /** Focus the search box, to find an entry and cite it at the cursor. */
+  | { action: "search" }
+  | { action: "manage" }
+  | { action: "generate" }
+  | { action: "fact-check" }
+  | { action: "undo" }
+  | { action: "copy-list" }
+  | { action: "copy-bibliography" }
+  | { action: "export-library"; format: ExportFormat }
+  | { action: "export-list"; format: BibliographyFormat }
+  | { action: "export-bibliography"; format: DocumentExportFormat }
+  | { action: "style"; style: string }
+  | { action: "filter"; filter: ReferenceFilter };
+export type ReferencesCommandDetail = { notebook: string; command: ReferencesPanelCommand };
+
+/** Shows the References panel for `notebook` and runs `command` there. */
+export function runReferencesCommand(notebook: string, command: ReferencesPanelCommand) {
+  window.dispatchEvent(new CustomEvent<ReferencesCommandDetail>(REFERENCES_COMMAND_EVENT, { detail: { notebook, command } }));
+}
+
 export type ReferencesPanelRequest =
   | { id: number; kind: "reveal"; notebook: string; entryId?: string; key?: string }
-  | { id: number; kind: "add"; notebook: string; query: string };
+  | { id: number; kind: "add"; notebook: string; query: string }
+  | { id: number; kind: "command"; notebook: string; command: ReferencesPanelCommand };
 
 type PanelViewState = { query: string; filter: ReferenceFilter; sort: ReferenceSort; tag: string | null };
 const DEFAULT_VIEW: PanelViewState = { query: "", filter: "all", sort: "author", tag: null };
@@ -251,11 +276,19 @@ export function useReferencesPanelRequests(onShow: (notebook: string) => void) {
       setRequest({ id: nextRequestId++, kind: "add", notebook: detail.notebook, query: detail.query ?? "" });
       showRef.current(detail.notebook);
     }
+    function command(event: Event) {
+      const detail = (event as CustomEvent<ReferencesCommandDetail>).detail;
+      if (!detail?.notebook || !detail.command) return;
+      setRequest({ id: nextRequestId++, kind: "command", notebook: detail.notebook, command: detail.command });
+      showRef.current(detail.notebook);
+    }
     window.addEventListener(REFERENCES_REVEAL_EVENT, reveal);
     window.addEventListener(REFERENCES_ADD_REQUEST_EVENT, add);
+    window.addEventListener(REFERENCES_COMMAND_EVENT, command);
     return () => {
       window.removeEventListener(REFERENCES_REVEAL_EVENT, reveal);
       window.removeEventListener(REFERENCES_ADD_REQUEST_EVENT, add);
+      window.removeEventListener(REFERENCES_COMMAND_EVENT, command);
     };
   }, []);
   const handled = useCallback((id: number) => setRequest((current) => current?.id === id ? null : current), []);
@@ -620,7 +653,7 @@ function ReferencesPanelBody({
 
   // Requests from REFERENCES_REVEAL_EVENT / REFERENCES_ADD_REQUEST_EVENT, once the library is here.
   useEffect(() => {
-    if (!request || request.notebook !== notebook) return;
+    if (!request || request.notebook !== notebook || request.kind === "command") return;
     if (request.kind === "add") {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setOpenId(null);
@@ -1180,6 +1213,56 @@ function ReferencesPanelBody({
         : null,
     onInsertBibliography: () => onInsertBibliography?.(),
   };
+
+  // Actions asked for from outside the panel (runReferencesCommand), once the library is here.
+  const commandRequest = request?.kind === "command" && request.notebook === notebook && library ? request : null;
+  const runCommandRef = useRef<(command: ReferencesPanelCommand) => void>(() => undefined);
+  useEffect(() => {
+    runCommandRef.current = (command) => {
+      switch (command.action) {
+        case "search":
+          setOpenId(null);
+          // An empty library has nothing to cite yet: add the first reference instead.
+          if (!entries.length) {
+            setAddBox({ id: Date.now(), query: "" });
+            return;
+          }
+          setAddBox(null);
+          window.requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
+          return;
+        case "manage": setManageOpen(true); return;
+        case "generate": if (!jobs.active) void generateForPdfs(); return;
+        case "fact-check":
+          if (factCheckBlocker) setNotice({ tone: "error", text: factCheckBlocker });
+          else setFactCheckOpen(true);
+          return;
+        case "undo":
+          if (undo.canUndo && !undo.stale) void runUndo();
+          else setNotice({ tone: "info", text: "Nothing to undo." });
+          return;
+        case "copy-list": void copyList(false); return;
+        case "export-library": panelMenuProps.onExport(command.format); return;
+        case "export-list": void exportList(command.format, false); return;
+        case "copy-bibliography":
+        case "export-bibliography":
+          if (documentBlocker) setNotice({ tone: "error", text: documentBlocker });
+          else if (command.action === "copy-bibliography") void copyList(true);
+          else void exportList(command.format, true);
+          return;
+        case "style": if (command.style !== currentStyle) panelMenuProps.onStyle(command.style); return;
+        case "filter":
+          setReviewFilter(null);
+          setOpenId(null);
+          setView({ filter: command.filter });
+          return;
+      }
+    };
+  });
+  useEffect(() => {
+    if (!commandRequest) return;
+    runCommandRef.current(commandRequest.command);
+    onRequestHandled?.(commandRequest.id);
+  }, [commandRequest, onRequestHandled]);
 
   async function openPanelMenu(button: HTMLButtonElement) {
     const rect = button.getBoundingClientRect();

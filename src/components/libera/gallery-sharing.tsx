@@ -206,15 +206,34 @@ function useMembers(projectId: string) {
   const [members, setMembers] = useState<Member[]>([]);
   useEffect(() => {
     let live = true;
-    let request = memberCache.get(projectId);
-    if (!request) {
-      request = collabClient.members(projectId).catch(() => [] as Member[]);
-      memberCache.set(projectId, request);
-    }
-    void request.then((loaded) => { if (live) setMembers(loaded); });
+    void loadMembers(projectId).then((loaded) => { if (live) setMembers(loaded); });
     return () => { live = false; };
   }, [projectId]);
   return useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
+}
+
+function loadMembers(projectId: string) {
+  let request = memberCache.get(projectId);
+  if (!request) {
+    request = collabClient.members(projectId).catch(() => [] as Member[]);
+    memberCache.set(projectId, request);
+  }
+  return request;
+}
+
+/** The members of several shared albums, by account id (the gallery's contributor filter). */
+export function useAlbumMembers(projectIds: string[]) {
+  const [members, setMembers] = useState<Map<string, Member>>(() => new Map());
+  const key = [...projectIds].sort().join("\n");
+  useEffect(() => {
+    let live = true;
+    const ids = key ? key.split("\n") : [];
+    void Promise.all(ids.map(loadMembers)).then((lists) => {
+      if (live) setMembers(new Map(lists.flat().map((member) => [member.id, member])));
+    });
+    return () => { live = false; };
+  }, [key]);
+  return members;
 }
 
 // ------------------------------------------------------------ a shared photo in the viewer

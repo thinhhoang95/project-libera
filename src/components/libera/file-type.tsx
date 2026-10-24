@@ -16,6 +16,10 @@ export function fileTypeLabel(fileType: LiberaFileNode["fileType"], name?: strin
     return "IMG";
   }
 
+  if (fileType === "page") {
+    return "PAGE";
+  }
+
   if (fileType === "text" || fileType === "audio") {
     const extension = name?.match(/\.([a-z0-9]{1,5})$/i)?.[1];
     return extension ? extension.toUpperCase() : fileType === "audio" ? "AUDIO" : "TXT";

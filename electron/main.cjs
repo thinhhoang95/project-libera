@@ -838,6 +838,18 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       if (event.sender === setupHost.webContents) setupHost.close();
     });
 
+    // A button in Preferences that opens an app page (Spending) in the
+    // workspace: Preferences closes and the workspace opens the page's tab.
+    ipcMain.handle("setup:open-page", (event, page) => {
+      if (event.sender !== setupHost.webContents || typeof page !== "string" || !/^[a-z-]{1,40}$/.test(page)) return false;
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      setupHost.close();
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      mainWindow.webContents.send("app:open-page", page);
+      return true;
+    });
+
     ipcMain.handle("setup:get-state", () => getConfigStatus());
 
     ipcMain.handle("setup:select-data-dir", () => selectDataDir(setupWindow));
@@ -943,6 +955,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     setupHost.on("closed", () => {
       ipcMain.removeHandler("setup:close");
+      ipcMain.removeHandler("setup:open-page");
       ipcMain.removeHandler("setup:get-state");
       ipcMain.removeHandler("setup:select-data-dir");
       ipcMain.removeHandler("setup:select-search-weights");

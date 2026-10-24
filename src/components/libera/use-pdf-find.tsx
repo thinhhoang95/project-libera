@@ -98,7 +98,7 @@ export function usePdfFind(pdfDocument: PDFDocumentProxy | null, cache: PdfTextC
   return {
     openFind, findText, activeMatch, matchesByPage,
     bar: open ? (
-      <div role="search" aria-label="Search PDF" className="flex flex-wrap items-center justify-end gap-1 border-b border-input bg-card px-4 py-2"
+      <div role="search" aria-label="Search PDF" data-command-toolbar="Find in PDF" className="flex flex-wrap items-center justify-end gap-1 border-b border-input bg-card px-4 py-2"
         onKeyDown={(event) => {
           if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeFind(); }
         }}>

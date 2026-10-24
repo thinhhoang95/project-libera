@@ -334,6 +334,14 @@
       .libera-dialog input.switch:checked::after { transform: translateX(16px); }
       .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
       :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
+      .spending-card { align-items: center; border: 1px solid var(--border, #e4e4e7); border-radius: 12px; display: flex; gap: 14px; margin-top: 14px; padding: 12px 14px; }
+      .spending-card[hidden] { display: none; }
+      .spending-card-icon { align-items: center; background: color-mix(in srgb, #7c5cdb 13%, transparent); border-radius: 9px; color: #7c5cdb; display: flex; flex: 0 0 34px; height: 34px; justify-content: center; }
+      :root[data-theme="dark"] .spending-card-icon { color: #b4a2f5; }
+      .spending-card-text { flex: 1; min-width: 0; }
+      .spending-card-text strong { display: block; font-size: 13px; }
+      .spending-card-text .field-help { margin: 2px 0 0; }
+      .spending-card button { flex: 0 0 auto; padding: 7px 12px; }
       .model-catalog-status { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 12px; }
       .model-catalog-status .field-help { margin: 0; }
       .model-catalog-refresh { background: none; border: 0; color: var(--accent, #2563eb); cursor: pointer; font-size: 12px; padding: 0; }
@@ -484,6 +492,14 @@
               <h2>AI</h2>
               <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
               <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically.</p>
+              <div class="spending-card" id="spending-card">
+                <span class="spending-card-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 13H7"/><path d="M19 9h-4"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="15" y="5" width="4" height="12" rx="1"/><rect x="7" y="8" width="4" height="9" rx="1"/></svg></span>
+                <div class="spending-card-text">
+                  <strong>Spending</strong>
+                  <p class="field-help">Token use and cost of every OpenRouter request Libera makes, by period, model, and input, output, or cache.</p>
+                </div>
+                <button id="open-spending" class="secondary" type="button">View spending</button>
+              </div>
               <div class="model-catalog-status">
                 <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
                 <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
@@ -2340,6 +2356,15 @@
           loadAiRewriteInstructionButton.disabled = false;
           loadAiRewriteInstructionButton.textContent = "Load from file";
         }
+      });
+
+      // Opens the Spending page in the workspace; unsaved changes here are left, as Close does.
+      const spendingCard = document.querySelector("#spending-card");
+      const openSpendingButton = document.querySelector("#open-spending");
+      if (!configurationMode || !window.liberaSetup?.openPage) spendingCard.hidden = true;
+      openSpendingButton.addEventListener("click", () => {
+        if (saveButton.disabled) return;
+        void window.liberaSetup.openPage("spending");
       });
 
       navButtons.forEach((button) => {

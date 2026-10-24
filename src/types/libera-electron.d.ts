@@ -107,6 +107,8 @@ declare global {
     liberaPreferences?: {
       /** Open Preferences at a section, e.g. "search". */
       open: (section?: string) => Promise<void>;
+      /** Preferences asked the workspace to open an app page, e.g. "spending" from Preferences → AI. */
+      onOpenPage?: (listener: (page: string) => void) => () => void;
     };
     liberaClipboard?: {
       copyItemPath: (

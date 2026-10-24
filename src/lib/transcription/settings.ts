@@ -74,9 +74,11 @@ function commonFfmpegLocations() {
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA ?? "";
     const home = os.homedir();
+    // Array join, not path.join: Next's file tracer expands path.join on
+    // env-derived values into a project-wide glob (which walks .git).
     return [
-      path.join(local, "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
-      path.join(home, "scoop", "shims", "ffmpeg.exe"),
+      [local, "Microsoft", "WinGet", "Links", "ffmpeg.exe"].join("\\"),
+      [home, "scoop", "shims", "ffmpeg.exe"].join("\\"),
       "C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe",
       "C:\\ffmpeg\\bin\\ffmpeg.exe",
     ];

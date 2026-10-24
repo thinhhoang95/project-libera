@@ -166,10 +166,12 @@ function toolbarCommands(scope: HTMLElement): PaletteCommand[] {
       }
 
       const tooltip = splitShortcut(control.getAttribute("title") ?? "");
-      const title = splitShortcut(label).text;
+      // A choice in a named radio group, such as one of several color swatches, says which group: "Ink color: Red".
+      const choices = control.getAttribute("role") === "radio" ? control.closest('[role="radiogroup"]')?.getAttribute("aria-label") : null;
+      const title = choices ? `${choices}: ${splitShortcut(label).text}` : splitShortcut(label).text;
       if (seen.has(`${group}\n${title}`)) continue;
       seen.add(`${group}\n${title}`);
-      const pressed = control.getAttribute("aria-pressed") ?? control.getAttribute("aria-selected");
+      const pressed = control.getAttribute("aria-pressed") ?? control.getAttribute("aria-selected") ?? control.getAttribute("aria-checked");
       commands.push({
         id: `${group}\n${title}`,
         title,

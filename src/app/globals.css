@@ -2928,3 +2928,17 @@ html.dark .libera-search-example:hover { background: #a3bbef12; box-shadow: inse
 .libera-search-notice[data-tone="error"] { background: var(--destructive-muted); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--destructive) 25%, transparent); }
 .libera-kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; background: var(--card); box-shadow: inset 0 0 0 1px var(--border), inset 0 -1px 0 var(--border); color: var(--foreground); font-family: inherit; font-size: 11px; line-height: 1; }
 html.dark .libera-kbd { background: #a3bbef10; }
+
+/* Contextual rail tabs (page-tabs.ts): a group below the regular tabs that
+   appears only while its page is the active tab, like a contextual ribbon tab.
+   It wears its own tint and a capped rule above it, so it reads as belonging to
+   the page rather than as another permanent panel. */
+.libera-left-panel { --libera-contextual: #7c5cdb; }
+html.dark .libera-left-panel { --libera-contextual: #b4a2f5; }
+.libera-rail-contextual { position: relative; margin-top: 8px; padding-top: 10px; animation: libera-rail-contextual-in 220ms cubic-bezier(.2, .8, .2, 1); }
+.libera-rail-contextual::before { content: ""; position: absolute; top: 0; left: 50%; width: 22px; height: 3px; transform: translateX(-50%); border-radius: 999px; background: var(--libera-contextual); opacity: .85; }
+.libera-left-panel .libera-rail-contextual .libera-sidebar-icon-button { color: var(--libera-contextual); }
+.libera-left-panel .libera-rail-contextual .libera-sidebar-icon-button:hover { background: color-mix(in srgb, var(--libera-contextual) 10%, transparent); color: var(--libera-contextual); }
+.libera-left-panel .libera-rail-contextual .libera-sidebar-icon-button[aria-selected="true"] { background: color-mix(in srgb, var(--libera-contextual) 17%, transparent); color: var(--libera-contextual); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--libera-contextual) 22%, transparent); }
+@keyframes libera-rail-contextual-in { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .libera-rail-contextual { animation: none; } }

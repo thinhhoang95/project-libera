@@ -7,6 +7,7 @@ import { apiRequest, encodeFilePath } from "./api-client";
 import type { OpenTab } from "./types";
 import { refreshGallery } from "./gallery-store";
 import { isGalleryTab, restoreGalleryTab } from "./gallery-tabs";
+import { createPageTab, isPageKind, isPageTab } from "./page-tabs";
 import type { LiberaFileNode, LiberaFilePayload, LiberaTree, LiberaTreeNode } from "@/lib/types";
 import {
   applyWorkspaceView, createWorkspaceView, captureWorkspaceSession, emptyWorkspaceLibrary, emptyWorkspaceSession,
@@ -111,6 +112,7 @@ export function useSavedWorkspaces(options: Options) {
     const gallery = session.tabs.some(isGalleryTab) ? await refreshGallery() : null;
     const restored = await Promise.all(session.tabs.map(async (tab): Promise<OpenTab | null> => {
       if (isGalleryTab(tab)) return restoreGalleryTab(tab, gallery);
+      if (isPageTab(tab)) return isPageKind(tab.page.kind) ? { ...createPageTab(tab.page.kind), viewState: tab.viewState } : null;
       if (tab.untitled || tab.standaloneSaveId) return { ...tab, status: tab.draft === tab.saved ? "clean" : "dirty" };
       if (!files.has(tab.file.path)) {
         // Recover unsaved text even if its original file was removed outside Libera.

@@ -38,6 +38,7 @@ Viewers and commenters cannot upload into the album, remove or delete its photos
 - **Removing photos.** **Remove from album** takes photos out of the album for everyone and keeps them at the top of your gallery.
 - **Deleting photos.** **Delete** removes the photo from the album, and from every member's computer. No hidden backup is kept. To keep a photo whatever happens to the album, save it first.
 - **Save to my gallery.** Copies photos out of a shared album into your own gallery, from the selection toolbar, the right-click menu or the viewer.
+- **Who added what.** **Filter → Added by** shows only the photos some members added, yourself included (see [Browsing the gallery by date](gallery-timeline.md)).
 - **Editing.** An edit saved over a photo is shared, and its original stays on the server, so any contributor can **Revert to original**, even on a computer where the photo was not edited. Edited GIFs become PNGs, so in a shared album they are saved as a copy.
 - **Captions.** The viewer's Info panel shows the caption. Contributors edit it there; it saves when you leave the field or press Enter.
 - **Comments.** The Info panel lists the photo's comments with replies, resolve and reopen. Click **Mark an area** and drag over the photo to comment on part of it; areas are outlined on the photo, and the selected comment's area is highlighted. `@` mentions and replies notify people as in shared notebooks.

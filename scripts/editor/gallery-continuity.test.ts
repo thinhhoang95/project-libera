@@ -35,7 +35,7 @@ test("gallery sections and individual photos retain scroll, zoom and info state 
   }
   async function click(label: string) { await act(async () => button(label).click()); }
   function scroller() {
-    const result = host.querySelector<HTMLElement>(".overflow-auto.px-4.pb-8"); assert.ok(result); return result;
+    const result = host.querySelector<HTMLElement>(".overflow-auto.pb-8"); assert.ok(result); return result;
   }
   async function scroll(top: number) { await act(async () => { scroller().scrollTop = top; scroller().dispatchEvent(new dom.window.Event("scroll")); }); }
   function image() { return document.querySelector<HTMLImageElement>('img[alt="first.png"]')!; }

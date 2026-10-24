@@ -7,6 +7,8 @@ import {
   AppWindow,
   ArchiveRestore,
   ArrowLeft,
+  ChevronFirst,
+  ChevronLast,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -17,7 +19,9 @@ import {
   Info,
   Lock,
   Maximize,
+  Maximize2,
   Minimize,
+  Minimize2,
   Minus,
   Pause,
   Pencil,
@@ -31,6 +35,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
 import { PhotoEditor } from "@/components/libera/photo-editor";
@@ -396,6 +401,26 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
     return () => window.removeEventListener("keydown", handleKey);
   });
 
+  // Moving between photos and the Info panel's actions, for the command palette; the toolbar's buttons are read from the page.
+  usePaletteCommands(rootRef, () => {
+    if (!photo || editing || detecting) return [];
+    const group = "Photo";
+    return [
+      { id: "photo:previous", title: "Previous photo", group, icon: ChevronLeft, shortcut: "←", disabled: !hasPrevious, run: () => go(-1) },
+      { id: "photo:next", title: "Next photo", group, icon: ChevronRight, shortcut: "→", disabled: !hasNext, run: () => go(1) },
+      { id: "photo:first", title: "First photo", group, icon: ChevronFirst, disabled: !hasPrevious, run: () => onNavigate(photos[0]) },
+      { id: "photo:last", title: "Last photo", group, icon: ChevronLast, disabled: !hasNext, run: () => onNavigate(photos[photos.length - 1]) },
+      { id: "photo:fit", title: "Fit to screen", group, icon: Minimize2, shortcut: "0", checked: transform.scale <= 1, run: () => setTransform(FIT) },
+      { id: "photo:actual-size", title: "Actual size", group, icon: Maximize2, keywords: "100% zoom pixels", run: () => setTransform({ scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 }) },
+      ...(photo.prompt && actions.onReusePrompt ? [{ id: "photo:reuse-prompt", title: "Reuse prompt", group, icon: Sparkles, keywords: "generate again", run: () => actions.onReusePrompt?.(photo) }] : []),
+      ...(actions.onUseAsReference ? [{ id: "photo:use-as-reference", title: "Use as reference", group, icon: ImagePlus, run: () => actions.onUseAsReference?.(photo) }] : []),
+      ...(photo.edited && actions.onRevert && !locked ? [{
+        id: "photo:revert", title: "Revert to original", group, icon: RotateCcw, keywords: "undo edits",
+        run: () => void actions.onRevert?.(photo).then(() => { setTransform(FIT); setNotice("Reverted to the original"); }, () => setNotice("Could not revert this photo")),
+      }] : []),
+    ];
+  });
+
   if (!photo) return null;
   const photoAlbums = albums.filter((album) => photo.albumIds.includes(album.id));
   const percent = Math.round(transform.scale * fitScale * 100);
@@ -417,7 +442,8 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         </div>
         <div className="flex items-center rounded-lg bg-white/5" role="group" aria-label="Zoom">
           <button className={toolButton} aria-label="Zoom out" title="Zoom out (−)" disabled={transform.scale <= 1} onClick={() => zoomBy(1 / 1.5)}><Minus className="h-4 w-4" /></button>
-          <button className="min-w-14 rounded-lg px-1 text-xs tabular-nums text-white/80 hover:bg-white/10" title={transform.scale > 1 ? "Fit to screen (0)" : "Actual size"}
+          {/* The palette lists Fit to screen and Actual size on their own. */}
+          <button className="min-w-14 rounded-lg px-1 text-xs tabular-nums text-white/80 hover:bg-white/10" title={transform.scale > 1 ? "Fit to screen (0)" : "Actual size"} data-command-skip=""
             onClick={() => setTransform(transform.scale > 1 ? FIT : { scale: Math.min(MAX_ZOOM, Math.max(1, 1 / fitScale)), x: 0, y: 0 })}>{transform.scale > 1 ? `${percent}%` : "Fit"}</button>
           <button className={toolButton} aria-label="Zoom in" title="Zoom in (+)" disabled={transform.scale >= MAX_ZOOM} onClick={() => zoomBy(1.5)}><Plus className="h-4 w-4" /></button>
         </div>
