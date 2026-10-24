@@ -80,9 +80,37 @@ function handleSecret(message) {
   }
 }
 
-function prefixLines(stream, prefix, chunk) {
-  const text = String(chunk);
-  stream.write(text.split(/\r?\n/).filter((line, index, lines) => line || index < lines.length - 1).map((line) => `${prefix} ${line}\n`).join(""));
+/**
+ * Where this module's messages and the host's output go. The packaged app has
+ * no console anyone sees, so there they also go to electron-log's main.log
+ * (the updater's log), which is what a user can send when collaboration
+ * fails. electron-log prints to the console as well.
+ */
+function createLog() {
+  if (app.isPackaged) {
+    try {
+      const electronLog = require("electron-log/main");
+      return {
+        info: (text) => electronLog.info(text),
+        warn: (text) => electronLog.warn(text),
+        error: (text) => electronLog.error(text),
+      };
+    } catch {
+      // Without electron-log the console still works.
+    }
+  }
+  return {
+    info: (text) => console.log(text),
+    warn: (text) => console.warn(text),
+    error: (text) => console.error(text),
+  };
+}
+
+const log = createLog();
+
+/** The host's stdout and stderr, line by line, with a prefix. */
+function logLines(write, prefix, chunk) {
+  for (const line of String(chunk).split(/\r?\n/)) if (line) write(`${prefix} ${line}`);
 }
 
 /**
@@ -125,7 +153,7 @@ function createCollabHost(options = {}) {
       child.postMessage(message, transfer);
       return true;
     } catch (error) {
-      console.error(`[collab-host] Could not reach the host: ${error.message}`);
+      log.error(`[collab-host] Could not reach the host: ${error.message}`);
       return false;
     }
   }
@@ -162,17 +190,17 @@ function createCollabHost(options = {}) {
           // The old port was taken; the in-process production server reads
           // process.env per request, so it follows. A spawned dev server
           // keeps the old URL until Libera restarts.
-          console.warn(`[collab-host] Control API moved from port ${port} to ${message.port}.`);
+          log.warn(`[collab-host] Control API moved from port ${port} to ${message.port}.`);
           port = message.port;
         }
         url = message.url;
         if (process.env.LIBERA_COLLAB_HOST_URL) process.env.LIBERA_COLLAB_HOST_URL = url;
-        console.log(`[collab-host] Ready at ${url} (store schema ${message.storeSchemaVersion}).`);
+        log.info(`[collab-host] Ready at ${url} (store schema ${message.storeSchemaVersion}).`);
         settleReady(null);
         return;
       }
       case "fatal":
-        console.error(`[collab-host] ${message.message}`);
+        log.error(`[collab-host] ${message.message}`);
         settleReady(new Error(message.message));
         return;
       case "event":
@@ -192,7 +220,7 @@ function createCollabHost(options = {}) {
     if (startedAt && Date.now() - startedAt > STABLE_UPTIME_MS) restartAttempt = 0;
     const delay = Math.min(RESTART_MAX_MS, RESTART_BASE_MS * 2 ** restartAttempt);
     restartAttempt++;
-    console.warn(`[collab-host] Restarting in ${Math.round(delay / 1000)} s.`);
+    log.warn(`[collab-host] Restarting in ${Math.round(delay / 1000)} s.`);
     restartTimer = setTimeout(() => {
       restartTimer = null;
       spawnHost();
@@ -210,21 +238,21 @@ function createCollabHost(options = {}) {
         stdio: "pipe",
       });
     } catch (error) {
-      console.error(`[collab-host] Could not start: ${error.message}`);
+      log.error(`[collab-host] Could not start: ${error.message}`);
       settleReady(error);
       scheduleRestart();
       return;
     }
     child = processHandle;
-    processHandle.stdout?.on("data", (chunk) => prefixLines(process.stdout, "[collab-host]", chunk));
-    processHandle.stderr?.on("data", (chunk) => prefixLines(process.stderr, "[collab-host]", chunk));
+    processHandle.stdout?.on("data", (chunk) => logLines(log.info, "[collab-host]", chunk));
+    processHandle.stderr?.on("data", (chunk) => logLines(log.error, "[collab-host]", chunk));
     processHandle.on("message", onMessage);
     processHandle.once("exit", (code) => {
       if (child === processHandle) child = null;
       const wasReady = ready;
       ready = false;
       if (stopping) return;
-      console.error(`[collab-host] Exited with code ${code}${wasReady ? "" : " before it was ready"}.`);
+      log.error(`[collab-host] Exited with code ${code}${wasReady ? "" : " before it was ready"}.`);
       settleReady(new Error(`The collaboration host exited with code ${code}.`));
       scheduleRestart();
     });
@@ -314,7 +342,7 @@ function createCollabHost(options = {}) {
     } catch (error) {
       // Next still gets the URL: the host keeps restarting and the routes
       // answer 503 until it is up. Collaboration must not block the app.
-      console.error(`[collab-host] ${error.message}`);
+      log.error(`[collab-host] ${error.message}`);
     }
   }
 
@@ -345,13 +373,13 @@ function createCollabHost(options = {}) {
         finished = true;
         clearTimeout(timer);
         processHandle.removeListener("message", onShutdown);
-        if (note) console.warn(`[collab-host] ${note}`);
+        if (note) log.warn(`[collab-host] ${note}`);
         resolve();
       };
       const onShutdown = (message) => {
         if (message?.t !== "shutdown-done" || message.id !== id) return;
-        if (message.error) console.error(`[collab-host] Stopped with an error: ${message.error}`);
-        else console.log("[collab-host] Flushed and stopped.");
+        if (message.error) log.error(`[collab-host] Stopped with an error: ${message.error}`);
+        else log.info("[collab-host] Flushed and stopped.");
         // The host exits on its own; wait for it so nothing writes after quit.
         if (child !== processHandle) finish();
       };
@@ -399,7 +427,7 @@ function createCollabHost(options = {}) {
       body: JSON.stringify({ password, previousPassword, changed: true }),
     })
       .then((response) => response.body?.cancel())
-      .catch((error) => console.warn(`[collab-host] Could not update the shared sign-in: ${error.message}`));
+      .catch((error) => log.warn(`[collab-host] Could not update the shared sign-in: ${error.message}`));
   }
 
   return {

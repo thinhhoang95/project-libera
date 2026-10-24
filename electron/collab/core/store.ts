@@ -5,9 +5,12 @@
 //   commit. With WAL and synchronous=FULL a commit is on disk when it returns,
 //   which is what lets the UI say "Saved on this device".
 // - One process owns a database file. A second host on the same file fails
-//   at open with HostStoreLockedError instead of interleaving writes.
+//   at open with HostStoreLockedError instead of interleaving writes. The
+//   owner refreshes its lock file every few seconds, so a lock left by a host
+//   that died is taken over even when the OS has given its pid to another
+//   program.
 
-import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, openSync, readFileSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 
 import type { Command } from "../../../src/lib/collab/protocol/api";
@@ -142,7 +145,17 @@ export interface HostStoreOptions {
   path: string;
   busyTimeoutMs?: number;
   now?: () => number;
+  /** How often the owner refreshes its lock file (tests shorten it). */
+  lockHeartbeatMs?: number;
+  /** A lock not refreshed for this long is stale, whatever its pid (tests shorten it). */
+  lockStaleMs?: number;
 }
+
+const LOCK_HEARTBEAT_MS = 5_000;
+// Generous next to the heartbeat: a busy event loop or a slow disk must not
+// let a second host in. Main restarts a crashed host within 30 s, so a stale
+// lock costs at most about a minute.
+const LOCK_STALE_MS = 60_000;
 
 // Each entry upgrades user_version N to N+1. Never edit a shipped entry.
 const MIGRATIONS: string[] = [
@@ -288,12 +301,23 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/** An owner lock file next to the database: `<db>.lock` holding the owner's pid. */
+/**
+ * An owner lock file next to the database: `<db>.lock` holding the owner's
+ * pid. The owner touches the file every heartbeat. A lock whose owner is dead
+ * is stale, and so is one whose file has not been touched for `staleMs`: pids
+ * are reused (Windows hands a dead host's pid to any new process), so a live
+ * pid alone does not prove the lock is held.
+ */
 class OwnerLock {
   private readonly token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private held = false;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
 
-  constructor(readonly path: string) {}
+  constructor(
+    readonly path: string,
+    private readonly heartbeatMs = LOCK_HEARTBEAT_MS,
+    private readonly staleMs = LOCK_STALE_MS,
+  ) {}
 
   acquire(): void {
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -305,14 +329,17 @@ class OwnerLock {
           closeSync(fd);
         }
         this.held = true;
+        this.startHeartbeat();
         return;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
       const owner = this.readOwner();
       // A lock from a live process (including another store in this process)
-      // is real. A dead owner crashed or was killed: its lock is stale.
-      if (owner && processAlive(owner.pid)) throw new HostStoreLockedError(this.path, owner.pid);
+      // is real while its owner keeps it fresh. A dead owner crashed or was
+      // killed, and an old lock was left by a host whose pid now belongs to
+      // someone else: either way it is stale.
+      if (owner && processAlive(owner.pid) && !this.expired()) throw new HostStoreLockedError(this.path, owner.pid);
       try {
         unlinkSync(this.path);
       } catch (error) {
@@ -326,10 +353,42 @@ class OwnerLock {
   release(): void {
     if (!this.held) return;
     this.held = false;
+    this.stopHeartbeat();
     try {
       if (this.readOwner()?.token === this.token) unlinkSync(this.path);
     } catch {
       // A missing lock file is already released.
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeat = setInterval(() => this.touch(), this.heartbeatMs);
+    // The lock must never keep a process alive.
+    this.heartbeat.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  private touch(): void {
+    try {
+      // Only our own lock: one taken over after a long stall is someone else's now.
+      if (this.readOwner()?.token !== this.token) return;
+      const now = new Date();
+      utimesSync(this.path, now, now);
+    } catch {
+      // A missed beat is harmless; the next one tries again.
+    }
+  }
+
+  /** Whether the lock file has gone unrefreshed for longer than staleMs. */
+  private expired(): boolean {
+    try {
+      return Date.now() - statSync(this.path).mtimeMs > this.staleMs;
+    } catch {
+      return false;
     }
   }
 
@@ -373,7 +432,7 @@ export class HostStore {
     this.path = options.path;
     this.now = options.now ?? Date.now;
     const memory = options.path === ":memory:";
-    this.lock = memory ? null : new OwnerLock(`${options.path}.lock`);
+    this.lock = memory ? null : new OwnerLock(`${options.path}.lock`, options.lockHeartbeatMs, options.lockStaleMs);
     this.lock?.acquire();
     try {
       this.db = openDatabase(options.path);

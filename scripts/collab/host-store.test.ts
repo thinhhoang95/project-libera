@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { statSync, utimesSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import * as Y from "yjs";
@@ -62,6 +62,38 @@ test("a stale lock from a dead process is taken over", async () => {
     writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, token: "stale" }));
     const store = new HostStore({ path });
     store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("an old lock whose pid now belongs to another program is taken over", () => {
+  const temp = tempDir();
+  try {
+    const path = temp.file("a.sqlite");
+    // A host died and the OS reused its pid: the pid is alive (here, this
+    // test's own), but nothing has refreshed the lock for minutes.
+    writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.pid, host: "x", token: "dead-host" }));
+    const old = new Date(Date.now() - 5 * 60_000);
+    utimesSync(`${path}.lock`, old, old);
+    const store = new HostStore({ path });
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("a live owner keeps its lock fresh, so a second store stays out", async () => {
+  const temp = tempDir();
+  try {
+    const path = temp.file("a.sqlite");
+    const store = new HostStore({ path, lockHeartbeatMs: 20, lockStaleMs: 200 });
+    const first = statSync(`${path}.lock`).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.ok(statSync(`${path}.lock`).mtimeMs > first, "the heartbeat refreshes the lock");
+    assert.throws(() => new HostStore({ path, lockHeartbeatMs: 20, lockStaleMs: 200 }), HostStoreLockedError);
+    store.close();
+    new HostStore({ path }).close();
   } finally {
     temp.cleanup();
   }
