@@ -159,6 +159,38 @@ export type GalleryPhoto = {
   edited: boolean;
   /** Set on photos in the Protected Archive: when they were sent there. */
   archivedAt?: string;
+  /** Set on photos of a shared album. */
+  shared?: GalleryPhotoSharing;
+};
+
+export type GallerySharingRole = "owner" | "editor" | "commenter" | "viewer";
+
+/** A shared album on this device. */
+export type GalleryAlbumSharing = {
+  projectId: string;
+  /** Comments on its photos are threads on this document. */
+  manifestDocId: string;
+  role: GallerySharingRole;
+  /** One photo shared on its own: listed under Shared with me, not as an album. */
+  direct: boolean;
+  keepLocation: boolean;
+  sharePrompts: boolean;
+  /** The collaboration service has not reported this album (it is starting, or off). */
+  unavailable?: boolean;
+};
+
+export type GalleryPhotoSharing = {
+  projectId: string;
+  albumId: string;
+  manifestDocId: string;
+  role: GallerySharingRole;
+  /** The photo's id in the album (comments anchor to it). */
+  fileId?: string;
+  caption?: string;
+  /** Account id of the member who added it. */
+  addedBy?: string;
+  /** The original is on the server, so any member with edit rights can revert. */
+  edited: boolean;
 };
 
 export type GalleryAlbum = {
@@ -169,7 +201,19 @@ export type GalleryAlbum = {
   count: number;
   coverId?: string;
   createdAt: string;
+  /** Set when the album is shared (by this account or with it). */
+  shared?: GalleryAlbumSharing;
 };
+
+/** Who may change a shared album's photos (add, remove, edit). */
+export function canChangeSharedPhotos(sharing: Pick<GalleryAlbumSharing, "role"> | undefined) {
+  return !sharing || sharing.role === "owner" || sharing.role === "editor";
+}
+
+/** Who may comment on a shared album's photos. */
+export function canCommentOnSharedPhotos(sharing: Pick<GalleryAlbumSharing, "role"> | undefined) {
+  return Boolean(sharing) && sharing!.role !== "viewer";
+}
 
 export type GalleryContents = {
   root: string;

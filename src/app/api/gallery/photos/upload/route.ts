@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { toStorageError } from "@/lib/storage";
 import { getGallery, importGalleryPhoto } from "@/lib/storage/gallery";
+import { withSharing } from "@/lib/storage/gallery-sharing";
 
 export const runtime = "nodejs";
 
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
         failed.push({ name: file.name, error: toStorageError(error).message });
       }
     }
-    return NextResponse.json({ added, failed, gallery: await getGallery() });
+    return NextResponse.json({ added, failed, gallery: await withSharing(await getGallery()) });
   } catch (error) {
     const storageError = toStorageError(error);
     return NextResponse.json({ error: storageError.message }, { status: storageError.status });

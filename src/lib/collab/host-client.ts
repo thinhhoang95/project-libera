@@ -11,7 +11,7 @@
 // server.
 
 import type { Command, CreateMessageRequest, ThreadMessage } from "./protocol/api";
-import type { LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
+import type { AlbumOriginalResponse, InviteRequest, LocalAlbum, ShareAlbumRequest, ShareAlbumResult, UpdateAlbumRequest, LocalProject, AnchoredThreadsResponse, EnqueueCommandResponse, ApplyEditsRequest, ApplyEditsResponse, CreateSuggestionsRequest, CreateSuggestionsResponse, CreateThreadAtRangeRequest, CreateThreadAtRangeResponse, DocText, FileOpRequest, HostStatus, ResolvedDoc, WithdrawSuggestionsRequest, WithdrawSuggestionsResponse } from "./local-api";
 import { ControlRoutes } from "./local-api";
 
 export interface HostClientConfig {
@@ -185,4 +185,30 @@ export function listProjects(config?: HostClientConfig | null): Promise<LocalPro
 /** A file operation in a shared notebook (create, write-blob, rename, delete); resolves with the Libera paths it touched. */
 export function fileOp(projectId: string, request: FileOpRequest, config?: HostClientConfig | null): Promise<{ paths: string[] }> {
   return hostJson(ControlRoutes.files(projectId), { method: "POST", body: request, config });
+}
+
+/** The shared albums on this device (empty when collaboration is off). */
+export async function listSharedAlbums(config?: HostClientConfig | null): Promise<LocalAlbum[]> {
+  if (!(config ?? collabHostConfig())) return [];
+  return hostJson(ControlRoutes.albums, { config });
+}
+
+/** Shares a gallery folder as an album. */
+export function shareAlbum(request: ShareAlbumRequest, config?: HostClientConfig | null): Promise<ShareAlbumResult> {
+  return hostJson(ControlRoutes.albumShare, { method: "POST", body: request, config });
+}
+
+/** Captions, order, edits, cover, name and settings of a shared album. */
+export function updateSharedAlbum(projectId: string, request: UpdateAlbumRequest, config?: HostClientConfig | null): Promise<LocalAlbum> {
+  return hostJson(ControlRoutes.album(projectId), { method: "POST", body: request, config });
+}
+
+/** Writes an edited shared photo's original into the gallery's originals folder. */
+export function fetchSharedOriginal(projectId: string, name: string, config?: HostClientConfig | null): Promise<AlbumOriginalResponse> {
+  return hostJson(ControlRoutes.albumOriginal(projectId), { method: "POST", body: { name }, config });
+}
+
+/** Invites someone to a shared notebook or album. */
+export function inviteToProject(projectId: string, request: InviteRequest, config?: HostClientConfig | null): Promise<unknown> {
+  return hostJson(ControlRoutes.invitations(projectId), { method: "POST", body: request, config });
 }
