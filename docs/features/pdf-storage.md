@@ -6,6 +6,12 @@ relative file path in each notebook's `.libera/annotations/pdf/by-path/` directo
 folders have independent notes. File and folder renames, moves, copies, archive,
 and deletion update their corresponding sidecars.
 
+Annotation side-cars record the PDF's size and SHA-256. When a PDF is renamed,
+moved or deleted outside Libera (or by a shared notebook's host), its side-cars
+— annotations, the generated outline, definitions — find it again by those
+bytes or are set aside until it returns; see
+[PDF outlines and annotations](pdf-outlines.md#pdfs-changed-outside-libera).
+
 Old flat annotation files migrate when exactly one PDF can own them. Migration
 keeps recovery copies ending in `.migrated-<id>`. When several PDFs have the same
 name, the old sidecar is preserved as `.ambiguous-<id>` for manual recovery; the

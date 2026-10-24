@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
 import { StorageError, toStorageError } from "@/lib/storage/errors";
-import { deleteTranscript, readTranscript, renameTranscriptSpeakers } from "@/lib/storage/transcripts";
+import { deleteTranscript, editTranscriptSegments, readTranscript, renameTranscriptSpeakers } from "@/lib/storage/transcripts";
 import { getTranscriptionJobs } from "@/lib/transcription/jobs";
 import type { TranscriptPayload } from "@/lib/transcription/types";
 
@@ -47,14 +47,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** Rename speakers: `{ path, speakers: { "0": "Vy" } }`. */
+/** Rename speakers, `{ path, speakers: { "0": "Vy" } }`, or save the reader's corrections, `{ path, segments }`. */
 export async function PATCH(request: NextRequest) {
   const authError = requireAuth(request);
   if (authError) return authError;
   try {
-    const body = (await request.json()) as { path?: string; speakers?: Record<string, unknown> };
+    const body = (await request.json()) as { path?: string; speakers?: Record<string, unknown>; segments?: unknown };
+    if (body.segments !== undefined) await editTranscriptSegments(body.path ?? "", body.segments);
     const names = Object.fromEntries(Object.entries(body.speakers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-    await renameTranscriptSpeakers(body.path ?? "", names);
+    if (Object.keys(names).length || body.segments === undefined) await renameTranscriptSpeakers(body.path ?? "", names);
     return NextResponse.json(await payload(body.path ?? ""));
   } catch (error) {
     return handleError(error);

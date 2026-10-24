@@ -55,6 +55,8 @@ import {
   notebookPath,
   pdfAnnotationsPath,
   pdfAnnotationsDirectoryPath,
+  pdfOutlinePath,
+  pdfOutlinesDirectoryPath,
   rawFileUrl,
   relativeFilePath,
   splitDirectoryPath,
@@ -315,6 +317,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
@@ -387,6 +390,7 @@ export async function archiveFolder(relativePath: string) {
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -421,6 +425,7 @@ export async function deleteFolder(relativePath: string) {
     await rm(directory, { force: true, recursive: true });
   }
   await rm(definitionsDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
+  await rm(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
@@ -605,6 +610,7 @@ export async function deleteFile(relativePath: string) {
 
   if (fileType === "pdf") {
     await rm(pdfAnnotationsPath(notebook, pathParts), { force: true });
+    await rm(pdfOutlinePath(notebook, pathParts), { force: true });
     await deletePdfTextCache(notebook, pathParts);
   }
 
@@ -753,8 +759,13 @@ async function moveRelatedMetadata(
       nextNotebook,
       nextPathParts,
     );
+    await moveFileIfExists(
+      pdfOutlinePath(currentNotebook, currentPathParts),
+      pdfOutlinePath(nextNotebook, nextPathParts),
+    );
   } else if (currentFileType === "pdf") {
     await rm(pdfAnnotationsPath(currentNotebook, currentPathParts), { force: true });
+    await rm(pdfOutlinePath(currentNotebook, currentPathParts), { force: true });
     await deletePdfTextCache(currentNotebook, currentPathParts);
   }
 
@@ -801,6 +812,8 @@ async function copyRelatedMetadata(
       pdfAnnotationsPath(nextNotebook, nextPathParts),
     );
     await copyPdfTextCache(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
+    // The outline describes the bytes, which the copy shares.
+    await copyFileIfExists(pdfOutlinePath(currentNotebook, currentPathParts), pdfOutlinePath(nextNotebook, nextPathParts));
   }
 
   if (currentFileType === "image") {

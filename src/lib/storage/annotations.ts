@@ -9,6 +9,7 @@ import {
 } from "@/lib/storage/file-types";
 import { copyFileIfExists, ensureParentDirectory, pathExists, writeJsonForSource } from "@/lib/storage/fs-utils";
 import { readFileSignature } from "@/lib/storage/file-signature";
+import { cachedPdfIdentity, parsePdfIdentity } from "@/lib/storage/pdf-identity";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -319,7 +320,7 @@ async function pdfSidecarForRead(notebook: string, name: string, pathParts: stri
   return annotationsPath;
 }
 
-type PdfSidecar = { annotations?: unknown; comments?: unknown };
+type PdfSidecar = { annotations?: unknown; comments?: unknown; source?: unknown };
 
 /** The sidecar's JSON, or an empty one when the PDF has none yet. */
 async function readPdfSidecar(annotationsPath: string): Promise<PdfSidecar> {
@@ -387,9 +388,16 @@ async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSi
   return withPdfSidecar(annotationsPath, async () => {
     const { sidecar, result } = change(await readPdfSidecar(annotationsPath));
     const comments = Array.isArray(sidecar.comments) && sidecar.comments.length ? { comments: sidecar.comments } : {};
-    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments }, sourcePath, signature);
+    // The PDF's bytes, so the notes can find it again after a rename outside Libera (pdf-sidecars.ts).
+    const source = await cachedPdfIdentity(sourcePath).catch(() => parsePdfIdentity(sidecar.source));
+    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments, ...(source ? { source } : {}) }, sourcePath, signature);
     return result;
   });
+}
+
+/** Records the PDF's identity in an existing side-car written before side-cars kept it. */
+export async function recordPdfAnnotationsSource(relativePath: string) {
+  await updatePdfSidecar(relativePath, (sidecar) => ({ sidecar, result: undefined }));
 }
 
 export async function readPdfAnnotations(

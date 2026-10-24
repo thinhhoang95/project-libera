@@ -5,6 +5,7 @@ import { act, createElement, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { MarkdownDisplayPreferencesProvider } from "../../src/components/libera/markdown-display-preferences";
 import { OutlinePanel } from "../../src/components/libera/outline-panel";
+import { PdfAnnotationsPanel } from "../../src/components/libera/pdf-annotations-panel";
 import type { OpenTab } from "../../src/components/libera/types";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
@@ -23,7 +24,7 @@ Object.assign(dom.window.HTMLElement.prototype, {
 });
 after(() => dom.window.close());
 
-test("PDF outline search filters annotations and opens the first match", async () => {
+test("the PDF Annotations panel searches annotations and opens the first match", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -43,16 +44,15 @@ test("PDF outline search filters annotations and opens the first match", async (
   const openedIds: Array<string | undefined> = [];
   const props = {
     activeTab,
-    textareaRef: createRef<HTMLTextAreaElement>(),
     onOpenFile: async (_file: OpenTab["file"], options?: { viewState?: OpenTab["viewState"] }) => {
       openedIds.push(options?.viewState?.pdf?.selectedAnnotationId);
     },
-    onSetDraft: () => assert.fail("Searching PDF annotations must not edit the document"),
   };
   const labels = () => Array.from(host.querySelectorAll("button .whitespace-normal"), (label) => label.textContent);
 
   try {
-    await act(async () => root.render(createElement(OutlinePanel, props)));
+    await act(async () => root.render(createElement(PdfAnnotationsPanel, props)));
+    assert.match(host.querySelector("h2")?.textContent ?? "", /Annotations/);
     assert.deepEqual(labels(), ["Methods", "Selected passage", "Results"]);
     const input = host.querySelector<HTMLInputElement>('input[aria-label="Search PDF annotations"]')!;
     await act(async () => input.focus());

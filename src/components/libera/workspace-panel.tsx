@@ -2191,10 +2191,11 @@ function WorkspacePanelContent({
           />
         </NoteMathMarkersProvider>
       ) : activeTab.recording ? (
-        <RecordingTabView key={activeTab.id} recordingId={activeTab.recording.id} />
+        <RecordingTabView key={activeTab.id} tabId={activeTab.id} recordingId={activeTab.recording.id} />
       ) : activeTab.file.fileType === "audio" ? (
         <VoiceMemoViewer
           key={activeTab.id}
+          tabId={activeTab.id}
           file={activeTab.file}
           src={activeTab.rawUrl}
           siblings={audioSiblings}

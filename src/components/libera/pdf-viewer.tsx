@@ -1099,7 +1099,13 @@ export function PdfViewer({
     const frame = window.requestAnimationFrame(() => {
       pendingScrollRestoreRef.current = null;
       const page = Math.max(1, Math.min(reveal.page, pageLayouts.length));
-      pageElementRefs.current.get(page)?.scrollIntoView({ block: "start", inline: "nearest" });
+      const pageElement = pageElementRefs.current.get(page);
+      pageElement?.scrollIntoView({ block: "start", inline: "nearest" });
+      // A bookmark's spot on the page, a little above it so its line is not at the very edge.
+      const scroller = scrollContainerRef.current;
+      if (pageElement && scroller && typeof reveal.top === "number" && reveal.top > 0) {
+        scroller.scrollTop += Math.max(0, pageElement.offsetHeight * reveal.top - 24);
+      }
       if (reveal.text) findTextRef.current(reveal.text, page);
       updateViewState({ reveal: undefined });
     });

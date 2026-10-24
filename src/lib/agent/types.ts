@@ -124,6 +124,8 @@ export type AgentEvent =
   | { type: "suggestions_added"; path: string; count: number }
   /** Definitions and notation cards saved to a document's side-car; `count` is its total. */
   | { type: "definitions_saved"; path: string; count: number }
+  /** A PDF's generated outline saved to its side-car; `count` is its entries. */
+  | { type: "pdf_outline_saved"; path: string; count: number }
   /** Child runs: only their tool steps and usage reach the parent, never their text. */
   | { type: "subagent_started"; id: string; label: string }
   | { type: "subagent_step"; id: string; step: AgentSubagentStep }

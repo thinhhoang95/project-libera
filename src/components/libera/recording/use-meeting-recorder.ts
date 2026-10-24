@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { encodeWav } from "@/components/libera/audio/dictation";
+import type { RecapEdit } from "@/lib/recording/recap";
 import { RECORDING_SAMPLE_RATE, type FinishedRecording, type RecordingRecap, type RecordingStatus } from "@/lib/recording/types";
+import type { SegmentEdits } from "@/lib/transcription/edits";
 import type { TranscriptSegment, TranscriptionSetupStatus } from "@/lib/transcription/types";
 
 // Copies the microphone's samples to the window; a worklet keeps recording
@@ -71,13 +73,15 @@ function quietThreshold(rms: number[]) {
  * of a few seconds while recording (the server keeps them on disk until the
  * recording is saved), so a crash loses at most the chunk being recorded. The
  * server transcribes the chunks with Parakeet and amends the recap; the
- * recorder polls for both.
+ * recorder polls for both. The reader's corrections to either are sent when
+ * their editing ends, in order, and saving the recording waits for them.
  */
 export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRecording, notebook: string, recordingId: string) => void }) {
   const [state, setState] = useState<RecorderState>("idle");
   const [error, setError] = useState("");
   const [session, setSession] = useState<RecordingStatus | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [transcriptEdits, setTranscriptEdits] = useState<SegmentEdits | null>(null);
   const [recap, setRecap] = useState<RecordingRecap | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [levels, setLevels] = useState<number[]>([]);
@@ -102,6 +106,9 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
   /** Bumped by each start and by cancelling one, so a start that was given up on stops. */
   const starts = useRef(0);
   const recapVersion = useRef(-1);
+  const newestRecap = useRef(-1);
+  /** The reader's edits being sent, one after another. */
+  const editSaves = useRef<Promise<unknown>>(Promise.resolve());
   const onSavedRef = useRef(onSaved);
   useEffect(() => {
     onSavedRef.current = onSaved;
@@ -275,9 +282,11 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     nextIndex.current = 0;
     segmentCount.current = 0;
     recapVersion.current = -1;
+    newestRecap.current = -1;
     paused.current = false;
     setSession(null);
     setSegments([]);
+    setTranscriptEdits(null);
     setRecap(null);
     setSeconds(0);
     levelHistory.current = [];
@@ -288,10 +297,12 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
 
   const applyStatus = useCallback((status: RecordingStatus) => {
     setSession(status);
-    const after = segmentCount.current;
-    setSegments((previous) => [...previous.slice(0, Math.max(0, Math.min(previous.length, after - 1))), ...status.segments]);
+    setSegments((previous) => [...previous.slice(0, Math.max(0, Math.min(previous.length, status.segmentsFrom))), ...status.segments]);
     segmentCount.current = status.segmentCount;
-    if (status.recap) {
+    if (status.transcriptEdits !== undefined) setTranscriptEdits(status.transcriptEdits);
+    // A poll answered before the reader's edits were saved must not bring back the recap without them.
+    if (status.recap && status.recap.version >= newestRecap.current) {
+      newestRecap.current = status.recap.version;
       setRecap(status.recap);
       recapVersion.current = status.recap.updating ? -1 : status.recapVersion;
     }
@@ -404,6 +415,7 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     setSaving(true);
     setError("");
     try {
+      await editSaves.current;
       await drainUploads();
       const finished = await apiRequest<FinishedRecording>(`/api/recordings/${id}/finish`, { method: "POST" });
       const notebook = session?.notebook ?? "";
@@ -439,6 +451,32 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
       setError(failure instanceof Error ? failure.message : "Could not change the recording.");
     }
   }, [applyStatus]);
+
+  /** Sends the reader's edits after any still on their way; rejects when they could not be kept. */
+  const sendEdits = useCallback((changes: { transcriptEdits?: SegmentEdits; recapEdits?: RecapEdit[] }, closing: boolean) => {
+    const id = sessionId.current;
+    if (!id) return Promise.reject(new Error("The recording is not open."));
+    const body = JSON.stringify(changes);
+    const send = editSaves.current.catch(() => undefined).then(async () => {
+      try {
+        // A keepalive request may carry at most 64 KB; more is sent as usual.
+        const status = await apiRequest<RecordingStatus>(`/api/recordings/${id}`, { method: "PATCH", keepalive: closing && body.length < 60_000, body });
+        if (sessionId.current === id) {
+          applyStatus(status);
+          // An earlier failure is mended: the edits it kept are saved now.
+          setError((current) => (current.startsWith("Your edits could not be saved") ? "" : current));
+        }
+      } catch (failure) {
+        if (sessionId.current === id) setError(failure instanceof Error ? `Your edits could not be saved: ${failure.message}` : "Your edits could not be saved.");
+        throw failure;
+      }
+    });
+    editSaves.current = send.catch(() => undefined);
+    return send;
+  }, [applyStatus]);
+
+  const saveTranscriptEdits = useCallback((edits: SegmentEdits, closing = false) => sendEdits({ transcriptEdits: edits }, closing), [sendEdits]);
+  const saveRecapEdits = useCallback((edits: RecapEdit[], closing = false) => sendEdits({ recapEdits: edits }, closing), [sendEdits]);
 
   const refreshRecap = useCallback(async () => {
     const id = sessionId.current;
@@ -502,6 +540,7 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     clearError: () => setError(""),
     session,
     segments,
+    transcriptEdits,
     recap,
     seconds,
     levels,
@@ -516,6 +555,8 @@ export function useMeetingRecorder({ onSaved }: { onSaved: (finished: FinishedRe
     stop,
     discard,
     update,
+    saveTranscriptEdits,
+    saveRecapEdits,
     refreshRecap,
     downloadModels,
     close: () => {

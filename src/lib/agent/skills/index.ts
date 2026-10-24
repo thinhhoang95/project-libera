@@ -1,6 +1,7 @@
 import type { AgentSkill } from "../tools";
 import { extractDefinitionsSkill } from "./extract-definitions";
 import { factCheckCitationsSkill } from "./fact-check-citations";
+import { generatePdfOutlineSkill } from "./generate-pdf-outline";
 import { leaveReviewCommentsSkill } from "./leave-review-comments";
 import { pythonResultsSkill } from "./python-results";
 import { slideDeckSkill } from "./slide-deck";
@@ -12,4 +13,4 @@ import { visualizationInteractivitySkill } from "./visualization-interactivity-i
 // optionally tools and a finishPass hook. To add a skill, write its module
 // and list it here.
 
-export const AGENT_SKILLS: AgentSkill[] = [leaveReviewCommentsSkill, factCheckCitationsSkill, slideDeckSkill, visualizationInteractivitySkill, pythonResultsSkill, extractDefinitionsSkill];
+export const AGENT_SKILLS: AgentSkill[] = [leaveReviewCommentsSkill, factCheckCitationsSkill, slideDeckSkill, visualizationInteractivitySkill, pythonResultsSkill, extractDefinitionsSkill, generatePdfOutlineSkill];

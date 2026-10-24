@@ -7,6 +7,7 @@ import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { moveFileIfExists, writeJsonForSource } from "@/lib/storage/fs-utils";
 import { assertFileSignature, readFileContentHash, readFileSignature } from "@/lib/storage/file-signature";
 import { audioSidecarDirectories, audioSidecarPaths, filePathFromParts, splitFilePath, transcriptPath } from "@/lib/storage/paths";
+import { cleanSegments, countWords } from "@/lib/transcription/edits";
 import { TRANSCRIPT_VERSION, type Transcript, type TranscriptSegment, type TranscriptSpeaker } from "@/lib/transcription/types";
 
 // Where a voice memo's transcript lives. The recording is the document, and
@@ -169,6 +170,23 @@ export async function renameTranscriptSpeakers(relativePath: string, names: Reco
     if (typeof requested !== "string") return speaker;
     return { ...speaker, name: requested.trim().slice(0, 80) || `Speaker ${index + 1}` };
   });
+  await writeTranscript(relativePath, transcript);
+  return transcript;
+}
+
+/**
+ * Replaces the transcript's passages with the reader's corrections. Speaker
+ * talk times stay as pyannote measured them; passage and word counts follow
+ * the text.
+ */
+export async function editTranscriptSegments(relativePath: string, value: unknown) {
+  const { transcript } = await readTranscript(relativePath);
+  if (!transcript) throw new StorageError("This recording has no transcript yet.", 404);
+  const segments = cleanSegments(value, transcript.speakers.length);
+  if (!segments) throw new StorageError("The transcript edits are not readable.");
+  transcript.segments = segments;
+  transcript.speakers = transcript.speakers.map((speaker, index) => ({ ...speaker, segments: segments.filter((segment) => segment.speaker === index).length }));
+  transcript.stats = { ...transcript.stats, words: countWords(segments) };
   await writeTranscript(relativePath, transcript);
   return transcript;
 }
