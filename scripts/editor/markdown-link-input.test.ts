@@ -94,9 +94,9 @@ test("source toolbar inserts the chosen notebook link only after confirmation", 
   try {
     await act(async () => root.render(createElement(MarkdownToolbar, {
       files, documentPath: "Notebook/note.md", canStartScreenshotSnip: false,
-      markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 1, previewFullscreen: false,
+      markdownContent: "", previewFullscreen: false,
       onEnumerateHeadings() {}, onFixChatGptEquations() {}, onInsert: (...args) => { insertions.push(args); }, onInsertTable() {},
-      onInsertExistingImage() {}, onInsertImage: async () => {}, onMarkdownZoomChange() {},
+      onInsertExistingImage() {}, onInsertImage: async () => {},
       onStartScreenshotSnip() {}, onTogglePreviewFullscreen() {}, onOpenFileLink: async () => false,
     })));
     await act(async () => { (host.querySelector('[aria-label="Link"]') as HTMLButtonElement).click(); });

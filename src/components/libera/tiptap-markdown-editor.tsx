@@ -5,7 +5,7 @@ import { TiptapChanges } from "@/lib/tiptap-changes";
 import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { MarkdownSelectionLinkOption, MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { changeTiptapHeadingLevels, getTiptapBlockInsertionRange, pasteMarkdownTableIntoCells, replaceTiptapRangeWithMarkdown, smartPasteTiptapMarkdown } from "@/lib/tiptap-editor-actions";
@@ -88,6 +88,8 @@ type Props = {
    * lifetime; key the editor on its generation.
    */
   collab?: SharedVisualSource;
+  /** A shared note's sync status and people, shown in the status bar. */
+  sharedStatus?: ReactNode;
   readSelectionLinks?: () => MarkdownSelectionLinkOption[];
   /** Opens the document with its macros expanded in a new tab (markdown-macros.ts). */
   onExpandMacros?: (markdown: string) => void;
@@ -164,7 +166,7 @@ function getVisualViewportViewState(
   };
 }
 
-export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, onExpandMacros }: Props) {
+export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = false, untitled = false, documentPath, value, fontFamily = "system-ui, sans-serif", fontSizePx, lineHeight, markdownZoom, initialViewState, onViewStateChange, onMarkdownZoomChange, onChange, onRegisterDraft, onSave, onOpenFileLink, readSelectionLinks, canStartScreenshotSnip = false, onStartScreenshotSnip, pendingInsertion, onPendingInsertionHandled, collab, sharedStatus, onExpandMacros }: Props) {
   const [mathDraft, setMathDraft] = useState<MathDraft | null>(null);
   const [linkDraft, setLinkDraft] = useState<{ href: string; label?: string; from: number; to: number; markdown: string; selectionLinks?: MarkdownSelectionLinkOption[] } | null>(null);
   const [error, setError] = useState("");
@@ -907,13 +909,13 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         {[
           { title: "Bullet list", icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
           { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
-          { title: "Quote", icon: Quote, active: state.blockquote, run: () => editor.chain().focus().toggleBlockquote().run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
           { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
           { title: "Insert diagram", icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
           { title: "Insert macro block", icon: Braces, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
           { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
         ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
+        <button type="button" title="Quote" aria-label="Quote" aria-pressed={state.blockquote} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="h-4 w-4" /></button>
         <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
           const chain = editor.chain().focus();
           const color = event.target.value === "default" ? null : event.target.value;
@@ -949,7 +951,6 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         <FactCheckButton className={buttonClass} documentPath={documentPath} markdown={value} disabled={untitled} />
         <ExpandMacrosButton className={buttonClass} markdown={value} getMarkdown={readMarkdown} onExpand={onExpandMacros} />
         <LatexExportButton documentPath={documentPath} getMarkdown={() => editor.getMarkdown()} />
-        <MarkdownDisplayZoom markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
         <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple className="hidden" aria-label="Choose images" onChange={(event) => { void insertImages(Array.from(event.target.files ?? []), editor.state.selection.from); event.target.value = ""; }} />
       </div>
       <GalleryPhotoPicker open={galleryPickerOpen} onClose={() => setGalleryPickerOpen(false)} onInsert={async (photos) => {
@@ -1016,7 +1017,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         ) : null}
         <TiptapChangeBar editor={editor} />
       </div>
-      <MarkdownStatusBar content={value} uploading={uploadCount > 0} />
+      <MarkdownStatusBar content={value} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {

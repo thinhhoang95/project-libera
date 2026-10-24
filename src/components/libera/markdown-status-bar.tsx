@@ -1,20 +1,41 @@
 "use client";
 
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { wordCountStatItems } from "@/lib/markdown-word-count";
+import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { useWordCount } from "./use-word-count";
 
 const countFormatter = new Intl.NumberFormat();
 
-export const MarkdownStatusBar = memo(function MarkdownStatusBar({ content, uploading = false }: { content: string; uploading?: boolean }) {
+type Props = {
+  content: string;
+  uploading?: boolean;
+  /** Controls at the right end, e.g. the text zoom. */
+  trailing?: ReactNode;
+  /** A shared note's sync status and people, after a separator. */
+  collab?: ReactNode;
+};
+
+export const MarkdownStatusBar = memo(function MarkdownStatusBar({ content, uploading = false, trailing, collab }: Props) {
   const stats = useWordCount(content);
+  // A bar wider than the pane scrolls with the mouse wheel, without a scrollbar.
+  const scrollRef = useHorizontalToolbarScroll();
 
   return (
-    <div role="status" aria-label="Document word counts" aria-live="off" className="libera-document-status flex shrink-0 items-center gap-4 overflow-x-auto whitespace-nowrap border-t border-border px-4 py-1.5 text-xs tabular-nums text-muted-foreground">
-      {uploading && <span role="status">Uploading images…</span>}
-      {wordCountStatItems(stats).map((item) => (
-        <span key={item.label}>{item.label}: {countFormatter.format(item.value)}{item.suffix ?? ""}</span>
-      ))}
+    <div ref={scrollRef} className="libera-document-status libera-horizontal-toolbar flex shrink-0 items-center gap-4 overflow-x-auto whitespace-nowrap border-t border-border px-4 py-1.5 text-xs tabular-nums text-muted-foreground">
+      <div role="status" aria-label="Document word counts" aria-live="off" className="flex shrink-0 items-center gap-[inherit]">
+        {uploading && <span role="status">Uploading images…</span>}
+        {wordCountStatItems(stats).map((item) => (
+          <span key={item.label}>{item.label}: {countFormatter.format(item.value)}{item.suffix ?? ""}</span>
+        ))}
+      </div>
+      {trailing || collab ? (
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          {trailing}
+          {trailing && collab ? <span aria-hidden className="h-4 w-px shrink-0 bg-border" /> : null}
+          {collab ? <div className="flex shrink-0 items-center gap-2" data-shared-status="">{collab}</div> : null}
+        </div>
+      ) : null}
     </div>
   );
 });

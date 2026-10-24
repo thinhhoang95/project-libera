@@ -28,6 +28,8 @@ export interface PresenceAvatarsProps {
   /** Quiet mode hides remote cursors and selections. Omit both to hide the toggle. */
   quiet?: boolean;
   onQuietChange?: (quiet: boolean) => void;
+  /** "above" when the avatars sit at the bottom of the window, in the status bar. */
+  popoverPlacement?: "below" | "above";
   className?: string;
 }
 
@@ -58,9 +60,11 @@ export function PresenceAvatars({
   onFollow,
   quiet,
   onQuietChange,
+  popoverPlacement = "below",
   className = "",
 }: PresenceAvatarsProps) {
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [overflowPosition, setOverflowPosition] = useState<{ right: number; bottom: number } | null>(null);
   const overflowId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const visibleCount = users.length > max ? Math.max(0, max - 1) : users.length;
@@ -98,7 +102,7 @@ export function PresenceAvatars({
           {visible.map((user) => {
             const following = followingClientId === user.clientId;
             return (
-              <CollabTooltip key={user.clientId} content={<span><span className="font-semibold">{user.name}</span>{user.section ? <span className="block text-muted-foreground">{user.section}</span> : null}{onFollow ? <span className="block text-muted-foreground">{following ? "Following" : "Click to follow"}</span> : null}</span>}>
+              <CollabTooltip key={user.clientId} placement={popoverPlacement} content={<span><span className="font-semibold">{user.name}</span>{user.section ? <span className="block text-muted-foreground">{user.section}</span> : null}{onFollow ? <span className="block text-muted-foreground">{following ? "Following" : "Click to follow"}</span> : null}</span>}>
                 {(tooltip) => (
                   <button
                     {...tooltip}
@@ -126,7 +130,12 @@ export function PresenceAvatars({
               data-overflow-trigger
               title={hidden.map(describe).join("\n")}
               type="button"
-              onClick={() => setOverflowOpen((open) => !open)}
+              onClick={() => {
+                // Above the avatars, the list is fixed so a scrolling status bar does not clip it.
+                const bounds = popoverPlacement === "above" ? containerRef.current?.getBoundingClientRect() : undefined;
+                setOverflowPosition(bounds ? { right: window.innerWidth - bounds.right, bottom: window.innerHeight - bounds.top + 4 } : null);
+                setOverflowOpen((open) => !open);
+              }}
             >
               +{hidden.length}
             </button>
@@ -136,8 +145,9 @@ export function PresenceAvatars({
       {overflowOpen && hidden.length ? (
         <ul
           aria-label="More people"
-          className="libera-collab-popover absolute right-0 top-full z-50 mt-1 max-h-64 w-56 overflow-auto rounded-lg p-1"
+          className={`libera-collab-popover z-50 max-h-64 w-56 overflow-auto rounded-lg p-1 ${overflowPosition ? "fixed" : "absolute right-0 top-full mt-1"}`}
           id={overflowId}
+          style={overflowPosition ?? undefined}
         >
           {hidden.map((user) => (
             <li key={user.clientId}>

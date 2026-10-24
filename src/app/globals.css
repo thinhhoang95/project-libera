@@ -390,9 +390,17 @@ html.libera-markdown-export-mode body {
 .markdown-pdf-export-document img,
 .markdown-pdf-export-document blockquote,
 .markdown-pdf-export-document pre,
-.markdown-pdf-export-document table,
 .markdown-pdf-export-document .katex-display {
   break-inside: avoid;
+}
+
+/* Long tables split across pages; rows stay whole and the header repeats. */
+.markdown-pdf-export-document tr {
+  break-inside: avoid;
+}
+
+.markdown-pdf-export-document thead {
+  display: table-header-group;
 }
 
 @page {

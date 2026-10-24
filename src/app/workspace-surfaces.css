@@ -151,6 +151,24 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-panel .libera-chat-composer textarea:focus { height: 70px; min-height: 70px; overflow-y: auto; }
 .libera-chat-composer textarea::placeholder { color: var(--muted-foreground); }
 .libera-chat-composer-actions { padding: 0 9px 9px; }
+/* Context tray: one-line pills for what the next message carries, inside the top of the composer. */
+.libera-context-tray { display: flex; flex-wrap: wrap; gap: 4px; max-height: 58px; overflow-y: auto; padding: 6px 6px 0; }
+.libera-context-chip { --chip-tone: #5b8def; display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 24px; padding: 0 2px 0 2px; border: 1px solid color-mix(in srgb, var(--chip-tone) 24%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--chip-tone) 7%, var(--card)); color: var(--foreground); font-size: 11px; line-height: 1; animation: libera-context-chip-in 140ms ease-out; transition: border-color 150ms, background-color 150ms, opacity 150ms; }
+.libera-context-chip[data-kind="comments"] { --chip-tone: #d4932a; }
+.libera-context-chip[data-kind="selection"] { --chip-tone: #987ce0; }
+.libera-context-chip[data-kind="photo"] { --chip-tone: #3fa58a; }
+.libera-context-chip:hover { border-color: color-mix(in srgb, var(--chip-tone) 50%, var(--border)); }
+.libera-context-chip[data-sent] { border-style: dashed; background: transparent; color: var(--muted-foreground); }
+.libera-context-chip-icon { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; background: color-mix(in srgb, var(--chip-tone) 18%, var(--card)); color: var(--chip-tone); }
+.libera-context-chip-title { min-width: 0; max-width: 120px; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.libera-context-chip-badge { flex-shrink: 0; min-width: 15px; padding: 2px 4px; border-radius: 9999px; background: color-mix(in srgb, var(--chip-tone) 20%, transparent); color: color-mix(in srgb, var(--chip-tone) 75%, var(--foreground)); font-size: 9.5px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.libera-context-chip-sent { flex-shrink: 0; color: var(--chip-tone); }
+.libera-context-chip-remove { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; color: var(--muted-foreground); transition: background-color 150ms, color 150ms; }
+.libera-context-chip-remove:hover, .libera-context-chip-remove:focus-visible { background: color-mix(in srgb, var(--chip-tone) 18%, transparent); color: var(--foreground); }
+.libera-context-chip-add { --chip-tone: var(--muted-foreground); padding-right: 7px; border-style: dashed; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.libera-context-chip-add .libera-context-chip-icon { background: var(--muted); }
+.libera-context-chip-add:hover { background: var(--muted); color: var(--foreground); }
+@keyframes libera-context-chip-in { from { opacity: 0; transform: scale(.94); } }
 .libera-chat-composer-actions select { order: 1; margin-left: auto; border: 1px solid var(--border); border-radius: 8px; min-width: 65px; padding: 6px 8px; text-align: center; }
 .libera-chat-composer-actions .libera-chat-attach { order: 0; }
 .libera-chat-composer-actions .libera-chat-send { order: 2; margin-left: 5px; }
@@ -235,7 +253,7 @@ summary.libera-agent-tool-line:hover { background: color-mix(in srgb, var(--card
   .libera-viewer-toolbar > div { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .libera-chat-composer, .libera-chat-composer textarea, .libera-editor-toolbar button { transition: none; }
+  .libera-chat-composer, .libera-chat-composer textarea, .libera-editor-toolbar button, .libera-context-chip, .libera-context-chip-remove { transition: none; animation: none; }
 }
 
 html.dark.libera-glass .libera-glass-panel.libera-chat-panel { text-shadow: none; }

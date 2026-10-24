@@ -53,7 +53,7 @@ import type { RegisterEditorDraft } from "./use-tiptap-draft";
 import { TiptapMarkdownEditor } from "@/components/libera/tiptap-markdown-editor";
 import { sharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemirror";
 import { SharedMarkdownSourceEditor } from "@/lib/collab/bindings/react-markdown-source";
-import { SharedTabChrome } from "@/lib/collab/bindings/react-shared-chrome";
+import { SharedTabChrome, SharedTabStatus } from "@/lib/collab/bindings/react-shared-chrome";
 import { useSharedTab } from "@/lib/collab/bindings/react-shared-tabs";
 import { sharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import type { DraftWriteOptions } from "@/lib/collab/client/workspace";
@@ -65,6 +65,7 @@ import { MarkdownToolbar } from "@/components/libera/markdown-toolbar";
 import { MarkdownTextWidth } from "./markdown-text-width";
 import { useMarkdownDisplayPreferences } from "./markdown-display-preferences";
 import { MarkdownStatusBar } from "@/components/libera/markdown-status-bar";
+import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { NotebookHome } from "@/components/libera/notebook-home";
 import { PdfViewer } from "@/components/libera/pdf-viewer";
 import { normalizeChatGptCopiedMarkdown } from "@/lib/chatgpt-markdown-normalizer";
@@ -1744,6 +1745,10 @@ function WorkspacePanelContent({
 
   const SourceEditor = markdownPreferences.sourceEditor === "codemirror" ? MarkdownSourceEditor : MarkdownEditor;
   const isTextTab = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" || activeTab?.file.fileType === "text";
+  // A shared Markdown note shows its sync status and people in the status bar.
+  const sharedStatus = activeTab && sharedSession && sharedAttached && activeTab.file.fileType === "markdown"
+    ? <SharedTabStatus tabId={activeTab.id} session={sharedSession} snapshot={sharedTab.snapshot} placement="above" />
+    : undefined;
 
   if (!activeTab) {
     if (selectedNotebook) {
@@ -1821,6 +1826,7 @@ function WorkspacePanelContent({
           fileName={activeTab.file.name}
           session={sharedSession}
           snapshot={sharedTab.snapshot}
+          statusInStatusBar={activeTab.file.fileType === "markdown"}
         />
       ) : null}
 
@@ -1870,6 +1876,7 @@ function WorkspacePanelContent({
           {markdownEditorMode === "visual" && !activeMarkdownIsSlides ? (
             <TiptapMarkdownEditor
               collab={sharedVisual ?? undefined}
+              sharedStatus={sharedStatus}
               files={files}
               mathMarkers={markdownPreferences}
               smartPaste={markdownPreferences.smartPaste}
@@ -1897,9 +1904,7 @@ function WorkspacePanelContent({
             untitled={activeTab.untitled}
             canStartScreenshotSnip={canStartScreenshotSnip}
             isSlideDeck={activeMarkdownIsSlides}
-            markdownBaseFontSize={markdownPreferences.baseFontSize}
             markdownContent={activeTab.draft}
-            markdownZoom={markdownZoom}
             readSelectionLinks={() => onReadMarkdownSelectionLinks?.(activeTab.file.path) ?? []}
             onEnumerateHeadings={enumerateActiveMarkdownHeadings}
             onNumberHeadings={numberActiveMarkdownHeadings}
@@ -1911,7 +1916,6 @@ function WorkspacePanelContent({
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
-            onMarkdownZoomChange={handleMarkdownZoomChange}
             onStartScreenshotSnip={(mode) => onStartScreenshotSnip(mode, "source")}
             onOpenFileLink={handleOpenMarkdownFileLink}
             onTogglePreviewFullscreen={() =>
@@ -2093,7 +2097,7 @@ function WorkspacePanelContent({
               </div>
             </div>
           )}
-          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} />
+          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={markdownPreferences.baseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange} />} collab={sharedStatus} />
           {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
             <MarkdownSlidesPresenter
               baseLineHeight={markdownPreferences.baseLineHeight}

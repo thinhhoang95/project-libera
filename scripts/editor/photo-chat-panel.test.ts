@@ -50,7 +50,7 @@ test("a photo viewed in the gallery is attached once per chat and replaces the d
   const lastUser = () => requests.at(-1)!.messages.filter((message) => message.role === "user").at(-1)!;
   try {
     await render(sunset);
-    assert.match(host.textContent ?? "", /Context: sunset\.png \(photo\)/);
+    assert.ok(host.querySelector('.libera-context-chip[aria-label="Photo in view: sunset.png"]'));
     assert.match(host.textContent ?? "", /Describe this photo/);
     assert.ok(!host.querySelector('[aria-label="Send message"]')!.hasAttribute("disabled"), "The viewed photo alone can be sent");
 
@@ -59,7 +59,7 @@ test("a photo viewed in the gallery is attached once per chat and replaces the d
     assert.equal(lastUser().photos![0].source, sunset.source);
     assert.match(lastUser().photos![0].dataUrl, /^data:image\/png;base64,/);
     assert.deepEqual(lastUser().contexts ?? [], [], "The covered Markdown editor is not sent while a photo is viewed");
-    assert.match(host.textContent ?? "", /sunset\.png \(already included\)/);
+    assert.ok(host.querySelector('.libera-context-chip[data-sent][aria-label="Photo in view: sunset.png (already included)"]'));
 
     await send("And the colors?");
     assert.equal(requests.length, 2);
@@ -77,16 +77,16 @@ test("a photo viewed in the gallery is attached once per chat and replaces the d
     const beach = { source: "gallery:p2:2026-01-01-4", name: "beach.png", url: "/api/gallery/raw/beach.png?v=1" };
     await render(beach);
     await click("Remove photo context");
-    assert.match(host.textContent ?? "", /beach\.png is not included/);
+    assert.ok(host.querySelector('[aria-label="Include photo: beach.png"]'));
     await send("Unrelated question");
     assert.equal(lastUser().photos?.length ?? 0, 0);
-    await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent === "Include")!.click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Include photo: beach.png"]')!.click(); });
     await send("Now about the beach");
     assert.equal(lastUser().photos?.[0]?.source, beach.source);
 
     // Leaving the viewer brings the document back as context.
     await render(null);
-    assert.match(host.textContent ?? "", /Context: a\.md/);
+    assert.equal(host.querySelector('.libera-context-chip[data-kind="document"]')?.textContent, "a.md");
 
     const { applyGallery } = await import("../../src/components/libera/gallery-store");
     await act(async () => { applyGallery({ root: "gallery", albums: [], photos: [], deletedPhotoIds: ["p1"] }); });

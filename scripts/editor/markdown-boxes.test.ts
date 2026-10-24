@@ -125,9 +125,9 @@ test("source toolbar exposes all highlight colors and inserts the chosen box mar
   const noop = () => {};
   try {
     await act(async () => root.render(createElement(MarkdownToolbar, {
-      files: [], documentPath: "note.md", canStartScreenshotSnip: false, markdownBaseFontSize: 16, markdownContent: "", markdownZoom: 100,
+      files: [], documentPath: "note.md", canStartScreenshotSnip: false, markdownContent: "",
       onEnumerateHeadings: noop, onFixChatGptEquations: noop, onInsert: (before) => { calls.push(before); }, onInsertTable: noop,
-      onInsertExistingImage: noop, onInsertImage: async () => {}, onMarkdownZoomChange: noop,
+      onInsertExistingImage: noop, onInsertImage: async () => {},
       onStartScreenshotSnip: noop, onTogglePreviewFullscreen: noop, onOpenFileLink: async () => false, previewFullscreen: false,
     })));
     const select = host.querySelector<HTMLSelectElement>('select[aria-label="Box color"]')!;

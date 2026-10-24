@@ -18,6 +18,7 @@ import {
   Maximize2,
   Minimize2,
   Palette,
+  Quote,
   ScanText,
   Scissors,
   GalleryHorizontalEnd,
@@ -28,7 +29,6 @@ import {
   Workflow,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MarkdownDisplayZoom } from "@/components/libera/markdown-display-zoom";
 import { useHorizontalToolbarScroll } from "./use-horizontal-toolbar-scroll";
 import { ColorPalette } from "@/components/libera/color-palette";
 import { LatexExportButton } from "@/components/libera/latex-export-button";
@@ -58,9 +58,7 @@ type MarkdownToolbarProps = {
   documentPath: string;
   canStartScreenshotSnip: boolean;
   isSlideDeck?: boolean;
-  markdownBaseFontSize: number;
   markdownContent: string;
-  markdownZoom: number;
   onEnumerateHeadings: (
     scope: MarkdownHeadingEnumerationScope,
     startAt?: number,
@@ -74,7 +72,6 @@ type MarkdownToolbarProps = {
   onInsertExistingImage: () => void;
   onInsertFromGallery?: () => void;
   onInsertImage: (file: File) => Promise<void>;
-  onMarkdownZoomChange: (zoom: number) => void;
   onStartScreenshotSnip: (mode: "image" | "markdown") => void;
   onTogglePreviewFullscreen: () => void;
   /** Opens a link written relative to this note. */
@@ -90,7 +87,7 @@ type MarkdownToolbarProps = {
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 23;
+const FULL_TOOLBAR_BUTTON_COUNT = 24;
 
 /**
  * Whether Markdown may contain a citation ([@key], [-@key], @key): a cheap
@@ -169,9 +166,7 @@ export function MarkdownToolbar({
   documentPath,
   canStartScreenshotSnip,
   isSlideDeck = false,
-  markdownBaseFontSize,
   markdownContent,
-  markdownZoom,
   onEnumerateHeadings,
   onNumberHeadings = () => undefined,
   onRemoveHeadingNumbers = () => undefined,
@@ -181,7 +176,6 @@ export function MarkdownToolbar({
   onInsertExistingImage,
   onInsertFromGallery,
   onInsertImage,
-  onMarkdownZoomChange,
   onStartScreenshotSnip,
   onTogglePreviewFullscreen,
   onOpenFileLink,
@@ -450,6 +444,15 @@ export function MarkdownToolbar({
   function renderSecondaryControls() {
     return (
       <>
+        <button
+          aria-label="Quote"
+          className="toolbar-button"
+          title="Quote the current or selected lines"
+          type="button"
+          onClick={() => onInsert("> ", "", "Quote")}
+        >
+          <Quote aria-hidden className="h-4 w-4" />
+        </button>
         <select
           aria-label="Box color"
           title="Apply a box to the current or selected lines"
@@ -561,7 +564,6 @@ export function MarkdownToolbar({
           onSkipTitleChange={saveHeadingNumberingSkipTitle}
           onToggle={(enabled) => saveDocumentHeadingNumbering(documentPath, enabled)}
         />
-        <MarkdownDisplayZoom markdownBaseFontSize={markdownBaseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />
       </>
     );
   }
@@ -612,7 +614,6 @@ export function MarkdownToolbar({
         {Array.from({ length: FULL_TOOLBAR_BUTTON_COUNT }, (_, index) => (
           <span className="toolbar-button" key={index} />
         ))}
-        <span className="inline-flex h-9 w-56 shrink-0" />
         <span className="inline-flex h-9 w-36 shrink-0" />
       </div>
       <div

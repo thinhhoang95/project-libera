@@ -43,6 +43,8 @@ export interface CollabStatusPillProps {
    */
   onClick?: () => void;
   className?: string;
+  /** "above" when the pill sits at the bottom of the window. Defaults to "below". */
+  tooltipPlacement?: "below" | "above";
   /** Clock for the "last confirmed" age; tests pass a fixed value. */
   now?: number;
 }
@@ -52,7 +54,7 @@ export interface CollabStatusPillProps {
  * of the unsaved-changes dot. Shows an icon and a short label; the tooltip
  * adds the detail, the pending count and the oldest pending age.
  */
-export function CollabStatusPill({ status, compact = false, onClick, className = "", now }: CollabStatusPillProps) {
+export function CollabStatusPill({ status, compact = false, onClick, className = "", tooltipPlacement = "below", now }: CollabStatusPillProps) {
   const wording = syncWording(status, now);
   const Icon = ICONS[status.state];
   const pendingLine =
@@ -73,6 +75,7 @@ export function CollabStatusPill({ status, compact = false, onClick, className =
 
   return (
     <CollabTooltip
+      placement={tooltipPlacement}
       content={
         <span className="block">
           <span className="block font-semibold">{wording.label}</span>

@@ -4,10 +4,12 @@
 // unsaved-changes dot (map §6), the people in the document with follow and
 // quiet mode, and the banners for rejected edits, changed access and newer
 // documents (plan M1.6, M1.8, M1.9), and the "Suggesting" toggle of the
-// CodeMirror editors (plan M3.2; a commenter's is always on).
+// CodeMirror editors (plan M3.2; a commenter's is always on). Markdown tabs
+// show the status controls in the document status bar (SharedTabStatus) and
+// keep only the banners here.
 
 import { Lock, MessageSquarePlus } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AccessChangedBanner, CollabStatusPill, PresenceAvatars, RejectedEditBanner } from "@/components/libera/collab";
 import { syncWording } from "../ui/wording";
 import type { SyncStatus } from "../protocol/local";
@@ -47,15 +49,28 @@ export interface SharedTabChromeProps {
   snapshot: ReplicaSnapshot | null;
   /** Shown when the tab asked for an editor that shared notes cannot use yet. */
   notice?: string;
+  /** The status controls are in the document status bar: show only the banners. */
+  statusInStatusBar?: boolean;
 }
 
-export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: SharedTabChromeProps) {
+export interface SharedTabStatusProps {
+  tabId: string;
+  session: SharedDocSession;
+  snapshot: ReplicaSnapshot | null;
+  notice?: string;
+  /** "above" when the controls sit at the bottom of the window, in the status bar. */
+  placement?: "below" | "above";
+}
+
+/** The sync pill, access note, Suggesting toggle and people of a shared tab. */
+export function SharedTabStatus({ tabId, session, snapshot, notice, placement = "below" }: SharedTabStatusProps) {
   const { replica } = session;
   const controller = editorControllerFor(replica);
   const controls = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const users = useSharedPresence(session);
+  const pillRef = useRef<HTMLDivElement>(null);
   const [revealedAt, setRevealedAt] = useState<number | null>(null);
-  const [dismissedAccess, setDismissedAccess] = useState(false);
+  const [revealPosition, setRevealPosition] = useState<{ left: number; bottom: number } | null>(null);
 
   // Cmd/Ctrl+S on a shared tab: there is nothing to save, so say where the edits are.
   useEffect(() => getSharedDocRegistry().onRevealStatus((target) => {
@@ -63,9 +78,12 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: 
   }), [tabId]);
   useEffect(() => {
     if (revealedAt === null) return;
+    // Above the pill, the popover is fixed so a scrolling status bar does not clip it.
+    const bounds = placement === "above" ? pillRef.current?.getBoundingClientRect() : undefined;
+    setRevealPosition(bounds ? { left: Math.max(8, Math.min(bounds.left, window.innerWidth - 296)), bottom: window.innerHeight - bounds.top + 4 } : null);
     const timer = setTimeout(() => setRevealedAt(null), REVEAL_MS);
     return () => clearTimeout(timer);
-  }, [revealedAt]);
+  }, [revealedAt, placement]);
 
   const status = snapshot?.status ?? LOADING_STATUS;
   const wording = syncWording(status);
@@ -74,53 +92,74 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: 
   const roleReadOnly = !!role && (role === "viewer" || role === "commenter") && banner === null;
 
   return (
-    <div className="libera-shared-tab-chrome flex shrink-0 flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5" data-shared-doc={session.docId}>
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="relative">
-          <CollabStatusPill status={status} />
-          {revealedAt !== null ? (
-            <div
-              className="libera-collab-popover absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs shadow-lg"
-              role="status"
-            >
-              <span className="block font-semibold">{wording.label}</span>
-              <span className="block text-muted-foreground">Shared notes save as you type. {wording.detail}</span>
-            </div>
-          ) : null}
-        </div>
-        {roleReadOnly ? (
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Lock aria-hidden className="h-3.5 w-3.5" />
-            {role === "commenter" ? "You can suggest changes and comment; editors decide." : "View only"}
-          </span>
-        ) : null}
-        {controls.canSuggest ? (
-          <button
-            type="button"
-            className="libera-collab-suggesting-toggle inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs font-medium aria-pressed:bg-primary aria-pressed:text-primary-foreground disabled:opacity-80"
-            aria-pressed={controls.suggesting}
-            disabled={controls.suggestForced}
-            title={controls.suggestForced ? "Commenters always suggest: your edits become suggestions for an editor to accept." : controls.suggesting ? "Typing makes suggestions. Click to edit directly." : "Make your edits suggestions that others accept or reject."}
-            onClick={() => controller.setSuggesting(!controls.suggesting)}
+    <>
+      <div ref={pillRef} className="relative shrink-0">
+        <CollabStatusPill status={status} tooltipPlacement={placement} />
+        {revealedAt !== null ? (
+          <div
+            className={`libera-collab-popover z-50 w-72 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs shadow-lg ${revealPosition ? "fixed" : "absolute left-0 top-full mt-1"}`}
+            role="status"
+            style={revealPosition ?? undefined}
           >
-            <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
-            Suggesting
-          </button>
+            <span className="block font-semibold">{wording.label}</span>
+            <span className="block text-muted-foreground">Shared notes save as you type. {wording.detail}</span>
+          </div>
         ) : null}
-        {notice ? <span className="truncate text-xs text-muted-foreground">{notice}</span> : null}
-        <PresenceAvatars
-          className="ml-auto"
-          users={users.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.section?.title }))}
-          followingClientId={controls.followingClientId}
-          onFollow={controls.views ? (clientId) => {
-            if (controls.followingClientId === clientId) controller.stopFollowing();
-            else controller.follow(Number(clientId));
-          } : undefined}
-          quiet={controls.views ? controls.quiet : undefined}
-          onQuietChange={controls.views ? (quiet) => controller.setQuiet(quiet) : undefined}
-        />
       </div>
-      {banner === "access-changed" && !dismissedAccess ? (
+      {roleReadOnly ? (
+        <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+          <Lock aria-hidden className="h-3.5 w-3.5" />
+          {role === "commenter" ? "You can suggest changes and comment; editors decide." : "View only"}
+        </span>
+      ) : null}
+      {controls.canSuggest ? (
+        <button
+          type="button"
+          className="libera-collab-suggesting-toggle inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs font-medium aria-pressed:bg-primary aria-pressed:text-primary-foreground disabled:opacity-80"
+          aria-pressed={controls.suggesting}
+          disabled={controls.suggestForced}
+          title={controls.suggestForced ? "Commenters always suggest: your edits become suggestions for an editor to accept." : controls.suggesting ? "Typing makes suggestions. Click to edit directly." : "Make your edits suggestions that others accept or reject."}
+          onClick={() => controller.setSuggesting(!controls.suggesting)}
+        >
+          <MessageSquarePlus aria-hidden className="h-3.5 w-3.5" />
+          Suggesting
+        </button>
+      ) : null}
+      {notice ? <span className="truncate text-xs text-muted-foreground">{notice}</span> : null}
+      <PresenceAvatars
+        className={placement === "above" ? "shrink-0" : "ml-auto"}
+        popoverPlacement={placement}
+        users={users.map((user) => ({ clientId: user.clientId, name: user.name, color: user.color, section: user.section?.title }))}
+        followingClientId={controls.followingClientId}
+        onFollow={controls.views ? (clientId) => {
+          if (controls.followingClientId === clientId) controller.stopFollowing();
+          else controller.follow(Number(clientId));
+        } : undefined}
+        quiet={controls.views ? controls.quiet : undefined}
+        onQuietChange={controls.views ? (quiet) => controller.setQuiet(quiet) : undefined}
+      />
+    </>
+  );
+}
+
+export function SharedTabChrome({ tabId, fileName, session, snapshot, notice, statusInStatusBar = false }: SharedTabChromeProps) {
+  const { replica } = session;
+  const [dismissedAccess, setDismissedAccess] = useState(false);
+  const banner = sharedBannerKind(snapshot);
+  const showAccessBanner = banner === "access-changed" && !dismissedAccess;
+
+  if (statusInStatusBar && !showAccessBanner && banner !== "deleted" && banner !== "update-required" && !snapshot?.rejection) {
+    return null;
+  }
+
+  return (
+    <div className="libera-shared-tab-chrome flex shrink-0 flex-col gap-1.5 border-b border-border bg-card px-3 py-1.5" data-shared-doc={session.docId}>
+      {statusInStatusBar ? null : (
+        <div className="flex min-w-0 items-center gap-2">
+          <SharedTabStatus tabId={tabId} session={session} snapshot={snapshot} notice={notice} />
+        </div>
+      )}
+      {showAccessBanner ? (
         <AccessChangedBanner
           onExport={() => downloadText(fileName, replica.text())}
           onDismiss={() => setDismissedAccess(true)}
@@ -138,7 +177,7 @@ export function SharedTabChrome({ tabId, fileName, session, snapshot, notice }: 
           <Lock aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="font-medium">Update required</p>
-            <p className="text-xs opacity-80">{syncWording({ ...status, state: "read-only" }).detail}</p>
+            <p className="text-xs opacity-80">{syncWording({ ...(snapshot?.status ?? LOADING_STATUS), state: "read-only" }).detail}</p>
           </div>
         </div>
       ) : null}
