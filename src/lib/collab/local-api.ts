@@ -90,6 +90,8 @@ export interface LocalAlbumPhoto {
   edits?: Record<string, unknown>;
   /** The original is on the server: the photo can be reverted or edited again from it. */
   edited: boolean;
+  /** Lets the gallery verify a local backup before reusing it offline. */
+  originalHash?: string;
   order?: number;
   /** Account id of the member who added it. */
   addedBy: string;

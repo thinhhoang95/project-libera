@@ -50,6 +50,7 @@ import {
   deleteSharePlan,
   readMarker,
   readSharePlan,
+  recordShareUpload,
   writeBase,
   writeMarker,
   writeSharePlan,
@@ -1075,9 +1076,10 @@ export class NotebookServiceImpl implements NotebookService {
           throw new ControlError(409, "conflict", `${file.path} changed while it was being shared. Share again to continue.`);
         }
         await api.uploadBlob(projectId, bytes, file.mime ?? "application/octet-stream");
+        if (album) await recordShareUpload(root, file);
         file.uploaded = true;
         done += 1;
-        await writeSharePlan(root, plan);
+        if (!album) await writeSharePlan(root, plan);
         this.progress(notebook, { phase: "uploading-files", done, total: blobs.length });
       }
 

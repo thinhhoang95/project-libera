@@ -3,6 +3,7 @@
 // gallery. The collab host is a stub HTTP server here.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -29,6 +30,7 @@ class HostStub {
   albums: LocalAlbum[] = [];
   calls: Call[] = [];
   original: Buffer | null = null;
+  originalUnavailable = false;
   server: Server;
 
   constructor() {
@@ -53,6 +55,7 @@ class HostStub {
         return reply(201, { id: "inv" });
       }
       if (request.method === "POST" && /^\/albums\/[^/]+\/original$/.test(url)) {
+        if (this.originalUnavailable) return reply(503, { error: { message: "The original is offline." } });
         await mkdir(path.join(getGalleryRoot(), ".originals"), { recursive: true });
         await writeFile(path.join(getGalleryRoot(), ".originals", "shared-original.png"), this.original ?? Buffer.alloc(0));
         return reply(200, { original: "shared-original.png" });
@@ -175,6 +178,56 @@ test("a shared photo on its own is a copy in an album of its own", () => withSha
   await assert.rejects(shareGalleryPhoto(svg.id), /Vector images cannot be shared/);
 }));
 
+test("sharing excludes photos removed from local membership, preserving their files and other albums", () => withSharedGallery(async (host) => {
+  const privatePhoto = await writeGalleryPhoto("", "private.png", await tile(), {});
+  const selected = await writeGalleryPhoto("", "selected.png", await tile("#aa2020"), {});
+  const { album: trip } = await createAlbum("Trip", [privatePhoto.id, selected.id]);
+  const { album: other } = await createAlbum("Other", []);
+  await updateAlbumPhotos(other.id, { add: [privatePhoto.id] });
+  await updateAlbumPhotos(trip.id, { remove: [privatePhoto.id] });
+  const privateBytes = await readFile(path.join(getGalleryRoot(), "Trip/private.png"));
+  // Moving a private photo out must not overwrite an unrelated gallery file.
+  const collision = await writeGalleryPhoto("", "private.png", await tile("#ffffff"), {});
+  const result = await shareGalleryAlbum(trip.id);
+  assert.deepEqual(await list("Trip"), ["selected.png"]);
+  assert.deepEqual(host.calls.find((call) => call.url === "/albums/share")!.body.photos, [{ name: "selected.png" }]);
+  const kept = result.gallery.photos.find((photo) => photo.id === privatePhoto.id)!;
+  assert.equal(kept.folder, "");
+  assert.notEqual(kept.path, collision.path);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), kept.path)), privateBytes);
+  assert.ok(kept.albumIds.includes(other.id));
+  assert.equal(result.gallery.albums.find((entry) => entry.id === trip.id)!.count, 1);
+}));
+
+test("an existing local album keeps a copy after a shared photo disappears", () => withSharedGallery(async (host) => {
+  await joinedAlbum(host, "Their trip", "viewer", [{ name: "beach.png" }]);
+  const source = (await getGallery()).photos.find((photo) => photo.name === "beach.png")!;
+  const bytes = await readFile(path.join(getGalleryRoot(), source.path));
+  const { album: local } = await createAlbum("Saved", []);
+  const added = await updateAlbumPhotos(local.id, { add: [source.id, source.id] });
+  const copy = added.photos.find((photo) => photo.folder === "Saved")!;
+  assert.notEqual(copy.id, source.id);
+  assert.deepEqual(await list("Saved"), ["beach.png"]);
+  assert.ok(copy.albumIds.includes(local.id));
+  await rm(path.join(getGalleryRoot(), source.path));
+  const after = await getGallery();
+  assert.equal(after.albums.find((entry) => entry.id === local.id)!.count, 1);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), copy.path)), bytes);
+}));
+
+test("metadata refreshes and permissions use the latest completed host snapshot", () => withSharedGallery(async (host) => {
+  await joinedAlbum(host, "Their trip", "editor", [{ name: "beach.png", caption: "Before" }, { name: "dog.png" }]);
+  const before = await withSharing(await getGallery());
+  assert.equal(before.photos.find((photo) => photo.name === "beach.png")!.shared?.caption, "Before");
+  // A host event can arrive immediately after a gallery read; no explicit cache invalidation runs here.
+  host.albums = host.albums.map((entry) => ({ ...entry, role: "viewer", cover: "beach.png", photos: entry.photos.map((photo) => ({ ...photo, caption: "After" })) }));
+  const after = await withSharing(await getGallery());
+  const beach = after.photos.find((photo) => photo.name === "beach.png")!;
+  assert.equal(beach.shared?.caption, "After");
+  assert.equal(after.albums[0].coverId, beach.id);
+  await assert.rejects(deletePhotos([beach.id]), /view this shared album/);
+}));
+
 test("a viewer sees captions and names but cannot change the album", () => withSharedGallery(async (host) => {
   const { albumId } = await joinedAlbum(host, "Their trip", "viewer", [{ name: "beach.png", caption: "Sunset" }, { name: "dog.png" }]);
   const gallery = await withSharing(await getGallery());
@@ -231,4 +284,47 @@ test("reverting a photo edited elsewhere gets the original from the album", () =
   await revertPhoto(beach.id);
   assert.deepEqual(await readFile(path.join(getGalleryRoot(), "Their trip", "beach.png")), host.original);
   assert.ok(host.calls.some((call) => call.url === "/albums/prj_joined/original" && call.body.name === "beach.png"));
+}));
+
+test("editing another member's edit does not back up the intermediate photo or require its original", () => withSharedGallery(async (host) => {
+  host.original = await tile("#ffffff");
+  await joinedAlbum(host, "Their trip", "editor", [{ name: "beach.png", edited: true }]);
+  const photo = (await getGallery()).photos[0];
+  host.originalUnavailable = true;
+  await editPhoto(photo.id, parsePhotoEdits({ brightness: 20 }), "replace");
+  const index = JSON.parse(await readFile(path.join(getGalleryRoot(), ".libera-gallery.json"), "utf8"));
+  assert.equal(index.photos[photo.id].original, undefined);
+  assert.ok(!host.calls.some((call) => call.url.endsWith("/original")));
+  host.originalUnavailable = false;
+  await revertPhoto(photo.id);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), photo.path)), host.original);
+  assert.deepEqual(await readdir(path.join(getGalleryRoot(), ".originals")), []);
+}));
+
+test("a verified local backup can be reverted while the shared original is offline", () => withSharedGallery(async (host) => {
+  await joinedAlbum(host, "Their trip", "editor", [{ name: "beach.png" }]);
+  const photo = (await getGallery()).photos[0];
+  const original = await readFile(path.join(getGalleryRoot(), photo.path));
+  await editPhoto(photo.id, parsePhotoEdits({ brightness: 20 }), "replace");
+  Object.assign(host.albums[0].photos[0], { edited: true, originalHash: createHash("sha256").update(original).digest("hex") });
+  host.originalUnavailable = true;
+  await revertPhoto(photo.id);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), photo.path)), original);
+  assert.ok(!host.calls.some((call) => call.url.endsWith("/original")));
+}));
+
+test("revert replaces a stale local backup with the album original and cleans up both backups", () => withSharedGallery(async (host) => {
+  host.original = await tile("#ffffff");
+  await joinedAlbum(host, "Their trip", "editor", [{ name: "beach.png" }]);
+  const photo = (await getGallery()).photos[0];
+  await editPhoto(photo.id, parsePhotoEdits({ brightness: 20 }), "replace");
+  host.albums[0].photos[0].edited = true;
+  const editedBytes = await readFile(path.join(getGalleryRoot(), photo.path));
+  host.originalUnavailable = true;
+  await assert.rejects(revertPhoto(photo.id), /original is offline/);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), photo.path)), editedBytes, "failed download does not restore the wrong backup");
+  host.originalUnavailable = false;
+  await revertPhoto(photo.id);
+  assert.deepEqual(await readFile(path.join(getGalleryRoot(), photo.path)), host.original);
+  assert.deepEqual(await readdir(path.join(getGalleryRoot(), ".originals")), []);
 }));

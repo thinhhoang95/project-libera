@@ -23,7 +23,6 @@ import { StorageError } from "@/lib/storage/errors";
 /** The marker the collab host writes in a shared folder (electron/collab/notebooks/state.ts). */
 const SHARED_MARKER_FILE = ".libera-shared.json";
 const MARKER_MAX_AGE_MS = 2000;
-const ALBUMS_MAX_AGE_MS = 1000;
 
 type Marker = { projectId: string; manifestDocId: string; kind?: string; revoked?: boolean };
 
@@ -55,15 +54,16 @@ export function sharedAlbumMarker(galleryRoot: string, folder: string): Marker |
   return marker;
 }
 
-let albumsCache: { at: number; albums: Promise<LocalAlbum[]> } | null = null;
+let albumsCache: Promise<LocalAlbum[]> | null = null;
 
-/** The host's shared albums, briefly cached (one gallery change asks several times). */
+/** Coalesce concurrent reads, but never reuse a completed snapshot after a host event or mutation. */
 export function hostAlbums(): Promise<LocalAlbum[]> {
   if (!isCollabEnabled()) return Promise.resolve([]);
-  const now = Date.now();
-  if (albumsCache && now - albumsCache.at < ALBUMS_MAX_AGE_MS) return albumsCache.albums;
-  const albums = listSharedAlbums().catch(() => [] as LocalAlbum[]);
-  albumsCache = { at: now, albums };
+  if (albumsCache) return albumsCache;
+  const albums = listSharedAlbums().catch(() => [] as LocalAlbum[]).finally(() => {
+    if (albumsCache === albums) albumsCache = null;
+  });
+  albumsCache = albums;
   return albums;
 }
 

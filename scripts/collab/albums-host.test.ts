@@ -167,12 +167,20 @@ test("shared albums between two hosts", { timeout: 180_000 }, async (t) => {
     });
 
     await t.test("captions and the cover are shared; viewers' changes are refused", async () => {
+      await member.service.project(projectId)!.whenIdle();
+      const before = member.events.length;
       const updated = await owner.router.call("POST", ControlRoutes.album(projectId), { photos: [{ name: "dog.jpg", caption: "Good dog" }], cover: "dog.jpg" });
       assert.equal(updated.status, 200, JSON.stringify(updated.body));
       await until(async () => {
         const [album] = await albums(member);
         return album.cover === "dog.jpg" && album.photos.find((photo) => photo.name === "dog.jpg")?.caption === "Good dog";
       }, "caption and cover reach the member");
+      await until(() => member.events.slice(before).some((event) => event.t === "project-changed" && event.projectId === projectId), "metadata refresh event reaches the gallery");
+      await member.service.project(projectId)!.whenIdle();
+      const after = member.events.filter((event) => event.t === "project-changed").length;
+      // A filesystem scan must not keep emitting identical album metadata.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      assert.equal(member.events.filter((event) => event.t === "project-changed").length, after);
       const privacy = await member.router.call("POST", ControlRoutes.album(projectId), { keepLocation: true });
       assert.equal(privacy.status, 403, "only the owner decides what the album shares");
     });

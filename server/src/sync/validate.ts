@@ -6,6 +6,7 @@ import * as Y from "yjs";
 
 import {
   AI_FEATURES,
+  AlbumSettingKeys,
   albumImageType,
   albumPathError,
   AnnotationKeys,
@@ -176,10 +177,21 @@ function suggestionTransitionViolation(
  * a safe path. A shared album's manifest holds photos only: flat blob entries
  * with a photo extension, and plain photo records keyed by their fileId.
  */
-export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKind: ProjectKind = "notebook", accountId = ""): string | null {
+export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKind: ProjectKind = "notebook", accountId = "", role: Role = "viewer"): string | null {
   const album = projectKind === "album";
   for (const [type, keys] of changed) {
     const root = rootName(after, type);
+    if (album && root === ManifestKeys.settings) {
+      if (type._item !== null) return "Album settings must be plain values.";
+      for (const key of keys) {
+        if (key === null) return "settings must be a map.";
+        if (key !== AlbumSettingKeys.keepLocation && key !== AlbumSettingKeys.sharePrompts) continue;
+        if (role !== "owner") return "Only the album's owner can change what it shares.";
+        const value = (type as Y.Map<unknown>).get(key);
+        if (value !== undefined && typeof value !== "boolean") return `settings/${key} must be a boolean.`;
+      }
+      continue;
+    }
     if (root === ManifestKeys.photos) {
       if (!album) return "Only shared albums have photo details.";
       const problem = albumPhotosViolation(after, type, keys, accountId);

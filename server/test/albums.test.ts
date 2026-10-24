@@ -3,7 +3,7 @@ import { after, before, describe, test } from "node:test";
 
 import type * as Y from "yjs";
 
-import { ManifestKeys, type ProjectSummary } from "../src/protocol.js";
+import { AlbumSettingKeys, ManifestKeys, type ProjectSummary } from "../src/protocol.js";
 import { addMember, createProject, register, request, startApi, type ApiHarness } from "./support/api-harness.js";
 import { startSyncEnv, type SyncEnv } from "./support/sync-fixtures.js";
 
@@ -140,6 +140,36 @@ describe("shared albums: manifest rules", () => {
     );
     assert.equal(rejected.reason, "forbidden");
     await client.close();
+  });
+
+  test("only owners can change or remove album privacy settings through sync", async () => {
+    const owner = await env.connect();
+    await owner.open(env.project.manifestDocId);
+    await owner.acked(owner.edit(env.project.manifestDocId, "manifest", (doc) => {
+      doc.getMap(ManifestKeys.settings).set(AlbumSettingKeys.keepLocation, false);
+      doc.getMap(ManifestKeys.settings).set(AlbumSettingKeys.sharePrompts, false);
+    }));
+    const editor = await env.member("editor");
+    const client = await env.connect(editor);
+    await client.open(env.project.manifestDocId);
+    for (const key of [AlbumSettingKeys.keepLocation, AlbumSettingKeys.sharePrompts]) {
+      for (const remove of [false, true]) {
+        const rejected = await client.rejected(client.edit(env.project.manifestDocId, "manifest", (doc) => {
+          const settings = doc.getMap(ManifestKeys.settings);
+          if (remove) settings.delete(key);
+          else settings.set(key, true);
+          settings.set(AlbumSettingKeys.cover, "f1");
+        }));
+        assert.equal(rejected.reason, "invalid-update");
+        await client.rollback(env.project.manifestDocId);
+        assert.equal(client.doc(env.project.manifestDocId, "manifest").getMap(ManifestKeys.settings).get(key), false);
+      }
+    }
+    // Contributor-owned settings, such as the cover, still work.
+    await client.acked(client.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.settings, AlbumSettingKeys.cover, "f1")));
+    await owner.acked(owner.edit(env.project.manifestDocId, "manifest", setEntry(ManifestKeys.settings, AlbumSettingKeys.keepLocation, true)));
+    await client.close();
+    await owner.close();
   });
 });
 

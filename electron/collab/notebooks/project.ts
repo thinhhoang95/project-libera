@@ -174,6 +174,7 @@ export class SharedProject {
   private stopped = false;
   private started = false;
   private rootUnavailable = false;
+  private albumSnapshot: string | null = null;
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
     this.ctx = ctx;
@@ -363,6 +364,7 @@ export class SharedProject {
     this.manifestWasReady = true;
     if (this.follower) {
       this.followManifest();
+      this.notifyAlbumChanged();
       return;
     }
     if (!(await this.rootAvailable())) {
@@ -491,6 +493,7 @@ export class SharedProject {
       }
     }
     this.rootUnavailable = false;
+    this.notifyAlbumChanged();
     if (needsRetry) this.scheduleRetry();
   }
 
@@ -1473,6 +1476,15 @@ export class SharedProject {
 
   // ------------------------------------------------------------ album details (control API)
 
+  /** Captions, covers and privacy changes have no disk event of their own. */
+  private notifyAlbumChanged(): void {
+    if (!this.info.album) return;
+    const snapshot = JSON.stringify(this.albumState());
+    if (snapshot === this.albumSnapshot) return;
+    this.albumSnapshot = snapshot;
+    this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
+  }
+
   /** The album's photos (with their file names on disk) and settings. */
   albumState(): Pick<LocalAlbum, "direct" | "keepLocation" | "sharePrompts" | "cover" | "photos"> {
     // After access ends the manifest is closed; the entries last read still
@@ -1496,6 +1508,7 @@ export class SharedProject {
         ...(sharePrompts && typeof record.model === "string" ? { model: record.model } : {}),
         ...(record.edits && typeof record.edits === "object" ? { edits: record.edits } : {}),
         edited: typeof record.originalHash === "string",
+        ...(typeof record.originalHash === "string" ? { originalHash: record.originalHash } : {}),
         ...(typeof record.order === "number" ? { order: record.order } : {}),
         addedBy: typeof record.addedBy === "string" ? record.addedBy : entry?.createdBy ?? "",
         downloaded: this.follower || Boolean(this.state.layout[fileId]?.hash && this.state.layout[fileId].hash === entry?.blobHash),

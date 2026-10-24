@@ -45,15 +45,17 @@ Writing to the manifest needs the editor role, as for notebooks.
 | Add, remove, edit and caption photos; set the cover | | | ✓ | ✓ |
 | Rename; invite; change roles; privacy settings; take down | | | | ✓ |
 
-The server enforces everything except the privacy settings and renaming. The host checks those (`updateAlbum`), and renaming also goes through the server's `rename-project` check. The gallery mirrors the roles: viewers and commenters cannot delete, remove, upload or edit in place (an edit is saved as a copy in their own gallery).
+The server enforces the roles, including owner-only privacy changes in manifest sync and renaming through its `rename-project` check. The host also checks these in `updateAlbum`. The gallery mirrors the roles: viewers and commenters cannot delete, remove, upload or edit in place (an edit is saved as a copy in their own gallery).
 
 ## 3. Data flows
 
 **Share (owner).** `POST /api/gallery/albums/share`:
 
-1. `gallery.ts` gathers the album's photos into its folder. A photo is moved, or copied when another album also has it.
+1. `gallery.ts` moves any photos no longer in the album out of its folder, then gathers the album's photos into it. A photo is moved, or copied when another album also has it. Photos removed from local membership are never uploaded just because their files used to live in that folder.
 2. The host's `POST /albums/share` (`NotebookServiceImpl.shareAlbum`) runs the resumable notebook share flow in album mode. It removes location details, uploads blobs, creates the project with `kind: "album"`, and writes `files`, `photos` and `settings` in one manifest change.
 3. Invitations go through the usual invitation route.
+
+Album uploads checkpoint each completed photo in `.libera-share-uploaded.jsonl`, alongside the full recovery plan. Resuming replays matching file ids and hashes, tolerates an interrupted last append, and reuploads changed photos. Completion removes both recovery files. This keeps checkpoint bytes linear in the number of photos.
 
 **Join (member).** The usual invitation join. When the project is an album, the host creates the folder in the gallery and marks it `kind: "album"`. The gallery's scan turns the new folder into an album, and `withSharing` decorates it with the project's name, role and cover.
 
@@ -65,7 +67,9 @@ The server enforces everything except the privacy settings and renaming. The hos
 
 The gallery copies (never moves) photos out of a shared folder: "Save to my gallery", making a new album from shared photos, adding a shared photo to another album.
 
-**Edits and revert.** After an in-place edit, the gallery records the `PhotoEdits` in the photo's record. A member who did not make the edit reverts with the original from the server (`POST /albums/:id/original`), which is written into `gallery/.originals`.
+**Edits and revert.** After an in-place edit, the gallery records the `PhotoEdits` in the photo's record. Editing another member's edited photo does not back up the intermediate version. Revert uses the album's original from the host (`POST /albums/:id/original`), written into `gallery/.originals`, unless a local backup's hash matches the album's original. A verified local backup can be used offline; obsolete backups are removed after a successful revert.
+
+**Metadata refresh.** Captions, covers and privacy changes emit `project-changed` even when no file bytes change. The gallery coalesces concurrent host requests but does not reuse completed snapshots, so an immediate refresh sees the latest metadata and role.
 
 **Comments.** A comment on a photo is an ordinary thread on the album's manifest document. Its `anchorId` is the photo's fileId, plus an optional area: `fil_…-r<x>-<y>-<w>-<h>` in thousandths (`src/lib/collab/album-comments.ts`). Mentions, replies and resolving work as they do in notebooks.
 
