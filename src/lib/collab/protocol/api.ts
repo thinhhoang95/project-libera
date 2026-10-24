@@ -14,7 +14,7 @@
 import type { Actor, AiActorHint } from "./actor";
 import type { RejectReason } from "./messages";
 import type { Role, Subdoc } from "./roles";
-import type { DocKind, SuggestionStatus } from "./schema";
+import type { DocKind, ProjectKind, SuggestionStatus } from "./schema";
 
 export type ApiErrorCode =
   | "bad-request"
@@ -142,6 +142,8 @@ export interface ProjectSummary {
   ownerId: string;
   manifestDocId: string;
   createdAt: string;
+  /** What the project shares; absent from servers older than shared albums (a notebook). */
+  kind?: ProjectKind;
 }
 
 /**
@@ -172,6 +174,8 @@ export interface FolderLease {
 
 export interface CreateProjectRequest {
   name: string;
+  /** Defaults to "notebook". */
+  kind?: ProjectKind;
 }
 
 export interface RenameProjectRequest {
@@ -504,7 +508,23 @@ export interface ReviewChangedEvent {
 
 // ---------------------------------------------------------------- notifications
 
-export type NotificationKind = "mention" | "reply" | "thread-resolved" | "review-requested" | "review-decided" | "invited";
+export type NotificationKind =
+  | "mention"
+  | "reply"
+  | "thread-resolved"
+  | "review-requested"
+  | "review-decided"
+  | "invited"
+  /** payload: { actor: UserSummary, albumName, count, fileIds } (collapsed per actor while unread). */
+  | "album-photos-added";
+
+/** POST ApiRoutes.albumActivity: photos this account just added to a shared album. */
+export interface AlbumActivityRequest {
+  /** How many photos were added. */
+  added: number;
+  /** Some of the photos (for a preview), at most 50. */
+  fileIds?: string[];
+}
 
 export interface NotificationInfo {
   id: string;
@@ -684,6 +704,8 @@ export const ApiRoutes = {
   notificationsRead: "/v1/notifications/read",
   audit: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/audit`,
   folderLease: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/folder-lease`,
+  /** POST AlbumActivityRequest → 204: tells the album's other members about new photos. */
+  albumActivity: (projectId: string) => `/v1/projects/${encodeURIComponent(projectId)}/album-activity`,
   commands: "/v1/commands",
   documentDigest: (docId: string) => `/v1/documents/${encodeURIComponent(docId)}/digest`,
   telemetry: "/v1/telemetry",

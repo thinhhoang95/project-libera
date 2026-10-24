@@ -6,7 +6,7 @@ import * as encoding from "lib0/encoding";
 import { applyAwarenessUpdate, Awareness, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import * as Y from "yjs";
 
-import { encodeMessage, MessageType, type Subdoc } from "../protocol.js";
+import { encodeMessage, MessageType, type ProjectKind, type Subdoc } from "../protocol.js";
 import type { DocumentKind, LoadedDocument } from "./store.js";
 import { PREDEFINED_MAPS, type ChangedTypes } from "./validate.js";
 
@@ -65,6 +65,8 @@ export class Room {
   readonly ready: Promise<void>;
 
   projectId = "";
+  /** A notebook's or a shared album's document (album manifests take photos only). */
+  projectKind: ProjectKind = "notebook";
   kind: DocumentKind = "manifest";
   schemaVersion = 1;
   /** Highest serverSeq applied to the live documents. */
@@ -96,6 +98,7 @@ export class Room {
       const loaded = await load();
       if (!loaded) throw new DocumentMissingError(docId);
       this.projectId = loaded.projectId;
+      this.projectKind = loaded.projectKind;
       this.kind = loaded.kind;
       this.schemaVersion = loaded.schemaVersion;
       this.serverSeq = loaded.serverSeq;

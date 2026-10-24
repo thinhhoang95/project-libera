@@ -6,12 +6,16 @@ import * as Y from "yjs";
 
 import {
   AI_FEATURES,
+  albumImageType,
+  albumPathError,
   AnnotationKeys,
   bindActor,
   ManifestKeys,
   manifestPathError,
+  MAX_ALBUM_CAPTION_LENGTH,
   type Actor,
   type AiFeature,
+  type ProjectKind,
   type Provenance,
   type ProvenanceSource,
   type Role,
@@ -28,7 +32,7 @@ const ANNOTATION_MAPS: readonly string[] = [AnnotationKeys.anchors, AnnotationKe
 /** Root types that must exist before an update is applied, so `changed` refers to them. */
 export const PREDEFINED_MAPS: Record<string, readonly string[]> = {
   annotations: ANNOTATION_MAPS,
-  manifest: [ManifestKeys.files, ManifestKeys.settings],
+  manifest: [ManifestKeys.files, ManifestKeys.settings, ManifestKeys.photos],
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -167,10 +171,22 @@ function suggestionTransitionViolation(
   return `Status cannot change from ${String(previous.status)} to ${String(next.status)}.`;
 }
 
-/** Returns a violation message, or null when every changed manifest entry has a safe path. */
-export function manifestViolation(after: Y.Doc, changed: ChangedTypes): string | null {
+/**
+ * Returns a violation message, or null when every changed manifest entry has
+ * a safe path. A shared album's manifest holds photos only: flat blob entries
+ * with a photo extension, and plain photo records keyed by their fileId.
+ */
+export function manifestViolation(after: Y.Doc, changed: ChangedTypes, projectKind: ProjectKind = "notebook", accountId = ""): string | null {
+  const album = projectKind === "album";
   for (const [type, keys] of changed) {
-    if (rootName(after, type) !== ManifestKeys.files) continue;
+    const root = rootName(after, type);
+    if (root === ManifestKeys.photos) {
+      if (!album) return "Only shared albums have photo details.";
+      const problem = albumPhotosViolation(after, type, keys, accountId);
+      if (problem) return problem;
+      continue;
+    }
+    if (root !== ManifestKeys.files) continue;
     if (type._item !== null) return "Manifest entries must be plain JSON values.";
     const files = type as Y.Map<unknown>;
     for (const key of keys) {
@@ -178,10 +194,40 @@ export function manifestViolation(after: Y.Doc, changed: ChangedTypes): string |
       const entry = files.get(key);
       if (entry === undefined) continue;
       if (!isPlainRecord(entry)) return `files/${key} must be a plain JSON object.`;
-      const problem = manifestPathError(entry.path as string);
+      const problem = album ? albumEntryViolation(entry) : manifestPathError(entry.path as string);
       if (problem) return `files/${key}: ${problem}`;
     }
   }
+  return null;
+}
+
+function albumEntryViolation(entry: JsonRecord): string | null {
+  if (entry.kind !== "blob") return "Albums hold photos only.";
+  const problem = albumPathError(entry.path as string);
+  if (problem) return problem;
+  if (typeof entry.mime === "string" && entry.mime !== albumImageType(entry.path as string)) return "The photo's type does not match its name.";
+  return null;
+}
+
+function albumPhotosViolation(after: Y.Doc, type: Y.AbstractType<any>, keys: Set<string | null>, accountId: string): string | null {
+  if (type._item !== null) return "Photo details must be plain JSON values.";
+  const photos = type as Y.Map<unknown>;
+  for (const key of keys) {
+    if (key === null) return "photos must be a map.";
+    const record = photos.get(key);
+    if (record === undefined) continue;
+    if (!isPlainRecord(record)) return `photos/${key} must be a plain JSON object.`;
+    if (record.fileId !== key) return `photos/${key}: fileId must match its key.`;
+    if (typeof record.addedBy !== "string" || !record.addedBy) return `photos/${key}: addedBy is required.`;
+    if (typeof record.caption === "string" && record.caption.length > MAX_ALBUM_CAPTION_LENGTH) return `photos/${key}: the caption is too long.`;
+    if (record.originalHash !== undefined && (typeof record.originalHash !== "string" || !/^[0-9a-f]{64}$/.test(record.originalHash))) {
+      return `photos/${key}: originalHash must be a sha256.`;
+    }
+    if (record.updatedBy !== undefined && record.updatedBy !== accountId) return `photos/${key}: updatedBy must be you.`;
+  }
+  // Details only describe photos the album has.
+  const files = after.getMap<unknown>(ManifestKeys.files);
+  for (const key of keys) if (key !== null && photos.get(key) !== undefined && !files.has(key)) return `photos/${key} has no photo.`;
   return null;
 }
 

@@ -37,6 +37,10 @@ function describe(kind: string, payload: Record<string, unknown>, projectName: s
       return `You were asked to review a document${where}`;
     case "review-decided":
       return `A review you requested was decided${where}`;
+    case "album-photos-added": {
+      const count = typeof payload.count === "number" ? payload.count : 1;
+      return `${name(payload.actor)} added ${count} photo${count === 1 ? "" : "s"}${where}`;
+    }
     default:
       return `New activity${where}`;
   }
