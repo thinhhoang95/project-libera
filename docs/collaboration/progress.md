@@ -213,3 +213,10 @@ Phase 3 part B also fixed the shared Comments panel staying empty in Electron (t
 - ☑ "Report sync problem" diagnostics (copy or save, scrubbed)
 - ☐ 👤 Manual matrix (IME, sleep/resume, ExFAT, screen reader)
 - ☐ 👤 Private beta with 3–5 teams
+
+## Shared albums and photos (gallery)
+- ☑ Server: project kind, album manifest rules, `album-activity` notifications (`server/test/albums.test.ts`)
+- ☑ Host: album mode (photos only, location details removed, edits keep the original), share, join into the gallery, take-away on revocation, album routes (`scripts/collab/albums-host.test.ts`)
+- ☑ Gallery: share album or photo, role checks, save to my gallery, revert from the server's original (`scripts/editor/gallery-sharing.test.ts`)
+- ☑ UI: share dialog, Shared tab, captions, comments on photos and areas, notifications open albums
+- ☐ On-demand originals, public links, manual photo order (see [gallery-sharing.md](gallery-sharing.md))
