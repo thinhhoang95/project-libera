@@ -125,7 +125,7 @@ export function useContentTrust(documentPath: string | undefined, explicit?: Con
     const snapshot = store.getSnapshot();
     if (snapshot.phase === "disabled") return "local";
     if (!snapshot.status) return snapshot.phase === "loading" ? "shared" : "local";
-    return snapshot.status.projects.some((project) => project.notebook === notebook) ? "shared" : "local";
+    return snapshot.status.projects.some((project) => project.kind !== "album" && project.notebook === notebook) ? "shared" : "local";
   }, [store, notebook]);
   const detected = useSyncExternalStore(store ? subscribe : NO_SUBSCRIPTION, getSnapshot, () => "local" as ContentTrust);
   return explicit ?? detected;

@@ -143,6 +143,21 @@ export const ROLE_DESCRIPTION: Record<Role, string> = {
   viewer: "Reads documents, comments and history.",
 };
 
+/** A shared album's roles: its editors add, remove and edit photos, so they are contributors. */
+export const ALBUM_ROLE_LABEL: Record<Role, string> = {
+  owner: "Owner",
+  editor: "Contributor",
+  commenter: "Commenter",
+  viewer: "Viewer",
+};
+
+export const ALBUM_ROLE_DESCRIPTION: Record<Role, string> = {
+  owner: "Manages members, decides what the album shares, and can do everything a contributor can.",
+  editor: "Adds, removes, edits and captions photos.",
+  commenter: "Sees the photos and comments on them.",
+  viewer: "Sees the photos, captions and comments.",
+};
+
 const SHARE_PHASE_LABEL: Record<ShareProgress["phase"], string> = {
   "creating-project": "Creating the shared notebook",
   "importing-documents": "Importing documents",
@@ -180,6 +195,10 @@ export function describeNotification(notification: NotificationInfo): string {
       return "You were asked to review a document";
     case "review-decided":
       return "A review you requested was decided";
+    case "album-photos-added": {
+      const count = typeof payload.count === "number" ? payload.count : 1;
+      return `${personName(payload.actor)} added ${count} ${count === 1 ? "photo" : "photos"} to “${text(payload.albumName) || "a shared album"}”`;
+    }
     default:
       return "New activity";
   }

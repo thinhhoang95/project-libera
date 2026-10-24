@@ -15,6 +15,7 @@ import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
 import { DocumentChatPanel, type AgentWorkspaceBridge, type ChatViewedPhoto } from "@/components/libera/document-chat-panel";
 import { ImageGalleryView } from "@/components/libera/image-gallery-view";
+import { requestSharedAlbum } from "@/components/libera/gallery-store";
 import { SearchView } from "@/components/libera/global-search/search-view";
 import { galleryPhotoFromSearch, searchRevealViewState } from "@/components/libera/global-search/reveal";
 import type { SearchEntry } from "@/components/libera/global-search/search-results";
@@ -520,6 +521,10 @@ export function LiberaApp({
         changeLeftPanel("notebook");
       }}
       onOpenPath={agentWorkspace.openFile}
+      onOpenAlbum={(target) => {
+        requestSharedAlbum(target);
+        changeLeftPanel("gallery");
+      }}
     >
     <MeetingRecorderProvider
       visibleTabIds={visibleCanvasTabIds}
