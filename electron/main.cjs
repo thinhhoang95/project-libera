@@ -52,7 +52,7 @@ const NATIVE_MENU_ITEM_TYPES = new Set(["normal", "checkbox", "radio"]);
 const MAX_NATIVE_MENU_ITEMS = 64;
 const MAX_NATIVE_MENU_ID_LENGTH = 128;
 const MAX_NATIVE_MENU_LABEL_LENGTH = 128;
-const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna";
 const DEFAULT_MARKDOWN_EDITOR_FONT_FAMILY = "system-monospace";
 const DEFAULT_WYSIWYG_EDITOR_FONT_FAMILY = "system-sans";
 const DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY = "system-sans";
@@ -1206,8 +1206,8 @@ async function openConfigurationWindow(section = "") {
     // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
       (key) => key !== "themePreference" && key !== "search" && (key === "aiFunctions"
-        // The server reads Where Was I from the config file on each request.
-        ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined })
+        // The server reads Where Was I and PDF to Markdown from the config file on each request.
+        ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined, pdfToMarkdown: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined, pdfToMarkdown: undefined })
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
         : key === "latexSnippets"

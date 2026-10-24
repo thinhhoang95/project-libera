@@ -9,12 +9,14 @@ import {
   readImageAsMarkdown,
   resolvePicturePlaceholders,
 } from "@/components/libera/document-ocr/document-ocr-client";
-import { joinDocumentPages, type DocumentBlock } from "@/lib/document-ocr/doctags";
+import { joinDocumentPages, type DocumentBlock, type DocumentPicture } from "@/lib/document-ocr/doctags";
+import { applyHeadingLevels, extractMarkdownHeadings, joinMarkdownPages } from "@/lib/document-ocr/markdown-pages";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { LiberaFileNode } from "@/lib/types";
 
 /**
- * Convert PDF to Markdown, one page at a time with the local model.
+ * Convert PDF to Markdown, one page at a time with the local model, or
+ * several pages at once with an OpenRouter model (Preferences → AI).
  *
  * A job belongs to the app, not to the PDF tab: it loads its own copy of the
  * document, so switching tabs does not stop it. Each finished page is saved
@@ -35,14 +37,31 @@ export type PdfMarkdownConversion = {
   openFile: (file: LiberaFileNode) => void;
 };
 
+/** Which engine reads the pages, from Preferences → AI → Convert PDF to Markdown. */
+export type PdfReadingSettings = {
+  engine: "local" | "openrouter";
+  model: string;
+  concurrency: number;
+  cleanup: boolean;
+  /** Whether an OpenRouter key is set. */
+  available: boolean;
+};
+
+export function getPdfReadingSettings(signal?: AbortSignal) {
+  return apiRequest<PdfReadingSettings>("/api/document-ocr/openrouter", { signal });
+}
+
 export type PdfMarkdownJob = {
   pdfPath: string;
   state: "running" | "done" | "cancelled" | "error";
+  engine?: PdfReadingSettings["engine"];
+  /** OpenRouter only: tidying heading levels after the last page. */
+  tidying?: boolean;
   firstPage: number;
   lastPage: number;
   /** Pages finished so far. */
   done: number;
-  /** The page being read now. */
+  /** The page being read now; with an OpenRouter model, the earliest of those being read. */
   current: number;
   startedAt: number;
   file?: LiberaFileNode;
@@ -163,14 +182,21 @@ async function runJob(
   let pdf: PDFDocumentProxy | null = null;
 
   try {
-    if (!(await ensureDocumentOcrModel())) {
+    const settings = await getPdfReadingSettings(signal);
+    job.engine = settings.engine;
+    if (settings.engine === "openrouter" && !settings.available) {
+      throw new Error("Add an OpenRouter API key in Preferences, or choose the local model in Preferences → AI → Convert PDF to Markdown.");
+    }
+    if (settings.engine === "local" && !(await ensureDocumentOcrModel())) {
       job.state = "cancelled";
       return;
     }
 
     const response = await fetch(src, { signal });
     if (!response.ok) throw new Error("Could not open the PDF.");
-    pdf = await getDocument({ data: new Uint8Array(await response.arrayBuffer()) }).promise;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // pdf.js may hand its buffer to its worker; the OpenRouter path splits the original.
+    pdf = await getDocument({ data: settings.engine === "openrouter" ? bytes.slice() : bytes }).promise;
     const last = Math.min(lastPage, pdf.numPages);
     job.lastPage = last;
 
@@ -181,6 +207,13 @@ async function runJob(
 
     const pages: DocumentBlock[][] = [];
     const pictureStem = file.name.replace(/\.md$/i, "");
+
+    if (settings.engine === "openrouter") {
+      await readWithOpenRouter({ pdf, bytes, job, firstPage, lastPage: last, file, writeFile: output.writeFile, pictureStem, mathMarkers, settings, signal });
+      job.state = "done";
+      conversion.openFile(file);
+      return;
+    }
 
     for (let pageNumber = firstPage; pageNumber <= last; pageNumber += 1) {
       signal.throwIfAborted();
@@ -235,4 +268,148 @@ async function runJob(
     publish(job);
     void pdf?.destroy();
   }
+}
+
+/**
+ * Read pages with the OpenRouter model, `settings.concurrency` at a time. Each
+ * page goes up as a one-page PDF, so the model sees its text layer as well as
+ * its look; a PDF that pdf-lib cannot split is sent as page images instead.
+ * The file is saved after every page, with a note for pages not read yet, and
+ * once all are in the heading levels are made consistent across pages.
+ */
+async function readWithOpenRouter({ pdf, bytes, job, firstPage, lastPage, file, writeFile, pictureStem, mathMarkers, settings, signal }: {
+  pdf: PDFDocumentProxy;
+  bytes: Uint8Array;
+  job: PdfMarkdownJob;
+  firstPage: number;
+  lastPage: number;
+  file: LiberaFileNode;
+  writeFile: (path: string, content: string) => Promise<void>;
+  pictureStem: string;
+  mathMarkers?: MathMarkerSettings;
+  settings: PdfReadingSettings;
+  signal: AbortSignal;
+}) {
+  const { PDFDocument } = await import("pdf-lib");
+  const source = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false }).catch(() => null);
+  const pages: (string | undefined)[] = [];
+  const reading = new Set<number>();
+  // Stops the other pages when the model fails on every page it tries.
+  const stop = new AbortController();
+  const stopped = AbortSignal.any([signal, stop.signal]);
+  let nextPage = firstPage;
+  let succeeded = 0;
+  let failed = 0;
+  let saving = Promise.resolve();
+
+  const assemble = (missing: string) => {
+    const read = Array.from({ length: pages.length }, (_, index) => pages[index] ?? `<!-- Page ${firstPage + index} ${missing}. -->`);
+    return `${joinMarkdownPages(read)}\n`;
+  };
+  const save = (content: string) => {
+    saving = saving.then(() => writeFile(file.path, content));
+    return saving;
+  };
+
+  const pageFile = async (page: PDFPageProxy, pageNumber: number) => {
+    if (source) {
+      const single = await PDFDocument.create();
+      const [copied] = await single.copyPages(source, [pageNumber - 1]);
+      single.addPage(copied);
+      return new Blob([new Uint8Array(await single.save())], { type: "application/pdf" });
+    }
+    const canvas = await renderPage(page, PAGE_MAX_EDGE);
+    const image = await canvasToBlob(canvas);
+    canvas.width = 0;
+    return image;
+  };
+
+  const readPage = async (pageNumber: number) => {
+    const page = await pdf.getPage(pageNumber);
+    const pageBlob = await pageFile(page, pageNumber);
+    const form = new FormData();
+    form.set("page", pageBlob, pageBlob.type === "application/pdf" ? `page-${pageNumber}.pdf` : `page-${pageNumber}.png`);
+    form.set("pageNumber", String(pageNumber));
+    if (mathMarkers?.inlineMathMarkers) form.set("inlineMathMarkers", mathMarkers.inlineMathMarkers);
+    if (mathMarkers?.blockMathMarkers) form.set("blockMathMarkers", mathMarkers.blockMathMarkers);
+    const result = await apiRequest<{ markdown: string; pictures: DocumentPicture[]; incomplete: boolean }>(
+      "/api/document-ocr/openrouter", { method: "POST", body: form, signal: stopped });
+    if (result.incomplete) job.warnings.push(`Page ${pageNumber} may be incomplete.`);
+
+    let markdown = result.markdown;
+    if (result.pictures.length) {
+      const sharp = await renderPage(page, PICTURE_RENDER_EDGE);
+      markdown = await resolvePicturePlaceholders(markdown, result.pictures, sharp, (image, index) =>
+        uploadPicture(file.path, image, `${pictureStem}-p${pageNumber}-figure-${index + 1}.png`));
+      sharp.width = 0;
+    }
+    page.cleanup();
+    return markdown;
+  };
+
+  const worker = async () => {
+    while (nextPage <= lastPage) {
+      stopped.throwIfAborted();
+      const pageNumber = nextPage++;
+      reading.add(pageNumber);
+      job.current = Math.min(...reading);
+      publish(job);
+      try {
+        pages[pageNumber - firstPage] = await readPage(pageNumber);
+        succeeded += 1;
+      } catch (error) {
+        if (stopped.aborted) throw error;
+        failed += 1;
+        // A wrong model name or a spent key fails every page: stop early with its message.
+        if (!succeeded && failed >= Math.min(3, lastPage - firstPage + 1)) {
+          stop.abort();
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : "the model failed";
+        pages[pageNumber - firstPage] = `<!-- Page ${pageNumber} could not be read: ${message.replace(/-->/g, "")} -->`;
+        job.warnings.push(`Page ${pageNumber} could not be read (${message}).`);
+      } finally {
+        reading.delete(pageNumber);
+      }
+      job.done += 1;
+      if (reading.size) job.current = Math.min(...reading);
+      publish(job);
+      await save(assemble("is still being read"));
+    }
+  };
+
+  try {
+    const workers = Math.max(1, Math.min(settings.concurrency, lastPage - firstPage + 1));
+    await Promise.all(Array.from({ length: workers }, worker));
+  } catch (error) {
+    stop.abort();
+    // Keep every page that was read, marking the rest.
+    await saving.catch(() => undefined);
+    if (succeeded) await save(assemble("was not read")).catch(() => undefined);
+    throw error;
+  }
+
+  let markdown = assemble("was not read");
+  if (settings.cleanup) {
+    job.tidying = true;
+    publish(job);
+    const headings = pages.flatMap((page, index) => extractMarkdownHeadings(page ?? "", firstPage + index));
+    try {
+      // Levels are applied in order, so the joined file must have the same headings.
+      if (headings.length >= 2 && extractMarkdownHeadings(markdown, 0).length === headings.length) {
+        const { levels } = await apiRequest<{ levels: number[] | null }>("/api/document-ocr/openrouter/headings", {
+          method: "POST",
+          body: JSON.stringify({ headings }),
+          signal,
+        });
+        if (levels) markdown = applyHeadingLevels(markdown, levels);
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      job.warnings.push("Heading levels were left as each page had them.");
+    }
+    job.tidying = false;
+  }
+  await saving;
+  await save(markdown);
 }

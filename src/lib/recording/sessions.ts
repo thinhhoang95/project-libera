@@ -386,12 +386,10 @@ function updateRecap(runtime: Runtime, { force = false } = {}): Promise<void> {
     do {
       const read = runtime.recap.wordsRead;
       const fresh = words.slice(read, read + RECAP_MAX_NEW_WORDS);
-      // A small, quick task: the formatting model at low effort.
-      const { model } = getAiFunctionOptions("formatting");
       const reply = await createOpenRouterCompletion([
         { role: "system", content: RECAP_SYSTEM_PROMPT },
         { role: "user", content: recapUserMessage(runtime.recap.bullets, words.slice(0, read), fresh) },
-      ], { model, reasoning: { effort: "low" } });
+      ], getAiFunctionOptions("recordingRecap"));
       const operations = parseRecapOperations(reply.content, new Set(runtime.recap.bullets.map((bullet) => bullet.id)));
       const { bullets, changed } = applyRecapOperations(runtime.recap.bullets, operations, fresh[0]?.start ?? 0);
       runtime.recap.bullets = bullets;

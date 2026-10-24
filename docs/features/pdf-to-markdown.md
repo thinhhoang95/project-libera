@@ -1,6 +1,6 @@
 # PDF to Markdown
 
-Read PDF pages, scanned books and images into Markdown on this computer, with no cloud service. Line breaks, columns, page numbers, running headers and words split across lines or pages are cleaned up, and tables, formulas, lists, code and figures come out as Markdown.
+Read PDF pages, scanned books and images into Markdown on this computer, with no cloud service, or convert whole PDFs faster with an OpenRouter model. Line breaks, columns, page numbers, running headers and words split across lines or pages are cleaned up, and tables, formulas, lists, code and figures come out as Markdown.
 
 ## Using it
 
@@ -8,6 +8,19 @@ Read PDF pages, scanned books and images into Markdown on this computer, with no
 - **Convert PDF to Markdown.** In a PDF tab, click the text-scan button in the toolbar, choose the pages, and start. Libera writes `<PDF name>.md` next to the PDF, or `<PDF name> (2).md` if that exists, and saves after every page. You can close the dialog, switch tabs and keep working. The button shows the progress, and **Stop** keeps what was read. The note opens when the conversion finishes. Figures are cropped from a sharp render of the page and saved as images of the note.
 
 Expect several seconds for a small snip and one to three minutes for a full page on a laptop CPU. Pages the model could not finish are listed at the end, so you can check them against the PDF.
+
+## Local model or OpenRouter
+
+Preferences → AI → **Convert PDF to Markdown** → **Read pages with** chooses how Convert PDF to Markdown reads pages. Snip as Markdown always uses the local model.
+
+- **Local model** (the default) runs granite-docling on this computer, described below. Nothing leaves the computer.
+- **OpenRouter model** sends each page to the model set there, `openai/gpt-6-luna` by default, using your OpenRouter key. Choose a model that reads PDF or image input.
+  - Each page goes up as its own one-page PDF, cut from the original with pdf-lib, so the model sees the text layer as well as the page. If the PDF cannot be split, the page is sent as an image instead.
+  - **Pages at once** (6 by default, up to 16) pages are read at the same time. A page that fails is retried twice. If the first pages all fail, for example because of a wrong model name, the conversion stops with the model's message. Otherwise a failed page is left as a note in the file and listed at the end.
+  - The model writes Markdown directly. Running headers, footers and page numbers are left out, footnotes are numbered per page (`[^12-1]`) so they stay unique, and figures come with a box that Libera crops from a sharp render of the page, as with the local model.
+  - The pages are joined into one file. A paragraph or a hyphenated word cut by a page break is joined back together, past the footnotes at the bottom of the page. A table that runs onto the next page is joined too, without a repeated header.
+  - **Tidy heading levels when done** (on by default) runs one last request. It sends only the list of headings with their pages, not the text, and the model makes their levels consistent across pages. It can also turn a running title that was kept by mistake into plain text. If the reply does not fit, the headings stay as they were.
+  - The model, reasoning effort, pages at once and the tidy pass apply without restarting. Without the desktop app, use `LIBERA_PDF_TO_MARKDOWN_ENGINE=openrouter`, `LIBERA_AI_PDF_TO_MARKDOWN_MODEL`, `LIBERA_AI_PDF_TO_MARKDOWN_REASONING_EFFORT`, `LIBERA_PDF_TO_MARKDOWN_CONCURRENCY` and `LIBERA_PDF_TO_MARKDOWN_CLEANUP`.
 
 ## Setting up the model
 
@@ -26,4 +39,5 @@ The model is IBM's [granite-docling-258M](https://huggingface.co/ibm-granite/gra
 - **DocTags.** The model writes DocTags, a page markup with a location for every block. `src/lib/document-ocr/doctags.ts` turns them into Markdown. It drops page headers and footers, writes headings, paragraphs, lists, code, tables (from OTSL) and formulas with your math markers, and leaves picture placeholders that the app replaces with cropped images.
 - **Page joins.** A paragraph that runs across a page break is merged back together, skipping footnotes at the bottom of the page. A word hyphenated across the break is joined too.
 - **Loops.** Small vision models sometimes repeat themselves, often after inventing text for a region they cannot read, such as a footnote. The worker ignores location tags and stops when the last 192 tokens repeat one cycle. It then drops the unfinished block the loop started in, and the conversion lists the page as possibly incomplete.
+- **OpenRouter path.** `src/components/libera/document-ocr/pdf-markdown-jobs.ts` splits pages and runs the page queue in the browser. `/api/document-ocr/openrouter` reads one page (`src/lib/document-ocr/openrouter-pages.ts`), and `/api/document-ocr/openrouter/headings` tidies the headings. `src/lib/document-ocr/markdown-pages.ts` joins pages and applies heading levels.
 - **Jobs.** A PDF conversion belongs to the app, not the tab. It loads its own copy of the document, so switching or closing tabs does not stop it.

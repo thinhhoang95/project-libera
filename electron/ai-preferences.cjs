@@ -1,11 +1,21 @@
-const AI_FUNCTIONS = ["formatting", "rewrite", "chat", "imageToMarkdown", "latex"];
+const DEFAULT_AI_MODEL = "openai/gpt-6-luna";
+const AI_FUNCTIONS = ["formatting", "rewrite", "write", "chat", "review", "recordingRecap", "imageToMarkdown", "latex"];
 const AI_FUNCTION_ENV_NAMES = {
   formatting: "FORMATTING",
   rewrite: "REWRITE",
+  write: "WRITE",
   chat: "CHAT",
+  review: "REVIEW",
+  recordingRecap: "RECORDING_RECAP",
   imageToMarkdown: "IMAGE_TO_MARKDOWN",
   latex: "LATEX",
 };
+/**
+ * Functions split off one they used to share. Until set, each keeps that
+ * function's settings, so existing configs behave as before. AI Chat and the
+ * AI Agent stay one function: they share a model pool.
+ */
+const AI_FUNCTION_PARENTS = { write: "rewrite", review: "chat", recordingRecap: "formatting" };
 const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const MAX_ALTERNATIVE_MODELS = 50;
 
@@ -63,30 +73,58 @@ function normalizeWhereWasIPreferences(input) {
   };
 }
 
-function normalizeAiPreferences(input, defaultModel = "google/gemini-3.5-flash") {
+const DEFAULT_PDF_TO_MARKDOWN_MODEL = "openai/gpt-6-luna";
+const PDF_TO_MARKDOWN_ENGINES = ["local", "openrouter"];
+
+/**
+ * Preferences → AI → Convert PDF to Markdown. `local` reads pages with the
+ * granite-docling model on this computer; `openrouter` sends each page as a
+ * one-page PDF to the model below, several pages at once, then tidies the
+ * joined Markdown (heading levels) with the same model when `cleanup` is on.
+ */
+function normalizePdfToMarkdownPreferences(input) {
+  const model = typeof input?.model === "string" ? input.model.trim() : "";
+  const concurrency = Number(input?.concurrency);
+  return {
+    engine: PDF_TO_MARKDOWN_ENGINES.includes(input?.engine) ? input.engine : "local",
+    model: model && model.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(model) ? model : DEFAULT_PDF_TO_MARKDOWN_MODEL,
+    reasoningEffort: REASONING_EFFORTS.includes(input?.reasoningEffort) ? input.reasoningEffort : "low",
+    concurrency: Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 16 ? concurrency : 6,
+    cleanup: typeof input?.cleanup === "boolean" ? input.cleanup : true,
+  };
+}
+
+function normalizeAiPreferences(input, defaultModel = DEFAULT_AI_MODEL) {
   return {
     ...normalizeAiFunctionPreferences(input, defaultModel),
     references: normalizeReferencePreferences(input?.references),
     whereWasI: normalizeWhereWasIPreferences(input?.whereWasI),
+    pdfToMarkdown: normalizePdfToMarkdownPreferences(input?.pdfToMarkdown),
   };
 }
 
 function normalizeAiFunctionPreferences(input, defaultModel) {
-  return Object.fromEntries(AI_FUNCTIONS.map((name) => {
+  const normalized = {};
+  // Parents come before the functions split off them in AI_FUNCTIONS.
+  for (const name of AI_FUNCTIONS) {
     const value = input?.[name];
     const model = typeof value?.model === "string" ? value.model.trim() : "";
-    return [name, {
-      model: model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
-      promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : name === "chat",
-      reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : name === "latex" ? "low" : "medium",
+    const parent = normalized[AI_FUNCTION_PARENTS[name]];
+    // The recording recap is a small, quick task: low effort, no caching.
+    const inherited = name === "recordingRecap" ? { promptCaching: false, reasoningEffort: "low" } : parent;
+    normalized[name] = {
+      model: model || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
+      promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : inherited ? inherited.promptCaching : name === "chat",
+      reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : inherited ? inherited.reasoningEffort : name === "latex" ? "low" : "medium",
       ...(["rewrite", "chat"].includes(name) ? {
         customInstruction: typeof value?.customInstruction === "string" ? value.customInstruction : "",
       } : {}),
       ...(name === "chat" ? {
         alternativeModels: normalizeAlternativeModels(value?.alternativeModels, model || defaultModel),
       } : {}),
-    }];
-  }));
+    };
+  }
+  return normalized;
 }
 
 function aiPreferencesEnvironment(preferences, defaultModel) {
@@ -107,6 +145,11 @@ function aiPreferencesEnvironment(preferences, defaultModel) {
     LIBERA_WHERE_WAS_I_SUMMARIZE: String(normalized.whereWasI.summarize),
     LIBERA_AI_WHERE_WAS_I_MODEL: normalized.whereWasI.model,
     LIBERA_AI_WHERE_WAS_I_REASONING_EFFORT: normalized.whereWasI.reasoningEffort,
+    LIBERA_PDF_TO_MARKDOWN_ENGINE: normalized.pdfToMarkdown.engine,
+    LIBERA_AI_PDF_TO_MARKDOWN_MODEL: normalized.pdfToMarkdown.model,
+    LIBERA_AI_PDF_TO_MARKDOWN_REASONING_EFFORT: normalized.pdfToMarkdown.reasoningEffort,
+    LIBERA_PDF_TO_MARKDOWN_CONCURRENCY: String(normalized.pdfToMarkdown.concurrency),
+    LIBERA_PDF_TO_MARKDOWN_CLEANUP: String(normalized.pdfToMarkdown.cleanup),
   };
 }
 
@@ -118,4 +161,4 @@ function aiFunctionEnvironment(normalized) {
     ...(name === "chat" ? [[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_ALTERNATIVE_MODELS`, JSON.stringify(value.alternativeModels)]] : []),
   ]));
 }
-module.exports = { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, REASONING_EFFORTS, DEFAULT_WHERE_WAS_I_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, aiPreferencesEnvironment };
+module.exports = { DEFAULT_AI_MODEL, AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, AI_FUNCTION_PARENTS, REASONING_EFFORTS, DEFAULT_WHERE_WAS_I_MODEL, DEFAULT_PDF_TO_MARKDOWN_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, normalizePdfToMarkdownPreferences, aiPreferencesEnvironment };

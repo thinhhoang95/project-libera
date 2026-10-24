@@ -191,6 +191,21 @@
         resize: vertical;
       }
 
+      .model-apply-row {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+      }
+
+      .model-apply-row input {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .model-apply-row button {
+        flex: none;
+      }
+
       .textarea-actions {
         display: flex;
         justify-content: flex-end;
@@ -473,6 +488,15 @@
                 <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
                 <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
               </div>
+              <fieldset class="ai-function-settings" id="ai-all-models-settings">
+                <legend>All models</legend>
+                <label for="ai-all-models">Model</label>
+                <div class="model-apply-row">
+                  <input id="ai-all-models" type="text" autocomplete="off" spellcheck="false" placeholder="Search OpenRouter models…" />
+                  <button id="ai-all-models-apply" class="secondary" type="button">Use for all</button>
+                </div>
+                <p id="ai-all-models-help" class="field-help" aria-live="polite">Fills in the fallback model and every model below, including References and Where Was I. AI Chat’s alternative models stay as they are. Change any one afterwards, then save preferences.</p>
+              </fieldset>
               <label for="openrouter-model">Fallback OpenRouter model</label>
               <input
                 id="openrouter-model"
@@ -521,6 +545,32 @@
                 </select>
                 <p class="field-help">Choose a model that supports image input.</p>
               </fieldset>
+              <fieldset class="ai-function-settings" id="pdf-to-markdown-settings">
+                <legend>Convert PDF to Markdown</legend>
+                <label for="pdf-to-markdown-engine">Read pages with</label>
+                <select id="pdf-to-markdown-engine">
+                  <option value="local">Local model (granite-docling, on this computer)</option>
+                  <option value="openrouter">OpenRouter model</option>
+                </select>
+                <p class="field-help">The local model sends nothing off this computer but takes one to three minutes a page. An OpenRouter model reads several pages at once, each sent as a one-page PDF, using your OpenRouter key.</p>
+                <label for="ai-pdfToMarkdown-model">Model</label>
+                <input id="ai-pdfToMarkdown-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/gpt-6-luna" />
+                <label for="ai-pdfToMarkdown-effort">Reasoning effort</label>
+                <select id="ai-pdfToMarkdown-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="pdf-to-markdown-concurrency">Pages at once</label>
+                <input id="pdf-to-markdown-concurrency" type="number" min="1" max="16" step="1" />
+                <div class="switch-row">
+                  <label for="pdf-to-markdown-cleanup">Tidy heading levels when done</label>
+                  <input id="pdf-to-markdown-cleanup" class="switch" type="checkbox" role="switch" />
+                </div>
+                <p class="field-help">Pages are read separately, so their headings can disagree. When every page is in, the model gets the list of headings, not the text, and makes their levels consistent. Choose a model that reads PDF or image input. Changes apply without restarting.</p>
+              </fieldset>
               <fieldset class="ai-function-settings">
                 <legend>AI Rewrite</legend>
                 <label for="ai-rewrite-model">Model</label>
@@ -553,7 +603,26 @@
                 </p>
               </fieldset>
               <fieldset class="ai-function-settings">
-                <legend>AI Chat</legend>
+                <legend>Write with AI</legend>
+                <label for="ai-write-model">Model</label>
+                <input id="ai-write-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-write-effort">Reasoning effort</label>
+                <select id="ai-write-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="ai-write-caching">Prompt caching</label>
+                <select id="ai-write-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <p class="field-help">Uses AI Rewrite’s custom instruction.</p>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>AI Chat and AI Agent</legend>
                 <label for="ai-chat-model">Model</label>
                 <input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required />
                 <label for="ai-chat-alternative-models">Alternative models</label>
@@ -573,7 +642,7 @@
                   aria-label="Add an alternative model"
                   placeholder="Search OpenRouter models to add…"
                 />
-                <p class="field-help">Optional. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored.</p>
+                <p class="field-help">Optional. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored. AI Chat and the AI Agent share this model and its alternatives.</p>
                 <label for="ai-chat-effort">Reasoning effort</label>
                 <select id="ai-chat-effort">
                   <option value="low">Low</option>
@@ -600,6 +669,25 @@
                 <p id="ai-chat-instruction-help" class="field-help">
                   Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.
                 </p>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>Agentic Review</legend>
+                <label for="ai-review-model">Model</label>
+                <input id="ai-review-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-review-effort">Reasoning effort</label>
+                <select id="ai-review-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="ai-review-caching">Prompt caching</label>
+                <select id="ai-review-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <p class="field-help">Plans and drafts changes that address a document’s comments.</p>
               </fieldset>
 
               <div class="quick-prompts-settings" aria-labelledby="quick-prompts-title">
@@ -654,6 +742,25 @@
                   <option value="false">Disabled</option>
                   <option value="true">Enabled</option>
                 </select>
+              </fieldset>
+              <fieldset class="ai-function-settings">
+                <legend>Recording Live Recap</legend>
+                <label for="ai-recordingRecap-model">Model</label>
+                <input id="ai-recordingRecap-model" type="text" autocomplete="off" spellcheck="false" required />
+                <label for="ai-recordingRecap-effort">Reasoning effort</label>
+                <select id="ai-recordingRecap-effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra High (xhigh)</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="ai-recordingRecap-caching">Prompt caching</label>
+                <select id="ai-recordingRecap-caching">
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <p class="field-help">Keeps the bullet-point summary of a recording as it goes on. A small, quick model is enough.</p>
               </fieldset>
               <fieldset class="ai-function-settings" id="references-settings">
                 <legend>References</legend>
@@ -1244,7 +1351,12 @@
       const apiKeyInput = document.querySelector("#openai-api-key");
       const apiKeyLocked = document.querySelector("#api-key-locked");
       const openRouterModelInput = document.querySelector("#openrouter-model");
-      const aiFunctionNames = ["formatting", "rewrite", "chat", "imageToMarkdown", "latex"];
+      const aiFunctionNames = ["formatting", "rewrite", "write", "chat", "review", "recordingRecap", "imageToMarkdown", "latex"];
+      // Unset, these keep the settings of the function they were split from.
+      const aiFunctionParents = { write: "rewrite", review: "chat", recordingRecap: "formatting" };
+      const allModelsInput = document.querySelector("#ai-all-models");
+      const allModelsApplyButton = document.querySelector("#ai-all-models-apply");
+      const allModelsHelp = document.querySelector("#ai-all-models-help");
       const aiFunctionInputs = Object.fromEntries(aiFunctionNames.map((name) => [name, {
         model: document.querySelector(`#ai-${name}-model`),
         effort: document.querySelector(`#ai-${name}-effort`),
@@ -1265,6 +1377,13 @@
         summarize: document.querySelector("#where-was-i-summarize"),
         model: document.querySelector("#ai-whereWasI-model"),
         effort: document.querySelector("#ai-whereWasI-effort"),
+      };
+      const pdfToMarkdownInputs = {
+        engine: document.querySelector("#pdf-to-markdown-engine"),
+        model: document.querySelector("#ai-pdfToMarkdown-model"),
+        effort: document.querySelector("#ai-pdfToMarkdown-effort"),
+        concurrency: document.querySelector("#pdf-to-markdown-concurrency"),
+        cleanup: document.querySelector("#pdf-to-markdown-cleanup"),
       };
       const aiChatCustomInstructionInput = document.querySelector("#ai-chat-custom-instruction");
       const aiChatAlternativeModelsInput = document.querySelector("#ai-chat-alternative-models");
@@ -1916,6 +2035,17 @@
       document.addEventListener("scroll", () => activeModelCombobox?.position(), true);
       modelCatalogRefreshButton.addEventListener("click", () => loadOpenRouterModels({ refresh: true }));
       attachModelCombobox(openRouterModelInput);
+      attachModelCombobox(allModelsInput);
+      allModelsApplyButton.addEventListener("click", () => {
+        const model = allModelsInput.value.trim();
+        if (!model) {
+          allModelsInput.focus();
+          return;
+        }
+        const inputs = [openRouterModelInput, ...aiFunctionNames.map((name) => aiFunctionInputs[name].model), referenceInputs.model, whereWasIInputs.model, pdfToMarkdownInputs.model];
+        for (const input of inputs) input.value = model;
+        allModelsHelp.textContent = `Every model is now ${model}. Save preferences to keep it.`;
+      });
       for (const name of aiFunctionNames) {
         attachModelCombobox(aiFunctionInputs[name].model, { visionOnly: name === "imageToMarkdown" });
       }
@@ -1930,6 +2060,13 @@
       }
       whereWasIInputs.enabled.addEventListener("change", updateWhereWasIInputs);
       whereWasIInputs.summarize.addEventListener("change", updateWhereWasIInputs);
+      attachModelCombobox(pdfToMarkdownInputs.model, { visionOnly: true });
+      // The model settings only apply to the OpenRouter engine.
+      function updatePdfToMarkdownInputs() {
+        const local = pdfToMarkdownInputs.engine.value !== "openrouter";
+        for (const input of [pdfToMarkdownInputs.model, pdfToMarkdownInputs.effort, pdfToMarkdownInputs.concurrency, pdfToMarkdownInputs.cleanup]) input.disabled = local;
+      }
+      pdfToMarkdownInputs.engine.addEventListener("change", updatePdfToMarkdownInputs);
       attachModelCombobox(transcriptionInputs.openRouterModel, { transcription: true });
       attachModelCombobox(dictationInputs.openRouterModel, { transcription: true });
       attachModelCombobox(ttsInputs.openRouterModel, { speech: true });
@@ -1959,12 +2096,15 @@
         setHeadingPalette(state.markdownHeadingPalette);
         updateHeadingPaletteVisibility();
         dataDirInput.value = state.dataDir || "";
-        openRouterModelInput.value = state.openRouterModel || "google/gemini-3.5-flash";
+        openRouterModelInput.value = state.openRouterModel || "openai/gpt-6-luna";
         for (const name of aiFunctionNames) {
-          aiFunctionInputs[name].caching.value = String(typeof state.aiFunctions?.[name]?.promptCaching === "boolean" ? state.aiFunctions[name].promptCaching : name === "chat");
-          aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
-          aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (name === "latex" ? "low" : "medium");
+          const parent = aiFunctionInputs[aiFunctionParents[name]];
+          const lowEffort = name === "latex" || name === "recordingRecap";
+          aiFunctionInputs[name].caching.value = String(typeof state.aiFunctions?.[name]?.promptCaching === "boolean" ? state.aiFunctions[name].promptCaching : parent && name !== "recordingRecap" ? parent.caching.value === "true" : name === "chat");
+          aiFunctionInputs[name].model.value = state.aiFunctions?.[name]?.model || parent?.model.value || (name === "latex" ? "openai/gpt-5.6-luna" : openRouterModelInput.value);
+          aiFunctionInputs[name].effort.value = state.aiFunctions?.[name]?.reasoningEffort || (lowEffort ? "low" : parent?.effort.value || "medium");
         }
+        allModelsInput.value = "";
         aiChatCustomInstructionInput.value = state.aiFunctions?.chat?.customInstruction || "";
         aiChatAlternativeModelsInput.value = Array.isArray(state.aiFunctions?.chat?.alternativeModels)
           ? state.aiFunctions.chat.alternativeModels.join("\n")
@@ -1985,6 +2125,13 @@
         whereWasIInputs.effort.value = whereWasI.reasoningEffort || "low";
         whereWasIInputs.summarize.checked = whereWasI.summarize !== false;
         updateWhereWasIInputs();
+        const pdfToMarkdown = state.aiFunctions?.pdfToMarkdown || {};
+        pdfToMarkdownInputs.engine.value = pdfToMarkdown.engine === "openrouter" ? "openrouter" : "local";
+        pdfToMarkdownInputs.model.value = typeof pdfToMarkdown.model === "string" && pdfToMarkdown.model ? pdfToMarkdown.model : "openai/gpt-6-luna";
+        pdfToMarkdownInputs.effort.value = pdfToMarkdown.reasoningEffort || "low";
+        pdfToMarkdownInputs.concurrency.value = String(pdfToMarkdown.concurrency || 6);
+        pdfToMarkdownInputs.cleanup.checked = pdfToMarkdown.cleanup !== false;
+        updatePdfToMarkdownInputs();
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -2488,6 +2635,12 @@
               summarize: whereWasIInputs.summarize.checked,
               model: whereWasIInputs.model.value.trim(),
               reasoningEffort: whereWasIInputs.effort.value,
+            }], ["pdfToMarkdown", {
+              engine: pdfToMarkdownInputs.engine.value,
+              model: pdfToMarkdownInputs.model.value.trim(),
+              reasoningEffort: pdfToMarkdownInputs.effort.value,
+              concurrency: Number(pdfToMarkdownInputs.concurrency.value),
+              cleanup: pdfToMarkdownInputs.cleanup.checked,
             }]])),
             search: {
               textWeights: searchTextWeightsInput.value,

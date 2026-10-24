@@ -69,8 +69,8 @@ ${prompt}`,
     ];
     // The response key predates LaTeX support; it holds LaTeX for LaTeX documents.
     const markdown = latex
-      ? normalizeLatexOutput((await createOpenRouterCompletion(messages, getAiFunctionOptions("rewrite"))).content)
-      : await createOpenRouterMarkdownCompletion(messages, getAiFunctionOptions("rewrite"));
+      ? normalizeLatexOutput((await createOpenRouterCompletion(messages, getAiFunctionOptions("write"))).content)
+      : await createOpenRouterMarkdownCompletion(messages, getAiFunctionOptions("write"));
 
     if (!markdown.trim()) {
       return jsonError("Write with AI returned an empty response.", 502);

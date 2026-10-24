@@ -2760,6 +2760,8 @@ html.dark .libera-left-panel .review-button { background: #a3bbef0c; box-shadow:
 html.dark .libera-left-panel .review-button:hover:not(:disabled) { background: #a3bbef17; color: #a2c9ff; }
 html.dark .libera-left-panel .review-textarea { background: #b3c8ef0d; }
 html.dark .libera-left-panel .review-textarea:focus { border-color: #7aa5ef80; box-shadow: 0 0 0 3px #7aa5ef1f; }
+.review-comment-icon.review-comment-pen, .libera-left-panel .review-comment-icon.review-comment-pen { width: auto; height: auto; padding: 0; border: 0; border-radius: 0; background: none; }
+.review-comment-icon.review-comment-pen:hover:not(:disabled), .libera-left-panel .review-comment-icon.review-comment-pen:hover:not(:disabled) { background: none; opacity: .7; }
 .libera-workspace-actions { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--card) 85%, transparent) 25%); backdrop-filter: blur(6px); }
 
 /* Gemini-style gradient wash behind the chat header while the model works. */

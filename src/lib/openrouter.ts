@@ -4,7 +4,7 @@ import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint, withPromptCache
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
   "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.5-flash";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna";
 
 const OPENROUTER_API_KEY_ENV_NAMES = [
   "OPENROUTER_API_KEY",
@@ -24,6 +24,10 @@ type OpenRouterContentPart =
       image_url: {
         url: string;
       };
+    }
+  | {
+      type: "file";
+      file: { filename: string; file_data: string };
     };
 
 export type OpenRouterMessage = {

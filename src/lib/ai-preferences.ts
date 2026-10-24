@@ -1,17 +1,22 @@
 import { readFileSync } from "node:fs";
 import { getOpenRouterModel } from "./openrouter";
 
-export type AiFunction = "formatting" | "rewrite" | "chat" | "imageToMarkdown" | "latex" | "references";
+export type AiFunction = "formatting" | "rewrite" | "write" | "chat" | "review" | "recordingRecap" | "imageToMarkdown" | "latex" | "references";
 export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 const ENV_NAMES: Record<AiFunction, string> = {
   formatting: "FORMATTING",
   rewrite: "REWRITE",
+  write: "WRITE",
   chat: "CHAT",
+  review: "REVIEW",
+  recordingRecap: "RECORDING_RECAP",
   imageToMarkdown: "IMAGE_TO_MARKDOWN",
   latex: "LATEX",
   references: "REFERENCES",
 };
+/** Functions split off one they used to share: unset, they keep its settings (see electron/ai-preferences.cjs). */
+const PARENTS: Partial<Record<AiFunction, AiFunction>> = { write: "rewrite", review: "chat", recordingRecap: "formatting" };
 
 function normalizeAlternativeModels(value: unknown, defaultModel: string) {
   const entries = Array.isArray(value) ? value : [];
@@ -23,12 +28,15 @@ function normalizeAlternativeModels(value: unknown, defaultModel: string) {
 
 export function getAiFunctionOptions(name: AiFunction): { model: string; reasoning: { effort: AiReasoningEffort }; promptCaching: boolean } {
   const prefix = `LIBERA_AI_${ENV_NAMES[name]}`;
+  const parentName = PARENTS[name];
+  const parent = parentName ? getAiFunctionOptions(parentName) : undefined;
   // References default to the formatting model: both turn text into structured output.
-  const model = process.env[`${prefix}_MODEL`]?.trim() || (name === "latex" ? "openai/gpt-5.6-luna" : name === "references" ? getAiFunctionOptions("formatting").model : getOpenRouterModel());
+  const model = process.env[`${prefix}_MODEL`]?.trim() || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : name === "references" ? getAiFunctionOptions("formatting").model : getOpenRouterModel());
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
-  const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : name === "latex" || name === "references" ? "low" : "medium";
+  const lowEffort = name === "latex" || name === "references" || name === "recordingRecap";
+  const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : lowEffort ? "low" : parent?.reasoning.effort ?? "medium";
   const configuredCaching = process.env[`${prefix}_PROMPT_CACHING`];
-  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "chat";
+  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "recordingRecap" ? false : parent?.promptCaching ?? name === "chat";
   return { model, reasoning: { effort }, promptCaching };
 }
 
