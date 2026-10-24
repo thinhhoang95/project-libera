@@ -14,7 +14,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import type { Reconciliation } from "../../../src/lib/collab/local-api";
-import type { DocKind, ManifestEntryKind } from "../../../src/lib/collab/protocol/schema";
+import type { DocKind, ManifestEntryKind, ProjectKind } from "../../../src/lib/collab/protocol/schema";
 import { SHARED_MARKER_FILE, SHARE_PENDING_FILE, STATE_DIRECTORY, readIfExists, writeFileAtomic } from "./fs-ops";
 
 export interface SharedMarker {
@@ -23,6 +23,8 @@ export interface SharedMarker {
   accountId: string;
   manifestDocId: string;
   sharedAt: string;
+  /** "album": a shared album's folder in the gallery. Missing for notebooks. */
+  kind?: ProjectKind;
   /**
    * The installation that keeps this folder in sync. A folder synced to
    * other devices (OneDrive and the like) carries the marker there too; their

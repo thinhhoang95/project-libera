@@ -149,6 +149,7 @@ export class UtilityHost {
       const options: ControlAppOptions = {
         collabDir,
         libraryRoot: path.join(message.dataDir, "users", "admin"),
+        galleryRoot: path.join(message.dataDir, "gallery"),
         appVersion: message.appVersion,
         installationId: await installationId(collabDir),
         secrets: this.codec,

@@ -12,11 +12,22 @@ import path from "node:path";
 
 import type * as Y from "yjs";
 
-import type { FileOpRequest, HostEvent, Reconciliation } from "../../../src/lib/collab/local-api";
+import type { FileOpRequest, HostEvent, LocalAlbum, LocalAlbumPhoto, Reconciliation, UpdateAlbumRequest } from "../../../src/lib/collab/local-api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { roleAtLeast } from "../../../src/lib/collab/protocol/roles";
-import { ContentKeys, ManifestKeys, manifestPathKey, type ManifestEntry } from "../../../src/lib/collab/protocol/schema";
+import {
+  AlbumSettingKeys,
+  ContentKeys,
+  MAX_ALBUM_CAPTION_LENGTH,
+  ManifestKeys,
+  albumImageType,
+  albumPathError,
+  manifestPathKey,
+  type AlbumPhotoRecord,
+  type ManifestEntry,
+} from "../../../src/lib/collab/protocol/schema";
+import { stripPhotoMetadata } from "../../../src/lib/collab/photo-metadata";
 import type { Logger } from "../core/clock";
 import type { DocHub } from "../core/doc-hub";
 import type { CollabHost } from "../core/host";
@@ -93,6 +104,13 @@ export interface ProjectInfo {
    * state.json, base/ or the marker, and it does not import disk changes.
    */
   follower?: boolean;
+  /**
+   * A shared album: the folder holds photos only (top-level PNG, JPEG, WebP
+   * and GIF files; anything else stays local), new photos lose their
+   * location details unless the album keeps them, and each photo has a
+   * record in the manifest's `photos` map.
+   */
+  album?: boolean;
 }
 
 export interface ProjectContext {
@@ -270,7 +288,7 @@ export class SharedProject {
   isMaterialized(): boolean {
     if (!this.manifestReady()) return false;
     if (this.follower) return true;
-    const layout = computeLayout(readManifest(this.manifestDoc()).values());
+    const layout = computeLayout(this.readEntries().values());
     for (const fileId of layout.paths.keys()) {
       const record = this.state.layout[fileId];
       if (!record) return false;
@@ -351,7 +369,7 @@ export class SharedProject {
       this.scheduleRetry();
       return;
     }
-    this.entries = readManifest(this.manifestDoc());
+    this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
     for (const refused of layout.refused) {
       if (this.refusedLogged.has(refused.fileId)) continue;
@@ -481,7 +499,7 @@ export class SharedProject {
    * the disk is left to the writer (its files arrive through the sync client).
    */
   private followManifest(): void {
-    this.entries = readManifest(this.manifestDoc());
+    this.entries = this.readEntries();
     const layout = computeLayout(this.entries.values());
     const previous = this.state.layout;
     const next: Record<string, LayoutRecord> = {};
@@ -608,11 +626,95 @@ export class SharedProject {
     this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${relative}`, error);
   }
 
-  private async writeManifest(fn: (files: Y.Map<unknown>) => void, provenance: Provenance): Promise<void> {
+  private async writeManifest(fn: (files: Y.Map<unknown>, doc: Y.Doc) => void, provenance: Provenance): Promise<void> {
     const hub = this.manifestHub;
     if (!hub) throw new Error("The manifest is not open.");
-    hub.applyLocalChange("manifest", (doc) => fn(doc.getMap<unknown>(ManifestKeys.files)), provenance);
-    this.entries = readManifest(hub.getDoc("manifest"));
+    hub.applyLocalChange("manifest", (doc) => {
+      const files = doc.getMap<unknown>(ManifestKeys.files);
+      fn(files, doc);
+      // A removed photo takes its details with it; a new one gets a record.
+      if (this.info.album) {
+        const photos = doc.getMap<unknown>(ManifestKeys.photos);
+        for (const fileId of [...photos.keys()]) if (!files.has(fileId)) photos.delete(fileId);
+        for (const [fileId, value] of files.entries()) {
+          if (photos.has(fileId)) continue;
+          const entry = value as Partial<ManifestEntry>;
+          const photo: AlbumPhotoRecord = { fileId, addedBy: entry.createdBy ?? "", updatedAt: entry.createdAt ?? Date.now() };
+          if (photo.addedBy) photos.set(fileId, { ...photo });
+        }
+      }
+    }, provenance);
+    this.entries = this.readEntries();
+  }
+
+  // ------------------------------------------------------------ albums
+
+  /** The manifest's entries; in an album, only the photos an album can hold. */
+  private readEntries(): Map<string, ManifestEntry> {
+    const entries = readManifest(this.manifestDoc());
+    if (!this.info.album) return entries;
+    for (const [fileId, entry] of entries) {
+      const problem = entry.kind === "blob" ? albumPathError(entry.path) : "Albums hold photos only.";
+      if (!problem) continue;
+      entries.delete(fileId);
+      if (!this.refusedLogged.has(fileId)) {
+        this.refusedLogged.add(fileId);
+        this.ctx.logger.warn(`Shared album ${this.info.notebook}: not writing "${entry.path}": ${problem}`);
+      }
+    }
+    return entries;
+  }
+
+  /** The folder as the watcher sees it: in an album, top-level photos only. */
+  private async walk(): Promise<WalkEntry[]> {
+    const { entries } = await walkNotebook(this.info.root);
+    if (!this.info.album) return entries;
+    return entries.filter((entry) => entry.kind === "file" && !entry.relative.includes("/") && albumImageType(entry.relative) !== null);
+  }
+
+  /** Whether photos keep their location and camera details (an album setting). */
+  private keepsLocation(): boolean {
+    return this.manifestHub?.getDoc("manifest").getMap<unknown>(ManifestKeys.settings).get(AlbumSettingKeys.keepLocation) === true;
+  }
+
+  /**
+   * In an album that removes location details: rewrites the photo without
+   * them before it is uploaded, and returns the bytes now on disk (null:
+   * nothing to remove).
+   */
+  private async stripForUpload(absolute: string, relative: string, bytes: Uint8Array): Promise<{ bytes: Uint8Array; size: number; mtimeMs: number } | null> {
+    if (!this.info.album || this.keepsLocation()) return null;
+    const stripped = stripPhotoMetadata(bytes, albumImageType(relative) ?? "");
+    if (!stripped) return null;
+    const stats = await writeFileAtomic(absolute, stripped);
+    return { bytes: stripped, size: stats.size, mtimeMs: stats.mtimeMs };
+  }
+
+  /**
+   * A photo's bytes were replaced (edited here, or by another program). The
+   * unedited photo stays on the server as its originalHash; putting the
+   * original back clears the edit.
+   */
+  private photoReplaced(doc: Y.Doc, fileId: string, before: string | undefined, after: string, accountId: string, now: number): void {
+    const photos = doc.getMap<unknown>(ManifestKeys.photos);
+    const current = (photos.get(fileId) ?? { fileId, addedBy: accountId, updatedAt: now }) as AlbumPhotoRecord;
+    const original = current.originalHash ?? before;
+    const next: AlbumPhotoRecord = { ...current, updatedBy: accountId, updatedAt: now };
+    if (original && original !== after) next.originalHash = original;
+    else {
+      delete next.originalHash;
+      delete next.edits;
+    }
+    photos.set(fileId, JSON.parse(JSON.stringify(next)));
+  }
+
+  /** Tells the album's other members about new photos; nothing is retried. */
+  private reportAddedPhotos(fileIds: string[]): void {
+    const api = this.ctx.host.api;
+    if (!api) return;
+    void api.albumActivity(this.info.projectId, { added: fileIds.length, fileIds: fileIds.slice(0, 50) }).catch((error: unknown) => {
+      this.ctx.logger.warn(`Shared album ${this.info.notebook}: could not announce new photos`, error);
+    });
   }
 
   // ------------------------------------------------------------ documents
@@ -935,7 +1037,7 @@ export class SharedProject {
       this.missingSince.clear();
       return;
     }
-    const { entries: walked } = await walkNotebook(this.info.root);
+    const walked = await this.walk();
     // The folder can disappear while the asynchronous walk is running.
     if (!(await this.rootAvailable())) {
       this.missingSince.clear();
@@ -955,7 +1057,9 @@ export class SharedProject {
     const now = Date.now();
     const missing: string[] = [];
     const removedRecords: LayoutRecord[] = [];
-    const operations: Array<(files: Y.Map<unknown>) => void> = [];
+    const operations: Array<(files: Y.Map<unknown>, doc: Y.Doc) => void> = [];
+    /** Photos this pass adds to an album (its other members hear about them). */
+    const addedPhotos: string[] = [];
     const touched = new Set<string>();
     const accountId = this.canEdit ? await this.ctx.accountId().catch(() => "") : "";
     let needsRetry = false;
@@ -977,9 +1081,17 @@ export class SharedProject {
       const settled = now - seen.mtimeMs > 3000;
       if (!record.hash || (settled && record.size === seen.size && record.mtimeMs === seen.mtimeMs)) continue;
       const absolute = await resolveInside(this.info.root, record.path).catch(() => null);
-      const bytes = absolute ? await readIfExists(absolute) : null;
+      let bytes: Uint8Array | null = absolute ? await readIfExists(absolute) : null;
       if (!bytes || !absolute) continue;
-      const hash = sha256(bytes);
+      let hash = sha256(bytes);
+      if (hash !== record.hash && record.kind === "blob" && this.canEdit) {
+        const stripped = await this.stripForUpload(absolute, record.path, bytes).catch(() => null);
+        if (stripped) {
+          bytes = stripped.bytes;
+          hash = sha256(bytes);
+          Object.assign(seen, { size: stripped.size, mtimeMs: stripped.mtimeMs });
+        }
+      }
       if (hash === record.hash) {
         Object.assign(record, { size: seen.size, mtimeMs: seen.mtimeMs });
         this.saveSoon();
@@ -1010,7 +1122,10 @@ export class SharedProject {
         continue;
       }
       const updated: ManifestEntry = { ...entry, blobHash: hash, size: bytes.byteLength, updatedAt: now };
-      operations.push((map) => map.set(fileId, entryRecord(updated)));
+      operations.push((map, doc) => {
+        map.set(fileId, entryRecord(updated));
+        if (this.info.album) this.photoReplaced(doc, fileId, entry.blobHash, hash, accountId, now);
+      });
       setMaterialized(record, hash, seen.size, seen.mtimeMs);
       this.ctx.host.store.putBlob({ hash, localPath: absolute, size: bytes.byteLength });
       touched.add(record.path);
@@ -1072,10 +1187,18 @@ export class SharedProject {
           needsRetry = true;
           continue;
         }
-        operations.push((map) => map.set(created.fileId, entryRecord(created)));
+        operations.push((map, doc) => {
+          map.set(created.fileId, entryRecord(created));
+          if (this.info.album) {
+            const photo: AlbumPhotoRecord = { fileId: created.fileId, addedBy: accountId, updatedAt: now };
+            doc.getMap<unknown>(ManifestKeys.photos).set(created.fileId, { ...photo });
+          }
+        });
+        if (this.info.album) addedPhotos.push(created.fileId);
         touched.add(candidate.entry.relative);
       }
       for (const [relative, entry] of directories) {
+        if (this.info.album) break;
         if (known.has(relative)) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
@@ -1091,9 +1214,10 @@ export class SharedProject {
         this.missingSince.clear();
         return;
       }
-      await this.writeManifest((map) => {
-        for (const operation of operations) operation(map);
+      await this.writeManifest((map, doc) => {
+        for (const operation of operations) operation(map, doc);
       }, EXTERNAL);
+      if (addedPhotos.length > 0) this.reportAddedPhotos(addedPhotos);
       for (const record of removedRecords) {
         this.docs.get(record.docId!)?.hub.markDeleted();
         try { await this.archiveRemoved(record); }
@@ -1116,6 +1240,12 @@ export class SharedProject {
   private async createFromDisk(entry: WalkEntry, bytes: Uint8Array, hash: string, accountId: string, now: number): Promise<ManifestEntry | null> {
     const api = this.ctx.host.api;
     if (!api) return null;
+    const stripped = await this.stripForUpload(path.join(this.info.root, ...entry.relative.split("/")), entry.relative, bytes).catch(() => null);
+    if (stripped) {
+      bytes = stripped.bytes;
+      hash = sha256(bytes);
+      entry = { ...entry, size: stripped.size, mtimeMs: stripped.mtimeMs };
+    }
     const fileId = randomId("fil");
     const classified = classifyFile(entry.relative, bytes);
     try {
@@ -1146,8 +1276,14 @@ export class SharedProject {
       if (!this.canEdit) throw new ControlError(403, "forbidden", "Your role cannot add, rename or delete files.");
       if (!this.manifestReady()) throw new ControlError(503, "offline", "The notebook's file list has not loaded yet.");
       if (!this.follower && !(await this.rootAvailable())) throw new ControlError(503, "notebook-unavailable", "The shared notebook folder is missing or has changed. Restore it before changing its files.");
-      this.entries = readManifest(this.manifestDoc());
+      this.entries = this.readEntries();
       const relative = normalizeRelative(request.path);
+      if (this.info.album) {
+        if (request.op === "create-file" || request.op === "create-folder") throw new ControlError(400, "bad-request", "Albums hold photos only.");
+        const target = request.op === "rename" ? normalizeRelative(request.to ?? "") : relative;
+        const problem = request.op === "delete" ? null : albumPathError(target);
+        if (problem) throw new ControlError(400, "bad-request", problem);
+      }
       const now = Date.now();
       const accountId = await this.ctx.accountId();
       const paths: string[] = [];
@@ -1167,7 +1303,8 @@ export class SharedProject {
           break;
         }
         case "write-blob": {
-          const bytes = request.stagedFile !== undefined ? await this.takeStaged(request.stagedFile) : base64Bytes(request.contentBase64);
+          let bytes = request.stagedFile !== undefined ? await this.takeStaged(request.stagedFile) : base64Bytes(request.contentBase64);
+          if (this.info.album && !this.keepsLocation()) bytes = stripPhotoMetadata(bytes, albumImageType(relative) ?? "") ?? bytes;
           const key = manifestPathKey(relative);
           const existing = [...this.entries.values()].find((entry) => manifestPathKey(entry.path) === key);
           if (existing && request.createOnly) throw new ControlError(409, "conflict", `${existing.path} already exists.`);
@@ -1196,7 +1333,10 @@ export class SharedProject {
             this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
           }
           const updated: ManifestEntry = { ...existing, blobHash: hash, size: bytes.byteLength, updatedAt: now };
-          await this.writeManifest((map) => map.set(existing.fileId, entryRecord(updated)), { source: "typing" });
+          await this.writeManifest((map, doc) => {
+            map.set(existing.fileId, entryRecord(updated));
+            if (this.info.album) this.photoReplaced(doc, existing.fileId, existing.blobHash, hash, accountId, now);
+          }, { source: "typing" });
           paths.push(existing.path);
           break;
         }
@@ -1319,6 +1459,103 @@ export class SharedProject {
       if (error instanceof PathRefusedError) throw new ControlError(400, "bad-request", error.message);
       throw error;
     }
+  }
+
+  // ------------------------------------------------------------ album details (control API)
+
+  /** The album's photos (with their file names on disk) and settings. */
+  albumState(): Pick<LocalAlbum, "direct" | "keepLocation" | "sharePrompts" | "cover" | "photos"> {
+    // After access ends the manifest is closed; the entries last read still
+    // say which photo is whose (revocation keeps this account's own).
+    const hub = this.manifestHub;
+    if (!hub) return { direct: false, keepLocation: false, sharePrompts: false, photos: [] };
+    const doc = hub.getDoc("manifest");
+    const settings = doc.getMap<unknown>(ManifestKeys.settings);
+    const records = doc.getMap<unknown>(ManifestKeys.photos);
+    const layout = computeLayout((this.manifestReady() ? this.readEntries() : this.entries).values());
+    const photos: LocalAlbumPhoto[] = [];
+    const sharePrompts = settings.get(AlbumSettingKeys.sharePrompts) === true;
+    for (const [fileId, name] of layout.paths) {
+      const record = (records.get(fileId) ?? {}) as Partial<AlbumPhotoRecord>;
+      const entry = this.entries.get(fileId);
+      photos.push({
+        fileId,
+        name,
+        ...(typeof record.caption === "string" && record.caption ? { caption: record.caption } : {}),
+        ...(sharePrompts && typeof record.prompt === "string" ? { prompt: record.prompt } : {}),
+        ...(sharePrompts && typeof record.model === "string" ? { model: record.model } : {}),
+        ...(record.edits && typeof record.edits === "object" ? { edits: record.edits } : {}),
+        edited: typeof record.originalHash === "string",
+        ...(typeof record.order === "number" ? { order: record.order } : {}),
+        addedBy: typeof record.addedBy === "string" ? record.addedBy : entry?.createdBy ?? "",
+        downloaded: this.follower || Boolean(this.state.layout[fileId]?.hash && this.state.layout[fileId].hash === entry?.blobHash),
+        updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : entry?.updatedAt ?? 0,
+      });
+    }
+    const coverId = settings.get(AlbumSettingKeys.cover);
+    const cover = typeof coverId === "string" ? layout.paths.get(coverId) : undefined;
+    return {
+      direct: settings.get(AlbumSettingKeys.direct) === true,
+      keepLocation: settings.get(AlbumSettingKeys.keepLocation) === true,
+      sharePrompts,
+      ...(cover ? { cover } : {}),
+      photos,
+    };
+  }
+
+  /** Captions, order, edits and settings, in one manifest change. */
+  updateAlbum(request: UpdateAlbumRequest): Promise<void> {
+    return this.enqueue(async () => {
+      if (!this.info.album) throw new ControlError(400, "bad-request", "This is not a shared album.");
+      if (!this.canEdit) throw new ControlError(403, "forbidden", "Your role cannot change this album.");
+      if ((request.keepLocation !== undefined || request.sharePrompts !== undefined) && this.info.role !== "owner") {
+        throw new ControlError(403, "forbidden", "Only the album's owner can change what it shares.");
+      }
+      if (!this.manifestReady()) throw new ControlError(503, "offline", "The album has not loaded yet.");
+      const accountId = await this.ctx.accountId();
+      const now = Date.now();
+      const layout = computeLayout(this.readEntries().values());
+      const byName = new Map([...layout.paths].map(([fileId, name]) => [manifestPathKey(name), fileId]));
+      const fileIdOf = (name: unknown): string => {
+        const fileId = typeof name === "string" ? byName.get(manifestPathKey(name)) : undefined;
+        if (!fileId) throw new ControlError(404, "not-found", `${String(name)} is not in this album.`);
+        return fileId;
+      };
+      const changes = (request.photos ?? []).map((change) => ({ fileId: fileIdOf(change.name), change }));
+      const cover = request.cover === undefined ? undefined : request.cover === null ? null : fileIdOf(request.cover);
+      await this.writeManifest((_files, doc) => {
+        const photos = doc.getMap<unknown>(ManifestKeys.photos);
+        for (const { fileId, change } of changes) {
+          const current = (photos.get(fileId) ?? { fileId, addedBy: this.entries.get(fileId)?.createdBy ?? accountId, updatedAt: now }) as Record<string, unknown>;
+          const next: Record<string, unknown> = { ...current, updatedBy: accountId, updatedAt: now };
+          for (const key of ["caption", "order", "edits", "prompt", "model"] as const) {
+            const value = change[key];
+            if (value === undefined) continue;
+            if (value === null || value === "") delete next[key];
+            else next[key] = key === "caption" ? String(value).slice(0, MAX_ALBUM_CAPTION_LENGTH) : value;
+          }
+          photos.set(fileId, JSON.parse(JSON.stringify(next)));
+        }
+        const settings = doc.getMap<unknown>(ManifestKeys.settings);
+        if (cover === null) settings.delete(AlbumSettingKeys.cover);
+        else if (cover !== undefined) settings.set(AlbumSettingKeys.cover, cover);
+        if (request.keepLocation !== undefined) settings.set(AlbumSettingKeys.keepLocation, request.keepLocation === true);
+        if (request.sharePrompts !== undefined) settings.set(AlbumSettingKeys.sharePrompts, request.sharePrompts === true);
+      }, { source: "typing" });
+    });
+  }
+
+  /** The unedited bytes of an edited photo, from the server (or the local cache). */
+  async photoOriginal(name: string): Promise<Uint8Array> {
+    if (!this.manifestReady()) throw new ControlError(503, "offline", "The album has not loaded yet.");
+    const layout = computeLayout(this.readEntries().values());
+    const fileId = [...layout.paths].find(([, path]) => manifestPathKey(path) === manifestPathKey(name))?.[0];
+    if (!fileId) throw new ControlError(404, "not-found", `${name} is not in this album.`);
+    const record = this.manifestDoc().getMap<unknown>(ManifestKeys.photos).get(fileId) as Partial<AlbumPhotoRecord> | undefined;
+    if (!record?.originalHash) throw new ControlError(404, "not-found", `${name} has no original.`);
+    const bytes = await this.blobBytes(record.originalHash);
+    if (!bytes) throw new ControlError(503, "offline", "The original cannot be downloaded right now.");
+    return bytes;
   }
 
   // ------------------------------------------------------------ index, events, persistence

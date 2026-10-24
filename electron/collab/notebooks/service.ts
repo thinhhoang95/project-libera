@@ -10,25 +10,39 @@ import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 
 import type {
+  AlbumOriginalResponse,
   FileOpRequest,
   JoinProjectRequest,
+  LocalAlbum,
   LocalProject,
   Reconciliation,
   ResolvedDoc,
+  ShareAlbumRequest,
+  ShareAlbumResult,
   ShareNotebookRequest,
   ShareProgress,
+  UpdateAlbumRequest,
 } from "../../../src/lib/collab/local-api";
+import { stripPhotoMetadata } from "../../../src/lib/collab/photo-metadata";
 import { ControlRoutes } from "../../../src/lib/collab/local-api";
 import type { ProjectSummary } from "../../../src/lib/collab/protocol/api";
 import { EventKind } from "../../../src/lib/collab/protocol/messages";
 import { isRole, roleAtLeast, type Role } from "../../../src/lib/collab/protocol/roles";
-import { ManifestKeys, manifestPathKey, type ManifestEntry } from "../../../src/lib/collab/protocol/schema";
+import {
+  AlbumSettingKeys,
+  ManifestKeys,
+  albumImageType,
+  manifestPathKey,
+  type AlbumPhotoRecord,
+  type ManifestEntry,
+  type ProjectKind,
+} from "../../../src/lib/collab/protocol/schema";
 import { ApiClientError, type ApiClient } from "../core/api-client";
 import { consoleLogger, type Logger } from "../core/clock";
 import type { CollabHostEvent } from "../core/host";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { PathRefusedError, randomId, readIfExists, sha256, statIfExists, walkNotebook } from "./fs-ops";
+import { ARCHIVE_DIRECTORY, PathRefusedError, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic } from "./fs-ops";
 import { entryRecord } from "./layout";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -94,8 +108,24 @@ export interface ShareResult {
   notes: string[];
 }
 
+/** What a share starts from: a notebook folder, or a gallery folder shared as an album. */
+interface ShareTarget {
+  kind: ProjectKind;
+  /** Folder name (a notebook, or an album's folder in the gallery). */
+  notebook: string;
+  root: string;
+  album?: {
+    direct: boolean;
+    keepLocation: boolean;
+    sharePrompts: boolean;
+    /** Captions and prompts by file name (manifestPathKey). */
+    photos: Map<string, { caption?: string; prompt?: string; model?: string }>;
+  };
+}
+
 export interface JoinResult {
   projectId: string;
+  kind: ProjectKind;
   name: string;
   notebook: string;
   role: Role;
@@ -106,6 +136,8 @@ export interface JoinResult {
 
 interface ProjectHandle {
   projectId: string;
+  /** A notebook (under the library root) or a shared album (in the gallery). */
+  kind: ProjectKind;
   name: string;
   notebook: string;
   root: string;
@@ -126,6 +158,7 @@ interface ProjectHandle {
 function newHandle(projectId: string, name: string, root: string, role: Role, marker: SharedMarker): ProjectHandle {
   return {
     projectId,
+    kind: marker.kind === "album" ? "album" : "notebook",
     name,
     notebook: path.basename(root),
     root,
@@ -221,8 +254,12 @@ export class NotebookServiceImpl implements NotebookService {
   private readonly pendingRoots = new Set<string>();
   private readonly unjoined = new Map<string, UnjoinedFolder>();
 
+  /** Where shared albums live: the gallery folder (its direct children are albums). */
+  private readonly galleryRoot: string;
+
   constructor(deps: Omit<ControlDeps, "notebooks">, options: NotebookServiceOptions = {}) {
     this.deps = deps;
+    this.galleryRoot = deps.galleryRoot ?? path.join(deps.libraryRoot, "..", "..", "gallery");
     this.logger = options.logger ?? consoleLogger;
     this.timings = { ...DEFAULT_TIMINGS, ...options.timings };
     this.joinTimeoutMs = options.joinTimeoutMs ?? 60_000;
@@ -304,6 +341,7 @@ export class NotebookServiceImpl implements NotebookService {
       manifestDocId: handle.manifestDocId,
       folderId: handle.folderId ?? undefined,
       follower: !handle.writer,
+      ...(handle.kind === "album" ? { album: true } : {}),
     });
     handle.runtime = runtime;
     this.reindex(handle.projectId);
@@ -482,11 +520,13 @@ export class NotebookServiceImpl implements NotebookService {
     if (!api) return;
     const accountId = await this.accountId().catch(() => null);
     if (!accountId) return;
-    const entries: Dirent[] = await fs.readdir(this.deps.libraryRoot, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
+    const folders: string[] = [];
+    for (const base of [this.deps.libraryRoot, this.galleryRoot]) {
+      const entries: Dirent[] = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith(".")) folders.push(path.join(base, entry.name));
+    }
+    for (const root of folders) {
       if (!this.started) return;
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const root = path.join(this.deps.libraryRoot, entry.name);
       if (this.pendingRoots.has(root)) continue;
       const marker = await readMarker(root).catch(() => null);
       if (!marker || marker.revoked || marker.accountId !== accountId || marker.serverUrl.replace(/\/+$/, "") !== api.baseUrl) continue;
@@ -620,6 +660,8 @@ export class NotebookServiceImpl implements NotebookService {
     const key = notebook.normalize("NFC").toLowerCase();
     let fallback: ProjectHandle | null = null;
     for (const handle of this.projects.values()) {
+      // An album folder lives in the gallery, not in the Notebooks tree.
+      if (handle.kind === "album") continue;
       if (handle.notebook === notebook) return handle;
       if (handle.notebook.normalize("NFC").toLowerCase() === key) fallback = handle;
     }
@@ -635,6 +677,7 @@ export class NotebookServiceImpl implements NotebookService {
       notebook: handle.notebook,
       revoked: handle.revoked,
       reconcilePending: handle.runtime?.reconcilePending ?? handle.reconcilePending,
+      ...(handle.kind === "album" ? { kind: "album" as const } : {}),
     }));
   }
 
@@ -679,6 +722,10 @@ export class NotebookServiceImpl implements NotebookService {
     // was deleted; confirm that unless the server said so.
     if (handle.role === "owner" && (deleted || (await this.projectGone(projectId)))) {
       await this.removeLocally(handle);
+      return;
+    }
+    if (handle.kind === "album") {
+      await this.takeAlbumAway(handle);
       return;
     }
     handle.revoked = true;
@@ -752,6 +799,91 @@ export class NotebookServiceImpl implements NotebookService {
     this.deps.statusChanged?.();
   }
 
+  /**
+   * Access to a shared album ended (left, removed, or the album was deleted):
+   * the photos other members added go, the ones this account added stay in
+   * the folder, which becomes an ordinary album. Photos saved to the gallery
+   * were copied out of the folder before, so they are not touched.
+   */
+  private async takeAlbumAway(handle: ProjectHandle): Promise<void> {
+    const runtime = handle.runtime;
+    const photos = runtime?.albumState().photos ?? [];
+    await runtime?.stop();
+    handle.runtime = null;
+    if (handle.writer) {
+      const accountId = this.cachedAccountId ?? (await this.accountId().catch(() => null));
+      const marker = await readMarker(handle.root).catch(() => null);
+      if (marker && this.ownsMarker(marker, handle.projectId)) {
+        for (const photo of photos) {
+          if (accountId && photo.addedBy === accountId) continue;
+          await fs.rm(path.join(handle.root, photo.name), { force: true }).catch(() => undefined);
+        }
+        await fs.rm(path.join(handle.root, ARCHIVE_DIRECTORY), { recursive: true, force: true }).catch(() => undefined);
+        await fs.rm(path.join(handle.root, ".libera"), { recursive: true, force: true }).catch(() => undefined);
+        await deleteSharePlan(handle.root);
+        await deleteMarker(handle.root);
+        // Nothing of this account's left: the folder goes too.
+        const left = await fs.readdir(handle.root).catch(() => ["?"]);
+        if (left.length === 0) await fs.rmdir(handle.root).catch(() => undefined);
+      }
+    }
+    this.deps.host.store.deleteProject(handle.projectId);
+    this.projects.delete(handle.projectId);
+    this.deps.emit({ t: "project-changed", projectId: handle.projectId });
+    this.deps.statusChanged?.();
+  }
+
+  // ------------------------------------------------------------ albums
+
+  /** The shared albums on this device, with their photos. */
+  albums(): LocalAlbum[] {
+    const result: LocalAlbum[] = [];
+    for (const handle of this.projects.values()) {
+      if (handle.kind !== "album") continue;
+      const state = handle.runtime?.albumState() ?? { direct: false, keepLocation: false, sharePrompts: false, photos: [] };
+      result.push({ projectId: handle.projectId, name: handle.name, folder: handle.notebook, manifestDocId: handle.manifestDocId, role: handle.role, revoked: handle.revoked, ...state });
+    }
+    return result;
+  }
+
+  private albumProject(projectId: string): SharedProject {
+    const handle = this.projects.get(projectId);
+    if (!handle || handle.kind !== "album") throw new ControlError(404, "not-found", "This shared album is not on this device.");
+    return this.runningProject(projectId);
+  }
+
+  async updateAlbum(projectId: string, request: UpdateAlbumRequest): Promise<LocalAlbum> {
+    if (!request || typeof request !== "object") throw new ControlError(400, "bad-request", "Album changes are required.");
+    const runtime = this.albumProject(projectId);
+    const { name, ...details } = request;
+    if (name !== undefined) {
+      const handle = this.projects.get(projectId)!;
+      const trimmed = typeof name === "string" ? name.trim().slice(0, 200) : "";
+      if (!trimmed) throw new ControlError(400, "bad-request", "The album needs a name.");
+      if (handle.role !== "owner") throw new ControlError(403, "forbidden", "Only the album's owner can rename it.");
+      const renamed = await this.requireApi().renameProject(projectId, { name: trimmed });
+      handle.name = renamed.name;
+      this.deps.host.store.upsertProject({ projectId, name: handle.name, localRoot: handle.root, role: handle.role });
+      this.deps.emit({ t: "project-changed", projectId });
+    }
+    if (Object.keys(details).length > 0) await runtime.updateAlbum(details);
+    const album = this.albums().find((item) => item.projectId === projectId);
+    if (!album) throw new ControlError(404, "not-found", "This shared album is not on this device.");
+    return album;
+  }
+
+  /** Writes an edited photo's original into the gallery's `.originals` folder. */
+  async albumOriginal(projectId: string, name: unknown): Promise<AlbumOriginalResponse> {
+    if (typeof name !== "string" || !name) throw new ControlError(400, "bad-request", "The photo's name is required.");
+    const bytes = await this.albumProject(projectId).photoOriginal(name);
+    const extension = path.extname(name).toLowerCase();
+    const original = `shared-${sha256(bytes).slice(0, 32)}${extension}`;
+    const directory = path.join(this.galleryRoot, ".originals");
+    await fs.mkdir(directory, { recursive: true });
+    await writeFileAtomic(path.join(directory, original), bytes);
+    return { original };
+  }
+
   /** Whether the server confirms the project no longer exists (false when it cannot be asked). */
   private async projectGone(projectId: string): Promise<boolean> {
     const api = this.deps.host.api;
@@ -798,12 +930,41 @@ export class NotebookServiceImpl implements NotebookService {
 
   share(request: ShareNotebookRequest): Promise<ShareResult> {
     const notebook = typeof request?.notebook === "string" ? request.notebook.trim() : "";
-    return this.locked(`notebook:${notebook.toLowerCase()}`, () => this.doShare(notebook, request.name));
+    return this.locked(`notebook:${notebook.toLowerCase()}`, async () => this.doShare({ kind: "notebook", notebook, root: await this.shareableRoot(notebook) }, request.name));
   }
 
-  private async doShare(notebook: string, requestedName: string | undefined): Promise<ShareResult> {
+  /** Shares a gallery folder as an album (Libera has moved the album's photos into it). */
+  shareAlbum(request: ShareAlbumRequest): Promise<ShareAlbumResult> {
+    const folder = typeof request?.folder === "string" ? request.folder.trim() : "";
+    return this.locked(`album:${folder.toLowerCase()}`, async () => {
+      const root = await this.albumRoot(folder);
+      const photos = new Map((Array.isArray(request.photos) ? request.photos : []).filter((photo) => typeof photo?.name === "string").map((photo) => [manifestPathKey(photo.name), photo]));
+      const result = await this.doShare(
+        {
+          kind: "album",
+          notebook: folder,
+          root,
+          album: { direct: request.direct === true, keepLocation: request.keepLocation === true, sharePrompts: request.sharePrompts === true, photos },
+        },
+        request.name,
+      );
+      return { projectId: result.projectId, name: result.name, folder: result.notebook, photos: result.blobs, skipped: result.skipped, synced: result.synced };
+    });
+  }
+
+  /** A gallery folder that can be shared as an album. */
+  private async albumRoot(folder: string): Promise<string> {
+    if (!folder || /[\\/\0]/.test(folder) || folder.startsWith(".") || folder === "..") throw new ControlError(400, "bad-request", "Choose an album to share.");
+    const root = path.join(this.galleryRoot, folder);
+    const stats = await statIfExists(root);
+    if (!stats) throw new ControlError(404, "not-found", `There is no album folder named ${folder}.`);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new ControlError(409, "conflict", "Only an album's own folder can be shared.");
+    return root;
+  }
+
+  private async doShare(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
     const api = this.requireApi();
-    const root = await this.shareableRoot(notebook);
+    const { root, notebook, album } = target;
     if (await readMarker(root)) throw new ControlError(409, "already-shared", `${notebook} is already shared.`);
     const accountId = await this.accountId();
 
@@ -814,7 +975,10 @@ export class NotebookServiceImpl implements NotebookService {
     const existing = await readSharePlan(root);
     const name = (requestedName?.trim() || existing?.name || notebook).slice(0, 200);
     const previous = new Map((existing?.files ?? []).map((file) => [file.path, file]));
-    const { entries: walked, skipped } = await walkNotebook(root);
+    const { entries: everything, skipped } = await walkNotebook(root);
+    // An album shares its top-level photos; anything else in the folder stays local.
+    const walked = album ? everything.filter((item) => item.kind === "file" && !item.relative.includes("/") && albumImageType(item.relative)) : everything;
+    if (album) skipped.push(...everything.filter((item) => item.kind === "file" && !walked.includes(item)).map((item) => item.relative));
     const files: PlannedFile[] = [];
     const texts = new Map<string, string>();
     for (const item of walked) {
@@ -823,8 +987,18 @@ export class NotebookServiceImpl implements NotebookService {
         files.push(before?.kind === "folder" ? before : { path: item.relative, kind: "folder", fileId: randomId("fil") });
         continue;
       }
-      const bytes = await readIfExists(path.join(root, ...item.relative.split("/")));
+      const absolute = path.join(root, ...item.relative.split("/"));
+      let bytes: Uint8Array | null = await readIfExists(absolute);
       if (!bytes) continue;
+      if (album && !album.keepLocation) {
+        // Location and camera details are removed here, in the folder, so the
+        // copy on disk is the one the members get (the watcher compares hashes).
+        const stripped = stripPhotoMetadata(bytes, albumImageType(item.relative) ?? "");
+        if (stripped) {
+          await writeFileAtomic(absolute, stripped);
+          bytes = stripped;
+        }
+      }
       const hash = sha256(bytes);
       const classified = classifyFile(item.relative, bytes);
       if (classified.kind === "doc") {
@@ -849,7 +1023,7 @@ export class NotebookServiceImpl implements NotebookService {
           fileId: reuse ? before.fileId : randomId("fil"),
           blobHash: hash,
           size: bytes.byteLength,
-          mime: mimeForPath(item.relative),
+          mime: (album && albumImageType(item.relative)) || mimeForPath(item.relative),
           uploaded: reuse && before.blobHash === hash ? before.uploaded : false,
         });
       }
@@ -866,7 +1040,12 @@ export class NotebookServiceImpl implements NotebookService {
     try {
       this.progress(notebook, { phase: "creating-project", done: 0, total: 1 });
       if (!plan.projectId) {
-        const project = (await this.orphanProject(api, accountId, name, plan.startedAt)) ?? (await api.createProject({ name }));
+        const project =
+          (await this.orphanProject(api, accountId, name, plan.startedAt, target.kind)) ??
+          (await api.createProject(album ? { name, kind: "album" } : { name }));
+        if (album && project.kind !== "album") {
+          throw new ControlError(409, "update-required", "The collaboration server is too old for shared albums. Ask its administrator to update it.");
+        }
         plan.projectId = project.id;
         plan.manifestDocId = project.manifestDocId;
         await writeSharePlan(root, plan);
@@ -928,6 +1107,25 @@ export class NotebookServiceImpl implements NotebookService {
               };
               map.set(file.fileId, entryRecord(entry));
             }
+            if (album) {
+              const settings = doc.getMap<unknown>(ManifestKeys.settings);
+              if (album.direct) settings.set(AlbumSettingKeys.direct, true);
+              settings.set(AlbumSettingKeys.keepLocation, album.keepLocation);
+              settings.set(AlbumSettingKeys.sharePrompts, album.sharePrompts);
+              const photos = doc.getMap<unknown>(ManifestKeys.photos);
+              for (const file of files) {
+                const details = album.photos.get(manifestPathKey(file.path));
+                const photo: AlbumPhotoRecord = {
+                  fileId: file.fileId,
+                  addedBy: accountId,
+                  updatedAt: plan.startedAt,
+                  ...(details?.caption?.trim() ? { caption: details.caption.trim().slice(0, 2000) } : {}),
+                  ...(album.sharePrompts && details?.prompt ? { prompt: details.prompt } : {}),
+                  ...(album.sharePrompts && details?.model ? { model: details.model } : {}),
+                };
+                photos.set(file.fileId, JSON.parse(JSON.stringify(photo)));
+              }
+            }
           },
           { source: "import" },
         );
@@ -955,7 +1153,16 @@ export class NotebookServiceImpl implements NotebookService {
         }
         await writeState(root, state);
         this.pendingRoots.add(root);
-        await writeMarker(root, { projectId, serverUrl: api.baseUrl, accountId, manifestDocId, sharedAt: new Date(plan.startedAt).toISOString(), writer: this.installationId, folderId });
+        await writeMarker(root, {
+          projectId,
+          serverUrl: api.baseUrl,
+          accountId,
+          manifestDocId,
+          sharedAt: new Date(plan.startedAt).toISOString(),
+          ...(album ? { kind: "album" as const } : {}),
+          writer: this.installationId,
+          folderId,
+        });
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
         await deleteSharePlan(root);
         synced = await waitUntil(() => hub.isClosed || (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
@@ -965,6 +1172,7 @@ export class NotebookServiceImpl implements NotebookService {
 
       const handle: ProjectHandle = {
         projectId,
+        kind: target.kind,
         name,
         notebook,
         root,
@@ -993,7 +1201,7 @@ export class NotebookServiceImpl implements NotebookService {
         folders: files.filter((file) => file.kind === "folder").length,
         skipped,
         synced,
-        notes: [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE],
+        notes: album ? [] : [LOCAL_REVIEW_NOTE, ARCHIVE_NOTE],
       };
     } catch (error) {
       throw toControlError(error);
@@ -1007,10 +1215,10 @@ export class NotebookServiceImpl implements NotebookService {
    * the server's answer and writing the plan): ours, same name, created after
    * the plan started, not used locally, and with an empty manifest.
    */
-  private async orphanProject(api: ApiClient, accountId: string, name: string, startedAt: number): Promise<ProjectSummary | null> {
+  private async orphanProject(api: ApiClient, accountId: string, name: string, startedAt: number, kind: ProjectKind): Promise<ProjectSummary | null> {
     const projects = await api.listProjects();
     for (const project of projects) {
-      if (project.ownerId !== accountId || project.name !== name) continue;
+      if (project.ownerId !== accountId || project.name !== name || (project.kind ?? "notebook") !== kind) continue;
       if (Date.parse(project.createdAt) < startedAt - 60_000) continue;
       if (this.deps.host.store.getProject(project.id)) continue;
       // Documents are only created after the plan records the project, so an
@@ -1039,17 +1247,29 @@ export class NotebookServiceImpl implements NotebookService {
     }
     const accountId = await this.accountId();
     const known = this.projects.get(project.id);
+    const kind: ProjectKind = project.kind === "album" ? "album" : "notebook";
     if (known && !known.revoked) {
-      return { projectId: project.id, name: known.name, notebook: known.notebook, role: known.role, materialized: known.runtime?.isMaterialized() ?? false, alreadyJoined: true };
+      return { projectId: project.id, kind, name: known.name, notebook: known.notebook, role: known.role, materialized: known.runtime?.isMaterialized() ?? false, alreadyJoined: true };
     }
 
-    const notebook = await this.createFolder(folderNameFor(project.name));
-    const root = path.join(this.deps.libraryRoot, notebook);
+    // An album joins the gallery as one of its folders; a notebook joins the library.
+    const base = kind === "album" ? this.galleryRoot : this.deps.libraryRoot;
+    const notebook = await this.createFolder(folderNameFor(project.name), base);
+    const root = path.join(base, notebook);
     const folderId = randomId("fld");
     this.pendingRoots.add(root);
     try {
       // The marker goes first: from now on Libera's own writers refuse the folder.
-      await writeMarker(root, { projectId: project.id, serverUrl: api.baseUrl, accountId, manifestDocId: project.manifestDocId, sharedAt: project.createdAt, writer: this.installationId, folderId });
+      await writeMarker(root, {
+        projectId: project.id,
+        serverUrl: api.baseUrl,
+        accountId,
+        manifestDocId: project.manifestDocId,
+        sharedAt: project.createdAt,
+        ...(kind === "album" ? { kind } : {}),
+        writer: this.installationId,
+        folderId,
+      });
       this.deps.host.store.upsertProject({ projectId: project.id, name: project.name, localRoot: root, role: project.role });
     } finally {
       this.pendingRoots.delete(root);
@@ -1060,6 +1280,7 @@ export class NotebookServiceImpl implements NotebookService {
     }
     const handle: ProjectHandle = {
       projectId: project.id,
+      kind,
       name: project.name,
       notebook,
       root,
@@ -1080,18 +1301,19 @@ export class NotebookServiceImpl implements NotebookService {
     const materialized = runtime ? await waitUntil(() => runtime.isMaterialized(), this.joinTimeoutMs) : false;
     if (runtime && materialized) await runtime.whenIdle();
     this.deps.emit({ t: "project-changed", projectId: project.id });
-    return { projectId: project.id, name: project.name, notebook, role: project.role, materialized, alreadyJoined: false };
+    return { projectId: project.id, kind, name: project.name, notebook, role: project.role, materialized, alreadyJoined: false };
   }
 
-  /** Creates `<library>/<name>`, or "<name> (2)" and so on when the name is taken (case-insensitively). */
-  private async createFolder(preferred: string): Promise<string> {
-    await fs.mkdir(this.deps.libraryRoot, { recursive: true });
-    const taken = new Set([...(await fs.readdir(this.deps.libraryRoot)), ...(await this.linkedFolderNames())].map((name) => name.toLowerCase()));
+  /** Creates `<base>/<name>`, or "<name> (2)" and so on when the name is taken (case-insensitively). */
+  private async createFolder(preferred: string, base = this.deps.libraryRoot): Promise<string> {
+    await fs.mkdir(base, { recursive: true });
+    const linked = base === this.deps.libraryRoot ? await this.linkedFolderNames() : [];
+    const taken = new Set([...(await fs.readdir(base)), ...linked].map((name) => name.toLowerCase()));
     for (let index = 1; index < 1000; index += 1) {
       const candidate = index === 1 ? preferred : `${preferred} (${index})`;
       if (taken.has(candidate.toLowerCase())) continue;
       try {
-        await fs.mkdir(path.join(this.deps.libraryRoot, candidate));
+        await fs.mkdir(path.join(base, candidate));
         return candidate;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -1161,6 +1383,14 @@ export class NotebookServiceImpl implements NotebookService {
       };
     router.add("POST", ControlRoutes.share, wrap(async (request) => ({ body: await this.share(request.body as ShareNotebookRequest) })));
     router.add("POST", ControlRoutes.join, wrap(async (request) => ({ body: await this.join(request.body as JoinProjectRequest) })));
+    router.add("GET", ControlRoutes.albums, wrap(async () => ({ body: this.albums() })));
+    router.add("POST", ControlRoutes.albumShare, wrap(async (request) => ({ body: await this.shareAlbum(request.body as ShareAlbumRequest) })));
+    router.add("POST", decodeURIComponent(ControlRoutes.album(":projectId")), wrap(async (request) => ({
+      body: await this.updateAlbum(request.params.projectId, request.body as UpdateAlbumRequest),
+    })));
+    router.add("POST", decodeURIComponent(ControlRoutes.albumOriginal(":projectId")), wrap(async (request) => ({
+      body: await this.albumOriginal(request.params.projectId, (request.body as { name?: unknown } | undefined)?.name),
+    })));
     router.add("DELETE", decodeURIComponent(ControlRoutes.project(":projectId")), wrap(async (request) => {
       await this.takeDown(request.params.projectId);
       return { status: 204 };

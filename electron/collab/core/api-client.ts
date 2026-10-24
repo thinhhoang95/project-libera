@@ -21,6 +21,7 @@ import type {
   CreateDocumentRequest,
   CreateInvitationRequest,
   CreateMessageRequest,
+  AlbumActivityRequest,
   CreateProjectRequest,
   CreateReviewRequest,
   CreateRevisionRequest,
@@ -343,6 +344,11 @@ export class ApiClient {
   uploadBlob(projectId: string, bytes: Uint8Array, mime: string): Promise<BlobInfo> {
     const hash = sha256Hex(bytes);
     return this.request("PUT", ApiRoutes.blob(projectId, hash), { raw: { bytes, contentType: mime || "application/octet-stream" } });
+  }
+
+  /** Tells a shared album's other members about photos this account added (best effort). */
+  albumActivity(projectId: string, body: AlbumActivityRequest): Promise<void> {
+    return this.request("POST", ApiRoutes.albumActivity(projectId), { body });
   }
 
   /** Downloads a blob and verifies its SHA-256 before returning it. */
