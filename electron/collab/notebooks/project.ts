@@ -580,7 +580,13 @@ export class SharedProject {
     }
   }
 
-  /** Moves a file or folder into the notebook's local archive (`_archive`), which is never shared. */
+  /**
+   * Moves a file or folder into the notebook's local archive (`_archive`),
+   * which is never shared. An album keeps no such copies: a photo removed
+   * from the album, or replaced by a member's newer version, is deleted from
+   * every member's computer (members keep a photo by saving it to their
+   * gallery, which copies it out of the album).
+   */
   private async archive(relative: string): Promise<void> {
     let source: string;
     try {
@@ -589,6 +595,10 @@ export class SharedProject {
       return;
     }
     if (!(await statIfExists(source))) return;
+    if (this.info.album) {
+      await fs.rm(source, { recursive: true, force: true });
+      return;
+    }
     const archiveRoot = path.join(this.info.root, ARCHIVE_DIRECTORY);
     const name = await availableName(archiveRoot, path.posix.basename(relative));
     await movePath(source, path.join(archiveRoot, name));

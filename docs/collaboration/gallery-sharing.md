@@ -61,7 +61,7 @@ The server enforces everything except the privacy settings and renaming. The hos
 
 - A new file becomes a new blob and a `photos` record, and the server is told about it (`album-activity`).
 - Replaced bytes are recorded as an edit: `originalHash` is kept. Writing the original back clears the edit.
-- A deletion leaves the album for everyone. Each other member's host archives its copy into the folder's hidden `_archive`.
+- A deletion leaves the album for everyone and is deleted from every member's computer. Unlike notebooks, albums keep no `_archive` copies (of removed photos, or of local versions replaced by a member's newer one); a member keeps a photo by saving it to their gallery.
 
 The gallery copies (never moves) photos out of a shared folder: "Save to my gallery", making a new album from shared photos, adding a shared photo to another album.
 

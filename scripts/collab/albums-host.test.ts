@@ -3,7 +3,7 @@
 // what is left when access ends.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -192,6 +192,16 @@ test("shared albums between two hosts", { timeout: 180_000 }, async (t) => {
       await member.service.project(projectId)!.whenIdle();
       writeFileSync(path.join(memberAlbum, "beach.jpg"), original);
       await until(async () => (await albums(owner))[0].photos.find((photo) => photo.name === "beach.jpg")?.edited === false, "revert clears the edit");
+    });
+
+    await t.test("a deleted photo leaves every member's computer, with no copy kept", async () => {
+      writeFileSync(path.join(memberAlbum, "cat.jpg"), jpegWithExif("cat"));
+      await until(() => existsSync(path.join(ownerAlbum, "cat.jpg")), "photo reaches the owner");
+      await owner.service.project(projectId)!.whenIdle();
+      rmSync(path.join(ownerAlbum, "cat.jpg"));
+      await until(() => !existsSync(path.join(memberAlbum, "cat.jpg")), "deletion reaches the member");
+      assert.ok(!existsSync(path.join(memberAlbum, "_archive")), "no hidden backup copy on the member's computer");
+      assert.ok(!existsSync(path.join(ownerAlbum, "_archive")));
     });
 
     await t.test("when access ends, the member keeps the photos they added", async () => {
