@@ -26,7 +26,10 @@ export async function GET(request: NextRequest, context: Context) {
   }
 }
 
-/** Rename, or turn live transcription or the live recap on or off: `{ name?, liveTranscribe?, liveRecap? }`. */
+/**
+ * Rename, turn live transcription or the live recap on or off, or keep the
+ * reader's edits: `{ name?, liveTranscribe?, liveRecap?, transcriptEdits?, recapEdits? }`.
+ */
 export async function PATCH(request: NextRequest, context: Context) {
   const authError = requireAuth(request);
   if (authError) return authError;

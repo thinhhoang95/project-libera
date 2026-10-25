@@ -22,7 +22,9 @@ import { ImageGenerationPanel } from "@/components/libera/image-generation-panel
 import { NotebookPanel, type NotebookPanelProps } from "@/components/libera/notebook-panel";
 import { OutlinePanel } from "@/components/libera/outline-panel";
 import { ReviewComments } from "@/components/libera/markdown-review-ui";
+import { PdfAnnotationsPanel } from "@/components/libera/pdf-annotations-panel";
 import { PdfReviewComments } from "@/components/libera/pdf-comments-panel";
+import { RailSlot } from "@/components/libera/rail-slot";
 import { ReferencesPanel, type ReferencesPanelProps } from "@/components/libera/references/references-panel";
 import { SidebarAppMenu } from "@/components/libera/sidebar-app-menu";
 import { SpendingPanel } from "@/components/libera/spending/spending-panel";
@@ -199,6 +201,13 @@ export function LeftPanel({
           <div role="tabpanel" id={`left-panel-${activePanel}`} aria-labelledby={`left-panel-tab-${activePanel}`} className="flex min-h-0 min-w-0 flex-1 flex-col pr-1.5">
             {activePanel === "spending" ? (
               <SpendingPanel />
+            ) : activePanel === "voice-memo" || activePanel === "recording" ? (
+              // The voice memo or recording tab renders its controls here.
+              activeTab ? <RailSlot key={activeTab.id} tabId={activeTab.id} emptyText={activePanel === "recording" ? "This recording has nothing to adjust." : "Opening the voice memo…"} /> : null
+            ) : activePanel === "pdf-annotations" ? (
+              activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
+                <PdfAnnotationsPanel key={activeTab.file.path} activeTab={activeTab} onOpenFile={notebookPanelProps.onOpenFile} />
+              ) : null
             ) : activePanel === "workspaces" ? (
               <WorkspacesPanel manager={workspaceManager} tree={fullTree} />
             ) : activePanel === "notebook" ? (

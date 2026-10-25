@@ -1,42 +1,27 @@
 "use client";
 
-import {
-  AudioLines,
-  Gauge,
-  Pause,
-  PanelRight,
-  Play,
-  RotateCcw,
-  RotateCw,
-  SkipBack,
-  SkipForward,
-  Square,
-  Zap,
-  Volume1,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { AudioLines, Pause, PanelLeft, Play } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
+import { useSegmentDraft } from "@/components/libera/audio/editable-lines";
 import { speakerColor } from "@/components/libera/audio/speaker-colors";
-import { TranscriptPanel, type TranscriptNoteActions } from "@/components/libera/audio/transcript-panel";
+import { TranscriptControls, TranscriptDocument, TranscriptMenu, type TranscriptNoteActions } from "@/components/libera/audio/transcript-panel";
 import { isJobActive, useAudioPeaks, useTranscript } from "@/components/libera/audio/use-voice-memo";
+import { PLAYBACK_RATES, SKIP_SECONDS, VoiceMemoControls, type VoiceMemoPlayer } from "@/components/libera/audio/voice-memo-controls";
 import { Waveform } from "@/components/libera/audio/waveform";
+import { requestRailTab } from "@/components/libera/page-tabs";
+import { useRailSlot } from "@/components/libera/rail-slot";
 import type { AudioTabViewState } from "@/components/libera/types";
 import { findTermRanges } from "@/lib/global-search";
 import { formatClock, formatDuration, segmentIndexAt, speakerName } from "@/lib/transcription/format";
+import type { Transcript, TranscriptSegment } from "@/lib/transcription/types";
 import type { LiberaFileNode } from "@/lib/types";
 
-const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
-const SKIP_SECONDS = 15;
-const BOOST_MAX = 4;
-const BOOST_DEFAULT = 2;
-const PANEL_MIN = 300;
-const PANEL_MAX = 720;
-const PANEL_DEFAULT = 400;
+const NO_SEGMENTS: TranscriptSegment[] = [];
 
 function isTyping(target: EventTarget | null) {
   const element = target as HTMLElement | null;
-  return Boolean(element?.closest("input, textarea, select, [contenteditable=true]"));
+  return Boolean(element?.isContentEditable || element?.closest("input, textarea, select"));
 }
 
 function formatSize(bytes: number) {
@@ -45,14 +30,14 @@ function formatSize(bytes: number) {
   return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
 }
 
-const controlButton = "inline-flex items-center justify-center rounded-full text-foreground/80 transition hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-35";
-
 /**
- * A voice memo: a player with the recording's waveform and transport
- * controls, and its transcript in a panel beside it, where reading and
- * listening stay in step.
+ * A voice memo: the recording's waveform to scrub, and its transcript as a
+ * document to read along and correct. The player's controls, transcribing,
+ * speakers and exports are in the Voice Memo rail tab, which this view
+ * renders into the left panel while the tab is active.
  */
 export function VoiceMemoViewer({
+  tabId,
   file,
   src,
   siblings,
@@ -61,6 +46,7 @@ export function VoiceMemoViewer({
   onViewStateChange,
   notes,
 }: {
+  tabId: string;
   file: LiberaFileNode;
   src?: string;
   /** Recordings in the same folder, in order, for previous and next. */
@@ -82,9 +68,9 @@ export function VoiceMemoViewer({
   const [boost, setBoost] = useState(initialViewState?.boost ?? 1);
   const boostGain = useRef<GainNode | null>(null);
   const boostContext = useRef<AudioContext | null>(null);
-  const [panelOpen, setPanelOpen] = useState(initialViewState?.transcriptOpen ?? true);
-  const [panelWidth, setPanelWidth] = useState(initialViewState?.transcriptWidth ?? PANEL_DEFAULT);
   const [follow, setFollow] = useState(initialViewState?.followPlayback ?? true);
+  const [speakerFilter, setSpeakerFilter] = useState<number | null>(null);
+  const [transcribeAgain, setTranscribeAgain] = useState(false);
   const [markers, setMarkers] = useState<number[]>([]);
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [loadError, setLoadError] = useState("");
@@ -92,11 +78,22 @@ export function VoiceMemoViewer({
   const transcript = transcriptState.payload?.transcript ?? null;
   const job = transcriptState.payload?.job ?? null;
   const { peaks, failed: peaksFailed } = useAudioPeaks(file.path);
+  const railSlot = useRailSlot(tabId);
   const viewStateRef = useRef(onViewStateChange);
   useLayoutEffect(() => {
     viewStateRef.current = onViewStateChange;
   }, [onViewStateChange]);
   const pendingPlay = useRef(false);
+
+  // The transcript as the reader corrects it; saved once the editing ends.
+  const { saveSegments } = transcriptState;
+  const draft = useSegmentDraft({
+    base: transcript?.segments ?? NO_SEGMENTS,
+    saved: null,
+    save: ({ segments }, closing) => saveSegments(segments, { keepalive: closing }),
+  });
+  const segments = draft.segments;
+  const editedTranscript = useMemo<Transcript | null>(() => (transcript ? { ...transcript, segments } : null), [segments, transcript]);
 
   const index = siblings.findIndex((sibling) => sibling.path === file.path);
   const previous = index > 0 ? siblings[index - 1] : undefined;
@@ -231,7 +228,6 @@ export function VoiceMemoViewer({
     seek(0);
   }, [seek]);
 
-  const segments = useMemo(() => transcript?.segments ?? [], [transcript]);
   const activeIndex = segmentIndexAt(segments, currentTime);
   const activeSegment = activeIndex >= 0 && currentTime <= (segments[activeIndex]?.end ?? 0) + 1.5 ? segments[activeIndex] : null;
 
@@ -246,29 +242,35 @@ export function VoiceMemoViewer({
     if (segment) seek(segment.start, !audioRef.current?.paused);
   }, [currentTime, segments, seek]);
 
-  const changeRate = useCallback((direction: 1 | -1 | 0) => {
-    setRate((value) => {
-      const position = RATES.indexOf(value);
-      const nextRate = direction === 0
-        ? RATES[(position + 1) % RATES.length]
-        : RATES[Math.max(0, Math.min(RATES.length - 1, (position < 0 ? 1 : position) + direction))];
-      viewStateRef.current({ playbackRate: nextRate });
-      return nextRate;
-    });
+  const chooseRate = useCallback((value: number) => {
+    setRate(value);
+    viewStateRef.current({ playbackRate: value });
   }, []);
 
-  const togglePanel = useCallback(() => {
-    setPanelOpen((open) => {
-      viewStateRef.current({ transcriptOpen: !open });
-      return !open;
-    });
+  const stepRate = (direction: 1 | -1) => {
+    const position = PLAYBACK_RATES.indexOf(rate);
+    chooseRate(PLAYBACK_RATES[Math.max(0, Math.min(PLAYBACK_RATES.length - 1, (position < 0 ? 1 : position) + direction))]);
+  };
+
+  const changeVolume = useCallback((value: number) => {
+    setVolume(value);
+    setMuted(value === 0);
+    viewStateRef.current({ volume: value });
   }, []);
+
+  const changeFollow = useCallback((value: boolean) => {
+    setFollow(value);
+    viewStateRef.current({ followPlayback: value });
+  }, []);
+
+  const showControls = useCallback(() => requestRailTab("voice-memo"), []);
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // Keys typed in the rail tab (rendered here through a portal) are the rail's own.
+    if (!rootRef.current?.contains(event.target as Node)) return;
     const findShortcut = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f";
     if (findShortcut) {
       event.preventDefault();
-      if (!panelOpen) togglePanel();
       setSearchFocusNonce((value) => value + 1);
       return;
     }
@@ -295,20 +297,16 @@ export function VoiceMemoViewer({
         case "]":
           if (next) onShowSibling(next);
           return true;
-        case "t":
-          togglePanel();
-          return true;
         case "m":
           setMuted((value) => !value);
           return true;
         case "<":
-          changeRate(-1);
+          stepRate(-1);
           return true;
         case ">":
-          changeRate(1);
+          stepRate(1);
           return true;
         case "/":
-          if (!panelOpen) togglePanel();
           setSearchFocusNonce((value) => value + 1);
           return true;
         case "Home":
@@ -321,33 +319,40 @@ export function VoiceMemoViewer({
     if (handled) event.preventDefault();
   };
 
-  // Drag the panel's edge to resize it.
-  const resizeFrom = useRef<{ x: number; width: number } | null>(null);
-  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    resizeFrom.current = { x: event.clientX, width: panelWidth };
-  };
-  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizeFrom.current) return;
-    const available = (rootRef.current?.clientWidth ?? 1200) - 360;
-    setPanelWidth(Math.max(PANEL_MIN, Math.min(PANEL_MAX, available, resizeFrom.current.width + resizeFrom.current.x - event.clientX)));
-  };
-  const onResizeEnd = () => {
-    if (!resizeFrom.current) return;
-    resizeFrom.current = null;
-    viewStateRef.current({ transcriptWidth: panelWidth });
-  };
-
   const title = file.name.replace(/\.[^.]+$/, "");
   const extension = file.name.match(/\.([a-z0-9]+)$/i)?.[1]?.toUpperCase();
   const created = new Date(file.createdAt);
-  const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const details = [extension, knownDuration ? formatDuration(knownDuration) : null, formatSize(file.size), Number.isNaN(created.getTime()) ? null : created.toLocaleDateString(undefined, { dateStyle: "medium" })].filter(Boolean).join(" · ");
   const activeName = activeSegment && transcript ? speakerName(transcript, activeSegment.speaker) : "";
+  const canPlay = Boolean(src) && !loadError;
+
+  const player: VoiceMemoPlayer = {
+    title,
+    details,
+    playing,
+    canPlay,
+    currentTime,
+    duration: knownDuration,
+    rate,
+    volume,
+    muted,
+    boost,
+    previous,
+    next,
+    togglePlay,
+    stop,
+    seek: (time) => seek(time),
+    setRate: chooseRate,
+    setVolume: changeVolume,
+    toggleMute: () => setMuted((value) => !value),
+    setBoost: changeBoost,
+    showSibling: onShowSibling,
+  };
 
   return (
     <div
       ref={rootRef}
-      className="libera-media-viewer libera-voice-memo flex min-h-0 flex-1 overflow-hidden outline-none"
+      className="libera-media-viewer libera-voice-memo flex min-h-0 flex-1 flex-col overflow-hidden outline-none"
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
@@ -380,48 +385,52 @@ export function VoiceMemoViewer({
         onError={() => setLoadError("This recording cannot be played here. Its format may not be supported.")}
       />
 
-      <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <div className="libera-viewer-toolbar flex items-center gap-3 border-b border-input bg-card px-4 py-2">
-          <AudioLines aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {[extension, knownDuration ? formatDuration(knownDuration) : null, formatSize(file.size), Number.isNaN(created.getTime()) ? null : created.toLocaleDateString(undefined, { dateStyle: "medium" })].filter(Boolean).join(" · ")}
+      <div className="libera-viewer-toolbar flex shrink-0 items-center gap-3 border-b border-input bg-card px-4 py-2">
+        <AudioLines aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{details}</span>
+        {isJobActive(job) ? (
+          <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs text-muted-foreground">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> Transcribing {Math.round((job?.progress ?? 0) * 100)}%
           </span>
-          {isJobActive(job) && !panelOpen ? (
-            <button type="button" className="inline-flex h-7 items-center gap-1.5 rounded-full bg-muted px-2.5 text-xs text-muted-foreground" onClick={togglePanel}>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" /> Transcribing {Math.round((job?.progress ?? 0) * 100)}%
-            </button>
-          ) : null}
-          <button
-            type="button"
-            aria-pressed={panelOpen}
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition ${panelOpen ? "border-transparent bg-foreground text-background" : "border-input hover:bg-muted"}`}
-            title="Transcript (T)"
-            onClick={togglePanel}
-          >
-            <PanelRight aria-hidden className="h-4 w-4" /> Transcript
+        ) : null}
+        {!railSlot ? (
+          <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-2.5 text-sm font-medium transition hover:bg-muted" title="Show the player and transcript controls in the left panel" onClick={showControls}>
+            <PanelLeft aria-hidden className="h-4 w-4" /> Controls
           </button>
+        ) : null}
+      </div>
+
+      <div className="mx-auto w-full max-w-3xl shrink-0 space-y-3 px-4 pb-3 pt-5 sm:px-8">
+        <div className="space-y-1">
+          <h1 className="truncate text-2xl font-semibold tracking-tight" title={file.name}>{title}</h1>
+          <div className="min-h-[1.5rem]">
+            {activeSegment ? (
+              <p className="line-clamp-1 text-[14px] leading-relaxed text-foreground/80" aria-live="off">
+                {activeName ? <span className="mr-2 font-semibold" style={{ color: speakerColor(activeSegment.speaker) }}>{activeName}</span> : null}
+                {activeSegment.text}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {transcript
+                  ? transcript.diarization ? `${transcript.speakers.length === 1 ? "1 speaker" : `${transcript.speakers.length} speakers`} · ${segments.length} passages` : `${segments.length} passages`
+                  : isJobActive(job) ? "Transcribing…" : "No transcript yet"}
+              </p>
+            )}
+          </div>
         </div>
 
-        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-6 px-6 py-8 sm:px-10">
-          <div className="space-y-1.5">
-            <h1 className="truncate text-2xl font-semibold tracking-tight" title={file.name}>{title}</h1>
-            <div className="min-h-[3.25rem]">
-              {activeSegment ? (
-                <p className="line-clamp-2 text-[15px] leading-relaxed text-foreground/80" aria-live="off">
-                  {activeName ? <span className="mr-2 font-semibold" style={{ color: speakerColor(activeSegment.speaker) }}>{activeName}</span> : null}
-                  {activeSegment.text}
-                </p>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  {transcript
-                    ? transcript.diarization ? `${transcript.speakers.length === 1 ? "1 speaker" : `${transcript.speakers.length} speakers`} · ${transcript.segments.length} passages` : `${transcript.segments.length} passages`
-                    : isJobActive(job) ? "Transcribing…" : "No transcript yet"}
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="@container rounded-2xl border border-border bg-card px-5 pb-4 pt-8 shadow-sm">
+        <div className="flex items-center gap-3 rounded-2xl border border-border bg-card py-3 pl-3 pr-4 shadow-sm">
+          <button
+            type="button"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-foreground text-background shadow-md transition hover:scale-[1.04] active:scale-95 disabled:opacity-40"
+            aria-label={playing ? "Pause" : "Play"}
+            title={playing ? "Pause (Space)" : "Play (Space)"}
+            disabled={!canPlay}
+            onClick={togglePlay}
+          >
+            {playing ? <Pause aria-hidden className="h-5 w-5" fill="currentColor" /> : <Play aria-hidden className="ml-0.5 h-5 w-5" fill="currentColor" />}
+          </button>
+          <div className="min-w-0 flex-1 pt-3">
             <Waveform
               peaks={peaks?.peaks ?? null}
               duration={knownDuration}
@@ -431,133 +440,50 @@ export function VoiceMemoViewer({
               loading={!peaks && !peaksFailed}
               onSeek={(time) => seek(time)}
             />
-            <div className="mt-2 flex justify-between font-mono text-xs tabular-nums text-muted-foreground">
+            <div className="mt-1 flex justify-between font-mono text-[11px] tabular-nums text-muted-foreground">
               <span>{formatClock(currentTime)}</span>
               <span>-{formatClock(Math.max(0, knownDuration - currentTime))}</span>
             </div>
-
-            {/* Narrow: the transport on its own row, speed and volume beneath. Wide: one row. */}
-            <div className="mt-3 grid grid-cols-2 items-center gap-x-2 gap-y-1 @lg:grid-cols-[1fr_auto_1fr]">
-              <div className="col-start-1 row-start-2 flex items-center gap-1 @lg:row-start-1">
-                <button type="button" className={`${controlButton} h-8 px-2 text-xs font-semibold tabular-nums`} title="Playback speed (< and >)" aria-label={`Playback speed ${rate}×`} onClick={() => changeRate(0)}>
-                  <Gauge aria-hidden className="mr-1 h-3.5 w-3.5" />{rate}×
-                </button>
-              </div>
-
-              <div className="col-span-2 row-start-1 flex items-center justify-self-center gap-1 @sm:gap-2 @lg:col-span-1 @lg:col-start-2">
-                <button type="button" className={`${controlButton} h-9 w-9`} aria-label="Previous recording" title={previous ? `Previous: ${previous.name} ([)` : "No previous recording"} disabled={!previous} onClick={() => previous && onShowSibling(previous)}>
-                  <SkipBack aria-hidden className="h-4 w-4" />
-                </button>
-                <button type="button" className={`${controlButton} h-9 w-9`} aria-label={`Back ${SKIP_SECONDS} seconds`} title={`Back ${SKIP_SECONDS} s (←)`} onClick={() => seek(currentTime - SKIP_SECONDS)}>
-                  <span className="relative inline-flex"><RotateCcw aria-hidden className="h-[18px] w-[18px]" /><span className="absolute inset-0 flex items-center justify-center pt-px text-[7px] font-bold">{SKIP_SECONDS}</span></span>
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-foreground text-background shadow-md transition hover:scale-[1.04] active:scale-95 disabled:opacity-40"
-                  aria-label={playing ? "Pause" : "Play"}
-                  title={playing ? "Pause (Space)" : "Play (Space)"}
-                  disabled={!src || Boolean(loadError)}
-                  onClick={togglePlay}
-                >
-                  {playing ? <Pause aria-hidden className="h-6 w-6" fill="currentColor" /> : <Play aria-hidden className="ml-0.5 h-6 w-6" fill="currentColor" />}
-                </button>
-                <button type="button" className={`${controlButton} h-9 w-9`} aria-label={`Forward ${SKIP_SECONDS} seconds`} title={`Forward ${SKIP_SECONDS} s (→)`} onClick={() => seek(currentTime + SKIP_SECONDS)}>
-                  <span className="relative inline-flex"><RotateCw aria-hidden className="h-[18px] w-[18px]" /><span className="absolute inset-0 flex items-center justify-center pt-px text-[7px] font-bold">{SKIP_SECONDS}</span></span>
-                </button>
-                <button type="button" className={`${controlButton} h-9 w-9`} aria-label="Next recording" title={next ? `Next: ${next.name} (])` : "No next recording"} disabled={!next} onClick={() => next && onShowSibling(next)}>
-                  <SkipForward aria-hidden className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="col-start-2 row-start-2 flex items-center justify-end gap-1 @lg:col-start-3 @lg:row-start-1">
-                <button type="button" className={`${controlButton} h-8 w-8`} aria-label="Stop" title="Stop" disabled={!playing && currentTime === 0} onClick={stop}>
-                  <Square aria-hidden className="h-3.5 w-3.5" fill="currentColor" />
-                </button>
-                <div className="group flex items-center">
-                  <input
-                    type="range"
-                    aria-label="Audio Boost"
-                    min={1}
-                    max={BOOST_MAX}
-                    step={0.25}
-                    value={boost}
-                    className="h-1 w-0 cursor-pointer opacity-0 transition-all duration-200 accent-[var(--foreground)] group-focus-within:w-20 group-focus-within:opacity-100 group-hover:w-20 group-hover:opacity-100"
-                    onChange={(event) => changeBoost(Number(event.target.value))}
-                  />
-                  <button
-                    type="button"
-                    aria-pressed={boost > 1}
-                    className={`${controlButton} h-8 gap-0.5 px-2 text-xs font-semibold tabular-nums ${boost > 1 ? "bg-foreground text-background hover:bg-foreground/90 hover:text-background" : ""}`}
-                    aria-label={boost > 1 ? `Audio Boost ${Math.round(boost * 100)}%` : "Audio Boost off"}
-                    title="Audio Boost: play louder than 100%, for quiet recordings"
-                    onClick={() => changeBoost(boost > 1 ? 1 : BOOST_DEFAULT)}
-                  >
-                    <Zap aria-hidden className="h-3.5 w-3.5" />{boost > 1 ? `${Math.round(boost * 100)}%` : null}
-                  </button>
-                </div>
-                <div className="group flex items-center">
-                  <button type="button" className={`${controlButton} h-8 w-8`} aria-label={muted ? "Unmute" : "Mute"} title="Mute (M)" onClick={() => setMuted((value) => !value)}>
-                    <VolumeIcon aria-hidden className="h-4 w-4" />
-                  </button>
-                  <input
-                    type="range"
-                    aria-label="Volume"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={muted ? 0 : volume}
-                    className="h-1 w-0 cursor-pointer opacity-0 transition-all duration-200 accent-[var(--foreground)] group-focus-within:w-20 group-focus-within:opacity-100 group-hover:w-20 group-hover:opacity-100"
-                    onChange={(event) => {
-                      const value = Number(event.target.value);
-                      setVolume(value);
-                      setMuted(value === 0);
-                      viewStateRef.current({ volume: value });
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
           </div>
-
-          {loadError ? <p className="rounded-lg bg-destructive-muted px-3 py-2 text-sm text-destructive">{loadError}</p> : null}
-
-          <p className="text-center text-[11px] text-muted-foreground/80">
-            Space play · ← → 5 s · Shift+← → passage · [ ] recording · T transcript · ⌘F find
-          </p>
         </div>
-      </section>
 
-      {panelOpen ? (
-        <>
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize transcript"
-            className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-accent/60 active:bg-accent"
-            onPointerDown={onResizeStart}
-            onPointerMove={onResizeMove}
-            onPointerUp={onResizeEnd}
-            onPointerCancel={onResizeEnd}
-          />
-          <div className="flex min-h-0 shrink-0" style={{ width: panelWidth }}>
-            <TranscriptPanel
-              path={file.path}
+        {loadError ? <p className="rounded-lg bg-destructive-muted px-3 py-2 text-sm text-destructive">{loadError}</p> : null}
+      </div>
+
+      <TranscriptDocument
+        path={file.path}
+        fileName={file.name}
+        state={transcriptState}
+        draft={draft}
+        speakerFilter={speakerFilter}
+        currentTime={currentTime}
+        onSeek={seek}
+        onSearchMatches={setMarkers}
+        searchFocusNonce={searchFocusNonce}
+        follow={follow}
+        onFollowChange={changeFollow}
+        onShowControls={showControls}
+      />
+
+      {railSlot ? createPortal(
+        <VoiceMemoControls
+          player={player}
+          menu={<TranscriptMenu fileName={file.name} notes={notes} state={transcriptState} transcript={editedTranscript} onTranscribeAgain={() => setTranscribeAgain(true)} />}
+          transcript={(
+            <TranscriptControls
               fileName={file.name}
-              notes={notes}
               state={transcriptState}
-              currentTime={currentTime}
-              onSeek={seek}
-              onSearchMatches={setMarkers}
-              searchFocusNonce={searchFocusNonce}
-              onClose={togglePanel}
+              transcript={editedTranscript}
+              again={transcribeAgain}
+              onAgainChange={setTranscribeAgain}
+              speakerFilter={speakerFilter}
+              onSpeakerFilterChange={setSpeakerFilter}
               follow={follow}
-              onFollowChange={(value) => {
-                setFollow(value);
-                viewStateRef.current({ followPlayback: value });
-              }}
+              onFollowChange={changeFollow}
             />
-          </div>
-        </>
+          )}
+        />,
+        railSlot,
       ) : null}
     </div>
   );

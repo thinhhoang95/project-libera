@@ -23,6 +23,7 @@ import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { StorageError } from "@/lib/storage/errors";
 import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
 import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
+import { deletePdfSidecars, followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
@@ -499,6 +500,8 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
     else await deleteSharedEntry(transcriptCompanionPath(sourcePath), { config }).catch(() => undefined);
     await followSharedAudioChanges([{ from: sourcePath, to: nextPath }], []);
   }
+  // A PDF's local side-cars (annotations, outline, definitions, text cache) follow it now, before the host's event does.
+  if (getFileType(current.name) === "pdf" && sourcePath !== nextPath) await followSharedPdfChanges([{ from: sourcePath, to: nextPath }], []);
   await renameFileMetadataPath(sourcePath, nextPath);
   notifySearchChanges([sourcePath, nextPath]);
   return readLiberaFile(nextPath);
@@ -517,6 +520,8 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
     await deleteSharedEntry(transcriptCompanionPath(liberaPath), { config }).catch(() => undefined);
     await followSharedAudioChanges([], [liberaPath]);
   }
+  // This user deleted it, so their own notes on it go too, as in a local notebook.
+  if (getFileType(current.name) === "pdf") await deletePdfSidecars(liberaPath);
   await removeFileMetadataPath(liberaPath);
   notifySearchChanges([liberaPath]);
   return getTree();

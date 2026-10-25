@@ -3,6 +3,8 @@
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { DefinitionsPaletteCommands } from "@/components/libera/definitions-panel";
+import { PdfOutlinePaletteCommands } from "@/components/libera/pdf-outline-panel";
+import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
@@ -56,7 +58,7 @@ import { ReadAloudBar } from "@/components/libera/read-aloud";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
-import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
+import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, OPEN_RAIL_TAB_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -108,16 +110,27 @@ export function LiberaApp({
     setActiveLeftPanel(panel);
   }, []);
   // A page's contextual rail tab opens with the page, as Word shows Table Design
-  // for a new table, and goes when another tab takes over, returning the
-  // panel to the one in use before.
-  const contextualPanels = contextualPanelTabs(workspace.activeTab).map((tab) => tab.id);
-  const contextualPanelKey = contextualPanels.join(" ");
+  // for a new table; a PDF's Annotations tab only appears. Either goes when
+  // another tab takes over, returning the panel to the one in use before.
+  const contextualRailTabs = contextualPanelTabs(workspace.activeTab);
+  const contextualPanelKey = contextualRailTabs.map((tab) => tab.id).join(" ");
+  const autoOpenPanel = contextualRailTabs.find((tab) => tab.autoOpen)?.id ?? null;
   useEffect(() => {
     const available = contextualPanelKey ? contextualPanelKey.split(" ") : [];
-    setActiveLeftPanel((current) => available.length
-      ? available[0] as ContextualPanelTab
-      : isContextualPanelTab(current) ? lastCanvasPanelRef.current : current);
-  }, [contextualPanelKey]);
+    setActiveLeftPanel((current) => autoOpenPanel
+      ?? (isContextualPanelTab(current) && !available.includes(current) ? lastCanvasPanelRef.current : current));
+  }, [contextualPanelKey, autoOpenPanel]);
+  // A tab's view asks for its rail tab, for example the voice memo for its transcription controls.
+  useEffect(() => {
+    const onOpenRailTab = (event: Event) => {
+      const panel = (event as CustomEvent<unknown>).detail;
+      if (typeof panel !== "string" || !isContextualPanelTab(panel)) return;
+      changeLeftPanel(panel);
+      setNotebooksCollapsed(false);
+    };
+    window.addEventListener(OPEN_RAIL_TAB_EVENT, onOpenRailTab);
+    return () => window.removeEventListener(OPEN_RAIL_TAB_EVENT, onOpenRailTab);
+  }, [changeLeftPanel]);
   const openComments = useCallback(() => {
     changeLeftPanel("comments");
     setNotebooksCollapsed(false);
@@ -554,6 +567,11 @@ export function LiberaApp({
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
     <DefinitionsPaletteCommands activeTab={workspace.activeTab} onShow={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); }} />
+    <PdfOutlinePaletteCommands
+      activeTab={workspace.activeTab}
+      onShowOutlines={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); showOutlineView("outline"); }}
+      onShowAnnotations={() => { changeLeftPanel("pdf-annotations"); setNotebooksCollapsed(false); }}
+    />
     <CollabProvider
       onNotebookJoined={async (notebook) => {
         await workspace.refreshTree(notebook).catch(() => undefined);

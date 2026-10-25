@@ -44,6 +44,9 @@ export const ANNOTATIONS_DIR = "annotations";
 export const TRANSCRIPTS_DIR = "transcripts";
 export const AUDIO_PEAKS_DIR = "audio-peaks";
 export const DEFINITIONS_DIR = "definitions";
+export const PDF_OUTLINES_DIR = "outlines";
+/** Side-cars whose file went away outside Libera, kept until it comes back or for recovery. */
+export const ORPHANED_SIDECARS_DIR = "orphaned-sidecars";
 export const PDF_TEXT_CACHE_DIR = "pdf-text";
 export const ARCHIVE_DIR = "_archive";
 export const MARKDOWN_ASSETS_DIR = "_assets";

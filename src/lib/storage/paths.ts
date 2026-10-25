@@ -12,6 +12,8 @@ import {
   ANNOTATIONS_DIR,
   AUDIO_PEAKS_DIR,
   DEFINITIONS_DIR,
+  ORPHANED_SIDECARS_DIR,
+  PDF_OUTLINES_DIR,
   IMAGE_ANNOTATIONS_SUFFIX,
   LIBERA_SYSTEM_DIR,
   MARKDOWN_ASSETS_DIR,
@@ -283,6 +285,25 @@ export function definitionsPath(notebook: string, pathParts: string[]) {
 export function definitionsDirectoryPath(notebook: string, folderParts: string[]) {
   return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), DEFINITIONS_DIR, "by-path",
     ...folderParts.map((part) => assertSafeUserSegment(part, "Folder path segment")));
+}
+
+/** A PDF's generated outline (Outlines tab): `outlines/by-path/<folders>/<name>.json`. */
+export function pdfOutlinePath(notebook: string, pathParts: string[]) {
+  if (!pathParts.length) throw new StorageError("PDF outline path is invalid.");
+  const safeParts = pathParts.map((part) => assertSafeUserSegment(part, "File path segment"));
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), PDF_OUTLINES_DIR, "by-path",
+    ...safeParts.slice(0, -1), `${safeParts.at(-1)}.json`);
+}
+
+/** The folder holding the generated outlines of every PDF inside a notebook folder. */
+export function pdfOutlinesDirectoryPath(notebook: string, folderParts: string[] = []) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), PDF_OUTLINES_DIR, "by-path",
+    ...folderParts.map((part) => assertSafeUserSegment(part, "Folder path segment")));
+}
+
+/** Where a notebook keeps side-cars of one kind whose file went away outside Libera (pdf-sidecars.ts). */
+export function orphanedSidecarsDirectoryPath(notebook: string, kind: string) {
+  return notebookSystemPath(assertSafeSegment(notebook, "Notebook name"), ORPHANED_SIDECARS_DIR, assertSafeSegment(kind, "Side-car kind"));
 }
 
 export function legacyFlatPdfAnnotationsPath(notebook: string, name: string) {

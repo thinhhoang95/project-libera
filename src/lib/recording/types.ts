@@ -1,5 +1,6 @@
 /** Shared by the recording server code and the recorder. Nothing here may touch the server. */
 
+import type { SegmentEdits } from "@/lib/transcription/edits";
 import type { TranscriptSegment } from "@/lib/transcription/types";
 
 /** The recorder's microphone rate; Parakeet listens at 16 kHz too. */
@@ -12,6 +13,8 @@ export type RecapBullet = {
   /** Recording seconds when the bullet was added and last changed. */
   addedAt: number;
   changedAt: number;
+  /** Written or corrected by the reader; the model leaves it as it is. */
+  edited?: boolean;
 };
 
 export type RecordingRecap = {
@@ -47,9 +50,12 @@ export type RecordingStatus = {
   /** Chunks still waiting for Parakeet. */
   pendingChunks: number;
   transcribeError: string;
-  /** Live transcript segments from `after` on; `segmentCount` is the total. */
+  /** Live transcript segments from `segmentsFrom` on; `segmentCount` is the total. */
   segments: TranscriptSegment[];
+  segmentsFrom: number;
   segmentCount: number;
+  /** The reader's edits to the live transcript; sent with the whole transcript (`after` 0) only. */
+  transcriptEdits?: SegmentEdits | null;
   /** Present when the recap changed since the version the recorder has. */
   recap: RecordingRecap | null;
   recapVersion: number;

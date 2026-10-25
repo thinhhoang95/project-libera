@@ -153,7 +153,8 @@ async function persistCache(cachePath: string, payload: PdfTextCachePayload, ide
   }
 }
 
-async function extractPdfTextPages(targetPath: string): Promise<PdfTextPage[]> {
+/** Opens a PDF on disk with pdf.js, as text extraction does; the caller destroys it. */
+export async function openPdfDocument(targetPath: string) {
   const { GlobalWorkerOptions, VerbosityLevel, getDocument } = await import(
     "pdfjs-dist/legacy/build/pdf.mjs"
   );
@@ -164,7 +165,11 @@ async function extractPdfTextPages(targetPath: string): Promise<PdfTextPage[]> {
     standardFontDataUrl: PDF_STANDARD_FONT_DATA_URL,
     verbosity: VerbosityLevel.ERRORS,
   });
-  const document = await loadingTask.promise;
+  return loadingTask.promise;
+}
+
+async function extractPdfTextPages(targetPath: string): Promise<PdfTextPage[]> {
+  const document = await openPdfDocument(targetPath);
 
   try {
     const pages: PdfTextPage[] = [];

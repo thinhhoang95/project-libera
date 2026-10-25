@@ -35,6 +35,10 @@ import {
   DEFINITIONS_REQUEST_EVENT, DEFINITIONS_RUN_FINISHED_EVENT, DEFINITIONS_UPDATED_EVENT, definitionsPrompt,
   type DefinitionsRequestDetail, type DefinitionsRunFinishedDetail, type DefinitionsUpdatedDetail,
 } from "@/lib/definitions";
+import {
+  PDF_OUTLINE_REQUEST_EVENT, PDF_OUTLINE_RUN_FINISHED_EVENT, PDF_OUTLINE_UPDATED_EVENT, pdfOutlinePrompt,
+  type PdfOutlineRequestDetail, type PdfOutlineRunFinishedDetail, type PdfOutlineUpdatedDetail,
+} from "@/lib/pdf-outline";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -144,6 +148,10 @@ const isStoredFlag = (value: unknown): value is "true" | "false" => value === "t
 const FACT_CHECK_SKILL = "fact-check-citations";
 /** The agent skill the Definitions tab preloads (src/lib/agent/skills/extract-definitions.ts). */
 const DEFINITIONS_SKILL = "extract-definitions";
+/** The agent skill the Outlines tab preloads for a PDF (src/lib/agent/skills/generate-pdf-outline.ts). */
+const PDF_OUTLINE_SKILL = "generate-pdf-outline";
+/** Where a run started for a tab reports that it ended. */
+type SkillRunFinished = { event: string; requestId: string };
 
 /** The first message of a run started by a Fact-check citations button. */
 export function factCheckPrompt(path: string) {
@@ -707,13 +715,13 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   // A Fact-check citations button (References panel, Markdown toolbars) or the
   // Definitions tab asks for an Agent run: open the panel, start a new Agent
   // chat with the request as its prompt, and send it with the skill preloaded.
-  const skillRequestRef = useRef<{ chatId: string; prompt: string; skill: string; definitionsRequestId?: string } | null>(null);
+  const skillRequestRef = useRef<{ chatId: string; prompt: string; skill: string; finished?: SkillRunFinished } | null>(null);
   const sendRef = useRef<typeof send | null>(null);
   // Before the effect below, so it sends with this render's chat and settings.
   useEffect(() => { sendRef.current = send; });
   useEffect(() => {
     /** Starts the request's chat; returns why it cannot start, or "". */
-    function startSkillRun(request: { prompt: string; skill: string; webSearch?: boolean; definitionsRequestId?: string }) {
+    function startSkillRun(request: { prompt: string; skill: string; webSearch?: boolean; finished?: SkillRunFinished }) {
       if (!store) return "The AI panel is still loading.";
       onCollapsedChange(false);
       review?.setChatReview(false);
@@ -727,7 +735,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       // An untouched chat is reused rather than left behind empty.
       const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length ? active : null;
       const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt: request.prompt };
-      skillRequestRef.current = { chatId: next.id, prompt: request.prompt, skill: request.skill, ...(request.definitionsRequestId ? { definitionsRequestId: request.definitionsRequestId } : {}) };
+      skillRequestRef.current = { chatId: next.id, prompt: request.prompt, skill: request.skill, ...(request.finished ? { finished: request.finished } : {}) };
       setStore((current) => current && (reuse
         ? { ...current, chats: current.chats.map((item) => item.id === next.id ? next : item) }
         : { chats: [next, ...current.chats], activeId: next.id }));
@@ -743,14 +751,24 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     function requestDefinitions(event: Event) {
       const detail = (event as CustomEvent<DefinitionsRequestDetail>).detail;
       if (!detail?.path) return;
-      const error = startSkillRun({ prompt: definitionsPrompt(detail.path), skill: DEFINITIONS_SKILL, definitionsRequestId: detail.requestId });
+      const finished = { event: DEFINITIONS_RUN_FINISHED_EVENT, requestId: detail.requestId };
+      const error = startSkillRun({ prompt: definitionsPrompt(detail.path), skill: DEFINITIONS_SKILL, finished });
       if (error) window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: detail.requestId, error } }));
+    }
+    function requestPdfOutline(event: Event) {
+      const detail = (event as CustomEvent<PdfOutlineRequestDetail>).detail;
+      if (!detail?.path) return;
+      const finished = { event: PDF_OUTLINE_RUN_FINISHED_EVENT, requestId: detail.requestId };
+      const error = startSkillRun({ prompt: pdfOutlinePrompt(detail.path), skill: PDF_OUTLINE_SKILL, finished });
+      if (error) window.dispatchEvent(new CustomEvent<PdfOutlineRunFinishedDetail>(PDF_OUTLINE_RUN_FINISHED_EVENT, { detail: { requestId: detail.requestId, error } }));
     }
     window.addEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
     window.addEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+    window.addEventListener(PDF_OUTLINE_REQUEST_EVENT, requestPdfOutline);
     return () => {
       window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
       window.removeEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+      window.removeEventListener(PDF_OUTLINE_REQUEST_EVENT, requestPdfOutline);
     };
   }, [store, defaultPermission, onCollapsedChange, review, setStore]);
 
@@ -759,9 +777,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (!request || !chat || pending || chat.id !== request.chatId || chat.mode !== "agent" || chat.prompt !== request.prompt) return;
     skillRequestRef.current = null;
     const run = sendRef.current?.(undefined, undefined, { skill: request.skill }) ?? Promise.resolve();
-    const { definitionsRequestId } = request;
-    if (definitionsRequestId) {
-      void run.finally(() => window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: definitionsRequestId } })));
+    const { finished } = request;
+    if (finished) {
+      void run.finally(() => window.dispatchEvent(new CustomEvent<{ requestId: string }>(finished.event, { detail: { requestId: finished.requestId } })));
     }
   }, [chat, pending]);
 
@@ -913,6 +931,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             }
           } else if (event.type === "definitions_saved") {
             window.dispatchEvent(new CustomEvent<DefinitionsUpdatedDetail>(DEFINITIONS_UPDATED_EVENT, { detail: { path: event.path } }));
+          } else if (event.type === "pdf_outline_saved") {
+            window.dispatchEvent(new CustomEvent<PdfOutlineUpdatedDetail>(PDF_OUTLINE_UPDATED_EVENT, { detail: { path: event.path } }));
           } else if (event.type === "suggestions_added") {
             if (event.count) {
               const existing = run.suggestions?.find((entry) => entry.path === event.path);

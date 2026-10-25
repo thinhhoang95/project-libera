@@ -82,8 +82,11 @@ export type PdfTabViewState = {
   textColor?: string;
   tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser" | "space";
   zoom?: number;
-  /** One-shot request (Global Search) to show a page and find a passage on it. */
-  reveal?: { page: number; text?: string; nonce: number };
+  /**
+   * One-shot request (Global Search, the Outlines tab) to show a page and find
+   * a passage on it; `top` scrolls that far down the page (0–1), for bookmarks.
+   */
+  reveal?: { page: number; text?: string; top?: number; nonce: number };
 };
 
 export type LatexTabViewState = {
