@@ -1912,8 +1912,8 @@ export function PdfViewer({
         return;
       }
 
-      if (event.key === "Escape" && (tool === "draw" || tool === "shape" || tool === "eraser" || tool === "space")) {
-        // Put the pen down first; the next Esc clears the selection.
+      if (event.key === "Escape" && tool !== "select") {
+        // Put the tool down first; the next Esc clears the selection.
         event.preventDefault();
         setTool("select");
         updateViewState({ tool: "select" });

@@ -61,6 +61,20 @@ Libera keeps its own per-notebook state in a hidden `.libera/` folder inside eac
 
 Images in the Image Gallery are kept separately, in `${LIBERA_DATA_DIR}/gallery`. See [Image Gallery](#image-gallery).
 
+In the desktop app, each [user](#users) has their own master directory, so `LIBERA_DATA_DIR` is the running user's folder.
+
+## Users
+
+Several people who share one computer (and one operating-system account) can each have their own user in the desktop app. A user has their own master directory, search index, preferences, master password, collaboration sign-in, and browser storage. One user runs at a time.
+
+- **Signing in.** Libera opens the sign-in screen of the last user who signed in. **Switch user**, under the password field, swaps the logo for a bubble of initials per user. Choosing another person restarts Libera as them, and the sign-in screen then asks for their password. The choice holds for one start: if they never sign in, the next start is back to the last user who did.
+- **Switching safely.** Before restarting, Libera saves the workspace and pending PDF and image annotations in every window, pop-outs included. If an unsaved document cancels closing, the switch is cancelled.
+- **Managing users.** Preferences → **Users** adds, renames, switches to, and removes users, and only works while signed in. Renaming or removing someone else needs their master password. Removing a user moves their settings aside and never touches their notebooks. The first user cannot be removed. At most 8 users.
+- **Separate folders.** Two users cannot share a master directory or search index, or put one inside the other's, even through symlinks or junctions. Libera checks this when settings are saved, when a backup is loaded, and at every start.
+- **Existing installs.** The first user keeps the original settings files and browser session, so a single-user install needs no migration and an older Libera still opens it. Other users live in `profiles/<id>/` in Electron's `userData` folder, listed in `profiles.json`. A damaged `profiles.json` or a user's broken settings are recovered from, not overwritten.
+
+See [docs/features/users.md](docs/features/users.md) for the full guide.
+
 ## Math Rendering
 
 Markdown rendering is wired through:
@@ -420,7 +434,7 @@ Work on several files side by side by splitting the editor area into panels. Cho
 
 Press Cmd/Ctrl+P to jump to any file by name. The palette lists your recent files first; type to fuzzy-search the notebooks (files in the selected notebook rank higher), then press Enter to open the file, or Cmd/Ctrl+Enter to open it beside the current panel.
 
-Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. The **Definitions** commands have the AI Agent generate (or regenerate) the definitions and notation of the document in view, or open its Definitions tab. In a PDF, the annotation styles are listed whatever tool is in use (for example **Markup style: Underline**, **Highlight color: Green**, **Shape: Arrow**, **Ink color: Blue**, **Stroke width: Thick stroke**, **Note font: …** and **Note font size: larger**); a style applies to the selected annotation, or to the next one you make. The PDF also offers **Add comment**, **Next page**, **Previous page**, **First page** and **Last page**, and, while Find is open, **Next match** and **Previous match**. The gallery and photo viewer have their own commands (see [docs/features/gallery-timeline.md](docs/features/gallery-timeline.md)). Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
+Press Cmd/Ctrl+Shift+P, or type `>` at the start of the box, to switch to commands. The palette lists the tools of the focused editor or viewer, including every toolbar button, tab, and option, along with app-wide actions, each with its keyboard shortcut. The **Definitions** commands have the AI Agent generate (or regenerate) the definitions and notation of the document in view, or open its Definitions tab. In a PDF, **Generate PDF outline** has it outline a PDF without bookmarks, and **Show PDF annotations** opens the Annotations tab. In a PDF, the annotation styles are listed whatever tool is in use (for example **Markup style: Underline**, **Highlight color: Green**, **Shape: Arrow**, **Ink color: Blue**, **Stroke width: Thick stroke**, **Note font: …** and **Note font size: larger**); a style applies to the selected annotation, or to the next one you make. The PDF also offers **Add comment**, **Next page**, **Previous page**, **First page** and **Last page**, and, while Find is open, **Next match** and **Previous match**. The gallery and photo viewer have their own commands (see [docs/features/gallery-timeline.md](docs/features/gallery-timeline.md)). Commands you used recently appear at the top. Delete the `>` to go back to files. Use ↑/↓ to move, Enter to run, and Esc to close.
 
 ## Where Was I
 
@@ -539,6 +553,18 @@ Choose the engine in Preferences → **Read Aloud**:
 - **Speed** from 0.75× to 2×. Changes apply without restarting. Web deployments use the `LIBERA_TTS_*` variables instead.
 
 See [docs/features/read-aloud.md](docs/features/read-aloud.md) for the user guide and [docs/read-aloud/implementation.md](docs/read-aloud/implementation.md) for how it is built and how to extend it.
+
+## PDF outlines and annotations
+
+For a PDF, **Outlines → Outline** shows its table of contents, and its highlights, notes and drawings move to their own **Annotations** tab in the left rail.
+
+- **Bookmarks.** A PDF's own bookmarks show as a tree. Choose how many levels are open, search closed branches too, and click an entry to go to its page and spot.
+- **AI outlines.** When a PDF has no bookmarks, **Generate outline** (also in the command palette) has the AI Agent outline it. The PDF is split into chunks of 12 pages that are outlined in parallel, each with the PDF's printed table of contents if it has one and with larger-type lines marked as likely headings. Every heading is checked against the page text, the chunks are stitched together with consistent levels, and the whole outline is verified: page order, level jumps, numbering under the right parent, repeats, gaps. The agent fixes what verification finds with an amend tool until no errors are left. Scanned PDFs without a text layer are refused.
+- **A side-car that follows the PDF.** The outline is saved beside the notebook's other Libera data, with the PDF's size and hash. Renaming, moving, copying or deleting the PDF in Libera does the same to it, and a rename during generation saves the outline under the new name. The tab says when the PDF has changed since, and the outline can be regenerated or deleted.
+- **Annotations tab.** It appears in the rail only while a PDF tab is active, lists the annotations in page order with their count, and filters them by text or page (`p. 4`). Click one to show it, or right-click a highlight to **Quote and cite** it.
+- **Renamed or deleted outside Libera.** A PDF's annotations, outline and definitions are re-attached to the PDF with the same bytes after a rename in Finder, Explorer or a sync client. When the PDF is gone they are set aside, not deleted, so a new PDF under the old name does not inherit them, and they come back if the original returns within 90 days. In shared notebooks they follow the collab host's moves and removals.
+
+See [docs/features/pdf-outlines.md](docs/features/pdf-outlines.md) for the full guide.
 
 ## PDF to Markdown
 

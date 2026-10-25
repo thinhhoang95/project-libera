@@ -936,7 +936,9 @@ export function TranscriptControls({
 /**
  * The Voice Memo panel's menu, beside its title: copying and saving the
  * transcript (with the corrections being made), transcribing again, the
- * speech settings and deleting the transcript.
+ * speech settings and deleting the transcript. The desktop app shows it as
+ * a native menu, like the tab strip's and the sidebar's; a browser, as a
+ * menu in the page.
  */
 export function TranscriptMenu({ fileName, notes, state, transcript, onTranscribeAgain }: {
   fileName: string;
@@ -990,26 +992,76 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
   const heading = "flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
   const none = !transcript;
 
+  const actions: Record<string, () => void> = {
+    "copy-md": () => void navigator.clipboard.writeText(exportAs("md")).then(() => flash("Copied as Markdown")),
+    "copy-txt": () => void navigator.clipboard.writeText(exportAs("txt")).then(() => flash("Copied as plain text")),
+    "open-note": () => notes?.openUnsaved(`${baseName} transcript.md`, exportAs("md")),
+    "save-beside": () => void notes?.saveBeside(exportAs("md")).then(() => flash("Saved as a note beside the recording"), (error: unknown) => flash(error instanceof Error ? error.message : "Could not save the note.")),
+    ...Object.fromEntries((Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => [`save-${format}`, () => void saveText(`${baseName}.${format}`, exportAs(format), format)])),
+    again: onTranscribeAgain,
+    settings: openSpeechPreferences,
+    delete: () => {
+      if (window.confirm("Delete this transcript, with its corrections and speaker names? The recording stays.")) void state.remove();
+    },
+  };
+
+  const [nativeOpen, setNativeOpen] = useState(false);
+  const openMenu = async (button: HTMLButtonElement) => {
+    const native = window.liberaMenu;
+    if (!native) {
+      setOpen((value) => !value);
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    setNativeOpen(true);
+    const chosen = await native.popup({
+      x: Math.round(rect.left),
+      y: Math.round(rect.bottom),
+      items: [
+        { id: "copy-md", label: "Copy as Markdown", enabled: !none },
+        { id: "copy-txt", label: "Copy as Plain Text", enabled: !none },
+        ...(notes ? [
+          { id: "open-note", label: "Open as a New Note", enabled: !none },
+          { id: "save-beside", label: "Save as a Note Beside the Recording", enabled: !none },
+        ] : []),
+        { type: "separator" as const },
+        {
+          id: "save",
+          label: "Save to This Computer",
+          enabled: !none,
+          submenu: (Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => ({ id: `save-${format}`, label: `${SAVE_FORMATS[format].label} (.${format})…` })),
+        },
+        { type: "separator" as const },
+        { id: "again", label: "Transcribe Again…", enabled: !none && !busy },
+        ...(hasPreferences ? [{ id: "settings", label: "Speech Settings…" }] : []),
+        { type: "separator" as const },
+        { id: "delete", label: "Delete Transcript…", enabled: !none && !busy },
+      ],
+    }).catch(() => null);
+    setNativeOpen(false);
+    if (chosen) actions[chosen]?.();
+  };
+
   return (
     <div ref={rootRef} className="relative">
-      <button type="button" className={railIconButton} aria-label="Voice memo menu" title="Copy, export and transcription" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <button type="button" className={railIconButton} aria-label="Voice memo menu" title="Copy, export and transcription" aria-haspopup="menu" aria-expanded={open || nativeOpen} onClick={(event) => void openMenu(event.currentTarget)}>
         <MoreVertical aria-hidden className="h-4 w-4" />
       </button>
       {open ? (
         <div role="menu" aria-label="Voice memo menu" className="absolute right-0 top-9 z-50 max-h-[70vh] w-64 overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg">
           <p className={heading}><Copy aria-hidden className="h-3.5 w-3.5" /> Transcript</p>
-          <button type="button" role="menuitem" className={item} disabled={none} onClick={act(() => void navigator.clipboard.writeText(exportAs("md")).then(() => flash("Copied as Markdown")))}>
+          <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["copy-md"])}>
             <span className="w-4" /> Copy as Markdown
           </button>
-          <button type="button" role="menuitem" className={item} disabled={none} onClick={act(() => void navigator.clipboard.writeText(exportAs("txt")).then(() => flash("Copied as plain text")))}>
+          <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["copy-txt"])}>
             <span className="w-4" /> Copy as plain text
           </button>
           {notes ? (
             <>
-              <button type="button" role="menuitem" className={item} disabled={none} onClick={act(() => notes.openUnsaved(`${baseName} transcript.md`, exportAs("md")))}>
+              <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["open-note"])}>
                 <FilePlus2 aria-hidden className="h-4 w-4" /> Open as a new note
               </button>
-              <button type="button" role="menuitem" className={item} disabled={none} onClick={act(() => void notes.saveBeside(exportAs("md")).then(() => flash("Saved as a note beside the recording"), (error: unknown) => flash(error instanceof Error ? error.message : "Could not save the note.")))}>
+              <button type="button" role="menuitem" className={item} disabled={none} onClick={act(actions["save-beside"])}>
                 <FileText aria-hidden className="h-4 w-4" /> Save as a note beside the recording
               </button>
             </>
@@ -1017,18 +1069,18 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
           <div className="my-1 h-px bg-border" />
           <p className={heading}><Download aria-hidden className="h-3.5 w-3.5" /> Save to this computer</p>
           {(Object.keys(SAVE_FORMATS) as SaveFormat[]).map((format) => (
-            <button key={format} type="button" role="menuitem" className={item} disabled={none} onClick={act(() => void saveText(`${baseName}.${format}`, exportAs(format), format))}>
+            <button key={format} type="button" role="menuitem" className={item} disabled={none} onClick={act(actions[`save-${format}`])}>
               <span className="w-4" />
               <span className="min-w-0 flex-1 truncate">{SAVE_FORMATS[format].label}…</span>
               <span className="font-mono text-[11px] text-muted-foreground">.{format}</span>
             </button>
           ))}
           <div className="my-1 h-px bg-border" />
-          <button type="button" role="menuitem" className={item} disabled={none || busy} onClick={act(onTranscribeAgain)}>
+          <button type="button" role="menuitem" className={item} disabled={none || busy} onClick={act(actions.again)}>
             <RefreshCw aria-hidden className="h-4 w-4" /> Transcribe again…
           </button>
           {hasPreferences ? (
-            <button type="button" role="menuitem" className={item} onClick={act(openSpeechPreferences)}>
+            <button type="button" role="menuitem" className={item} onClick={act(actions.settings)}>
               <Settings2 aria-hidden className="h-4 w-4" /> Speech settings…
             </button>
           ) : null}
@@ -1037,9 +1089,7 @@ export function TranscriptMenu({ fileName, notes, state, transcript, onTranscrib
             role="menuitem"
             className={`${item} text-destructive`}
             disabled={none || busy}
-            onClick={act(() => {
-              if (window.confirm("Delete this transcript, with its corrections and speaker names? The recording stays.")) void state.remove();
-            })}
+            onClick={act(actions.delete)}
           >
             <Trash2 aria-hidden className="h-4 w-4" /> Delete transcript
           </button>

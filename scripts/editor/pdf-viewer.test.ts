@@ -617,6 +617,12 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
 
       await key({ key: "Escape" });
       assert.equal(changes.at(-1)?.tool, "select", "Esc puts the eraser down");
+      for (const [shortcut, tool] of [["h", "highlight"], ["t", "text"], ["s", "shape"], ["g", "space"]]) {
+        await key({ key: shortcut });
+        assert.equal(changes.at(-1)?.tool, tool);
+        await key({ key: "Escape" });
+        assert.equal(changes.at(-1)?.tool, "select", `Esc puts the ${tool} tool down`);
+      }
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select highlight"]')!.click());
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Change to underline"]')!.click());
       const mark = page.querySelector<HTMLElement>(".pdf-highlight-mark")!;
