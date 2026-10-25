@@ -46,7 +46,7 @@ export async function updateReviewDatabase(libraryRoot: string, change: (db: Rev
   await withReviewTransaction<MigratableDocument, void>(libraryRoot, async (tx) => {
     const documents: MigratableDocument[] = [];
     for (const [id] of tx.keys()) {
-      const doc = await tx.get(id);
+      const doc = await tx.getIfPresent(id);
       if (doc) documents.push(doc);
     }
     const db: ReviewDatabase = { schemaVersion: 1, documents };

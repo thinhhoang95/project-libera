@@ -306,11 +306,17 @@ export function replayReviewEdits(doc: ReviewDocument, edits: unknown, snapshot:
   let text = doc.snapshot;
   for (const edit of edits as Partial<ReviewTextEdit>[]) {
     const { start, end } = edit ?? {};
-    if (!Number.isInteger(start) || !Number.isInteger(end) || typeof edit.text !== "string" || start! < 0 || end! < start! || end! > text.length) return syncReview(doc, snapshot);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || typeof edit?.text !== "string" || start! < 0 || end! < start! || end! > text.length) return syncReview(doc, snapshot);
     text = text.slice(0, start) + edit.text + text.slice(end);
     texts.push(text);
   }
   return text === snapshot ? texts.reduce((mapped, next) => syncReview(mapped, next), doc) : syncReview(doc, snapshot);
+}
+// Each keystroke is its own step while they fit. Past the limit, touching steps
+// are merged (continuous typing becomes one edit), so a minute of typing does
+// not collapse into one change spanning every edit; only then is it all one.
+function boundedEdits(steps: ReviewTextEdit[], grouped: ReviewTextEdit[], from: string, to: string) {
+  return steps.length <= MAX_REVIEW_EDITS ? steps : grouped.length <= MAX_REVIEW_EDITS ? [...grouped] : addReviewEdit([], from, to);
 }
 /**
  * Follows a stored review through the editor's draft: `advance` maps it onto
@@ -324,26 +330,44 @@ export class ReviewDraftTracker {
   private text = "";
   private mapped: ReviewDocument | null = null;
   private recorded: ReviewTextEdit[] = [];
+  private grouped: ReviewTextEdit[] = [];
+  private pending: { base: ReviewDocument; snapshot: string; edits: ReviewTextEdit[]; grouped: ReviewTextEdit[] } | null = null;
   advance(doc: ReviewDocument, draft: string): ReviewDocument {
-    if (this.base !== doc) { this.base = doc; this.text = doc.snapshot; this.mapped = doc; this.recorded = []; }
+    if (this.base !== doc) { this.base = doc; this.text = doc.snapshot; this.mapped = doc; this.recorded = []; this.grouped = []; this.pending = null; }
     if (this.text !== draft) {
-      const edits = addReviewEdit(this.recorded, this.text, draft);
-      // Past the limit the server maps the whole change at once; this copy stays precise.
-      this.recorded = edits.length > MAX_REVIEW_EDITS ? addReviewEdit([], doc.snapshot, draft) : edits;
+      const step = addReviewEdit([], this.text, draft);
+      this.grouped = addReviewEdit(this.grouped, this.text, draft);
+      if (this.pending) {
+        this.pending.grouped = addReviewEdit(this.pending.grouped, this.text, draft);
+        this.pending.edits = boundedEdits([...this.pending.edits, ...step], this.pending.grouped, this.pending.snapshot, draft);
+      }
+      this.recorded = boundedEdits([...this.recorded, ...step], this.grouped, doc.snapshot, draft);
       this.mapped = syncReview(this.mapped!, draft);
       this.text = draft;
     }
     return this.mapped!;
   }
   /** How many edits are waiting to be stored. */
-  get count() { return this.recorded.length; }
+  get count() { return this.grouped.length; }
   /** The followed draft: the text `edits()` leads to by default. */
   get draft() { return this.text; }
   /** The edits from `doc`'s snapshot to `text`; none when `doc` is not the review being followed. */
   edits(doc: ReviewDocument, text = this.text): ReviewTextEdit[] {
     if (this.base !== doc) return [];
-    const edits = addReviewEdit(this.recorded, this.text, text);
+    const edits = boundedEdits([...this.recorded, ...addReviewEdit([], this.text, text)], addReviewEdit(this.grouped, this.text, text), doc.snapshot, text);
     return edits.length > MAX_REVIEW_EDITS ? [] : edits;
+  }
+  checkpoint(doc: ReviewDocument, text: string): ReviewTextEdit[] {
+    this.advance(doc, text);
+    const edits = this.edits(doc);
+    this.pending = { base: doc, snapshot: text, edits: [], grouped: [] };
+    return edits;
+  }
+  acknowledge(doc: ReviewDocument, next: ReviewDocument) {
+    const pending = this.pending;
+    if (this.base !== doc || pending?.base !== doc || next.snapshot !== pending.snapshot) return;
+    this.base = next; this.recorded = pending.edits; this.grouped = pending.grouped;
+    this.mapped = replayReviewEdits(next, pending.edits, this.text); this.pending = null;
   }
 }
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {

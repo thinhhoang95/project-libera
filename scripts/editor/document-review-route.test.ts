@@ -116,7 +116,8 @@ test("unsaved review recovery preserves identity on first save and concurrent wr
     const moved = await review(request({ action: "migrate-path", from: draft.key, to: "Notebook/saved.md", snapshot: draft.snapshot }));
     assert.equal(moved.status, 200);
     const loaded = await loadReview("Notebook/saved.md", draft.snapshot);
-    assert.equal(loaded.id, draft.id); assert.equal(loaded.threads[0].id, commented.threads[0].id);
+    assert.equal(loaded.id, draft.id);
+    assert.deepEqual(loaded.threads, (writes.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<ReviewDocument>).value.threads);
   } finally { if (prior === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -288,6 +289,7 @@ test("recorded edits keep anchors that one change spanning them would lose", asy
   assert.equal(syncReview(doc, final).threads[0].anchor.state, "orphaned", "the single change covers the comment");
   // Edits that do not lead to the snapshot fall back to the single change.
   assert.equal(replayReviewEdits(doc, [{ start: 0, end: 0, text: "x" }], final).threads[0].anchor.state, "orphaned");
+  for (const edits of [[null], [undefined], [false], [{ start: -1, end: 0, text: "x" }]]) assert.deepEqual(replayReviewEdits(doc, edits, final), syncReview(doc, final));
   assert.equal(tracker.edits(newReview("Notes/other.md", original, "other")).length, 0);
 });
 
@@ -313,4 +315,59 @@ test("continuous typing is recorded as one edit", () => {
     }
     assert.equal(recorded.reduce(apply, start), current, JSON.stringify(recorded));
   }
+});
+
+test("touching edits retain their individual anchor maps when their merged replacement would detach a comment", () => {
+  const text = "Alpha.\n\nBeta.\n\nGamma.";
+  const doc = newReview("Notes/a.md", text, "review-a");
+  doc.threads = [{ id: "thread", anchor: anchorAt(text, { start: 8, end: 13 }), messages: [], status: "open" }];
+  const tracker = new ReviewDraftTracker();
+  tracker.advance(doc, "Alpha.\n\nBeta.abcGamma.");
+  const final = "Alpha.\n\nBetaababcGamma.";
+  const shown = tracker.advance(doc, final);
+  assert.equal(tracker.count, 1, "touching changes still count as one typing group");
+  assert.equal(shown.threads[0].anchor.state, "attached");
+  assert.equal(shown.threads[0].anchor.quote, "Betaab");
+  assert.deepEqual(replayReviewEdits(doc, tracker.edits(doc), final), shown);
+});
+
+test("acknowledging an in-flight review write preserves the exact mapping of edits typed after it", () => {
+  const text = "Alpha one.\n\nBeta two.\n\nGamma three.\n";
+  const doc = newReview("Notes/a.md", text, "review-a");
+  const at = text.indexOf("Beta two.");
+  doc.threads = [{ id: "thread", anchor: anchorAt(text, { start: at, end: at + 9 }), messages: [], status: "open" }];
+  const tracker = new ReviewDraftTracker();
+  const sent = `Intro.\n\n${text}`;
+  tracker.advance(doc, sent);
+  const edits = tracker.checkpoint(doc, sent);
+  tracker.advance(doc, sent.replace("Beta two.", "Beta 2."));
+  const final = sent.replace("Beta two.", "Beta 2.").replace("Gamma three.", "Gamma three!");
+  const shown = tracker.advance(doc, final);
+  const stored = { ...replayReviewEdits(doc, edits, sent), revision: 1 };
+  tracker.acknowledge(doc, stored);
+  const projected = tracker.advance(stored, final);
+  assert.deepEqual(projected.threads, shown.threads);
+  assert.deepEqual(replayReviewEdits(stored, tracker.edits(stored), final).threads, shown.threads);
+  assert.equal(projected.threads[0].anchor.state, "attached");
+});
+
+test("a minute of typing past the edit limit still keeps anchors precise when stored", () => {
+  const original = "Alpha one.\n\nBeta two.\n\nGamma three.\n";
+  const doc = newReview("Notes/limit.md", original, "review-limit");
+  const at = original.indexOf("Beta two.");
+  doc.threads = [{ id: "t1", anchor: anchorAt(original, { start: at, end: at + "Beta two.".length }), messages: [{ id: "m1", text: "Hm", createdAt: "2026-10-01T00:00:00.000Z" }], status: "open" }];
+  const tracker = new ReviewDraftTracker();
+  const edited = original.replace("Beta two.", "Beta 2.");
+  tracker.advance(doc, edited);
+  // One keystroke per step, well past MAX_REVIEW_EDITS, before the review is stored.
+  const typed = "An intro typed one key at a time. ".repeat(10);
+  let text = edited;
+  for (let i = 1; i <= typed.length; i++) { text = `${typed.slice(0, i)}\n\n${edited}`; tracker.advance(doc, text); }
+  text = text.replace("Gamma three.", "Gamma three!");
+  const shown = tracker.advance(doc, text);
+  const edits = tracker.edits(doc);
+  assert.ok(edits.length > 1 && edits.length <= 200, `${edits.length} edits`);
+  const stored = replayReviewEdits(doc, edits, text);
+  assert.equal(shown.threads[0].anchor.state, "attached");
+  assert.deepEqual(stored.threads[0].anchor, shown.threads[0].anchor);
 });

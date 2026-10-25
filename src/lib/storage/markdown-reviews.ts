@@ -121,9 +121,11 @@ export async function updateReview(id: string, revision: number, change: (doc: R
 const under = (key: string, folder: string) => key === folder || key.startsWith(`${folder}/`);
 export async function moveReviewPath(from: string, to: string) {
   return transaction(async (tx) => {
+    // A review whose file has not synced yet still follows its file.
     for (const [id, key] of tx.keys()) if (under(key, from)) {
-      const doc = await tx.get(id);
+      const doc = await tx.getIfPresent(id);
       if (doc) { doc.key = to + doc.key.slice(from.length); doc.revision++; }
+      else tx.rekey(id, to + key.slice(from.length));
     }
   });
 }
@@ -133,7 +135,7 @@ export async function deleteReviewPath(key: string) {
 export async function copyReviewPath(from: string, to: string) {
   return transaction(async (tx) => {
     for (const [id, key] of tx.keys()) if (under(key, from)) {
-      const original = await tx.get(id);
+      const original = await tx.getIfPresent(id);
       if (!original) continue;
       const copied = newReview(to + original.key.slice(from.length), original.snapshot, randomUUID());
       copied.enabled = original.enabled;
