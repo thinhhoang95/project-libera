@@ -1,31 +1,30 @@
 "use client";
 
+import {
+  changeSelectedHeadingLevels, getChangedTextRange, sourceClipboardContents, sourceDragKind,
+  getDroppedImageFiles, SELECTION_CHANGE_DEBOUNCE_MS,
+  SOURCE_EDITOR_LABEL, SOURCE_PANE_PADDING, SOURCE_SPELLCHECK, SOURCE_TAB_SIZE, sourcePasteEdit, sourcePasteMode, sourceFormatEdit, handleSourceKey, fileLinkPopupKey, refreshSourcePopupOnKeyUp,
+  sourceFileLinkContext, sameFileLinkPopup, sourceHeadingLinkEdit, sourceCitationContext, sameCitationPopup, sourceCitationHit, sourceSelectionAfterChange,
+  type FileLinkPopupContext, type CitationPopupContext, type HeadingLevelChangeDirection, type MarkdownFormat,
+} from "@/lib/markdown-source";
+export { changeSelectedHeadingLevels, findMarkdownImageInText, getChangedTextRange, getClipboardImageFiles, getDroppedImageFiles, hasImageDragItem, MARKDOWN_SHORTCUT_FORMATS, SOURCE_DRAFT_DELAY_MS } from "@/lib/markdown-source";
+export type { HeadingLevelChangeDirection, MarkdownFormat } from "@/lib/markdown-source";
+
+import { MarkdownSourceContextMenu, sourceContextMenuState, type SourceContextMenuState } from "./markdown-source/markdown-source-context-menu";
+import { MarkdownSourceFindBar } from "./markdown-source/markdown-source-find-bar";
+import type { MarkdownSourceEditorProps } from "./markdown-source/types";
+import { useMarkdownSourceDraft } from "./markdown-source/use-markdown-source-draft";
+import { useMarkdownSourceFind } from "./markdown-source/use-markdown-source-find";
+
 import { beginAiActivity } from "@/lib/ai-activity";
 
 import { useSourceReview } from "./use-editor-review";
-import {
-  ChevronDown,
-  ChevronUp,
-  ImageIcon,
-  ListIndentDecrease,
-  ListIndentIncrease,
-  Loader2,
-  PenLine,
-  Search,
-  Sparkles,
-  Volume2,
-  X,
-} from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
-import { QuickPromptInput } from "./quick-prompt-input";
-import { IncludeDocumentContextCheckbox } from "./ai-document-context-preference";
-import { useCanvasViewStateCapture } from "./canvas-view-state";
 import type {
   ClipboardEvent as ReactClipboardEvent,
   DragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent,
-  RefObject,
   UIEvent,
 } from "react";
 import {
@@ -44,38 +43,27 @@ import {
   flattenMarkdownFileLinkSections,
 } from "@/components/libera/markdown-file-link-popup";
 import type {
-  MarkdownFileLinkRange,
   MarkdownFileLinkSelection,
-  MarkdownImageSelection,
-  OpenTab,
 } from "@/components/libera/types";
 import {
   getTextareaClientPointForOffset,
   getTextareaOffsetAtPoint,
-  scrollTextareaToOffset,
 } from "@/lib/textarea-position";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
 import {
   filterMarkdownHeadingAnchors,
-  markdownHeadingAnchors,
-  markdownHeadingHref,
   type MarkdownHeadingAnchor,
 } from "@/lib/markdown-heading-anchors";
 import {
   createMarkdownEditorLineIndex,
-  getMarkdownEditorLineHighlight,
-  initialMarkdownEditorHighlightState,
 } from "@/lib/markdown-editor-highlighting";
 import type {
   MarkdownEditorCachedLine,
-  MarkdownEditorHighlightState,
   MarkdownEditorLineTone,
 } from "@/lib/markdown-editor-highlighting";
-import type { LiberaFileNode } from "@/lib/types";
-import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
-import { convertClipboardHtmlToMarkdown } from "@/lib/markdown-clipboard";
-import { smartPasteMarkdown, type SmartPasteMode } from "@/lib/markdown-smart-paste";
+import type { TextMatch } from "@/lib/text-find";
+import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import {
   applyTextChanges,
   detectMarkdownHeadingNumbering,
@@ -83,13 +71,11 @@ import {
   mapOffsetThroughTextChanges,
 } from "@/lib/markdown-heading-numbering";
 import { useHeadingNumbering } from "@/components/libera/heading-numbering-state";
-import { PasteMenuItems, readClipboardText, type ClipboardText, type MenuPasteMode } from "@/components/libera/paste-menu-items";
-import type { MathMarkerSettings } from "@/lib/math-markers";
-import { citationAt, citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
-import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
+import { readClipboardText, type ClipboardText, type MenuPasteMode } from "@/components/libera/paste-menu-items";
+import { citationAt } from "@/lib/references/citation-syntax";
+import { citationInsertion, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
 import {
   CitationPopup,
-  citationPopupPosition,
   openCitationAttachment,
   useEditorCitationHover,
   type CitationPopupHandle,
@@ -98,378 +84,19 @@ import { referenceKeyResolver, useReferenceRender } from "@/components/libera/re
 import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "@/components/libera/references/pdf-quote-cite";
 import { quoteBlockInsertion, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 
-type EditorContextMenuState = {
-  hasText: boolean;
-  image?: MarkdownImageSelection;
-  x: number;
-  y: number;
-  start: number;
-  end: number;
-};
+type MarkdownEditorProps = Omit<MarkdownSourceEditorProps, "extensions" | "documentSource" | "onViewChange">;
 
-type FileLinkPopupContext = {
-  destinationEnd: number;
-  destinationStart: number;
-  /** This document's headings, parsed once when the destination starts with "#". */
-  headings?: MarkdownHeadingAnchor[];
-  query: string;
-  x: number;
-  y: number;
-};
-
-type CitationPopupContext = {
-  from: number;
-  to: number;
-  query: string;
-  insideCitation: boolean;
-  citedKeys: string[];
-  x: number;
-  y: number;
-  /** The character before the `@` (narrative insertion needs whitespace, `[` or `(` there). */
-  before: string;
-};
-
-type MarkdownEditorProps = {
-  activeFilePath?: string;
-  files: LiberaFileNode[];
-  formatting: boolean;
-  fontFamily: string;
-  fontSizePx: number;
-  imageConverting: boolean;
-  lineHeightPx: number;
-  mathMarkers?: MathMarkerSettings;
-  openTabs?: OpenTab[];
-  smartPaste?: boolean;
-  readOpenTabs?: () => OpenTab[];
-  recentFiles: LiberaFileNode[];
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
-  value: string;
-  onAiFormatSelection: (selection: { start: number; end: number }) => Promise<void>;
-  onAiImageToMarkdown: (image: MarkdownImageSelection) => Promise<void>;
-  onAiRewriteSelection: (
-    selection: { start: number; end: number },
-    prompt: string,
-  ) => Promise<void>;
-  onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
-  onChange: (value: string) => void;
-  onRegisterDraft?: (read: () => string) => () => void;
-  onInsertFileLink: (
-    selection: MarkdownFileLinkSelection,
-    range?: MarkdownFileLinkRange,
-  ) => void;
-  onInsertImageFile: (
-    file: File,
-    selection?: { end: number; start: number },
-  ) => Promise<void>;
-  onSelectionChange?: (selection: { end: number; start: number }) => void;
-};
-
-const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-const IMAGE_FILE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp)$/i;
-const CLIPBOARD_IMAGE_TYPE_EXTENSIONS: Record<string, string> = {
-  "image/gif": "gif",
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-};
-const MARKDOWN_HEADING_REGEX = /^( {0,3})(#{1,6})([ \t]+|$)/;
 const EMPTY_EDITOR_LINE = "\u200b";
-const SELECTION_CHANGE_DEBOUNCE_MS = 120;
-export const SOURCE_DRAFT_DELAY_MS = 250;
 const FIND_MATCH_CLASS_NAME = "markdown-editor-find-match";
 const ACTIVE_FIND_MATCH_CLASS_NAME = "markdown-editor-find-match-active";
-
-/** The smallest range of `current` that must be replaced to produce `next`,
- * so whole-document edits land in the textarea as one compact undo step. */
-export function getChangedTextRange(current: string, next: string) {
-  let prefixLength = 0;
-  while (
-    prefixLength < current.length &&
-    prefixLength < next.length &&
-    current[prefixLength] === next[prefixLength]
-  ) {
-    prefixLength += 1;
-  }
-  let suffixLength = 0;
-  while (
-    suffixLength < current.length - prefixLength &&
-    suffixLength < next.length - prefixLength &&
-    current[current.length - 1 - suffixLength] === next[next.length - 1 - suffixLength]
-  ) {
-    suffixLength += 1;
-  }
-  return {
-    replacement: next.slice(prefixLength, next.length - suffixLength),
-    selectionEnd: current.length - suffixLength,
-    selectionStart: prefixLength,
-  };
-}
-
-export type HeadingLevelChangeDirection = "indent" | "unindent";
 
 type HighlightChunk = {
   className?: string;
   text: string;
 };
 
-type TextMutation = {
-  inserted: number;
-  offset: number;
-  removed: number;
-};
-
-type HeadingLevelChangeResult = {
-  changed: boolean;
-  hasHeading: boolean;
-  nextEnd: number;
-  nextStart: number;
-  nextValue: string;
-};
-
-export type MarkdownFormat = {
-  after: string;
-  before: string;
-  placeholder?: string;
-};
-
-export const MARKDOWN_SHORTCUT_FORMATS: Record<string, MarkdownFormat> = {
-  b: { before: "**", after: "**" },
-  i: { before: "_", after: "_" },
-  u: { before: "<u>", after: "</u>" },
-};
-
-export function findMarkdownImageInText(
-  value: string,
-  start: number,
-  end: number,
-): MarkdownImageSelection | undefined {
-  const selection = value.slice(start, end);
-  const selectedMatch = Array.from(selection.matchAll(MARKDOWN_IMAGE_REGEX))[0];
-
-  if (selectedMatch?.index !== undefined) {
-    return {
-      alt: selectedMatch[1] ?? "",
-      src: selectedMatch[2] ?? "",
-      start: start + selectedMatch.index,
-      end: start + selectedMatch.index + selectedMatch[0].length,
-    };
-  }
-
-  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-  const nextLineBreak = value.indexOf("\n", end);
-  const lineEnd = nextLineBreak === -1 ? value.length : nextLineBreak;
-  const line = value.slice(lineStart, lineEnd);
-
-  for (const match of line.matchAll(MARKDOWN_IMAGE_REGEX)) {
-    if (match.index === undefined) {
-      continue;
-    }
-
-    const imageStart = lineStart + match.index;
-    const imageEnd = imageStart + match[0].length;
-
-    if (start >= imageStart && start <= imageEnd) {
-      return {
-        alt: match[1] ?? "",
-        src: match[2] ?? "",
-        start: imageStart,
-        end: imageEnd,
-      };
-    }
-  }
-}
-
-function isImageFile(file: File) {
-  return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION_REGEX.test(file.name);
-}
-
-export function hasImageDragItem(dataTransfer: DataTransfer) {
-  if (dataTransfer.files.length) {
-    return Array.from(dataTransfer.files).some(isImageFile);
-  }
-
-  return Array.from(dataTransfer.items).some(
-    (item) =>
-      item.kind === "file" &&
-      (item.type.startsWith("image/") || !item.type),
-  );
-}
-
-export function getDroppedImageFiles(dataTransfer: DataTransfer) {
-  return Array.from(dataTransfer.files).filter(isImageFile);
-}
-
-function timestampForPastedImageName() {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[:.]/g, "-");
-}
-
-function normalizeClipboardImageFile(file: File) {
-  if (IMAGE_FILE_EXTENSION_REGEX.test(file.name)) {
-    return file;
-  }
-
-  const extension = CLIPBOARD_IMAGE_TYPE_EXTENSIONS[file.type.toLowerCase()];
-
-  if (!extension) {
-    return null;
-  }
-
-  return new File([file], `pasted-image-${timestampForPastedImageName()}.${extension}`, {
-    lastModified: file.lastModified || Date.now(),
-    type: file.type,
-  });
-}
-
-export function getClipboardImageFiles(dataTransfer: DataTransfer) {
-  const files = Array.from(dataTransfer.files)
-    .filter(isImageFile)
-    .map(normalizeClipboardImageFile)
-    .filter((file): file is File => Boolean(file));
-
-  if (files.length) {
-    return files;
-  }
-
-  return Array.from(dataTransfer.items)
-    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
-    .map(normalizeClipboardImageFile)
-    .filter((file): file is File => Boolean(file));
-}
-
 function getHighlightClassName(tone: MarkdownEditorLineTone | undefined) {
   return tone ? `markdown-editor-highlight-tone-${tone}` : undefined;
-}
-
-function isHeadingTone(tone: MarkdownEditorLineTone | undefined) {
-  return tone?.startsWith("heading-") ?? false;
-}
-
-function transformSelectionOffset(
-  offset: number,
-  mutations: TextMutation[],
-  insertAffinity: "after" | "before",
-) {
-  let delta = 0;
-
-  for (const mutation of mutations) {
-    if (mutation.removed === 0) {
-      if (
-        offset > mutation.offset ||
-        (offset === mutation.offset && insertAffinity === "after")
-      ) {
-        delta += mutation.inserted;
-      }
-
-      continue;
-    }
-
-    if (offset <= mutation.offset) {
-      continue;
-    }
-
-    if (offset <= mutation.offset + mutation.removed) {
-      return mutation.offset + delta + mutation.inserted;
-    }
-
-    delta += mutation.inserted - mutation.removed;
-  }
-
-  return offset + delta;
-}
-
-export function changeSelectedHeadingLevels(
-  value: string,
-  start: number,
-  end: number,
-  direction: HeadingLevelChangeDirection,
-): HeadingLevelChangeResult {
-  const selectionStart = Math.max(0, Math.min(start, end, value.length));
-  const selectionEnd = Math.max(0, Math.min(Math.max(start, end), value.length));
-
-  if (selectionStart === selectionEnd) {
-    return {
-      changed: false,
-      hasHeading: false,
-      nextEnd: selectionEnd,
-      nextStart: selectionStart,
-      nextValue: value,
-    };
-  }
-
-  const lines = value.split("\n");
-  const mutations: TextMutation[] = [];
-  const nextLines: string[] = [];
-  let hasHeading = false;
-  let lineOffset = 0;
-  let state: MarkdownEditorHighlightState = initialMarkdownEditorHighlightState();
-
-  for (const line of lines) {
-    const lineEnd = lineOffset + line.length;
-    const lineSelected = selectionStart < lineEnd && selectionEnd > lineOffset;
-    const highlight = getMarkdownEditorLineHighlight(line, state);
-    const headingMatch = line.match(MARKDOWN_HEADING_REGEX);
-    let nextLine = line;
-
-    state = highlight.nextState;
-
-    if (lineSelected && isHeadingTone(highlight.tone) && headingMatch) {
-      const leadingSpaces = headingMatch[1] ?? "";
-      const headingMarkers = headingMatch[2] ?? "";
-      const headingSeparator = headingMatch[3] ?? "";
-      const markerOffset = lineOffset + leadingSpaces.length;
-
-      hasHeading = true;
-
-      if (direction === "indent" && headingMarkers.length < 6) {
-        nextLine = `${line.slice(0, leadingSpaces.length)}#${line.slice(
-          leadingSpaces.length,
-        )}`;
-        mutations.push({
-          inserted: 1,
-          offset: markerOffset,
-          removed: 0,
-        });
-      }
-
-      if (direction === "unindent") {
-        const removed = headingMarkers.length === 1
-          ? headingMarkers.length + headingSeparator.length
-          : 1;
-        nextLine = `${line.slice(0, leadingSpaces.length)}${line.slice(
-          leadingSpaces.length + removed,
-        )}`;
-        mutations.push({
-          inserted: 0,
-          offset: markerOffset,
-          removed,
-        });
-      }
-    }
-
-    nextLines.push(nextLine);
-    lineOffset = lineEnd + 1;
-  }
-
-  if (!mutations.length) {
-    return {
-      changed: false,
-      hasHeading,
-      nextEnd: selectionEnd,
-      nextStart: selectionStart,
-      nextValue: value,
-    };
-  }
-
-  return {
-    changed: true,
-    hasHeading,
-    nextEnd: transformSelectionOffset(selectionEnd, mutations, "after"),
-    nextStart: transformSelectionOffset(selectionStart, mutations, "before"),
-    nextValue: nextLines.join("\n"),
-  };
 }
 
 function appendHighlightChunk(
@@ -642,20 +269,6 @@ function renderHighlightedMarkdown(
   });
 }
 
-function isSameFileLinkPopupContext(
-  left: FileLinkPopupContext | null,
-  right: FileLinkPopupContext | null,
-) {
-  return (
-    left?.destinationEnd === right?.destinationEnd &&
-    left?.destinationStart === right?.destinationStart &&
-    left?.query === right?.query &&
-    !left?.headings === !right?.headings &&
-    left?.x === right?.x &&
-    left?.y === right?.y
-  );
-}
-
 export function MarkdownEditor({
   activeFilePath,
   files,
@@ -683,22 +296,10 @@ export function MarkdownEditor({
 }: MarkdownEditorProps) {
   const [editorValue, setEditorValue] = useState(value);
   const [initialValue] = useState(value);
-  const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
-  const [rewritePrompt, setRewritePrompt] = useState("");
-  const [writePrompt, setWritePrompt] = useState("");
+  const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
   const [draggingImage, setDraggingImage] = useState(false);
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [replaceQuery, setReplaceQuery] = useState("");
-  const [wildcardMatches, setWildcardMatches] = useState(false);
-  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const findInputRef = useRef<HTMLInputElement>(null);
-  const replaceInputRef = useRef<HTMLInputElement>(null);
-  const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
-  const writeInputRef = useRef<HTMLTextAreaElement>(null);
   const highlightLayerRef = useRef<HTMLPreElement>(null);
   const editorValueRef = useRef(value);
   const highlightedLinesRef = useRef<HighlightChunk[][]>([]);
@@ -714,7 +315,6 @@ export function MarkdownEditor({
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const referenceRender = useReferenceRender();
   const citationHover = useEditorCitationHover();
-  const publishedDraftsRef = useRef<string[]>([]);
   const composingRef = useRef(false);
   const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
   const headingNumberingRef = useRef(headingNumbering);
@@ -731,10 +331,6 @@ export function MarkdownEditor({
   }, [headingNumbering]);
   const previousActiveFilePathRef = useRef(activeFilePath);
   const selectionChangeTimeoutRef = useRef<number | null>(null);
-  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const publishRef = useRef(onChange);
-  const lastPublishedRef = useRef(value);
-  useLayoutEffect(() => { publishRef.current = onChange; }, [onChange]);
   const selectionCallbackRef = useRef(onSelectionChange);
   useLayoutEffect(() => { selectionCallbackRef.current = onSelectionChange; }, [onSelectionChange]);
   useLayoutEffect(() => {
@@ -744,24 +340,10 @@ export function MarkdownEditor({
     };
   }, [textareaRef]);
 
-  const readDraft = useCallback(() => {
-    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
-    draftTimerRef.current = null;
-    const text = editorValueRef.current;
-    if (lastPublishedRef.current !== text) {
-      setEditorValue(text);
-      lastPublishedRef.current = text;
-      publishedDraftsRef.current.push(text);
-      publishRef.current(text);
-    }
-    return text;
-  }, []);
-  useLayoutEffect(() => {
-    const unregister = onRegisterDraft?.(readDraft);
-    window.addEventListener("pagehide", readDraft);
-    return () => { readDraft(); unregister?.(); window.removeEventListener("pagehide", readDraft); };
-  }, [onRegisterDraft, readDraft]);
-  useCanvasViewStateCapture(readDraft);
+  const { readDraft, schedulePublish, lastPublishedRef, publishedDraftsRef, draftTimerRef } = useMarkdownSourceDraft(value, {
+    readText: () => editorValueRef.current, isComposing: () => composingRef.current,
+    onChange, onPublish: setEditorValue, onRegisterDraft,
+  });
   const review = useSourceReview(textareaRef, (text) => {
     if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = null;
@@ -780,19 +362,11 @@ export function MarkdownEditor({
   ] : [], [reviewEnabled, reviewDocument, reviewSelection]);
   const aiWorking = formatting || imageConverting;
   useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
-  const findMatches = useMemo(() => {
-    let cached: { text: string; query: string; wildcards: boolean; matches: TextMatch[] } | undefined;
-    return (text: string, query: string, options: { wildcards: boolean }) => {
-      if (cached?.text === text && cached.query === query && cached.wildcards === options.wildcards) return cached.matches;
-      const matches = findTextMatches(text, query, options);
-      cached = { text, query, wildcards: options.wildcards, matches };
-      return matches;
-    };
-  }, []);
-  const textMatches = useMemo(
-    () => findOpen ? findMatches(editorValue, findQuery, { wildcards: wildcardMatches }) : [],
-    [findOpen, findQuery, editorValue, wildcardMatches, findMatches],
-  );
+  const find = useMarkdownSourceFind({
+    text: editorValue, textareaRef, readText: () => editorValueRef.current, updateText: setEditorValue,
+    commitText: commitEditorValue, readDraft, closeContextMenu: () => setContextMenu(null), syncScroll: syncHighlightLayerScroll,
+  });
+  const { open: findOpen, query: findQuery, wildcards: wildcardMatches, active: activeMatchIndex, matches: textMatches, findMatches } = find;
   const refreshHighlightLayer = useCallback(() => {
     // This layer is intentionally owned by the input handler, not React.
     // Stable line nodes isolate layout and avoid allocating thousands of React
@@ -876,30 +450,6 @@ export function MarkdownEditor({
   const selectedFileLinkIndex = linkOptionCount
     ? Math.min(activeFileLinkIndex, linkOptionCount - 1)
     : 0;
-  const contextMenuHeadingLevels = useMemo(() => {
-    if (!contextMenu || contextMenu.start === contextMenu.end) {
-      return {
-        canIndent: false,
-        canUnindent: false,
-      };
-    }
-
-    return {
-      canIndent: changeSelectedHeadingLevels(
-        editorValue,
-        contextMenu.start,
-        contextMenu.end,
-        "indent",
-      ).changed,
-      canUnindent: changeSelectedHeadingLevels(
-        editorValue,
-        contextMenu.start,
-        contextMenu.end,
-        "unindent",
-      ).changed,
-    };
-  }, [contextMenu, editorValue]);
-
   useLayoutEffect(() => {
     const fileChanged = previousActiveFilePathRef.current !== activeFilePath;
     previousActiveFilePathRef.current = activeFilePath;
@@ -918,7 +468,7 @@ export function MarkdownEditor({
       if (textareaRef.current) textareaRef.current.value = value;
       setEditorValue(value);
     }
-  }, [activeFilePath, value, textareaRef]);
+  }, [activeFilePath, value, textareaRef, draftTimerRef, lastPublishedRef, publishedDraftsRef]);
 
   useLayoutEffect(() => { refreshHighlightLayer(); }, [editorValue, refreshHighlightLayer]);
 
@@ -938,190 +488,13 @@ export function MarkdownEditor({
     };
   }, []);
 
-  function selectMatch(matchIndex: number, matches = textMatches) {
-    if (!matches.length) {
-      return;
-    }
-
-    const normalizedIndex = (matchIndex + matches.length) % matches.length;
-    const match = matches[normalizedIndex];
-    setActiveMatchIndex(normalizedIndex);
-
-    window.requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-
-      if (!textarea) {
-        return;
-      }
-
-      textarea.setSelectionRange(match.start, match.end);
-      scrollTextareaToOffset(textarea, match.start);
-    });
-  }
-
-  function openFind(nextQuery?: string) {
-    setEditorValue(editorValueRef.current);
-    const textarea = textareaRef.current;
-    const selectedText = textarea
-      ? editorValueRef.current.slice(textarea.selectionStart, textarea.selectionEnd)
-      : "";
-    const query = nextQuery ?? (selectedText.includes("\n") ? "" : selectedText);
-
-    setContextMenu(null);
-    setFindOpen(true);
-
-    if (query) {
-      const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
-      setFindQuery(query);
-      selectMatch(0, matches);
-    }
-
-    window.requestAnimationFrame(() => {
-      findInputRef.current?.focus();
-      findInputRef.current?.select();
-    });
-  }
-
-  function closeFind() {
-    const textarea = textareaRef.current;
-    const scrollLeft = textarea?.scrollLeft ?? 0;
-    const scrollTop = textarea?.scrollTop ?? 0;
-    setFindOpen(false);
-    textarea?.focus({ preventScroll: true });
-    window.requestAnimationFrame(() => {
-      if (!textarea) return;
-      textarea.scrollLeft = scrollLeft;
-      textarea.scrollTop = scrollTop;
-      syncHighlightLayerScroll(textarea);
-    });
-  }
-
-  function updateFindQuery(query: string) {
-    const matches = findMatches(editorValueRef.current, query, { wildcards: wildcardMatches });
-    setFindQuery(query);
-    setActiveMatchIndex(0);
-
-    if (matches.length) {
-      selectMatch(0, matches);
-    }
-  }
-
-  function findNext() {
-    selectMatch(activeMatchIndex + 1);
-  }
-
-  function findPrevious() {
-    selectMatch(activeMatchIndex - 1);
-  }
-
-  function updateWildcardMatches(enabled: boolean) {
-    const matches = findMatches(editorValueRef.current, findQuery, { wildcards: enabled });
-    setWildcardMatches(enabled);
-    setActiveMatchIndex(0);
-    if (matches.length) selectMatch(0, matches);
-  }
-
-  function replaceMatches(matches: TextMatch[]) {
-    const textarea = textareaRef.current;
-    if (!textarea || !matches.length) return;
-
-    const first = matches[0];
-    const last = matches.at(-1)!;
-    const relativeMatches = matches.map((match) => ({
-      start: match.start - first.start,
-      end: match.end - first.start,
-    }));
-    const replacement = replaceTextMatches(
-      editorValueRef.current.slice(first.start, last.end),
-      relativeMatches,
-      replaceQuery,
-    );
-    const nextValue = `${editorValueRef.current.slice(0, first.start)}${replacement}${editorValueRef.current.slice(last.end)}`;
-    const focusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
-      selectionStart: first.start,
-      selectionEnd: last.end,
-      replacement,
-      nextSelectionStart: first.start + replacement.length,
-      nextSelectionEnd: first.start + replacement.length,
-      scrollLeft: textarea.scrollLeft,
-      scrollTop: textarea.scrollTop,
-    });
-
-    if (!usedNativeUndo) commitEditorValue(textarea, nextValue);
-    readDraft();
-
-    const nextMatches = findMatches(nextValue, findQuery, { wildcards: wildcardMatches });
-    const replacedOne = matches.length === 1;
-    const nextOffset = first.start + replaceQuery.length;
-    const nextIndex = replacedOne
-      ? Math.max(0, nextMatches.findIndex((match) => match.start >= nextOffset))
-      : 0;
-    setActiveMatchIndex(nextIndex);
-    if (nextMatches.length) selectMatch(nextIndex, nextMatches);
-
-    window.requestAnimationFrame(() => focusedElement?.focus());
-  }
-
-  function replaceCurrent() {
-    const match = textMatches[activeMatchIndex];
-    if (match) replaceMatches([match]);
-  }
-
-  function replaceAll() {
-    replaceMatches(textMatches);
-  }
-
   const getFileLinkPopupContext = useCallback(
     (
       textarea: HTMLTextAreaElement,
       nextValue = editorValueRef.current,
     ): FileLinkPopupContext | null => {
-      if (textarea.selectionStart !== textarea.selectionEnd) {
-        return null;
-      }
-
-      const cursor = textarea.selectionStart;
-      const lineStart = nextValue.lastIndexOf("\n", cursor - 1) + 1;
-      const beforeCursor = nextValue.slice(lineStart, cursor);
-      const linkOpenIndex = beforeCursor.lastIndexOf("](");
-
-      if (linkOpenIndex < 0) {
-        return null;
-      }
-
-      const labelStart = beforeCursor.lastIndexOf("[", linkOpenIndex);
-
-      if (labelStart < 0) {
-        return null;
-      }
-
-      const destinationStart = lineStart + linkOpenIndex + 2;
-      const destination = nextValue.slice(destinationStart, cursor);
-
-      if (destination.includes("\n") || destination.includes(")")) {
-        return null;
-      }
-
-      const point = getTextareaClientPointForOffset(textarea, cursor);
-      const width = Math.min(384, window.innerWidth - 16);
-      const height = 384;
-      const query = destination.replace(/^</, "");
-      const currentPopup = fileLinkPopupRef.current;
-      const headings = query.startsWith("#")
-        ? currentPopup?.destinationStart === destinationStart && currentPopup.headings
-          ? currentPopup.headings
-          : markdownHeadingAnchors(nextValue)
-        : undefined;
-
-      return {
-        destinationEnd: cursor,
-        destinationStart,
-        headings,
-        query,
-        x: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
-        y: Math.max(8, Math.min(point.y + 6, window.innerHeight - height - 8)),
-      };
+      return sourceFileLinkContext(nextValue, textarea.selectionStart, textarea.selectionEnd, fileLinkPopupRef.current,
+        () => getTextareaClientPointForOffset(textarea, textarea.selectionStart));
     },
     [],
   );
@@ -1135,7 +508,7 @@ export function MarkdownEditor({
         setActiveFileLinkIndex(0);
       }
 
-      if (isSameFileLinkPopupContext(currentPopup, nextPopup)) {
+      if (sameFileLinkPopup(currentPopup, nextPopup)) {
         return;
       }
 
@@ -1180,38 +553,15 @@ export function MarkdownEditor({
   /** Opens, moves or closes the citation popup for the caret. `citationTriggerAt`
    * analyses the whole document, so it only runs right after `@` and key characters. */
   function refreshCitationPopup(textarea: HTMLTextAreaElement, nextValue = editorValueRef.current) {
-    const cursor = textarea.selectionStart;
     const previous = citationPopupRef.current;
-    let next: CitationPopupContext | null = null;
-    if (
-      textarea.selectionStart === textarea.selectionEnd &&
-      !fileLinkPopupRef.current &&
-      mayTriggerCitation(nextValue.slice(Math.max(0, cursor - 260), cursor))
-    ) {
-      const trigger = citationTriggerAt(nextValue, cursor, { mathMarkers });
-      const dismissed = citationInsertedRef.current;
-      // The `@key` a choice just inserted is not a new query: stay closed until the caret leaves it.
-      if (!(trigger && dismissed && dismissed.from === trigger.from && dismissed.query === trigger.query)) {
-        citationInsertedRef.current = null;
-        if (trigger) {
-          const same = previous?.from === trigger.from;
-          next = {
-            from: trigger.from,
-            to: cursor,
-            query: trigger.query,
-            insideCitation: trigger.insideCitation,
-            // The trigger just analysed this text, so listing its keys reuses that analysis.
-            citedKeys: same ? previous.citedKeys : documentCitedKeys(nextValue, { mathMarkers, resolves: referenceKeyResolver(referenceRender) }),
-            ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(getTextareaClientPointForOffset(textarea, trigger.from))),
-            before: trigger.from > 0 ? nextValue[trigger.from - 1] : "",
-          };
-        }
-      }
-    } else citationInsertedRef.current = null;
-    if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
-    if (!previous && !next) return;
-    citationPopupRef.current = next;
-    setCitationPopup(next);
+    const result = sourceCitationContext(nextValue, textarea.selectionStart, textarea.selectionEnd, {
+      fileLinkOpen: !!fileLinkPopupRef.current, previous, inserted: citationInsertedRef.current, mathMarkers,
+      resolves: referenceKeyResolver(referenceRender), point: (offset) => getTextareaClientPointForOffset(textarea, offset),
+    });
+    citationInsertedRef.current = result.inserted;
+    if (sameCitationPopup(previous, result.popup)) return;
+    citationPopupRef.current = result.popup;
+    setCitationPopup(result.popup);
   }
   const refreshCitationPopupRef = useRef(refreshCitationPopup);
   useLayoutEffect(() => { refreshCitationPopupRef.current = refreshCitationPopup; });
@@ -1254,14 +604,8 @@ export function MarkdownEditor({
     const text = editorValueRef.current;
     if (!text.includes("@")) return null;
     const offset = getTextareaOffsetAtPoint(textarea, clientX, clientY);
-    const found = citationAt(text, offset, { mathMarkers });
-    // A narrative `@word` is a citation only when the library knows its key.
-    if (!found || (found.citation.narrative && !referenceKeyResolver(referenceRender)?.(found.citation.items[0].key))) return null;
-    // The offset is the nearest caret position: check the pointer is over the token on its line.
-    const start = getTextareaClientPointForOffset(textarea, found.start);
-    const end = getTextareaClientPointForOffset(textarea, found.end);
-    if (start.y === end.y && (clientX < start.x - 2 || clientX > end.x + 2)) return null;
-    return found;
+    return sourceCitationHit(offset, clientX, (at) => citationAt(text, at, { mathMarkers }),
+      (at) => getTextareaClientPointForOffset(textarea, at), referenceKeyResolver(referenceRender));
   }
 
   function handleCitationPointer(event: MouseEvent<HTMLTextAreaElement>) {
@@ -1294,14 +638,11 @@ export function MarkdownEditor({
     const nextValue = writeDocumentStyleForPath(activeFilePath, currentValue, detail.style);
     if (nextValue === currentValue) return;
     const change = textChange(currentValue, nextValue);
-    const delta = change.insert.length - (change.to - change.from);
-    const shift = (offset: number) => offset <= change.from ? offset : offset >= change.to ? offset + delta : change.from + change.insert.length;
     if (!replaceTextareaSelectionWithUndo(textarea, {
       selectionStart: change.from,
       selectionEnd: change.to,
       replacement: change.insert,
-      nextSelectionStart: shift(textarea.selectionStart),
-      nextSelectionEnd: shift(textarea.selectionEnd),
+      ...sourceSelectionAfterChange(textarea.selectionStart, textarea.selectionEnd, change),
       scrollLeft: textarea.scrollLeft,
       scrollTop: textarea.scrollTop,
     })) {
@@ -1340,12 +681,8 @@ export function MarkdownEditor({
     }
 
     const value = editorValueRef.current;
-    const href = markdownHeadingHref(heading);
-    const lineEnd = value.indexOf("\n", popup.destinationEnd);
-    const closeIndex = value.indexOf(")", popup.destinationEnd);
-    const hasClose = closeIndex >= 0 && (lineEnd < 0 || closeIndex < lineEnd);
-    const replacement = hasClose ? href : `${href})`;
-    const caret = popup.destinationStart + href.length + 1;
+    const edit = sourceHeadingLinkEdit(value, popup, heading);
+    const { replacement, nextSelectionStart: caret } = edit;
     const usedNativeUndo = replaceTextareaSelectionWithUndo(textarea, {
       selectionStart: popup.destinationStart,
       selectionEnd: popup.destinationEnd,
@@ -1367,148 +704,13 @@ export function MarkdownEditor({
     textarea.focus();
   }
 
-  useEffect(() => {
-    if (!contextMenu) {
-      return;
-    }
-
-    function closeContextMenu() {
-      setContextMenu(null);
-    }
-
-    function handleScroll(event: Event) {
-      const target = event.target;
-
-      if (
-        target instanceof Node &&
-        contextMenuRef.current?.contains(target)
-      ) {
-        return;
-      }
-
-      closeContextMenu();
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeContextMenu();
-      }
-    }
-
-    window.addEventListener("pointerdown", closeContextMenu);
-    window.addEventListener("scroll", handleScroll, true);
-    window.addEventListener("resize", closeContextMenu);
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("pointerdown", closeContextMenu);
-      window.removeEventListener("scroll", handleScroll, true);
-      window.removeEventListener("resize", closeContextMenu);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [contextMenu]);
-
-  useEffect(() => {
-    if (!contextMenu) {
-      return;
-    }
-
-    const writeOnly = !contextMenu.hasText;
-    const animationFrame = window.requestAnimationFrame(() => {
-      (writeOnly ? writeInputRef : rewriteInputRef).current?.focus();
-    });
-
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [contextMenu]);
-
   function openContextMenu(event: MouseEvent<HTMLTextAreaElement>) {
     const textarea = event.currentTarget;
     setEditorValue(textarea.value);
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const selectedText = editorValueRef.current.slice(start, end);
-    const image = findMarkdownImageInText(editorValueRef.current, start, end);
-    const hasText = !!selectedText.trim();
-
-    // Without a selection the menu offers Write with AI at the caret.
     event.preventDefault();
-    const menuWidth = 288;
-    const menuHeight = (hasText ? 384 : 114) + 90 + (image ? 44 : 0);
-    setRewritePrompt("");
-    setWritePrompt("");
-
-    setContextMenu({
-      hasText,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
-      start,
-      end,
-      image,
-    });
-  }
-
-  async function formatSelection() {
-    if (!contextMenu || aiWorking) {
-      return;
-    }
-
-    const selection = {
-      start: contextMenu.start,
-      end: contextMenu.end,
-    };
-
-    setContextMenu(null);
-    await onAiFormatSelection(selection);
-  }
-
-  async function rewriteSelection() {
-    if (!contextMenu || aiWorking) {
-      return;
-    }
-
-    const prompt = rewritePrompt.trim();
-
-    if (!prompt) {
-      rewriteInputRef.current?.focus();
-      return;
-    }
-
-    const selection = {
-      start: contextMenu.start,
-      end: contextMenu.end,
-    };
-
-    setContextMenu(null);
-    await onAiRewriteSelection(selection, prompt);
-  }
-
-  async function writeWithAi() {
-    if (!contextMenu || aiWorking) {
-      return;
-    }
-
-    const prompt = writePrompt.trim();
-
-    if (!prompt) {
-      writeInputRef.current?.focus();
-      return;
-    }
-
-    const offset = contextMenu.end;
-
-    setContextMenu(null);
-    await onAiWriteAt(offset, prompt);
-  }
-
-  async function imageToMarkdown() {
-    if (!contextMenu?.image || aiWorking) {
-      return;
-    }
-
-    const image = contextMenu.image;
-
-    setContextMenu(null);
-    await onAiImageToMarkdown(image);
+    setContextMenu(sourceContextMenuState(editorValueRef.current, start, end, event.clientX, event.clientY));
   }
 
   function applyHeadingLevelChange(
@@ -1566,13 +768,14 @@ export function MarkdownEditor({
   }
 
   function handleDragOver(event: DragEvent<HTMLTextAreaElement>) {
-    if (hasPdfQuoteDrag(event.dataTransfer)) {
+    const kind = sourceDragKind(event.dataTransfer, hasPdfQuoteDrag(event.dataTransfer));
+    if (kind === "quote") {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
       return;
     }
 
-    if (!hasImageDragItem(event.dataTransfer)) {
+    if (kind !== "image") {
       return;
     }
 
@@ -1633,9 +836,9 @@ export function MarkdownEditor({
   }
 
   async function handlePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
-    const imageFiles = getClipboardImageFiles(event.clipboardData);
+    const contents = sourceClipboardContents(event.clipboardData);
 
-    if (imageFiles.length) {
+    if (contents.kind === "image") {
       event.preventDefault();
       setContextMenu(null);
       closeFileLinkPopup();
@@ -1646,7 +849,7 @@ export function MarkdownEditor({
         end: textarea.selectionEnd,
       };
 
-      await onInsertImageFile(imageFiles[0], selection);
+      await onInsertImageFile(contents.image, selection);
       return;
     }
 
@@ -1654,11 +857,7 @@ export function MarkdownEditor({
     const pasted = pasteClipboardText(textarea, {
       end: textarea.selectionEnd,
       start: textarea.selectionStart,
-    }, {
-      html: event.clipboardData.getData("text/html"),
-      markdown: event.clipboardData.getData("text/markdown"),
-      plain: event.clipboardData.getData("text/plain"),
-    }, smartPaste ? "child" : null);
+    }, contents.clipboard, sourcePasteMode(smartPaste));
 
     if (pasted) event.preventDefault();
   }
@@ -1671,43 +870,19 @@ export function MarkdownEditor({
     textarea: HTMLTextAreaElement,
     { end: selectionEnd, start: selectionStart }: { end: number; start: number },
     clipboard: ClipboardText,
-    smartMode: SmartPasteMode | null,
+    smartMode: SmartPasteMode | false,
     insertPlain = false,
   ) {
-    let replacement = clipboard.markdown;
-    if (!replacement && clipboard.html) {
-      try {
-        replacement = convertClipboardHtmlToMarkdown(clipboard.html, mathMarkers);
-      } catch {
-        // Preserve the browser's plain-text fallback for malformed clipboard HTML.
-        if (!smartMode && !insertPlain) return false;
-      }
-    }
-
     const currentValue = editorValueRef.current;
-    const smartPasted = smartMode
-      ? smartPasteMarkdown(
-          currentValue,
-          { end: selectionEnd, start: selectionStart },
-          replacement || clipboard.plain,
-          smartMode,
-        )
-      : null;
-
-    if (!replacement && !smartPasted) {
-      if (!insertPlain || !clipboard.plain) return false;
-      replacement = clipboard.plain;
-    }
-
+    const edit = sourcePasteEdit(currentValue, { start: selectionStart, end: selectionEnd }, clipboard, {
+      mathMarkers, smartPaste: smartMode, insertPlain,
+    });
+    if (!edit) return false;
     setContextMenu(null);
     closeFileLinkPopup();
 
-    const nextSelection = smartPasted?.selection.start ?? selectionStart + replacement.length;
-    const nextValue = smartPasted?.value ??
-      `${currentValue.slice(0, selectionStart)}${replacement}${currentValue.slice(selectionEnd)}`;
-    const edit = smartPasted
-      ? getChangedTextRange(currentValue, nextValue)
-      : { replacement, selectionEnd, selectionStart };
+    const nextSelection = edit.nextSelectionStart;
+    const nextValue = currentValue.slice(0, edit.selectionStart) + edit.replacement + currentValue.slice(edit.selectionEnd);
 
     if (!replaceTextareaSelectionWithUndo(textarea, {
       ...edit,
@@ -1743,7 +918,7 @@ export function MarkdownEditor({
       textarea,
       { end: menu.end, start: menu.start },
       clipboard,
-      mode === "peer" ? "peer" : smartPaste ? "child" : null,
+      sourcePasteMode(smartPaste, mode),
       true,
     );
   }
@@ -1781,27 +956,19 @@ export function MarkdownEditor({
     textarea: HTMLTextAreaElement,
     { after, before, placeholder = "text" }: MarkdownFormat,
   ) {
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
     const currentValue = editorValueRef.current;
-    const selectedText = currentValue.slice(start, end) || placeholder;
-    const replacement = `${before}${selectedText}${after}`;
-    const nextValue = `${currentValue.slice(0, start)}${replacement}${currentValue.slice(end)}`;
-    const nextSelectionStart = start + before.length;
-    const nextSelectionEnd = nextSelectionStart + selectedText.length;
+    const edit = sourceFormatEdit(currentValue, textarea.selectionStart, textarea.selectionEnd, { after, before, placeholder });
+    const { nextSelectionStart, nextSelectionEnd } = edit;
+    const nextValue = currentValue.slice(0, edit.selectionStart) + edit.replacement + currentValue.slice(edit.selectionEnd);
 
     setContextMenu(null);
     closeFileLinkPopup();
 
     if (
       !replaceTextareaSelectionWithUndo(textarea, {
-        nextSelectionEnd,
-        nextSelectionStart,
-        replacement,
+        ...edit,
         scrollLeft: textarea.scrollLeft,
         scrollTop: textarea.scrollTop,
-        selectionEnd: end,
-        selectionStart: start,
       })
     ) {
       commitEditorValue(textarea, nextValue);
@@ -1824,71 +991,24 @@ export function MarkdownEditor({
   }
 
   function handleEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if (citationPopupRef.current && citationPopupHandleRef.current?.handleKey(event)) {
-      event.preventDefault();
-      return;
-    }
-
-    if (fileLinkPopup) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeFileLinkPopup();
-        return;
-      }
-
-      if (linkOptionCount && event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveFileLinkIndex((current) => (current + 1) % linkOptionCount);
-        return;
-      }
-
-      if (linkOptionCount && event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveFileLinkIndex(
-          (current) => (current - 1 + linkOptionCount) % linkOptionCount,
-        );
-        return;
-      }
-
-      if (linkOptionCount && event.key === "Enter") {
-        event.preventDefault();
-        if (headingLinkOptions) insertHeadingLink(headingLinkOptions[selectedFileLinkIndex]);
-        else insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
-        return;
-      }
-    }
-
-    if ((event.metaKey || event.ctrlKey) && !event.altKey) {
-      const shortcut = event.key.toLowerCase();
-      const format = MARKDOWN_SHORTCUT_FORMATS[shortcut];
-
-      if (format) {
-        event.preventDefault();
-        applyMarkdownFormat(event.currentTarget, format);
-        return;
-      }
-    }
-
-    if (
-      event.key === "Tab" &&
-      !event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey
-    ) {
-      const handled = applyHeadingLevelChange(
-        event.shiftKey ? "unindent" : "indent",
-      );
-
-      if (handled) {
-        event.preventDefault();
-        return;
-      }
-    }
-
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-      event.preventDefault();
-      openFind();
-    }
+    if (handleSourceKey(event, {
+      citation: (key) => !!citationPopupRef.current && !!citationPopupHandleRef.current?.handleKey(key),
+      fileLink: (key) => {
+        if (!fileLinkPopup) return false;
+        const action = fileLinkPopupKey(key, linkOptionCount);
+        if (action === "close") closeFileLinkPopup();
+        else if (action === "next") setActiveFileLinkIndex((current) => (current + 1) % linkOptionCount);
+        else if (action === "previous") setActiveFileLinkIndex((current) => (current - 1 + linkOptionCount) % linkOptionCount);
+        else if (action === "choose") {
+          if (headingLinkOptions) insertHeadingLink(headingLinkOptions[selectedFileLinkIndex]);
+          else insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        }
+        return action !== null;
+      },
+      format: (format) => applyMarkdownFormat(event.currentTarget, format),
+      heading: applyHeadingLevelChange,
+      find: find.openFind,
+    })) event.preventDefault();
   }
 
   function handleEditorKeyUp(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -1896,14 +1016,7 @@ export function MarkdownEditor({
       scheduleSelectionChange(event.currentTarget);
     }
 
-    if (
-      event.key === "ArrowDown" ||
-      event.key === "ArrowUp" ||
-      event.key === "Enter" ||
-      event.key === "Escape"
-    ) {
-      return;
-    }
+    if (!refreshSourcePopupOnKeyUp(event.key)) return;
 
     scheduleFileLinkPopupRefresh(event.currentTarget);
   }
@@ -1915,11 +1028,7 @@ export function MarkdownEditor({
     if (findOpen) setEditorValue(nextValue);
     // Keep workspace/outline/review renders out of the continuous typing path.
     // Save, tab closing, review and export can still read the exact live draft.
-    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
-    draftTimerRef.current = setTimeout(function publishAfterPause() {
-      if (composingRef.current) draftTimerRef.current = setTimeout(publishAfterPause, SOURCE_DRAFT_DELAY_MS);
-      else startTransition(() => { readDraft(); });
-    }, SOURCE_DRAFT_DELAY_MS);
+    schedulePublish();
     scheduleFileLinkPopupRefresh(textarea, nextValue);
     scheduleSelectionChange(textarea);
   }
@@ -1980,38 +1089,6 @@ export function MarkdownEditor({
     syncHighlightLayerScroll(event.currentTarget);
   }
 
-  function handleFindKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeFind();
-      return;
-    }
-
-    if (event.key === "Enter") {
-      event.preventDefault();
-
-      if (event.shiftKey) {
-        findPrevious();
-      } else {
-        findNext();
-      }
-    }
-  }
-
-  function handleReplaceKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeFind();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      replaceCurrent();
-    }
-  }
-
-  const currentMatchNumber = textMatches.length
-    ? Math.min(activeMatchIndex + 1, textMatches.length)
-    : 0;
-
   return (
     <div className="markdown-editor-source relative min-h-0 min-w-0 overflow-hidden bg-card">
       <pre
@@ -2023,11 +1100,13 @@ export function MarkdownEditor({
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
           paddingLeft: "var(--markdown-line-text-start)",
+          paddingBlock: SOURCE_PANE_PADDING,
+          tabSize: SOURCE_TAB_SIZE,
         }}
       />
       <textarea
         ref={textareaRef}
-        aria-label="Source Markdown editor"
+        aria-label={SOURCE_EDITOR_LABEL}
         readOnly={review?.locked}
         className="markdown-editor-input relative z-10 block h-full min-h-0 w-full resize-none overflow-auto border-b border-border p-5 font-mono text-sm leading-6 outline-none lg:border-b-0 lg:border-r"
         style={{
@@ -2035,6 +1114,8 @@ export function MarkdownEditor({
           fontSize: `${fontSizePx}px`,
           lineHeight: `${lineHeightPx}px`,
           paddingLeft: "var(--markdown-line-text-start)",
+          paddingBlock: SOURCE_PANE_PADDING,
+          tabSize: SOURCE_TAB_SIZE,
         }}
         defaultValue={initialValue}
         onBlur={(event) => { readDraft(); flushSelectionChange(event.currentTarget); }}
@@ -2063,53 +1144,16 @@ export function MarkdownEditor({
         onFocus={(event) => scheduleFileLinkPopupRefresh(event.currentTarget)}
         onSelect={(event) => scheduleSelectionChange(event.currentTarget)}
         onScroll={handleEditorScroll}
-        spellCheck={false}
+        spellCheck={SOURCE_SPELLCHECK}
       />
 
       {findOpen ? (
-        <div className="absolute right-3 top-3 z-20 flex w-[30rem] max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
-          <div className="flex min-w-0 items-center gap-1">
-            <Search aria-hidden className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
-            <input
-              ref={findInputRef}
-              aria-label="Find in note"
-              className="h-8 min-w-24 flex-1 border-0 px-1 text-sm outline-none"
-              value={findQuery}
-              placeholder="Find in note"
-              onChange={(event) => updateFindQuery(event.target.value)}
-              onKeyDown={handleFindKeyDown}
-            />
-            <span className="min-w-16 text-center text-xs text-muted-foreground">
-              {findQuery ? `${currentMatchNumber}/${textMatches.length}` : "0/0"}
-            </span>
-            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40" type="button" aria-label="Previous match" title="Previous match" disabled={!textMatches.length} onClick={findPrevious}>
-              <ChevronUp aria-hidden className="h-4 w-4" />
-            </button>
-            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40" type="button" aria-label="Next match" title="Next match" disabled={!textMatches.length} onClick={findNext}>
-              <ChevronDown aria-hidden className="h-4 w-4" />
-            </button>
-            <button className="inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted" type="button" aria-label="Close find" title="Close" onClick={closeFind}>
-              <X aria-hidden className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="flex min-w-0 items-center gap-1 pl-7">
-            <input
-              ref={replaceInputRef}
-              aria-label="Replace with"
-              className="h-8 min-w-20 flex-1 rounded border border-border bg-background px-2 text-sm outline-none"
-              value={replaceQuery}
-              placeholder="Replace with"
-              onChange={(event) => setReplaceQuery(event.target.value)}
-              onKeyDown={handleReplaceKeyDown}
-            />
-            <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!textMatches.length} onClick={replaceCurrent}>Replace</button>
-            <button type="button" className="h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40" disabled={!textMatches.length} onClick={replaceAll}>Replace all</button>
-            <label className="flex shrink-0 items-center gap-1 px-1 text-xs text-muted-foreground" title="Use * for any text and ? for one character">
-              <input type="checkbox" aria-label="Wildcard matches" checked={wildcardMatches} onChange={(event) => updateWildcardMatches(event.target.checked)} />
-              Wildcards
-            </label>
-          </div>
-        </div>
+        <MarkdownSourceFindBar
+          activeIndex={activeMatchIndex} findInputRef={find.findInputRef} matchCount={textMatches.length}
+          query={findQuery} replacement={find.replacement} wildcards={wildcardMatches}
+          onClose={find.closeFind} onNext={find.next} onPrevious={find.previous} onQueryChange={find.updateQuery}
+          onReplace={find.replace} onReplaceAll={find.replaceAll} onReplacementChange={find.setReplacement} onWildcardsChange={find.updateWildcards}
+        />
       ) : null}
 
       {draggingImage ? (
@@ -2119,163 +1163,16 @@ export function MarkdownEditor({
       ) : null}
 
       {contextMenu ? (
-        <div
-          ref={contextMenuRef}
-          className="fixed z-50 w-72 rounded-lg border border-border bg-card p-1 shadow-lg"
-          role="menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <PasteMenuItems
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-            onPaste={(mode) => void pasteFromContextMenu(mode)}
-          />
-          {contextMenu.hasText ? (
-            <>
-              <button
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: "Selection" });
-                  setContextMenu(null);
-                }}
-              >
-                <Volume2 aria-hidden className="h-4 w-4" />
-                Read Out Loud
-              </button>
-              <button
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                role="menuitem"
-                disabled={aiWorking}
-                onClick={() => void formatSelection()}
-              >
-                {formatting ? (
-                  <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles aria-hidden className="h-4 w-4" />
-                )}
-                {formatting ? "Formatting..." : "AI Format"}
-              </button>
-              <button
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                role="menuitem"
-                disabled={!contextMenuHeadingLevels.canIndent}
-                onClick={() => {
-                  applyHeadingLevelChange("indent", {
-                    start: contextMenu.start,
-                    end: contextMenu.end,
-                  });
-                }}
-              >
-                <ListIndentIncrease aria-hidden className="h-4 w-4" />
-                Indent Headings
-              </button>
-              <button
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                type="button"
-                role="menuitem"
-                disabled={!contextMenuHeadingLevels.canUnindent}
-                onClick={() => {
-                  applyHeadingLevelChange("unindent", {
-                    start: contextMenu.start,
-                    end: contextMenu.end,
-                  });
-                }}
-              >
-                <ListIndentDecrease aria-hidden className="h-4 w-4" />
-                Unindent Headings
-              </button>
-              <form
-                className="mt-1 border-t border-border px-2 py-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void rewriteSelection();
-                }}
-              >
-                <label className="block text-xs font-medium text-muted-foreground" htmlFor="ai-rewrite-prompt">
-                  AI Rewrite
-                </label>
-                <div className="mt-1 flex items-start gap-2">
-                  <QuickPromptInput
-                    id="ai-rewrite-prompt"
-                    inputRef={rewriteInputRef}
-                    value={rewritePrompt}
-                    disabled={aiWorking}
-                    onChange={setRewritePrompt}
-                    onSubmit={() => void rewriteSelection()}
-                    onEscape={() => setContextMenu(null)}
-                  />
-                  <button
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="submit"
-                    aria-label="Rewrite selected text"
-                    title="Rewrite selected text"
-                    disabled={aiWorking || !rewritePrompt.trim()}
-                  >
-                    {formatting ? (
-                      <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Sparkles aria-hidden className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-              </form>
-            </>
-          ) : null}
-          <form
-            className={`${contextMenu.hasText ? "mt-1 border-t border-border " : ""}px-2 py-2`}
-            onSubmit={(event) => {
-              event.preventDefault();
-              void writeWithAi();
-            }}
-          >
-            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground" htmlFor="ai-write-prompt">
-              <PenLine aria-hidden className="h-3.5 w-3.5" />
-              Write with AI
-            </label>
-            <div className="mt-1 flex items-start gap-2">
-              <QuickPromptInput
-                id="ai-write-prompt"
-                inputRef={writeInputRef}
-                placeholder="What should AI write? Type / for prompts"
-                value={writePrompt}
-                disabled={aiWorking}
-                onChange={setWritePrompt}
-                onSubmit={() => void writeWithAi()}
-                onEscape={() => setContextMenu(null)}
-              />
-              <button
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                type="submit"
-                aria-label="Write new text with AI"
-                title="Write new text with AI"
-                disabled={aiWorking || !writePrompt.trim()}
-              >
-                <PenLine aria-hidden className="h-4 w-4" />
-              </button>
-            </div>
-            <IncludeDocumentContextCheckbox id="ai-document-context" />
-          </form>
-          {contextMenu.image ? (
-            <button
-              className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-              type="button"
-              role="menuitem"
-              disabled={aiWorking}
-              onClick={() => void imageToMarkdown()}
-            >
-              {imageConverting ? (
-                <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-              ) : (
-                <ImageIcon aria-hidden className="h-4 w-4" />
-              )}
-              {imageConverting ? "Converting..." : "AI Image to Markdown"}
-            </button>
-          ) : null}
-        </div>
+        <MarkdownSourceContextMenu
+          aiWorking={aiWorking} formatting={formatting} imageConverting={imageConverting} menu={contextMenu} text={editorValue}
+          onClose={() => setContextMenu(null)} onPaste={(mode) => void pasteFromContextMenu(mode)}
+          onFormat={() => { if (!aiWorking) { setContextMenu(null); void onAiFormatSelection({ start: contextMenu.start, end: contextMenu.end }); } }}
+          onHeadingLevels={(direction) => applyHeadingLevelChange(direction, contextMenu)}
+          onRewrite={(prompt) => { setContextMenu(null); void onAiRewriteSelection({ start: contextMenu.start, end: contextMenu.end }, prompt); }}
+          onWrite={(prompt) => { setContextMenu(null); void onAiWriteAt(contextMenu.end, prompt); }}
+          onImageToMarkdown={() => { if (!aiWorking && contextMenu.image) { setContextMenu(null); void onAiImageToMarkdown(contextMenu.image); } }}
+          onReadAloud={() => { speakMarkdown(editorValueRef.current.slice(contextMenu.start, contextMenu.end), { label: "Selection" }); setContextMenu(null); }}
+        />
       ) : null}
 
       {citationPopup ? (

@@ -3,9 +3,8 @@
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
 
-/* Find and Replace for the CodeMirror Source editor. It is the textarea
- * editor's bar (same controls, labels and keys, including Wildcards) rather
- * than CodeMirror's search panel, so the two Source editors behave alike. */
+/* Both Markdown Source editors use these controls, labels and keys,
+ * including Wildcards, together with useMarkdownSourceFind. */
 
 const ICON_BUTTON = "inline-flex h-8 w-8 items-center justify-center rounded text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40";
 const TEXT_BUTTON = "h-8 rounded px-2 text-xs text-foreground hover:bg-muted disabled:opacity-40";

@@ -14,6 +14,8 @@ import {
   Italic,
   Link,
   List,
+  ListIndentDecrease,
+  ListIndentIncrease,
   ListOrdered,
   Maximize2,
   Minimize2,
@@ -69,6 +71,8 @@ type MarkdownToolbarProps = {
   onFixChatGptEquations: () => void;
   onInsert: (before: string, after?: string, placeholder?: string) => void;
   onInsertTable: (rows: number, columns: number) => void;
+  /** Indents or outdents the list item(s) under the caret or selection. */
+  onShiftList?: (direction: "indent" | "outdent") => void;
   onInsertExistingImage: () => void;
   onInsertFromGallery?: () => void;
   onInsertImage: (file: File) => Promise<void>;
@@ -87,7 +91,7 @@ type MarkdownToolbarProps = {
 const HIGHLIGHT_MENU_WIDTH = 160;
 const TEXT_COLOR_MENU_WIDTH = 160;
 const FLOATING_MENU_GAP = 6;
-const FULL_TOOLBAR_BUTTON_COUNT = 24;
+const FULL_TOOLBAR_BUTTON_COUNT = 26;
 
 /**
  * Whether Markdown may contain a citation ([@key], [-@key], @key): a cheap
@@ -173,6 +177,7 @@ export function MarkdownToolbar({
   onFixChatGptEquations,
   onInsert,
   onInsertTable,
+  onShiftList,
   onInsertExistingImage,
   onInsertFromGallery,
   onInsertImage,
@@ -746,6 +751,30 @@ export function MarkdownToolbar({
         >
           <List aria-hidden className="h-4 w-4" />
         </button>
+        {onShiftList ? (
+          <>
+            <button
+              aria-label="Outdent list item"
+              className="toolbar-button"
+              title="Outdent list item"
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onShiftList("outdent")}
+            >
+              <ListIndentDecrease aria-hidden className="h-4 w-4" />
+            </button>
+            <button
+              aria-label="Indent list item"
+              className="toolbar-button"
+              title="Indent list item"
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onShiftList("indent")}
+            >
+              <ListIndentIncrease aria-hidden className="h-4 w-4" />
+            </button>
+          </>
+        ) : null}
         <button
           aria-label="Link"
           className="toolbar-button"

@@ -11,7 +11,7 @@ import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, X } from "lucide-react";
+import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, LogOut, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, Settings, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
@@ -69,6 +69,20 @@ type LiberaAppProps = {
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
+
+/** The sections of the desktop Preferences window, as palette commands. */
+const PREFERENCES_SECTIONS: Array<{ section?: string; title: string; keywords?: string }> = [
+  { title: "Open Preferences…" },
+  { section: "general", title: "Preferences: General", keywords: "theme dark mode data directory api key password" },
+  { section: "markdown", title: "Preferences: Markdown", keywords: "editor heading numbering source accent" },
+  { section: "ai", title: "Preferences: AI", keywords: "openrouter model quick prompts chat" },
+  { section: "search", title: "Preferences: Search", keywords: "index embedding images" },
+  { section: "speech", title: "Preferences: Speech", keywords: "transcription dictation voice" },
+  { section: "read-aloud", title: "Preferences: Read Aloud", keywords: "tts text to speech voice" },
+  { section: "detection", title: "Preferences: Detection and Segmentation", keywords: "objects photos models" },
+  { section: "users", title: "Preferences: Users", keywords: "profiles accounts" },
+  { section: "io", title: "Preferences: I/O", keywords: "import export backup" },
+];
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 560;
@@ -480,6 +494,17 @@ export function LiberaApp({
       { id: "app:panel-gallery", title: "Show image gallery", group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
       { id: "app:panel-references", title: "Show references", group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
       { id: "app:page-spending", title: "Show OpenRouter spending", group: general, icon: ChartColumnStacked, detail: "Token use and cost by period, model and component", keywords: "usage cost tokens billing credits statistics money price", run: () => openPageRef.current("spending") },
+      { id: "app:logout", title: "Log out", group: general, icon: LogOut, keywords: "logout sign out switch user lock", run: () => void workspace.handleLogout() },
+      ...(window.liberaPreferences
+        ? PREFERENCES_SECTIONS.map(({ section, title, keywords }) => ({
+            id: `app:preferences-${section ?? "open"}`,
+            title,
+            group: "Preferences",
+            icon: Settings,
+            keywords: `settings preferences ${keywords ?? ""}`,
+            run: () => void window.liberaPreferences?.open(section),
+          }))
+        : []),
     ];
   });
 
@@ -529,6 +554,7 @@ export function LiberaApp({
         onInsertImage={workspace.insertMarkdownImage}
         onInsertMarkdown={workspace.insertMarkdown}
         onInsertMarkdownTable={workspace.insertMarkdownTable}
+        onShiftMarkdownList={workspace.shiftMarkdownList}
         onOpenFile={workspace.openFile}
         onShowImage={(file) => {
           if (tab) workspace.showImageInTab(tab.id, file);

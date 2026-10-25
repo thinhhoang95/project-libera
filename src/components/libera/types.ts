@@ -417,6 +417,7 @@ export type LiberaWorkspace = {
     selection?: { end: number; start: number },
   ) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
+  shiftMarkdownList: (direction: "indent" | "outdent") => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   openFile: (

@@ -15,7 +15,7 @@ import { createMathExtensions } from "@/lib/tiptap-math";
 import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
 import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
+import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, ListIndentDecrease, ListIndentIncrease, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
 import katex from "katex";
 import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
@@ -417,6 +417,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     return current ? {
     bold: current.isActive("bold"), italic: current.isActive("italic"), underline: current.isActive("underline"), strike: current.isActive("strike"),
     bulletList: current.isActive("bulletList"), orderedList: current.isActive("orderedList"),
+    canSinkListItem: current.can().sinkListItem("listItem") || current.can().sinkListItem("taskItem"),
+    canLiftListItem: current.can().liftListItem("listItem") || current.can().liftListItem("taskItem"),
     blockquote: current.isActive("blockquote"), codeBlock: current.isActive("codeBlock"),
     table: current.isActive("table"),
     boxColor: current.isActive("blockquote") ? current.getAttributes("blockquote").color ?? "default" : "",
@@ -913,12 +915,14 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         {[
           { title: "Bullet list", icon: List, active: state.bulletList, run: () => editor.chain().focus().toggleBulletList().run() },
           { title: "Numbered list", icon: ListOrdered, active: state.orderedList, run: () => editor.chain().focus().toggleOrderedList().run() },
+          { title: "Outdent list item", icon: ListIndentDecrease, active: false, disabled: !state.canLiftListItem, run: () => editor.chain().focus().liftListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
+          { title: "Indent list item", icon: ListIndentIncrease, active: false, disabled: !state.canSinkListItem, run: () => editor.chain().focus().sinkListItem(editor.isActive("taskItem") ? "taskItem" : "listItem").run() },
           { title: "Code block", icon: Code2, active: state.codeBlock, run: () => editor.chain().focus().toggleCodeBlock().run() },
           { title: "Insert chart", icon: ChartColumn, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
           { title: "Insert diagram", icon: Workflow, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
           { title: "Insert macro block", icon: Braces, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
           { title: "Insert interactive HTML", icon: CodeXml, active: false, run: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
-        ].map(({ title, icon: Icon, active, run }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
+        ].map(({ title, icon: Icon, active, disabled, run }: { title: string; icon: typeof List; active: boolean; disabled?: boolean; run: () => void }) => <button key={title} type="button" title={title} aria-label={title} aria-pressed={active} disabled={disabled} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={run}><Icon className="h-4 w-4" /></button>)}
         <button type="button" title="Quote" aria-label="Quote" aria-pressed={state.blockquote} className={buttonClass} onMouseDown={(event) => event.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="h-4 w-4" /></button>
         <select aria-label="Box color" className={selectClass} value={state.boxColor} onChange={(event) => {
           const chain = editor.chain().focus();

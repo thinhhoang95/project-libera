@@ -1,5 +1,6 @@
 "use client";
 import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdown-boxes";
+import { shiftMarkdownListItems, type ListIndentDirection } from "@/lib/markdown-list-indent";
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
@@ -1637,6 +1638,43 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectionStart: nextSelectionStart,
       selectionEnd: nextSelectionEnd,
     });
+  }
+
+  /** The toolbar's Indent / Outdent list item buttons in the Source editor. */
+  function shiftMarkdownList(direction: ListIndentDirection) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
+    const start = textarea?.selectionStart ?? draft.length;
+    const end = textarea?.selectionEnd ?? draft.length;
+    const result = shiftMarkdownListItems(draft, start, end, direction);
+
+    if (!result) {
+      textarea?.focus();
+      return;
+    }
+
+    const selection = { selectionStart: result.nextStart, selectionEnd: result.nextEnd };
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        ...result.changed,
+        nextSelectionStart: result.nextStart,
+        nextSelectionEnd: result.nextEnd,
+      })
+    ) {
+      restoreMarkdownTextarea({ ...scrollState, ...selection });
+      return;
+    }
+
+    setActiveDraft(result.nextValue, { base: draft });
+    restoreMarkdownTextarea({ ...scrollState, ...selection });
   }
 
   /** Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of the active Markdown editor, in the source or the visual editor. */
@@ -4324,6 +4362,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
+      shiftMarkdownList,
       insertCitation,
       insertBibliographyMarker,
       activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,

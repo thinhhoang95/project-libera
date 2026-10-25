@@ -4,7 +4,7 @@ import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { act, createElement, createRef, useRef, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import { undo } from "@codemirror/commands";
+import { redo, undo } from "@codemirror/commands";
 import { StateField, Transaction, type Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { MarkdownCodeMirrorEditor } from "../../src/components/libera/markdown-source/markdown-codemirror-editor";
@@ -13,6 +13,8 @@ import { MarkdownReviewProvider, useMarkdownReview } from "../../src/components/
 import { CodeMirrorTextareaAdapter, getCodeMirrorTextareaAdapter } from "../../src/lib/markdown-codemirror/textarea-adapter";
 import { normalizeChatGptCopiedMarkdown } from "../../src/lib/chatgpt-markdown-normalizer";
 import { anchorAt, newReview, syncReview, type ReviewDocument } from "../../src/lib/markdown-review";
+import { markdownValueSync } from "../../src/lib/markdown-codemirror/value-sync";
+import { replaceTextareaSelectionWithUndo } from "../../src/lib/textarea-editing";
 
 /* The CodeMirror Markdown Source editor as a component: the same draft flow,
  * shortcuts, paste, find and review behaviour as the textarea editor, and the
@@ -192,6 +194,117 @@ test("Fix ChatGPT equations gives the textarea's text and keeps the caret", asyn
   }
 });
 
+test("opening, switching and applying outside numbered text never renumbers it", async () => {
+  const source = "# Title\n\n## 9. Intro";
+  const editor = await mountCodeMirror(source, { activeFilePath: "Notes/numbering-outside.md" });
+  try {
+    assert.equal(editor.text, source);
+    const switched = "# Other\n\n## 7. Body";
+    await editor.render({ activeFilePath: "Notes/numbering-switched.md", value: switched });
+    assert.equal(editor.text, switched);
+    const applied = "# Other\n\n## Unnumbered\n\n## 7. Body";
+    await editor.render({ value: applied });
+    assert.equal(editor.text, applied);
+    const reviewed = "# Other\n\n## Reviewed\n\n## 8. Body";
+    act(() => editor.view.dispatch({ changes: { from: 0, to: editor.text.length, insert: reviewed }, annotations: markdownValueSync.of("review") }));
+    assert.equal(editor.text, reviewed);
+    await settle(320);
+    assert.deepEqual(editor.changes, [], "outside text is not published back as a local edit");
+  } finally {
+    await editor.dispose();
+  }
+});
+
+test("typing and adapter edits renumber in a separate undo step, and redo restores both steps", async () => {
+  for (const adapterEdit of [false, true]) {
+    const source = "# Title\n\n## 1. Intro\n\n";
+    const editor = await mountCodeMirror(source, { activeFilePath: `Notes/numbering-undo-${adapterEdit}.md` });
+    try {
+      const at = source.length;
+      act(() => {
+        if (adapterEdit) {
+          assert.equal(replaceTextareaSelectionWithUndo(editor.adapter.asTextarea(), {
+            selectionStart: at, selectionEnd: at, replacement: "## ", nextSelectionStart: at + 3, nextSelectionEnd: at + 3,
+          }), true);
+        } else editor.view.dispatch({ changes: { from: at, insert: "## " }, selection: { anchor: at + 3 }, userEvent: "input.type" });
+      });
+      const numbered = `${source}## 2. `;
+      assert.equal(editor.text, numbered);
+      assert.deepEqual(editor.selection, [numbered.length, numbered.length]);
+      act(() => editor.view.dispatch({ changes: { from: numbered.length, insert: "N" }, selection: { anchor: numbered.length + 1 }, userEvent: "input.type" }));
+      act(() => { undo(editor.view); });
+      assert.equal(editor.text, numbered, "later typing does not join the numbering step");
+      act(() => { undo(editor.view); });
+      assert.equal(editor.text, `${source}## `, "first undo removes numbering only");
+      assert.deepEqual(editor.selection, [at + 3, at + 3]);
+      act(() => { undo(editor.view); });
+      assert.equal(editor.text, source, "second undo removes the edit");
+      act(() => { redo(editor.view); });
+      assert.equal(editor.text, `${source}## `, "redo does not trigger renumbering");
+      act(() => { redo(editor.view); });
+      assert.equal(editor.text, numbered);
+    } finally {
+      await editor.dispose();
+    }
+  }
+});
+
+test("composition leaves headings alone until it ends, then numbers them once", async () => {
+  const source = "# Title\n\n## 1. Intro\n\n";
+  const editor = await mountCodeMirror(source, { activeFilePath: "Notes/numbering-ime.md" });
+  try {
+    act(() => {
+      editor.view.contentDOM.dispatchEvent(new dom.window.CompositionEvent("compositionstart", { bubbles: true }));
+      assert.equal(editor.view.compositionStarted, true);
+      const at = editor.text.length;
+      editor.view.dispatch({ changes: { from: at, insert: "## あ" }, selection: { anchor: at + 4 }, userEvent: "input.type.compose" });
+    });
+    assert.equal(editor.text, `${source}## あ`);
+    act(() => editor.view.dispatch({ changes: { from: editor.text.length, insert: "い" }, selection: { anchor: editor.text.length + 1 }, userEvent: "input.type.compose" }));
+    assert.equal(editor.text, `${source}## あい`);
+    await act(async () => {
+      editor.view.contentDOM.dispatchEvent(new dom.window.CompositionEvent("compositionend", { bubbles: true }));
+      // A selection-only update after composition must not lose deferred numbering.
+      editor.view.dispatch({ selection: editor.view.state.selection });
+    });
+    await settle(10);
+    const numbered = `${source}## 2. あい`;
+    assert.equal(editor.text, numbered);
+    assert.deepEqual(editor.selection, [numbered.length, numbered.length]);
+    act(() => { undo(editor.view); });
+    assert.equal(editor.text, `${source}## あい`);
+    act(() => { undo(editor.view); });
+    assert.equal(editor.text, source);
+  } finally {
+    await editor.dispose();
+  }
+});
+
+test("ending a composition without a local edit, or with a queued outside value, preserves outside numbering", async () => {
+  const source = "# Title\n\n## 9. Intro";
+  const editor = await mountCodeMirror(source, { activeFilePath: "Notes/numbering-ime-outside.md" });
+  const composition = (type: string) => editor.view.contentDOM.dispatchEvent(new dom.window.CompositionEvent(type, { bubbles: true }));
+  try {
+    await act(async () => { composition("compositionstart"); composition("compositionend"); });
+    await settle(10);
+    assert.equal(editor.text, source, "composition without an edit does not touch the document");
+    act(() => {
+      composition("compositionstart");
+      editor.view.dispatch({ changes: { from: source.length, insert: "\n\n## あ" }, userEvent: "input.type.compose" });
+    });
+    const outside = "# Title\n\n## 8. Applied";
+    await editor.render({ value: outside });
+    assert.equal(editor.text, `${source}\n\n## あ`, "the outside value waits for composition");
+    await act(async () => { composition("compositionend"); });
+    await settle(10);
+    assert.equal(editor.text, outside, "applying the queued value must not renumber it");
+    await settle(320);
+    assert.deepEqual(editor.changes, []);
+  } finally {
+    await editor.dispose();
+  }
+});
+
 test("Cmd/Ctrl+B, I, U and Tab give the textarea editor's results", async () => {
   const cases: [string, KeyboardEventInit, string, number, number][] = [
     ["b", { ctrlKey: true }, "make this bold", 5, 9],
@@ -279,6 +392,7 @@ test("Find and Replace with wildcards behaves like the textarea editor", async (
     await act(async () => { replaceAll.click(); });
     assert.equal(editor.text, "X X item-123;");
     assert.equal(editor.changes.at(-1), "X X item-123;");
+    await settle(25); // Replacement restores the find input's focus in the next frame, as the textarea does.
     await act(async () => { keydown(editor.host.querySelector('[aria-label="Find in note"]')!, "Escape"); });
     assert.equal(editor.host.querySelector('[aria-label="Find in note"]'), null);
     await settle(5);
