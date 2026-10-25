@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { syncReview, commentRange, paragraphRange, plainParagraphRange, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
+import { syncReview, commentRange, paragraphRange, plainParagraphRange, ReviewDraftTracker, type ReviewDocument, type ReviewRange } from "@/lib/markdown-review";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import { apiRequest } from "./api-client";
@@ -61,6 +61,10 @@ export const useMarkdownReview = () => useContext(ReviewContext);
 // document its proposals are overlay suggestions and "decision" is a server
 // decision on them (sharedDecision).
 const SHARED_ACTIONS = new Set(["comment", "reply", "edit", "resolve", "reattach", "delete", "delete-message", "retry", "discard"]);
+// The review is stored at most this often while you type (see `syncDue`), or
+// sooner once this many separate edits are waiting.
+const SYNC_INTERVAL_MS = 60_000;
+const SYNC_EDIT_LIMIT = 100;
 function sharedAccount() {
   const account = getCollabStatusStore().getSnapshot().status?.account;
   return account ? { id: account.id, displayName: account.displayName || account.email, color: account.color } : null;
@@ -83,7 +87,14 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
   const pending = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
   const metadataWrite = useRef<Promise<unknown> | null>(null);
-  useEffect(() => registerStateFlusher(() => metadataWrite.current ?? undefined), []);
+  const [tracker] = useState(() => new ReviewDraftTracker());
+  // Writes storing a tab that was just left; a load waits for them.
+  const leaving = useRef(new Set<Promise<unknown>>());
+  const syncNowRef = useRef<() => Promise<unknown> | undefined>(() => undefined);
+  useEffect(() => registerStateFlusher(() => {
+    const writes = [metadataWrite.current ?? syncNowRef.current(), ...leaving.current].filter(Boolean);
+    return writes.length ? Promise.all(writes) : undefined;
+  }), []);
   useSessionEndRevisions();
   const lastTab = useRef<{ id: string; key: string; doc: ReviewDocument | null } | null>(null);
   const key = activeTab?.file.fileType === "markdown" || activeTab?.file.fileType === "latex" ? (activeTab.standaloneSaveId ? `standalone:${activeTab.standaloneSaveId}` : activeTab.untitled ? `draft:${activeTab.id}` : activeTab.file.path) : null;
@@ -114,6 +125,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     if (!key || !localStore) return () => { disposed = true; };
     const text = current.current.getDraft(tabId!);
     async function load() {
+      await Promise.all(leaving.current);
       // Saving an untitled/standalone draft preserves its review identity.
       if (prior && prior.id === tabId && prior.key !== key && prior.doc && (prior.key.startsWith("draft:") || prior.key.startsWith("standalone:"))) {
         await localStore!.migrate(prior.doc, text);
@@ -256,7 +268,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     busyRef.current = true; setBusy(name); setError("");
     try {
       const before = snapshot();
-      const write = localStore.mutate(name, fields, { doc: stored, snapshot: before, signal: controller.signal });
+      const edits = tracker.edits(stored, before);
+      const write = localStore.mutate(name, { ...fields, ...(edits.length ? { edits } : {}) }, { doc: stored, snapshot: before, signal: controller.signal });
       metadataWrite.current = write;
       const result = await write;
       if (current.current.activeTab?.id !== tab.id || controller.signal.aborted) return false;
@@ -278,7 +291,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       return false;
     }
     finally { metadataWrite.current = null; if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
-  }, [publish, snapshot, localStore, sharedAction, sharedDecision]);
+  }, [publish, snapshot, localStore, sharedAction, sharedDecision, tracker]);
 
   const generate = useCallback(async (stage: "plan" | "generate" | "revise", prompt: string, ids?: string[], references?: ChatContext[], suggestionId?: string) => {
     const stored = latest.current, tab = current.current.activeTab;
@@ -288,8 +301,9 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     try {
       const shared = sharedStore.current;
       const text = snapshot();
+      const edits = tracker.edits(stored, text);
       const sharedThreads = shared ? reviewThreadsForPlanning(shared.getProjection().threads) : undefined;
-      const result = await apiRequest<ReviewDocument>("/api/document-review", { method: "POST", signal: controller.signal, body: JSON.stringify({ action: stage, id: stored.id, revision: stored.revision, snapshot: text, prompt, ids, references, suggestionId, planVersion: stored.session?.plan.version, ...(sharedThreads ? { sharedThreads } : {}) }) });
+      const result = await apiRequest<ReviewDocument>("/api/document-review", { method: "POST", signal: controller.signal, body: JSON.stringify({ action: stage, id: stored.id, revision: stored.revision, snapshot: text, ...(edits.length ? { edits } : {}), prompt, ids, references, suggestionId, planVersion: stored.session?.plan.version, ...(sharedThreads ? { sharedThreads } : {}) }) });
       if (controller.signal.aborted || current.current.activeTab?.id !== tab.id) return false;
       publish(result);
       // Replies the confirmed plan posted on the server show up in the
@@ -305,7 +319,7 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       return true;
     } catch (cause) { if (pending.current === controller && current.current.activeTab?.id === tab.id) setError(controller.signal.aborted ? "Generation stopped. No proposed changes were applied. Reload review before retrying." : cause instanceof Error ? cause.message : "Agentic review failed."); return false; }
     finally { if (pending.current === controller) { pending.current = null; busyRef.current = false; setBusy(""); } }
-  }, [publish, snapshot]);
+  }, [publish, snapshot, tracker]);
   const reload = useCallback(async () => {
     const tab = current.current.activeTab;
     if (busyRef.current || !tab || !localStore) return;
@@ -325,22 +339,57 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
     }
   }, [key, publish, snapshot, localStore]);
   const draft = activeTab?.draft;
-  // Persist anchor positions against the unsaved buffer, without ever saving
-  // Markdown. Wait until generation finishes to avoid invalidating its CAS.
-  // A shared document's comments are anchored in the replica, so only an
-  // agentic-review session needs this there.
+  // Anchors follow the unsaved buffer in memory as you type (`tracker`). The
+  // review is stored, with the edits that led to the buffer, only now and
+  // then: SYNC_INTERVAL_MS after the first unstored change, when the file is
+  // saved, when the window loses focus or is hidden, when another tab opens,
+  // and before the app quits. Markdown is never saved here. Waits until
+  // generation finishes to avoid invalidating its CAS. A shared document's
+  // comments are anchored in the replica, so only an agentic-review session
+  // needs this there.
+  const mapped = useMemo(() => doc?.key === key && draft !== undefined ? tracker.advance(doc, draft) : null, [doc, key, draft, tracker]);
+  const syncDue = !!doc && !!mapped && !busy && !error && !recovery && (sharedProjection ? !!doc.session : !!(doc.threads.length || doc.session || doc.agentSuggestions?.length)) && doc.snapshot !== draft;
+  const manyEdits = syncDue && tracker.count >= SYNC_EDIT_LIMIT;
+  const syncDueRef = useRef(false);
+  useLayoutEffect(() => { syncDueRef.current = syncDue; }, [syncDue]);
+  // A background write must not interrupt an IME session or surface a
+  // "finish composing" error as though review storage had failed.
+  const syncNow = useCallback(() => !syncDueRef.current || bridge.current?.isComposing() ? undefined : action("sync"), [action]);
+  useLayoutEffect(() => { syncNowRef.current = syncNow; }, [syncNow]);
   useEffect(() => {
-    if (!doc || draft === undefined || busy || error || recovery || (sharedProjection ? !doc.session : (!doc.threads.length && !doc.session && !doc.agentSuggestions?.length)) || doc.snapshot === draft) return;
+    if (!syncDue) return;
     let timer: number;
     const syncWhenReady = () => {
-      // A background snapshot must not interrupt an IME session or surface a
-      // "finish composing" error as though review storage had failed.
       if (bridge.current?.isComposing()) timer = window.setTimeout(syncWhenReady, 250);
-      else void action("sync");
+      else void syncNow();
     };
-    timer = window.setTimeout(syncWhenReady, 900);
+    timer = window.setTimeout(syncWhenReady, manyEdits ? 900 : SYNC_INTERVAL_MS);
     return () => window.clearTimeout(timer);
-  }, [tabId, draft, action, busy, doc, error, recovery, sharedProjection]);
+  }, [syncDue, manyEdits, syncNow]);
+  useEffect(() => {
+    const onBlur = () => { void syncNow(); };
+    const onVisibility = () => { if (document.visibilityState === "hidden") void syncNow(); };
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { window.removeEventListener("blur", onBlur); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [syncNow]);
+  const tabStatus = activeTab?.status;
+  useEffect(() => { if (tabStatus === "clean") void syncNow(); }, [tabStatus, syncNow]);
+  // Leaving a tab (another opens, or it closes) stores the review it showed.
+  // Cleanups run before the load effect resets `latest` for the next tab. By
+  // then this render already belongs to the next tab (`mapped` is null), so
+  // the last decision made while the review was shown is kept apart.
+  const leaveDue = useRef(false);
+  useLayoutEffect(() => { if (mapped) leaveDue.current = syncDue; }, [mapped, syncDue]);
+  useEffect(() => () => {
+    const stored = latest.current;
+    if (!stored || !leaveDue.current) return;
+    const edits = tracker.edits(stored);
+    if (!edits.length) return;
+    const write = new LocalReviewStore({ key: stored.key, request: apiRequest }).mutate("sync", { edits }, { doc: stored, snapshot: tracker.draft }).catch(() => undefined);
+    leaving.current.add(write);
+    void write.finally(() => leaving.current.delete(write));
+  }, [tabId, tracker]);
   // Sync/reload only persist/read metadata. Toggling contenteditable for them
   // drops browser focus and can leave an IME composition stranded.
   const locked = !!busy && !["plan", "generate", "revise", "sync", "reload"].includes(busy);
@@ -353,8 +402,8 @@ export function MarkdownReviewProvider({ activeTab, getDraft, applyDraft, recove
       const base = doc?.key === key ? syncReview(doc, sharedProjection.text) : null;
       return sharedReviewDocument(sharedProjection, base && suggestionsSnapshot ? withOverlayStatuses(base, suggestionsSnapshot.groups) : base);
     }
-    return doc?.key === key && draft !== undefined ? syncReview(doc, draft) : null;
-  }, [doc, key, draft, sharedProjection, suggestionsSnapshot]);
+    return mapped;
+  }, [doc, key, mapped, sharedProjection, suggestionsSnapshot]);
   const shared = useMemo<SharedReviewState | null>(() => sharedProjection ? {
     docId: sharedProjection.docId, projectId: sharedProjection.projectId, projection: sharedProjection,
     reattachCandidates: (threadId) => sharedStore.current?.reattachCandidates(threadId) ?? [],

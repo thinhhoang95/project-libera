@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
@@ -8,7 +8,7 @@ import { POST as review } from "../../src/app/api/markdown-reviews/route";
 import { POST as agent } from "../../src/app/api/document-review/route";
 import { SESSION_COOKIE_NAME, createSessionToken } from "../../src/lib/auth";
 import { readReview, loadReview, moveReviewPath, copyReviewPath, deleteReviewPath, updateReview } from "../../src/lib/storage/markdown-reviews";
-import type { ReviewDocument } from "../../src/lib/markdown-review";
+import { addReviewEdit, anchorAt, newReview, replayReviewEdits, ReviewDraftTracker, syncReview, type ReviewDocument, type ReviewTextEdit } from "../../src/lib/markdown-review";
 
 function request(body: unknown, authenticated = true) { return new NextRequest("http://localhost/api/review", { method: "POST", headers: authenticated ? { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` } : {}, body: JSON.stringify(body) }); }
 test("authenticated review plans, revises, confirms, accepts/rejects individually, persists, and handles stale output", async () => {
@@ -109,7 +109,8 @@ test("unsaved review recovery preserves identity on first save and concurrent wr
     const { GET } = await import("../../src/app/api/markdown-reviews/route");
     const recovered = await GET(new NextRequest("http://localhost/api/markdown-reviews?drafts=1", { headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` } }));
     const rows = await recovered.json(); assert.equal(rows[0].id, draft.id); assert.equal(rows[0].snapshot, "Unsaved text.");
-    const writes = await Promise.allSettled([updateReview(draft.id, commented.revision, d => ({ ...d, enabled: true })), updateReview(draft.id, commented.revision, d => ({ ...d, enabled: false }))]);
+    // Two real changes at one revision (a change that changes nothing takes no revision).
+    const writes = await Promise.allSettled([updateReview(draft.id, commented.revision, d => ({ ...d, enabled: true })), updateReview(draft.id, commented.revision, d => ({ ...d, threads: [] }))]);
     assert.equal(writes.filter(r => r.status === "fulfilled").length, 1);
     assert.equal(writes.filter(r => r.status === "rejected").length, 1);
     const moved = await review(request({ action: "migrate-path", from: draft.key, to: "Notebook/saved.md", snapshot: draft.snapshot }));
@@ -128,7 +129,7 @@ test('existing review loads are read-only and concurrent creation preserves one 
     const created = await Promise.all(Array.from({ length: 5 }, () => loadReview('Notes/existing.md', 'Initial snapshot.')));
     assert.equal(new Set(created.map(doc => doc.id)).size, 1);
     const { getAdminRoot } = await import('../../src/lib/storage/paths');
-    const target = path.join(getAdminRoot(), '.libera', 'markdown-reviews.json');
+    const target = path.join(getAdminRoot(), '.libera', 'reviews', `${created[0].id}.json`);
     const before = await stat(target);
     const contents = await readFile(target, 'utf8');
     const doc = await loadReview('Notes/existing.md', 'Unsaved replacement must not overwrite recovery.');
@@ -151,14 +152,15 @@ test("unrelated file moves, copies and deletions do not rewrite the review datab
   process.env.LIBERA_DATA_DIR = directory;
   try {
     const doc = await loadReview("Notes/a.md", "Initial snapshot.");
-    const target = path.join(getAdminRoot(), ".libera", "markdown-reviews.json");
-    const before = await stat(target);
+    const targets = [path.join(getAdminRoot(), ".libera", "reviews", "index.json"), path.join(getAdminRoot(), ".libera", "reviews", `${doc.id}.json`)];
+    const before = await Promise.all(targets.map((target) => stat(target)));
     await moveReviewPath("Other/missing.md", "Other/renamed.md");
     await copyReviewPath("Other/missing.md", "Other/copy.md");
     await deleteReviewPath("Other/missing.md");
-    const after = await stat(target);
-    assert.equal(after.ino, before.ino);
-    assert.equal(after.mtimeMs, before.mtimeMs);
+    // A sync against the stored text changes nothing: same revision, no write.
+    assert.deepEqual(await updateReview(doc.id, doc.revision, (stored) => syncReview(stored, stored.snapshot)), doc);
+    const after = await Promise.all(targets.map((target) => stat(target)));
+    assert.deepEqual(after.map((s) => [s.ino, s.mtimeMs]), before.map((s) => [s.ino, s.mtimeMs]));
     assert.deepEqual(await readReview(doc.id), doc);
   } finally {
     if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
@@ -220,5 +222,95 @@ test("the plan reads whole threads with authors, and only planned comments get p
     globalThis.fetch = originalFetch;
     for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function withLibrary(prefix: string, run: (root: string) => Promise<void>) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const previous = process.env.LIBERA_DATA_DIR;
+  process.env.LIBERA_DATA_DIR = directory;
+  try {
+    const { getAdminRoot } = await import("../../src/lib/storage/paths");
+    await run(getAdminRoot());
+  } finally {
+    if (previous === undefined) delete process.env.LIBERA_DATA_DIR; else process.env.LIBERA_DATA_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("a library's single review database moves to one file per document", async () => {
+  await withLibrary("libera-review-legacy-", async (root) => {
+    const a = newReview("Notes/a.md", "Alpha.", "review-a");
+    a.threads = [{ id: "t1", anchor: anchorAt("Alpha.", { start: 0, end: 5 }), messages: [{ id: "m1", text: "Hi", createdAt: "2026-10-01T00:00:00.000Z" }], status: "open" }];
+    const b = newReview("Notes/b.md", "Beta.", "review-b");
+    await mkdir(path.join(root, ".libera"), { recursive: true });
+    await writeFile(path.join(root, ".libera", "markdown-reviews.json"), JSON.stringify({ schemaVersion: 1, documents: [a, b] }));
+    assert.deepEqual(await readReview("review-a"), a);
+    assert.equal((await loadReview("Notes/b.md", "Changed.")).id, "review-b");
+    assert.deepEqual((await readdir(path.join(root, ".libera", "reviews"))).sort(), ["index.json", "review-a.json", "review-b.json"]);
+    assert.deepEqual((await readdir(path.join(root, ".libera"))).filter((name) => name.startsWith("markdown-reviews")), ["markdown-reviews.json.migrated"]);
+  });
+});
+
+test("a review write rewrites only that document's file", async () => {
+  await withLibrary("libera-review-files-", async (root) => {
+    const a = await loadReview("Notes/a.md", "Alpha paragraph.");
+    const b = await loadReview("Notes/b.md", "Beta paragraph.");
+    const untouched = [path.join(root, ".libera", "reviews", "index.json"), path.join(root, ".libera", "reviews", `${b.id}.json`)];
+    const before = await Promise.all(untouched.map((target) => stat(target)));
+    const response = await review(request({ action: "comment", id: a.id, revision: a.revision, snapshot: a.snapshot, range: { start: 0, end: 5 }, text: "Only A." }));
+    assert.equal(response.status, 200);
+    const after = await Promise.all(untouched.map((target) => stat(target)));
+    assert.deepEqual(after.map((s) => [s.ino, s.mtimeMs]), before.map((s) => [s.ino, s.mtimeMs]));
+    assert.equal((await readReview(a.id)).threads.length, 1);
+    // Moving a document's file rewrites the index and that document only.
+    await moveReviewPath("Notes/a.md", "Notes/c.md");
+    assert.equal((await loadReview("Notes/c.md", "")).id, a.id);
+    assert.deepEqual(await readReview(b.id), b);
+  });
+});
+
+test("recorded edits keep anchors that one change spanning them would lose", async () => {
+  const original = "Alpha one.\n\nBeta two.\n\nGamma three.\n";
+  const steps = ["Alpha one.\n\nBeta 2.\n\nGamma three.\n", "Intro.\n\nAlpha one.\n\nBeta 2.\n\nGamma three.\n", "Intro.\n\nAlpha one.\n\nBeta 2.\n\nGamma three!\n"];
+  const doc = newReview("Notes/edits.md", original, "review-edits");
+  const at = original.indexOf("Beta two.");
+  doc.threads = [{ id: "t1", anchor: anchorAt(original, { start: at, end: at + "Beta two.".length }), messages: [{ id: "m1", text: "Hm", createdAt: "2026-10-01T00:00:00.000Z" }], status: "open" }];
+  const tracker = new ReviewDraftTracker();
+  let shown = doc;
+  for (const step of steps) shown = tracker.advance(doc, step);
+  const final = steps.at(-1)!;
+  assert.equal(shown.threads[0].anchor.state, "attached");
+  assert.equal(shown.threads[0].anchor.quote, "Beta 2.");
+  assert.equal(tracker.count, 3);
+  const replayed = replayReviewEdits(doc, tracker.edits(doc), final);
+  assert.deepEqual(replayed.threads[0].anchor, shown.threads[0].anchor);
+  assert.equal(syncReview(doc, final).threads[0].anchor.state, "orphaned", "the single change covers the comment");
+  // Edits that do not lead to the snapshot fall back to the single change.
+  assert.equal(replayReviewEdits(doc, [{ start: 0, end: 0, text: "x" }], final).threads[0].anchor.state, "orphaned");
+  assert.equal(tracker.edits(newReview("Notes/other.md", original, "other")).length, 0);
+});
+
+test("continuous typing is recorded as one edit", () => {
+  let text = "Hello world.", edits: ReviewTextEdit[] = [];
+  // Typing, a backspace, then an edit elsewhere.
+  for (const next of ["Hello world. ", "Hello world. M", "Hello world. Mo", "Hello world. Mor", "Hello world. More", "Hello world. Mor", "Oh, Hello world. Mor"]) {
+    edits = addReviewEdit(edits, text, next); text = next;
+  }
+  assert.deepEqual(edits, [{ start: 12, end: 12, text: " Mor" }, { start: 0, end: 0, text: "Oh, " }]);
+  const apply = (value: string, edit: ReviewTextEdit) => value.slice(0, edit.start) + edit.text + value.slice(edit.end);
+  assert.equal(edits.reduce(apply, "Hello world."), text);
+  // However edits overlap and merge, replaying them reproduces the text.
+  let seed = 7;
+  const random = (n: number) => { seed = (seed * 48271) % 2147483647; return seed % n; };
+  for (let round = 0; round < 300; round++) {
+    const start = "abcabcabc";
+    let current = start, recorded: ReviewTextEdit[] = [];
+    for (let step = 0; step < 8; step++) {
+      const at = random(current.length + 1), end = Math.min(current.length, at + random(4));
+      const next = current.slice(0, at) + "abc".slice(0, random(4)) + current.slice(end);
+      recorded = addReviewEdit(recorded, current, next); current = next;
+    }
+    assert.equal(recorded.reduce(apply, start), current, JSON.stringify(recorded));
   }
 });

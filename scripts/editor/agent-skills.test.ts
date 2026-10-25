@@ -12,6 +12,7 @@ import { RunSnapshots } from "../../src/lib/agent/snapshots";
 import { activeTools, ALL_TOOLS, toolsForPermission, type AgentTool, type ToolContext } from "../../src/lib/agent/tools";
 import type { AgentEvent, AgentPermission } from "../../src/lib/agent/types";
 import type { ReviewDocument } from "../../src/lib/markdown-review";
+import { readReviewDocuments } from "../../src/lib/storage/review-files";
 
 const PLAN = "# Plan\n\nThe Q3 budget is 40k.\nAtlas launches in May.\n\n- Hire\n- Ship\n";
 
@@ -55,7 +56,7 @@ async function call(context: ToolContext, name: string, args: Record<string, unk
 }
 
 async function reviews(root: string) {
-  return (JSON.parse(await readFile(path.join(root, ".libera", "markdown-reviews.json"), "utf8")) as { documents: ReviewDocument[] }).documents;
+  return readReviewDocuments<ReviewDocument>(root);
 }
 
 const block = (text: string) => `:::comment\n${text}\n:::`;

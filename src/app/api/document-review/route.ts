@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, jsonError } from "@/lib/api";
 import { randomUUID } from "node:crypto";
 import { generateReview } from "@/lib/markdown-review-ai";
-import { dueReviewReplies, reviewString, syncReview, type ReviewDocument, type ReviewReply, type ReviewSession, type ReviewThread } from "@/lib/markdown-review";
+import { dueReviewReplies, replayReviewEdits, reviewString, type ReviewDocument, type ReviewReply, type ReviewSession, type ReviewThread } from "@/lib/markdown-review";
 import { getAiFunctionOptions } from "@/lib/ai-preferences";
 import { replyToSharedThread, requireSharedDoc } from "@/lib/collab/shared-writes";
 import { validateChatMessages, type ChatContext } from "@/lib/document-chat";
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
     if (doc.revision !== body.revision) throw new StorageError("Review changed. Reload before retrying.", 409);
     const snapshot = reviewString(body.snapshot, "document snapshot", 500_000);
     const prompt = reviewString(body.prompt ?? "", "request", 20_000);
-    const synced = syncReview(doc, snapshot);
+    const synced = replayReviewEdits(doc, body.edits, snapshot);
     // A shared document's comments live on the collab server, so the window
     // sends them. They are planned against but never written to the local
     // review file, which keeps only this user's private session.

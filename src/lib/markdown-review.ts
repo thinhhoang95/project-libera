@@ -271,6 +271,81 @@ export function syncReview(doc: ReviewDocument, snapshot: string, detectHistory 
   return { ...doc, snapshot, redo: [], threads: doc.threads.map((t) => ({ ...t, anchor: mapAnchor(t.anchor, doc.snapshot, snapshot, context) })), session: doc.session && { ...doc.session, phase: doc.session.phase === "awaiting_confirmation" ? "stale" : doc.session.phase, suggestions: suggestions! },
     ...(doc.agentSuggestions ? { agentSuggestions: mapAgentSuggestions(doc.agentSuggestions, doc.snapshot, snapshot, context) } : {}) };
 }
+/**
+ * A text change since a review's snapshot: `[start, end)` of the text before
+ * it, replaced by `text`. The editor records them as you type, so anchors are
+ * mapped through each change in turn (replayReviewEdits) rather than through
+ * one change spanning every edit since the review was last stored.
+ */
+export type ReviewTextEdit = { start: number; end: number; text: string };
+export const MAX_REVIEW_EDITS = 200;
+/** `edits` plus the change from `before` to `after`, merged into the last edit when the two touch (continuous typing). */
+export function addReviewEdit(edits: readonly ReviewTextEdit[], before: string, after: string): ReviewTextEdit[] {
+  if (before === after) return [...edits];
+  const change = textChange(before, after);
+  const last = edits.at(-1);
+  // The last edit's replacement text sits at [last.start, lastEnd) of `before`.
+  const lastEnd = last ? last.start + last.text.length : -1;
+  if (last && change.start <= lastEnd && change.oldEnd >= last.start) {
+    const start = Math.min(last.start, change.start);
+    const end = change.oldEnd <= lastEnd ? last.end : last.end + change.oldEnd - lastEnd;
+    // Everything after `end` in the text before `last` is unchanged in `after`.
+    const original = before.length - last.text.length + last.end - last.start;
+    return [...edits.slice(0, -1), { start, end, text: after.slice(start, after.length - (original - end)) }];
+  }
+  return [...edits, { start: change.start, end: change.oldEnd, text: after.slice(change.start, change.newEnd) }];
+}
+/**
+ * `doc` mapped onto `snapshot` through `edits` in turn when they lead from its
+ * snapshot to `snapshot`, else (none, too many, or ones that do not apply)
+ * through the single change between the two texts.
+ */
+export function replayReviewEdits(doc: ReviewDocument, edits: unknown, snapshot: string): ReviewDocument {
+  if (!Array.isArray(edits) || !edits.length || edits.length > MAX_REVIEW_EDITS) return syncReview(doc, snapshot);
+  const texts: string[] = [];
+  let text = doc.snapshot;
+  for (const edit of edits as Partial<ReviewTextEdit>[]) {
+    const { start, end } = edit ?? {};
+    if (!Number.isInteger(start) || !Number.isInteger(end) || typeof edit.text !== "string" || start! < 0 || end! < start! || end! > text.length) return syncReview(doc, snapshot);
+    text = text.slice(0, start) + edit.text + text.slice(end);
+    texts.push(text);
+  }
+  return text === snapshot ? texts.reduce((mapped, next) => syncReview(mapped, next), doc) : syncReview(doc, snapshot);
+}
+/**
+ * Follows a stored review through the editor's draft: `advance` maps it onto
+ * each new draft one small change at a time, so anchors stay as precise as if
+ * every change were stored, and records the edits for the server to replay
+ * when the review is next written. Calling it again with the same review and
+ * draft returns the same result, so it is safe during render.
+ */
+export class ReviewDraftTracker {
+  private base: ReviewDocument | null = null;
+  private text = "";
+  private mapped: ReviewDocument | null = null;
+  private recorded: ReviewTextEdit[] = [];
+  advance(doc: ReviewDocument, draft: string): ReviewDocument {
+    if (this.base !== doc) { this.base = doc; this.text = doc.snapshot; this.mapped = doc; this.recorded = []; }
+    if (this.text !== draft) {
+      const edits = addReviewEdit(this.recorded, this.text, draft);
+      // Past the limit the server maps the whole change at once; this copy stays precise.
+      this.recorded = edits.length > MAX_REVIEW_EDITS ? addReviewEdit([], doc.snapshot, draft) : edits;
+      this.mapped = syncReview(this.mapped!, draft);
+      this.text = draft;
+    }
+    return this.mapped!;
+  }
+  /** How many edits are waiting to be stored. */
+  get count() { return this.recorded.length; }
+  /** The followed draft: the text `edits()` leads to by default. */
+  get draft() { return this.text; }
+  /** The edits from `doc`'s snapshot to `text`; none when `doc` is not the review being followed. */
+  edits(doc: ReviewDocument, text = this.text): ReviewTextEdit[] {
+    if (this.base !== doc) return [];
+    const edits = addReviewEdit(this.recorded, this.text, text);
+    return edits.length > MAX_REVIEW_EDITS ? [] : edits;
+  }
+}
 export function newReview(key: string, snapshot: string, id: string): ReviewDocument {
   return { schemaVersion: 1, key, id, snapshot, revision: 0, enabled: false, threads: [], undo: [] };
 }

@@ -35,10 +35,12 @@ async function mountReview() {
   let failSync = false, holdSync = false, holdReload = false;
   let finishSync: (() => void) | undefined, finishReload: (() => void) | undefined;
   const calls: string[] = [];
+  let syncEdits: unknown;
   globalThis.fetch = async (_url, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const action = body?.action ?? "reload";
     calls.push(action);
+    if (action === "sync") syncEdits = body.edits;
     if (action === "reload") {
       const response = structuredClone(stored);
       if (holdReload) await new Promise<void>((resolve) => { finishReload = resolve; });
@@ -86,8 +88,10 @@ async function mountReview() {
   await settle(50);
   const editor = (document.querySelector(".tiptap") as HTMLElement & { editor: Editor }).editor;
   return {
-    dom, editor, calls, get review() { return review; },
+    dom, editor, calls, get review() { return review; }, get syncEdits() { return syncEdits; },
     holdSync() { holdSync = true; }, finishSync() { holdSync = false; finishSync!(); },
+    // Leaving the window is one of the moments a review is stored.
+    blur() { return act(async () => { dom.window.dispatchEvent(new dom.window.Event("blur")); }); },
     holdReload() { holdReload = true; }, finishReload() { holdReload = false; finishReload!(); },
     failSync() { failSync = true; }, switchTab(id: string) { setId(id); },
     async dispose() { await act(async () => root.unmount()); dom.window.close(); globalThis.fetch = originalFetch; },
@@ -102,6 +106,8 @@ test("background comment sync keeps Visual focus, selection and editability whil
     await act(async () => { editor.commands.setTextSelection(6); editor.view.focus(); editor.commands.insertContent(" edit"); });
     await settle(300);
     await settle(950);
+    assert.equal(h.calls.filter((action) => action === "sync").length, 0, "Typing alone does not store the review");
+    await h.blur();
     assert.equal(h.review.busy, "sync");
     assert.equal(h.review.locked, false);
     assert.equal(editor.isEditable, true);
@@ -140,11 +146,13 @@ test("comment sync waits for IME composition without raising a reload error", as
     await act(async () => { h.editor.view.focus(); h.editor.commands.insertContent("a"); });
     await settle(300);
     await act(async () => { h.editor.view.dom.dispatchEvent(new h.dom.window.CompositionEvent("compositionstart", { bubbles: true })); });
+    await h.blur();
     await settle(1000);
     assert.equal(h.calls.filter((action) => action === "sync").length, 0);
     assert.equal(h.review.error, "");
     assert.equal(h.editor.isEditable, true);
     await act(async () => { h.editor.commands.insertContent("Tiếng Việt"); h.editor.view.dom.dispatchEvent(new h.dom.window.CompositionEvent("compositionend", { bubbles: true })); });
+    await h.blur();
     await settle(350);
     assert.ok(h.calls.includes("sync"));
     assert.equal(h.review.error, "");
@@ -166,16 +174,16 @@ test("formatted live selections can add comments; reload recovers a conflict wit
     assert.equal(editor.state.doc, liveDoc, "Commenting must not normalize the live editor");
     h.failSync();
     await act(async () => { editor.commands.insertContent("change"); });
-    await settle(300); await settle(950);
+    await settle(300); await h.blur(); await settle(50);
     assert.match(h.review.error, /Reload review/);
     const syncCount = h.calls.filter((action) => action === "sync").length;
-    await settle(1000);
+    await h.blur(); await settle(1000);
     assert.equal(h.calls.filter((action) => action === "sync").length, syncCount, "Failed sync must not endlessly retry a stale revision");
     h.holdReload();
     let reloading!: Promise<void>;
     await act(async () => { reloading = h.review.reload(); });
     assert.equal(h.review.locked, false);
-    await settle(1000);
+    await h.blur(); await settle(1000);
     assert.equal(h.calls.filter((action) => action === "sync").length, syncCount, "Reload is serialized with background review writes");
     await act(async () => { h.finishReload(); await reloading; });
     assert.equal(h.review.error, "");
@@ -200,6 +208,21 @@ test("a delayed review reload cannot replace the next tab's comments", async () 
     await act(async () => { h.finishReload(); await reloading; });
     assert.equal(h.review.doc?.key, "Notes/other.md");
     assert.equal(h.review.busy, "");
+    assert.equal(h.review.error, "");
+  } finally { await h.dispose(); }
+});
+
+test("leaving a tab stores its review, with the edits made, before the next tab loads", async () => {
+  const h = await mountReview();
+  try {
+    await act(async () => { h.editor.commands.setTextSelection(6); h.editor.commands.insertContent(" edit"); });
+    await settle(300);
+    assert.equal(h.calls.includes("sync"), false);
+    await act(async () => h.switchTab("Notes/other.md"));
+    await settle(50);
+    assert.deepEqual(h.calls.slice(-2), ["sync", "load"]);
+    assert.deepEqual(h.syncEdits, [{ start: 6, end: 6, text: "edit " }]);
+    assert.equal(h.review.doc?.key, "Notes/other.md");
     assert.equal(h.review.error, "");
   } finally { await h.dispose(); }
 });

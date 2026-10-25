@@ -9,7 +9,7 @@
 
 import { dom, createProject, installBridge, installRendererFetch, nextRoute, openWindow, startClient, statusStoreFor, until, type Client, type Window } from "./support/p3b-harness";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -24,6 +24,7 @@ import { setCollabStatusStore } from "../../src/lib/collab/ui/status-store";
 import { SharedReviewStore } from "../../src/lib/collab/review-store/shared";
 import { createThreadApi } from "../../src/lib/collab/review-store/api";
 import { listSuggestions } from "../../src/lib/collab/suggestions/model";
+import { readReviewDocuments } from "../../src/lib/storage/review-files";
 import { MarkdownReviewProvider, useMarkdownReview } from "../../src/components/libera/markdown-review-context";
 import type { OpenTab } from "../../src/components/libera/types";
 import { removeDataDir, startServerProcess } from "./support/server-process";
@@ -148,10 +149,10 @@ test("agentic review proposals become AI suggestion groups that collaborators se
       sessionId = review().doc!.session!.id;
       // Nothing reached collaborators: the plan is in Alice's local review file only.
       assert.equal(listSuggestions(bobWin.session.replica.annotations).length, 0);
-      const files = readdirSync(path.join(process.env.LIBERA_DATA_DIR!), { recursive: true }).map(String).filter((name) => name.endsWith("markdown-reviews.json"));
-      const local = readFileSync(path.join(process.env.LIBERA_DATA_DIR!, files[0]), "utf8");
-      assert.match(local, /Tighten both paragraphs/);
-      const stored = (JSON.parse(local) as { documents: { key: string; threads: unknown[] }[] }).documents.find((item) => item.key === PATH)!;
+      const index = readdirSync(process.env.LIBERA_DATA_DIR!, { recursive: true }).map(String).find((name) => name.endsWith(path.join(".libera", "reviews", "index.json")))!;
+      const documents = await readReviewDocuments<{ id: string; key: string; threads: unknown[] }>(path.join(process.env.LIBERA_DATA_DIR!, index, "..", "..", ".."));
+      assert.match(JSON.stringify(documents), /Tighten both paragraphs/);
+      const stored = documents.find((item) => item.key === PATH)!;
       assert.deepEqual(stored.threads, [], "shared threads are planned against, never stored as local comments");
     });
 
