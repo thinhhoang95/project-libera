@@ -25,7 +25,7 @@ import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensur
 import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
 import { deletePdfSidecars, followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
 import { INK_DIR } from "@/lib/storage/constants";
-import { inkFolderPath, inkLibraryPath, supportsInk } from "@/lib/storage/ink";
+import { copyInkThroughEdit, inkFolderPath, inkLibraryPath, supportsInk } from "@/lib/storage/ink";
 import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
@@ -676,6 +676,7 @@ export async function saveSharedEditedImageCopy(relativePath: string, edits: Pho
   const targetParts = [...directoryParts, available.name];
   const liberaPath = relativeFilePath(notebook, targetParts);
   await writeSharedBlob(liberaPath, new Uint8Array(body), options);
+  await copyInkThroughEdit(relativeFilePath(notebook, pathParts), liberaPath, edits);
   notifySearchChanges([liberaPath]);
   return { file: await getFileNode(notebook, targetParts), tree: await getTree() };
 }

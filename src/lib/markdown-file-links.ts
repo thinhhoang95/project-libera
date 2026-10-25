@@ -11,7 +11,7 @@ export type MarkdownLinkViewState = {
     panX?: number;
     panY?: number;
     selectedAnnotationId?: string;
-    tool?: "select" | "text";
+    tool?: "select" | "text" | "ink";
     zoom?: number;
   };
   markdown?: {

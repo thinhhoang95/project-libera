@@ -3,7 +3,8 @@ import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:
 import path from "node:path";
 import { parseInkBlockSource } from "@/lib/ink/block";
 import { createInkAuthorKey, inkFileName, isInkAuthorKey, isInkChunkName, pageNumberOfChunk, parseInkFileName } from "@/lib/ink/authors";
-import { canWriteInkFile, emptyInkAuthorFile, normalizeInkAuthorFile, normalizeInkFrame, normalizeInkStroke } from "@/lib/ink/codec";
+import { canWriteInkFile, emptyInkAuthorFile, encodeInkSamples, normalizeInkAuthorFile, normalizeInkFrame, normalizeInkStroke, sampleBounds, strokeSamples } from "@/lib/ink/codec";
+import { originalToView, photoViewSize, type PhotoInkView } from "@/lib/ink/frame";
 import { applyInkOps, mergeInkFiles } from "@/lib/ink/merge";
 import { inkToSvg } from "@/lib/ink/svg";
 import type { InkAuthor, InkAuthorFile, InkFrame, InkOps, InkSource, InkStroke, MergedInkStroke } from "@/lib/ink/types";
@@ -107,6 +108,8 @@ export type InkChunkPayload = {
   strokes: MergedInkStroke[];
   /** This author's file revision; 0 when they have not inked here. */
   revision: number;
+  /** A Markdown ink block's rendering was asked about and is not on disk: the next Save writes it. */
+  renderingMissing?: boolean;
 };
 
 export type InkPayload = {
@@ -125,7 +128,7 @@ async function readAuthorFile(file: string): Promise<InkAuthorFile | null> {
 }
 
 /** Every author's file in a folder, by chunk. */
-async function readFolder(folder: string, only?: Set<string>) {
+export async function readInkFolder(folder: string, only?: Set<string>) {
   const byChunk = new Map<string, InkAuthorFile[]>();
   const names = await readdir(folder).catch(() => [] as string[]);
   await Promise.all(names.map(async (name) => {
@@ -141,7 +144,7 @@ async function readFolder(folder: string, only?: Set<string>) {
   return byChunk;
 }
 
-function chunkPayload(chunk: string, files: InkAuthorFile[], author: string): InkChunkPayload {
+export function chunkPayload(chunk: string, files: InkAuthorFile[], author: string): InkChunkPayload {
   const merged = mergeInkFiles(files);
   return { chunk, frame: merged.frame, strokes: merged.strokes, revision: files.find((file) => file.author.key === author)?.revision ?? 0 };
 }
@@ -156,18 +159,26 @@ async function assertInkFile(relativePath: string) {
   return { notebook, pathParts, fileType, sourcePath, folder: inkFolderPath(notebook, pathParts) };
 }
 
-/** Merged ink of a file: the chunks asked for, or every chunk with ink. */
-export async function readInk(relativePath: string, chunks?: string[]): Promise<InkPayload> {
+/**
+ * Merged ink of a file: the chunks asked for, or every chunk with ink. With
+ * `rendering` (one Markdown ink block), says whether its SVG is missing.
+ */
+export async function readInk(relativePath: string, chunks?: string[], rendering?: string): Promise<InkPayload> {
   const { notebook, pathParts, fileType, folder } = await assertInkFile(relativePath);
   for (const chunk of chunks ?? []) assertChunkFor(fileType, chunk);
   const author = await inkAuthor();
-  const byChunk = await readFolder(folder, chunks ? new Set(chunks) : undefined);
+  const byChunk = await readInkFolder(folder, chunks ? new Set(chunks) : undefined);
   const names = chunks ?? [...byChunk.keys()].sort();
-  return {
+  const payload = {
     path: relativeFilePath(notebook, pathParts),
     author: author.key,
     chunks: names.map((chunk) => chunkPayload(chunk, byChunk.get(chunk) ?? [], author.key)),
   };
+  if (rendering !== undefined && names.length === 1) {
+    const target = renderingTarget(notebook, names[0], rendering);
+    payload.chunks[0].renderingMissing = !(await pathExists(target.targetPath));
+  }
+  return payload;
 }
 
 // ---- Writing -----------------------------------------------------------------------
@@ -179,19 +190,33 @@ const locks = new Map<string, Promise<unknown>>();
  * handle has it open: a reader in another window, the search indexer or an
  * antivirus scan. Those holds are brief, so the publish is retried.
  */
-async function publishInkFile(target: string, value: unknown) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await writeJsonAtomically(target, value);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? "";
-      if (attempt >= 7 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 15 * 2 ** attempt));
+export async function publishInkFile(target: string, value: unknown) {
+  // Compact: an author file is uploaded whole by sync clients on every save.
+  await publishText(target, `${JSON.stringify(value)}\n`);
+}
+
+/** Writes a whole file under a temporary name and renames it into place. */
+async function publishText(target: string, text: string) {
+  await mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, text, { encoding: "utf8", flag: "wx" });
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(temporary, target);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (attempt >= 7 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 15 * 2 ** attempt));
+      }
     }
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
   }
 }
 
-function withLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+export function withInkLock<T>(key: string, work: () => Promise<T>): Promise<T> {
   const task = (locks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
   locks.set(key, task);
   void task.finally(() => { if (locks.get(key) === task) locks.delete(key); }).catch(() => undefined);
@@ -208,7 +233,7 @@ function normalizeStrokes(value: unknown, label: string): InkStroke[] {
   });
 }
 
-function normalizeOps(value: unknown): InkOps {
+export function normalizeInkOps(value: unknown): InkOps {
   if (typeof value !== "object" || value === null) throw new StorageError("Ink changes are missing.");
   const { add, erase, unerase } = value as Record<string, unknown>;
   if (erase !== undefined && (!Array.isArray(erase) || !erase.every((id) => typeof id === "string" && id.length <= 64))) throw new StorageError("Ink erase ids are invalid.");
@@ -239,7 +264,7 @@ export type WriteInkOptions = {
 export async function writeInk(relativePath: string, chunk: string, opsValue: unknown, frameValue: unknown, options: WriteInkOptions = {}): Promise<InkPayload> {
   const { notebook, pathParts, fileType, sourcePath, folder } = await assertInkFile(relativePath);
   assertChunkFor(fileType, chunk);
-  const ops = normalizeOps(opsValue);
+  const ops = normalizeInkOps(opsValue);
   const frame = normalizeInkFrame(frameValue);
   const rendering = options.rendering === undefined ? null : renderingTarget(notebook, chunk, options.rendering);
   const author = await inkAuthor();
@@ -248,12 +273,11 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
   const libraryPath = relativeFilePath(notebook, pathParts);
   const shared = isSharedNotebookPath(libraryPath);
 
-  return withLock(target, async () => {
-    const files = (await readFolder(folder, new Set([chunk]))).get(chunk) ?? [];
+  return withInkLock(target, async () => {
+    const files = (await readInkFolder(folder, new Set([chunk]))).get(chunk) ?? [];
     const others = files.filter((file) => file.author.key !== author.key);
     let own = files.find((file) => file.author.key === author.key);
     if (own && !canWriteInkFile(own)) throw new StorageError("This ink was saved by a newer version of Libera. Update Libera to change it.", 409);
-    const existed = Boolean(own);
     if (!own) {
       const first = frame ?? others[0]?.frame;
       if (!first) throw new StorageError("Ink needs the surface's frame.");
@@ -288,9 +312,12 @@ export async function writeInk(relativePath: string, chunk: string, opsValue: un
     }
 
     const payload = chunkPayload(chunk, current, author.key);
-    if (rendering && (changed || !existed || !(await pathExists(rendering.targetPath)))) {
+    // Rendered on every save, so a save whose SVG failed earlier repairs it;
+    // written only when it differs, since each write is a sync upload.
+    if (rendering) {
       const svg = inkToSvg(payload.strokes.map((item) => item.stroke), payload.frame ?? own.frame, "Ink");
-      await publishRendering(notebook, rendering, svg, shared);
+      const onDisk = await readFile(rendering.targetPath, "utf8").catch(() => null);
+      if (onDisk !== svg) await publishRendering(notebook, rendering, svg, shared);
     }
     return { path: libraryPath, author: author.key, chunks: [payload] };
   });
@@ -309,24 +336,7 @@ async function publishRendering(notebook: string, rendering: { normalized: strin
     await writeSharedBlob(`${notebook}/${rendering.normalized}`, new TextEncoder().encode(svg));
     return;
   }
-  await mkdir(path.dirname(rendering.targetPath), { recursive: true });
-  const temporary = `${rendering.targetPath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, svg, "utf8");
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        await rename(temporary, rendering.targetPath);
-        break;
-      } catch (error) {
-        // See publishInkFile: a reader can hold the old file open for a moment on Windows.
-        const code = (error as NodeJS.ErrnoException).code ?? "";
-        if (attempt >= 7 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 15 * 2 ** attempt));
-      }
-    }
-  } finally {
-    await rm(temporary, { force: true }).catch(() => undefined);
-  }
+  await publishText(rendering.targetPath, svg);
 }
 
 // ---- Following the file (local notebooks) -------------------------------------------
@@ -351,33 +361,83 @@ export async function deleteInkFolder(notebook: string, pathParts: string[]) {
   await rm(inkFolderPath(notebook, pathParts), { recursive: true, force: true });
 }
 
+/**
+ * Strokes in a photo's pixels mapped through photo edits (rotate, flip, crop):
+ * what an edited copy keeps of the original's ink, or what flattening draws.
+ * Widths do not change; quarter turns, flips and crops do not scale.
+ */
+export function mapInkThroughView(file: InkAuthorFile, view: PhotoInkView): InkAuthorFile {
+  const original = { width: file.frame.width, height: file.frame.height };
+  const size = photoViewSize(original, view);
+  const strokes = file.strokes.map((stroke) => {
+    const samples = strokeSamples(stroke).map((sample) => ({ ...sample, ...originalToView(sample, original, view) }));
+    return { ...stroke, points: encodeInkSamples(samples), bounds: sampleBounds(samples) };
+  });
+  return { ...file, frame: { ...file.frame, width: size.width, height: size.height }, strokes };
+}
+
+/**
+ * An edited copy of a notebook image takes the original's ink, every
+ * author's, mapped through the edit. `targetPath` is the copy's library path.
+ */
+export async function copyInkThroughEdit(sourcePath: string, targetPath: string, edits: PhotoInkView) {
+  const source = splitFilePath(sourcePath);
+  const target = splitFilePath(targetPath);
+  const files = (await readInkFolder(inkFolderPath(source.notebook, source.pathParts), new Set(["image"]))).get("image") ?? [];
+  if (!files.length) return;
+  const shared = isSharedNotebookPath(targetPath);
+  const folder = inkFolderPath(target.notebook, target.pathParts);
+  // The copy is a different file: ink finds it by its own bytes.
+  const identity = await cachedPdfIdentity(filePathFromParts(target.notebook, target.pathParts)).catch(() => null);
+  for (const file of files) {
+    const mapped: InkAuthorFile = { ...mapInkThroughView(file, edits), ...(identity ? { source: { size: identity.size, sha256: identity.contentHash } } : {}) };
+    const name = inkFileName("image", file.author.key);
+    if (shared) {
+      const { writeSharedBlob } = await import("@/lib/collab/shared-writes");
+      await writeSharedBlob(inkLibraryPath(target.notebook, target.pathParts, name), new TextEncoder().encode(`${JSON.stringify(mapped)}
+`));
+    } else {
+      await mkdir(folder, { recursive: true });
+      await publishInkFile(path.join(folder, name), mapped);
+    }
+  }
+}
+
 // ---- Files renamed or deleted outside Libera ------------------------------------------
 
 type InkOrphanRecord = { originalPath: string; orphanedAt: string; source: InkSource | null };
 
 const missingSince = new Map<string, number>();
 
-/** Ink folders under `_ink`: folders that directly hold at least one ink file. */
+/**
+ * Ink folders under `_ink`: folders that directly hold at least one ink file.
+ * Listing only: an ink file is read (for its PDF's bytes) only once its
+ * PDF is missing, since reading an online-only synced file downloads it.
+ */
 async function listInkFolders(notebook: string) {
-  const found: Array<{ folder: string; libraryPath: string; source: InkSource | null }> = [];
+  const found: Array<{ folder: string; libraryPath: string }> = [];
   async function visit(directory: string, parts: string[]) {
     let entries;
     try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
-    let source: InkSource | null = null;
-    let holdsInk = false;
-    for (const entry of entries) {
-      if (entry.isFile() && parseInkFileName(entry.name)) {
-        holdsInk = true;
-        source ??= (await readAuthorFile(path.join(directory, entry.name)))?.source ?? null;
-      }
-    }
-    if (holdsInk && parts.length) found.push({ folder: directory, libraryPath: relativeFilePath(notebook, parts), source });
+    const holdsInk = entries.some((entry) => entry.isFile() && parseInkFileName(entry.name));
+    if (holdsInk && parts.length) found.push({ folder: directory, libraryPath: relativeFilePath(notebook, parts) });
     for (const entry of entries) {
       if (entry.isDirectory() && !entry.name.startsWith(".")) await visit(path.join(directory, entry.name), [...parts, entry.name]);
     }
   }
   await visit(path.join(notebookPath(notebook), INK_DIR), []);
   return found;
+}
+
+/** The PDF or image bytes an ink folder's files recorded, from the first that has them. */
+async function folderSource(folder: string): Promise<InkSource | null> {
+  const names = await readdir(folder).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!parseInkFileName(name)) continue;
+    const source = (await readAuthorFile(path.join(folder, name)))?.source;
+    if (source) return source;
+  }
+  return null;
 }
 
 async function fileExists(libraryPath: string): Promise<boolean | null> {
@@ -404,10 +464,10 @@ export async function reconcileInkFolders(notebook: string, files: Array<{ path:
   if (!folders.length && !storedNames.length) return { reattached: 0, setAside: 0 };
 
   const taken = new Set<string>();
-  const missing: typeof folders = [];
+  const missing: Array<(typeof folders)[number] & { source: InkSource | null }> = [];
   for (const found of folders) {
     const exists = await fileExists(found.libraryPath);
-    if (exists === false) missing.push(found);
+    if (exists === false) missing.push({ ...found, source: await folderSource(found.folder) });
     else taken.add(found.libraryPath.toLowerCase());
   }
 

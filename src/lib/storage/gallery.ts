@@ -15,6 +15,18 @@ import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { pruneGalleryChatPhotos } from "@/lib/storage/document-chat";
+import {
+  copyPhotoInk,
+  deletePhotoInk,
+  movePhotoInk,
+  photoEditedInPlace,
+  photoReverted,
+  readPhotoInk,
+  renderPhotoWithInk,
+  resolveChangedPhotoInk,
+  writePhotoInk,
+  type PhotoLocation,
+} from "@/lib/storage/gallery-ink";
 
 // libvips can keep source files open after metadata/thumbnail reads. Windows
 // then rejects deletes, moves and replacements of those photos with EBUSY.
@@ -106,6 +118,10 @@ function absolutePath(relative: string) {
 function protectedRoot() {
   return path.join(getGalleryRoot(), PROTECTED_DIR);
 }
+
+/** Where a photo's ink is kept (gallery-ink.ts): beside the gallery, or the Protected Archive. */
+const inkInGallery = (id: string): PhotoLocation => ({ root: getGalleryRoot(), id });
+const inkInArchive = (id: string): PhotoLocation => ({ root: protectedRoot(), id });
 
 function folderOf(relative: string) {
   const slash = relative.indexOf("/");
@@ -263,6 +279,7 @@ async function reconcile(index: GalleryIndex) {
 
   for (const id of missing) {
     await removeOriginal(index.photos[id]);
+    await deletePhotoInk(inkInGallery(id));
     delete index.photos[id];
   }
   for (const album of index.albums) album.photoIds = [...new Set(album.photoIds.filter((id) => index.photos[id]))];
@@ -417,6 +434,7 @@ async function copyRecordInto(index: GalleryIndex, id: string, folder: string, n
     width: record.width,
     height: record.height,
   };
+  await copyPhotoInk(inkInGallery(id), inkInGallery(copyId), destination.path, null);
   return copyId;
 }
 
@@ -565,6 +583,7 @@ export function deletePhotos(ids: string[]) {
       if (!record) continue;
       await rm(absolutePath(record.path), { force: true });
       await removeOriginal(record);
+      await deletePhotoInk(inkInGallery(id));
       delete index.photos[id];
       deleted += 1;
     }
@@ -604,6 +623,7 @@ async function reconcileArchive(index: GalleryIndex) {
     });
     if (!stats?.isFile()) {
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      await deletePhotoInk(inkInArchive(id));
       delete index.archive[id];
     } else if (record.mtimeMs !== stats.mtimeMs || record.size !== stats.size) {
       Object.assign(record, { mtimeMs: stats.mtimeMs, size: stats.size }, await imageSize(path.join(protectedRoot(), record.path)));
@@ -629,6 +649,7 @@ export function archivePhotos(ids: string[]) {
       const destination = await findAvailableFilePath(protectedRoot(), path.posix.basename(record.path));
       await movePath(absolutePath(record.path), destination.path);
       const original = record.original ? await moveOriginal(record.original, getGalleryRoot(), protectedRoot()) : undefined;
+      await movePhotoInk(inkInGallery(id), inkInArchive(id));
       index.archive[id] = {
         ...record,
         path: destination.name,
@@ -664,6 +685,7 @@ export function restoreArchivedPhotos(ids: string[]) {
         path: folder ? `${folder}/${destination.name}` : destination.name,
         original: record.original ? await moveOriginal(record.original, protectedRoot(), getGalleryRoot()) : undefined,
       };
+      await movePhotoInk(inkInArchive(id), inkInGallery(id));
       delete restoredRecord.archivedAt;
       delete restoredRecord.folder;
       delete restoredRecord.albumIds;
@@ -685,6 +707,7 @@ export function deleteArchivedPhotos(ids: string[]) {
       if (!record) continue;
       await rm(path.join(protectedRoot(), record.path), { force: true });
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      await deletePhotoInk(inkInArchive(id));
       delete index.archive[id];
       deleted += 1;
     }
@@ -796,6 +819,8 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
         ...await imageSize(destination.path),
       };
       if (canChange) for (const album of index.albums) if (album.photoIds.includes(id)) album.photoIds.push(copyId);
+      // The copy keeps the photo's ink, moved with the crop and turns.
+      await copyPhotoInk(inkInGallery(id), inkInGallery(copyId), destination.path, edits);
       return { id: copyId, gallery: toContents(index) };
     }
 
@@ -822,6 +847,8 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     if (nextRelative !== record.path) await rm(current, { force: true });
     const stats = await stat(absolutePath(nextRelative));
     Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    // Ink stays a layer: its view takes the edit's turns and crop (gallery-ink.ts).
+    await photoEditedInPlace(inkInGallery(id), absolutePath(nextRelative), edits);
     // The album's members see what was done (the watcher shares the edited file).
     if (shared) {
       void updateSharedAlbum(shared.projectId, { photos: [{ name: path.posix.basename(nextRelative), edits: edits as unknown as Record<string, unknown> }] })
@@ -856,6 +883,7 @@ export function revertPhoto(id: string) {
     if (previousOriginal && previousOriginal !== original) await removeOriginal(record);
     const stats = await stat(absolutePath(restored));
     Object.assign(record, { path: restored, original: undefined, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(restored)));
+    await photoReverted(inkInGallery(id), absolutePath(restored));
     return toContents(index);
   });
 }
@@ -1019,6 +1047,89 @@ export async function shareGalleryPhoto(photoId: string, options: ShareOptions =
 }
 
 /** Copies photos out of shared albums into this gallery, where they stay whatever happens to the album. */
+// ---- Ink (gallery-ink.ts) ------------------------------------------------------
+//
+// Reads and saves look the photo up in the index without the full gallery
+// scan withGallery makes: ink is saved every few seconds while drawing.
+
+/** A gallery photo's file and ink. Archived photos' ink stays behind the archive's lock: not here. */
+async function inkTarget(id: string) {
+  const index = await loadIndex();
+  const record = index.photos[id];
+  if (!record) throw new StorageError("Photo not found.", 404);
+  return { location: inkInGallery(id), absolute: absolutePath(record.path), edited: Boolean(record.original), record };
+}
+
+/** Shares the gallery's queue without a scan, so ink cannot race a move, edit or delete. */
+function withGalleryInk<T>(id: string, work: (target: Awaited<ReturnType<typeof inkTarget>>) => Promise<T>): Promise<T> {
+  const next = queue.then(async () => work(await inkTarget(id)));
+  queue = next.catch(() => undefined);
+  return next;
+}
+
+export function readGalleryPhotoInk(id: string) {
+  return withGalleryInk(id, (target) => readPhotoInk(target.location, target.absolute));
+}
+
+export function writeGalleryPhotoInk(id: string, ops: unknown) {
+  return withGalleryInk(id, (target) => {
+    if (path.extname(target.record.path).toLowerCase() === ".svg") throw new StorageError("Vector images cannot be drawn on here.");
+    return writePhotoInk(target.location, target.absolute, target.edited, ops);
+  });
+}
+
+export function resolveGalleryPhotoInk(id: string, action: "keep" | "discard") {
+  return withGalleryInk(id, async (target) => {
+    await resolveChangedPhotoInk(target.location, target.absolute, action);
+    return readPhotoInk(target.location, target.absolute);
+  });
+}
+
+/** The photo with its ink drawn on, for saving elsewhere; the photo is not changed. */
+export function exportGalleryPhotoWithInk(id: string) {
+  return withGalleryInk(id, async (target) => {
+    const { format, extension } = editedPhotoFormat(target.record.path);
+    const body = await renderPhotoWithInk(target.location, target.absolute, format);
+    if (!body) throw new StorageError("This photo has no ink.", 404);
+    const stem = path.posix.basename(target.record.path, path.extname(target.record.path));
+    return { name: `${stem} (with ink)${extension}`, body, contentType: CONTENT_TYPES[extension] ?? "application/octet-stream" };
+  });
+}
+
+/**
+ * Draws the ink into the photo itself, as an edit: the first original is kept
+ * so Revert brings the photo back without it. The ink layer is then cleared.
+ */
+export function flattenGalleryPhotoInk(id: string) {
+  return withGallery(async (index) => {
+    const record = findPhoto(index, id);
+    if (await sharedFolder(getGalleryRoot(), folderOf(record.path))) throw new StorageError("Ink cannot be drawn into a shared album's photo. Export it with ink instead.", 409);
+    const { format, extension } = editedPhotoFormat(record.path);
+    const body = await renderPhotoWithInk(inkInGallery(id), absolutePath(record.path), format);
+    if (!body) throw new StorageError("This photo has no ink.", 404);
+    const current = absolutePath(record.path);
+    if (!record.original) {
+      const backupName = `${id}${path.extname(record.path).toLowerCase()}`;
+      await mkdir(path.join(getGalleryRoot(), ORIGINALS_DIR), { recursive: true });
+      await copyFile(current, path.join(getGalleryRoot(), ORIGINALS_DIR, backupName));
+      record.original = backupName;
+    }
+    const nextRelative = withExtension(record.path, extension);
+    const temporary = `${absolutePath(nextRelative)}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, body);
+      await rename(temporary, absolutePath(nextRelative));
+    } finally {
+      await rm(temporary, { force: true });
+    }
+    if (nextRelative !== record.path) await rm(current, { force: true });
+    const stats = await stat(absolutePath(nextRelative));
+    Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    await deletePhotoInk(inkInGallery(id));
+    return toContents(index);
+  });
+}
+
 export function savePhotosToGallery(ids: string[]) {
   return withGallery(async (index) => {
     const saved: string[] = [];

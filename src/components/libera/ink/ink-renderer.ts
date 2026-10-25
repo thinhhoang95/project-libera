@@ -1,7 +1,7 @@
 "use client";
 
 import { strokeSamples } from "@/lib/ink/codec";
-import { centerlinePath, inflateRect, outlinePath, rectsIntersect, strokeOutline, strokeReach, unionRect } from "@/lib/ink/geometry";
+import { inflateRect, rectsIntersect, strokeOutline, strokeReach, unionRect } from "@/lib/ink/geometry";
 import { InkSpatialIndex } from "@/lib/ink/spatial-index";
 import { dashPattern } from "@/lib/ink/tools";
 import type { InkFrame, InkRect, InkSample, InkStroke } from "@/lib/ink/types";
@@ -25,11 +25,50 @@ const MAX_DPR = 2;
 
 const paths = new WeakMap<InkStroke, Path2D>();
 
+/*
+ * Paths are built from numbers, not from SVG path text: formatting and
+ * parsing the text was the slowest step of a cold redraw (ink-bench.ts).
+ * The curves are the same as geometry.ts's outlinePath and centerlinePath.
+ */
+
+/** A closed path through outline points: quadratic curves between their midpoints. */
+function outlinePath2D(outline: readonly number[][]) {
+  const path = new Path2D();
+  if (outline.length < 2) return path;
+  path.moveTo(outline[0][0], outline[0][1]);
+  for (let index = 0; index < outline.length; index += 1) {
+    const [x0, y0] = outline[index];
+    const [x1, y1] = outline[(index + 1) % outline.length];
+    path.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
+  }
+  path.closePath();
+  return path;
+}
+
+/** An open path along samples, smoothed the same way: dashed and dotted strokes. */
+function centerlinePath2D(samples: readonly { x: number; y: number }[]) {
+  const path = new Path2D();
+  if (!samples.length) return path;
+  path.moveTo(samples[0].x, samples[0].y);
+  if (samples.length === 1) {
+    path.lineTo(samples[0].x, samples[0].y);
+    return path;
+  }
+  for (let index = 1; index < samples.length - 1; index += 1) {
+    const point = samples[index];
+    const next = samples[index + 1];
+    path.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+  }
+  const last = samples[samples.length - 1];
+  path.lineTo(last.x, last.y);
+  return path;
+}
+
 function strokePath(stroke: InkStroke) {
   let path = paths.get(stroke);
   if (!path) {
     const samples = strokeSamples(stroke);
-    path = new Path2D(stroke.lineStyle === "solid" ? outlinePath(strokeOutline(samples, stroke.brush, stroke.width)) : centerlinePath(samples));
+    path = stroke.lineStyle === "solid" ? outlinePath2D(strokeOutline(samples, stroke.brush, stroke.width)) : centerlinePath2D(samples);
     paths.set(stroke, path);
   }
   return path;
@@ -59,7 +98,7 @@ export function paintLiveStroke(context: CanvasRenderingContext2D, samples: read
   context.globalAlpha = style.opacity;
   if (style.lineStyle === "solid") {
     context.fillStyle = style.color;
-    context.fill(new Path2D(outlinePath(strokeOutline(samples, style.brush, style.width, false))));
+    context.fill(outlinePath2D(strokeOutline(samples, style.brush, style.width, false)));
     return;
   }
   context.strokeStyle = style.color;
@@ -67,16 +106,40 @@ export function paintLiveStroke(context: CanvasRenderingContext2D, samples: read
   context.lineCap = "round";
   context.lineJoin = "round";
   context.setLineDash(dashPattern(style.lineStyle, style.width));
-  context.stroke(new Path2D(centerlinePath(samples)));
+  context.stroke(centerlinePath2D(samples));
   context.setLineDash([]);
 }
 
-export type InkCanvasSize = { cssWidth: number; cssHeight: number; scale: number; dpr: number };
+/** A 2D affine map, `[a, b, c, d, e, f]` as canvas `setTransform` takes it. */
+export type InkMatrix = readonly [number, number, number, number, number, number];
+export const IDENTITY_INK_MATRIX: InkMatrix = [1, 0, 0, 1, 0, 0];
 
-/** The device pixel ratio to draw at, capped by `MAX_DPR` and the canvas pixel budget. */
-export function inkCanvasRatio(cssWidth: number, cssHeight: number, devicePixelRatio = globalThis.devicePixelRatio || 1) {
+/**
+ * How a surface is drawn: its CSS size, CSS px per view unit (`scale`), backing
+ * pixels per CSS px (`dpr`), and the map from stroke units to view units (a
+ * gallery photo edited since it was inked; identity elsewhere).
+ */
+export type InkCanvasSize = { cssWidth: number; cssHeight: number; scale: number; dpr: number; matrix?: InkMatrix };
+
+/** On battery, ink is drawn at most this many device pixels per CSS pixel (ink-power.ts). */
+const MAX_DPR_ON_BATTERY = 1.5;
+
+/**
+ * Backing pixels per CSS px: the screen's ratio times any zoom an ancestor
+ * applies (so a zoomed photo's ink stays sharp), capped by `MAX_DPR` (1.5 on
+ * battery) and the canvas pixel budget.
+ */
+export function inkCanvasRatio(cssWidth: number, cssHeight: number, devicePixelRatio = globalThis.devicePixelRatio || 1, zoom = 1, onBattery = false) {
   const area = Math.max(1, cssWidth * cssHeight);
-  return Math.max(0.5, Math.min(devicePixelRatio, MAX_DPR, Math.sqrt(MAX_CANVAS_PIXELS / area)));
+  const cap = (onBattery ? MAX_DPR_ON_BATTERY : MAX_DPR) * Math.max(1, zoom);
+  return Math.max(0.5, Math.min(devicePixelRatio * Math.max(1, zoom), cap, Math.sqrt(MAX_CANVAS_PIXELS / area)));
+}
+
+/** Sets a context to draw in stroke units for a surface of this size. */
+export function applyInkTransform(context: CanvasRenderingContext2D, size: InkCanvasSize) {
+  const ratio = size.dpr * size.scale;
+  const [a, b, c, d, e, f] = size.matrix ?? IDENTITY_INK_MATRIX;
+  context.setTransform(ratio * a, ratio * b, ratio * c, ratio * d, ratio * e, ratio * f);
 }
 
 export function sizeCanvas(canvas: HTMLCanvasElement, size: InkCanvasSize) {
@@ -113,8 +176,7 @@ export class InkRenderer {
   private context(canvas: HTMLCanvasElement) {
     const context = canvas.getContext("2d");
     if (!context || !this.size) return null;
-    const ratio = this.size.dpr * this.size.scale;
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    applyInkTransform(context, this.size);
     return context;
   }
 
@@ -180,8 +242,7 @@ export class InkRenderer {
       } else {
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, canvas.width, canvas.height);
-        const ratio = this.size.dpr * this.size.scale;
-        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+        applyInkTransform(context, this.size);
       }
       const near = area ? this.index.query(area) : null;
       for (const stroke of this.order) {

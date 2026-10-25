@@ -19,7 +19,7 @@ When there is more than one user, a small **Switch user** button sits under the 
 
 That choice holds for one start only. If the chosen person never signs in, the next start opens the last user who did.
 
-Libera saves the workspace and pending PDF/image annotations in every app window, including pop-outs, before scheduling the restart. Pop-outs close before the main window; if an unsaved document cancels closing or a save fails, the switch is cancelled and the controls become available again. No switch is queued for a later quit. Closing a pop-out by itself also waits for its pending annotation writes.
+Libera saves the workspace in every app window, including pop-outs, before scheduling the restart. Pop-outs close before the main window. A note, annotations or ink that are not saved cancel closing, as does a failed save: the switch is cancelled and the controls become available again. Annotations and ink are saved only with **Save** (Ctrl+S), as notes are; until then a local copy outside the synced master directory keeps them through a crash. No switch is queued for a later quit.
 
 To change user while signed in, choose **Logout** in the sidebar, then use **Switch user**.
 

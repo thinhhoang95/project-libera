@@ -133,6 +133,19 @@ test("concurrent writes from several windows all land", () => withLibrary(async 
   assert.equal((await readInk("Notes/paper.pdf", ["page-0001"])).chunks[0].revision, 20);
 }));
 
+test("retrying an erase that already landed does not rewrite the author file", () => withLibrary(async () => {
+  await file("Notes/retry.pdf");
+  const mark = stroke();
+  await writeInk("Notes/retry.pdf", "page-0001", { add: [mark] }, FRAME);
+  const erased = await writeInk("Notes/retry.pdf", "page-0001", { erase: [mark.id] }, FRAME);
+  const { key } = await inkAuthor();
+  const target = path.join(inkFolderPath("Notes", ["retry.pdf"]), `page-0001.${key}.ink`);
+  const before = await readFile(target, "utf8");
+  const retry = await writeInk("Notes/retry.pdf", "page-0001", { erase: [mark.id] }, FRAME);
+  assert.equal(retry.chunks[0].revision, erased.chunks[0].revision);
+  assert.equal(await readFile(target, "utf8"), before);
+}));
+
 test("ink written by a newer Libera is not overwritten", () => withLibrary(async () => {
   await file("Notes/paper.pdf");
   await writeInk("Notes/paper.pdf", "page-0001", { add: [stroke()] }, FRAME);

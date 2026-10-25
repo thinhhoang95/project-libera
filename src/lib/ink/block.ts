@@ -31,7 +31,10 @@ export function parseInkBlockSource(src: string): string | null {
   try { decoded = decodeURIComponent(path); } catch { /* keep as written */ }
   // Sources resolved for the browser carry the asset in a query string.
   const asset = /[?&]asset=([^&]+)/.exec(src)?.[1];
-  const candidate = asset ? decodeURIComponent(asset) : decoded;
+  let candidate = decoded;
+  if (asset) {
+    try { candidate = decodeURIComponent(asset); } catch { return null; }
+  }
   return SOURCE.exec(candidate)?.[1]?.toLowerCase() ?? null;
 }
 

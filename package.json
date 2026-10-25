@@ -27,6 +27,7 @@
     "test:electron-release": "node --test scripts/**/*.test.cjs",
     "test:editor": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint",
+    "bench:ink": "node --import tsx scripts/editor/ink-bench.ts",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
     "search:download-model": "node scripts/download-embeddinggemma.cjs",
     "models:download": "node --import tsx scripts/download-models.ts",

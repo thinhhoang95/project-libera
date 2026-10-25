@@ -26,16 +26,26 @@ export function strokeSvgElement(stroke: InkStroke) {
   return outline ? `<path d="${outline}" fill="${color}"${opacityAttribute(stroke.opacity)}/>` : "";
 }
 
-export function inkToSvg(strokes: readonly InkStroke[], frame: InkFrame, title = "Ink") {
+/**
+ * Strokes as an SVG the size of `frame`. With `view`, the SVG is the view's
+ * size and strokes are drawn through its matrix: a gallery photo's ink, stored
+ * on the original, over the photo as edited since.
+ */
+export function inkToSvg(strokes: readonly InkStroke[], frame: InkFrame, title = "Ink", view?: { width: number; height: number; matrix: readonly number[] }) {
   const highlights = strokes.filter((stroke) => stroke.brush === "highlighter").map(strokeSvgElement).join("");
   const pens = strokes.filter((stroke) => stroke.brush !== "highlighter").map(strokeSvgElement).join("");
   const safeTitle = title.replace(/[<>&"]/g, (character) => `&#${character.charCodeAt(0)};`);
+  const width = view?.width ?? frame.width;
+  const height = view?.height ?? frame.height;
+  const transform = view ? ` transform="matrix(${view.matrix.map((value) => Math.round(value * 1e6) / 1e6).join(" ")})"` : "";
 
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${frame.width} ${frame.height}" width="${frame.width}" height="${frame.height}" role="img">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img">`,
     `<title>${safeTitle}</title>`,
+    `<g${transform}>`,
     highlights ? `<g style="mix-blend-mode:multiply">${highlights}</g>` : "",
     pens,
+    "</g>",
     "</svg>",
   ].join("");
 }

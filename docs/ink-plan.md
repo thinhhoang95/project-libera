@@ -10,8 +10,34 @@ Status (2026-10-25): open questions settled (see [Decisions](#decisions)).
 - the emulated-pen harness.
 
 Tests are `scripts/editor/ink-core.test.ts`, `ink-storage.test.ts` and
-`ink-pen.test.ts`. See [Phase 0 findings](#phase-0-findings). Phases 1–4 are
-not started.
+`ink-pen.test.ts`. See [Phase 0 findings](#phase-0-findings).
+
+**Phase 2 (Markdown ink blocks) is done**, ahead of phase 1:
+
+- The shared drawing pieces phase 1 was to build are in
+  `src/components/libera/ink/`, with Markdown as their first host:
+  - `ink-surface.tsx`, `ink-renderer.ts` and `ink-input.ts`;
+  - the toolbox (`ink-toolbar.tsx`, `use-ink-tools.ts`);
+  - the document hook (`use-ink-document.ts`).
+- The block itself is `tiptap-ink-block.tsx` and `src/lib/ink/block.ts`.
+- Tests are in `scripts/editor/ink-block.test.ts`.
+
+See [Phase 2 notes](#phase-2-notes).
+
+**Phase 3 (photos) is done.**
+
+- Notebook images: `ink/image-ink-layer.tsx`.
+- Gallery photos: `ink/photo-ink-layer.tsx` and `storage/gallery-ink.ts`.
+
+**Phase 4 is partly done:**
+
+- **Done:** the lasso, the lowest-latency mode, battery limits, and the
+  benchmark (`npm run bench:ink`).
+- **Waiting:** shared-album ink sync, PDF `/Ink` export and hardware tuning.
+
+See [Phase 3 and 4 notes](#phase-3-and-4-notes). Tests are in
+`scripts/editor/ink-photos.test.ts`. Phase 1's PDF-specific work and phase 2b
+are not started.
 
 Ink lets a reader write and draw with a stylus (or a mouse or finger) on PDFs,
 in Markdown notes, both between paragraphs and on top of the text, and on
@@ -281,11 +307,9 @@ Notes:
   - `GET` returns the merged chunk.
   - For PDFs, `GET` takes a page range, so the viewer loads ink only for
     pages near the viewport.
-- **Client writer** (`use-ink-writer.ts`): built on `createDeferredSave` with a
-  1.5 s idle debounce, about 4× fewer wakeups than 350 ms during steady
-  writing. It flushes on blur, on tab close, and through `registerStateFlusher`
-  on quit and user switch. Cross-window updates go over a broadcast channel, as
-  `annotation-sync.ts` does.
+- **Client writer** (`InkWriter` in `use-ink-document.ts`): writes only on
+  **Save**; see [Saving](#saving). Cross-window updates go over a broadcast
+  channel, as `annotation-sync.ts` does.
 - **Asset cleanup:** `cleanupMarkdownImageAssets` must keep `ink-*.svg`
   renderings that a note still references, as it keeps Python figures. When a
   block is deleted from the note, its `_ink` chunk files go with its
@@ -448,26 +472,47 @@ InkSurface (one per page / block / photo)
 
 ### Markdown (TipTap)
 
-- A new block node, `inkBlock`, with attrs `{ id, width, height }`. It is a
-  React NodeView hosting an `InkSurface`, with `stopEvent` for pointer input
-  and `ignoreMutation`, as the Python figure view does.
+- **An ink block is an ordinary `image` node** whose source names an ink
+  rendering, as Python figures are images whose names mark them. There is no
+  new node type. The image NodeView (`createInkImageNodeView`) draws ink
+  sources as a React NodeView hosting an `InkSurface`, with `stopEvent` for
+  pointer input and `ignoreMutation`; every other image goes on to the Python
+  figure view.
 - **In the note, it is an image of its own rendering:**
 
   ```markdown
-  ![Ink](_assets/Notes/Lecture 3.md/ink-7f3c2a.svg)
+  ![Ink](_assets/Lecture-3/ink-7f3c2a9q0d1e4b5c.svg)
   ```
 
-  - The NodeView recognizes the `ink-` prefix, as `parsePythonFigureSource`
-    recognizes Python figures, and loads the stroke data from the
-    `_ink/Notes/Lecture 3.md/block-7f3c2a.*.ink` author files.
-  - The SVG is regenerated when the block loses focus (not per stroke), so
-    other Markdown apps, previews, slides and PDF export show the ink with no
-    special support.
-- **Inserting:** a toolbar button, `/ink` in the slash menu, or a pen-down in
-  the note's empty margin after the last block. The block grows downward
-  when the pen nears its bottom edge, and can be resized with a grip.
-- **Collab:** `nodeMatchesBlock` (`tiptap-blocks.ts`) needs a case for the
-  node. The block is a plain image in Y.Text, so text sync is unchanged.
+  - The source is in the note's usual assets folder (`markdownAssetsFolder`).
+    The id is 6–32 letters and digits, and a `-1`, `-2`… suffix from a copy
+    is allowed.
+  - The NodeView loads strokes from the
+    `_ink/Lecture 3.md/block-<id>.*.ink` author files.
+  - **The server renders the SVG with each Save of the block's ink** (the
+    note's Save), and writes it only when it differs from the file on disk.
+    A new block's blank SVG is written with the first Save: loading a block
+    reports a missing rendering. Other Markdown apps, previews, slides and PDF
+    export show the ink with no special support. LaTeX export converts it to
+    PNG with sharp, as it does other images.
+  - **Serving SVG.** `ink-<id>.svg` is the one SVG a note may show.
+    `getMarkdownImageAsset` serves it as `image/svg+xml`, with
+    `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+    sandbox` and `nosniff`. Other SVGs are still not note images.
+- **Height.** The height is in the author file's frame, and the tallest
+  author's height wins (`mergeInkFiles`). The block grows when a stroke nears
+  its bottom, and its grip resizes it, though never above its lowest ink.
+- **Inserting:** a toolbar button, **Insert ink block**. The Visual editor has
+  no slash menu, so `/ink` waits for one. A pen-down in the margin is not
+  built yet.
+- **Input:**
+  - A pen always draws.
+  - A mouse draws once the block is selected; the toolbox shows then.
+  - While the block is selected, Undo and Redo apply to its ink first.
+  - Ink is drawn on white paper in every theme, as PDF pages are, so its
+    colors match the SVG.
+- **Collab:** nothing to add. The block is a plain image in Y.Text, and
+  `nodeMatchesBlock` already handles images.
 
 ### Markdown: ink over text (`tiptap-ink-overlay.tsx`, `src/lib/ink/text-anchors.ts`)
 
@@ -646,10 +691,12 @@ tests do.
 - Add vector export, stylus-anywhere and spaces.
 - Ship a feature doc at `docs/features/ink.md`.
 
-### Phase 2: Markdown ink blocks
+### Phase 2: Markdown ink blocks, done
 
-- Add the `inkBlock` node, the `.ink` and `.svg` assets, and the insert
-  gestures.
+- Built the shared surface, input, renderer, toolbox and document hook,
+  since phase 1 had not.
+- Add the ink block (an image NodeView), the `.ink` and `.svg` assets, and the
+  insert button.
 - Add shared-notebook writes and moves, asset-cleanup exemptions, and collab
   block matching.
 
@@ -660,21 +707,23 @@ tests do.
 - Add Ink mode, the pen tap that places the caret, the detached-ink list,
   and overlay ink in preview, PDF export and slides.
 
-### Phase 3: photos
+### Phase 3: photos, done
 
 - Add ink to notebook images in `ImageViewer`.
 - Add ink to gallery photos, with the `view` composed in edit, revert and copy,
   "Export with ink" and "Flatten ink into photo".
 
-### Phase 4: polish
+### Phase 4: polish, partly done
 
-- Add the lasso (move, recolor, copy).
-- Sync ink in shared albums.
-- Tune pressure, prediction and palm rejection on real hardware.
-- Write real `/Ink` annotations in PDF export.
-- Add a lowest-latency mode.
+- Add the lasso (move, recolor, restyle, copy, paste, delete). Done.
+- Sync ink in shared albums. Not built; a design is in
+  [Phase 3 and 4 notes](#phase-3-and-4-notes).
+- Tune pressure, prediction and palm rejection on real hardware. Waiting for
+  hardware.
+- Write real `/Ink` annotations in PDF export. Waiting for phase 1's PDF ink.
+- Add a lowest-latency mode. Done.
 - Move re-rasterizing of very dense pages to an OffscreenCanvas worker, if the
-  benchmark shows it is needed.
+  benchmark shows it is needed. The benchmark says no for now.
 
 ## Phase 0 findings
 
@@ -717,6 +766,229 @@ tests do.
   host.
 - `_ink` is now a reserved name and hidden from the tree. An existing user
   folder called `_ink` would disappear from the tree.
+
+## Phase 2 notes
+
+- **Note saves keep ink renderings** while the note exists, as they keep
+  Python figures (`cleanupMarkdownImageAssets`). A new block's SVG is written
+  before the note is saved with it, and Undo can bring back a deleted block.
+  - A block deleted from a note keeps its SVG and `_ink` chunk until the note
+    itself is deleted.
+- **Saving:** `use-ink-document` batches changes and drops changes that
+  cancel out before they are saved (`mergePendingInkOps`). A property test
+  checks that batching saves the same ink as saving each change.
+- **Performance:**
+  - A new stroke paints on top without redrawing anything else.
+  - Erasing redraws only the area it touched.
+  - Blocks more than 1,500 px off screen give up their canvases.
+  - Canvases are capped at 2× device pixels and 16 megapixels.
+- **Not built yet:**
+  - The pen-in-the-margin insert.
+  - The battery-aware limits.
+  - Two-finger pinch on ink surfaces. Fingers scroll the note; there is no
+    zoom to pinch in a note.
+- **Tested in the dev server** (scratch library):
+  - inserting a block;
+  - drawing with the mouse once the block is selected;
+  - the stroke saving to `_ink/Lecture.md/block-<id>.<author>.ink`;
+  - the SVG updating.
+
+  Pen input was tested with synthetic pen events. Real stylus hardware is
+  still untested.
+
+## Saving
+
+Since 2026-10-25, ink and PDF/image annotations are written only when the
+person saves, as a note's text is. Notebooks are often synced (OneDrive), and
+every write is an upload.
+
+- **Unsaved changes** (`pending-saves.ts`):
+  - They stay in memory and in a recovery journal in IndexedDB. That lives in
+    the app's profile (Electron's userData), not the synced master directory.
+  - A crash, power cut or restart loses nothing: the changes come back as
+    unsaved when the file is opened again.
+  - Quitting writes the journal only.
+- **Save:** Save, Ctrl+S, or the viewer's **Save** button. A note's Save also
+  saves its ink blocks. A failed batch is retried exactly as sent before
+  newer changes (see Codex's review below).
+- **Unsaved state:**
+  - The tab's dot, Close, Close others, moving, archiving and `beforeunload`
+    all count unsaved ink and annotations as they count unsaved text.
+  - **Close without saving** drops them and their journal copy.
+  - Quitting or switching user with unsaved changes is cancelled, as with
+    unsaved notes. No dialog explains why; that is how unsaved notes already
+    behave.
+- **Traffic changes made at the same time:**
+  - Ink author files are compact JSON.
+  - Block renderings are written only when their SVG differs.
+  - Library refresh lists `_ink` folders without reading them, and reads an
+    ink file only when its PDF or image has gone missing. Reading an
+    online-only synced file downloads it.
+- **Codex review (gpt-6.1-sol, stopped partway).** All of its fixes are kept:
+  - malformed `%` in block sources;
+  - the pen's hit and dirty-rect reach;
+  - undo of partial-eraser drags;
+  - photo copies keeping their own revert baseline;
+  - unplaceable ink after a revert showing as changed;
+  - gallery ink saves joining the gallery's queue;
+  - retrying a failed save batch as sent;
+  - stale loads;
+  - a BroadcastChannel leak.
+
+  Its new tests are in `ink-*.test.ts` and `ink-client.test.ts`.
+- **Second Codex review** (gpt-6.1-sol, xhigh, after saving on click). Its
+  fixes, all kept:
+  - An ink batch that is being saved stays in the recovery journal until it
+    lands, with its own frame.
+  - A late reply to a discarded save cannot bring the ink back.
+  - Writers with unsaved changes stay registered when their view unmounts
+    (source mode, tab switches), so Save still reaches them. A remount reuses
+    them, including a save in flight.
+  - The journal keeps its latest value without IndexedDB, does not resurrect
+    discarded records at startup, and quitting waits for writes already
+    started.
+  - Recovery cannot replay a save that just finished, and runs once, in the
+    first successful load.
+  - Close without saving also covers gallery tabs. A recovery copy for a file
+    with no open tab doesn't block quitting.
+  - The photo layer's **Discard ink** clears unsaved strokes too.
+  - Retrying an erase that already landed doesn't rewrite the author file.
+- **Renames and moves** (fixed after the second review).
+  `pendingSaves.moveUnsaved` runs before the tabs re-path:
+  - for file moves and renames in `retargetOpenTab`, which also covers a
+    collaborator's moves through the collab host;
+  - for folder renames;
+  - for notebook renames.
+
+  What it does:
+  - Re-keys open and unmounted writers, which retarget their pending changes
+    and any failed batch waiting to be resent.
+  - Moves the recovery records of views that aren't open.
+  - Moves an ink block's rendering source with a cross-notebook move's new
+    image sources (`imageSources`).
+
+  A batch already being saved keeps the path it was sent to. Archiving a file
+  or folder with unsaved changes is still refused. Moves that don't go
+  through these workspace actions (another app, for example) are not followed.
+- **Still open:**
+  - Recovery records are keyed by path and chunk only, so two windows on one
+    file can overwrite each other's record.
+  - Two windows saving one PDF's or image's annotations save whole arrays, so
+    the later save can drop the other's additions. Ink is not affected: it
+    saves operations.
+  - Ink recovered after a restart straight into Markdown source mode has no
+    writer, so Save doesn't reach it until the Visual editor opens the note.
+  - PDF annotation saves still create and delete a lock file in the synced
+    `.libera/locks` folder.
+
+## Phase 3 and 4 notes
+
+**Notebook images.**
+
+- **Drawing:** the image viewer has a **Draw** tool, and the toolbox replaces
+  the note style controls while it is on.
+- **Strokes:**
+  - stored in the image's pixels, chunk `image`;
+  - drawn inside the viewer's zoomed frame, sharper as you zoom
+    (`inkCanvasRatio` takes the zoom);
+  - a finger pans the image.
+- **Away from Draw:** the ink shows, and presses go to the viewer as before.
+- **Edited copies:** saving an edited copy maps every author's ink through the
+  edit (`copyInkThroughEdit`), in local and shared notebooks.
+
+**Gallery photos** (`storage/gallery-ink.ts`).
+
+- **Storage:**
+  - Ink is in `gallery/.libera-ink/<photo id>/`, as
+    `photo.<author>.ink` files plus `state.json`.
+  - `state.json` records the photo's size when first inked (the strokes'
+    units), the view (the turns and crop of edits since), the SHA-256 of the
+    file as Libera left it, and whether the ink was drawn on the unedited photo.
+- **Edits:**
+  - An in-place edit composes into the view.
+  - A copy (edited or not) takes the ink with its own view.
+  - Revert resets the view when the ink was drawn on the original. Otherwise
+    it marks the ink as changed: where it belongs on that original is unknown.
+- **Archive and delete:** archiving moves the ink to the Protected Archive's
+  `.libera-ink/`, restoring moves it back, and deleting the photo deletes its
+  ink. The ink API refuses archived photos, so their ink stays behind the
+  archive's lock.
+- **Saving:** saves look the photo up in the index without `withGallery`'s
+  full gallery scan, but in its queue, so a save can't race an archive or
+  delete. The viewer's ink bar has **Save**. Leaving a photo with unsaved
+  ink asks Save, Discard or Keep drawing.
+- **The viewer:**
+  - A **Draw** button and a toolbox bar.
+  - **Save with ink** downloads the photo with the ink on top, drawn after
+    every color step.
+  - **Flatten…** draws the ink into the photo as a revertable edit and clears
+    the layer. It is refused in shared albums; use Save with ink there.
+  - A file changed outside Libera dims the ink, with **Keep ink** and
+    **Discard ink**.
+- **Not drawn yet:** ink in the photo editor's preview, and on thumbnails.
+
+**The lasso.**
+
+- **Selecting:** draw around strokes; a stroke is selected when at least half
+  its samples are inside.
+- **Moving:** drag inside the frame. The strokes move on the live canvas and
+  are saved as copies under new ids.
+- **Toolbox:** recolor, restyle, copy, paste and delete.
+- **Keys:** Delete/Backspace, Escape, Ctrl+C and Ctrl+V, caught before the
+  editor's own keys, so Backspace never deletes the block around the ink.
+- **Paste:** into the surface last used, offset by 16 px. One selection and
+  one clipboard per window (`ink-selection.ts`).
+
+**Energy and latency.**
+
+- **Lowest latency** (opt-in, ⚡ in the toolbox) takes samples from
+  `pointerrawupdate`. It listens only while a stroke is down, since a listener
+  makes the browser send those events all the time.
+- **On battery** (Battery Status API, `ink-power.ts`), canvases are capped at
+  1.5 device pixels and the predicted tail is skipped.
+
+**Benchmark** (`npm run bench:ink`; 5,000 strokes of 60 samples on this
+Windows computer):
+
+- **Simplify:** about 6 µs a stroke, keeping 74% of samples.
+- **Encode / decode:** about 13 / 9 µs, at 6.2 bytes a sample.
+- **Pen outline:** about 27 µs.
+- **Path text:** building SVG path text was about 64 µs a stroke, so the
+  renderer now builds `Path2D` from numbers instead.
+- **Cold redraw:** a full first draw of that extreme page costs roughly
+  150 ms, once, since paths are then cached. Typical pages hold a few hundred
+  to 1,500 strokes, about 10–40 ms.
+- **Saving:**
+  - An author file of 5,000 strokes is about 3 MB.
+  - Adding one stroke to it takes about 1 ms.
+  - Merging three such files takes about 30 ms.
+
+No OffscreenCanvas worker is needed at these numbers.
+
+**Shared-album ink: design, not built.**
+
+- **Why it isn't built:** album photos' details are one `AlbumPhotoRecord` per
+  photo in the album's Y.Map, replaced whole on every update
+  (`electron/collab/notebooks/project.ts`), so two people inking one photo
+  would overwrite each other.
+- **The plan:**
+  - Give ink its own key per photo and author in the manifest doc
+    (`ink:<fileId>:<author>`), holding that author's file JSON. That is the
+    same per-author rule as everywhere else, so nothing merges.
+  - Add the strokes' base `original` and `view` to the record when an edit
+    lands (`photoReplaced`).
+  - Have the host write each key to the member's
+    `gallery/.libera-ink/<photo id>/`.
+- **Testing:** it needs host protocol changes and a live collab server, which
+  this environment doesn't have.
+
+**Still open from these phases:**
+
+- **Not verified in the app's UI:** the Draw tools in both viewers, the lasso
+  and the photo toolbox bar. The browser pane was hidden.
+- **Verified against the dev server:** the gallery ink API (write, an edit
+  composing into the view, export).
+- **Untested:** stylus hardware.
 
 ## Risks
 

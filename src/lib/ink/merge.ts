@@ -87,7 +87,11 @@ export function applyInkOps(file: InkAuthorFile, ops: InkOps, others: readonly I
   }
 
   if (!changed) return file;
-  return compactInkAuthorFile({ ...file, strokes: [...own.values()], erased: [...erased], revision: file.revision + 1 }, others);
+  const next = compactInkAuthorFile({ ...file, strokes: [...own.values()], erased: [...erased], revision: file.revision + 1 }, others);
+  // Retrying an erase of an absent stroke can add then compact away the same
+  // tombstone. It must not rewrite an unchanged author file on every retry.
+  if (next.strokes.length === file.strokes.length && next.strokes.every((stroke, index) => stroke === file.strokes[index]) && next.erased.length === file.erased.length && next.erased.every((id, index) => id === file.erased[index])) return file;
+  return next;
 }
 
 /**
@@ -104,4 +108,27 @@ export function compactInkAuthorFile(file: InkAuthorFile, others: readonly InkAu
   const erased = file.erased.filter((id) => held.has(id));
   if (strokes.length === file.strokes.length && erased.length === file.erased.length) return file;
   return { ...file, strokes, erased };
+}
+
+/**
+ * Pending operations followed by more. Changes that cancel out before
+ * saving (a stroke drawn and erased, an erase undone) never reach the disk.
+ */
+export function mergePendingInkOps(into: InkOps, ops: InkOps): InkOps {
+  const add = new Map((into.add ?? []).map((stroke) => [stroke.id, stroke]));
+  const erase = new Set(into.erase ?? []);
+  const unerase = new Map((into.unerase ?? []).map((stroke) => [stroke.id, stroke]));
+  for (const id of ops.erase ?? []) {
+    if (add.delete(id) || unerase.delete(id)) continue;
+    erase.add(id);
+  }
+  for (const stroke of ops.add ?? []) {
+    // Undoing an erase that was never saved: the stroke is still on disk.
+    if (erase.delete(stroke.id)) continue;
+    add.set(stroke.id, stroke);
+  }
+  for (const stroke of ops.unerase ?? []) {
+    if (!erase.delete(stroke.id)) unerase.set(stroke.id, stroke);
+  }
+  return { add: [...add.values()], erase: [...erase], unerase: [...unerase.values()] };
 }

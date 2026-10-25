@@ -72,7 +72,7 @@ import {
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
-import { copyInkFolder, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
+import { copyInkFolder, copyInkThroughEdit, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
 import { supportsDefinitions } from "@/lib/storage/definitions";
@@ -701,6 +701,8 @@ export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdit
   );
 
   await writeFile(available.path, body, { flag: "wx" });
+  // The copy keeps the original's ink, moved with the crop and turns.
+  await copyInkThroughEdit(relativeFilePath(notebook, pathParts), relativeFilePath(notebook, [...directoryParts, available.name]), edits);
   notifySearchChanges([relativeFilePath(notebook, [...directoryParts, available.name])]);
 
   return {

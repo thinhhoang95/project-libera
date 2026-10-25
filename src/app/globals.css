@@ -2381,6 +2381,49 @@ button.border[class*="border-white"]:hover {
 .libera-python-figure.is-running img { opacity: .55; transition: opacity .2s; }
 .libera-python-figure-bar { position: absolute; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .25rem; padding: .2rem .25rem .2rem .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 500 .75rem/1.2 var(--font-sans); box-shadow: 0 2px 8px rgb(0 0 0 / .08); opacity: 0; transition: opacity .15s; }
 .libera-python-figure:hover .libera-python-figure-bar, .libera-python-figure:focus-within .libera-python-figure-bar, .libera-python-figure.is-running .libera-python-figure-bar { opacity: 1; }
+/* A Markdown ink block (ink/tiptap-ink-block.tsx). Ink is drawn on paper in
+   every theme, as PDF pages are, so its colors match the note's SVG. */
+.libera-ink-block { position: relative; margin: 1em 0; white-space: normal; user-select: none; }
+.libera-tiptap .libera-ink-block.ProseMirror-selectednode { outline: none; }
+.libera-ink-paper { position: relative; width: 100%; border: 1px dashed var(--border); border-radius: .5rem; background: #fff; overflow: hidden; }
+.libera-ink-block.is-active .libera-ink-paper { border-style: solid; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.libera-ink-surface { position: absolute; inset: 0; touch-action: none; }
+.libera-ink-surface[data-mouse-draws] { cursor: crosshair; }
+.libera-ink-surface[data-mouse-draws][data-ink-tool="eraser"] { cursor: cell; }
+.libera-ink-surface canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.libera-ink-highlight { mix-blend-mode: multiply; }
+.libera-ink-cursor { position: absolute; left: 0; top: 0; border: 1.5px solid; border-radius: 999px; pointer-events: none; opacity: .7; }
+.libera-ink-block-toolbar { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; max-width: 100%; flex-wrap: wrap; }
+.libera-ink-toolbar { align-items: center; background: var(--card); border: 1px solid var(--border); border-radius: .6rem; box-shadow: 0 4px 14px rgb(0 0 0 / .1); display: inline-flex; gap: 6px; padding: 3px 6px; }
+.libera-ink-toolbar .annotation-choice { align-items: center; border: 1px solid transparent; border-radius: 8px; color: var(--muted-foreground); display: inline-flex; height: 28px; justify-content: center; padding: 0; width: 28px; }
+.libera-ink-toolbar .annotation-choice:disabled { opacity: .4; }
+.libera-ink-toolbar .annotation-choice[aria-checked="true"] { background: var(--surface-blue, var(--muted)); border-color: color-mix(in srgb, var(--accent) 22%, var(--card)); color: var(--accent); }
+.libera-ink-toolbar .annotation-swatch { align-items: center; border: 0; border-radius: 999px; display: inline-flex; height: 26px; justify-content: center; padding: 0; width: 26px; }
+.libera-ink-custom-color input { width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+.libera-ink-eraser-dot { border: 1.5px solid currentColor; border-radius: 999px; display: inline-block; }
+.libera-ink-presets { align-items: center; display: inline-flex; gap: 2px; }
+.libera-ink-selection { align-items: center; display: inline-flex; gap: 4px; }
+.libera-ink-selection-count { color: var(--muted-foreground); font-size: 12px; padding: 0 4px; white-space: nowrap; }
+.libera-ink-preset { position: relative; display: inline-flex; }
+.libera-ink-preset > button:first-child { width: 22px; height: 22px; border-radius: 999px; border: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; }
+.libera-ink-preset > button:first-child > span { width: 16px; height: 16px; border-radius: 4px; background: var(--swatch); border: 1px solid rgb(15 23 42 / .16); }
+.libera-ink-preset-remove { position: absolute; top: -5px; right: -5px; display: none; width: 14px; height: 14px; border-radius: 999px; border: 0; padding: 0; align-items: center; justify-content: center; background: var(--muted); color: var(--foreground); }
+.libera-ink-preset:hover .libera-ink-preset-remove { display: inline-flex; }
+.libera-ink-grip { position: absolute; left: 50%; bottom: -5px; width: 44px; height: 10px; transform: translateX(-50%); border-radius: 999px; background: var(--accent); cursor: ns-resize; touch-action: none; }
+.libera-ink-block-error { margin: .25em 0 0; font-size: .75rem; color: var(--destructive, #b91c1c); }
+/* Ink on photos: notebook images (ink/image-ink-layer.tsx) and gallery photos (ink/photo-ink-layer.tsx). */
+.libera-ink-toolbar-slot { display: inline-flex; }
+.libera-ink-toolbar-slot .libera-ink-toolbar { box-shadow: none; }
+.libera-ink-image-error, .libera-photo-ink-error { position: absolute; left: 8px; bottom: 8px; margin: 0; border-radius: 6px; background: var(--card); color: var(--destructive, #b91c1c); font-size: .75rem; padding: 2px 8px; }
+.libera-ink-surface.is-stale { opacity: .45; }
+.libera-photo-ink-bar { display: flex; justify-content: center; padding: 0 8px 8px; }
+.libera-photo-ink-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.libera-photo-ink-action { border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; font-size: .8125rem; padding: .3rem .7rem; }
+.libera-photo-ink-action:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
+.libera-photo-ink-action:disabled { opacity: .45; }
+.libera-photo-ink-action.is-danger { border-color: #f87171; color: #fecaca; }
+.libera-photo-ink-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100% - 24px); border-radius: .75rem; background: #fff; color: #111; font-size: .8125rem; padding: .5rem .75rem; box-shadow: 0 4px 14px rgb(0 0 0 / .25); }
+.libera-photo-ink-notice button { border: 1px solid #d4d4d8; border-radius: .5rem; padding: .2rem .6rem; }
 .libera-python-figure-bar button { border-radius: .35rem; padding: .2rem .45rem; color: var(--foreground); background: transparent; cursor: pointer; }
 .libera-python-figure-bar button:hover:not(:disabled) { background: var(--muted); }
 .libera-python-figure-bar button:disabled { color: var(--muted-foreground); cursor: progress; }

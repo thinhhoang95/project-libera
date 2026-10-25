@@ -10,7 +10,10 @@ function handleError(error: unknown) {
   return NextResponse.json({ error: storageError.message }, { status: storageError.status });
 }
 
-/** `?path=` a file, and optionally `chunks=page-0001,page-0002` (else every chunk with ink). */
+/**
+ * `?path=` a file, and optionally `chunks=page-0001,page-0002` (else every chunk
+ * with ink); `rendering=` an ink block's SVG source, to learn whether it is missing.
+ */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
 
@@ -21,7 +24,8 @@ export async function GET(request: NextRequest) {
   try {
     const filePath = request.nextUrl.searchParams.get("path") ?? "";
     const chunks = request.nextUrl.searchParams.get("chunks");
-    return NextResponse.json(await readInk(filePath, chunks ? chunks.split(",").filter(Boolean).slice(0, 500) : undefined));
+    const rendering = request.nextUrl.searchParams.get("rendering") ?? undefined;
+    return NextResponse.json(await readInk(filePath, chunks ? chunks.split(",").filter(Boolean).slice(0, 500) : undefined, rendering));
   } catch (error) {
     return handleError(error);
   }

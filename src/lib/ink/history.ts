@@ -34,8 +34,13 @@ export class InkHistory {
     if (!entry.added.length && !entry.removed.length) return;
     const last = this.undoStack.at(-1);
     if (entry.gesture && last?.gesture === entry.gesture) {
-      last.added.push(...entry.added);
-      last.removed.push(...entry.removed);
+      const added = new Map(last.added.map((stroke) => [stroke.id, stroke]));
+      for (const item of entry.removed) {
+        // A partial eraser can cut a piece it made earlier in this gesture.
+        if (!added.delete(item.stroke.id)) last.removed.push(item);
+      }
+      for (const stroke of entry.added) added.set(stroke.id, stroke);
+      last.added = [...added.values()];
     } else {
       this.undoStack.push({ added: [...entry.added], removed: [...entry.removed], gesture: entry.gesture });
       if (this.undoStack.length > MAX_ENTRIES) this.undoStack.shift();

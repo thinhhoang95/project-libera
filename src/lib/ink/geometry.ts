@@ -58,7 +58,10 @@ export function centerlinePath(samples: readonly Point[]) {
 
 /** Half the widest visible extent of a stroke, for hit testing and dirty rects. */
 export function strokeReach(brush: string, width: number) {
-  return brush === "pen" ? width * 0.8 : width / 2;
+  // Pen easing can take its radius above half the size at high pressure.
+  if (brush === "marker") return width / 2;
+  if (brush === "highlighter") return width * 0.51;
+  return width * 1.6;
 }
 
 export function inflateRect(rect: InkRect, by: number): InkRect {

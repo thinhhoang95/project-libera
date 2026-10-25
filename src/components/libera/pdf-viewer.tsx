@@ -83,6 +83,7 @@ import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
 import { useAnnotationWriter } from "./use-annotation-writer";
+import { SaveStatusButton } from "./save-status-button";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -1053,9 +1054,16 @@ export function PdfViewer({
 
         setPdfDocument(loadedDocument);
         setBasePageLayouts(loadedPageLayouts);
-        latestAnnotationsRef.current = annotationsPayload.annotations;
+        // Unsaved notes kept from before a crash or restart come back unsaved.
+        const kept = await annotationWriterRef.current.recover();
+        if (!active) return;
+        const loadedAnnotations = kept ?? annotationsPayload.annotations;
+        latestAnnotationsRef.current = loadedAnnotations;
         automaticSpaceNotesRef.current.clear();
-        setAnnotations(annotationsPayload.annotations);
+        setAnnotations(loadedAnnotations);
+        if (kept) {
+          localSavePendingRef.current = true;
+        }
         historyRef.current = EMPTY_HISTORY;
         setHistory(EMPTY_HISTORY);
       } catch (loadError) {
@@ -1337,7 +1345,7 @@ export function PdfViewer({
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: remoteAnnotations });
   });
 
-  const scheduleAnnotations = useAnnotationWriter<PdfAnnotation>("pdf", filePath, (savedAnnotations) => {
+  const annotationWriter = useAnnotationWriter<PdfAnnotation>("pdf", filePath, (savedAnnotations) => {
     localSavePendingRef.current = false;
     latestAnnotationsRef.current = savedAnnotations;
     setAnnotations(savedAnnotations);
@@ -1352,12 +1360,16 @@ export function PdfViewer({
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
-      setSaveStatus("saving");
+      // Written on Save (pending-saves.ts); until then the file shows as unsaved.
+      setSaveStatus("idle");
       localSavePendingRef.current = true;
-      scheduleAnnotations(nextAnnotations);
+      annotationWriter.schedule(nextAnnotations);
     },
-    [filePath, scheduleAnnotations],
+    [filePath, annotationWriter],
   );
+  // The PDF loads before this writer is made; it reads the writer through a ref.
+  const annotationWriterRef = useRef(annotationWriter);
+  useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
 
   function applyZoom(nextValue: number) {
     const nextZoom = clamp(nextValue, MIN_ZOOM, MAX_ZOOM);
@@ -2440,15 +2452,7 @@ export function PdfViewer({
               className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-input px-1.5 hover:bg-muted"
             />
           ) : null}
-          <span className="mr-2 text-xs text-muted-foreground">
-            {saveStatus === "saving"
-              ? "Saving"
-              : saveStatus === "saved"
-                ? "Saved"
-                : saveStatus === "error"
-                  ? "Save failed"
-                  : ""}
-          </span>
+          <SaveStatusButton path={filePath} status={saveStatus} />
           {pageLayouts.length > 0 ? (
             <span className="mr-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
               Page {Math.min(currentPage, pageLayouts.length)}/{pageLayouts.length}

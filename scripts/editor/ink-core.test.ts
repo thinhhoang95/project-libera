@@ -21,7 +21,7 @@ import {
   viewToOriginal,
   type PhotoInkView,
 } from "../../src/lib/ink/frame";
-import { hitTestSamples, pathLength, simplifySamples, splitSamplesByCircle, strokeOutline } from "../../src/lib/ink/geometry";
+import { hitTestSamples, inflateRect, pathLength, simplifySamples, splitSamplesByCircle, strokeOutline, strokeReach } from "../../src/lib/ink/geometry";
 import { InkHistory } from "../../src/lib/ink/history";
 import { applyInkOps, compactInkAuthorFile, mergeInkFiles } from "../../src/lib/ink/merge";
 import { InkSpatialIndex } from "../../src/lib/ink/spatial-index";
@@ -268,6 +268,28 @@ test("history groups one eraser drag into one step and undoes own strokes direct
   assert.equal(history.undo(), null);
 });
 
+test("undo and redo of a partial eraser drag exclude pieces cut again during the drag", () => {
+  const original = stroke(line(0, 100));
+  const left = stroke(line(0, 40));
+  const right = stroke(line(60, 100));
+  const shortened = stroke(line(0, 20));
+  let bob = applyInkOps(author("bbbbbb"), { add: [original] });
+  let alice = author("aaaaaa");
+  const history = new InkHistory("aaaaaa");
+  const first = { add: [left, right], erase: [original.id] };
+  alice = applyInkOps(alice, first, [bob]);
+  history.record({ added: first.add, removed: [{ stroke: original, author: "bbbbbb" }], gesture: "partial" });
+  const second = { add: [shortened], erase: [left.id] };
+  alice = applyInkOps(alice, second, [bob]);
+  history.record({ added: second.add, removed: [{ stroke: left, author: "aaaaaa" }], gesture: "partial" });
+  bob = compactInkAuthorFile(bob, [alice]);
+
+  alice = applyInkOps(alice, history.undo()!, [bob]);
+  assert.deepEqual(visibleIds([alice, bob]), [original.id]);
+  alice = applyInkOps(alice, history.redo()!, [bob]);
+  assert.deepEqual(visibleIds([alice, bob]), [right.id, shortened.id].sort());
+});
+
 test("applying operations that change nothing returns the same file", () => {
   const file = applyInkOps(author("aaaaaa"), { add: [stroke(line(0, 10))] });
   assert.equal(applyInkOps(file, {}), file);
@@ -283,6 +305,16 @@ test("outlines exist for taps, short strokes and pressure strokes", () => {
   const pressured = line(0, 100).map((sample, index) => ({ ...sample, pressure: index / 20 }));
   const outline = strokeOutline(pressured, "pen", 2);
   assert.ok(outline.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)));
+});
+
+test("stroke reach contains the widest pressure outline, including unknown brushes drawn as pens", () => {
+  const samples = line(0, 100).map((sample, index) => ({ ...sample, pressure: index / 20 }));
+  for (const brush of ["pen", "watercolor", "marker", "highlighter"]) {
+    const box = inflateRect(sampleBounds(samples), strokeReach(brush, 10));
+    for (const [x, y] of strokeOutline(samples, brush, 10)) {
+      assert.ok(x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height, `${brush} outline fits its eraser and redraw bounds`);
+    }
+  }
 });
 
 test("the partial eraser leaves only samples outside its circle", () => {

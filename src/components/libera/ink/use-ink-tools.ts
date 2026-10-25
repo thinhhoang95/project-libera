@@ -19,7 +19,8 @@ import { INK_BRUSHES, type InkBrush } from "@/lib/ink/types";
  * local storage, which is each Libera user's own (docs/features/users.md).
  */
 
-export type InkTool = InkBrush | "eraser";
+/** "select" is the lasso: select strokes to move, recolor, copy or delete. */
+export type InkTool = InkBrush | "eraser" | "select";
 
 export type InkToolsState = {
   tool: InkTool;
@@ -30,6 +31,8 @@ export type InkToolsState = {
   eraserRadius: number;
   presets: InkToolStyle[];
   drawWithFinger: boolean;
+  /** Samples as they arrive (pointerrawupdate) instead of once a frame: less lag, more wakeups. */
+  lowLatency: boolean;
 };
 
 const STORAGE_KEY = "libera.ink.tools.v1";
@@ -42,6 +45,7 @@ const DEFAULTS: InkToolsState = {
   eraserRadius: INK_DEFAULT_ERASER_RADIUS,
   presets: [],
   drawWithFinger: false,
+  lowLatency: false,
 };
 
 function read(): InkToolsState {
@@ -55,13 +59,14 @@ function read(): InkToolsState {
     }
     const lastBrush = INK_BRUSHES.includes(value.lastBrush as InkBrush) ? value.lastBrush as InkBrush : DEFAULTS.lastBrush;
     return {
-      tool: value.tool === "eraser" || INK_BRUSHES.includes(value.tool as InkBrush) ? value.tool as InkTool : DEFAULTS.tool,
+      tool: value.tool === "eraser" || value.tool === "select" || INK_BRUSHES.includes(value.tool as InkBrush) ? value.tool as InkTool : DEFAULTS.tool,
       lastBrush,
       styles,
       eraserMode: value.eraserMode === "partial" ? "partial" : "stroke",
       eraserRadius: INK_ERASER_RADII.includes(value.eraserRadius as typeof INK_ERASER_RADII[number]) ? value.eraserRadius as number : DEFAULTS.eraserRadius,
       presets: normalizeInkPresets(value.presets),
       drawWithFinger: value.drawWithFinger === true,
+      lowLatency: value.lowLatency === true,
     };
   } catch {
     return DEFAULTS;
@@ -97,9 +102,9 @@ function subscribe(listener: () => void) {
   };
 }
 
-/** The style a new stroke takes, or null while erasing. */
+/** The style a new stroke takes, or null while erasing or selecting. */
 export function activeInkStyle(tools: InkToolsState): InkToolStyle | null {
-  return tools.tool === "eraser" ? null : tools.styles[tools.tool];
+  return tools.tool === "eraser" || tools.tool === "select" ? null : tools.styles[tools.tool];
 }
 
 export const inkTools = {
@@ -108,7 +113,7 @@ export const inkTools = {
     update((previous) => {
       // Choosing the eraser again switches between whole strokes and cutting.
       if (tool === "eraser" && previous.tool === "eraser") return { ...previous, eraserMode: previous.eraserMode === "stroke" ? "partial" : "stroke" };
-      return { ...previous, tool, lastBrush: tool === "eraser" ? previous.lastBrush : tool };
+      return { ...previous, tool, lastBrush: tool === "eraser" || tool === "select" ? previous.lastBrush : tool };
     });
   },
   setStyle(brush: InkBrush, patch: Partial<Omit<InkToolStyle, "brush">>) {
@@ -119,6 +124,9 @@ export const inkTools = {
   },
   setDrawWithFinger(drawWithFinger: boolean) {
     update((previous) => ({ ...previous, drawWithFinger }));
+  },
+  setLowLatency(lowLatency: boolean) {
+    update((previous) => ({ ...previous, lowLatency }));
   },
   savePreset() {
     update((previous) => {

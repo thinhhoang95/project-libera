@@ -118,7 +118,7 @@ export type ImageTabViewState = {
   /** One-shot request, cleared by the viewer: select and show the annotation. */
   revealSelectedAnnotation?: boolean;
   textColor?: string;
-  tool?: "select" | "text";
+  tool?: "select" | "text" | "ink";
   zoom?: number;
 };
 

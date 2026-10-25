@@ -15,7 +15,7 @@ import { createMathExtensions } from "@/lib/tiptap-math";
 import { TiptapMarkdownMacros } from "@/lib/tiptap-macros";
 import { ExpandMacrosButton } from "./expand-macros-button";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText } from "lucide-react";
+import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, Code2, ChartColumn, Workflow, CodeXml, Quote, Undo2, Redo2, ImagePlus, Images, Sigma, Link2, Highlighter, RemoveFormatting, Save, Sparkles, Search, ChevronUp, ChevronDown, X, Scissors, ScanText, PenLine } from "lucide-react";
 import katex from "katex";
 import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
@@ -55,6 +55,9 @@ import type { SmartPasteMode } from "@/lib/markdown-smart-paste";
 import { useHeadingNumbering } from "./heading-numbering-state";
 import { LIVE_BLOCK_TEMPLATES, createLiveCodeBlockNodeView } from "./tiptap-live-code-block-view";
 import { PYTHON_FIGURE_OPEN_CODE_EVENT, createPythonFigureNodeView } from "./tiptap-python-figure-view";
+import { createInkImageNodeView } from "./ink/tiptap-ink-block";
+import { inkBlockSource } from "@/lib/ink/block";
+import { createInkId } from "@/lib/ink/types";
 import type { ClipboardText, MenuPasteMode } from "./paste-menu-items";
 
 type Props = {
@@ -228,7 +231,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   // ```chart and ```html live blocks draw under their code, as in the preview.
   const codeBlockNodeView = useMemo(() => createLiveCodeBlockNodeView(documentPath), [documentPath]);
   // Figures made by the note's Python get Re-run and Code (lib/python/sidecar.ts).
-  const imageNodeView = useMemo(() => createPythonFigureNodeView(documentPath), [documentPath]);
+  // Ink blocks draw as ink surfaces; other images, Python figures included, as before.
+  const imageNodeView = useMemo(() => createInkImageNodeView(documentPath, createPythonFigureNodeView(documentPath)), [documentPath]);
   // A quote dragged from a PDF is quoted and cited at the drop point (set below, once the editor exists).
   const referenceNotebook = useReferenceRender()?.notebook ?? null;
   const dropQuoteRef = useRef<(source: PdfQuoteSource, pos: number) => void>(() => undefined);
@@ -940,6 +944,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
             <button type="button" aria-label="Snip as Markdown" title={canStartScreenshotSnip ? "Snip as Markdown: read a region of an image or PDF tab into text" : "Open an image or PDF tab to snip"} disabled={!canStartScreenshotSnip} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()} onClick={() => { captureVisualState(); onStartScreenshotSnip("markdown"); }}><ScanText className="h-4 w-4" /></button>
           </>
         ) : null}
+        <button type="button" aria-label="Insert ink block" title={untitled ? "Save the note to draw in it" : "Insert ink block: draw or write with a pen"} disabled={untitled} className={`${buttonClass} disabled:opacity-40`} onMouseDown={(event) => event.preventDefault()}
+          onClick={() => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run()}><PenLine className="h-4 w-4" /></button>
         <TableInsertButton className={buttonClass} disabled={state.table} title={state.table ? "Tables cannot be placed inside a table" : "Insert table"}
           onPick={(rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()} />
         <button type="button" aria-label="Insert or edit equation" title="Insert or edit equation" className={buttonClass} onClick={openMath}><Sigma className="h-4 w-4" /></button>

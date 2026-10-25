@@ -25,6 +25,7 @@ import {
   Minus,
   Pause,
   Pencil,
+  PenLine,
   Play,
   Plus,
   RotateCcw,
@@ -39,6 +40,8 @@ import { usePaletteCommands } from "@/components/libera/command-palette/commands
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
 import { PhotoEditor } from "@/components/libera/photo-editor";
+import { PhotoInkLayer } from "@/components/libera/ink/photo-ink-layer";
+import { pendingSaves } from "@/components/libera/pending-saves";
 import type { PhotoRegion } from "@/lib/collab/album-comments";
 import { canChangeSharedPhotos, galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
@@ -85,13 +88,17 @@ export type PhotoOverlay = {
 };
 
 /** Zoomable, pannable photo. `scale` 1 fits the photo in the stage. */
-function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, overlay }: {
+/** Ink over the photo (ink/photo-ink-layer.tsx); archived photos have none here. */
+type PhotoInk = { drawing: boolean; toolbarSlot: HTMLElement | null; onEdited: (gallery: GalleryContents) => void };
+
+function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, overlay, ink }: {
   photo: GalleryPhoto;
   rawUrl: PhotoUrl;
   transform: Transform;
   onTransform: (transform: Transform) => void;
   onFitScale: (fitScale: number) => void;
   overlay?: PhotoOverlay | null;
+  ink?: PhotoInk | null;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -109,11 +116,11 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
   }, []);
   // The transform animates for 80 ms; measure again once it has settled.
   useLayoutEffect(() => {
-    if (!overlay) return;
+    if (!overlay && !ink) return;
     measureBox();
     const timer = window.setTimeout(measureBox, 120);
     return () => window.clearTimeout(timer);
-  }, [measureBox, overlay, transform, loaded]);
+  }, [measureBox, overlay, ink, transform, loaded]);
 
   const clampPan = useCallback((next: Transform): Transform => {
     const stage = stageRef.current?.getBoundingClientRect();
@@ -184,7 +191,8 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
 
   return <div ref={stageRef} className={`relative flex min-h-0 min-w-0 flex-1 touch-none items-center justify-center overflow-hidden ${transform.scale > 1 ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in"}`}
     onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}
-    onDoubleClick={(event) => (transform.scale > 1 ? onTransform(FIT) : zoomAt(2.5, event.clientX, event.clientY))}>
+    // Quick taps while drawing are ink, not a zoom.
+    onDoubleClick={(event) => { if (!ink?.drawing) { if (transform.scale > 1) onTransform(FIT); else zoomAt(2.5, event.clientX, event.clientY); } }}>
     {/* The thumbnail shows at once while the full photo loads. */}
     {!loaded && /* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */
       <img src={rawUrl(photo, true)} alt="" aria-hidden className="absolute max-h-[calc(100%-3rem)] max-w-[calc(100%-3rem)] object-contain blur-[2px]" />}
@@ -193,6 +201,10 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
       className={`max-h-[calc(100%-3rem)] max-w-[calc(100%-3rem)] select-none object-contain transition-opacity ${loaded ? "opacity-100" : "opacity-0"}`}
       style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transition: dragging ? "none" : "transform 80ms ease-out, opacity 150ms" }}
       onLoad={() => { setLoaded(true); reportFit(); }} />
+    {ink && box && loaded && <div className="absolute" style={box} data-photo-ink>
+      <PhotoInkLayer photoId={photo.id} version={photo.updatedAt} drawing={ink.drawing} toolbarSlot={ink.toolbarSlot} onEdited={ink.onEdited}
+        onPan={(dx, dy) => onTransform(clampPan({ ...transform, x: transform.x + dx, y: transform.y + dy }))} />
+    </div>}
     {overlay && box && <div className="pointer-events-none absolute" style={box} data-photo-overlay>
       {overlay.regions.map((item) => <span key={item.id} aria-hidden
         className={`absolute rounded-sm border-2 ${item.active ? "border-amber-300 bg-amber-300/15" : "border-white/70 bg-white/5"}`}
@@ -275,7 +287,7 @@ function useChatPanelInset(rootRef: RefObject<HTMLDivElement | null>, open: bool
   }, [rootRef, open]);
 }
 
-export function PhotoViewer({ photos, index, albums, onNavigate, onClose, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl, sharedDetails }: {
+export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onClose: close, actions, chat, initialViewState, onViewStateChange, rawUrl = galleryRawUrl, sharedDetails }: {
   photos: GalleryPhoto[];
   index: number;
   albums: GalleryAlbum[];
@@ -303,8 +315,21 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
   const [fitScale, setFitScale] = useState(1);
   const [infoOpen, setInfoOpen] = useState(initialViewState?.infoOpen ?? true);
   const [editing, setEditing] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [inkToolbarSlot, setInkToolbarSlot] = useState<HTMLElement | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [playing, setPlaying] = useState(false);
+  // Leaving a photo with unsaved ink (pending-saves.ts) asks first: Save, Discard or keep drawing.
+  const [leaving, setLeaving] = useState<(() => void) | null>(null);
+  const [leaveError, setLeaveError] = useState("");
+  const guarded = useCallback((action: () => void) => {
+    if (!pendingSaves.isDirty(`gallery:${photo.id}`)) return action();
+    setPlaying(false);
+    setLeaveError("");
+    setLeaving(() => action);
+  }, [photo.id]);
+  const onNavigate = useCallback((next: GalleryPhoto) => guarded(() => navigateTo(next)), [guarded, navigateTo]);
+  const onClose = useCallback(() => guarded(close), [guarded, close]);
   const [fullscreen, setFullscreen] = useState(false);
   const [notice, setNotice] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -451,7 +476,9 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         {actions.onToggleStar && <button className={toolButton} aria-label={photo.starred ? "Unstar" : "Star"} aria-pressed={photo.starred} title={photo.starred ? "Unstar (S)" : "Star (S)"} onClick={() => actions.onToggleStar?.(photo)}>
           <Star className={`h-5 w-5 ${photo.starred ? "fill-amber-400 text-amber-400" : ""}`} />
         </button>}
-        {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={() => { setPlaying(false); setEditing(true); }}><Pencil className="h-4 w-4" /></button>}
+        {editable && actions.onEdited && <button className={toolButton} aria-label="Edit" title="Edit: crop, rotate, adjust (E)" onClick={() => { setPlaying(false); setDrawing(false); setEditing(true); }}><Pencil className="h-4 w-4" /></button>}
+        {editable && actions.onEdited && !locked && <button className={toolButton} aria-label="Draw" aria-pressed={drawing} title={drawing ? "Stop drawing" : "Draw on the photo with a pen, mouse or finger; the photo itself is not changed"}
+          onClick={() => { setPlaying(false); setDrawing((value) => !value); }}><PenLine className={`h-4 w-4 ${drawing ? "text-white" : ""}`} /></button>}
         <button className={toolButton} aria-label="Detection and Segmentation" title="Detection and Segmentation: find, outline and count objects"
           onClick={() => { setPlaying(false); if (document.fullscreenElement) void document.exitFullscreen(); setDetecting(true); }}><ScanSearch className="h-4 w-4" /></button>
         {actions.onAddToAlbum && <button className={toolButton} aria-label="Add to album" title="Add to album" onClick={(event) => actions.onAddToAlbum?.(photo, event.currentTarget)}><FolderInput className="h-4 w-4" /></button>}
@@ -470,12 +497,22 @@ export function PhotoViewer({ photos, index, albums, onNavigate, onClose, action
         <button className={toolButton} aria-label="Info" aria-pressed={infoOpen} title="Info (I)" onClick={() => setInfoOpen((open) => !open)}><Info className={`h-4 w-4 ${infoOpen ? "text-white" : ""}`} /></button>
         {!locked && <button className={toolButton} aria-label="Delete photo" title={photo.shared ? "Delete from the shared album, for everyone (Del)" : "Delete (Del)"} onClick={() => actions.onDelete(photo)}><Trash2 className="h-4 w-4" /></button>}
       </header>
+      {drawing && <div ref={setInkToolbarSlot} className="libera-photo-ink-bar" data-command-toolbar="Ink" />}
       <div className="relative flex min-h-0 flex-1">
         <div className="relative flex min-w-0 flex-1">
-          <ZoomableImage key={photo.id} photo={photo} rawUrl={rawUrl} transform={transform} onTransform={setTransform} onFitScale={setFitScale} overlay={photo.shared ? overlay : null} />
+          <ZoomableImage key={photo.id} photo={photo} rawUrl={rawUrl} transform={transform} onTransform={setTransform} onFitScale={setFitScale} overlay={photo.shared ? overlay : null}
+            ink={editable && actions.onEdited && !locked ? { drawing, toolbarSlot: inkToolbarSlot, onEdited: (gallery) => { setDrawing(false); actions.onEdited?.({ id: photo.id, gallery }); setNotice("Ink drawn into the photo. You can revert to the original from Info."); } } : null} />
           {hasPrevious && <button className="absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60" aria-label="Previous photo" title="Previous (←)" onClick={() => go(-1)}><ChevronLeft className="h-6 w-6" /></button>}
           {hasNext && <button className="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/60" aria-label="Next photo" title="Next (→)" onClick={() => go(1)}><ChevronRight className="h-6 w-6" /></button>}
           {notice && <div role="status" className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-white px-4 py-2 text-sm text-black shadow-lg">{notice}</div>}
+          {leaving && <div role="alertdialog" aria-label="Unsaved ink" className="libera-photo-ink-notice">
+            <span>{leaveError || "This photo has unsaved ink."}</span>
+            <button type="button" onClick={() => {
+              void pendingSaves.save(`gallery:${photo.id}`).then(() => { const action = leaving; setLeaving(null); action(); }, (error: unknown) => setLeaveError(error instanceof Error ? error.message : "The ink could not be saved."));
+            }}>Save</button>
+            <button type="button" onClick={() => { pendingSaves.discard(`gallery:${photo.id}`); const action = leaving; setLeaving(null); action(); }}>Discard</button>
+            <button type="button" onClick={() => setLeaving(null)}>Keep drawing</button>
+          </div>}
         </div>
         {infoOpen && <aside ref={infoRef} onScroll={(event) => {
           infoScrollRef.current = event.currentTarget.scrollTop;

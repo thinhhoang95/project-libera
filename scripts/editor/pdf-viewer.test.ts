@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { act, createElement, useRef } from "react";
@@ -115,7 +116,7 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       onCompleteScreenshotSnip: async () => undefined,
     })));
   }
-  async function unmount() { await act(async () => root.unmount()); root = createRoot(host); }
+  async function unmount() { await act(async () => root.unmount()); root = createRoot(host); resetPendingSavesForTests(); }
   // JSDOM has no layout: model the viewer's fixed padding/gaps and each page's
   // actual CSS size, including pages outside the PDF render window. Sheets
   // stretch to the widest page, centred until they overflow the viewport.
@@ -631,6 +632,12 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.ok(host.querySelector('[aria-label="Change to red"]')?.hasAttribute("data-active"), "pastel ink swaps for a pen ink");
 
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+      assert.equal(saved.length, 0, "drawing writes nothing until Save");
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[title="Save annotations and ink (Ctrl+S)"]')!.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      assert.equal(saved.length, 1, "one write for every change made");
       const last = saved.at(-1)!;
       assert.deepEqual(last.map((annotation) => annotation.type).sort(), ["highlight", "ink", "shape"]);
       const arrow = last.find((annotation) => annotation.type === "shape");
