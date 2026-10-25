@@ -2,7 +2,7 @@
 
 import type { Editor } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { TextSelection } from "@tiptap/pm/state";
+import { Selection, TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Placeholder } from "@tiptap/extensions";
@@ -156,22 +156,6 @@ export function PdfNoteEditor({
         return false;
       },
     },
-    onCreate({ editor: createdEditor }) {
-      const point = initial.caret;
-      let position: number | undefined;
-
-      try {
-        // Start typing where the note was clicked; resting HTML and the editor
-        // share typography, so the coordinates map onto the same text.
-        position = point
-          ? createdEditor.view.posAtCoords({ left: point.x, top: point.y })?.pos
-          : undefined;
-      } catch {
-        position = undefined;
-      }
-
-      createdEditor.commands.focus(position ?? "end", { scrollIntoView: false });
-    },
     onUpdate({ editor: updatedEditor }) {
       if (pendingRef.current !== null) {
         window.clearTimeout(pendingRef.current);
@@ -183,6 +167,25 @@ export function PdfNoteEditor({
       }, CHANGE_DEBOUNCE_MS);
     },
   });
+
+  useLayoutEffect(() => {
+    if (!editor) return;
+    let position: number | undefined;
+    try {
+      const point = initial.caret;
+      position = point ? editor.view.posAtCoords({ left: point.x, top: point.y })?.pos : undefined;
+    } catch {
+      position = undefined;
+    }
+    // EditorContent has mounted. Focus now: onCreate and commands.focus defer
+    // to a timer/frame, leaving the first keys with the viewer's shortcuts.
+    const { doc } = editor.state;
+    const selection = position === undefined
+      ? Selection.atEnd(doc)
+      : Selection.near(doc.resolve(Math.min(doc.content.size, Math.max(0, position))));
+    if (!selection.eq(editor.state.selection)) editor.view.dispatch(editor.state.tr.setSelection(selection));
+    editor.view.focus();
+  }, [editor, initial]);
 
   useLayoutEffect(() => {
     const readMarkdown = () => {

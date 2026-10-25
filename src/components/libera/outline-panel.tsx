@@ -19,6 +19,7 @@ import {
   Strikethrough,
   Trash2,
   Underline,
+  UnfoldVertical,
   Waves,
   X,
 } from "lucide-react";
@@ -423,6 +424,10 @@ function annotationLabel(annotation: PdfAnnotation) {
     return "Pen drawing";
   }
 
+  if (annotation.type === "space") {
+    return "Space";
+  }
+
   const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
 
   if (quote) {
@@ -441,6 +446,10 @@ function annotationIcon(annotation: PdfAnnotation) {
 
   if (annotation.type === "ink") {
     return <PenLine aria-hidden className={className} />;
+  }
+
+  if (annotation.type === "space") {
+    return <UnfoldVertical aria-hidden className={className} />;
   }
 
   if (annotation.type === "shape") {
@@ -1163,7 +1172,8 @@ function PdfOutline({
 
   const sortedAnnotations = useMemo(
     () =>
-      [...annotations].sort(
+      // Spaces are page layout, not annotations to list; what is in them is listed.
+      annotations.filter((annotation) => annotation.type !== "space").sort(
         (left, right) =>
           left.pageNumber - right.pageNumber ||
           Date.parse(left.createdAt) - Date.parse(right.createdAt),

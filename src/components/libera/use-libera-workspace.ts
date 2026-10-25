@@ -3293,6 +3293,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      if (annotations.some((annotation) => annotation.type === "space")) {
+        // Until export can make pages taller (docs/create-space-plan.md, phase 2).
+        setWorkspaceError("The PDF was exported without its spaces: spaces, and the notes and ink in them, can't be exported yet.");
+      }
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not export the annotated PDF.");
     }

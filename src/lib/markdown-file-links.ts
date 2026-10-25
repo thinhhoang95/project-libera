@@ -30,7 +30,7 @@ export type MarkdownLinkViewState = {
     scrollLeft?: number;
     scrollTop?: number;
     selectedAnnotationId?: string;
-    tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
+    tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser" | "space";
     zoom?: number;
   };
 };

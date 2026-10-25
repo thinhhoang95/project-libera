@@ -1,8 +1,10 @@
 "use client";
 
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist/types/src/display/api";
-import { useEffect, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { pdfDetailRegion, pdfRectContains, type PdfRect } from "@/components/libera/pdf-rendering";
+import { pieceVariable } from "@/components/libera/pdf-space-raster";
+import { IDENTITY_PAGE_GEOMETRY, type PdfPageGeometry } from "@/lib/pdf-space-geometry";
 
 const DETAIL_RENDER_DELAY_MS = 120;
 const CLIPPING_OVERFLOW = /auto|scroll|hidden|clip|overlay/;
@@ -38,6 +40,58 @@ function visibleElementRect(element: HTMLElement, width: number, height: number)
   };
 }
 
+function unionRect(a: PdfRect, b: PdfRect): PdfRect {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+}
+
+/**
+ * On a page with spaces: the document area (CSS pixels of the original page)
+ * whose pieces show in `view`, the visible part of the displayed page.
+ */
+function visibleDocumentArea(view: PdfRect, geometry: PdfPageGeometry, width: number, height: number): PdfRect | null {
+  let area: PdfRect | null = null;
+  for (const { rect, shift } of geometry.pieces) {
+    const left = Math.max(rect.x * width, view.x);
+    const right = Math.min((rect.x + rect.width) * width, view.x + view.width);
+    const top = Math.max((rect.y + shift) * height, view.y);
+    const bottom = Math.min((rect.y + rect.height + shift) * height, view.y + view.height);
+    if (right <= left || bottom <= top) continue;
+    const part = { x: left, y: top - shift * height, width: right - left, height: bottom - top };
+    area = area ? unionRect(area, part) : part;
+  }
+  return area;
+}
+
+/** Splits a detail canvas covering `rect` into the pieces it overlaps, each moving with its piece. */
+function pieceDetails(detail: HTMLCanvasElement, rect: PdfRect, geometry: PdfPageGeometry, width: number, height: number) {
+  const scaleX = detail.width / rect.width;
+  const scaleY = detail.height / rect.height;
+  return geometry.pieces.flatMap((piece, index) => {
+    const left = Math.max(piece.rect.x * width, rect.x);
+    const right = Math.min((piece.rect.x + piece.rect.width) * width, rect.x + rect.width);
+    const top = Math.max(piece.rect.y * height, rect.y);
+    const bottom = Math.min((piece.rect.y + piece.rect.height) * height, rect.y + rect.height);
+    if (right <= left || bottom <= top) return [];
+    const canvas = document.createElement("canvas");
+    const sx = Math.round((left - rect.x) * scaleX);
+    const sy = Math.round((top - rect.y) * scaleY);
+    canvas.width = Math.max(1, Math.round((right - rect.x) * scaleX) - sx);
+    canvas.height = Math.max(1, Math.round((bottom - rect.y) * scaleY) - sy);
+    canvas.getContext("2d")?.drawImage(detail, sx, sy, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    Object.assign(canvas.style, {
+      position: "absolute",
+      left: `${(left / width) * 100}%`,
+      top: `${(top / height) * 100}%`,
+      width: `${((right - left) / width) * 100}%`,
+      height: `${((bottom - top) / height) * 100}%`,
+      translate: `0 var(${pieceVariable(index)}, 0px)`,
+    });
+    return [canvas];
+  });
+}
+
 function releaseCanvases(host: HTMLElement) {
   for (const canvas of host.querySelectorAll("canvas")) {
     canvas.width = 0;
@@ -49,27 +103,46 @@ function releaseCanvases(host: HTMLElement) {
 // The page canvas is capped at PDF_MAX_CANVAS_PIXELS, so at high zoom it is
 // drawn below the device pixel ratio. This keeps a second canvas, sized to the
 // visible part of the page, at full resolution over it. `host` must cover the
-// page exactly; it is re-rendered shortly after scrolling, resizing or zooming.
+// original page exactly; it is re-rendered shortly after scrolling, resizing or
+// zooming. On a page with spaces, `surfaceRef` covers the page as displayed and
+// the detail is split into the geometry's pieces.
 export function usePdfDetailCanvas({
   hostRef,
+  surfaceRef,
+  geometry = IDENTITY_PAGE_GEOMETRY,
   pdfDocument,
   pageNumber,
   scale,
   active = true,
 }: {
   hostRef: RefObject<HTMLElement | null>;
+  surfaceRef?: RefObject<HTMLElement | null>;
+  geometry?: PdfPageGeometry;
   pdfDocument: PDFDocumentProxy;
   pageNumber: number;
   scale: number;
   active?: boolean;
 }) {
-  useEffect(() => {
+  // Resizing a space only moves pieces, which the detail follows through CSS.
+  const geometryRef = useRef(geometry);
+  useLayoutEffect(() => {
+    geometryRef.current = geometry;
+  });
+  const structureKey = geometry.structureKey;
+  const shownStructureRef = useRef(structureKey);
+  useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    if (!active) {
+    if (!active || shownStructureRef.current !== structureKey) {
+      // Details placed for other pieces would show in the wrong places.
       releaseCanvases(host);
-      return;
+      shownStructureRef.current = structureKey;
     }
+  }, [active, hostRef, structureKey]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !active) return;
 
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -82,7 +155,11 @@ export function usePdfDetailCanvas({
       if (disposed || !host) return;
       const viewport = page.getViewport({ scale });
       const ratio = window.devicePixelRatio || 1;
-      const visible = visibleElementRect(host, viewport.width, viewport.height);
+      const pageGeometry = geometryRef.current;
+      const spaced = pageGeometry !== IDENTITY_PAGE_GEOMETRY;
+      const surface = spaced ? surfaceRef?.current ?? host : host;
+      const view = visibleElementRect(surface, viewport.width, viewport.height * pageGeometry.scale);
+      const visible = view && spaced ? visibleDocumentArea(view, pageGeometry, viewport.width, viewport.height) : view;
       const region = visible && pdfDetailRegion(viewport.width, viewport.height, visible, ratio);
 
       if (!visible || !region) {
@@ -108,7 +185,12 @@ export function usePdfDetailCanvas({
         height: `${(rect.height / viewport.height) * 100}%`,
       });
       const canvasContext = canvas.getContext("2d");
-      if (!canvasContext) return;
+      if (!canvasContext) {
+        target = null;
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
       const scaleX = region.width / rect.width;
       const scaleY = region.height / rect.height;
       const task = page.render({
@@ -127,9 +209,19 @@ export function usePdfDetailCanvas({
         canvas.height = 0;
         return;
       }
-      if (disposed || renderTask !== task) return;
+      if (disposed || renderTask !== task || pageGeometry.structureKey !== geometryRef.current.structureKey) {
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
       releaseCanvases(host);
-      host.append(canvas);
+      if (spaced) {
+        host.append(...pieceDetails(canvas, rect, pageGeometry, viewport.width, viewport.height));
+        canvas.width = 0;
+        canvas.height = 0;
+      } else {
+        host.append(canvas);
+      }
     }
 
     function schedule() {
@@ -143,6 +235,7 @@ export function usePdfDetailCanvas({
     window.addEventListener("resize", schedule);
     const observer = new ResizeObserver(schedule);
     observer.observe(host);
+    if (geometryRef.current !== IDENTITY_PAGE_GEOMETRY && surfaceRef?.current && surfaceRef.current !== host) observer.observe(surfaceRef.current);
 
     return () => {
       disposed = true;
@@ -153,7 +246,7 @@ export function usePdfDetailCanvas({
       observer.disconnect();
       // The current detail stays (stretched) until the next render replaces it.
     };
-  }, [active, hostRef, pageNumber, pdfDocument, scale]);
+  }, [active, hostRef, pageNumber, pdfDocument, scale, structureKey, surfaceRef]);
 
   useEffect(() => {
     const host = hostRef.current;

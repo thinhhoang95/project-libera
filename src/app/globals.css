@@ -1793,6 +1793,130 @@ button.border[class*="border-white"]:hover {
   z-index: 15;
 }
 
+/* Create space: blank room opened in the page (docs/create-space-plan.md).
+   Fills sit above the text layer and below ink and notes; the controls and
+   the tool's surface sit above the drawing surface and below notes. */
+.pdf-space-boxes,
+.pdf-space-chrome {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.pdf-space-boxes {
+  z-index: 12;
+}
+
+.pdf-space-chrome {
+  z-index: 27;
+}
+
+.pdf-space-box {
+  /* PDFs are paper; a space without a sampled fill is white, also in dark mode. */
+  background: #fff;
+  position: absolute;
+}
+
+.pdf-space-box[data-editable] {
+  outline: 1px dashed rgb(13 148 136 / 0.55);
+  outline-offset: -1px;
+  pointer-events: auto;
+}
+
+.pdf-space-box[data-selected] {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.pdf-space-filler {
+  background: #fff;
+  position: absolute;
+}
+
+/* Filler can't hold notes or ink; the hatching says so while spaces are being made. */
+.pdf-space-filler[data-active]::after {
+  background: repeating-linear-gradient(135deg, rgb(100 116 139 / 0.18) 0 2px, transparent 2px 8px);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.pdf-space-surface {
+  cursor: row-resize;
+  inset: 0;
+  pointer-events: auto;
+  position: absolute;
+  touch-action: none;
+}
+
+.pdf-space-cut {
+  border-top: 2px dashed rgb(217 119 6 / 0.9);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  transform: translateY(-1px);
+}
+
+.pdf-space-cut[data-snapped] {
+  border-top-color: var(--ring);
+}
+
+.pdf-space-controls {
+  pointer-events: none;
+  position: absolute;
+}
+
+.pdf-space-delete {
+  align-items: center;
+  background: rgb(9 9 11 / 0.72);
+  border-radius: 9999px;
+  color: #fff;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: auto;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  transition: opacity 120ms;
+  width: 18px;
+}
+
+.pdf-space-controls:hover .pdf-space-delete,
+.pdf-space-delete:focus-visible {
+  opacity: 1;
+}
+
+.pdf-space-grip {
+  bottom: -4px;
+  cursor: ns-resize;
+  height: 8px;
+  left: 0;
+  pointer-events: auto;
+  position: absolute;
+  right: 0;
+  touch-action: none;
+}
+
+.pdf-space-grip::after {
+  background: var(--ring);
+  border-radius: 2px;
+  content: "";
+  height: 3px;
+  left: 50%;
+  opacity: 0.55;
+  position: absolute;
+  top: 2.5px;
+  transform: translateX(-50%);
+  width: 36px;
+}
+
+.pdf-space-grip:hover::after {
+  opacity: 1;
+}
+
 .pdf-highlight-hit {
   background: transparent;
   border: 0;

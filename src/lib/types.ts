@@ -54,6 +54,11 @@ export type PdfShapeAnnotation = {
   /** Line endpoints, or opposite corners of a rectangle or ellipse's box. */
   from: PdfAnnotationPoint;
   to: PdfAnnotationPoint;
+  /**
+   * The space this annotation sits in. Its y coordinates are then measured
+   * from the top of that space, in page-height fractions; x is unchanged.
+   */
+  space?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -66,6 +71,11 @@ export type PdfInkAnnotation = {
   color: string;
   strokeWidth: number;
   points: PdfAnnotationPoint[];
+  /**
+   * The space this annotation sits in. Its y coordinates are then measured
+   * from the top of that space, in page-height fractions; x is unchanged.
+   */
+  space?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -83,6 +93,40 @@ export type PdfTextAnnotation = {
   color?: string;
   fontFamily?: PdfTextAnnotationFont;
   rect: PdfAnnotationRect;
+  /**
+   * The space this annotation sits in. Its y coordinates are then measured
+   * from the top of that space, in page-height fractions; x is unchanged.
+   */
+  space?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A column block's layout, in page fractions, recorded when its first space was made. */
+export type PdfSpaceBand = {
+  top: number;
+  bottom: number;
+  /** x boundaries between columns, ascending; empty for one full-width column. */
+  splits: number[];
+};
+
+/**
+ * Blank room opened in the page as displayed; the PDF itself is unchanged.
+ * A full-width space has a band of zero height at its cut.
+ */
+export type PdfSpaceAnnotation = {
+  id: string;
+  type: "space";
+  pageNumber: number;
+  /** The cut: a page fraction, normally at a blank row of the column. */
+  y: number;
+  /** Inserted height, as a fraction of the page height. */
+  height: number;
+  band: PdfSpaceBand;
+  /** Index of the column (between `band.splits`) that opens. */
+  column: number;
+  /** Page background sampled at creation, used to fill the space. */
+  fill?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -91,7 +135,8 @@ export type PdfAnnotation =
   | PdfHighlightAnnotation
   | PdfTextAnnotation
   | PdfShapeAnnotation
-  | PdfInkAnnotation;
+  | PdfInkAnnotation
+  | PdfSpaceAnnotation;
 
 export type LiberaFileNode = {
   kind: "file";

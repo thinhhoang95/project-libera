@@ -80,7 +80,7 @@ export type PdfTabViewState = {
    * instead of restoring the saved scroll position (set when following a link). */
   revealSelectedAnnotation?: boolean;
   textColor?: string;
-  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
+  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser" | "space";
   zoom?: number;
   /** One-shot request (Global Search) to show a page and find a passage on it. */
   reveal?: { page: number; text?: string; nonce: number };
