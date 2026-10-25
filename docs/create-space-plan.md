@@ -1,6 +1,7 @@
 # Create Space implementation plan
 
-Status (2026-10-25), on branch `create-space`:
+Status (2026-10-25), merged into `multi-user-profiles`. The user guide is
+[docs/features/create-space.md](features/create-space.md).
 
 - **Phase 0 is done:** types, sidecar normalization, preservation of unknown
   types and fields, consumers guarded, and `src/lib/pdf-space.ts` /

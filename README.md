@@ -566,6 +566,18 @@ For a PDF, **Outlines → Outline** shows its table of contents, and its highlig
 
 See [docs/features/pdf-outlines.md](docs/features/pdf-outlines.md) for the full guide.
 
+## Create space in PDFs
+
+The **Space** tool (`G`) opens blank room inside a PDF page to write or draw next to what you are reading. Put the cursor on a line and drag down: what is below slides down as you drag, and a note opens in the new space when you let go.
+
+- **Clean cuts.** The cut snaps to blank rows, so it never splits a line, an equation or a figure. Hold `Shift` to place it freely; a click without dragging opens a space three lines tall.
+- **Two-column papers.** Only the column under the cursor opens; `Alt` opens the whole width where the page allows it. The other columns end early with blank paper, hatched while the tool is on.
+- **Things stay attached.** Notes, drawings and shapes made in a space move with it. Highlights, comments, search matches and selection stay on their text.
+- **Editing.** Drag a space's bottom grip to resize it, or its × to delete it with what it holds. Each change is one undo step.
+- **The PDF is untouched.** Spaces are annotations, saved and synced with the PDF's others. Pages are shown as moved pieces of one rendering, so opening a space never re-renders the page, and pages without spaces cost nothing extra. Exports leave spaces out for now.
+
+In every PDF tool (highlight, text, pen, shape, eraser, space), `Esc` returns to Select. See [docs/features/create-space.md](docs/features/create-space.md) for the full guide.
+
 ## PDF to Markdown
 
 Read PDF pages, scanned books, and images into Markdown on this computer, with no cloud service. Line breaks, page numbers, running headers, and words hyphenated across lines or pages are cleaned up. Tables, formulas (with your math markers), lists, code, and figures come out as Markdown.
