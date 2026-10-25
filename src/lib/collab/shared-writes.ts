@@ -24,6 +24,8 @@ import { StorageError } from "@/lib/storage/errors";
 import { assertMarkdownFileName, assertSupportedFileName, ensureImageName, ensureMarkdownName, getFileType, normalizeAssetFileName } from "@/lib/storage/file-types";
 import { copyTranscript, followSharedAudioChanges, transcriptCompanionPath } from "@/lib/storage/transcripts";
 import { deletePdfSidecars, followSharedPdfChanges } from "@/lib/storage/pdf-sidecars";
+import { INK_DIR } from "@/lib/storage/constants";
+import { inkFolderPath, inkLibraryPath, supportsInk } from "@/lib/storage/ink";
 import { assertDirectoryExists, findAvailableFilePath, pathExists } from "@/lib/storage/fs-utils";
 import {
   assertSafeSegment,
@@ -420,6 +422,17 @@ export async function deleteSharedEntry(liberaPath: string, options: SharedWrite
   });
 }
 
+/** A file's or folder's ink (storage/ink.ts) follows it through the host, so collaborators' copies move too. */
+async function moveSharedInk(notebook: string, fromParts: string[], toParts: string[], config: HostClientConfig) {
+  if (!(await pathExists(inkFolderPath(notebook, fromParts)))) return;
+  const source = manifestTarget(inkLibraryPath(notebook, fromParts));
+  await host(source.path, () => fileOp(source.projectId, { op: "rename", path: source.path, to: [INK_DIR, ...toParts].join("/") }, config));
+}
+
+async function deleteSharedInk(notebook: string, parts: string[], config: HostClientConfig) {
+  if (await pathExists(inkFolderPath(notebook, parts))) await deleteSharedEntry(inkLibraryPath(notebook, parts), { config });
+}
+
 /** A recording's companion transcript follows it; a missing one is fine. */
 async function moveCompanionTranscript(fromPath: string, toPath: string, config: HostClientConfig) {
   const from = transcriptCompanionPath(fromPath);
@@ -502,6 +515,10 @@ export async function moveSharedFile(relativePath: string, destinationDirectory:
   }
   // A PDF's local side-cars (annotations, outline, definitions, text cache) follow it now, before the host's event does.
   if (getFileType(current.name) === "pdf" && sourcePath !== nextPath) await followSharedPdfChanges([{ from: sourcePath, to: nextPath }], []);
+  if (supportsInk(getFileType(current.name)) && sourcePath !== nextPath) {
+    if (getFileType(safeName) === getFileType(current.name)) await moveSharedInk(current.notebook, current.pathParts, nextParts, config);
+    else await deleteSharedInk(current.notebook, current.pathParts, config);
+  }
   await renameFileMetadataPath(sourcePath, nextPath);
   notifySearchChanges([sourcePath, nextPath]);
   return readLiberaFile(nextPath);
@@ -522,6 +539,7 @@ export async function deleteSharedFile(relativePath: string, options: SharedWrit
   }
   // This user deleted it, so their own notes on it go too, as in a local notebook.
   if (getFileType(current.name) === "pdf") await deletePdfSidecars(liberaPath);
+  if (supportsInk(getFileType(current.name))) await deleteSharedInk(current.notebook, current.pathParts, config);
   await removeFileMetadataPath(liberaPath);
   notifySearchChanges([liberaPath]);
   return getTree();
@@ -542,6 +560,7 @@ export async function renameSharedFolder(relativePath: string, name: string, opt
   if (sourcePath !== nextPath && await pathExists(itemPath(current.notebook, parts))) throw new StorageError("Destination folder already exists.", 409);
   const config = hostConfig(sourcePath, options);
   await host(sourcePath, () => fileOp(source.projectId, { op: "rename", path: source.path, to: parts.join("/") }, config));
+  if (sourcePath !== nextPath) await moveSharedInk(current.notebook, current.pathParts, parts, config);
   await renameFileMetadataPathPrefix(sourcePath, nextPath);
   await renameNotebookPanelExpandedPathPrefix(sourcePath, nextPath);
   notifySearchChanges();
@@ -557,6 +576,7 @@ export async function deleteSharedFolder(relativePath: string, options: SharedWr
   await assertDirectoryExists(itemPath(current.notebook, current.pathParts), "Folder was not found.");
   const config = hostConfig(liberaPath, options);
   await host(liberaPath, () => fileOp(target.projectId, { op: "delete", path: target.path }, config));
+  await deleteSharedInk(current.notebook, current.pathParts, config);
   await removeFileMetadataPathPrefix(liberaPath);
   await removeNotebookPanelExpandedPathPrefix(liberaPath);
   notifySearchChanges();

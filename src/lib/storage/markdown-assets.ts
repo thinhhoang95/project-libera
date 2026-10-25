@@ -26,6 +26,7 @@ import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constant
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
+import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
@@ -446,6 +447,11 @@ export async function getMarkdownImageAsset(documentPath: string, assetPath: str
 
   const asset = markdownAssetPath(notebook, assetPath);
   const fileName = path.basename(asset.normalized);
+  // An ink block's rendering (lib/ink/block.ts) is the one SVG a note shows;
+  // it is written by Libera from strokes and served with scripts disabled.
+  if (isInkBlockRenderingName(fileName)) {
+    return { body: await readFile(asset.targetPath), contentType: "image/svg+xml", assetPath: asset.normalized, fileName };
+  }
   const fileType = assertSupportedFileName(fileName);
 
   if (fileType !== "image") {

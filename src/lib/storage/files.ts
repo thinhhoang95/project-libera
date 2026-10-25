@@ -72,6 +72,7 @@ import {
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
+import { copyInkFolder, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
 import { supportsDefinitions } from "@/lib/storage/definitions";
@@ -319,6 +320,7 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
@@ -392,6 +394,7 @@ export async function archiveFolder(relativePath: string) {
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
   await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
+  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -426,6 +429,7 @@ export async function deleteFolder(relativePath: string) {
   }
   await rm(definitionsDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
   await rm(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
+  await deleteInkFolder(current.notebook, current.pathParts);
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
@@ -623,6 +627,7 @@ export async function deleteFile(relativePath: string) {
   }
 
   if (supportsDefinitions(relativePath)) await rm(definitionsPath(notebook, pathParts), { force: true });
+  if (supportsInk(fileType)) await deleteInkFolder(notebook, pathParts);
 
   if (markdown !== null) {
     await deletePythonSidecar(relativeFilePath(notebook, pathParts));
@@ -797,6 +802,12 @@ async function moveRelatedMetadata(
     if (nextFileType === currentFileType) await moveFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
     else await rm(definitionsPath(currentNotebook, currentPathParts), { force: true });
   }
+
+  // Ink chunks are per kind of file (PDF pages, a note's blocks), so ink only follows the same kind.
+  if (supportsInk(currentFileType)) {
+    if (nextFileType === currentFileType) await moveInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
+    else await deleteInkFolder(currentNotebook, currentPathParts);
+  }
 }
 
 async function copyRelatedMetadata(
@@ -836,6 +847,8 @@ async function copyRelatedMetadata(
   if (supportsDefinitionsType(currentFileType)) {
     await copyFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
   }
+
+  if (supportsInk(currentFileType)) await copyInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
 }
 
 function supportsDefinitionsType(fileType: string) {

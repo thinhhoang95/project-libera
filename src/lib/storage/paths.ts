@@ -15,6 +15,7 @@ import {
   ORPHANED_SIDECARS_DIR,
   PDF_OUTLINES_DIR,
   IMAGE_ANNOTATIONS_SUFFIX,
+  INK_DIR,
   LIBERA_SYSTEM_DIR,
   MARKDOWN_ASSETS_DIR,
   NOTEBOOK_METADATA_FILE,
@@ -74,7 +75,8 @@ export function assertSafeUserSegment(segment: string, label: string) {
     trimmed.startsWith(".") ||
     trimmed.startsWith("._") ||
     trimmed === "__MACOSX" ||
-    trimmed === MARKDOWN_ASSETS_DIR
+    trimmed === MARKDOWN_ASSETS_DIR ||
+    trimmed === INK_DIR
   ) {
     throw new StorageError(`${label} is reserved.`);
   }

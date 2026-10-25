@@ -1,12 +1,13 @@
 import { prunePdfTextCaches } from "@/lib/storage/pdf-text-cache";
 import { pdfFilesOf, reconcilePdfSidecars } from "@/lib/storage/pdf-sidecars";
+import { inkSourceFilesOf, reconcileInkFolders } from "@/lib/storage/ink";
 import { pruneAudioSidecars } from "@/lib/storage/transcripts";
 import { populateRelatedNotebooks } from "@/lib/storage/notebook-links";
 import { scheduleReferenceReattach } from "@/lib/storage/references";
 import { readLastNotebookName } from "@/lib/storage/last-notebook";
 import type { Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { ARCHIVE_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
+import { ARCHIVE_DIR, INK_DIR, MARKDOWN_ASSETS_DIR } from "@/lib/storage/constants";
 import { StorageError } from "@/lib/storage/errors";
 import { assertSupportedFileName, getFileType } from "@/lib/storage/file-types";
 import { pathExists } from "@/lib/storage/fs-utils";
@@ -60,6 +61,7 @@ export function isVisibleTreeEntry(name: string, linked = false) {
     name.startsWith("._") ||
     name === "__MACOSX" ||
     name === MARKDOWN_ASSETS_DIR ||
+    name === INK_DIR ||
     (linked && SKIPPED_LINKED_FOLDER_ENTRIES.has(name))
   );
 }
@@ -332,6 +334,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
     await prunePdfTextCaches(entry.name).catch(() => undefined);
     await pruneAudioSidecars(entry.name).catch(() => undefined);
     await reconcilePdfSidecars(entry.name, pdfFilesOf(children)).catch(() => undefined);
+    await reconcileInkFolders(entry.name, inkSourceFilesOf(children)).catch(() => undefined);
 
     notebooks.push({
       kind: "notebook",
@@ -362,6 +365,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
       await prunePdfTextCaches(folder.name).catch(() => undefined);
       await pruneAudioSidecars(folder.name).catch(() => undefined);
       await reconcilePdfSidecars(folder.name, pdfFilesOf(node.children)).catch(() => undefined);
+      await reconcileInkFolders(folder.name, inkSourceFilesOf(node.children)).catch(() => undefined);
     }
     notebooks.push(node);
     collectFilePaths(node.children, filePaths);
