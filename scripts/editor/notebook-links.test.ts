@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { extractNotebookLinkDestinations } from "../../src/lib/storage/notebook-links";
@@ -51,6 +51,12 @@ test("persists links, reuses unchanged metadata, and reconciles saves, external 
     assert.deepEqual(await related(), ["Beta space"]);
     assert.equal(await readFile(cache, "utf8"), initial);
     assert.equal((await stat(cache)).mtimeMs, initialMtime, "unchanged loads do not rewrite metadata");
+    assert.deepEqual(Object.keys(JSON.parse(initial).files["Alpha/nested/note.md"]).sort(), ["contentHash", "destinations"],
+      "no timestamps or sizes, which differ between computers");
+    const touched = new Date("2026-03-04T05:06:07.000Z");
+    await utimes(source, touched, touched);
+    assert.deepEqual(await related(), ["Beta space"]);
+    assert.equal((await stat(cache)).mtimeMs, initialMtime, "a timestamp-only change does not rewrite metadata");
 
     await updateMarkdownFile("Alpha/nested/note.md", "[gamma](../../Gamma/target.pdf)");
     assert.deepEqual(await related(), ["Gamma"]);

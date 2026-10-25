@@ -13,7 +13,10 @@ export function extractNotebookLinkDestinations(content: string): string[] {
   return [...new Set(extractMarkdownLinkOccurrences(content).map((occurrence) => occurrence.href))];
 }
 
-type LinkEntry = { updatedAt: string; size: number; contentHash: string; destinations: string[] };
+// Entries hold only what follows from a file's bytes, never its timestamps or
+// size, and paths are sorted: a touched, re-downloaded or reordered file does
+// not rewrite the index, and computers sharing a synced notebook write the same one.
+type LinkEntry = { contentHash: string; destinations: string[] };
 type LinkIndex = { version: 2; files: Record<string, LinkEntry> };
 
 function collectFiles(nodes: LiberaTreeNode[]): LiberaFileNode[] {
@@ -23,7 +26,16 @@ function collectFiles(nodes: LiberaTreeNode[]): LiberaFileNode[] {
 async function readLinkIndex(indexPath: string): Promise<LinkIndex> {
   try {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
-    if (index.version === 2 && index.files && typeof index.files === "object") return index;
+    if (index.version === 2 && index.files && typeof index.files === "object") {
+      // Older entries also held updatedAt and size: ignored, and dropped when the index next changes.
+      const files: LinkIndex["files"] = {};
+      for (const [file, entry] of Object.entries(index.files as Record<string, Partial<LinkEntry>>)) {
+        if (typeof entry?.contentHash === "string" && Array.isArray(entry.destinations) && entry.destinations.every((href) => typeof href === "string")) {
+          files[file] = { contentHash: entry.contentHash, destinations: entry.destinations };
+        }
+      }
+      return { version: 2, files };
+    }
   } catch {
     // Missing, old or partially synced indexes can be rebuilt from saved files.
   }
@@ -60,17 +72,12 @@ async function rebuildDestinations(notebook: LiberaNotebookNode, files: LiberaFi
       throw error;
     }
     const cached = previous.files[file.path];
-    if (cached?.contentHash === snapshot.contentHash &&
-        Array.isArray(cached.destinations) && cached.destinations.every((href) => typeof href === "string")) {
-      next.files[file.path] = { ...cached, updatedAt: file.updatedAt, size: file.size };
-    } else {
-      next.files[file.path] = {
-        updatedAt: file.updatedAt, size: file.size, contentHash: snapshot.contentHash,
-        destinations: extractNotebookLinkDestinations(snapshot.content),
-      };
-    }
+    next.files[file.path] = cached?.contentHash === snapshot.contentHash ? cached
+      : { contentHash: snapshot.contentHash, destinations: extractNotebookLinkDestinations(snapshot.content) };
   }
-  if (JSON.stringify(previous) !== JSON.stringify(next)) {
+  const sorted = (files: LinkIndex["files"]) => Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  next.files = sorted(next.files);
+  if (JSON.stringify(sorted(previous.files)) !== JSON.stringify(next.files)) {
     // Do not recreate a notebook deleted while this derived index was built.
     try { await writeJsonAtomically(indexPath, next, () => assertDirectorySignature(root, identity)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
