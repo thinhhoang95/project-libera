@@ -1,36 +1,9 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, requireAuth } from "@/lib/api";
-import { getAiFunctionOptions, getAiRewriteCustomInstruction } from "@/lib/ai-preferences";
-import { formatDocumentContext, INSERTION_MARKER, readDocumentContext } from "@/lib/ai-document-context";
-import { createOpenRouterCompletion, createOpenRouterMarkdownCompletion } from "@/lib/openrouter";
-import { latexWritePrompt, normalizeLatexOutput } from "@/lib/latex/ai-prompts";
+import { AiEditRequestError, runAiEdit } from "@/lib/ai-edit";
 import { MAX_QUICK_PROMPT_LENGTH } from "@/lib/quick-prompts";
 
 export const runtime = "nodejs";
-
-async function readSystemPrompt() {
-  const formatterPrompt = await readFile(
-    path.join(process.cwd(), "prompts", "system_prompt_ai_formatter.md"),
-    "utf8",
-  );
-
-  const customInstruction = getAiRewriteCustomInstruction().trim();
-
-  return `${formatterPrompt}
-
-Write mode override:
-
-* Write new Markdown content according to the user's instruction. It will be inserted into the user's document at the marked insertion point.
-* The rules above about preserving the original text and not inventing content do not apply: you are writing new content, not formatting existing text.
-* When the document is provided, the new content goes at ${INSERTION_MARKER}. Use the document only as context: match its topic, tone, language, terminology, heading levels, and notation, and make the new content fit between what comes before and after the marker. Do not repeat the surrounding content unless the instruction asks for it, and do not output the marker.
-* Keep all output-format rules from the formatter prompt: return only the new Markdown content, no explanations, no introductions, no closing remarks, and no code fences around the whole response.
-* Keep links, images, math delimiters, tables, and code syntax valid.${customInstruction ? `
-
-User-configured custom instructions for every AI Rewrite and Write with AI request:
-${customInstruction}` : ""}`;
-}
 
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
@@ -40,8 +13,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = (await request.json()) as { prompt?: string; before?: string; after?: string; format?: string };
-    const latex = body.format === "latex";
+    const body = (await request.json()) as { prompt?: string; before?: string; after?: string; format?: string; thread?: unknown };
     const prompt = body.prompt?.trim() ?? "";
 
     if (!prompt) {
@@ -52,32 +24,16 @@ export async function POST(request: NextRequest) {
       return jsonError("Write prompt is too long.", 413);
     }
 
-    const context = readDocumentContext(body);
-    const messages = [
-      {
-        role: "system" as const,
-        content: latex ? latexWritePrompt(getAiRewriteCustomInstruction().trim()) : await readSystemPrompt(),
-      },
-      {
-        role: "user" as const,
-        content: `${context ? `Full document, with the insertion point marked:
-${formatDocumentContext(context, INSERTION_MARKER)}
-
-` : ""}Instruction:
-${prompt}`,
-      },
-    ];
     // The response key predates LaTeX support; it holds LaTeX for LaTeX documents.
-    const markdown = latex
-      ? normalizeLatexOutput((await createOpenRouterCompletion(messages, getAiFunctionOptions("write"))).content)
-      : await createOpenRouterMarkdownCompletion(messages, getAiFunctionOptions("write"));
+    const { output: markdown, thread } = await runAiEdit("write", body);
 
     if (!markdown.trim()) {
       return jsonError("Write with AI returned an empty response.", 502);
     }
 
-    return NextResponse.json({ markdown });
+    return NextResponse.json({ markdown, ...(thread ? { thread } : {}) });
   } catch (error) {
+    if (error instanceof AiEditRequestError) return jsonError(error.message, error.status);
     return jsonError(
       `Write with AI failed: ${
         error instanceof Error ? error.message : "Write with AI failed."

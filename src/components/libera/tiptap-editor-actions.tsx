@@ -10,7 +10,8 @@ import { ArrowDownToLine, ArrowLeftToLine, ArrowRightToLine, ArrowUpToLine, Colu
 import { speakMarkdown } from "@/lib/tts/player";
 import { apiRequest } from "./api-client";
 import { QuickPromptInput } from "./quick-prompt-input";
-import { IncludeDocumentContextCheckbox, readIncludeDocumentContext } from "./ai-document-context-preference";
+import { readIncludeDocumentContext } from "./ai-document-context-preference";
+import { AiEditOptions, aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "./ai-edit-thread";
 import {
   changeTiptapHeadingLevels,
   enumerateTiptapHeadings,
@@ -210,7 +211,10 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
     try {
       const text = action === "write" ? "" : source ? source.snapshot.slice(source.start, source.end) : getTiptapSelectionMarkdown(editor, range);
       // The Markdown on either side of the selection or insertion point.
-      const context = (action === "write" || action === "rewrite") && readIncludeDocumentContext() ? (source ? {
+      const editing = action === "write" || action === "rewrite";
+      const includeDocument = editing && readIncludeDocumentContext();
+      const thread = editing ? aiEditThreadFor(documentPath, includeDocument) : undefined;
+      const context = includeDocument ? (source ? {
         before: source.snapshot.slice(0, source.start),
         after: source.snapshot.slice(source.end),
       } : {
@@ -225,14 +229,16 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
         });
         markdown = result.markdown;
       } else if (action === "write") {
-        const result = await apiRequest<{ markdown: string }>("/api/ai-write", {
-          ...init, body: JSON.stringify({ prompt: writePrompt.trim(), ...context }),
+        const result = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
+          ...init, body: JSON.stringify({ prompt: writePrompt.trim(), ...context, thread }),
         });
+        if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
         markdown = result.markdown;
       } else if (action === "rewrite") {
-        const result = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
-          ...init, body: JSON.stringify({ text, prompt: prompt.trim(), ...context }),
+        const result = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
+          ...init, body: JSON.stringify({ text, prompt: prompt.trim(), ...context, thread }),
         });
+        if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
         markdown = result.rewrittenText;
       } else {
         const result = await apiRequest<{ formattedText: string }>("/api/ai-format", {
@@ -297,7 +303,7 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
       <QuickPromptInput id="visual-ai-write" placeholder="What should AI write? Type / for prompts" value={writePrompt} disabled={!!working} onChange={setWritePrompt} onSubmit={() => void runAi("write")} />
       <button type="submit" aria-label="Write new text with AI" title="Write new text with AI" disabled={!!working || !writePrompt.trim()} className="h-8 shrink-0 rounded-md bg-primary px-2 text-primary-foreground disabled:opacity-50"><PenLine aria-hidden className="h-4 w-4" /></button>
     </div>
-    <IncludeDocumentContextCheckbox id="visual-ai-document-context" />
+    <AiEditOptions id="visual-ai-document-context" documentPath={documentPath} />
   </form>;
 
   return <>

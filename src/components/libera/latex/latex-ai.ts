@@ -4,6 +4,7 @@ import type { EditorView } from "@codemirror/view";
 import { beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
+import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "@/components/libera/ai-edit-thread";
 import { applyAiProposal, pendingAiField, setPendingAiRequest, type AiChangeSource } from "@/lib/latex/codemirror/review";
 import { aiSuggestionNotice, sharedSuggester } from "@/lib/collab/client/suggestions-ai";
 
@@ -34,7 +35,7 @@ export function cancelLatexAi(view: EditorView) {
  * of applied hunks (plan M3.4): collaborators see it, and accepting it is a
  * server decision.
  */
-export async function runLatexAi(view: EditorView, action: AiChangeSource, range: { from: number; to: number }, prompt: string, onError: (message: string) => void) {
+export async function runLatexAi(view: EditorView, action: AiChangeSource, range: { from: number; to: number }, prompt: string, onError: (message: string) => void, documentPath?: string) {
   if (isLatexAiWorking(view)) return;
   const id = `latex-ai-${++requestCounter}`;
   const length = view.state.doc.length;
@@ -43,7 +44,10 @@ export async function runLatexAi(view: EditorView, action: AiChangeSource, range
   const original = view.state.sliceDoc(target.from, target.to);
   if (action !== "write" && !original.trim()) return;
   const doc = view.state.doc.toString();
-  const context = action !== "format" && readIncludeDocumentContext() ? { before: doc.slice(0, target.from), after: doc.slice(target.to) } : {};
+  const includeDocument = action !== "format" && readIncludeDocumentContext();
+  const context = includeDocument ? { before: doc.slice(0, target.from), after: doc.slice(target.to) } : {};
+  // Rewrite and write continue the document's cached thread (src/lib/ai-edit.ts).
+  const thread = action !== "format" ? aiEditThreadFor(documentPath, includeDocument) : undefined;
   const controller = new AbortController();
   controllers.set(view, controller);
   const endActivity = beginAiActivity();
@@ -56,9 +60,13 @@ export async function runLatexAi(view: EditorView, action: AiChangeSource, range
     if (action === "format") {
       text = (await apiRequest<{ formattedText: string }>("/api/ai-format", { ...init, body: JSON.stringify({ text: original, format: "latex" }) })).formattedText;
     } else if (action === "rewrite") {
-      text = (await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", { ...init, body: JSON.stringify({ text: original, prompt, format: "latex", ...context }) })).rewrittenText;
+      const result = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", { ...init, body: JSON.stringify({ text: original, prompt, format: "latex", ...context, thread }) });
+      if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
+      text = result.rewrittenText;
     } else {
-      text = (await apiRequest<{ markdown: string }>("/api/ai-write", { ...init, body: JSON.stringify({ prompt, format: "latex", ...context }) })).markdown;
+      const result = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", { ...init, body: JSON.stringify({ prompt, format: "latex", ...context, thread }) });
+      if (!controller.signal.aborted) recordAiEditTurn(documentPath, includeDocument, thread, result.thread);
+      text = result.markdown;
     }
 
     if (controller.signal.aborted || !view.dom.isConnected) return;

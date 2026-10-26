@@ -85,6 +85,7 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 // Snips are read at the model's own page scale (up to four 512 px tiles across).
 const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
+import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "./ai-edit-thread";
 import { latexDocumentTemplate } from "@/lib/latex/project";
 import type { AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
@@ -2551,16 +2552,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
-      const payload = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
+      const includeDocument = readIncludeDocumentContext();
+      const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
+      const payload = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
         method: "POST",
         body: JSON.stringify({
           text: selectedText,
           prompt,
-          ...(readIncludeDocumentContext()
+          ...(includeDocument
             ? { before: draft.slice(0, selection.start), after: draft.slice(selection.end) }
             : {}),
+          thread,
         }),
       });
+      recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
       )}`;
@@ -2607,13 +2612,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
-      const payload = await apiRequest<{ markdown: string }>("/api/ai-write", {
+      const includeDocument = readIncludeDocumentContext();
+      const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
+      const payload = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
         method: "POST",
         body: JSON.stringify({
           prompt,
-          ...(readIncludeDocumentContext() ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+          ...(includeDocument ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+          thread,
         }),
       });
+      recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
       const suggested = suggestSharedAi(tabId, draft, {
         start: position,

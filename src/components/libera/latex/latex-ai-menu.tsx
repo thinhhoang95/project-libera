@@ -6,7 +6,7 @@ import { BookmarkPlus, ClipboardPaste, Copy, FileSearch, Loader2, MessageSquareT
 import { speakMarkdown } from "@/lib/tts/player";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { IncludeDocumentContextCheckbox } from "@/components/libera/ai-document-context-preference";
+import { AiEditOptions } from "@/components/libera/ai-edit-thread";
 import { QuickPromptInput } from "@/components/libera/quick-prompt-input";
 import { isLatexAiWorking, runLatexAi } from "./latex-ai";
 
@@ -72,7 +72,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
       return;
     }
     onClose();
-    void runLatexAi(view, action, { from: menu.from, to: menu.to }, prompt.trim(), onError);
+    void runLatexAi(view, action, { from: menu.from, to: menu.to }, prompt.trim(), onError, documentPath);
   }
 
   async function clipboard(action: "cut" | "copy" | "paste") {
@@ -126,7 +126,7 @@ export function LatexAiMenu({ view, menu, documentPath, onClose, onError, onForw
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
-        <IncludeDocumentContextCheckbox id="latex-ai-document-context" />
+        <AiEditOptions id="latex-ai-document-context" documentPath={documentPath} />
       </form>
       <div className="mt-1 border-t border-border pt-1">
         {isTex ? (

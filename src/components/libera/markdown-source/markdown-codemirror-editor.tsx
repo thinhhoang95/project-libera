@@ -736,6 +736,7 @@ export function MarkdownCodeMirrorEditor({
       {contextMenu ? (
         <MarkdownSourceContextMenu
           aiWorking={aiWorking}
+          documentPath={activeFilePath}
           formatting={formatting}
           imageConverting={imageConverting}
           menu={contextMenu}

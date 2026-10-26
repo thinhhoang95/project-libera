@@ -1164,7 +1164,7 @@ export function MarkdownEditor({
 
       {contextMenu ? (
         <MarkdownSourceContextMenu
-          aiWorking={aiWorking} formatting={formatting} imageConverting={imageConverting} menu={contextMenu} text={editorValue}
+          aiWorking={aiWorking} documentPath={activeFilePath} formatting={formatting} imageConverting={imageConverting} menu={contextMenu} text={editorValue}
           onClose={() => setContextMenu(null)} onPaste={(mode) => void pasteFromContextMenu(mode)}
           onFormat={() => { if (!aiWorking) { setContextMenu(null); void onAiFormatSelection({ start: contextMenu.start, end: contextMenu.end }); } }}
           onHeadingLevels={(direction) => applyHeadingLevelChange(direction, contextMenu)}

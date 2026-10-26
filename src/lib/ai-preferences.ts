@@ -36,7 +36,7 @@ export function getAiFunctionOptions(name: AiFunction): { model: string; reasoni
   const lowEffort = name === "latex" || name === "references" || name === "recordingRecap";
   const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : lowEffort ? "low" : parent?.reasoning.effort ?? "medium";
   const configuredCaching = process.env[`${prefix}_PROMPT_CACHING`];
-  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "recordingRecap" ? false : parent?.promptCaching ?? name === "chat";
+  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "recordingRecap" ? false : parent?.promptCaching ?? (name === "chat" || name === "rewrite");
   return { model, reasoning: { effort }, promptCaching };
 }
 

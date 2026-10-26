@@ -114,7 +114,7 @@ function normalizeAiFunctionPreferences(input, defaultModel) {
     const inherited = name === "recordingRecap" ? { promptCaching: false, reasoningEffort: "low" } : parent;
     normalized[name] = {
       model: model || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : defaultModel),
-      promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : inherited ? inherited.promptCaching : name === "chat",
+      promptCaching: typeof value?.promptCaching === "boolean" ? value.promptCaching : inherited ? inherited.promptCaching : ["chat", "rewrite"].includes(name),
       reasoningEffort: REASONING_EFFORTS.includes(value?.reasoningEffort) ? value.reasoningEffort : inherited ? inherited.reasoningEffort : name === "latex" ? "low" : "medium",
       ...(["rewrite", "chat"].includes(name) ? {
         customInstruction: typeof value?.customInstruction === "string" ? value.customInstruction : "",

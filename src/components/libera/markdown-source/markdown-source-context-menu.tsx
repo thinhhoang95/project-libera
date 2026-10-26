@@ -3,7 +3,7 @@
 import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sparkles, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
-import { IncludeDocumentContextCheckbox } from "../ai-document-context-preference";
+import { AiEditOptions } from "../ai-edit-thread";
 import { QuickPromptInput } from "../quick-prompt-input";
 import { PasteMenuItems, type MenuPasteMode } from "../paste-menu-items";
 import { changeSelectedHeadingLevels, findMarkdownImageInText } from "@/lib/markdown-source";
@@ -43,6 +43,7 @@ const SUBMIT_CLASS = "inline-flex h-8 w-8 shrink-0 items-center justify-center r
 
 export function MarkdownSourceContextMenu({
   aiWorking,
+  documentPath,
   formatting,
   imageConverting,
   menu,
@@ -57,6 +58,8 @@ export function MarkdownSourceContextMenu({
   onWrite,
 }: {
   aiWorking: boolean;
+  /** Keys the cached AI Rewrite / Write with AI thread. */
+  documentPath?: string;
   formatting: boolean;
   imageConverting: boolean;
   menu: SourceContextMenuState;
@@ -203,7 +206,7 @@ export function MarkdownSourceContextMenu({
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
-        <IncludeDocumentContextCheckbox id="ai-document-context" />
+        <AiEditOptions id="ai-document-context" documentPath={documentPath} />
       </form>
       {menu.image ? (
         <button className={ITEM_CLASS} type="button" role="menuitem" disabled={aiWorking} onClick={onImageToMarkdown}>

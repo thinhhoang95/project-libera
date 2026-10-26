@@ -1,4 +1,4 @@
-import { INSERTION_MARKER, SELECTION_END_MARKER, SELECTION_START_MARKER } from "@/lib/ai-document-context";
+import { AI_EDIT_THREAD_RULES, INSERTION_MARKER, SELECTION_END_MARKER, SELECTION_START_MARKER } from "@/lib/ai-document-context";
 
 /** System prompts for AI Format, AI Rewrite and Write with AI in LaTeX files. */
 
@@ -24,27 +24,23 @@ Your task is to turn the user's text into clean, idiomatic LaTeX source. The tex
 
 ${LATEX_OUTPUT_RULES}`;
 
-export function latexRewritePrompt(customInstruction: string) {
+/** One prompt for AI Rewrite and Write with AI, so both can continue one cached thread (src/lib/ai-edit.ts). */
+export function latexEditPrompt(customInstruction: string) {
   return `You are an expert LaTeX writing assistant inside a LaTeX source editor.
 
-Rewrite the selected LaTeX according to the user's rewrite instruction. The instruction may change wording, length, tone, structure, or emphasis.
+Each request is either an AI Rewrite or a Write with AI request.
 
-* When the full document is provided, the selected LaTeX is the part between ${SELECTION_START_MARKER} and ${SELECTION_END_MARKER}. Use the rest of the document only as context (topic, notation, macros, sectioning level, what comes before and after) and return only the replacement for the selected part, without the markers.
+AI Rewrite: rewrite the selected LaTeX according to the user's rewrite instruction. The instruction may change wording, length, tone, structure, or emphasis.
+
+* When the document is provided, the selected LaTeX is the part between ${SELECTION_START_MARKER} and ${SELECTION_END_MARKER}. Use the rest of the document only as context (topic, notation, macros, sectioning level, what comes before and after) and return only the replacement for the selected part, without the markers.
 * The replacement must fit seamlessly where the selection was: keep an environment open or closed exactly as the selection did, and keep leading and trailing line breaks when the selection had them.
 
-${LATEX_OUTPUT_RULES}${customInstruction ? `
-
-User-configured custom instructions for every AI Rewrite request:
-${customInstruction}` : ""}`;
-}
-
-export function latexWritePrompt(customInstruction: string) {
-  return `You are an expert LaTeX writing assistant inside a LaTeX source editor.
-
-Write new LaTeX content according to the user's instruction. It will be inserted into the user's document at the marked insertion point.
+Write with AI: write new LaTeX content according to the user's instruction. It will be inserted into the user's document at the marked insertion point.
 
 * When the document is provided, the new content goes at ${INSERTION_MARKER}. Use the document only as context: match its topic, language, notation, macros and sectioning level, and make the new content fit between what comes before and after the marker. Do not repeat the surrounding content unless asked, and do not output the marker.
 * Write complete blocks: close every environment and group you open.
+
+${AI_EDIT_THREAD_RULES}
 
 ${LATEX_OUTPUT_RULES}${customInstruction ? `
 

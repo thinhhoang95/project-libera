@@ -10,11 +10,11 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   const legacy = normalizeAiPreferences(undefined, 'existing/model');
   assert.equal(legacy.formatting.model, 'existing/model');
   assert.equal(legacy.rewrite.model, 'existing/model');
-  assert.deepEqual(legacy.rewrite, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false, customInstruction: '' });
+  assert.deepEqual(legacy.rewrite, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true, customInstruction: '' });
   assert.equal(legacy.chat.model, 'existing/model');
   assert.deepEqual(legacy.imageToMarkdown, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
   assert.deepEqual(legacy.chat, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true, customInstruction: '', alternativeModels: [] });
-  assert.deepEqual(legacy.write, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: false });
+  assert.deepEqual(legacy.write, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true });
   assert.deepEqual(legacy.review, { model: 'existing/model', reasoningEffort: 'medium', promptCaching: true });
   assert.deepEqual(legacy.recordingRecap, { model: 'existing/model', reasoningEffort: 'low', promptCaching: false });
   // Split-off functions keep the settings of the one they shared until set.
@@ -128,7 +128,7 @@ test('Preferences UI loads and saves every function setting', async () => {
     for (const name of AI_FUNCTIONS) {
       assert.equal(document.querySelector(`#ai-${name}-model`).value, aiFunctions[name].model);
       assert.deepEqual(Array.from(document.querySelector(`#ai-${name}-effort`).options, (option) => option.value), ['low', 'medium', 'high', 'xhigh', 'max']);
-      assert.equal(document.querySelector(`#ai-${name}-caching`).value, String(name === "chat" || name === "review"));
+      assert.equal(document.querySelector(`#ai-${name}-caching`).value, String(name === "chat" || name === "review" || name === "rewrite" || name === "write"));
       document.querySelector(`#ai-${name}-caching`).value = String(name !== "chat");
       document.querySelector(`#ai-${name}-model`).value = `custom/${name}`;
       document.querySelector(`#ai-${name}-effort`).value = 'max';

@@ -478,7 +478,7 @@ Lookups send only identifiers, titles, and author names. When AI is used, the fi
 
 ### AI Rewrite and Write with AI
 
-Right-click selected text in either editor and describe the change under **AI Rewrite**. Right-click without a selection to use **Write with AI**, which writes new text at that spot as its own paragraph, so existing paragraphs and lists are never split. In either prompt, type `/` to pick a saved quick prompt (configured as `quickPrompts` in the config file, or in `LIBERA_QUICK_PROMPTS`). **Include whole document as context** sends the full document along with the selection; it is on by default and remembered on each device.
+Right-click selected text in either editor and describe the change under **AI Rewrite**. Right-click without a selection to use **Write with AI**, which writes new text at that spot as its own paragraph, so existing paragraphs and lists are never split. In either prompt, type `/` to pick a saved quick prompt (configured as `quickPrompts` in the config file, or in `LIBERA_QUICK_PROMPTS`). **Whole document** sends the full document along with the selection; it is on by default and remembered on each device. With prompt caching enabled (the default for AI Rewrite and Write with AI), consecutive requests on a document continue one cached thread: the instructions and the document are sent once, and each follow-up sends only the text around the spot. A small cache icon with the request count shows while the thread continues; click it to start fresh. A thread also ends after five idle minutes, after 20 requests, or when **Whole document** is switched.
 
 ### Live previews of AI edits
 
