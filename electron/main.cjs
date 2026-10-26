@@ -1492,8 +1492,8 @@ async function openConfigurationWindow(section = "") {
     // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
       (key) => key !== "themePreference" && key !== "search" && (key === "aiFunctions"
-        // The server reads Where Was I and PDF to Markdown from the config file on each request.
-        ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined, pdfToMarkdown: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined, pdfToMarkdown: undefined })
+        // The server reads Where Was I, PDF to Markdown and routing from the config file on each request.
+        ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined })
         : key === "quickPrompts"
           ? JSON.stringify(updatedConfig.quickPrompts) !== JSON.stringify(normalizeQuickPrompts(previousConfig.quickPrompts))
         : key === "latexSnippets"

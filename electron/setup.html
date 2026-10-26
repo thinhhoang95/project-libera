@@ -293,8 +293,104 @@
           border-bottom: 1px solid #e4e4e7;
         }
       }
-      .ai-function-settings { border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; margin: 16px 0; }
-      .ai-function-settings legend { padding: 0 4px; font-size: 14px; font-weight: 600; }
+      /* Preferences → AI: an overview of shared tools, then one card per function. */
+      .ai-settings label { font-size: 12px; margin: 0 0 6px; }
+      .ai-settings input:not([type="checkbox"]), .ai-settings select { padding: 8px 10px; font-size: 13px; }
+      .ai-settings textarea { font-size: 13px; min-height: 96px; }
+      .ai-settings button.secondary, .routing-dialog button { font-size: 13px; }
+      .ai-settings .model-apply-row button { padding: 8px 12px; }
+      .ai-overview { display: grid; gap: 10px; margin-bottom: 8px; }
+      .ai-panel { background: color-mix(in srgb, var(--muted, #f4f4f5) 45%, transparent); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 14px 16px; }
+      .ai-panel-head { align-items: flex-start; display: flex; gap: 11px; margin-bottom: 14px; }
+      .ai-panel-head h3 { margin: 1px 0 2px; font-size: 14px; }
+      .ai-panel-head .field-help { margin: 0; }
+      .ai-panel-icon, .ai-card-icon { align-items: center; background: color-mix(in srgb, var(--accent, #2563eb) 12%, transparent); border-radius: 9px; color: var(--accent, #2563eb); display: flex; flex: 0 0 auto; justify-content: center; }
+      .ai-panel-icon { height: 32px; width: 32px; }
+      .ai-routing-all { align-items: center; border-top: 1px solid var(--border, #e4e4e7); display: flex; gap: 12px; justify-content: space-between; margin-top: 14px; padding-top: 12px; }
+      .ai-routing-all-text { min-width: 0; }
+      .ai-routing-all-text .field-help { margin: 2px 0 0; }
+      .ai-field-label { color: var(--foreground, #18181b); display: block; font-size: 12px; font-weight: 600; }
+      .routing-all-button { align-items: center; display: inline-flex; flex: 0 0 auto; gap: 7px; padding: 8px 12px; }
+      .ai-note { margin-top: 10px; }
+      .ai-note summary, .ai-card-more summary, .routing-advanced summary { color: var(--accent, #2563eb); cursor: pointer; font-size: 12px; font-weight: 600; width: fit-content; }
+      .ai-note .field-help { margin-top: 6px; }
+      .ai-group-title { color: var(--muted-foreground, #71717a) !important; font-size: 11px !important; font-weight: 700; letter-spacing: 0.06em; margin: 26px 0 10px !important; text-transform: uppercase; }
+      .ai-cards { display: grid; gap: 10px; }
+      .ai-card { background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 14px 16px 16px; transition: border-color 0.15s; }
+      .ai-card:focus-within { border-color: color-mix(in srgb, var(--ring, #2563eb) 70%, var(--border, #e4e4e7)); }
+      .ai-card-header { align-items: flex-start; display: flex; gap: 11px; margin-bottom: 12px; }
+      .ai-card-icon { height: 30px; width: 30px; }
+      .ai-card-title { flex: 1; min-width: 0; }
+      .ai-card-title h4 { font-size: 14px; line-height: 1.3; margin: 0; }
+      .ai-card-title p { color: var(--muted-foreground, #71717a); font-size: 12px; line-height: 1.4; margin: 2px 0 0; }
+      .ai-card-grid { display: grid; gap: 10px 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .ai-field { min-width: 0; }
+      .ai-field-wide { grid-column: 1 / -1; }
+      .ai-field .field-help { margin-top: 6px; }
+      .ai-card > .field-help { margin-top: 6px; }
+      .ai-card .switch-row { margin-top: 12px; }
+      .ai-card .switch-row:first-of-type { margin-top: 0; }
+      .ai-card .switch-row + .field-help { margin: 4px 0 12px; }
+      .ai-card-grid + .switch-row { margin-top: 14px; }
+      .ai-card-more { border-top: 1px dashed var(--border, #e4e4e7); margin-top: 12px; padding-top: 10px; }
+      .ai-card-more[open] summary { margin-bottom: 10px; }
+      .ai-card-more .textarea-actions { align-items: flex-start; gap: 12px; justify-content: space-between; }
+      .ai-card-more .textarea-actions .field-help { margin: 0; }
+      .ai-card-more .textarea-actions button { flex: 0 0 auto; padding: 7px 12px; }
+      .ai-card-more > label:not(.visually-hidden) { margin-top: 12px; }
+      .routing-button { align-items: center; background: var(--muted, #f4f4f5) !important; border: 1px solid transparent !important; border-radius: 999px !important; color: var(--foreground, #18181b) !important; display: inline-flex; flex: 0 0 auto; font-size: 12px; font-weight: 600; gap: 6px; max-width: 46%; padding: 5px 10px 5px 8px; }
+      .routing-button svg { color: var(--accent, #2563eb); flex: 0 0 auto; }
+      .routing-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .routing-button:hover:not(:disabled) { border-color: var(--input, #d4d4d8) !important; }
+      .routing-button[data-custom="true"]::after { background: var(--accent, #2563eb); border-radius: 50%; content: ""; flex: 0 0 6px; height: 6px; }
+      .routing-dialog { margin: auto; max-height: min(720px, calc(100dvh - 32px)); padding: 0; width: min(600px, calc(100vw - 32px)); }
+      .routing-dialog:not([open]) { display: none; }
+      /* Beats the full-window sizing the Preferences shell gives .libera-dialog. */
+      html body.libera-preferences dialog.routing-dialog.libera-dialog { border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px #161c3c2e, 0 2px 8px #161c3c0f; height: auto; max-height: min(720px, calc(100dvh - 32px)); min-height: 0; }
+      .routing-dialog::backdrop { background: var(--libera-dialog-overlay-color, #202a5061); }
+      .routing-body { display: grid; gap: 18px; min-height: 0; overflow-y: auto; padding: 0 24px 18px; scrollbar-width: thin; }
+      .routing-group-head { align-items: baseline; display: flex; gap: 8px; justify-content: space-between; margin-bottom: 8px; }
+      .routing-step { color: var(--foreground, #18181b); font-size: 12px; font-weight: 650; }
+      .routing-optional { color: var(--muted-foreground, #71717a); font-size: 11px; margin-right: auto; }
+      .routing-link { background: none !important; border: 0 !important; color: var(--accent, #2563eb) !important; font-size: 12px; font-weight: 600; padding: 0 !important; }
+      .routing-targets { display: flex; flex-wrap: wrap; gap: 6px; }
+      .routing-target { align-items: center; border: 1px solid var(--input, #d4d4d8); border-radius: 999px; cursor: pointer; display: inline-flex; font-size: 12px !important; font-weight: 500 !important; gap: 6px; margin: 0 !important; padding: 4px 10px 4px 8px; }
+      .routing-target:has(input:checked) { background: color-mix(in srgb, var(--accent, #2563eb) 11%, transparent); border-color: color-mix(in srgb, var(--accent, #2563eb) 45%, transparent); }
+      .routing-target input { margin: 0; width: auto; }
+      .routing-recommendation { background: color-mix(in srgb, var(--accent, #2563eb) 8%, transparent); border-radius: 8px; font-size: 12px !important; margin: 0 0 8px !important; padding: 8px 10px; }
+      .routing-presets { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .routing-preset { border: 1px solid var(--input, #d4d4d8); border-radius: 10px; cursor: pointer; display: grid; gap: 3px; margin: 0 !important; padding: 10px 12px; position: relative; transition: border-color 0.12s, background 0.12s; }
+      .routing-preset:hover { border-color: color-mix(in srgb, var(--accent, #2563eb) 45%, var(--input, #d4d4d8)); }
+      .routing-preset:has(input:checked) { background: color-mix(in srgb, var(--accent, #2563eb) 8%, transparent); border-color: var(--accent, #2563eb); box-shadow: 0 0 0 1px var(--accent, #2563eb) inset; }
+      .routing-preset:has(input:focus-visible) { outline: 2px solid var(--ring, #2563eb); outline-offset: 2px; }
+      .routing-preset input { opacity: 0; pointer-events: none; position: absolute; }
+      .routing-preset-title { align-items: center; display: flex; font-size: 13px; font-weight: 650; gap: 6px; }
+      .routing-preset-detail { color: var(--muted-foreground, #71717a); font-size: 12px; font-weight: 400; line-height: 1.4; }
+      .routing-preset-badge { background: var(--accent, #2563eb); border-radius: 999px; color: var(--accent-foreground, #fff); font-size: 10px; font-weight: 700; letter-spacing: 0.02em; padding: 1px 7px; }
+      .routing-preset-wide { grid-column: 1 / -1; }
+      .routing-limits { display: grid; gap: 10px 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .routing-limits label { font-size: 12px; margin: 0 0 6px; }
+      .routing-unit-input { align-items: center; display: flex; position: relative; }
+      .routing-unit-input input { padding: 8px 86px 8px 10px; font-size: 13px; }
+      .routing-unit-input span { color: var(--muted-foreground, #71717a); font-size: 11px; pointer-events: none; position: absolute; right: 10px; white-space: nowrap; }
+      .routing-limits .ai-field.is-highlighted input { border-color: var(--accent, #2563eb); }
+      #routing-price-hint { margin-top: 8px; }
+      .routing-advanced { border: 1px solid var(--border, #e4e4e7); border-radius: 10px; padding: 10px 12px; }
+      .routing-advanced[open] summary { margin-bottom: 12px; }
+      .routing-advanced .switch-row { margin-top: 10px; }
+      .routing-advanced .switch-row:first-of-type { margin-top: 0; }
+      .routing-advanced .switch-row label, .routing-advanced > label { font-size: 13px; }
+      .routing-advanced > label { margin: 14px 0 6px; }
+      .routing-advanced input[type="text"] { padding: 8px 10px; font-size: 13px; }
+      .routing-preview pre { background: var(--muted, #f4f4f5); border-radius: 8px; color: var(--foreground, #18181b); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 6px 0 0; max-height: 160px; overflow: auto; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
+      .routing-error { background: #fef2f2; border-radius: 8px; color: #b91c1c !important; font-size: 12px !important; margin: 0 !important; padding: 8px 10px; }
+      .routing-footer { align-items: center; }
+      .libera-dialog-footer > .routing-reset { border-color: transparent; box-shadow: none; color: var(--muted-foreground); margin-right: auto; padding-left: 4px; }
+      @media (max-width: 600px) {
+        .ai-card-grid, .routing-presets, .routing-limits { grid-template-columns: 1fr; }
+        .ai-routing-all { align-items: stretch; flex-direction: column; }
+        .routing-body { padding: 0 16px 16px; }
+      }
       .quick-prompts-settings { border-top: 1px solid var(--border, #e4e4e7); margin-top: 26px; padding-top: 24px; }
       .quick-prompts-header { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
       .quick-prompts-heading { align-items: center; display: flex; gap: 9px; }
@@ -344,7 +440,7 @@
       .libera-dialog input.switch:checked { background: var(--accent, #2563eb); }
       .libera-dialog input.switch:checked::after { transform: translateX(16px); }
       .visually-hidden { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
-      :root[data-theme="dark"] .ai-function-settings { border-color: #52525b; }
+      :root[data-theme="dark"] .routing-error { background: color-mix(in srgb, #ef4444 16%, transparent); color: #fca5a5 !important; }
       .spending-card { align-items: center; border: 1px solid var(--border, #e4e4e7); border-radius: 12px; display: flex; gap: 14px; margin-top: 14px; padding: 12px 14px; }
       .spending-card[hidden] { display: none; }
       .spending-card-icon { align-items: center; background: color-mix(in srgb, #7c5cdb 13%, transparent); border-radius: 9px; color: #7c5cdb; display: flex; flex: 0 0 34px; height: 34px; justify-content: center; }
@@ -500,223 +596,293 @@
               </div>
             </section>
 
-            <section class="settings-section hidden" data-section="ai">
+            <section class="settings-section hidden ai-settings" data-section="ai">
               <h2>AI</h2>
-              <p>Choose a model, reasoning effort, and prompt caching for each function. Settings are saved across app restarts.</p>
-              <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically.</p>
-              <div class="spending-card" id="spending-card">
-                <span class="spending-card-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 13H7"/><path d="M19 9h-4"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="15" y="5" width="4" height="12" rx="1"/><rect x="7" y="8" width="4" height="9" rx="1"/></svg></span>
-                <div class="spending-card-text">
-                  <strong>Spending</strong>
-                  <p class="field-help">Token use and cost of every OpenRouter request Libera makes, by period, model, and input, output, or cache.</p>
-                </div>
-                <button id="open-spending" class="secondary" type="button">View spending</button>
-              </div>
-              <div class="model-catalog-status">
-                <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
-                <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
-              </div>
-              <fieldset class="ai-function-settings" id="ai-all-models-settings">
-                <legend>All models</legend>
-                <label for="ai-all-models">Model</label>
-                <div class="model-apply-row">
-                  <input id="ai-all-models" type="text" autocomplete="off" spellcheck="false" placeholder="Search OpenRouter models…" />
-                  <button id="ai-all-models-apply" class="secondary" type="button">Use for all</button>
-                </div>
-                <p id="ai-all-models-help" class="field-help" aria-live="polite">Fills in the fallback model and every model below, including References and Where Was I. AI Chat’s alternative models stay as they are. Change any one afterwards, then save preferences.</p>
-              </fieldset>
-              <label for="openrouter-model">Fallback OpenRouter model</label>
-              <input
-                id="openrouter-model"
-                autocomplete="off"
-                spellcheck="false"
-                type="text"
-              />
-              <p class="field-help">
-                Used only when a non-LaTeX function-specific model is unavailable. Each AI function can be configured independently below; LaTeX/PDF retains its own fallback.
-              </p>
+              <p class="settings-section-description">Choose a model, reasoning effort, prompt caching and OpenRouter routing for each function. Settings are saved across app restarts.</p>
 
-              <fieldset class="ai-function-settings">
-                <legend>AI Formatting</legend>
-                <label for="ai-formatting-model">Model</label>
-                <input id="ai-formatting-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-formatting-effort">Reasoning effort</label>
-                <select id="ai-formatting-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-formatting-caching">Prompt caching</label>
-                <select id="ai-formatting-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>AI Image to Markdown</legend>
-                <label for="ai-imageToMarkdown-model">Model</label>
-                <input id="ai-imageToMarkdown-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-imageToMarkdown-effort">Reasoning effort</label>
-                <select id="ai-imageToMarkdown-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-imageToMarkdown-caching">Prompt caching</label>
-                <select id="ai-imageToMarkdown-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <p class="field-help">Choose a model that supports image input.</p>
-              </fieldset>
-              <fieldset class="ai-function-settings" id="pdf-to-markdown-settings">
-                <legend>Convert PDF to Markdown</legend>
-                <label for="pdf-to-markdown-engine">Read pages with</label>
-                <select id="pdf-to-markdown-engine">
-                  <option value="local">Local model (granite-docling, on this computer)</option>
-                  <option value="openrouter">OpenRouter model</option>
-                </select>
-                <p class="field-help">The local model sends nothing off this computer but takes one to three minutes a page. An OpenRouter model reads several pages at once, each sent as a one-page PDF, using your OpenRouter key.</p>
-                <label for="ai-pdfToMarkdown-model">Model</label>
-                <input id="ai-pdfToMarkdown-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/gpt-6-luna" />
-                <label for="ai-pdfToMarkdown-effort">Reasoning effort</label>
-                <select id="ai-pdfToMarkdown-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="pdf-to-markdown-concurrency">Pages at once</label>
-                <input id="pdf-to-markdown-concurrency" type="number" min="1" max="16" step="1" />
-                <div class="switch-row">
-                  <label for="pdf-to-markdown-cleanup">Tidy heading levels when done</label>
-                  <input id="pdf-to-markdown-cleanup" class="switch" type="checkbox" role="switch" />
+              <div class="ai-overview">
+                <div class="ai-panel" id="ai-all-models-settings">
+                  <div class="ai-panel-head">
+                    <span class="ai-panel-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
+                    <div>
+                      <h3>Apply to every function</h3>
+                      <p class="field-help">Set one model or one routing strategy everywhere, then fine-tune any function below.</p>
+                    </div>
+                  </div>
+                  <label for="ai-all-models">Model</label>
+                  <div class="model-apply-row">
+                    <input id="ai-all-models" type="text" autocomplete="off" spellcheck="false" placeholder="Search OpenRouter models…" />
+                    <button id="ai-all-models-apply" class="secondary" type="button">Use for all</button>
+                  </div>
+                  <p id="ai-all-models-help" class="field-help" aria-live="polite">Fills in the fallback model and every model below, including References and Where Was I. AI Chat’s alternative models stay as they are. Change any one afterwards, then save preferences.</p>
+                  <div class="ai-routing-all">
+                    <div class="ai-routing-all-text">
+                      <span class="ai-field-label">OpenRouter routing</span>
+                      <p id="ai-routing-summary" class="field-help" aria-live="polite">Cheapest provider for every function.</p>
+                    </div>
+                    <button id="ai-routing-all" class="secondary routing-all-button" type="button" aria-haspopup="dialog">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+                      Routing for all…
+                    </button>
+                  </div>
                 </div>
-                <p class="field-help">Pages are read separately, so their headings can disagree. When every page is in, the model gets the list of headings, not the text, and makes their levels consistent. Choose a model that reads PDF or image input. Changes apply without restarting.</p>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>AI Rewrite</legend>
-                <label for="ai-rewrite-model">Model</label>
-                <input id="ai-rewrite-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-rewrite-effort">Reasoning effort</label>
-                <select id="ai-rewrite-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-rewrite-caching">Prompt caching</label>
-                <select id="ai-rewrite-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <label for="ai-rewrite-custom-instruction">Custom instruction</label>
-                <textarea
-                  id="ai-rewrite-custom-instruction"
-                  autocomplete="off"
-                  placeholder="Add instructions that should apply to every AI Rewrite request."
-                  spellcheck="true"
-                ></textarea>
-                <div class="textarea-actions">
-                  <button id="load-ai-rewrite-instruction-button" class="secondary" type="button">Load from file</button>
+
+                <div class="ai-panel ai-panel-compact">
+                  <label for="openrouter-model">Fallback OpenRouter model</label>
+                  <input id="openrouter-model" autocomplete="off" spellcheck="false" type="text" />
+                  <p class="field-help">Used only when a non-LaTeX function-specific model is unavailable. LaTeX/PDF keeps its own fallback.</p>
+                  <div class="model-catalog-status">
+                    <p id="model-catalog-status" class="field-help" aria-live="polite">Model suggestions are loaded from OpenRouter and cached for a day.</p>
+                    <button id="model-catalog-refresh" class="model-catalog-refresh" type="button">Refresh model list</button>
+                  </div>
+                  <details class="ai-note">
+                    <summary>About prompt caching</summary>
+                    <p class="field-help">Enabled routes only to caching-capable providers and adds explicit cache breakpoints where supported, including Gemini. Cache writes may cost extra and expire; repeated context is needed for savings. Disabled removes cache breakpoints and routing restrictions, but providers may still cache automatically. With caching on, routing still applies among the caching providers.</p>
+                  </details>
                 </div>
-                <p id="ai-rewrite-instruction-help" class="field-help">
-                  Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.
-                </p>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>Write with AI</legend>
-                <label for="ai-write-model">Model</label>
-                <input id="ai-write-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-write-effort">Reasoning effort</label>
-                <select id="ai-write-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-write-caching">Prompt caching</label>
-                <select id="ai-write-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <p class="field-help">Uses AI Rewrite’s custom instruction.</p>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>AI Chat and AI Agent</legend>
-                <label for="ai-chat-model">Model</label>
-                <input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-chat-alternative-models">Alternative models</label>
-                <textarea
-                  id="ai-chat-alternative-models"
-                  autocomplete="off"
-                  placeholder="anthropic/claude-sonnet-4.5&#10;google/gemini-3.5-pro"
-                  rows="3"
-                  spellcheck="false"
-                ></textarea>
-                <input
-                  id="ai-chat-alternative-model-picker"
-                  class="model-picker-row"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  aria-label="Add an alternative model"
-                  placeholder="Search OpenRouter models to add…"
-                />
-                <p class="field-help">Optional. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored. AI Chat and the AI Agent share this model and its alternatives.</p>
-                <label for="ai-chat-effort">Reasoning effort</label>
-                <select id="ai-chat-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-chat-caching">Prompt caching</label>
-                <select id="ai-chat-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <label for="ai-chat-custom-instruction">Custom instruction</label>
-                <textarea
-                  id="ai-chat-custom-instruction"
-                  autocomplete="off"
-                  placeholder="Add instructions that should apply to every AI Chat conversation."
-                  spellcheck="true"
-                ></textarea>
-                <div class="textarea-actions">
-                  <button id="load-ai-chat-instruction-button" class="secondary" type="button">Load from file</button>
+
+                <div class="spending-card" id="spending-card">
+                  <span class="spending-card-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 13H7"/><path d="M19 9h-4"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><rect x="15" y="5" width="4" height="12" rx="1"/><rect x="7" y="8" width="4" height="9" rx="1"/></svg></span>
+                  <div class="spending-card-text">
+                    <strong>Spending</strong>
+                    <p class="field-help">Token use and cost of every OpenRouter request Libera makes, by period, model, and input, output, or cache.</p>
+                  </div>
+                  <button id="open-spending" class="secondary" type="button">View spending</button>
                 </div>
-                <p id="ai-chat-instruction-help" class="field-help">
-                  Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.
-                </p>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>Agentic Review</legend>
-                <label for="ai-review-model">Model</label>
-                <input id="ai-review-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-review-effort">Reasoning effort</label>
-                <select id="ai-review-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-review-caching">Prompt caching</label>
-                <select id="ai-review-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <p class="field-help">Plans and drafts changes that address a document’s comments.</p>
-              </fieldset>
+              </div>
+
+              <h3 class="ai-group-title">Writing and editing</h3>
+              <div class="ai-cards">
+                <article class="ai-card" data-ai-function="formatting">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg></span>
+                    <div class="ai-card-title"><h4>AI Formatting</h4><p>Tidies the formatting of selected Markdown or LaTeX.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-formatting-model">Model</label><input id="ai-formatting-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-formatting-effort">Reasoning effort</label>
+                      <select id="ai-formatting-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-formatting-caching">Prompt caching</label>
+                      <select id="ai-formatting-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+
+                <article class="ai-card" data-ai-function="rewrite">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.38 3.62a1 1 0 0 1 3 3L7.37 18.64a2 2 0 0 1-.86.5l-2.87.84a.5.5 0 0 1-.62-.62l.84-2.87a2 2 0 0 1 .5-.86z"/></svg></span>
+                    <div class="ai-card-title"><h4>AI Rewrite</h4><p>Rewrites a selection the way you ask.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-rewrite-model">Model</label><input id="ai-rewrite-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-rewrite-effort">Reasoning effort</label>
+                      <select id="ai-rewrite-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-rewrite-caching">Prompt caching</label>
+                      <select id="ai-rewrite-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                  <details class="ai-card-more">
+                    <summary>Custom instruction</summary>
+                    <label class="visually-hidden" for="ai-rewrite-custom-instruction">Custom instruction</label>
+                    <textarea id="ai-rewrite-custom-instruction" autocomplete="off" placeholder="Add instructions that should apply to every AI Rewrite and Write with AI request." spellcheck="true"></textarea>
+                    <div class="textarea-actions">
+                      <p id="ai-rewrite-instruction-help" class="field-help">Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.</p>
+                      <button id="load-ai-rewrite-instruction-button" class="secondary" type="button">Load from file</button>
+                    </div>
+                  </details>
+                </article>
+
+                <article class="ai-card" data-ai-function="write">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.94 14.06 2 22"/><path d="m18 2 4 4-9.5 9.5a2 2 0 0 1-1.42.59H8v-3.08a2 2 0 0 1 .59-1.42Z"/><path d="M14 6l4 4"/></svg></span>
+                    <div class="ai-card-title"><h4>Write with AI</h4><p>Writes new text from a prompt. Uses AI Rewrite’s custom instruction.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-write-model">Model</label><input id="ai-write-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-write-effort">Reasoning effort</label>
+                      <select id="ai-write-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-write-caching">Prompt caching</label>
+                      <select id="ai-write-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+              </div>
+
+              <h3 class="ai-group-title">Chat and review</h3>
+              <div class="ai-cards">
+                <article class="ai-card" data-ai-function="chat">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+                    <div class="ai-card-title"><h4>AI Chat and AI Agent</h4><p>Answers questions about your documents and works on them as an agent. Both share this model and its alternatives.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-chat-model">Model</label><input id="ai-chat-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-chat-effort">Reasoning effort</label>
+                      <select id="ai-chat-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-chat-caching">Prompt caching</label>
+                      <select id="ai-chat-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                  <p class="field-help">A chat’s own reasoning selection wins over the effort here.</p>
+                  <details class="ai-card-more">
+                    <summary>Alternative models</summary>
+                    <label class="visually-hidden" for="ai-chat-alternative-models">Alternative models</label>
+                    <textarea id="ai-chat-alternative-models" autocomplete="off" placeholder="anthropic/claude-sonnet-4.5&#10;google/gemini-3.5-pro" rows="3" spellcheck="false"></textarea>
+                    <input id="ai-chat-alternative-model-picker" class="model-picker-row" type="text" autocomplete="off" spellcheck="false" aria-label="Add an alternative model" placeholder="Search OpenRouter models to add…" />
+                    <p class="field-help">Optional. Offered in the chat panel’s model menu. Enter one OpenRouter model identifier per line, or search above to add one. Duplicate entries and the default AI Chat model are ignored.</p>
+                  </details>
+                  <details class="ai-card-more">
+                    <summary>Custom instruction</summary>
+                    <label class="visually-hidden" for="ai-chat-custom-instruction">Custom instruction</label>
+                    <textarea id="ai-chat-custom-instruction" autocomplete="off" placeholder="Add instructions that should apply to every AI Chat conversation." spellcheck="true"></textarea>
+                    <div class="textarea-actions">
+                      <p id="ai-chat-instruction-help" class="field-help">Optional. Loading a file replaces the text above; save preferences to keep it across app restarts.</p>
+                      <button id="load-ai-chat-instruction-button" class="secondary" type="button">Load from file</button>
+                    </div>
+                  </details>
+                </article>
+
+                <article class="ai-card" data-ai-function="review">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="m9 10 2 2 4-4"/></svg></span>
+                    <div class="ai-card-title"><h4>Agentic Review</h4><p>Plans and drafts changes that address a document’s comments.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-review-model">Model</label><input id="ai-review-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-review-effort">Reasoning effort</label>
+                      <select id="ai-review-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-review-caching">Prompt caching</label>
+                      <select id="ai-review-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+              </div>
+
+              <h3 class="ai-group-title">Conversion</h3>
+              <div class="ai-cards">
+                <article class="ai-card" data-ai-function="imageToMarkdown">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/></svg></span>
+                    <div class="ai-card-title"><h4>AI Image to Markdown</h4><p>Reads photos and screenshots into Markdown. Choose a model that supports image input.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-imageToMarkdown-model">Model</label><input id="ai-imageToMarkdown-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-imageToMarkdown-effort">Reasoning effort</label>
+                      <select id="ai-imageToMarkdown-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-imageToMarkdown-caching">Prompt caching</label>
+                      <select id="ai-imageToMarkdown-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+
+                <article class="ai-card" data-ai-function="pdfToMarkdown" id="pdf-to-markdown-settings">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></span>
+                    <div class="ai-card-title"><h4>Convert PDF to Markdown</h4><p>Reads PDF pages into Markdown, on this computer or with an OpenRouter model.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="pdf-to-markdown-engine">Read pages with</label>
+                      <select id="pdf-to-markdown-engine"><option value="local">Local model (granite-docling, on this computer)</option><option value="openrouter">OpenRouter model</option></select>
+                      <p class="field-help">The local model sends nothing off this computer but takes one to three minutes a page. An OpenRouter model reads several pages at once, each sent as a one-page PDF, using your OpenRouter key.</p></div>
+                    <div class="ai-field ai-field-wide"><label for="ai-pdfToMarkdown-model">Model</label><input id="ai-pdfToMarkdown-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/gpt-6-luna" /></div>
+                    <div class="ai-field"><label for="ai-pdfToMarkdown-effort">Reasoning effort</label>
+                      <select id="ai-pdfToMarkdown-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="pdf-to-markdown-concurrency">Pages at once</label><input id="pdf-to-markdown-concurrency" type="number" min="1" max="16" step="1" /></div>
+                  </div>
+                  <div class="switch-row">
+                    <label for="pdf-to-markdown-cleanup">Tidy heading levels when done</label>
+                    <input id="pdf-to-markdown-cleanup" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">Pages are read separately, so their headings can disagree. When every page is in, the model gets the list of headings, not the text, and makes their levels consistent. Choose a model that reads PDF or image input. Changes apply without restarting.</p>
+                </article>
+
+                <article class="ai-card" data-ai-function="latex">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2"/></svg></span>
+                    <div class="ai-card-title"><h4>Convert Markdown to LaTeX/PDF</h4><p>Writes a LaTeX version of a Markdown document for PDF export.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-latex-model">Model</label><input id="ai-latex-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-latex-effort">Reasoning effort</label>
+                      <select id="ai-latex-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-latex-caching">Prompt caching</label>
+                      <select id="ai-latex-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+              </div>
+
+              <h3 class="ai-group-title">In the background</h3>
+              <div class="ai-cards">
+                <article class="ai-card" data-ai-function="recordingRecap">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></span>
+                    <div class="ai-card-title"><h4>Recording Live Recap</h4><p>Keeps the bullet-point summary of a recording as it goes on. A small, quick model is enough.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-recordingRecap-model">Model</label><input id="ai-recordingRecap-model" type="text" autocomplete="off" spellcheck="false" required /></div>
+                    <div class="ai-field"><label for="ai-recordingRecap-effort">Reasoning effort</label>
+                      <select id="ai-recordingRecap-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-recordingRecap-caching">Prompt caching</label>
+                      <select id="ai-recordingRecap-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                </article>
+
+                <article class="ai-card" data-ai-function="references" id="references-settings">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/></svg></span>
+                    <div class="ai-card-title"><h4>References</h4><p>Fills in reference metadata from PDFs and notes when no catalogue has it.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-references-model">Model</label><input id="ai-references-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as AI Formatting" /></div>
+                    <div class="ai-field"><label for="ai-references-effort">Reasoning effort</label>
+                      <select id="ai-references-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                    <div class="ai-field"><label for="ai-references-caching">Prompt caching</label>
+                      <select id="ai-references-caching"><option value="false">Disabled</option><option value="true">Enabled</option></select></div>
+                  </div>
+                  <details class="ai-card-more">
+                    <summary>Lookups and web search</summary>
+                    <div class="switch-row">
+                      <label for="references-lookup-online">Look up metadata online</label>
+                      <input id="references-lookup-online" class="switch" type="checkbox" role="switch" />
+                    </div>
+                    <p class="field-help">Crossref, DataCite, arXiv, OpenAlex, PubMed and Open Library. Only identifiers, titles and author names are sent.</p>
+                    <div class="switch-row">
+                      <label for="references-use-ai">Use AI when no source is found</label>
+                      <input id="references-use-ai" class="switch" type="checkbox" role="switch" />
+                    </div>
+                    <p class="field-help">Reads a PDF’s first page or a note with the model above, using your OpenRouter key.</p>
+                    <div class="switch-row">
+                      <label for="references-web-search">Allow web search by default</label>
+                      <input id="references-web-search" class="switch" type="checkbox" role="switch" />
+                    </div>
+                    <p class="field-help">Lets the model search the web for reports, theses and pages no catalogue has. Every field it finds names its source page.</p>
+                    <div class="switch-row">
+                      <label for="references-auto-create-pdfs">Create entries automatically for new PDFs</label>
+                      <input id="references-auto-create-pdfs" class="switch" type="checkbox" role="switch" />
+                    </div>
+                    <p class="field-help">A notebook’s own setting overrides this.</p>
+                    <label for="references-contact-email">Crossref/OpenAlex contact email</label>
+                    <input id="references-contact-email" type="email" autocomplete="off" spellcheck="false" placeholder="Optional" />
+                    <p class="field-help">Sent with Crossref and OpenAlex lookups so they can contact you about heavy use, which gives faster service. Leave empty to send none.</p>
+                  </details>
+                </article>
+
+                <article class="ai-card" data-ai-function="whereWasI" id="where-was-i-settings">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span>
+                    <div class="ai-card-title"><h4>Where Was I</h4><p>Shows where you left off on each notebook’s home. Changes apply without restarting.</p></div>
+                  </header>
+                  <div class="switch-row">
+                    <label for="where-was-i-enabled">Show where you left off on notebook homes</label>
+                    <input id="where-was-i-enabled" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">Remembers the files you opened and edited in each notebook, with short excerpts of your edits. Turn off to stop recording sessions and hide the card.</p>
+                  <div class="switch-row">
+                    <label for="where-was-i-summarize">Summarize the last session with AI</label>
+                    <input id="where-was-i-summarize" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">Adds a few bullet points about what you were doing. Sends the names of those files and the short excerpts to the model below, once per session. A small, inexpensive model is enough.</p>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="ai-whereWasI-model">Model</label><input id="ai-whereWasI-model" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek/deepseek-v4.1-flash" /></div>
+                    <div class="ai-field"><label for="ai-whereWasI-effort">Reasoning effort</label>
+                      <select id="ai-whereWasI-effort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra High (xhigh)</option><option value="max">Max</option></select></div>
+                  </div>
+                </article>
+              </div>
 
               <div class="quick-prompts-settings" aria-labelledby="quick-prompts-title">
                 <div class="quick-prompts-header">
@@ -752,111 +918,6 @@
                   </label>
                 </article>
               </template>
-
-              <fieldset class="ai-function-settings">
-                <legend>Convert Markdown to LaTeX/PDF</legend>
-                <label for="ai-latex-model">Model</label>
-                <input id="ai-latex-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-latex-effort">Reasoning effort</label>
-                <select id="ai-latex-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-latex-caching">Prompt caching</label>
-                <select id="ai-latex-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-              </fieldset>
-              <fieldset class="ai-function-settings">
-                <legend>Recording Live Recap</legend>
-                <label for="ai-recordingRecap-model">Model</label>
-                <input id="ai-recordingRecap-model" type="text" autocomplete="off" spellcheck="false" required />
-                <label for="ai-recordingRecap-effort">Reasoning effort</label>
-                <select id="ai-recordingRecap-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-recordingRecap-caching">Prompt caching</label>
-                <select id="ai-recordingRecap-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <p class="field-help">Keeps the bullet-point summary of a recording as it goes on. A small, quick model is enough.</p>
-              </fieldset>
-              <fieldset class="ai-function-settings" id="references-settings">
-                <legend>References</legend>
-                <label for="ai-references-model">Model</label>
-                <input id="ai-references-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as AI Formatting" />
-                <label for="ai-references-effort">Reasoning effort</label>
-                <select id="ai-references-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <label for="ai-references-caching">Prompt caching</label>
-                <select id="ai-references-caching">
-                  <option value="false">Disabled</option>
-                  <option value="true">Enabled</option>
-                </select>
-                <div class="switch-row">
-                  <label for="references-lookup-online">Look up metadata online</label>
-                  <input id="references-lookup-online" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">Crossref, DataCite, arXiv, OpenAlex, PubMed and Open Library. Only identifiers, titles and author names are sent.</p>
-                <div class="switch-row">
-                  <label for="references-use-ai">Use AI when no source is found</label>
-                  <input id="references-use-ai" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">Reads a PDF’s first page or a note with the model above, using your OpenRouter key.</p>
-                <div class="switch-row">
-                  <label for="references-web-search">Allow web search by default</label>
-                  <input id="references-web-search" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">Lets the model search the web for reports, theses and pages no catalogue has. Every field it finds names its source page.</p>
-                <div class="switch-row">
-                  <label for="references-auto-create-pdfs">Create entries automatically for new PDFs</label>
-                  <input id="references-auto-create-pdfs" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">A notebook’s own setting overrides this.</p>
-                <label for="references-contact-email">Crossref/OpenAlex contact email</label>
-                <input id="references-contact-email" type="email" autocomplete="off" spellcheck="false" placeholder="Optional" />
-                <p class="field-help">Sent with Crossref and OpenAlex lookups so they can contact you about heavy use, which gives faster service. Leave empty to send none.</p>
-              </fieldset>
-              <fieldset class="ai-function-settings" id="where-was-i-settings">
-                <legend>Where Was I</legend>
-                <div class="switch-row">
-                  <label for="where-was-i-enabled">Show where you left off on notebook homes</label>
-                  <input id="where-was-i-enabled" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">Remembers the files you opened and edited in each notebook, with short excerpts of your edits, and shows them on the notebook’s home the next time. Turn off to stop recording sessions and hide the card.</p>
-                <div class="switch-row">
-                  <label for="where-was-i-summarize">Summarize the last session with AI</label>
-                  <input id="where-was-i-summarize" class="switch" type="checkbox" role="switch" />
-                </div>
-                <p class="field-help">Adds a few bullet points about what you were doing. Sends the names of those files and the short excerpts to the model below, once per session.</p>
-                <label for="ai-whereWasI-model">Model</label>
-                <input id="ai-whereWasI-model" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek/deepseek-v4.1-flash" />
-                <label for="ai-whereWasI-effort">Reasoning effort</label>
-                <select id="ai-whereWasI-effort">
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra High (xhigh)</option>
-                  <option value="max">Max</option>
-                </select>
-                <p class="field-help">A small, inexpensive model is enough. Changes apply without restarting.</p>
-              </fieldset>
-              <p class="field-help">Enter or search OpenRouter model IDs for each function. AI Chat uses this reasoning effort unless a chat has its own selection.</p>
-
             </section>
 
             <section class="settings-section hidden" data-section="search">
@@ -1364,6 +1425,76 @@
           <button id="save-button" class="libera-dialog-primary" type="submit">Start Libera for Vy Tran</button>
         </div>
       </form>
+
+      <dialog id="routing-dialog" class="libera-dialog routing-dialog" aria-labelledby="routing-title" aria-describedby="routing-description">
+        <div class="libera-dialog-header">
+          <div>
+            <h2 id="routing-title" class="libera-dialog-title">OpenRouter routing</h2>
+            <p id="routing-description" class="libera-dialog-description"></p>
+          </div>
+          <button id="routing-close" class="libera-dialog-close" type="button" aria-label="Close routing">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
+          </button>
+        </div>
+        <div class="routing-body">
+          <div id="routing-targets-group" class="routing-group hidden">
+            <div class="routing-group-head">
+              <span class="routing-step">Apply to</span>
+              <button id="routing-targets-toggle" class="routing-link" type="button">Select none</button>
+            </div>
+            <div id="routing-targets" class="routing-targets"></div>
+          </div>
+
+          <div class="routing-group">
+            <div class="routing-group-head"><span class="routing-step" id="routing-presets-label">What matters most?</span></div>
+            <p id="routing-recommendation" class="routing-recommendation hidden"></p>
+            <div id="routing-presets" class="routing-presets" role="radiogroup" aria-labelledby="routing-presets-label"></div>
+          </div>
+
+          <div class="routing-group">
+            <div class="routing-group-head"><span class="routing-step">Limits</span><span class="routing-optional">Optional</span></div>
+            <div class="routing-limits">
+              <div class="ai-field"><label for="routing-max-prompt-price">Max input price</label><div class="routing-unit-input"><input id="routing-max-prompt-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Any" /><span>$/M tokens</span></div></div>
+              <div class="ai-field"><label for="routing-max-completion-price">Max output price</label><div class="routing-unit-input"><input id="routing-max-completion-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Any" /><span>$/M tokens</span></div></div>
+              <div class="ai-field"><label for="routing-min-throughput">Preferred minimum speed</label><div class="routing-unit-input"><input id="routing-min-throughput" type="number" min="0" step="1" inputmode="numeric" placeholder="Any" /><span>tokens/s</span></div></div>
+              <div class="ai-field"><label for="routing-max-latency">Preferred maximum wait</label><div class="routing-unit-input"><input id="routing-max-latency" type="number" min="0" step="0.1" inputmode="decimal" placeholder="Any" /><span>s to first token</span></div></div>
+            </div>
+            <p id="routing-price-hint" class="field-help">Providers above a price ceiling are never used; the request fails instead. Speed and wait preferences only move slower providers to the back of the line.</p>
+          </div>
+
+          <details class="routing-advanced">
+            <summary>Privacy and providers</summary>
+            <div class="switch-row">
+              <label for="routing-allow-fallbacks">Fall back to other providers</label>
+              <input id="routing-allow-fallbacks" class="switch" type="checkbox" role="switch" />
+            </div>
+            <p class="field-help">When the best provider is down or rate-limited, try the next one. Off, the request fails instead.</p>
+            <div class="switch-row">
+              <label for="routing-deny-data-collection">Skip providers that may store or train on prompts</label>
+              <input id="routing-deny-data-collection" class="switch" type="checkbox" role="switch" />
+            </div>
+            <div class="switch-row">
+              <label for="routing-zdr">Zero data retention providers only</label>
+              <input id="routing-zdr" class="switch" type="checkbox" role="switch" />
+            </div>
+            <p class="field-help">Both narrow the providers available, so some models may stop working.</p>
+            <label for="routing-ignore">Never use these providers</label>
+            <input id="routing-ignore" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. deepinfra, together" />
+            <p class="field-help">OpenRouter provider slugs, separated by commas.</p>
+          </details>
+
+          <div class="routing-preview">
+            <span class="routing-step">Sent to OpenRouter</span>
+            <pre id="routing-json"></pre>
+          </div>
+          <p id="routing-error" class="routing-error hidden" role="alert"></p>
+        </div>
+        <div class="libera-dialog-footer routing-footer">
+          <button id="routing-reset" class="routing-reset" type="button">Reset to default</button>
+          <button id="routing-cancel" type="button">Cancel</button>
+          <button id="routing-apply" class="libera-dialog-primary" type="button">Apply</button>
+        </div>
+      </dialog>
     </main>
 
     <script>
@@ -2134,6 +2265,406 @@
         for (const input of [pdfToMarkdownInputs.model, pdfToMarkdownInputs.effort, pdfToMarkdownInputs.concurrency, pdfToMarkdownInputs.cleanup]) input.disabled = local;
       }
       pdfToMarkdownInputs.engine.addEventListener("change", updatePdfToMarkdownInputs);
+
+      // Preferences → AI → routing: OpenRouter's `provider` object for each
+      // function (see src/lib/openrouter-routing.ts). The server reads it from
+      // the saved config on each request, so it needs no restart.
+      const routingFunctions = [
+        ["formatting", "AI Formatting"], ["rewrite", "AI Rewrite"], ["write", "Write with AI"],
+        ["chat", "AI Chat and AI Agent"], ["review", "Agentic Review"],
+        ["imageToMarkdown", "AI Image to Markdown"], ["pdfToMarkdown", "Convert PDF to Markdown"], ["latex", "Markdown to LaTeX/PDF"],
+        ["recordingRecap", "Recording Live Recap"], ["references", "References"], ["whereWasI", "Where Was I"],
+      ];
+      const routingLabels = Object.fromEntries(routingFunctions);
+      // Cheapest first: what Libera did before routing was configurable.
+      const defaultRouting = { sort: "price", allowFallbacks: true, dataCollection: "allow", zdr: false, ignore: [] };
+      const routingPresets = [
+        { id: "price", sort: "price", title: "Cheapest", short: "Cheapest", detail: "Lowest price per token. Speed varies by provider." },
+        { id: "throughput", sort: "throughput", title: "Fastest generation", short: "Fastest output", detail: "Most tokens per second, so long answers finish soonest." },
+        { id: "latency", sort: "latency", title: "Fastest first response", short: "Fastest start", detail: "Shortest wait for the first token. Feels quickest in chat and short edits." },
+        { id: "budget", sort: "throughput", title: "Fastest within a budget", short: "Fastest in budget", detail: "The fastest provider under the price ceilings you set below." },
+        { id: "value", sort: "price", title: "Cheapest with acceptable speed", short: "Cheap and steady", detail: "The cheapest provider that keeps up with the minimum speed below." },
+        { id: "default", sort: "default", title: "Balanced", short: "Balanced", detail: "OpenRouter’s default: spreads requests over reliable providers, favouring lower prices." },
+      ];
+      const routingPresetById = Object.fromEntries(routingPresets.map((preset) => [preset.id, preset]));
+      const routingRecommendations = {
+        formatting: ["throughput", "it rewrites whole passages, so generation speed sets the pace"],
+        rewrite: ["latency", "edits are short, so a quick start matters most"],
+        write: ["latency", "text appears while you wait, so a quick start matters most"],
+        chat: ["latency", "replies stream as you read, so the first token matters most"],
+        review: ["throughput", "plans and drafts come back as long structured output"],
+        imageToMarkdown: ["throughput", "transcriptions are long output"],
+        pdfToMarkdown: ["throughput", "every page is a long transcription"],
+        latex: ["throughput", "it writes out a whole document"],
+        recordingRecap: ["price", "it runs again and again in the background, where cost adds up and speed hardly shows"],
+        references: ["price", "lookups are small and run in the background"],
+        whereWasI: ["price", "it writes one short summary per session"],
+      };
+      const routeIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>';
+      let routingByFunction = Object.fromEntries(routingFunctions.map(([name]) => [name, { ...defaultRouting }]));
+      let routingPending = false;
+
+      // Mirrors normalizeRoutingPreferences in ai-preferences.cjs.
+      function normalizeRouting(input) {
+        const positive = (value, max) => {
+          const number = typeof value === "string" && value.trim() ? Number(value) : value;
+          return typeof number === "number" && Number.isFinite(number) && number > 0 && number <= max ? number : undefined;
+        };
+        const limits = {
+          maxPromptPrice: positive(input?.maxPromptPrice, 10_000),
+          maxCompletionPrice: positive(input?.maxCompletionPrice, 10_000),
+          minThroughput: positive(input?.minThroughput, 100_000),
+          maxLatency: positive(input?.maxLatency, 600),
+        };
+        return {
+          sort: ["default", "price", "throughput", "latency"].includes(input?.sort) ? input.sort : "price",
+          ...Object.fromEntries(Object.entries(limits).filter(([, value]) => value !== undefined)),
+          allowFallbacks: typeof input?.allowFallbacks === "boolean" ? input.allowFallbacks : true,
+          dataCollection: input?.dataCollection === "deny" ? "deny" : "allow",
+          zdr: input?.zdr === true,
+          ignore: Array.isArray(input?.ignore)
+            ? Array.from(new Set(input.ignore.filter((slug) => typeof slug === "string").map((slug) => slug.trim().toLowerCase()).filter((slug) => /^[a-z0-9][a-z0-9._/-]{0,63}$/i.test(slug)))).slice(0, 50)
+            : [],
+        };
+      }
+
+      function routingPresetOf(routing) {
+        if (routing.sort === "default" || routing.sort === "latency") return routing.sort;
+        if (routing.sort === "throughput") return routing.maxPromptPrice || routing.maxCompletionPrice ? "budget" : "throughput";
+        return routing.minThroughput ? "value" : "price";
+      }
+
+      function routingHasProviderRules(routing) {
+        return !routing.allowFallbacks || routing.dataCollection === "deny" || routing.zdr || routing.ignore.length > 0;
+      }
+
+      function formatPrice(value) {
+        return `$${+value.toFixed(value < 1 ? 3 : 2)}`;
+      }
+
+      function routingSummary(routing) {
+        const parts = [routingPresetById[routingPresetOf(routing)].title];
+        if (routing.maxPromptPrice || routing.maxCompletionPrice) {
+          parts.push(`at most ${[routing.maxPromptPrice ? `${formatPrice(routing.maxPromptPrice)} in` : "", routing.maxCompletionPrice ? `${formatPrice(routing.maxCompletionPrice)} out` : ""].filter(Boolean).join(", ")} per million tokens`);
+        }
+        if (routing.minThroughput) parts.push(`prefers ${routing.minThroughput}+ tokens/s`);
+        if (routing.maxLatency) parts.push(`prefers under ${routing.maxLatency} s to first token`);
+        if (routing.zdr) parts.push("zero data retention only");
+        else if (routing.dataCollection === "deny") parts.push("no providers that store prompts");
+        if (routing.ignore.length) parts.push(`never ${routing.ignore.join(", ")}`);
+        if (!routing.allowFallbacks) parts.push("no fallbacks");
+        return parts.join(" · ");
+      }
+
+      // Mirrors toOpenRouterProvider in src/lib/openrouter-routing.ts.
+      function routingProvider(routing, sort = routing.sort) {
+        const maxPrice = { ...(routing.maxPromptPrice ? { prompt: routing.maxPromptPrice } : {}), ...(routing.maxCompletionPrice ? { completion: routing.maxCompletionPrice } : {}) };
+        return {
+          ...(sort !== "default" ? { sort } : {}),
+          ...(Object.keys(maxPrice).length ? { max_price: maxPrice } : {}),
+          ...(routing.minThroughput ? { preferred_min_throughput: routing.minThroughput } : {}),
+          ...(routing.maxLatency ? { preferred_max_latency: routing.maxLatency } : {}),
+          ...(routing.allowFallbacks ? {} : { allow_fallbacks: false }),
+          ...(routing.dataCollection === "deny" ? { data_collection: "deny" } : {}),
+          ...(routing.zdr ? { zdr: true } : {}),
+          ...(routing.ignore.length ? { ignore: routing.ignore } : {}),
+        };
+      }
+
+      function routingModel(name) {
+        if (aiFunctionInputs[name]) return aiFunctionInputs[name].model.value.trim();
+        if (name === "references") return referenceInputs.model.value.trim() || aiFunctionInputs.formatting.model.value.trim();
+        if (name === "whereWasI") return whereWasIInputs.model.value.trim();
+        if (name === "pdfToMarkdown") return pdfToMarkdownInputs.model.value.trim();
+        return "";
+      }
+
+      const routingButtons = {};
+      for (const card of document.querySelectorAll(".ai-card[data-ai-function]")) {
+        const name = card.dataset.aiFunction;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "routing-button";
+        button.setAttribute("aria-haspopup", "dialog");
+        button.innerHTML = `${routeIcon}<span></span>`;
+        button.addEventListener("click", () => openRoutingDialog([name]));
+        card.querySelector(".ai-card-header").append(button);
+        routingButtons[name] = button;
+      }
+      const routingSummaryText = document.querySelector("#ai-routing-summary");
+
+      function updateRoutingButtons() {
+        for (const [name, button] of Object.entries(routingButtons)) {
+          const routing = routingByFunction[name];
+          const summary = routingSummary(routing);
+          button.querySelector("span").textContent = routingPresetById[routingPresetOf(routing)].short;
+          button.dataset.custom = String(routingHasProviderRules(routing));
+          button.title = `Routing: ${summary}`;
+          button.setAttribute("aria-label", `OpenRouter routing for ${routingLabels[name]}: ${summary}`);
+        }
+        // Routing only matters while the function sends requests to OpenRouter.
+        routingButtons.pdfToMarkdown.disabled = pdfToMarkdownInputs.engine.value !== "openrouter";
+        routingButtons.whereWasI.disabled = whereWasIInputs.model.disabled;
+        const counts = new Map();
+        for (const [name] of routingFunctions) {
+          const id = routingPresetOf(routingByFunction[name]);
+          counts.set(id, (counts.get(id) ?? 0) + 1);
+        }
+        const summary = counts.size === 1
+          ? `${routingPresetById[[...counts.keys()][0]].title} for every function.`
+          : `${[...counts].sort((a, b) => b[1] - a[1]).map(([id, count]) => `${routingPresetById[id].short} for ${count}`).join(", ")} functions.`;
+        routingSummaryText.textContent = routingPending ? `${summary} Save preferences to keep it.` : summary;
+      }
+      pdfToMarkdownInputs.engine.addEventListener("change", updateRoutingButtons);
+      whereWasIInputs.enabled.addEventListener("change", updateRoutingButtons);
+      whereWasIInputs.summarize.addEventListener("change", updateRoutingButtons);
+
+      const routingDialog = document.querySelector("#routing-dialog");
+      const routingTitle = document.querySelector("#routing-title");
+      const routingDescription = document.querySelector("#routing-description");
+      const routingTargetsGroup = document.querySelector("#routing-targets-group");
+      const routingTargetsList = document.querySelector("#routing-targets");
+      const routingTargetsToggle = document.querySelector("#routing-targets-toggle");
+      const routingRecommendation = document.querySelector("#routing-recommendation");
+      const routingPresetList = document.querySelector("#routing-presets");
+      const routingPriceHint = document.querySelector("#routing-price-hint");
+      const routingJson = document.querySelector("#routing-json");
+      const routingError = document.querySelector("#routing-error");
+      const routingFields = {
+        maxPromptPrice: document.querySelector("#routing-max-prompt-price"),
+        maxCompletionPrice: document.querySelector("#routing-max-completion-price"),
+        minThroughput: document.querySelector("#routing-min-throughput"),
+        maxLatency: document.querySelector("#routing-max-latency"),
+        allowFallbacks: document.querySelector("#routing-allow-fallbacks"),
+        denyDataCollection: document.querySelector("#routing-deny-data-collection"),
+        zdr: document.querySelector("#routing-zdr"),
+        ignore: document.querySelector("#routing-ignore"),
+      };
+      const routingPriceHintDefault = routingPriceHint.textContent;
+      let routingEditing = [];
+      let routingDraft = { ...defaultRouting };
+      // A preset id, "recommended" (each function its own, batch only), or null before a choice.
+      let routingChoice = null;
+
+      function routingTargets() {
+        return routingEditing.length > 1
+          ? Array.from(routingTargetsList.querySelectorAll("input:checked"), (input) => input.value)
+          : routingEditing;
+      }
+
+      function writeRoutingFields() {
+        for (const key of ["maxPromptPrice", "maxCompletionPrice", "minThroughput", "maxLatency"]) {
+          routingFields[key].value = routingDraft[key] ? String(routingDraft[key]) : "";
+        }
+        routingFields.allowFallbacks.checked = routingDraft.allowFallbacks;
+        routingFields.denyDataCollection.checked = routingDraft.dataCollection === "deny" || routingDraft.zdr;
+        routingFields.denyDataCollection.disabled = routingDraft.zdr;
+        routingFields.zdr.checked = routingDraft.zdr;
+        routingFields.ignore.value = routingDraft.ignore.join(", ");
+      }
+
+      function readRoutingFields() {
+        routingDraft = normalizeRouting({
+          sort: routingDraft.sort,
+          maxPromptPrice: routingFields.maxPromptPrice.value,
+          maxCompletionPrice: routingFields.maxCompletionPrice.value,
+          minThroughput: routingFields.minThroughput.value,
+          maxLatency: routingFields.maxLatency.value,
+          allowFallbacks: routingFields.allowFallbacks.checked,
+          dataCollection: routingFields.denyDataCollection.checked ? "deny" : "allow",
+          zdr: routingFields.zdr.checked,
+          ignore: routingFields.ignore.value.split(/[,\s]+/),
+        });
+      }
+
+      function renderRoutingPresets() {
+        const single = routingEditing.length === 1 ? routingEditing[0] : null;
+        const recommended = single ? routingRecommendations[single][0] : null;
+        const presets = single ? routingPresets : [{
+          id: "recommended",
+          title: "Recommended for each",
+          detail: "Fastest start for chat and edits, fastest output for long documents and conversions, cheapest for background jobs.",
+        }, ...routingPresets];
+        routingPresetList.replaceChildren(...presets.map((preset) => {
+          const option = document.createElement("label");
+          option.className = `routing-preset${preset.id === "recommended" ? " routing-preset-wide" : ""}`;
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = "routing-preset";
+          input.value = preset.id;
+          input.checked = routingChoice === preset.id;
+          input.addEventListener("change", () => chooseRoutingPreset(preset.id));
+          const title = document.createElement("span");
+          title.className = "routing-preset-title";
+          title.textContent = preset.title;
+          if (preset.id === recommended || preset.id === "recommended") {
+            const badge = document.createElement("span");
+            badge.className = "routing-preset-badge";
+            badge.textContent = "Recommended";
+            title.append(badge);
+          }
+          const detail = document.createElement("span");
+          detail.className = "routing-preset-detail";
+          detail.textContent = preset.detail;
+          option.append(input, title, detail);
+          return option;
+        }));
+      }
+
+      function updateRoutingPreview() {
+        const highlight = { budget: ["maxPromptPrice", "maxCompletionPrice"], value: ["minThroughput"] }[routingChoice] ?? [];
+        for (const key of ["maxPromptPrice", "maxCompletionPrice", "minThroughput", "maxLatency"]) {
+          routingFields[key].closest(".ai-field").classList.toggle("is-highlighted", highlight.includes(key));
+        }
+        const targets = routingTargets();
+        const provider = routingChoice === "recommended"
+          ? { ...routingProvider(routingDraft), sort: [...new Set(targets.map((name) => routingPresetById[routingRecommendations[name][0]].sort))].join(" | ") || "price" }
+          : routingProvider(routingDraft);
+        const note = routingChoice === "recommended" ? "\n// sort is chosen per function" : "";
+        routingJson.textContent = `"provider": ${JSON.stringify(provider, null, 2)}${note}`;
+      }
+
+      function chooseRoutingPreset(id) {
+        readRoutingFields();
+        routingChoice = id;
+        routingError.classList.add("hidden");
+        if (id !== "recommended") {
+          routingDraft.sort = routingPresetById[id].sort;
+          // Plain presets drop the limit that would turn them into the combined ones.
+          if (id === "throughput") { delete routingDraft.maxPromptPrice; delete routingDraft.maxCompletionPrice; }
+          if (id === "price") delete routingDraft.minThroughput;
+          if (id === "budget" && !routingDraft.maxPromptPrice && !routingDraft.maxCompletionPrice) {
+            // Start from the model's listed price with some headroom, when the catalog has it.
+            const price = routingEditing.length === 1 ? openRouterModels.find((model) => model.id === routingModel(routingEditing[0]))?.price : null;
+            if (price) {
+              routingDraft.maxPromptPrice = Math.max(0.01, Math.ceil(price.prompt * 125) / 100);
+              routingDraft.maxCompletionPrice = Math.max(0.01, Math.ceil(price.completion * 125) / 100);
+            }
+          }
+          if (id === "value" && !routingDraft.minThroughput) routingDraft.minThroughput = 50;
+        }
+        writeRoutingFields();
+        updateRoutingPreview();
+        if (id === "budget" && !routingDraft.maxPromptPrice) routingFields.maxPromptPrice.focus();
+      }
+
+      function openRoutingDialog(names) {
+        routingEditing = names;
+        const configs = names.map((name) => routingByFunction[name]);
+        const same = configs.every((config) => JSON.stringify(config) === JSON.stringify(configs[0]));
+        routingDraft = normalizeRouting(same ? configs[0] : defaultRouting);
+        routingChoice = same ? routingPresetOf(routingDraft) : null;
+        const single = names.length === 1 ? names[0] : null;
+        routingTitle.textContent = single ? `Routing for ${routingLabels[single]}` : "Routing for all functions";
+        routingDescription.textContent = single
+          ? `How OpenRouter picks a provider for ${routingModel(single) || "this function’s model"}. Only routing changes; the model and other settings stay as they are.`
+          : "One routing strategy for the functions you choose. Only routing changes; models, reasoning effort and caching stay as they are.";
+        routingTargetsGroup.classList.toggle("hidden", !!single);
+        if (!single) {
+          routingTargetsList.replaceChildren(...routingFunctions.map(([name, label]) => {
+            const chip = document.createElement("label");
+            chip.className = "routing-target";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.value = name;
+            input.checked = names.includes(name);
+            input.addEventListener("change", () => { updateRoutingTargetsToggle(); updateRoutingPreview(); });
+            chip.append(input, label);
+            return chip;
+          }));
+          updateRoutingTargetsToggle();
+        }
+        routingRecommendation.classList.toggle("hidden", !single);
+        if (single) {
+          const [presetId, reason] = routingRecommendations[single];
+          routingRecommendation.textContent = `Recommended: ${routingPresetById[presetId].title}, because ${reason}.`;
+        }
+        const price = single ? openRouterModels.find((model) => model.id === routingModel(single))?.price : null;
+        routingPriceHint.textContent = price
+          ? `${routingModel(single)} lists ${formatPrice(price.prompt)} input and ${formatPrice(price.completion)} output per million tokens; providers may charge more or less. ${routingPriceHintDefault}`
+          : routingPriceHintDefault;
+        routingError.classList.add("hidden");
+        renderRoutingPresets();
+        writeRoutingFields();
+        updateRoutingPreview();
+        activeModelCombobox?.close();
+        if (typeof routingDialog.showModal === "function") routingDialog.showModal();
+        else routingDialog.setAttribute("open", "");
+        routingDialog.querySelector(".routing-body").scrollTop = 0;
+        routingPresetList.querySelector("input:checked")?.focus();
+      }
+
+      function closeRoutingDialog() {
+        if (typeof routingDialog.close === "function") routingDialog.close();
+        else routingDialog.removeAttribute("open");
+      }
+
+      function updateRoutingTargetsToggle() {
+        const inputs = Array.from(routingTargetsList.querySelectorAll("input"));
+        routingTargetsToggle.textContent = inputs.every((input) => input.checked) ? "Select none" : "Select all";
+      }
+
+      routingTargetsToggle.addEventListener("click", () => {
+        const inputs = Array.from(routingTargetsList.querySelectorAll("input"));
+        const check = !inputs.every((input) => input.checked);
+        for (const input of inputs) input.checked = check;
+        updateRoutingTargetsToggle();
+        updateRoutingPreview();
+      });
+
+      for (const field of Object.values(routingFields)) {
+        field.addEventListener("input", () => {
+          readRoutingFields();
+          // Typing a limit can turn one preset into its combined form, and back.
+          if (routingChoice && routingChoice !== "recommended") {
+            const derived = routingPresetOf(routingDraft);
+            if (derived !== routingChoice) {
+              routingChoice = derived;
+              renderRoutingPresets();
+            }
+          }
+          if (field === routingFields.zdr) writeRoutingFields();
+          updateRoutingPreview();
+        });
+      }
+
+      document.querySelector("#routing-reset").addEventListener("click", () => {
+        routingDraft = { ...defaultRouting };
+        routingChoice = "price";
+        renderRoutingPresets();
+        writeRoutingFields();
+        updateRoutingPreview();
+      });
+      document.querySelector("#routing-cancel").addEventListener("click", closeRoutingDialog);
+      document.querySelector("#routing-close").addEventListener("click", closeRoutingDialog);
+      routingDialog.addEventListener("mousedown", (event) => {
+        if (event.target === routingDialog) closeRoutingDialog();
+      });
+
+      document.querySelector("#routing-apply").addEventListener("click", () => {
+        readRoutingFields();
+        const targets = routingTargets();
+        const invalid = ["maxPromptPrice", "maxCompletionPrice", "minThroughput", "maxLatency"]
+          .find((key) => routingFields[key].value.trim() && routingDraft[key] === undefined);
+        const problem = !routingChoice ? "Choose what matters most for these functions."
+          : !targets.length ? "Choose at least one function to apply this routing to."
+          : invalid ? `${routingFields[invalid].closest(".ai-field").querySelector("label").textContent} must be a positive number.`
+          : "";
+        if (problem) {
+          routingError.textContent = problem;
+          routingError.classList.remove("hidden");
+          return;
+        }
+        for (const name of targets) {
+          const sort = routingChoice === "recommended" ? routingPresetById[routingRecommendations[name][0]].sort : routingDraft.sort;
+          routingByFunction[name] = normalizeRouting({ ...routingDraft, sort });
+        }
+        routingPending = true;
+        updateRoutingButtons();
+        closeRoutingDialog();
+      });
+      document.querySelector("#ai-routing-all").addEventListener("click", () => openRoutingDialog(routingFunctions.map(([name]) => name)));
+
       attachModelCombobox(transcriptionInputs.openRouterModel, { transcription: true });
       attachModelCombobox(dictationInputs.openRouterModel, { transcription: true });
       attachModelCombobox(ttsInputs.openRouterModel, { speech: true });
@@ -2199,6 +2730,13 @@
         pdfToMarkdownInputs.concurrency.value = String(pdfToMarkdown.concurrency || 6);
         pdfToMarkdownInputs.cleanup.checked = pdfToMarkdown.cleanup !== false;
         updatePdfToMarkdownInputs();
+        routingByFunction = Object.fromEntries(routingFunctions.map(([name]) => [name, normalizeRouting(state.aiFunctions?.routing?.[name])]));
+        routingPending = false;
+        updateRoutingButtons();
+        // Open the optional extras that hold something, so nothing set is hidden.
+        for (const input of [aiChatCustomInstructionInput, aiChatAlternativeModelsInput, aiRewriteCustomInstructionInput]) {
+          input.closest("details").open = input.value.trim() !== "";
+        }
         quickPromptsList.replaceChildren();
         (Array.isArray(state.quickPrompts) ? state.quickPrompts : []).forEach((quickPrompt) => addQuickPrompt(quickPrompt));
         refreshQuickPromptList();
@@ -2636,7 +3174,8 @@
       headerCloseButton.addEventListener("click", closePreferences);
       window.liberaSetup?.onRequestClose?.(closePreferences);
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closePreferences();
+        // The routing dialog closes itself on Escape.
+        if (event.key === "Escape" && !routingDialog.open) closePreferences();
       });
       document.addEventListener("mousedown", (event) => {
         if (document.documentElement.dataset.presentation === "overlay" &&
@@ -2911,7 +3450,7 @@
               reasoningEffort: pdfToMarkdownInputs.effort.value,
               concurrency: Number(pdfToMarkdownInputs.concurrency.value),
               cleanup: pdfToMarkdownInputs.cleanup.checked,
-            }]])),
+            }], ["routing", routingByFunction]])),
             search: {
               textWeights: searchTextWeightsInput.value,
               visionWeights: searchVisionWeightsInput.value,

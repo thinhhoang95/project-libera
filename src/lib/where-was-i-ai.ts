@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { AiReasoningEffort } from "@/lib/ai-preferences";
 import { createOpenRouterCompletion, getOpenRouterApiKey } from "@/lib/openrouter";
+import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 import { parseRecapBullets, type RecapSession } from "@/lib/where-was-i";
 
 // Preferences → AI → Where Was I. Read from the desktop config file on each
@@ -75,6 +76,7 @@ export async function summarizeRecapSession(notebook: string, session: RecapSess
   ], {
     model: settings.model,
     reasoning: { effort: settings.reasoningEffort },
+    provider: getOpenRouterRouting("whereWasI"),
     // Room for reasoning tokens; the answer itself is a few lines.
     maxTokens: 1200,
     signal,

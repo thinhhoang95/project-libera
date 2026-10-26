@@ -4,7 +4,7 @@ const { mkdtempSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { JSDOM } = require('jsdom');
-const { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, normalizeAlternativeModels, normalizeAiPreferences, aiPreferencesEnvironment } = require('../../electron/ai-preferences.cjs');
+const { AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, ROUTING_FUNCTIONS, normalizeAlternativeModels, normalizeAiPreferences, normalizeRoutingPreferences, aiPreferencesEnvironment } = require('../../electron/ai-preferences.cjs');
 
 test('AI preferences migrate legacy models and survive a config file round trip', () => {
   const legacy = normalizeAiPreferences(undefined, 'existing/model');
@@ -43,6 +43,9 @@ test('AI preferences migrate legacy models and survive a config file round trip'
   aiFunctions.references = { model: 'provider/references', reasoningEffort: 'high', promptCaching: true, lookupOnline: false, useAi: true, webSearch: true, contactEmail: 'me@example.org', autoCreateForPdfs: true };
   aiFunctions.whereWasI = { enabled: false, summarize: false, model: 'provider/recap', reasoningEffort: 'medium' };
   aiFunctions.pdfToMarkdown = { engine: 'openrouter', model: 'provider/pdf', reasoningEffort: 'medium', concurrency: 3, cleanup: false };
+  aiFunctions.routing = Object.fromEntries(ROUTING_FUNCTIONS.map((name) => [name, { sort: 'price', allowFallbacks: true, dataCollection: 'allow', zdr: false, ignore: [] }]));
+  aiFunctions.routing.chat = { sort: 'latency', maxLatency: 2, allowFallbacks: true, dataCollection: 'deny', zdr: false, ignore: ['deepinfra'] };
+  aiFunctions.routing.formatting = { sort: 'throughput', maxPromptPrice: 0.5, maxCompletionPrice: 1.5, allowFallbacks: false, dataCollection: 'allow', zdr: true, ignore: [] };
   const directory = mkdtempSync(path.join(os.tmpdir(), 'libera-ai-prefs-'));
   try {
     const configPath = path.join(directory, 'libera-electron-config.json');
@@ -72,7 +75,16 @@ test('AI preferences migrate legacy models and survive a config file round trip'
     assert.equal(env.LIBERA_REFERENCES_WEB_SEARCH, 'true');
     assert.equal(env.LIBERA_REFERENCES_CONTACT_EMAIL, 'me@example.org');
     assert.equal(env.LIBERA_REFERENCES_AUTO_CREATE_PDFS, 'true');
+    assert.deepEqual(JSON.parse(env.LIBERA_AI_ROUTING), aiFunctions.routing);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('routing preferences default to the cheapest provider and drop invalid limits', () => {
+  const defaults = { sort: 'price', allowFallbacks: true, dataCollection: 'allow', zdr: false, ignore: [] };
+  assert.deepEqual(normalizeRoutingPreferences(undefined), defaults);
+  assert.deepEqual(Object.keys(normalizeAiPreferences(undefined).routing), ROUTING_FUNCTIONS);
+  assert.deepEqual(normalizeRoutingPreferences({ sort: 'fastest', maxPromptPrice: -1, maxCompletionPrice: 'abc', minThroughput: '40', maxLatency: 9999, zdr: 'yes', ignore: [' DeepInfra ', 'deepinfra', 'bad slug', 7] }),
+    { ...defaults, minThroughput: 40, ignore: ['deepinfra'] });
 });
 
 test('alternative models are trimmed, deduplicated, and exclude the default model', () => {
@@ -194,6 +206,34 @@ test('Preferences UI loads and saves every function setting', async () => {
       model: 'custom/references', reasoningEffort: 'low', promptCaching: false, lookupOnline: false, useAi: true, webSearch: true, autoCreateForPdfs: true, contactEmail: 'me@example.org',
     });
     assert.deepEqual(saved.aiFunctions.whereWasI, { enabled: false, summarize: false, model: 'custom/recap', reasoningEffort: 'low' });
+    // Every function gets a routing button; unset, each routes to the cheapest provider.
+    assert.equal(document.querySelectorAll('.routing-button').length, ROUTING_FUNCTIONS.length);
+    assert.deepEqual(saved.aiFunctions.routing, normalizeAiPreferences(undefined).routing);
+    const chatRouting = document.querySelector('[data-ai-function="chat"] .routing-button');
+    assert.equal(chatRouting.textContent, 'Cheapest');
+    chatRouting.click();
+    assert.equal(document.querySelector('#routing-dialog').hasAttribute('open'), true);
+    assert.match(document.querySelector('#routing-recommendation').textContent, /Fastest first response/);
+    document.querySelector('#routing-presets input[value="latency"]').click();
+    document.querySelector('#routing-max-latency').value = '1.5';
+    document.querySelector('#routing-max-latency').dispatchEvent(new dom.window.Event('input'));
+    document.querySelector('#routing-apply').click();
+    assert.equal(document.querySelector('#routing-dialog').hasAttribute('open'), false);
+    assert.equal(chatRouting.textContent, 'Fastest start');
+    // Batch: recommended routing for every function but the chat; models stay.
+    document.querySelector('#ai-routing-all').click();
+    assert.equal(document.querySelectorAll('#routing-targets input:checked').length, ROUTING_FUNCTIONS.length);
+    document.querySelector('#routing-targets input[value="chat"]').click();
+    document.querySelector('#routing-presets input[value="recommended"]').click();
+    document.querySelector('#routing-max-prompt-price').value = '2';
+    document.querySelector('#routing-max-prompt-price').dispatchEvent(new dom.window.Event('input'));
+    document.querySelector('#routing-apply').click();
+    document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(saved.aiFunctions.routing.chat, { sort: 'latency', maxLatency: 1.5, allowFallbacks: true, dataCollection: 'allow', zdr: false, ignore: [] });
+    assert.deepEqual(saved.aiFunctions.routing.formatting, { sort: 'throughput', maxPromptPrice: 2, allowFallbacks: true, dataCollection: 'allow', zdr: false, ignore: [] });
+    assert.deepEqual(saved.aiFunctions.routing.whereWasI, { sort: 'price', maxPromptPrice: 2, allowFallbacks: true, dataCollection: 'allow', zdr: false, ignore: [] });
+    assert.equal(saved.aiFunctions.formatting.model, 'custom/formatting');
     document.querySelector('#ai-all-models').value = ' every/model ';
     document.querySelector('#ai-all-models-apply').click();
     for (const selector of ['#openrouter-model', ...AI_FUNCTIONS.map((name) => `#ai-${name}-model`), '#ai-references-model', '#ai-whereWasI-model']) {

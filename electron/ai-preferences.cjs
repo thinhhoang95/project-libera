@@ -94,12 +94,52 @@ function normalizePdfToMarkdownPreferences(input) {
   };
 }
 
+/** Every function Preferences → AI lists, each with its own OpenRouter routing. */
+const ROUTING_FUNCTIONS = ["formatting", "imageToMarkdown", "pdfToMarkdown", "rewrite", "write", "chat", "review", "latex", "recordingRecap", "references", "whereWasI"];
+const ROUTING_SORTS = ["default", "price", "throughput", "latency"];
+const PROVIDER_SLUG = /^[a-z0-9][a-z0-9._/-]{0,63}$/i;
+
+function positiveNumber(value, max) {
+  const number = typeof value === "string" && value.trim() ? Number(value) : value;
+  return typeof number === "number" && Number.isFinite(number) && number > 0 && number <= max ? number : undefined;
+}
+
+/**
+ * Preferences → AI → Routing for one function: OpenRouter's `provider`
+ * object (see src/lib/openrouter-routing.ts, which reads it on each request).
+ * Unset, a function routes to the cheapest provider, as before routing was
+ * configurable. Empty optional limits are left out.
+ */
+function normalizeRoutingPreferences(input) {
+  const limits = {
+    maxPromptPrice: positiveNumber(input?.maxPromptPrice, 10_000),
+    maxCompletionPrice: positiveNumber(input?.maxCompletionPrice, 10_000),
+    minThroughput: positiveNumber(input?.minThroughput, 100_000),
+    maxLatency: positiveNumber(input?.maxLatency, 600),
+  };
+  return {
+    sort: ROUTING_SORTS.includes(input?.sort) ? input.sort : "price",
+    ...Object.fromEntries(Object.entries(limits).filter(([, value]) => value !== undefined)),
+    allowFallbacks: typeof input?.allowFallbacks === "boolean" ? input.allowFallbacks : true,
+    dataCollection: input?.dataCollection === "deny" ? "deny" : "allow",
+    zdr: input?.zdr === true,
+    ignore: Array.isArray(input?.ignore)
+      ? Array.from(new Set(input.ignore.filter((slug) => typeof slug === "string").map((slug) => slug.trim().toLowerCase()).filter((slug) => PROVIDER_SLUG.test(slug)))).slice(0, 50)
+      : [],
+  };
+}
+
+function normalizeAiRouting(input) {
+  return Object.fromEntries(ROUTING_FUNCTIONS.map((name) => [name, normalizeRoutingPreferences(input?.[name])]));
+}
+
 function normalizeAiPreferences(input, defaultModel = DEFAULT_AI_MODEL) {
   return {
     ...normalizeAiFunctionPreferences(input, defaultModel),
     references: normalizeReferencePreferences(input?.references),
     whereWasI: normalizeWhereWasIPreferences(input?.whereWasI),
     pdfToMarkdown: normalizePdfToMarkdownPreferences(input?.pdfToMarkdown),
+    routing: normalizeAiRouting(input?.routing),
   };
 }
 
@@ -150,6 +190,7 @@ function aiPreferencesEnvironment(preferences, defaultModel) {
     LIBERA_AI_PDF_TO_MARKDOWN_REASONING_EFFORT: normalized.pdfToMarkdown.reasoningEffort,
     LIBERA_PDF_TO_MARKDOWN_CONCURRENCY: String(normalized.pdfToMarkdown.concurrency),
     LIBERA_PDF_TO_MARKDOWN_CLEANUP: String(normalized.pdfToMarkdown.cleanup),
+    LIBERA_AI_ROUTING: JSON.stringify(normalized.routing),
   };
 }
 
@@ -161,4 +202,4 @@ function aiFunctionEnvironment(normalized) {
     ...(name === "chat" ? [[`LIBERA_AI_${AI_FUNCTION_ENV_NAMES[name]}_ALTERNATIVE_MODELS`, JSON.stringify(value.alternativeModels)]] : []),
   ]));
 }
-module.exports = { DEFAULT_AI_MODEL, AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, AI_FUNCTION_PARENTS, REASONING_EFFORTS, DEFAULT_WHERE_WAS_I_MODEL, DEFAULT_PDF_TO_MARKDOWN_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, normalizePdfToMarkdownPreferences, aiPreferencesEnvironment };
+module.exports = { DEFAULT_AI_MODEL, AI_FUNCTIONS, AI_FUNCTION_ENV_NAMES, AI_FUNCTION_PARENTS, REASONING_EFFORTS, ROUTING_FUNCTIONS, DEFAULT_WHERE_WAS_I_MODEL, DEFAULT_PDF_TO_MARKDOWN_MODEL, normalizeAlternativeModels, normalizeAiPreferences, normalizeReferencePreferences, normalizeWhereWasIPreferences, normalizePdfToMarkdownPreferences, normalizeRoutingPreferences, aiPreferencesEnvironment };

@@ -333,10 +333,10 @@ test("reference preferences come from the config file, else the environment; the
 
     process.env.LIBERA_AI_FORMATTING_MODEL = "provider/formatting";
     process.env.LIBERA_AI_REFERENCES_MODEL = "";
-    assert.deepEqual(getAiFunctionOptions("references"), { model: "provider/formatting", reasoning: { effort: "low" }, promptCaching: false });
+    assert.deepEqual(getAiFunctionOptions("references"), { model: "provider/formatting", reasoning: { effort: "low" }, promptCaching: false, provider: { sort: "price" } });
     process.env.LIBERA_AI_REFERENCES_MODEL = "provider/references";
     process.env.LIBERA_AI_REFERENCES_REASONING_EFFORT = "high";
-    assert.deepEqual(getAiFunctionOptions("references"), { model: "provider/references", reasoning: { effort: "high" }, promptCaching: false });
+    assert.deepEqual(getAiFunctionOptions("references"), { model: "provider/references", reasoning: { effort: "high" }, promptCaching: false, provider: { sort: "price" } });
   } finally {
     for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
     await rm(directory, { recursive: true, force: true });
