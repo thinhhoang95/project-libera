@@ -7,11 +7,12 @@ import { PdfDocumentOutline } from "@/components/libera/pdf-outline-panel";
 import {
   ChevronDown,
   ChevronRight,
-  GripVertical,
+  ListTree,
   Search,
   Trash2,
   X,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import { useMarkdownDisplayPreferences } from "@/components/libera/markdown-display-preferences";
@@ -826,12 +827,16 @@ function MarkdownOutline({
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
         </span>
       </label>
+      <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <ListTree aria-hidden className="h-3.5 w-3.5" />
+        <span className="min-w-0 flex-1 truncate">Headings</span>
+      </div>
       {!activeTab ? (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
           Open a Markdown file to see headings.
         </p>
       ) : filteredHeadings.length ? (
-        <div className="space-y-1">
+        <div className="space-y-0.5" role="tree" aria-label={`Headings of ${activeTab.file.name}`}>
           {filteredHeadings.map(({ heading, hasChildren, expanded }) => {
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
@@ -841,8 +846,12 @@ function MarkdownOutline({
             return (
               <div
                 key={heading.id}
+                role="treeitem"
+                aria-level={heading.level}
+                aria-selected={isActive}
+                aria-expanded={hasChildren ? expanded : undefined}
                 className="flex items-start gap-0.5"
-                style={{ paddingLeft: `${(heading.level - 1) * 12}px` }}
+                style={{ paddingLeft: normalizedQuery ? 0 : `${(heading.level - 1) * 12}px` }}
               >
                 {hasChildren ? (
                   <button
@@ -859,7 +868,7 @@ function MarkdownOutline({
                   </button>
                 ) : <span aria-hidden className="w-5 shrink-0" />}
                 <SidebarNameTooltipButton
-                  className={`relative flex min-w-0 flex-1 items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
+                  className={`relative flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
                     outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
                   } ${
                     isDragging ? "opacity-45" : ""
@@ -892,16 +901,9 @@ function MarkdownOutline({
                   {activeDropPlacement === "after" ? (
                     <span className="pointer-events-none absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-accent" />
                   ) : null}
-                  <GripVertical
-                    aria-hidden
-                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                  />
-                  <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
-                    H{heading.level}
-                  </span>
-                  <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{heading.text}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {heading.line}
+                  <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${heading.level === 1 ? "font-medium" : ""}`}>{heading.text}</span>
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    L. {heading.line}
                   </span>
                 </SidebarNameTooltipButton>
               </div>
@@ -913,9 +915,9 @@ function MarkdownOutline({
           {headings.length ? "No matching headings." : "No headings in this Markdown file."}
         </p>
       )}
-      {contextMenu ? (
+      {contextMenu ? createPortal(
         <div
-          className="fixed z-50 w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
+          className="fixed z-[100] w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
@@ -929,7 +931,8 @@ function MarkdownOutline({
             <Trash2 aria-hidden className="h-4 w-4" />
             Delete Section
           </button>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </section>
   );

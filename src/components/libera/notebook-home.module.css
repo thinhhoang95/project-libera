@@ -17,6 +17,8 @@
 .cover {
   position: relative;
   isolation: isolate;
+  /* Keeps the search dropdown above later positioned siblings such as the recap card. */
+  z-index: 2;
   display: flex;
   min-height: clamp(260px, 24cqi, 360px);
   background: #eaf0fe var(--notebook-illustration, url('/images/notebook-landscape.png')) center 35% / cover;

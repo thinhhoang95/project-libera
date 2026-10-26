@@ -699,6 +699,7 @@ function WorkspacePanelContent({
   onReadMarkdownSelectionLinks,
   onStartScreenshotSnip,
 }: PanelContentProps) {
+  const [markdownSelectedText, setMarkdownSelectedText] = useState("");
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
@@ -1454,6 +1455,7 @@ function WorkspacePanelContent({
 
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
+    setMarkdownSelectedText(selection.end > selection.start ? markdownDraft.slice(selection.start, selection.end) : "");
 
     updateMarkdownViewState({
       line: getMarkdownLineForOffset(markdownDraft, selection.start),
@@ -2104,7 +2106,7 @@ function WorkspacePanelContent({
               </div>
             </div>
           )}
-          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={markdownPreferences.baseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange} />} collab={sharedStatus} />
+          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} selectedText={markdownSelectedText} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={markdownPreferences.baseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange} />} collab={sharedStatus} />
           {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
             <MarkdownSlidesPresenter
               baseLineHeight={markdownPreferences.baseLineHeight}

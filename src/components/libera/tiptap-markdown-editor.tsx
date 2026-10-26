@@ -264,6 +264,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     }),
   ]; }, [documentPath, mathMarkers, shared, citations, codeBlockNodeView, imageNodeView]);
 
+  const [selectedText, setSelectedText] = useState("");
   const editor = useEditor({
     extensions,
     // A shared note starts empty: the bridge builds the document block by
@@ -366,6 +367,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     },
     onSelectionUpdate({ editor: current }) {
       scheduleVisualPosition(current);
+      const { from, to, empty } = current.state.selection;
+      setSelectedText(empty ? "" : current.state.doc.textBetween(from, to, "\n"));
     },
     onTransaction({ transaction }) {
       for (const upload of uploads.current) upload.pos = transaction.mapping.map(upload.pos);
@@ -1027,7 +1030,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
         ) : null}
         <TiptapChangeBar editor={editor} />
       </div>
-      <MarkdownStatusBar content={value} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
+      <MarkdownStatusBar content={value} selectedText={selectedText} uploading={uploadCount > 0} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (markdownZoom / 100)} markdownZoom={markdownZoom} onMarkdownZoomChange={onMarkdownZoomChange} />} collab={sharedStatus} />
       <ModalDialog open={!!mathDraft} title={mathDraft?.existing ? "Edit equation" : "Insert equation"} description="Write LaTeX without the surrounding equation markers." panelClassName="max-w-xl" onClose={() => setMathDraft(null)} footer={<>
         <button type="button" className={selectClass} onClick={() => setMathDraft(null)}>Cancel</button>
         <button type="button" disabled={!!mathPreview.error} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-40" onClick={() => {
