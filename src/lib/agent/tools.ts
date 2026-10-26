@@ -13,6 +13,7 @@ import { readFreshPdfTextCache, readPdfTextCache } from "@/lib/storage/pdf-text-
 import { readTranscript } from "@/lib/storage/transcripts";
 import { formatClock, speakerName, transcriptLine } from "@/lib/transcription/format";
 import { isTextFileType, type PdfTextPage } from "@/lib/types";
+import { approximateMatch } from "./approximate-match";
 import { globToRegExp } from "./glob";
 import { resolveLibraryPath, statLibraryPath, suggestSimilarPath, walkLibraryFiles, type LibraryEntry, type ResolvedPath } from "./library";
 import { hashContent, type RunSnapshots } from "./snapshots";
@@ -770,20 +771,83 @@ function stripLineNumbers(text: string) {
   return lines.map((line) => line.replace(LINE_NUMBER_PREFIX, "")).join("\n");
 }
 
-export function normalizeQuotes(text: string) {
-  return text.replace(/[‘’‚‛]/g, "'").replace(/[“”„‟]/g, "\"");
+const SINGLE_QUOTES = /[‘’‚‛]/;
+const DOUBLE_QUOTES = /[“”„‟]/;
+const DASHES = /[-‐‑‒–—―−]/;
+const SPACES = /[ \t   -   　]/;
+const INVISIBLE = /[\r­​-‍⁠﻿]/;
+
+/** Text in canonical form; for each character, the [start, end) range of the original it came from. */
+export type CanonicalText = { text: string; starts: number[]; ends: number[] };
+
+/**
+ * The form old_string and the file are compared in when they do not match
+ * exactly. Every rule is typographic and cannot change what the text says:
+ * Unicode composition (NFC), curly versus straight quotes, dash variants and
+ * runs ("—", "--" and "-" alike), "…" versus "...", non-breaking and other
+ * special spaces, invisible characters (zero-width, soft hyphen, BOM, CR),
+ * repeated spaces inside a line, and spaces at line ends. Indentation is kept.
+ */
+export function canonicalForMatch(input: string): CanonicalText {
+  const out: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let lineStart = true;
+  const push = (character: string, start: number, end: number) => { out.push(character); starts.push(start); ends.push(end); };
+  const trimLineEnd = () => { while (out.at(-1) === " ") { out.pop(); starts.pop(); ends.pop(); } };
+  for (const cluster of input.matchAll(/\P{M}\p{M}*|\p{M}+/gu)) {
+    const start = cluster.index;
+    const end = start + cluster[0].length;
+    for (const character of cluster[0].normalize("NFC")) {
+      if (INVISIBLE.test(character)) continue;
+      if (character === "\n") { trimLineEnd(); push("\n", start, end); lineStart = true; continue; }
+      if (SPACES.test(character)) {
+        // Indentation keeps its tabs and width; elsewhere a run of spaces is one space.
+        if (lineStart) push(character === "\t" ? "\t" : " ", start, end);
+        else if (out.at(-1) === " ") ends[ends.length - 1] = end;
+        else push(" ", start, end);
+        continue;
+      }
+      lineStart = false;
+      if (DASHES.test(character)) {
+        if (out.at(-1) === "-" && ends.at(-1) === start) ends[ends.length - 1] = end;
+        else push("-", start, end);
+      } else if (character === "…") {
+        for (let dot = 0; dot < 3; dot++) push(".", start, end);
+      } else {
+        push(SINGLE_QUOTES.test(character) ? "'" : DOUBLE_QUOTES.test(character) ? "\"" : character, start, end);
+      }
+    }
+  }
+  trimLineEnd();
+  return { text: out.join(""), starts, ends };
 }
 
-function escapeRegex(text: string) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Where `needle` occurs in `haystack` (both canonical), as ranges of the original haystack text. */
+function canonicalMatches(haystack: CanonicalText, needle: string): Match[] {
+  const found: Match[] = [];
+  if (!needle) return found;
+  for (let index = haystack.text.indexOf(needle); index !== -1; index = haystack.text.indexOf(needle, index + 1)) {
+    const last = index + needle.length - 1;
+    // Skip matches that begin or end inside one original character's expansion (part of an "…").
+    if (index > 0 && haystack.starts[index - 1] === haystack.starts[index]) continue;
+    if (last + 1 < haystack.text.length && haystack.ends[last + 1] === haystack.ends[last]) continue;
+    const start = haystack.starts[index];
+    if (found.length && start < found.at(-1)!.index + found.at(-1)!.length) continue;
+    found.push({ index: start, length: haystack.ends[last] - start });
+    if (found.length > 1000) break;
+  }
+  return found;
 }
 
 type Match = { index: number; length: number };
 
 /**
  * Find old_string in content, forgiving the usual model slips: pasted Read
- * line numbers, LF versus CRLF, curly versus straight quotes, and trailing
- * whitespace. Returns the matches and the strings to use.
+ * line numbers, LF versus CRLF, and the typographic differences
+ * canonicalForMatch ignores. Never fuzzy: a match differs from old_string
+ * only in ways that cannot change the text's meaning. Returns the matches and
+ * the strings to use.
  */
 export function findEditTarget(content: string, oldString: string, newString: string): { matches: Match[]; oldString: string; newString: string; note?: string } {
   const exact = countOccurrences(content, oldString);
@@ -801,28 +865,51 @@ export function findEditTarget(content: string, oldString: string, newString: st
     const found = countOccurrences(content, candidate.old);
     if (found.length) return { matches: found.map((index) => ({ index, length: candidate.old.length })), oldString: candidate.old, newString: candidate.next, note: candidate.note };
   }
-  // Quote normalization keeps offsets, so matches map straight back to the file.
-  const normalizedContent = normalizeQuotes(content);
-  for (const candidate of [{ old: oldString, next: newString }, ...candidates]) {
-    const found = countOccurrences(normalizedContent, normalizeQuotes(candidate.old));
-    if (found.length) return { matches: found.map((index) => ({ index, length: candidate.old.length })), oldString: candidate.old, newString: candidate.next, note: "Matched after treating curly and straight quotes alike." };
-  }
-  // Tolerate trailing whitespace differences at line ends.
-  for (const candidate of [{ old: oldString, next: newString }, ...candidates]) {
-    const lines = candidate.old.replace(/\r\n/g, "\n").split("\n");
-    if (lines.length < 2 && !/[ \t]$/.test(candidate.old)) continue;
-    const pattern = new RegExp(lines.map((line) => escapeRegex(line.replace(/[ \t]+$/, ""))).join("[ \\t]*\\r?\\n") + (lines.length > 1 ? "" : "[ \\t]*"), "g");
-    const found: Match[] = [];
-    for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
-      found.push({ index: match.index, length: match[0].length });
-      if (!match[0].length) pattern.lastIndex++;
+  const canonicalContent = canonicalForMatch(content);
+  for (const candidate of [{ old: oldString, next: newString, note: undefined as string | undefined }, ...candidates.filter((item) => !item.old.includes("\r\n"))]) {
+    const found = canonicalMatches(canonicalContent, canonicalForMatch(candidate.old).text);
+    if (found.length) {
+      const note = [candidate.note, "Matched after ignoring typographic differences (quotes, dashes, ellipses, special or repeated spaces, invisible characters, Unicode composition); new_string was written as given."].filter(Boolean).join(" ");
+      return { matches: found, oldString: candidate.old, newString: crlf ? candidate.next.replace(/\r?\n/g, "\r\n") : candidate.next, note };
     }
-    if (found.length) return { matches: found, oldString: candidate.old, newString: crlf ? candidate.next.replace(/\r?\n/g, "\r\n") : candidate.next, note: "Matched after ignoring trailing whitespace." };
   }
   return { matches: [], oldString, newString };
 }
 
+/** Old strings shorter than this get the line-based hint only. */
+const MIN_PASSAGE_HINT_CHARS = 24;
+/** At most this many canonical characters of old_string are compared for the hint. */
+const PASSAGE_HINT_NEEDLE_CHARS = 600;
+/** The hint's edit-distance search is skipped past this many cells (file × needle). */
+const PASSAGE_HINT_BUDGET = 60_000_000;
+const PASSAGE_HINT_RATIO = 0.75;
+
+/**
+ * Where old_string most nearly occurs, for the not-found error: the passage
+ * with the fewest differing characters, as numbered lines to copy from. Only
+ * a hint; edits themselves never match approximately.
+ */
+function closestPassage(content: string, oldString: string) {
+  const needle = canonicalForMatch(oldString).text;
+  if (needle.length < MIN_PASSAGE_HINT_CHARS) return null;
+  const compared = needle.slice(0, PASSAGE_HINT_NEEDLE_CHARS);
+  const haystack = canonicalForMatch(content);
+  if (haystack.text.length * compared.length > PASSAGE_HINT_BUDGET) return null;
+  const match = approximateMatch(compared, haystack.text);
+  if (!match || match.ratio < PASSAGE_HINT_RATIO || match.end <= match.start) return null;
+  const endIndex = Math.min(haystack.text.length, match.end + needle.length - compared.length) - 1;
+  const start = haystack.starts[match.start];
+  const end = haystack.ends[Math.max(match.start, endIndex)];
+  const lines = splitLines(content);
+  const first = lineOfOffset(content, start);
+  const last = Math.min(lines.length, lineOfOffset(content, end), first + 40);
+  const percent = Math.round(match.ratio * 100);
+  return `\nThe closest passage (about ${percent}% the same) is at ${first === last ? `line ${first}` : `lines ${first}-${last}`}. If it is the text you mean, copy old_string from it exactly:\n${lines.slice(first - 1, last).map((line, index) => numberLine(first + index, line)).join("\n")}`;
+}
+
 export function closestLines(content: string, oldString: string) {
+  const passage = closestPassage(content, oldString);
+  if (passage) return passage;
   const firstLine = oldString.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
   if (!firstLine) return "";
   const lines = splitLines(content);
