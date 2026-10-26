@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import type { GalleryContents, GalleryPhoto } from "@/lib/image-generation";
 import { galleryPhotoSummary, type GalleryCatalogPage } from "@/lib/gallery-catalog";
@@ -14,6 +14,7 @@ type GalleryState = { contents: GalleryContents | null; loading: boolean; error:
 let state: GalleryState = { contents: null, loading: false, error: "" };
 let pendingRefresh: Promise<GalleryContents | null> | null = null;
 let revision = "";
+let catalogGeneration = 0;
 const detailsCache = new Map<string, { photo: GalleryPhoto; bytes: number }>();
 let detailBytes = 0;
 
@@ -38,26 +39,28 @@ function cacheDetails(summary: GalleryPhoto, photo: GalleryPhoto) {
 }
 
 /** A large prompt is held only by its open viewer or the small LRU cache. */
-export function useGalleryPhotoDetails(summary: GalleryPhoto) {
-  const key = detailKey(summary);
+export function useGalleryPhotoDetails(summary: GalleryPhoto, archived = false) {
+  const key = `${archived ? "archive:" : ""}${detailKey(summary)}`;
   const [loaded, setLoaded] = useState<{ key: string; photo: GalleryPhoto } | null>(null);
+  const cachedPhoto = !archived && summary.detailsDeferred ? detailsCache.get(key)?.photo : undefined;
   useEffect(() => {
     if (!summary.detailsDeferred) return;
-    const cached = detailsCache.get(key);
+    const cached = !archived && detailsCache.get(key);
     if (cached) {
       detailsCache.delete(key); detailsCache.set(key, cached);
-      setLoaded({ key, photo: cached.photo });
       return;
     }
     const controller = new AbortController();
-    void apiRequest<GalleryPhoto>(`/api/gallery/photos/details?id=${encodeURIComponent(summary.id)}`, { signal: controller.signal })
+    void apiRequest<GalleryPhoto>(`/api/gallery/${archived ? "archive" : "photos"}/details?id=${encodeURIComponent(summary.id)}`, { signal: controller.signal })
       .then((photo) => {
         if (controller.signal.aborted || photo.id !== summary.id || photo.updatedAt !== summary.updatedAt) return;
-        cacheDetails(summary, photo); setLoaded({ key, photo });
+        if (!archived) cacheDetails(summary, photo);
+        setLoaded({ key, photo });
       }).catch(() => undefined);
     return () => controller.abort();
-  }, [key, summary]);
-  return summary.detailsDeferred && loaded?.key === key ? { ...summary, prompt: loaded.photo.prompt, model: loaded.photo.model, shared: summary.shared ? { ...summary.shared, caption: loaded.photo.shared?.caption } : undefined } : summary;
+  }, [key, summary, archived]);
+  const details = loaded?.key === key ? loaded.photo : cachedPhoto;
+  return useMemo(() => summary.detailsDeferred && details ? { ...summary, prompt: details.prompt, model: details.model, shared: summary.shared ? { ...summary.shared, caption: details.shared?.caption } : undefined } : summary, [summary, details]);
 }
 const listeners = new Set<() => void>();
 const promptListeners = new Set<(prompt: string) => void>();
@@ -103,12 +106,14 @@ export function applyGallery(contents: GalleryContents | undefined) {
     return old && JSON.stringify(old) === JSON.stringify(summary) ? old : summary;
   });
   const next = { ...contents, photos };
+  catalogGeneration++;
   revision = "";
   setState({ contents: next, error: "" });
 }
 
 export function refreshGallery() {
   if (pendingRefresh) return pendingRefresh;
+  const generation = catalogGeneration;
   setState({ loading: true });
   pendingRefresh = (async () => {
     let page = await apiRequest<GalleryCatalogPage>(`/api/gallery?catalog=1${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`);
@@ -125,6 +130,8 @@ export function refreshGallery() {
       photos.push(...next.photos); page = next;
     }
     const contents = { root: page.root, albums: page.albums, photos, deletedPhotoIds: page.deletedPhotoIds };
+    // A mutation that finished during pagination already installed newer contents.
+    if (generation !== catalogGeneration) return state.contents;
     applyGallery(contents); revision = page.revision ?? "";
     return state.contents;
   })()

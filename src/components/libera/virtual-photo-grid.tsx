@@ -55,7 +55,7 @@ export const VirtualPhotoGrid = memo(function VirtualPhotoGrid({ groups, layout,
           <button type="button" aria-label={`${allSelected ? "Deselect" : "Select"} photos from ${group.label}`}
             className={`flex h-5 w-5 items-center justify-center rounded-full border ${allSelected ? "border-primary bg-primary text-primary-foreground" : `border-muted-foreground/50 ${selecting ? "" : "opacity-0 group-hover/day:opacity-100 focus-visible:opacity-100"}`}`}
             onClick={() => onToggleGroup(group.photos)}>{allSelected && <Check className="h-3 w-3" />}</button>
-          <h3 className="text-sm font-medium">{group.label}</h3>
+          <h3 className="truncate text-sm font-medium" title={group.label}>{group.label}</h3>
         </div>;
       }
       return <div key={`${group.key}:${row.start}`} className="absolute left-0 right-0 flex" style={{ top: row.top, height: row.height, gap: GALLERY_GAP }}>

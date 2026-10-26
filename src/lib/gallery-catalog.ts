@@ -1,4 +1,4 @@
-import type { GalleryContents, GalleryPhoto } from "./image-generation";
+import type { ArchiveContents, GalleryContents, GalleryPhoto } from "./image-generation";
 
 /** Keep large text out of the catalog, including shared-photo captions. */
 export function galleryPhotoSummary(photo: GalleryPhoto): GalleryPhoto {
@@ -13,6 +13,10 @@ export function galleryPhotoSummary(photo: GalleryPhoto): GalleryPhoto {
 }
 
 export function gallerySummary(contents: GalleryContents): GalleryContents {
+  return { ...contents, photos: contents.photos.map(galleryPhotoSummary) };
+}
+
+export function archiveSummary(contents: ArchiveContents): ArchiveContents {
   return { ...contents, photos: contents.photos.map(galleryPhotoSummary) };
 }
 

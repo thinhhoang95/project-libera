@@ -45,7 +45,7 @@ import { PhotoEditor } from "@/components/libera/photo-editor";
 import { PhotoInkLayer } from "@/components/libera/ink/photo-ink-layer";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import type { PhotoRegion } from "@/lib/collab/album-comments";
-import { canChangeSharedPhotos, galleryRawUrl, sizedGalleryUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
+import { archiveRawUrl, canChangeSharedPhotos, galleryRawUrl, sizedGalleryUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
 const MAX_ZOOM = 8;
 const SLIDESHOW_MS = 4000;
@@ -307,7 +307,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
   onViewStateChange?: (state: PhotoViewerViewState) => void;
   sharedDetails?: PhotoViewerShared;
 }) {
-  const photo = useGalleryPhotoDetails(photos[index]);
+  const photo = useGalleryPhotoDetails(photos[index], rawUrl === archiveRawUrl);
   const [overlay, setOverlay] = useState<PhotoOverlay | null>(null);
   // A viewer or commenter of a shared album only looks.
   const locked = Boolean(photo?.shared) && !canChangeSharedPhotos(photo?.shared);
@@ -368,7 +368,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
     const timer = window.setTimeout(() => {
       for (const neighbor of [photos[index - 1], photos[index + 1]]) if (neighbor) {
         void fetch(sizedGalleryUrl(rawUrl(neighbor)), { signal: controller.signal, cache: "force-cache" })
-          .then((response) => response.ok ? response.blob() : response.body?.cancel()).catch(() => undefined);
+          .then(async (response) => { if (response.ok) await response.blob(); else await response.body?.cancel(); }).catch(() => undefined);
       }
     }, 120);
     return () => { window.clearTimeout(timer); controller.abort(); };

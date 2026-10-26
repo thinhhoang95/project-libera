@@ -57,7 +57,7 @@ export function galleryRows(
   groups: Array<{ photos: Array<{ id: string; createdAt: string; width?: number; height?: number }> }>,
   mode: GalleryLayoutMode, width: number, size: number,
 ): GalleryRows {
-  const available = Math.max(1, width);
+  const available = width > 0 ? width : size;
   const columns = Math.max(1, Math.floor((available + GALLERY_GAP) / (size + GALLERY_GAP)));
   const tileWidth = (available - (columns - 1) * GALLERY_GAP) / columns;
   const rows: GalleryRow[] = [];

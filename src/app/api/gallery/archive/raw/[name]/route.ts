@@ -18,7 +18,7 @@ export async function GET(request: NextRequest, context: ArchiveRawRouteContext)
   try {
     const name = decodeURIComponent((await context.params).name);
     const photo = request.nextUrl.searchParams.get("thumbnail") === "1"
-      ? await readArchivedThumbnail(name, Number(request.nextUrl.searchParams.get("size")) || 640)
+      ? await readArchivedThumbnail(name, Number(request.nextUrl.searchParams.get("size")) || 640, request.signal)
       : await streamArchivedPhoto(name, request.signal);
     return renewArchiveAccess(new NextResponse(photo.body instanceof Uint8Array ? new Uint8Array(photo.body) : photo.body, {
       headers: {

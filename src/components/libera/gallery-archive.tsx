@@ -21,7 +21,7 @@ const ARCHIVE_RENEW_MS = 4 * 60 * 1000;
 class ArchiveLockedError extends Error {}
 
 async function archiveRequest<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
+  const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", "X-Libera-Gallery": "catalog", ...init?.headers } });
   const payload = (await response.json().catch(() => ({}))) as { error?: string; locked?: boolean };
   if (response.status === 403 && payload.locked) throw new ArchiveLockedError(payload.error ?? "The Protected Archive is locked.");
   if (!response.ok) throw new Error(payload.error ?? "Request failed.");

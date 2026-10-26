@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { watch, type FSWatcher, type Stats } from "node:fs";
+import type { Stats } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import type { ArchiveContents, GalleryAlbum, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
@@ -289,25 +289,13 @@ async function reconcile(index: GalleryIndex) {
 }
 
 let queue: Promise<unknown> = Promise.resolve();
-let galleryWatcher: FSWatcher | null = null;
-let watchedRoot = "";
-let galleryDirty = true;
+let reconciledRoot = "";
+let reconciledAt = 0;
+let reconciledIdentity = "";
 
-function watchGallery() {
-  const root = getGalleryRoot();
-  if (watchedRoot === root && galleryWatcher) return;
-  galleryWatcher?.close();
-  watchedRoot = root;
-  galleryDirty = true;
-  try {
-    galleryWatcher = watch(root, { recursive: true }, (_event, name) => {
-      const parts = String(name ?? "").replaceAll("\\", "/").split("/");
-      if (parts.some((part) => part.startsWith(".") && part !== PROTECTED_DIR)) return;
-      galleryDirty = true;
-    });
-    galleryWatcher.on("error", () => { galleryDirty = true; galleryWatcher?.close(); galleryWatcher = null; });
-    galleryWatcher.unref();
-  } catch { galleryWatcher = null; }
+async function indexIdentity() {
+  const stats = await stat(indexPath()).catch(() => null);
+  return stats ? `${stats.ino}:${stats.mtimeMs}:${stats.size}` : "";
 }
 const thumbnailReads = new Set<Promise<unknown>>();
 // Snapshots share this transient array so cleanup can append notices before returning.
@@ -342,8 +330,10 @@ async function pruneThumbnails(records: Record<string, PhotoRecord>, root: strin
 function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T, forceScan = false): Promise<T> {
   const reads = [...thumbnailReads];
   const next = queue.then(() => Promise.allSettled(reads)).then(async () => {
+    // A canceled HTTP reader may finish before its native image job releases
+    // the source file. Windows mutations must wait for those jobs too.
+    await Promise.allSettled([...renderingThumbnails.values()].map((job) => job.promise));
     const index = await loadIndex();
-    watchGallery();
     const notices: string[] = [];
     deletionNotices.set(index, notices);
     const idsBefore = [...Object.keys(index.photos), ...Object.keys(index.archive)];
@@ -351,15 +341,15 @@ function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T, forceSc
     const searchablePhotos = () => JSON.stringify(Object.entries(index.photos).map(([id, photo]) =>
       [id, photo.path, photo.size, photo.mtimeMs, photo.prompt]));
     const photosBefore = searchablePhotos();
-    if (forceScan || galleryDirty || !galleryWatcher) {
-      galleryDirty = false;
-      try { await reconcile(index); await reconcileArchive(index); }
-      catch (error) { galleryDirty = true; throw error; }
-    }
+    // Reuse recent scans during rapid UI changes. Explicit reads always scan.
+    const scan = forceScan || reconciledRoot !== getGalleryRoot() || Date.now() - reconciledAt > 1000 || reconciledIdentity !== await indexIdentity();
+    if (scan) { await reconcile(index); await reconcileArchive(index); }
     const result = await change(index);
     await pruneThumbnails(index.photos, getGalleryRoot());
     await pruneThumbnails(index.archive, protectedRoot());
     if (JSON.stringify(index) !== before) await saveIndex(index);
+    if (scan) { reconciledRoot = getGalleryRoot(); reconciledAt = Date.now(); }
+    reconciledIdentity = await indexIdentity();
     const remaining = new Set([...Object.keys(index.photos), ...Object.keys(index.archive)]);
     notices.push(...new Set([...idsBefore.filter((id) => !remaining.has(id)), ...await pruneGalleryChatPhotos(remaining)]));
     if (searchablePhotos() !== photosBefore) notifySearchChanges(undefined, true);
@@ -484,12 +474,18 @@ export function getGallery({ incremental = false } = {}) {
 }
 
 /** A detail read shares mutation ordering but never rescans every photo. */
-export function getGalleryPhotoDetails(id: string) {
+export function getGalleryPhotoDetails(id: string, archived = false) {
   const next = queue.then(async () => {
     const index = await loadIndex();
+    if (archived) {
+      const record = index.archive[id];
+      if (!record) throw new StorageError("That photo was not found.", 404);
+      return { root: protectedRoot(), albums: [], photos: [{ ...toPhoto(id, record, record.albumIds), path: `${PROTECTED_DIR}/${record.path}`, name: record.path, folder: record.folder, archivedAt: record.archivedAt }] };
+    }
     const record = findPhoto(index, id);
     const photo = toPhoto(id, record, index.albums.filter((album) => album.photoIds.includes(id)).map((album) => album.id));
-    return { root: getGalleryRoot(), photos: [photo], albums: toContents({ ...index, photos: { [id]: record }, albums: index.albums.map((album) => ({ ...album, photoIds: album.photoIds.filter((photoId) => photoId === id) })) }).albums };
+    const albums: GalleryAlbum[] = index.albums.map((album) => ({ id: album.id, name: album.name, folder: album.folder, count: album.photoIds.length, createdAt: album.createdAt }));
+    return { root: getGalleryRoot(), photos: [photo], albums };
   });
   queue = next.catch(() => undefined);
   return next;
@@ -937,16 +933,33 @@ async function readPhotoFile(photo: PhotoFile) {
   };
 }
 
-const renderingThumbnails = new Map<string, Promise<{ name: string; body: Buffer; contentType: string }>>();
+type ThumbnailJob = { promise: Promise<{ name: string; body: Buffer; contentType: string }>; controller: AbortController; readers: number; settled: boolean };
+const renderingThumbnails = new Map<string, ThumbnailJob>();
 let activeThumbnailRenders = 0;
 const thumbnailRenderWaiters: Array<() => void> = [];
 
-async function renderThumbnail(photo: PhotoFile, target: string, size: number) {
-  if (activeThumbnailRenders >= 2) await new Promise<void>((resolve) => thumbnailRenderWaiters.push(resolve));
-  else activeThumbnailRenders++;
+async function acquireThumbnailRender(signal: AbortSignal) {
+  signal.throwIfAborted();
+  if (activeThumbnailRenders < 2) { activeThumbnailRenders++; return; }
+  await new Promise<void>((resolve, reject) => {
+    const ready = () => { signal.removeEventListener("abort", aborted); resolve(); };
+    const aborted = () => {
+      const index = thumbnailRenderWaiters.indexOf(ready);
+      if (index >= 0) thumbnailRenderWaiters.splice(index, 1);
+      reject(signal.reason);
+    };
+    thumbnailRenderWaiters.push(ready);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+async function renderThumbnail(photo: PhotoFile, target: string, size: number, signal: AbortSignal) {
+  await acquireThumbnailRender(signal);
   try {
+    signal.throwIfAborted();
     const body = await sharp(photo.absolute, { animated: false }).rotate()
       .resize(size, size, { fit: "inside", withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
+    signal.throwIfAborted();
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, body).catch(() => undefined);
     return { name: photo.name, body, contentType: "image/webp" };
@@ -956,18 +969,39 @@ async function renderThumbnail(photo: PhotoFile, target: string, size: number) {
   }
 }
 
-async function readThumbnail(photo: PhotoFile, root: string, size = THUMBNAIL_SIZE) {
+async function readThumbnail(photo: PhotoFile, root: string, size = THUMBNAIL_SIZE, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   // Vector images are already small and scale cleanly.
   if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
   const target = await thumbnailPathFor(photo.relative, root, size);
   try {
-    return { name: photo.name, body: await readFile(target), contentType: "image/webp" };
+    return { name: photo.name, body: await readFile(target, { signal }), contentType: "image/webp" };
   } catch {
-    const pending = renderingThumbnails.get(target);
-    if (pending) return pending;
-    const task = renderThumbnail(photo, target, size).finally(() => renderingThumbnails.delete(target));
-    renderingThumbnails.set(target, task);
-    return task;
+    signal?.throwIfAborted();
+    let job = renderingThumbnails.get(target);
+    if (!job || job.controller.signal.aborted) {
+      const controller = new AbortController();
+      const created: ThumbnailJob = { controller, readers: 0, settled: false, promise: null! };
+      created.promise = renderThumbnail(photo, target, size, controller.signal).finally(() => {
+        created.settled = true;
+        if (renderingThumbnails.get(target) === created) renderingThumbnails.delete(target);
+      });
+      job = created; renderingThumbnails.set(target, job);
+    }
+    const current = job;
+    current.readers++;
+    let aborted: (() => void) | undefined;
+    try {
+      return await (signal ? Promise.race([current.promise, new Promise<never>((_resolve, reject) => {
+        aborted = () => reject(signal.reason);
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+      })]) : current.promise);
+    } finally {
+      if (aborted) signal?.removeEventListener("abort", aborted);
+      current.readers--;
+      if (!current.readers && !current.settled) current.controller.abort();
+    }
   }
 }
 
@@ -976,10 +1010,10 @@ export async function readGalleryPhoto(photoPath: string) {
 }
 
 /** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
-export async function readGalleryThumbnail(photoPath: string, requestedSize = THUMBNAIL_SIZE) {
+export async function readGalleryThumbnail(photoPath: string, requestedSize = THUMBNAIL_SIZE, signal?: AbortSignal) {
   const photo = resolvePhotoPath(photoPath);
   const root = getGalleryRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize)));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize), signal));
 }
 
 /** Validate an archived photo's file name from a request. */
@@ -996,10 +1030,10 @@ export async function readArchivedPhoto(name: string) {
 }
 
 /** Archive thumbnails are cached inside the archive folder, never beside the gallery's. */
-export async function readArchivedThumbnail(name: string, requestedSize = THUMBNAIL_SIZE) {
+export async function readArchivedThumbnail(name: string, requestedSize = THUMBNAIL_SIZE, signal?: AbortSignal) {
   const photo = resolveArchivedPath(name);
   const root = protectedRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize)));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize), signal));
 }
 
 async function streamPhotoFile(photo: PhotoFile, signal?: AbortSignal) {

@@ -7,8 +7,9 @@ import { getGallery, getGalleryRoot } from "./gallery";
 import { withSharing } from "./gallery-sharing";
 
 const PAGE_SIZE = 500;
-let snapshot: { root: string; identity: string; revision: string; contents: GalleryContents } | null = null;
-let pending: Promise<NonNullable<typeof snapshot>> | null = null;
+type CatalogSnapshot = { root: string; identity: string; revision: string; contents: GalleryContents };
+let snapshot: CatalogSnapshot | null = null;
+let pending: Promise<CatalogSnapshot> | null = null;
 
 async function identity(root: string) {
   const stats = await stat(path.join(root, ".libera-gallery.json")).catch(() => null);

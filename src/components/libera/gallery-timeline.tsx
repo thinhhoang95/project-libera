@@ -214,7 +214,7 @@ export function TimelineSeeker({ scrollRef, rows, layoutKey }: {
     setMetrics({ scrollTop: scroller.scrollTop, maxScroll: Math.max(0, scroller.scrollHeight - scroller.clientHeight), clientHeight: scroller.clientHeight, rail: (railRef.current?.clientHeight ?? 0) - 2 * SEEKER_PADDING });
   }, [scrollRef]);
 
-  useLayoutEffect(() => { measure(); }, [layoutKey, measure]);
+  useLayoutEffect(() => { measure(); }, [layoutKey, rows, measure]);
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller) return;
@@ -224,7 +224,7 @@ export function TimelineSeeker({ scrollRef, rows, layoutKey }: {
     observer.observe(scroller);
     let idle = 0;
     const scrolled = () => {
-      setMetrics((current) => ({ ...current, scrollTop: scroller.scrollTop }));
+      later();
       setScrolling(true);
       window.clearTimeout(idle);
       idle = window.setTimeout(() => setScrolling(false), 900);

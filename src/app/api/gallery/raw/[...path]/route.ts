@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: GalleryRawRouteContext)
     const { path } = await context.params;
     const photoPath = path.map(decodeURIComponent).join("/");
     const photo = request.nextUrl.searchParams.get("thumbnail") === "1"
-      ? await readGalleryThumbnail(photoPath, Number(request.nextUrl.searchParams.get("size")) || 640)
+      ? await readGalleryThumbnail(photoPath, Number(request.nextUrl.searchParams.get("size")) || 640, request.signal)
       : await streamGalleryPhoto(photoPath, request.signal);
     return new NextResponse(photo.body instanceof Uint8Array ? new Uint8Array(photo.body) : photo.body, {
       headers: {

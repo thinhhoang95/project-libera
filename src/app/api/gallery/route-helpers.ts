@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonError, renewArchiveAccess, requireArchiveAccess, requireAuth } from "@/lib/api";
-import type { GalleryContents } from "@/lib/image-generation";
+import type { ArchiveContents, GalleryContents } from "@/lib/image-generation";
 import { toStorageError } from "@/lib/storage";
 import { withSharing } from "@/lib/storage/gallery-sharing";
-import { gallerySummary } from "@/lib/gallery-catalog";
+import { archiveSummary, gallerySummary } from "@/lib/gallery-catalog";
 
 const MAX_IDS = 10_000;
 
@@ -36,7 +36,13 @@ export async function galleryRoute(request: NextRequest, run: (body: Record<stri
   let body: Record<string, unknown>;
   try { body = await request.json(); } catch { return jsonError("Invalid request.", 400); }
   try {
-    const response = NextResponse.json(await shared(await run(body ?? {}), request.headers.get("X-Libera-Gallery") === "catalog"));
+    const compact = request.headers.get("X-Libera-Gallery") === "catalog";
+    let result = await shared(await run(body ?? {}), compact);
+    if (compact && result && typeof result === "object" && "archive" in result) {
+      const archive = result.archive as ArchiveContents;
+      if (Array.isArray(archive?.photos)) result = { ...result, archive: archiveSummary(archive) };
+    }
+    const response = NextResponse.json(result);
     return archive ? renewArchiveAccess(response) : response;
   } catch (error) {
     const storageError = toStorageError(error);

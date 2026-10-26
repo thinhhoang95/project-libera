@@ -11,7 +11,6 @@ import {
   ArchiveRestore,
   CalendarDays,
   CalendarSearch,
-  Check,
   FolderDown,
   FolderInput,
   FolderMinus,
