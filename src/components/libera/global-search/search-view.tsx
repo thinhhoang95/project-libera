@@ -3,8 +3,15 @@
 import {
   AlertTriangle,
   ArrowUpRight,
+  AudioLines,
+  BookMarked,
+  Code2,
   Download,
+  FileText,
+  FileType2,
   FolderOpen,
+  Image as ImageIcon,
+  Layers,
   ImagePlus,
   Images,
   Lightbulb,
@@ -13,6 +20,7 @@ import {
   ScanSearch,
   Search,
   Settings2,
+  Sigma,
   Sparkles,
   Upload,
   type LucideIcon,
@@ -54,15 +62,16 @@ import type { LiberaFileNode } from "@/lib/types";
 
 type KindFilter = "all" | SearchFileKind;
 
-const KIND_FILTERS: Array<{ id: KindFilter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "markdown", label: "Notes" },
-  { id: "pdf", label: "PDFs" },
-  { id: "latex", label: "LaTeX" },
-  { id: "text", label: "Text & code" },
-  { id: "image", label: "Images" },
-  { id: "audio", label: "Voice memos" },
-  { id: "reference", label: "References" },
+// Each kind keeps its color in the chip and when selected.
+const KIND_FILTERS: Array<{ id: KindFilter; label: string; icon: LucideIcon; color: string }> = [
+  { id: "all", label: "All", icon: Layers, color: "#7a8299" },
+  { id: "markdown", label: "Notes", icon: FileText, color: "#5b8def" },
+  { id: "pdf", label: "PDFs", icon: FileType2, color: "#d08178" },
+  { id: "latex", label: "LaTeX", icon: Sigma, color: "#8b7fd1" },
+  { id: "text", label: "Text & code", icon: Code2, color: "#3fa7b5" },
+  { id: "image", label: "Images", icon: ImageIcon, color: "#4caa85" },
+  { id: "audio", label: "Voice memos", icon: AudioLines, color: "#e0a03c" },
+  { id: "reference", label: "References", icon: BookMarked, color: "#b07cc6" },
 ];
 
 const EXAMPLES: Array<{ text: string; label: string; icon: LucideIcon; color: string }> = [
@@ -364,9 +373,11 @@ export function SearchView({
                 key={filter.id}
                 type="button"
                 aria-pressed={kind === filter.id}
-                className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${kind === filter.id ? "bg-foreground text-background" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+                className={`inline-flex items-center gap-1.5 rounded-full py-1 pl-2 pr-2.5 text-xs font-medium transition ${kind === filter.id ? "text-white shadow-sm" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+                style={kind === filter.id ? { backgroundColor: filter.color } : undefined}
                 onClick={() => changeKind(filter.id)}
               >
+                <filter.icon aria-hidden className="h-3.5 w-3.5" style={kind === filter.id ? undefined : { color: filter.color }} />
                 {filter.label}
               </button>
             ))}

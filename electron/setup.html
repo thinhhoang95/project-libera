@@ -79,15 +79,6 @@
         padding: 14px;
       }
 
-      .settings-sidebar-title {
-        margin: 0 0 8px;
-        color: #71717a;
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-      }
-
       .nav-item {
         width: 100%;
         border: 1px solid transparent;
@@ -294,10 +285,10 @@
         }
       }
       /* Preferences → AI: an overview of shared tools, then one card per function. */
-      .ai-settings label { font-size: 12px; margin: 0 0 6px; }
-      .ai-settings input:not([type="checkbox"]), .ai-settings select { padding: 8px 10px; font-size: 13px; }
+      .card-settings label { font-size: 12px; margin: 0 0 6px; }
+      .card-settings :is(input:not([type="checkbox"]), select) { padding: 8px 10px; font-size: 13px; }
       .ai-settings textarea { font-size: 13px; min-height: 96px; }
-      .ai-settings button.secondary, .routing-dialog button { font-size: 13px; }
+      .card-settings button.secondary, .routing-dialog button { font-size: 13px; }
       .ai-settings .model-apply-row button { padding: 8px 12px; }
       .ai-overview { display: grid; gap: 10px; margin-bottom: 8px; }
       .ai-panel { background: color-mix(in srgb, var(--muted, #f4f4f5) 45%, transparent); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 14px 16px; }
@@ -386,6 +377,23 @@
       .routing-error { background: #fef2f2; border-radius: 8px; color: #b91c1c !important; font-size: 12px !important; margin: 0 !important; padding: 8px 10px; }
       .routing-footer { align-items: center; }
       .libera-dialog-footer > .routing-reset { border-color: transparent; box-shadow: none; color: var(--muted-foreground); margin-right: auto; padding-left: 4px; }
+      .speech-speakers { margin-top: 12px; }
+      .card-settings .settings-section-description + .ai-group-title { margin-top: 4px !important; }
+      .card-settings .ai-card > label { margin-top: 2px; }
+      .card-settings .ai-card > select + .heading-palette { margin-top: 10px; }
+      .card-settings .ai-card .password-locked-row { margin-top: 0; }
+      .card-settings .heading-palette label { font-size: 12px; }
+      .ai-card-switch { margin-top: 6px !important; }
+      .card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      .card-actions-end { justify-content: flex-end; }
+      .card-actions button { padding: 7px 12px; }
+      .nav-item { align-items: center; display: flex; gap: 9px; }
+      .nav-item svg { color: var(--muted-foreground, #71717a); flex: 0 0 auto; }
+      .nav-item span { min-width: 0; overflow-wrap: anywhere; }
+      html .libera-preferences .settings-sidebar { overflow-x: hidden; }
+      .nav-item.active svg { color: currentColor; }
+      #dictation-openrouter-fields[hidden] + .ai-field { grid-column: 1 / -1; }
+      .card-settings .directory-row button { padding: 8px 12px; }
       @media (max-width: 600px) {
         .ai-card-grid, .routing-presets, .routing-limits { grid-template-columns: 1fr; }
         .ai-routing-all { align-items: stretch; flex-direction: column; }
@@ -409,17 +417,19 @@
       .quick-prompt-text-label span { display: block; margin-bottom: 7px; }
       .quick-prompt-text { min-height: 92px; }
       .quick-prompts-empty { border: 1px dashed var(--input, #d4d4d8); border-radius: 12px; margin: 14px 0 0; padding: 18px; text-align: center; }
-      .io-grid { display: grid; gap: 14px; }
-      .io-card { border: 1px solid var(--border, #e4e4e7); border-radius: 12px; padding: 18px; }
-      .io-card h3 { margin: 0 0 5px; }
-      .io-card p { margin-bottom: 14px; }
+      .io-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+      .io-grid .ai-card { display: flex; flex-direction: column; }
+      .io-grid .io-button { align-self: flex-start; margin-top: auto; }
       .io-button { align-items: center; display: inline-flex; gap: 8px; }
       .io-button svg { flex: 0 0 auto; }
-      .io-warning { border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #f59e0b 9%, transparent); margin-top: 16px; padding: 12px; }
+      .io-warning { align-items: flex-start; border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 12px; background: color-mix(in srgb, #f59e0b 9%, transparent); color: #b45309; display: flex; gap: 10px; margin-top: 12px; padding: 12px 14px; }
+      .io-warning svg { flex: 0 0 auto; margin-top: 1px; }
+      .io-warning .field-help { margin: 0; }
+      :root[data-theme="dark"] .io-warning { color: #fbbf24; }
       .io-status { margin-top: 14px; min-height: 20px; }
       .users-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
-      .user-row { align-items: center; border: 1px solid var(--border, #e4e4e7); border-radius: 12px; display: flex; gap: 12px; padding: 10px 12px; }
-      .user-avatar { align-items: center; background: var(--muted, #f4f4f5); border-radius: 50%; color: var(--muted-foreground, #71717a); display: flex; flex: 0 0 36px; font-size: 13px; font-weight: 650; height: 36px; justify-content: center; }
+      .user-row { align-items: center; background: var(--dialog-surface, #fff); border: 1px solid var(--border, #e4e4e7); border-radius: 12px; display: flex; gap: 12px; padding: 10px 14px; }
+      .user-avatar { align-items: center; background: color-mix(in srgb, var(--accent, #2563eb) 12%, transparent); border-radius: 50%; color: var(--accent, #2563eb); display: flex; flex: 0 0 36px; font-size: 13px; font-weight: 650; height: 36px; justify-content: center; }
       .user-text { flex: 1; min-width: 0; }
       .user-name { align-items: center; display: flex; font-weight: 600; gap: 8px; }
       .user-badge { background: var(--muted, #f4f4f5); border-radius: 999px; color: var(--muted-foreground, #71717a); font-size: 11px; font-weight: 600; padding: 1px 8px; }
@@ -427,7 +437,7 @@
       .user-text input { padding: 6px 10px; }
       .user-actions { display: flex; flex: 0 0 auto; gap: 6px; }
       .user-actions button { padding: 6px 10px; }
-      .users-add { margin-top: 18px; }
+      .users-add { margin-top: 12px; }
       .heading-palette { border: 1px solid var(--border, #d4d4d8); border-radius: 8px; display: grid; gap: 8px 16px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 12px 0 0; padding: 10px 14px 12px; }
       .heading-palette.hidden { display: none; }
       .heading-palette label { align-items: center; display: flex; font-weight: 400; gap: 8px; margin: 0; }
@@ -483,120 +493,119 @@
 
         <div class="settings-layout">
           <nav class="settings-sidebar" aria-label="Settings sections">
-            <p class="settings-sidebar-title">Settings</p>
             <button
               class="nav-item active"
               data-section-button="general"
               type="button"
               aria-selected="true"
-            >
-              General
-            </button>
+            ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg><span>General</span></button>
             <button
               class="nav-item"
               data-section-button="markdown"
               type="button"
               aria-selected="false"
-            >
-              Markdown
-            </button>
-            <button class="nav-item" data-section-button="ai" type="button" aria-selected="false">AI</button>
-            <button class="nav-item" data-section-button="search" type="button" aria-selected="false">Search</button>
-            <button class="nav-item" data-section-button="speech" type="button" aria-selected="false">Speech</button>
-            <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false">Read Aloud</button>
-            <button class="nav-item" data-section-button="detection" type="button" aria-selected="false">Detection and Segmentation</button>
-            <button class="nav-item configuration-only hidden" data-section-button="users" type="button" aria-selected="false">Users</button>
-            <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false">I/O</button>
+            ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg><span>Markdown</span></button>
+            <button class="nav-item" data-section-button="ai" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg><span>AI</span></button>
+            <button class="nav-item" data-section-button="search" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span>Search</span></button>
+            <button class="nav-item" data-section-button="speech" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg><span>Speech</span></button>
+            <button class="nav-item" data-section-button="read-aloud" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg><span>Read Aloud</span></button>
+            <button class="nav-item" data-section-button="detection" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect width="8" height="8" x="8" y="8" rx="1"/></svg><span>Detection and Segmentation</span></button>
+            <button class="nav-item configuration-only hidden" data-section-button="users" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Users</span></button>
+            <button class="nav-item configuration-only hidden" data-section-button="io" type="button" aria-selected="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/></svg><span>I/O</span></button>
           </nav>
 
           <div class="settings-detail libera-dialog-section">
-            <section class="settings-section" data-section="general">
+            <section class="settings-section card-settings" data-section="general">
               <h2>General</h2>
-              <p class="settings-section-description">
-                Personalize Libera and configure your local data directory, OpenRouter model, API key, and master password.
-              </p>
+              <p class="settings-section-description">Personalize Libera and configure your local data directory, API key, and master password.</p>
 
-              <label for="theme-preference">Theme</label>
-              <select id="theme-preference" aria-describedby="theme-help">
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-                <option value="system">System</option>
-              </select>
-              <p id="theme-help" class="field-help">
-                System follows your device’s appearance. Theme changes apply when saved.
-              </p>
-
-              <label for="your-name">Your name</label>
-              <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" />
-              <p id="your-name-help" class="field-help">
-                Optional. Adds a personal greeting to your notebooks and sign-in screen.
-              </p>
-
-              <div class="switch-row">
-                <label for="smart-paste">Smart Paste</label>
-                <input id="smart-paste" class="switch" type="checkbox" role="switch" aria-describedby="smart-paste-help" />
-              </div>
-              <p id="smart-paste-help" class="field-help">
-                When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.
-              </p>
-
-              <label for="source-editor">Source editor</label>
-              <select id="source-editor" aria-describedby="source-editor-help">
-                <option value="classic">Classic</option>
-                <option value="codemirror">CodeMirror (beta)</option>
-              </select>
-              <p id="source-editor-help" class="field-help">
-                The editor used for Markdown Source mode and slide decks. CodeMirror (beta) adds syntax colours for Markdown and Libera’s highlights, boxes and math. Restart Libera after changing it.
-              </p>
-
-              <label for="data-dir">Libera for Vy Tran Master directory</label>
-              <div class="directory-row">
-                <input id="data-dir" autocomplete="off" readonly />
-                <button id="browse-button" class="secondary" type="button">Choose</button>
+              <h3 class="ai-group-title">You</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg></span>
+                    <div class="ai-card-title"><h4>Appearance</h4><p>How Libera looks and greets you.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="theme-preference">Theme</label>
+                      <select id="theme-preference" aria-describedby="theme-help"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></div>
+                    <div class="ai-field"><label for="your-name">Your name</label>
+                      <input id="your-name" autocomplete="given-name" type="text" placeholder="How should Libera greet you?" aria-describedby="your-name-help" /></div>
+                  </div>
+                  <p id="theme-help" class="field-help">System follows your device’s appearance. Theme changes apply when saved.</p>
+                  <p id="your-name-help" class="field-help">Your name is optional. It adds a personal greeting to your notebooks and sign-in screen.</p>
+                </article>
               </div>
 
-              <label for="openai-api-key">OPENAI_API_KEY</label>
-              <input id="openai-api-key" autocomplete="off" spellcheck="false" type="password" />
-              <div id="api-key-locked" class="locked hidden">
-                An API key is already saved. Leave this field blank to keep it.
+              <h3 class="ai-group-title">Editing</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11v6"/><path d="m9 14 3 3 3-3"/></svg></span>
+                    <div class="ai-card-title"><h4>Smart Paste</h4><p>Fits pasted Markdown into the document’s outline.</p></div>
+                    <input id="smart-paste" class="switch ai-card-switch" type="checkbox" role="switch" aria-label="Smart Paste" aria-describedby="smart-paste-help" />
+                  </header>
+                  <p id="smart-paste-help" class="field-help">When pasted Markdown has headings, match its top heading level to the document’s and continue the document’s heading numbering. Works in the visual and source editors.</p>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg></span>
+                    <div class="ai-card-title"><h4>Source editor</h4><p>The editor used for Markdown Source mode and slide decks.</p></div>
+                  </header>
+                  <div class="ai-field"><label for="source-editor">Editor</label>
+                    <select id="source-editor" aria-describedby="source-editor-help"><option value="classic">Classic</option><option value="codemirror">CodeMirror (beta)</option></select></div>
+                  <p id="source-editor-help" class="field-help">CodeMirror (beta) adds syntax colours for Markdown and Libera’s highlights, boxes and math. Restart Libera after changing it.</p>
+                </article>
               </div>
 
-              <div id="password-fields">
-                <label for="password">Master password</label>
-                <input id="password" autocomplete="new-password" type="password" />
-
-                <label for="password-confirmation">Confirm master password</label>
-                <input id="password-confirmation" autocomplete="new-password" type="password" />
-              </div>
-              <div id="password-locked" class="password-locked-row hidden">
-                <div class="locked">
-                  A master password is already configured. The login screen will ask for it every
-                  time Libera for Vy Tran starts.
-                </div>
-                <button id="change-password-button" class="secondary" type="button">
-                  Change password
-                </button>
-              </div>
-              <div id="change-password-fields" class="hidden">
-                <label for="current-password">Current master password</label>
-                <input id="current-password" autocomplete="current-password" type="password" />
-
-                <label for="new-password">New master password</label>
-                <input id="new-password" autocomplete="new-password" type="password" />
-
-                <label for="new-password-confirmation">Confirm new master password</label>
-                <input
-                  id="new-password-confirmation"
-                  autocomplete="new-password"
-                  type="password"
-                />
-                <p class="field-help">
-                  Password changes are applied after restarting Libera for Vy Tran.
-                </p>
+              <h3 class="ai-group-title">Library and security</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></span>
+                    <div class="ai-card-title"><h4>Master directory</h4><p>Where your notebooks live.</p></div>
+                  </header>
+                  <label for="data-dir">Libera for Vy Tran Master directory</label>
+                  <div class="directory-row">
+                    <input id="data-dir" autocomplete="off" readonly />
+                    <button id="browse-button" class="secondary" type="button">Choose</button>
+                  </div>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg></span>
+                    <div class="ai-card-title"><h4>API key</h4><p>An OpenRouter key, used by every AI feature.</p></div>
+                  </header>
+                  <label for="openai-api-key">OPENAI_API_KEY</label>
+                  <input id="openai-api-key" autocomplete="off" spellcheck="false" type="password" />
+                  <div id="api-key-locked" class="locked hidden">An API key is already saved. Leave this field blank to keep it.</div>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                    <div class="ai-card-title"><h4>Master password</h4><p>The login screen asks for it every time Libera starts.</p></div>
+                  </header>
+                  <div id="password-fields" class="ai-card-grid">
+                    <div class="ai-field"><label for="password">Master password</label><input id="password" autocomplete="new-password" type="password" /></div>
+                    <div class="ai-field"><label for="password-confirmation">Confirm master password</label><input id="password-confirmation" autocomplete="new-password" type="password" /></div>
+                  </div>
+                  <div id="password-locked" class="password-locked-row hidden">
+                    <div class="locked">A master password is already configured. The login screen will ask for it every time Libera for Vy Tran starts.</div>
+                    <button id="change-password-button" class="secondary" type="button">Change password</button>
+                  </div>
+                  <div id="change-password-fields" class="hidden">
+                    <div class="ai-card-grid">
+                      <div class="ai-field ai-field-wide"><label for="current-password">Current master password</label><input id="current-password" autocomplete="current-password" type="password" /></div>
+                      <div class="ai-field"><label for="new-password">New master password</label><input id="new-password" autocomplete="new-password" type="password" /></div>
+                      <div class="ai-field"><label for="new-password-confirmation">Confirm new master password</label><input id="new-password-confirmation" autocomplete="new-password" type="password" /></div>
+                    </div>
+                    <p class="field-help">Password changes are applied after restarting Libera for Vy Tran.</p>
+                  </div>
+                </article>
               </div>
             </section>
 
-            <section class="settings-section hidden ai-settings" data-section="ai">
+            <section class="settings-section hidden ai-settings card-settings" data-section="ai">
               <h2>AI</h2>
               <p class="settings-section-description">Choose a model, reasoning effort, prompt caching and OpenRouter routing for each function. Settings are saved across app restarts.</p>
 
@@ -920,489 +929,446 @@
               </template>
             </section>
 
-            <section class="settings-section hidden" data-section="search">
+            <section class="settings-section hidden card-settings" data-section="search">
               <h2>Search</h2>
-              <p class="settings-section-description">
-                Global Search finds notes, PDFs, LaTeX, code and images by meaning with Google’s EmbeddingGemma 2,
-                running on this computer. Keyword search works without it. Changes apply without restarting.
-              </p>
+              <p class="settings-section-description">Global Search finds notes, PDFs, LaTeX, code and images by meaning with Google’s EmbeddingGemma 2, running on this computer. Keyword search works without it. Changes apply without restarting.</p>
 
-              <h3>EmbeddingGemma 2 weights</h3>
-              <p class="field-help">
-                Leave both empty and Libera offers to download the 8-bit text model and vision encoder (about 540 MB) from the
-                Search panel, into its application data. To use other weights, download the ONNX model from Hugging Face
-                (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json, tokenizer_config.json, processor_config.json
-                and preprocessor_config.json, plus the weight files below, each with its .onnx_data file, and choose them here.
-                On a CPU, the 8-bit files (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.
-              </p>
-              <label for="search-text-weights">Text model weights</label>
-              <div class="directory-row">
-                <input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
-                <button id="search-text-weights-button" class="secondary" type="button">Choose</button>
-              </div>
-              <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p>
-
-              <label for="search-vision-weights">Vision encoder weights</label>
-              <div class="directory-row">
-                <input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download, with the text model" />
-                <button id="search-vision-weights-button" class="secondary" type="button">Choose</button>
-              </div>
-              <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; with your own text model, leave empty for text only.</p>
-
-              <h3>PDF reading model</h3>
-              <p class="field-help">
-                Snip as Markdown and Convert PDF to Markdown read pages with IBM’s granite-docling-258M (Apache-2.0), running
-                on this computer. The first time you use either feature, Libera offers to download it (about 600 MB) into the
-                folder below, or into its application data when the field is empty. Or put the files from Hugging Face
-                (onnx-community/granite-docling-258M-ONNX) in a folder yourself, laid out like the repository: the configs and
-                tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.
-              </p>
-              <label for="reading-model-directory">Model folder</label>
-              <div class="directory-row">
-                <input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
-                <button id="reading-model-directory-button" class="secondary" type="button">Choose</button>
+              <h3 class="ai-group-title">Models on this computer</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg></span>
+                    <div class="ai-card-title"><h4>EmbeddingGemma 2</h4><p>Understands what notes and photos are about. Leave both fields empty to use Libera’s download.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="search-text-weights">Text model weights</label>
+                      <div class="directory-row"><input id="search-text-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" /><button id="search-text-weights-button" class="secondary" type="button">Choose</button></div>
+                      <p class="field-help">A model_*.onnx file. config.json and tokenizer.json must be in its folder or the folder above.</p></div>
+                    <div class="ai-field ai-field-wide"><label for="search-vision-weights">Vision encoder weights</label>
+                      <div class="directory-row"><input id="search-vision-weights" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download, with the text model" /><button id="search-vision-weights-button" class="secondary" type="button">Choose</button></div>
+                      <p class="field-help">A vision_encoder_*.onnx file. Needed to index photos and to search with images; with your own text model, leave empty for text only.</p></div>
+                  </div>
+                  <details class="ai-card-more">
+                    <summary>Using your own weights</summary>
+                    <p class="field-help">Leave both empty and Libera offers to download the 8-bit text model and vision encoder (about 540 MB) from the Search panel, into its application data. To use other weights, download the ONNX model from Hugging Face (onnx-community/embeddinggemma-2-ONNX): config.json, tokenizer.json, tokenizer_config.json, processor_config.json and preprocessor_config.json, plus the weight files above, each with its .onnx_data file, and choose them here. On a CPU, the 8-bit files (model_quantized.onnx) are as fast as the 4-bit ones and closer to the original.</p>
+                  </details>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></span>
+                    <div class="ai-card-title"><h4>PDF reading model</h4><p>IBM’s granite-docling-258M (Apache-2.0) reads pages for Snip as Markdown and Convert PDF to Markdown.</p></div>
+                  </header>
+                  <label for="reading-model-directory">Model folder</label>
+                  <div class="directory-row"><input id="reading-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" /><button id="reading-model-directory-button" class="secondary" type="button">Choose</button></div>
+                  <details class="ai-card-more">
+                    <summary>What goes in this folder</summary>
+                    <p class="field-help">The first time you use either feature, Libera offers to download it (about 600 MB) into this folder, or into its application data when the field is empty. Or put the files from Hugging Face (onnx-community/granite-docling-258M-ONNX) in a folder yourself, laid out like the repository: the configs and tokenizer at the top, and vision_encoder, embed_tokens and decoder_model_merged weights in onnx/.</p>
+                  </details>
+                </article>
               </div>
 
-              <h3>Index</h3>
-              <label for="search-dimensions">Embedding size</label>
-              <select id="search-dimensions">
-                <option value="768">768 dimensions (best quality)</option>
-                <option value="512">512 dimensions</option>
-                <option value="256">256 dimensions (smaller index)</option>
-                <option value="128">128 dimensions (text only; images lose quality)</option>
-              </select>
-              <p class="field-help">Smaller vectors make the index smaller and searches faster. Changing the size re-embeds everything.</p>
-
-              <label for="search-vision-tokens">Image detail</label>
-              <select id="search-vision-tokens">
-                <option value="70">Low (fastest)</option>
-                <option value="140">Standard (about 2 seconds per photo on a laptop CPU)</option>
-                <option value="280">High (about twice as slow)</option>
-                <option value="560">Very high</option>
-              </select>
-
-              <div class="switch-row">
-                <label for="search-index-images">Index photos</label>
-                <input id="search-index-images" class="switch" type="checkbox" role="switch" />
+              <h3 class="ai-group-title">Index</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></span>
+                    <div class="ai-card-title"><h4>What gets indexed</h4><p>Quality, size and speed of the index.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="search-dimensions">Embedding size</label>
+                      <select id="search-dimensions"><option value="768">768 dimensions (best quality)</option><option value="512">512 dimensions</option><option value="256">256 dimensions (smaller index)</option><option value="128">128 dimensions (text only; images lose quality)</option></select></div>
+                    <div class="ai-field"><label for="search-vision-tokens">Image detail</label>
+                      <select id="search-vision-tokens"><option value="70">Low (fastest)</option><option value="140">Standard (about 2 seconds per photo on a laptop CPU)</option><option value="280">High (about twice as slow)</option><option value="560">Very high</option></select></div>
+                  </div>
+                  <p class="field-help">Smaller vectors make the index smaller and searches faster. Changing the size re-embeds everything.</p>
+                  <div class="switch-row">
+                    <label for="search-index-images">Index photos</label>
+                    <input id="search-index-images" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">Notebook images and the Image Gallery, using the vision encoder.</p>
+                  <div class="switch-row">
+                    <label for="search-background-indexing">Keep the index up to date in the background</label>
+                    <input id="search-background-indexing" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <p class="field-help">When off, the index is updated when you open Search.</p>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></span>
+                    <div class="ai-card-title"><h4>Index file</h4><p>Where the index is stored.</p></div>
+                  </header>
+                  <label for="search-index-file">Index file</label>
+                  <div class="directory-row"><input id="search-index-file" autocomplete="off" spellcheck="false" placeholder="Default: on this computer, in Libera’s application data" /><button id="search-index-reveal-button" class="secondary" type="button">Reveal</button></div>
+                  <div class="card-actions">
+                    <button id="search-index-existing-button" class="secondary" type="button">Use existing index…</button>
+                    <button id="search-index-new-button" class="secondary" type="button">New index file…</button>
+                    <button id="search-index-default-button" class="secondary" type="button">Use default</button>
+                  </div>
+                  <p id="search-index-help" class="field-help">By default the index stays on this computer, outside the Master directory, so a notes folder synced to the cloud never uploads it. To skip building it again, use an index Libera built before, for example copied from another computer with the same notes. Keep the index on a local disk.</p>
+                </article>
               </div>
-              <p class="field-help">Notebook images and the Image Gallery, using the vision encoder.</p>
-
-              <div class="switch-row">
-                <label for="search-background-indexing">Keep the index up to date in the background</label>
-                <input id="search-background-indexing" class="switch" type="checkbox" role="switch" />
-              </div>
-              <p class="field-help">When off, the index is updated when you open Search.</p>
-
-              <label for="search-index-file">Index file</label>
-              <div class="directory-row">
-                <input id="search-index-file" autocomplete="off" spellcheck="false" placeholder="Default: on this computer, in Libera’s application data" />
-                <button id="search-index-reveal-button" class="secondary" type="button">Reveal</button>
-              </div>
-              <div class="textarea-actions">
-                <button id="search-index-existing-button" class="secondary" type="button">Use existing index…</button>
-                <button id="search-index-new-button" class="secondary" type="button">New index file…</button>
-                <button id="search-index-default-button" class="secondary" type="button">Use default</button>
-              </div>
-              <p id="search-index-help" class="field-help">
-                By default the index stays on this computer, outside the Master directory, so a notes folder synced to the cloud
-                never uploads it. To skip building it again, use an index Libera built before, for example copied from another
-                computer with the same notes. Keep the index on a local disk.
-              </p>
             </section>
 
-            <section class="settings-section hidden" data-section="speech">
+            <section class="settings-section hidden speech-settings card-settings" data-section="speech">
               <h2>Speech</h2>
-              <p class="settings-section-description">
-                Turns speech into text: voice memos get timestamped transcripts that tell speakers apart, and the microphone in
-                AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite types what you say. Changes apply without restarting.
-              </p>
+              <p class="settings-section-description">Turns speech into text: voice memos get timestamped transcripts that tell speakers apart, and the microphone in AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite types what you say. Changes apply without restarting.</p>
 
-              <h3>Models</h3>
-              <label for="transcription-model-directory">Speech models folder</label>
-              <div class="directory-row">
-                <input id="transcription-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
-                <button id="transcription-model-directory-button" class="secondary" type="button">Choose</button>
-              </div>
-              <p class="field-help">
-                The first time you transcribe, Libera offers to download them here, or into its application data when the field
-                is empty: NVIDIA Parakeet TDT
-                0.6B v3 (sherpa-onnx 8-bit export, about 670 MB), and pyannote segmentation-3.0 with 3D-Speaker CAM++ to tell
-                speakers apart (34 MB together). Or put the files there yourself, in parakeet-tdt-0.6b-v3/ (encoder, decoder and
-                joiner .onnx files and tokens.txt), pyannote-segmentation-3.0/model.onnx and speaker-embedding/*.onnx.
-                Voice memos and dictation share them.
-              </p>
-              <label for="transcription-ffmpeg">ffmpeg</label>
-              <div class="directory-row">
-                <input id="transcription-ffmpeg" autocomplete="off" spellcheck="false" placeholder="Found automatically when installed" />
-                <button id="transcription-ffmpeg-button" class="secondary" type="button">Choose</button>
-              </div>
-              <p class="field-help">Reads M4A, MP3, OGG, FLAC and other recording formats. Without it, macOS reads them with its own converter and other systems read WAV only. Dictation does not need it.</p>
-
-              <h3>Voice memos</h3>
-              <label for="transcription-engine">Transcribe with</label>
-              <select id="transcription-engine">
-                <option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
-              <p class="field-help">Parakeet runs on the CPU and covers 25 European languages. OpenRouter receives the audio in pieces of a few minutes and bills per second.</p>
-              <label for="transcription-openrouter-model">OpenRouter speech-to-text model</label>
-              <input id="transcription-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/whisper-large-v3" />
-              <label for="transcription-language">Language</label>
-              <input id="transcription-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Detect automatically, or a code such as en, vi, fr" />
-              <div class="switch-row">
-                <label for="transcription-diarization">Tell speakers apart (pyannote)</label>
-                <input id="transcription-diarization" class="switch" type="checkbox" role="switch" />
-              </div>
-              <p class="field-help">Runs on this computer with either engine: pyannote segmentation-3.0 finds who speaks when, and a speaker embedding groups the voices.</p>
-              <label for="transcription-speakers">Number of speakers</label>
-              <select id="transcription-speakers">
-                <option value="0">Detect automatically</option>
-                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
-                <option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
-              </select>
-              <p class="field-help">A known count separates voices more reliably. Each recording can also be given its own when you transcribe it.</p>
-
-              <h3>Dictation</h3>
-              <label for="dictation-engine">Dictate with</label>
-              <select id="dictation-engine">
-                <option value="same">Same as voice memos</option>
-                <option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
-              <p class="field-help">Spoken prompts are short, so a fast engine suits them even when voice memos use a more accurate one. Nothing is kept after a prompt is typed.</p>
-              <div id="dictation-openrouter-fields">
-                <label for="dictation-openrouter-model">OpenRouter speech-to-text model</label>
-                <input id="dictation-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as voice memos" />
-              </div>
-              <label for="dictation-language">Language</label>
-              <input id="dictation-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Same as voice memos" />
-              <p class="field-help">A code such as en or vi; empty uses the voice memo language (or detects it).</p>
-            </section>
-
-            <section class="settings-section hidden" data-section="read-aloud">
-              <h2>Read Aloud</h2>
-              <p class="settings-section-description">
-                Reads selected text in the editors and PDFs, and AI Chat replies, out loud: choose <strong>Read Out Loud</strong>
-                in an editor’s right-click menu, the speaker button in a PDF’s selection toolbar or under a reply, or turn on
-                <strong>Auto Read</strong> in the chat’s ⋯ menu. Changes apply without restarting.
-              </p>
-
-              <label for="tts-engine">Read with</label>
-              <select id="tts-engine">
-                <option value="openrouter">OpenRouter</option>
-                <option value="local">This computer: Kokoro 82M</option>
-              </select>
-              <p class="field-help">Kokoro runs on the CPU and nothing leaves the computer. OpenRouter receives the text a few sentences at a time and bills per character.</p>
-              <label for="tts-speed">Speed</label>
-              <select id="tts-speed">
-                <option value="0.75">0.75×</option><option value="0.9">0.9×</option><option value="1">1×</option>
-                <option value="1.1">1.1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option>
-              </select>
-              <p class="field-help">Kokoro on this computer always follows it; on OpenRouter only some providers do.</p>
-
-              <div id="tts-local-fields">
-                <h3>Kokoro 82M on this computer</h3>
-                <label for="tts-model-directory">Kokoro model folder</label>
-                <div class="directory-row">
-                  <input id="tts-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" />
-                  <button id="tts-model-directory-button" class="secondary" type="button">Choose</button>
+              <div class="ai-overview">
+                <div class="ai-panel">
+                  <div class="ai-panel-head">
+                    <span class="ai-panel-icon" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg></span>
+                    <div>
+                      <h3>On this computer</h3>
+                      <p class="field-help">Speech models and the audio converter that voice memos and dictation share.</p>
+                    </div>
+                  </div>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide">
+                      <label for="transcription-model-directory">Speech models folder</label>
+                      <div class="directory-row">
+                        <input id="transcription-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
+                        <button id="transcription-model-directory-button" class="secondary" type="button">Choose</button>
+                      </div>
+                      <details class="ai-note">
+                        <summary>What goes in this folder</summary>
+                        <p class="field-help">The first time you transcribe, Libera offers to download them here, or into its application data when the field is empty: NVIDIA Parakeet TDT 0.6B v3 (sherpa-onnx 8-bit export, about 670 MB), and pyannote segmentation-3.0 with 3D-Speaker CAM++ to tell speakers apart (34 MB together). Or put the files there yourself, in parakeet-tdt-0.6b-v3/ (encoder, decoder and joiner .onnx files and tokens.txt), pyannote-segmentation-3.0/model.onnx and speaker-embedding/*.onnx. Voice memos and dictation share them.</p>
+                      </details>
+                    </div>
+                    <div class="ai-field ai-field-wide">
+                      <label for="transcription-ffmpeg">ffmpeg</label>
+                      <div class="directory-row">
+                        <input id="transcription-ffmpeg" autocomplete="off" spellcheck="false" placeholder="Found automatically when installed" />
+                        <button id="transcription-ffmpeg-button" class="secondary" type="button">Choose</button>
+                      </div>
+                      <p class="field-help">Reads M4A, MP3, OGG, FLAC and other recording formats. Without it, macOS reads them with its own converter and other systems read WAV only. Dictation does not need it.</p>
+                    </div>
+                  </div>
                 </div>
-                <p id="tts-model-status" class="field-help" role="status"></p>
-                <p class="field-help">
-                  Leave it empty and the first time you read aloud, Libera offers to download kokoro-int8-multi-lang-v1_0 (about
-                  190 MB) into its application data. To use another release, such as the full-precision kokoro-multi-lang-v1_0
-                  or the English-only kokoro-en-v0_19, download it from sherpa-onnx’s tts-models release on GitHub, extract it,
-                  and choose the folder holding model.onnx, voices.bin, tokens.txt and espeak-ng-data/.
-                </p>
-                <label for="tts-local-voice">Voice</label>
-                <select id="tts-local-voice"></select>
-                <p class="field-help">Voices for kokoro-multi-lang-v1_0, grouped by accent. Other releases fall back to their first voice for names they do not have.</p>
               </div>
 
-              <div id="tts-openrouter-fields">
-                <h3>OpenRouter</h3>
-                <label for="tts-openrouter-model">Text-to-speech model</label>
-                <input id="tts-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="hexgrad/kokoro-82m" />
-                <p class="field-help">hexgrad/kokoro-82m (the default) costs well under a dollar per million characters and has the same voices as Kokoro on this computer. Others, such as openai/gpt-4o-mini-tts or google/gemini-3.8-flash-lite-tts, sound more expressive for more.</p>
-                <label for="tts-openrouter-voice">Voice</label>
-                <input id="tts-openrouter-voice" type="text" autocomplete="off" spellcheck="false" placeholder="af_heart" list="tts-openrouter-voices" />
-                <datalist id="tts-openrouter-voices"></datalist>
-                <p id="tts-openrouter-voice-help" class="field-help">Each model has its own voices; the list suggests the chosen model’s. Empty uses the provider’s default, where it has one.</p>
+              <h3 class="ai-group-title">Voice memos</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>
+                    <div class="ai-card-title"><h4>Transcription</h4><p>Timestamped transcripts of your recordings.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="transcription-engine">Transcribe with</label>
+                      <select id="transcription-engine"><option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option><option value="openrouter">OpenRouter</option></select>
+                      <p class="field-help">Parakeet runs on the CPU and covers 25 European languages. OpenRouter receives the audio in pieces of a few minutes and bills per second.</p></div>
+                    <div class="ai-field"><label for="transcription-openrouter-model">OpenRouter speech-to-text model</label><input id="transcription-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="openai/whisper-large-v3" /></div>
+                    <div class="ai-field"><label for="transcription-language">Language</label><input id="transcription-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Detect, or en, vi, fr…" /></div>
+                  </div>
+                  <p class="field-help">Language takes a code such as en, vi or fr; leave it empty to detect it.</p>
+                </article>
+
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+                    <div class="ai-card-title"><h4>Speakers</h4><p>Runs on this computer with either engine: pyannote segmentation-3.0 finds who speaks when, and a speaker embedding groups the voices.</p></div>
+                  </header>
+                  <div class="switch-row">
+                    <label for="transcription-diarization">Tell speakers apart (pyannote)</label>
+                    <input id="transcription-diarization" class="switch" type="checkbox" role="switch" />
+                  </div>
+                  <div class="ai-card-grid speech-speakers">
+                    <div class="ai-field"><label for="transcription-speakers">Number of speakers</label>
+                      <select id="transcription-speakers">
+                        <option value="0">Detect automatically</option>
+                        <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                      </select></div>
+                  </div>
+                  <p class="field-help">A known count separates voices more reliably. Each recording can also be given its own when you transcribe it.</p>
+                </article>
+              </div>
+
+              <h3 class="ai-group-title">Dictation</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></span>
+                    <div class="ai-card-title"><h4>Spoken prompts</h4><p>The microphone in AI Chat, the Agent, Agentic Review, Write with AI and AI Rewrite. Nothing is kept after a prompt is typed.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="dictation-engine">Dictate with</label>
+                      <select id="dictation-engine"><option value="same">Same as voice memos</option><option value="local">This computer: NVIDIA Parakeet TDT 0.6B v3</option><option value="openrouter">OpenRouter</option></select>
+                      <p class="field-help">Spoken prompts are short, so a fast engine suits them even when voice memos use a more accurate one.</p></div>
+                    <div class="ai-field" id="dictation-openrouter-fields"><label for="dictation-openrouter-model">OpenRouter speech-to-text model</label><input id="dictation-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="Same as voice memos" /></div>
+                    <div class="ai-field"><label for="dictation-language">Language</label><input id="dictation-language" type="text" autocomplete="off" spellcheck="false" maxlength="3" placeholder="Same as voice memos" /></div>
+                  </div>
+                  <p class="field-help">Language takes a code such as en or vi; empty uses the voice memo language (or detects it).</p>
+                </article>
               </div>
             </section>
 
-            <section class="settings-section hidden" data-section="detection">
+            <section class="settings-section hidden card-settings" data-section="read-aloud">
+              <h2>Read Aloud</h2>
+              <p class="settings-section-description">Reads selected text in the editors and PDFs, and AI Chat replies, out loud: choose <strong>Read Out Loud</strong> in an editor’s right-click menu, the speaker button in a PDF’s selection toolbar or under a reply, or turn on <strong>Auto Read</strong> in the chat’s ⋯ menu. Changes apply without restarting.</p>
+
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg></span>
+                    <div class="ai-card-title"><h4>Engine and speed</h4><p>Kokoro runs on the CPU and nothing leaves the computer. OpenRouter receives the text a few sentences at a time and bills per character.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="tts-engine">Read with</label>
+                      <select id="tts-engine"><option value="openrouter">OpenRouter</option><option value="local">This computer: Kokoro 82M</option></select></div>
+                    <div class="ai-field"><label for="tts-speed">Speed</label>
+                      <select id="tts-speed"><option value="0.75">0.75×</option><option value="0.9">0.9×</option><option value="1">1×</option><option value="1.1">1.1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></div>
+                  </div>
+                  <p class="field-help">Kokoro on this computer always follows the speed; on OpenRouter only some providers do.</p>
+                </article>
+
+                <article class="ai-card" id="tts-local-fields">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></span>
+                    <div class="ai-card-title"><h4>Kokoro 82M on this computer</h4><p>Voices for kokoro-multi-lang-v1_0, grouped by accent.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="tts-model-directory">Kokoro model folder</label>
+                      <div class="directory-row"><input id="tts-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s download" /><button id="tts-model-directory-button" class="secondary" type="button">Choose</button></div>
+                      <p id="tts-model-status" class="field-help" role="status"></p></div>
+                    <div class="ai-field ai-field-wide"><label for="tts-local-voice">Voice</label><select id="tts-local-voice"></select>
+                      <p class="field-help">Other releases fall back to their first voice for names they do not have.</p></div>
+                  </div>
+                  <details class="ai-card-more">
+                    <summary>Using another release</summary>
+                    <p class="field-help">Leave the folder empty and the first time you read aloud, Libera offers to download kokoro-int8-multi-lang-v1_0 (about 190 MB) into its application data. To use another release, such as the full-precision kokoro-multi-lang-v1_0 or the English-only kokoro-en-v0_19, download it from sherpa-onnx’s tts-models release on GitHub, extract it, and choose the folder holding model.onnx, voices.bin, tokens.txt and espeak-ng-data/.</p>
+                  </details>
+                </article>
+
+                <article class="ai-card" id="tts-openrouter-fields">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg></span>
+                    <div class="ai-card-title"><h4>OpenRouter</h4><p>hexgrad/kokoro-82m (the default) costs well under a dollar per million characters and has the same voices as Kokoro on this computer. Others, such as openai/gpt-4o-mini-tts or google/gemini-3.8-flash-lite-tts, sound more expressive for more.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="tts-openrouter-model">Text-to-speech model</label><input id="tts-openrouter-model" type="text" autocomplete="off" spellcheck="false" placeholder="hexgrad/kokoro-82m" /></div>
+                    <div class="ai-field"><label for="tts-openrouter-voice">Voice</label><input id="tts-openrouter-voice" type="text" autocomplete="off" spellcheck="false" placeholder="af_heart" list="tts-openrouter-voices" /><datalist id="tts-openrouter-voices"></datalist></div>
+                  </div>
+                  <p id="tts-openrouter-voice-help" class="field-help">Each model has its own voices; the list suggests the chosen model’s. Empty uses the provider’s default, where it has one.</p>
+                </article>
+              </div>
+            </section>
+
+            <section class="settings-section hidden card-settings" data-section="detection">
               <h2>Detection and Segmentation</h2>
-              <p class="settings-section-description">
-                Finds, outlines and counts objects in photos with Ultralytics’ YOLOE-26, on this computer. Describe what to find in
-                words, or draw examples on the photo or on a reference image. Open it with the scan button in the photo viewer and
-                the Image Gallery. Changes apply to the next run, without restarting.
-              </p>
+              <p class="settings-section-description">Finds, outlines and counts objects in photos with Ultralytics’ YOLOE-26, on this computer. Describe what to find in words, or draw examples on the photo or on a reference image. Open it with the scan button in the photo viewer and the Image Gallery. Changes apply to the next run, without restarting.</p>
 
-              <h3>Model</h3>
-              <label for="detection-variant">Default variant</label>
-              <select id="detection-variant">
-                <option value="n">YOLOE-26n: fastest (12 MB, text/visual mAP 24.7/21.9)</option>
-                <option value="s">YOLOE-26s: balanced (31 MB, 30.8/28.6)</option>
-                <option value="m">YOLOE-26m (70 MB, 35.4/33.9)</option>
-                <option value="l">YOLOE-26l (79 MB, 37.8/36.3)</option>
-                <option value="x">YOLOE-26x: most accurate (172 MB, 40.6/38.5)</option>
-              </select>
-              <p class="field-help">The prompt models (text and visual prompts). mAP50-95 on LVIS minival, from Ultralytics. The tool can switch variants for a run; each downloads the first time it is used.</p>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect width="8" height="8" x="8" y="8" rx="1"/></svg></span>
+                    <div class="ai-card-title"><h4>Model</h4><p>The prompt models for text and visual prompts. The tool can switch variants for a run; each downloads the first time it is used.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field ai-field-wide"><label for="detection-variant">Default variant</label>
+                      <select id="detection-variant"><option value="n">YOLOE-26n: fastest (12 MB, text/visual mAP 24.7/21.9)</option><option value="s">YOLOE-26s: balanced (31 MB, 30.8/28.6)</option><option value="m">YOLOE-26m (70 MB, 35.4/33.9)</option><option value="l">YOLOE-26l (79 MB, 37.8/36.3)</option><option value="x">YOLOE-26x: most accurate (172 MB, 40.6/38.5)</option></select>
+                      <p class="field-help">mAP50-95 on LVIS minival, from Ultralytics.</p></div>
+                    <div class="ai-field ai-field-wide"><label for="detection-device">Run on</label>
+                      <select id="detection-device"><option value="cpu">CPU</option><option value="mps">Apple GPU (Metal)</option><option value="cuda">NVIDIA GPU (CUDA)</option></select>
+                      <p class="field-help">The CPU works everywhere and takes well under a second per photo for the smaller variants. The GPUs are faster for the larger variants, where PyTorch supports them.</p></div>
+                  </div>
+                </article>
 
-              <label for="detection-device">Run on</label>
-              <select id="detection-device">
-                <option value="cpu">CPU</option>
-                <option value="mps">Apple GPU (Metal)</option>
-                <option value="cuda">NVIDIA GPU (CUDA)</option>
-              </select>
-              <p class="field-help">The CPU works everywhere and takes well under a second per photo for the smaller variants. The GPUs are faster for the larger variants, where PyTorch supports them.</p>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg></span>
+                    <div class="ai-card-title"><h4>Inference</h4><p>How detections are kept and how closely photos are examined.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="detection-confidence">Confidence threshold</label><input id="detection-confidence" type="number" min="0.01" max="0.99" step="0.01" />
+                      <p class="field-help">Detections scoring below it are dropped (default 0.25). The tool can raise it afterwards without running again.</p></div>
+                    <div class="ai-field"><label for="detection-iou">IoU threshold</label><input id="detection-iou" type="number" min="0.05" max="0.95" step="0.05" />
+                      <p class="field-help">How much two boxes may overlap before the weaker is suppressed (default 0.7).</p></div>
+                    <div class="ai-field"><label for="detection-max-detections">Maximum detections per photo</label><input id="detection-max-detections" type="number" min="1" max="3000" step="1" /></div>
+                    <div class="ai-field"><label for="detection-image-size">Inference size</label>
+                      <select id="detection-image-size"><option value="640">640 px (the model’s training size)</option><option value="960">960 px (small objects)</option><option value="1280">1280 px (very small objects; slower)</option></select></div>
+                  </div>
+                  <p class="field-help">The photo’s longer side is resized to the inference size before detection; larger sizes find smaller objects such as cells or seeds.</p>
+                </article>
 
-              <h3>Inference</h3>
-              <label for="detection-confidence">Confidence threshold</label>
-              <input id="detection-confidence" type="number" min="0.01" max="0.99" step="0.01" />
-              <p class="field-help">Detections scoring below it are dropped (default 0.25). The tool can raise the threshold afterwards without running again.</p>
-              <label for="detection-iou">IoU threshold</label>
-              <input id="detection-iou" type="number" min="0.05" max="0.95" step="0.05" />
-              <p class="field-help">How much two boxes may overlap before the weaker is suppressed (default 0.7).</p>
-              <label for="detection-max-detections">Maximum detections per photo</label>
-              <input id="detection-max-detections" type="number" min="1" max="3000" step="1" />
-              <label for="detection-image-size">Inference size</label>
-              <select id="detection-image-size">
-                <option value="640">640 px (the model’s training size)</option>
-                <option value="960">960 px (small objects)</option>
-                <option value="1280">1280 px (very small objects; slower)</option>
-              </select>
-              <p class="field-help">The photo’s longer side is resized to this before detection; larger sizes find smaller objects such as cells or seeds.</p>
-
-              <h3>Downloads</h3>
-              <label for="detection-model-directory">Model folder</label>
-              <div class="directory-row">
-                <input id="detection-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" />
-                <button id="detection-model-directory-button" class="secondary" type="button">Choose</button>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></span>
+                    <div class="ai-card-title"><h4>Downloads</h4><p>A private Python runtime and the model weights, kept in one folder.</p></div>
+                  </header>
+                  <label for="detection-model-directory">Model folder</label>
+                  <div class="directory-row"><input id="detection-model-directory" autocomplete="off" spellcheck="false" placeholder="Default: Libera’s application data" /><button id="detection-model-directory-button" class="secondary" type="button">Choose</button></div>
+                  <p id="detection-model-status" class="field-help" role="status"></p>
+                  <p class="field-help">The first time you detect, Libera offers to download a private Python runtime with PyTorch and Ultralytics (about 1 GB, installed by uv into this folder, nothing system-wide), MobileCLIP2-B for text prompts (254 MB) and the chosen variant’s weights from Ultralytics’ GitHub releases. Ultralytics and the YOLOE-26 weights are licensed AGPL-3.0.</p>
+                </article>
               </div>
-              <p id="detection-model-status" class="field-help" role="status"></p>
-              <p class="field-help">
-                The first time you detect, Libera offers to download a private Python runtime with PyTorch and Ultralytics (about
-                1 GB, installed by uv into this folder, nothing system-wide), MobileCLIP2-B for text prompts (254 MB) and the chosen
-                variant’s weights from Ultralytics’ GitHub releases. Ultralytics and the YOLOE-26 weights are licensed AGPL-3.0.
-              </p>
             </section>
 
-            <section class="settings-section hidden" data-section="markdown">
+            <section class="settings-section hidden card-settings" data-section="markdown">
               <h2>Markdown</h2>
-              <p class="settings-section-description">
-                Set the default typography used by Markdown editing, preview, and PDF export.
-              </p>
+              <p class="settings-section-description">Set the default typography used by Markdown editing, preview, and PDF export.</p>
 
-              <h3>Equation markers</h3>
-              <p class="field-help">Enter one opening and closing pair per line, separated by a space. Use literal punctuation, not regular expressions. Leave a textarea empty to disable that type. These settings apply to visual editing and Source Editor rendering; recognized markers are preserved when saving. Save preferences and restart the app to apply changes.</p>
-              <label for="markdown-inline-math-markers">Inline math markers</label>
-              <textarea id="markdown-inline-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea>
-              <label for="markdown-block-math-markers">Display math markers (on their own lines)</label>
-              <textarea id="markdown-block-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea>
-              <h3>Visual editor</h3>
-              <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
-              <div class="font-picker-row">
-                <select id="wysiwyg-editor-font-family">
-                  <option value="system-sans">System sans serif (default)</option>
-                </select>
-                <button id="load-wysiwyg-system-fonts-button" class="secondary" type="button">
-                  Load system fonts
-                </button>
+              <h3 class="ai-group-title">Fonts</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg></span>
+                    <div class="ai-card-title"><h4>Visual editor</h4><p>The default font for the visual (TipTap) editor.</p></div>
+                  </header>
+                  <label for="wysiwyg-editor-font-family">WYSIWYG editor font</label>
+                  <div class="font-picker-row">
+                    <select id="wysiwyg-editor-font-family"><option value="system-sans">System sans serif (default)</option></select>
+                    <button id="load-wysiwyg-system-fonts-button" class="secondary" type="button">Load system fonts</button>
+                  </div>
+                  <p id="wysiwyg-system-fonts-status" class="field-help">The Markdown source editor and PDF export are not affected.</p>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg></span>
+                    <div class="ai-card-title"><h4>Source editor</h4><p>The font for Markdown source text.</p></div>
+                  </header>
+                  <label for="markdown-editor-font-family">Font family</label>
+                  <div class="font-picker-row">
+                    <select id="markdown-editor-font-family"><option value="system-monospace">System monospace (default)</option></select>
+                    <button id="load-system-fonts-button" class="secondary" type="button">Load system fonts</button>
+                  </div>
+                  <p id="system-fonts-status" class="field-help">Load the fonts installed on this computer, then choose one. Preview and PDF fonts are not affected.</p>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg></span>
+                    <div class="ai-card-title"><h4>Rendered Markdown</h4><p>Rendered previews and generated PDFs.</p></div>
+                  </header>
+                  <label for="rendered-markdown-font-family">Font family</label>
+                  <div class="font-picker-row">
+                    <select id="rendered-markdown-font-family"><option value="system-sans">System sans serif (default)</option></select>
+                    <button id="load-rendered-system-fonts-button" class="secondary" type="button">Load system fonts</button>
+                  </div>
+                  <p id="rendered-system-fonts-status" class="field-help">The visual editor and Markdown source text are not affected.</p>
+                </article>
               </div>
-              <p id="wysiwyg-system-fonts-status" class="field-help">
-                Choose the default font for the visual (TipTap) editor. The Markdown source
-                editor and PDF export are not affected.
-              </p>
 
-              <h3>Source editor</h3>
-              <label for="markdown-editor-font-family">Font family</label>
-              <div class="font-picker-row">
-                <select id="markdown-editor-font-family">
-                  <option value="system-monospace">System monospace (default)</option>
-                </select>
-                <button id="load-system-fonts-button" class="secondary" type="button">
-                  Load system fonts
-                </button>
+              <h3 class="ai-group-title">Size and spacing</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 16 2.536-7.328a1.02 1.02 1 0 1 1.928 0L22 16"/><path d="M15.697 14h5.606"/><path d="m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16"/><path d="M3.304 13h6.392"/></svg></span>
+                    <div class="ai-card-title"><h4>Editor and preview</h4><p>The toolbar zoom multiplies this size; at 100%, Markdown text uses it.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="markdown-base-font-size">Base font size</label><input id="markdown-base-font-size" inputmode="decimal" max="32" min="10" step="1" type="number" /></div>
+                    <div class="ai-field"><label for="markdown-base-line-height">Base line-height</label><input id="markdown-base-line-height" inputmode="decimal" max="2.4" min="1.1" step="0.05" type="number" /></div>
+                  </div>
+                  <p class="field-help">Font size in pixels. Line-height is a unitless ratio; the default is 1.75.</p>
+                </article>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg></span>
+                    <div class="ai-card-title"><h4>PDF export</h4><p>Controls Markdown PDF export only and does not affect the editor.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="markdown-pdf-base-font-size">Base font size</label><input id="markdown-pdf-base-font-size" inputmode="decimal" max="32" min="10" step="1" type="number" /></div>
+                    <div class="ai-field"><label for="markdown-pdf-base-line-height">Base line-height</label><input id="markdown-pdf-base-line-height" inputmode="decimal" max="2.4" min="1.1" step="0.05" type="number" /></div>
+                  </div>
+                  <p class="field-help">Use a unitless line-height ratio for exported PDFs.</p>
+                </article>
               </div>
-              <p id="system-fonts-status" class="field-help">
-                Load the fonts installed on this computer, then choose one for the Markdown
-                source editor. Preview and PDF fonts are not affected.
-              </p>
 
-              <h3>Source-rendered Markdown</h3>
-              <label for="rendered-markdown-font-family">Font family</label>
-              <div class="font-picker-row">
-                <select id="rendered-markdown-font-family">
-                  <option value="system-sans">System sans serif (default)</option>
-                </select>
-                <button id="load-rendered-system-fonts-button" class="secondary" type="button">
-                  Load system fonts
-                </button>
+              <h3 class="ai-group-title">Color</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg></span>
+                    <div class="ai-card-title"><h4>Accent color</h4><p>Colors headings, list bullets and numbers in the visual editor and rendered previews. Each color has a lighter shade for the dark theme. PDF export is not affected.</p></div>
+                  </header>
+                  <label for="markdown-heading-color">Heading color</label>
+                  <select id="markdown-heading-color">
+                    <option value="blue">Blue (default)</option><option value="indigo">Indigo</option><option value="teal">Teal</option><option value="green">Green</option><option value="purple">Purple</option><option value="rose">Rose</option><option value="orange">Orange</option><option value="spectrum">Spectrum (a color per heading level)</option><option value="custom">Custom…</option><option value="none">None</option>
+                  </select>
+                  <fieldset id="markdown-heading-palette" class="heading-palette hidden">
+                    <legend>Custom colors</legend>
+                    <label><input type="color" data-palette-key="h1" /> Heading 1</label>
+                    <label><input type="color" data-palette-key="h2" /> Heading 2</label>
+                    <label><input type="color" data-palette-key="h3" /> Heading 3</label>
+                    <label><input type="color" data-palette-key="h4" /> Heading 4</label>
+                    <label><input type="color" data-palette-key="h5" /> Heading 5 and smaller</label>
+                    <label><input type="color" data-palette-key="lists" /> Bullets, numbers and lead-ins</label>
+                    <button id="reset-heading-palette" class="secondary" type="button">Reset to Spectrum</button>
+                    <p class="field-help">Pick the colors for the light theme; the dark theme uses a lighter shade of each.</p>
+                  </fieldset>
+                  <div class="switch-row">
+                    <label for="markdown-bold-lead-ins">Color bold lead-ins</label>
+                    <input id="markdown-bold-lead-ins" class="switch" type="checkbox" role="switch" aria-describedby="markdown-bold-lead-ins-help" />
+                  </div>
+                  <p id="markdown-bold-lead-ins-help" class="field-help">Bold text at the start of a paragraph or list item (after -, * or 1.) takes the heading color too.</p>
+                </article>
               </div>
-              <p id="rendered-system-fonts-status" class="field-help">
-                Applies to rendered Markdown previews and generated PDFs. The visual editor
-                and Markdown source text are not affected.
-              </p>
 
-              <h3>Editor and preview</h3>
-              <label for="markdown-base-font-size">Base font size</label>
-              <input
-                id="markdown-base-font-size"
-                inputmode="decimal"
-                max="32"
-                min="10"
-                step="1"
-                type="number"
-              />
-              <p class="field-help">
-                The toolbar zoom multiplies this pixel size. At 100%, Markdown text uses this
-                size.
-              </p>
-
-              <label for="markdown-base-line-height">Base line-height</label>
-              <input
-                id="markdown-base-line-height"
-                inputmode="decimal"
-                max="2.4"
-                min="1.1"
-                step="0.05"
-                type="number"
-              />
-              <p class="field-help">
-                Use a unitless line-height ratio. The default is 1.75.
-              </p>
-
-              <h3>Accent color</h3>
-              <label for="markdown-heading-color">Heading color</label>
-              <select id="markdown-heading-color">
-                <option value="blue">Blue (default)</option>
-                <option value="indigo">Indigo</option>
-                <option value="teal">Teal</option>
-                <option value="green">Green</option>
-                <option value="purple">Purple</option>
-                <option value="rose">Rose</option>
-                <option value="orange">Orange</option>
-                <option value="spectrum">Spectrum (a color per heading level)</option>
-                <option value="custom">Custom…</option>
-                <option value="none">None</option>
-              </select>
-              <p class="field-help">
-                Colors headings, list bullets and numbers in the visual editor and rendered
-                Markdown previews. Each color has a lighter shade for the dark theme. PDF
-                export is not affected.
-              </p>
-
-              <fieldset id="markdown-heading-palette" class="heading-palette hidden">
-                <legend>Custom colors</legend>
-                <label><input type="color" data-palette-key="h1" /> Heading 1</label>
-                <label><input type="color" data-palette-key="h2" /> Heading 2</label>
-                <label><input type="color" data-palette-key="h3" /> Heading 3</label>
-                <label><input type="color" data-palette-key="h4" /> Heading 4</label>
-                <label><input type="color" data-palette-key="h5" /> Heading 5 and smaller</label>
-                <label><input type="color" data-palette-key="lists" /> Bullets, numbers and lead-ins</label>
-                <button id="reset-heading-palette" class="secondary" type="button">Reset to Spectrum</button>
-                <p class="field-help">
-                  Pick the colors for the light theme; the dark theme uses a lighter shade of each.
-                </p>
-              </fieldset>
-
-              <div class="switch-row">
-                <label for="markdown-bold-lead-ins">Color bold lead-ins</label>
-                <input id="markdown-bold-lead-ins" class="switch" type="checkbox" role="switch" aria-describedby="markdown-bold-lead-ins-help" />
+              <h3 class="ai-group-title">Equations</h3>
+              <div class="ai-cards">
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2"/></svg></span>
+                    <div class="ai-card-title"><h4>Equation markers</h4><p>One opening and closing pair per line, separated by a space. Use literal punctuation, not regular expressions; leave one empty to turn that type off.</p></div>
+                  </header>
+                  <div class="ai-card-grid">
+                    <div class="ai-field"><label for="markdown-inline-math-markers">Inline math markers</label><textarea id="markdown-inline-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea></div>
+                    <div class="ai-field"><label for="markdown-block-math-markers">Display math markers (on their own lines)</label><textarea id="markdown-block-math-markers" spellcheck="false" rows="3" maxlength="4096"></textarea></div>
+                  </div>
+                  <p class="field-help">These apply to visual editing and Source Editor rendering; recognized markers are preserved when saving. Save preferences and restart the app to apply changes.</p>
+                </article>
               </div>
-              <p id="markdown-bold-lead-ins-help" class="field-help">
-                Bold text at the start of a paragraph or list item (after -, * or 1.)
-                takes the heading color too.
-              </p>
-
-              <h3>PDF export</h3>
-              <label for="markdown-pdf-base-font-size">Base font size</label>
-              <input
-                id="markdown-pdf-base-font-size"
-                inputmode="decimal"
-                max="32"
-                min="10"
-                step="1"
-                type="number"
-              />
-              <p class="field-help">
-                This controls Markdown PDF export only and does not affect the editor.
-              </p>
-
-              <label for="markdown-pdf-base-line-height">Base line-height</label>
-              <input
-                id="markdown-pdf-base-line-height"
-                inputmode="decimal"
-                max="2.4"
-                min="1.1"
-                step="0.05"
-                type="number"
-              />
-              <p class="field-help">
-                Use a unitless line-height ratio for exported PDFs.
-              </p>
             </section>
 
-            <section class="settings-section configuration-only hidden" data-section="users">
+            <section class="settings-section configuration-only hidden card-settings" data-section="users">
               <h2>Users</h2>
-              <p class="settings-section-description">
-                Everyone who shares this computer can have their own master directory, preferences, password and collaboration sign-in. To change user, sign out and choose a name on the sign-in screen.
-              </p>
+              <p class="settings-section-description">Everyone who shares this computer can have their own master directory, preferences, password and collaboration sign-in. To change user, sign out and choose a name on the sign-in screen.</p>
 
+              <h3 class="ai-group-title">On this computer</h3>
               <ul id="users-list" class="users-list" aria-label="Users"></ul>
               <p id="users-status" class="io-status field-help" role="status" aria-live="polite"></p>
 
-              <article id="add-user-card" class="io-card users-add">
-                <h3>Add a user</h3>
-                <p class="field-help">They start with default preferences and can change them after signing in.</p>
-
-                <label for="new-user-name">Name</label>
-                <input id="new-user-name" type="text" autocomplete="off" maxlength="60" />
-
-                <label for="new-user-data-dir">Master directory</label>
-                <div class="directory-row">
-                  <input id="new-user-data-dir" autocomplete="off" readonly aria-describedby="new-user-data-dir-help" />
-                  <button id="new-user-browse-button" class="secondary" type="button">Choose</button>
+              <article id="add-user-card" class="ai-card users-add">
+                <header class="ai-card-header">
+                  <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></svg></span>
+                  <div class="ai-card-title"><h4>Add a user</h4><p>They start with default preferences and can change them after signing in.</p></div>
+                </header>
+                <div class="ai-card-grid">
+                  <div class="ai-field ai-field-wide"><label for="new-user-name">Name</label><input id="new-user-name" type="text" autocomplete="off" maxlength="60" /></div>
+                  <div class="ai-field ai-field-wide"><label for="new-user-data-dir">Master directory</label>
+                    <div class="directory-row"><input id="new-user-data-dir" autocomplete="off" readonly aria-describedby="new-user-data-dir-help" /><button id="new-user-browse-button" class="secondary" type="button">Choose</button></div>
+                    <p id="new-user-data-dir-help" class="field-help">A folder of their own, apart from every other user’s.</p></div>
+                  <div class="ai-field"><label for="new-user-password">Master password</label><input id="new-user-password" autocomplete="new-password" type="password" /></div>
+                  <div class="ai-field"><label for="new-user-password-confirmation">Confirm master password</label><input id="new-user-password-confirmation" autocomplete="new-password" type="password" /></div>
+                  <div class="ai-field ai-field-wide"><label for="new-user-api-key">OPENAI_API_KEY</label><input id="new-user-api-key" autocomplete="off" spellcheck="false" type="password" aria-describedby="new-user-api-key-help" />
+                    <p id="new-user-api-key-help" class="field-help">Optional. Leave blank to share your API key with this user.</p></div>
                 </div>
-                <p id="new-user-data-dir-help" class="field-help">A folder of their own, apart from every other user’s.</p>
-
-                <label for="new-user-password">Master password</label>
-                <input id="new-user-password" autocomplete="new-password" type="password" />
-
-                <label for="new-user-password-confirmation">Confirm master password</label>
-                <input id="new-user-password-confirmation" autocomplete="new-password" type="password" />
-
-                <label for="new-user-api-key">OPENAI_API_KEY</label>
-                <input id="new-user-api-key" autocomplete="off" spellcheck="false" type="password" aria-describedby="new-user-api-key-help" />
-                <p id="new-user-api-key-help" class="field-help">Optional. Leave blank to share your API key with this user.</p>
-
-                <div class="textarea-actions">
+                <div class="card-actions card-actions-end">
                   <button id="add-user-button" type="button">Add User</button>
                 </div>
               </article>
             </section>
 
-            <section class="settings-section configuration-only hidden" data-section="io">
+            <section class="settings-section configuration-only hidden card-settings" data-section="io">
               <h2>I/O</h2>
-              <p class="settings-section-description">
-                Back up all settings shown in Preferences or restore them from a Libera JSON backup.
-              </p>
+              <p class="settings-section-description">Back up all settings shown in Preferences or restore them from a Libera JSON backup.</p>
 
               <div class="io-grid">
-                <article class="io-card">
-                  <h3>Export settings</h3>
-                  <p class="field-help">Save the currently stored General, Markdown, AI, and Search preferences to a JSON file.</p>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg></span>
+                    <div class="ai-card-title"><h4>Export settings</h4><p>Save the currently stored General, Markdown, AI, and Search preferences to a JSON file.</p></div>
+                  </header>
                   <button id="export-preferences-button" class="secondary io-button" type="button">
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
                     Export settings
                   </button>
                 </article>
-
-                <article class="io-card">
-                  <h3>Load settings</h3>
-                  <p class="field-help">Replace the saved preferences with values from a Libera JSON backup.</p>
+                <article class="ai-card">
+                  <header class="ai-card-header">
+                    <span class="ai-card-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg></span>
+                    <div class="ai-card-title"><h4>Load settings</h4><p>Replace the saved preferences with values from a Libera JSON backup.</p></div>
+                  </header>
                   <button id="import-preferences-button" class="secondary io-button" type="button">
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></svg>
                     Load settings
@@ -1410,9 +1376,10 @@
                 </article>
               </div>
 
-              <p class="io-warning field-help">
-                The backup contains sensitive data, including your API key and master password verifier. Store it securely. The active login session secret is never exported.
-              </p>
+              <div class="io-warning">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <p class="field-help">The backup contains sensitive data, including your API key and master password verifier. Store it securely. The active login session secret is never exported.</p>
+              </div>
               <p id="io-status" class="io-status field-help" role="status" aria-live="polite"></p>
             </section>
           </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, X } from "lucide-react";
+import { CalendarDays, Check, Plus, TextCursorInput, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { cleanNameList, NameListEditor } from "@/components/libera/references/name-list-editor";
@@ -326,8 +326,9 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}>Cancel</button>
-          <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" disabled={submitting} onClick={() => void submit()}>
+          <button type="button" className="inline-flex items-center gap-1.5 rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted" onClick={onClose}><X aria-hidden className="h-4 w-4" /> Cancel</button>
+          <button type="button" className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90" disabled={submitting} onClick={() => void submit()}>
+            {entry ? <Check aria-hidden className="h-4 w-4" /> : <Plus aria-hidden className="h-4 w-4" />}
             {entry ? "Save" : "Add reference"}
           </button>
         </>
@@ -355,7 +356,8 @@ function ReferenceEditFormDialog({ open, entry, initial, onClose, onSubmit }: Fo
         <fieldset className="space-y-1">
           <legend className="mb-1 flex w-full items-center justify-between text-xs font-medium text-muted-foreground">
             <span>Date</span>
-            <button type="button" className="text-xs font-medium text-accent hover:underline" onClick={() => setDate((current) => ({ ...current, mode: current.mode === "parts" ? "literal" : "parts" }))}>
+            <button type="button" className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline" onClick={() => setDate((current) => ({ ...current, mode: current.mode === "parts" ? "literal" : "parts" }))}>
+              {date.mode === "parts" ? <TextCursorInput aria-hidden className="h-3.5 w-3.5" /> : <CalendarDays aria-hidden className="h-3.5 w-3.5" />}
               {date.mode === "parts" ? "Enter as text" : "Enter year, month, day"}
             </button>
           </legend>
