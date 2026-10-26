@@ -3,6 +3,7 @@ import { jsonError, renewArchiveAccess, requireArchiveAccess, requireAuth } from
 import type { GalleryContents } from "@/lib/image-generation";
 import { toStorageError } from "@/lib/storage";
 import { withSharing } from "@/lib/storage/gallery-sharing";
+import { gallerySummary } from "@/lib/gallery-catalog";
 
 const MAX_IDS = 10_000;
 
@@ -16,10 +17,11 @@ function isContents(value: unknown): value is GalleryContents {
 }
 
 /** Adds shared-album details to gallery contents in a route's answer (the answer itself, or its `gallery`). */
-export async function shared<T>(result: T): Promise<T> {
-  if (isContents(result)) return await withSharing(result) as T;
+export async function shared<T>(result: T, compact = false): Promise<T> {
+  const prepare = async (contents: GalleryContents) => { const next = await withSharing(contents); return compact ? gallerySummary(next) : next; };
+  if (isContents(result)) return await prepare(result) as T;
   if (result && typeof result === "object" && isContents((result as { gallery?: unknown }).gallery)) {
-    return { ...result, gallery: await withSharing((result as unknown as { gallery: GalleryContents }).gallery) };
+    return { ...result, gallery: await prepare((result as unknown as { gallery: GalleryContents }).gallery) };
   }
   return result;
 }
@@ -34,7 +36,7 @@ export async function galleryRoute(request: NextRequest, run: (body: Record<stri
   let body: Record<string, unknown>;
   try { body = await request.json(); } catch { return jsonError("Invalid request.", 400); }
   try {
-    const response = NextResponse.json(await shared(await run(body ?? {})));
+    const response = NextResponse.json(await shared(await run(body ?? {}), request.headers.get("X-Libera-Gallery") === "catalog"));
     return archive ? renewArchiveAccess(response) : response;
   } catch (error) {
     const storageError = toStorageError(error);

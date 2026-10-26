@@ -3,6 +3,7 @@ import { jsonError, requireAuth } from "@/lib/api";
 import { toStorageError } from "@/lib/storage";
 import { getGallery, importGalleryPhoto } from "@/lib/storage/gallery";
 import { withSharing } from "@/lib/storage/gallery-sharing";
+import { gallerySummary } from "@/lib/gallery-catalog";
 
 export const runtime = "nodejs";
 
@@ -31,7 +32,8 @@ export async function POST(request: NextRequest) {
         failed.push({ name: file.name, error: toStorageError(error).message });
       }
     }
-    return NextResponse.json({ added, failed, gallery: await withSharing(await getGallery()) });
+    const gallery = await withSharing(await getGallery({ incremental: true }));
+    return NextResponse.json({ added, failed, gallery: request.headers.get("X-Libera-Gallery") === "catalog" ? gallerySummary(gallery) : gallery });
   } catch (error) {
     const storageError = toStorageError(error);
     return NextResponse.json({ error: storageError.message }, { status: storageError.status });

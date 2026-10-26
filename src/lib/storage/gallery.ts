@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import type { Stats } from "node:fs";
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { watch, type FSWatcher, type Stats } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import type { ArchiveContents, GalleryAlbum, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
+import { galleryImageSize } from "@/lib/image-generation";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import { StorageError } from "@/lib/storage/errors";
@@ -287,6 +289,26 @@ async function reconcile(index: GalleryIndex) {
 }
 
 let queue: Promise<unknown> = Promise.resolve();
+let galleryWatcher: FSWatcher | null = null;
+let watchedRoot = "";
+let galleryDirty = true;
+
+function watchGallery() {
+  const root = getGalleryRoot();
+  if (watchedRoot === root && galleryWatcher) return;
+  galleryWatcher?.close();
+  watchedRoot = root;
+  galleryDirty = true;
+  try {
+    galleryWatcher = watch(root, { recursive: true }, (_event, name) => {
+      const parts = String(name ?? "").replaceAll("\\", "/").split("/");
+      if (parts.some((part) => part.startsWith(".") && part !== PROTECTED_DIR)) return;
+      galleryDirty = true;
+    });
+    galleryWatcher.on("error", () => { galleryDirty = true; galleryWatcher?.close(); galleryWatcher = null; });
+    galleryWatcher.unref();
+  } catch { galleryWatcher = null; }
+}
 const thumbnailReads = new Set<Promise<unknown>>();
 // Snapshots share this transient array so cleanup can append notices before returning.
 const deletionNotices = new WeakMap<GalleryIndex, string[]>();
@@ -300,8 +322,9 @@ function queuedThumbnail<T>(read: () => Promise<T>): Promise<T> {
   return task;
 }
 
-function thumbnailName(relative: string, stats: Pick<PhotoRecord, "size" | "mtimeMs">) {
-  return `${createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex")}.webp`;
+function thumbnailName(relative: string, stats: Pick<PhotoRecord, "size" | "mtimeMs">, size = THUMBNAIL_SIZE) {
+  const hash = createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex");
+  return `${hash}${size === THUMBNAIL_SIZE ? "" : `-${size}`}.webp`;
 }
 
 /** Cached previews are disposable; sweep old versions and pre-existing orphaned files. */
@@ -311,15 +334,16 @@ async function pruneThumbnails(records: Record<string, PhotoRecord>, root: strin
   try { entries = await readdir(directory, { withFileTypes: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   const current = new Set(Object.values(records).map((record) => thumbnailName(record.path, record)));
-  await Promise.all(entries.filter((entry) => entry.isFile() && /^[a-f0-9]{40}\.webp$/.test(entry.name) && !current.has(entry.name))
+  await Promise.all(entries.filter((entry) => entry.isFile() && /^[a-f0-9]{40}(?:-(?:160|320|1280|2048))?\.webp$/.test(entry.name) && !current.has(entry.name.replace(/-(160|320|1280|2048)(?=\.webp$)/, "")))
     .map((entry) => rm(path.join(directory, entry.name), { force: true })));
 }
 
 /** Run one gallery change at a time against a freshly reconciled index. */
-function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promise<T> {
+function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T, forceScan = false): Promise<T> {
   const reads = [...thumbnailReads];
   const next = queue.then(() => Promise.allSettled(reads)).then(async () => {
     const index = await loadIndex();
+    watchGallery();
     const notices: string[] = [];
     deletionNotices.set(index, notices);
     const idsBefore = [...Object.keys(index.photos), ...Object.keys(index.archive)];
@@ -327,8 +351,11 @@ function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promis
     const searchablePhotos = () => JSON.stringify(Object.entries(index.photos).map(([id, photo]) =>
       [id, photo.path, photo.size, photo.mtimeMs, photo.prompt]));
     const photosBefore = searchablePhotos();
-    await reconcile(index);
-    await reconcileArchive(index);
+    if (forceScan || galleryDirty || !galleryWatcher) {
+      galleryDirty = false;
+      try { await reconcile(index); await reconcileArchive(index); }
+      catch (error) { galleryDirty = true; throw error; }
+    }
     const result = await change(index);
     await pruneThumbnails(index.photos, getGalleryRoot());
     await pruneThumbnails(index.archive, protectedRoot());
@@ -452,8 +479,20 @@ async function placeRecordIn(index: GalleryIndex, id: string, folder: string, { 
   return id;
 }
 
-export function getGallery() {
-  return withGallery(toContents);
+export function getGallery({ incremental = false } = {}) {
+  return withGallery(toContents, !incremental);
+}
+
+/** A detail read shares mutation ordering but never rescans every photo. */
+export function getGalleryPhotoDetails(id: string) {
+  const next = queue.then(async () => {
+    const index = await loadIndex();
+    const record = findPhoto(index, id);
+    const photo = toPhoto(id, record, index.albums.filter((album) => album.photoIds.includes(id)).map((album) => album.id));
+    return { root: getGalleryRoot(), photos: [photo], albums: toContents({ ...index, photos: { [id]: record }, albums: index.albums.map((album) => ({ ...album, photoIds: album.photoIds.filter((photoId) => photoId === id) })) }).albums };
+  });
+  queue = next.catch(() => undefined);
+  return next;
 }
 
 /** Create an album; its photos are moved into a new folder named after it. */
@@ -565,9 +604,9 @@ export function setPhotosStarred(ids: string[], starred: boolean) {
 }
 
 /** Thumbnails are keyed by the file's identity, inside `root` (the gallery or the archive). */
-async function thumbnailPathFor(relative: string, root = getGalleryRoot()) {
+async function thumbnailPathFor(relative: string, root = getGalleryRoot(), size = THUMBNAIL_SIZE) {
   const stats = await stat(path.join(root, ...relative.split("/")));
-  return path.join(root, THUMBNAILS_DIR, thumbnailName(relative, stats));
+  return path.join(root, THUMBNAILS_DIR, thumbnailName(relative, stats, size));
 }
 
 export function deletePhotos(ids: string[]) {
@@ -667,7 +706,7 @@ export function archivePhotos(ids: string[]) {
 }
 
 export function getArchive() {
-  return withGallery(toArchiveContents);
+  return withGallery(toArchiveContents, true);
 }
 
 /** Put archived photos back in the folder and albums they came from, where those still exist. */
@@ -898,21 +937,37 @@ async function readPhotoFile(photo: PhotoFile) {
   };
 }
 
-async function readThumbnail(photo: PhotoFile, root: string) {
-  // Vector images are already small and scale cleanly.
-  if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
-  const target = await thumbnailPathFor(photo.relative, root);
+const renderingThumbnails = new Map<string, Promise<{ name: string; body: Buffer; contentType: string }>>();
+let activeThumbnailRenders = 0;
+const thumbnailRenderWaiters: Array<() => void> = [];
+
+async function renderThumbnail(photo: PhotoFile, target: string, size: number) {
+  if (activeThumbnailRenders >= 2) await new Promise<void>((resolve) => thumbnailRenderWaiters.push(resolve));
+  else activeThumbnailRenders++;
   try {
-    return { name: photo.name, body: await readFile(target), contentType: "image/webp" };
-  } catch {
-    const body = await sharp(photo.absolute, { animated: false })
-      .rotate()
-      .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "inside", withoutEnlargement: true })
-      .webp({ quality: 78 })
-      .toBuffer();
+    const body = await sharp(photo.absolute, { animated: false }).rotate()
+      .resize(size, size, { fit: "inside", withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, body).catch(() => undefined);
     return { name: photo.name, body, contentType: "image/webp" };
+  } finally {
+    const next = thumbnailRenderWaiters.shift();
+    if (next) next(); else activeThumbnailRenders--;
+  }
+}
+
+async function readThumbnail(photo: PhotoFile, root: string, size = THUMBNAIL_SIZE) {
+  // Vector images are already small and scale cleanly.
+  if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
+  const target = await thumbnailPathFor(photo.relative, root, size);
+  try {
+    return { name: photo.name, body: await readFile(target), contentType: "image/webp" };
+  } catch {
+    const pending = renderingThumbnails.get(target);
+    if (pending) return pending;
+    const task = renderThumbnail(photo, target, size).finally(() => renderingThumbnails.delete(target));
+    renderingThumbnails.set(target, task);
+    return task;
   }
 }
 
@@ -921,10 +976,10 @@ export async function readGalleryPhoto(photoPath: string) {
 }
 
 /** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
-export async function readGalleryThumbnail(photoPath: string) {
+export async function readGalleryThumbnail(photoPath: string, requestedSize = THUMBNAIL_SIZE) {
   const photo = resolvePhotoPath(photoPath);
   const root = getGalleryRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize)));
 }
 
 /** Validate an archived photo's file name from a request. */
@@ -941,10 +996,29 @@ export async function readArchivedPhoto(name: string) {
 }
 
 /** Archive thumbnails are cached inside the archive folder, never beside the gallery's. */
-export async function readArchivedThumbnail(name: string) {
+export async function readArchivedThumbnail(name: string, requestedSize = THUMBNAIL_SIZE) {
   const photo = resolveArchivedPath(name);
   const root = protectedRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize)));
+}
+
+async function streamPhotoFile(photo: PhotoFile, signal?: AbortSignal) {
+  // Open before returning the response so missing files remain normal API errors.
+  const handle = await open(photo.absolute, "r");
+  try {
+    const stats = await handle.stat();
+    const stream = handle.createReadStream({ highWaterMark: 64 * 1024, autoClose: true, signal });
+    const body = Readable.toWeb(stream, { strategy: { highWaterMark: 64 * 1024, size: (chunk: Uint8Array) => chunk.byteLength } }) as ReadableStream<Uint8Array>;
+    return { name: photo.name, body, size: stats.size, contentType: CONTENT_TYPES[path.extname(photo.name).toLowerCase()] ?? "application/octet-stream" };
+  } catch (error) { await handle.close(); throw error; }
+}
+
+export function streamGalleryPhoto(photoPath: string, signal?: AbortSignal) {
+  return streamPhotoFile(resolvePhotoPath(photoPath), signal);
+}
+
+export function streamArchivedPhoto(name: string, signal?: AbortSignal) {
+  return streamPhotoFile(resolveArchivedPath(name), signal);
 }
 
 // ------------------------------------------------------------ sharing (collaboration)

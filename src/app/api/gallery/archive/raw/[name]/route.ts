@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { renewArchiveAccess, requireArchiveAccess } from "@/lib/api";
 import { contentDisposition } from "@/lib/content-disposition";
 import { toStorageError } from "@/lib/storage";
-import { readArchivedPhoto, readArchivedThumbnail } from "@/lib/storage/gallery";
+import { streamArchivedPhoto, readArchivedThumbnail } from "@/lib/storage/gallery";
 
 export const runtime = "nodejs";
 
@@ -18,9 +18,9 @@ export async function GET(request: NextRequest, context: ArchiveRawRouteContext)
   try {
     const name = decodeURIComponent((await context.params).name);
     const photo = request.nextUrl.searchParams.get("thumbnail") === "1"
-      ? await readArchivedThumbnail(name)
-      : await readArchivedPhoto(name);
-    return renewArchiveAccess(new NextResponse(new Uint8Array(photo.body), {
+      ? await readArchivedThumbnail(name, Number(request.nextUrl.searchParams.get("size")) || 640)
+      : await streamArchivedPhoto(name, request.signal);
+    return renewArchiveAccess(new NextResponse(photo.body instanceof Uint8Array ? new Uint8Array(photo.body) : photo.body, {
       headers: {
         // Never keep archived photos in a cache that outlives the unlock.
         "Cache-Control": "no-store",

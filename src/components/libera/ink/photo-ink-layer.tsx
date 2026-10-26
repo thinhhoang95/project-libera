@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { Check, Download, Layers, Save, X } from "lucide-react";
 import { photoViewMatrix, photoViewSize } from "@/lib/ink/frame";
 import type { GalleryContents } from "@/lib/image-generation";
 import { apiRequest } from "../api-client";
@@ -25,6 +26,8 @@ import { useInkTools } from "./use-ink-tools";
  */
 
 const IDENTITY: InkMatrix = [1, 0, 0, 1, 0, 0];
+
+const halt = (event: { stopPropagation: () => void }) => event.stopPropagation();
 
 export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, onEdited }: {
   photoId: string;
@@ -106,26 +109,38 @@ export function PhotoInkLayer({ photoId, version, drawing, toolbarSlot, onPan, o
         </div>
       ) : null}
       {drawing && toolbarSlot ? createPortal(
-        <span className="libera-photo-ink-tools">
+        // React bubbles portal events to the zoomable stage, which would pan or zoom the photo.
+        <span className="libera-photo-ink-tools" onPointerDown={halt} onPointerMove={halt} onPointerUp={halt} onPointerCancel={halt} onDoubleClick={halt}>
           <InkToolbar canUndo={ink.canUndo} canRedo={ink.canRedo} onUndo={ink.undo} onRedo={ink.redo} />
-          <button type="button" className="libera-photo-ink-action is-primary" disabled={!unsaved || busy} title="Save the ink (Ctrl+S)" onClick={() => { void ink.save().catch(() => undefined); }}>
-            {unsaved ? "Save" : "Saved"}
-          </button>
-          <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title="Save the ink, then download a copy of the photo with the ink drawn on it"
-            onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>
-            Save with ink
-          </button>
-          {confirmFlatten ? (
-            <>
-              <button type="button" className="libera-photo-ink-action is-danger" disabled={busy} onClick={() => void flatten()}>Draw into photo</button>
-              <button type="button" className="libera-photo-ink-action" disabled={busy} onClick={() => setConfirmFlatten(false)}>Cancel</button>
-            </>
-          ) : (
-            <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy || photo?.changed} title="Draw the ink into the photo itself; Revert in Info brings back the photo without it"
-              onClick={() => setConfirmFlatten(true)}>
-              Flatten…
+          <span className="libera-photo-ink-actions" role="group" aria-label="Save ink">
+            <button type="button" className="libera-photo-ink-action is-primary" disabled={!unsaved || busy} title="Save the ink (Ctrl+S)" onClick={() => { void ink.save().catch(() => undefined); }}>
+              {unsaved ? <Save aria-hidden className="h-3.5 w-3.5" /> : <Check aria-hidden className="h-3.5 w-3.5" />}
+              {unsaved ? "Save" : "Saved"}
             </button>
-          )}
+            <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy} title="Save the ink, then download a copy of the photo with the ink drawn on it"
+              onClick={() => { void ink.save().then(() => downloadImage({ name: "photo-with-ink", src: `/api/gallery/photos/ink/export?id=${encodeURIComponent(photoId)}` }), () => undefined); }}>
+              <Download aria-hidden className="h-3.5 w-3.5" />
+              Save with ink
+            </button>
+            {confirmFlatten ? (
+              <>
+                <button type="button" className="libera-photo-ink-action is-danger" disabled={busy} onClick={() => void flatten()}>
+                  <Layers aria-hidden className="h-3.5 w-3.5" />
+                  Draw into photo
+                </button>
+                <button type="button" className="libera-photo-ink-action" disabled={busy} onClick={() => setConfirmFlatten(false)}>
+                  <X aria-hidden className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button type="button" className="libera-photo-ink-action" disabled={!hasInk || busy || photo?.changed} title="Draw the ink into the photo itself; Revert in Info brings back the photo without it"
+                onClick={() => setConfirmFlatten(true)}>
+                <Layers aria-hidden className="h-3.5 w-3.5" />
+                Flatten…
+              </button>
+            )}
+          </span>
         </span>,
         toolbarSlot,
       ) : null}

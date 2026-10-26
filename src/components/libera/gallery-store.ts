@@ -1,8 +1,9 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { apiRequest } from "@/components/libera/api-client";
-import type { GalleryContents } from "@/lib/image-generation";
+import type { GalleryContents, GalleryPhoto } from "@/lib/image-generation";
+import { galleryPhotoSummary, type GalleryCatalogPage } from "@/lib/gallery-catalog";
 
 /**
  * The generation panel and the gallery view share one copy of the gallery, so
@@ -12,6 +13,52 @@ type GalleryState = { contents: GalleryContents | null; loading: boolean; error:
 
 let state: GalleryState = { contents: null, loading: false, error: "" };
 let pendingRefresh: Promise<GalleryContents | null> | null = null;
+let revision = "";
+const detailsCache = new Map<string, { photo: GalleryPhoto; bytes: number }>();
+let detailBytes = 0;
+
+function detailKey(photo: GalleryPhoto) {
+  return `${photo.id}:${photo.updatedAt}:${photo.size}:${photo.detailsVersion ?? ""}`;
+}
+
+function cacheDetails(summary: GalleryPhoto, photo: GalleryPhoto) {
+  const key = detailKey(summary);
+  const previous = detailsCache.get(key);
+  if (previous) detailBytes -= previous.bytes;
+  detailsCache.delete(key);
+  const bytes = JSON.stringify(photo).length * 2;
+  if (bytes > 2 * 1024 * 1024) return;
+  detailsCache.set(key, { photo, bytes });
+  detailBytes += bytes;
+  while (detailsCache.size > 64 || detailBytes > 2 * 1024 * 1024) {
+    const oldest = detailsCache.keys().next().value!;
+    detailBytes -= detailsCache.get(oldest)!.bytes;
+    detailsCache.delete(oldest);
+  }
+}
+
+/** A large prompt is held only by its open viewer or the small LRU cache. */
+export function useGalleryPhotoDetails(summary: GalleryPhoto) {
+  const key = detailKey(summary);
+  const [loaded, setLoaded] = useState<{ key: string; photo: GalleryPhoto } | null>(null);
+  useEffect(() => {
+    if (!summary.detailsDeferred) return;
+    const cached = detailsCache.get(key);
+    if (cached) {
+      detailsCache.delete(key); detailsCache.set(key, cached);
+      setLoaded({ key, photo: cached.photo });
+      return;
+    }
+    const controller = new AbortController();
+    void apiRequest<GalleryPhoto>(`/api/gallery/photos/details?id=${encodeURIComponent(summary.id)}`, { signal: controller.signal })
+      .then((photo) => {
+        if (controller.signal.aborted || photo.id !== summary.id || photo.updatedAt !== summary.updatedAt) return;
+        cacheDetails(summary, photo); setLoaded({ key, photo });
+      }).catch(() => undefined);
+    return () => controller.abort();
+  }, [key, summary]);
+  return summary.detailsDeferred && loaded?.key === key ? { ...summary, prompt: loaded.photo.prompt, model: loaded.photo.model, shared: summary.shared ? { ...summary.shared, caption: loaded.photo.shared?.caption } : undefined } : summary;
+}
 const listeners = new Set<() => void>();
 const promptListeners = new Set<(prompt: string) => void>();
 const referenceListeners = new Set<(photos: Array<{ name: string; url: string }>) => void>();
@@ -47,14 +94,41 @@ function subscribe(listener: () => void) {
 }
 
 export function applyGallery(contents: GalleryContents | undefined) {
-  if (contents) setState({ contents, error: "" });
+  if (!contents) return;
+  const previous = new Map(state.contents?.photos.map((photo) => [photo.id, photo]));
+  const photos = contents.photos.map((photo) => {
+    const summary = galleryPhotoSummary(photo);
+    if (!photo.detailsDeferred) cacheDetails(summary, photo);
+    const old = previous.get(photo.id);
+    return old && JSON.stringify(old) === JSON.stringify(summary) ? old : summary;
+  });
+  const next = { ...contents, photos };
+  revision = "";
+  setState({ contents: next, error: "" });
 }
 
 export function refreshGallery() {
   if (pendingRefresh) return pendingRefresh;
   setState({ loading: true });
-  pendingRefresh = apiRequest<GalleryContents>("/api/gallery")
-    .then((contents) => { setState({ contents, loading: false, error: "" }); return contents; })
+  pendingRefresh = (async () => {
+    let page = await apiRequest<GalleryCatalogPage>(`/api/gallery?catalog=1${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`);
+    if (page.revision && page.revision === revision && state.contents) return state.contents;
+    const photos = [...page.photos];
+    // Pages share a revision. Restart once if a mutation invalidated it mid-read.
+    let restarted = false;
+    while (page.cursor != null) {
+      const next = await apiRequest<GalleryCatalogPage>(`/api/gallery?catalog=1&cursor=${page.cursor}&revision=${encodeURIComponent(page.revision)}`);
+      if (next.reset) {
+        if (restarted) throw new Error("The gallery changed while loading. Please try again.");
+        restarted = true; photos.length = 0;
+      }
+      photos.push(...next.photos); page = next;
+    }
+    const contents = { root: page.root, albums: page.albums, photos, deletedPhotoIds: page.deletedPhotoIds };
+    applyGallery(contents); revision = page.revision ?? "";
+    return state.contents;
+  })()
+    .then((contents) => { setState({ loading: false, error: "" }); return contents; })
     .catch((error: Error) => { setState({ loading: false, error: error.message }); return null; })
     .finally(() => { pendingRefresh = null; });
   return pendingRefresh;

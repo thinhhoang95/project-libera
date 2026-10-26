@@ -29,6 +29,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Save,
   ScanSearch,
   Sparkles,
   Star,
@@ -36,6 +37,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { apiRequest } from "@/components/libera/api-client";
+import { useGalleryPhotoDetails } from "@/components/libera/gallery-store";
 import { usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
 import { openImageSaveMenu, subscribeImageSaved } from "@/components/libera/image-save";
@@ -43,7 +45,7 @@ import { PhotoEditor } from "@/components/libera/photo-editor";
 import { PhotoInkLayer } from "@/components/libera/ink/photo-ink-layer";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import type { PhotoRegion } from "@/lib/collab/album-comments";
-import { canChangeSharedPhotos, galleryRawUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
+import { canChangeSharedPhotos, galleryRawUrl, sizedGalleryUrl, type GalleryAlbum, type GalleryContents, type GalleryPhoto } from "@/lib/image-generation";
 
 const MAX_ZOOM = 8;
 const SLIDESHOW_MS = 4000;
@@ -103,7 +105,10 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
   const stageRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const dragRef = useRef<{ x: number; y: number; start: Transform } | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [loadedSrc, setLoadedSrc] = useState("");
+  const [previewEdge, setPreviewEdge] = useState(2048);
+  const src = transform.scale > 1 ? rawUrl(photo) : sizedGalleryUrl(rawUrl(photo), previewEdge);
+  const loaded = loadedSrc === src;
   const [dragging, setDragging] = useState(false);
   // Where the photo is inside the stage (after zoom and pan), for the overlay.
   const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
@@ -159,9 +164,11 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
 
   const reportFit = useCallback(() => {
     const image = imageRef.current;
-    if (image?.naturalWidth) onFitScale(image.offsetWidth / image.naturalWidth);
+    if (image?.naturalWidth) onFitScale(image.offsetWidth / (photo.width || image.naturalWidth));
+    const stage = stageRef.current;
+    if (stage?.clientWidth && stage.clientHeight) setPreviewEdge(Math.max(stage.clientWidth, stage.clientHeight) * Math.min(2, window.devicePixelRatio || 1));
     measureBox();
-  }, [measureBox, onFitScale]);
+  }, [measureBox, onFitScale, photo.width]);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -197,10 +204,10 @@ function ZoomableImage({ photo, rawUrl, transform, onTransform, onFitScale, over
     {!loaded && /* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */
       <img src={rawUrl(photo, true)} alt="" aria-hidden className="absolute max-h-[calc(100%-3rem)] max-w-[calc(100%-3rem)] object-contain blur-[2px]" />}
     {/* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */}
-    <img ref={imageRef} key={`${photo.id}-${photo.updatedAt}`} src={rawUrl(photo)} alt={photo.prompt ?? photo.name} draggable={false}
+    <img ref={imageRef} key={`${photo.id}-${photo.updatedAt}`} src={src} alt={photo.prompt ?? photo.name} draggable={false} decoding="async" fetchPriority="high"
       className={`max-h-[calc(100%-3rem)] max-w-[calc(100%-3rem)] select-none object-contain transition-opacity ${loaded ? "opacity-100" : "opacity-0"}`}
       style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transition: dragging ? "none" : "transform 80ms ease-out, opacity 150ms" }}
-      onLoad={() => { setLoaded(true); reportFit(); }} />
+      onLoad={() => { setLoadedSrc(src); reportFit(); }} />
     {ink && box && loaded && <div className="absolute" style={box} data-photo-ink>
       <PhotoInkLayer photoId={photo.id} version={photo.updatedAt} drawing={ink.drawing} toolbarSlot={ink.toolbarSlot} onEdited={ink.onEdited}
         onPan={(dx, dy) => onTransform(clampPan({ ...transform, x: transform.x + dx, y: transform.y + dy }))} />
@@ -300,7 +307,7 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
   onViewStateChange?: (state: PhotoViewerViewState) => void;
   sharedDetails?: PhotoViewerShared;
 }) {
-  const photo = photos[index];
+  const photo = useGalleryPhotoDetails(photos[index]);
   const [overlay, setOverlay] = useState<PhotoOverlay | null>(null);
   // A viewer or commenter of a shared album only looks.
   const locked = Boolean(photo?.shared) && !canChangeSharedPhotos(photo?.shared);
@@ -354,9 +361,17 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
     if (next) onNavigate(next);
   }, [index, onNavigate, photos]);
 
-  // Preload neighbors so moving through photos feels instant.
+  // Only bounded previews are speculative. Cancel obsolete work on every step.
   useEffect(() => {
-    for (const neighbor of [photos[index - 1], photos[index + 1]]) if (neighbor) new Image().src = rawUrl(neighbor);
+    if (rawUrl !== galleryRawUrl) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      for (const neighbor of [photos[index - 1], photos[index + 1]]) if (neighbor) {
+        void fetch(sizedGalleryUrl(rawUrl(neighbor)), { signal: controller.signal, cache: "force-cache" })
+          .then((response) => response.ok ? response.blob() : response.body?.cancel()).catch(() => undefined);
+      }
+    }, 120);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [index, photos, rawUrl]);
 
   useEffect(() => {
@@ -509,14 +524,15 @@ export function PhotoViewer({ photos, index, albums, onNavigate: navigateTo, onC
             <span>{leaveError || "This photo has unsaved ink."}</span>
             <button type="button" onClick={() => {
               void pendingSaves.save(`gallery:${photo.id}`).then(() => { const action = leaving; setLeaving(null); action(); }, (error: unknown) => setLeaveError(error instanceof Error ? error.message : "The ink could not be saved."));
-            }}>Save</button>
-            <button type="button" onClick={() => { pendingSaves.discard(`gallery:${photo.id}`); const action = leaving; setLeaving(null); action(); }}>Discard</button>
-            <button type="button" onClick={() => setLeaving(null)}>Keep drawing</button>
+            }}><Save aria-hidden className="h-3.5 w-3.5" />Save</button>
+            <button type="button" onClick={() => { pendingSaves.discard(`gallery:${photo.id}`); const action = leaving; setLeaving(null); action(); }}><Trash2 aria-hidden className="h-3.5 w-3.5" />Discard</button>
+            <button type="button" onClick={() => setLeaving(null)}><PenLine aria-hidden className="h-3.5 w-3.5" />Keep drawing</button>
           </div>}
         </div>
         {infoOpen && <aside ref={infoRef} onScroll={(event) => {
           infoScrollRef.current = event.currentTarget.scrollTop;
           infoPositionsRef.current.set(photo.id, infoScrollRef.current);
+          if (infoPositionsRef.current.size > 64) infoPositionsRef.current.delete(infoPositionsRef.current.keys().next().value!);
           onViewStateChange?.({ transform, infoOpen, infoScrollTop: infoScrollRef.current });
         }} className="flex w-80 shrink-0 flex-col gap-4 overflow-auto border-l border-white/10 p-5 max-md:hidden">
           <h2 className="text-sm font-semibold">Info</h2>

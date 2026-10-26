@@ -2418,12 +2418,14 @@ button.border[class*="border-white"]:hover {
 .libera-ink-surface.is-stale { opacity: .45; }
 .libera-photo-ink-bar { display: flex; justify-content: center; padding: 0 8px 8px; }
 .libera-photo-ink-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.libera-photo-ink-action { border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; font-size: .8125rem; padding: .3rem .7rem; }
+.libera-photo-ink-actions { align-items: center; border-left: 1px solid rgb(255 255 255 / .2); display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 4px; padding-left: 10px; }
+.libera-photo-ink-action { align-items: center; border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; display: inline-flex; font-size: .8125rem; gap: .4rem; padding: .3rem .7rem; }
+.libera-photo-ink-action.is-primary:not(:disabled) { background: rgb(255 255 255 / .16); }
 .libera-photo-ink-action:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
 .libera-photo-ink-action:disabled { opacity: .45; }
 .libera-photo-ink-action.is-danger { border-color: #f87171; color: #fecaca; }
 .libera-photo-ink-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100% - 24px); border-radius: .75rem; background: #fff; color: #111; font-size: .8125rem; padding: .5rem .75rem; box-shadow: 0 4px 14px rgb(0 0 0 / .25); }
-.libera-photo-ink-notice button { border: 1px solid #d4d4d8; border-radius: .5rem; padding: .2rem .6rem; }
+.libera-photo-ink-notice button { align-items: center; display: inline-flex; gap: .4rem; border: 1px solid #d4d4d8; border-radius: .5rem; padding: .2rem .6rem; }
 .libera-python-figure-bar button { border-radius: .35rem; padding: .2rem .45rem; color: var(--foreground); background: transparent; cursor: pointer; }
 .libera-python-figure-bar button:hover:not(:disabled) { background: var(--muted); }
 .libera-python-figure-bar button:disabled { color: var(--muted-foreground); cursor: progress; }
@@ -3109,3 +3111,8 @@ html.dark .libera-left-panel { --libera-contextual: #b4a2f5; }
 .libera-left-panel .libera-rail-contextual .libera-sidebar-icon-button[aria-selected="true"] { background: color-mix(in srgb, var(--libera-contextual) 17%, transparent); color: var(--libera-contextual); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--libera-contextual) 22%, transparent); }
 @keyframes libera-rail-contextual-in { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .libera-rail-contextual { animation: none; } }
+
+/* The edit pencil on comment cards: a quiet, small gray icon. */
+.review-comment-icon.review-comment-pen, html.dark .review-comment-icon.review-comment-pen { color: var(--muted-foreground); }
+.review-comment-icon.review-comment-pen svg { width: 13px; height: 13px; }
+.review-comment-icon.review-comment-pen:hover:not(:disabled) { color: var(--foreground); opacity: 1; }
