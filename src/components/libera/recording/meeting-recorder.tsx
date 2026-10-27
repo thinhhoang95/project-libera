@@ -65,7 +65,8 @@ export function MeetingRecorderProvider({ children, tabs, visibleTabIds }: { chi
     let disposed = false;
     void apiRequest<{ recordings: UnfinishedRecording[] }>("/api/recordings")
       .then(({ recordings }) => {
-        if (!disposed) setUnfinished(recordings);
+        // A reply without the list (an older server) must not take the workspace down.
+        if (!disposed) setUnfinished(recordings ?? []);
       })
       .catch(() => undefined);
     return () => {

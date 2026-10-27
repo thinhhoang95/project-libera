@@ -50,6 +50,10 @@ A macro block holds one definition per line (a `\newcommand` body may run over s
 
 Names are letters only, as in LaTeX: `\fset2` is not `\fset` followed by `2`. Arguments are `{…}` groups right after the name (spaces between them are allowed); braces inside an argument must balance, and `\{` and `\}` do not count. A use without enough arguments is left as written.
 
+In a body, `#1`…`#9` are arguments and `##1` is a literal `#1`, as in LaTeX; `##` before anything else is plain Markdown, such as a heading. A hex color such as `#2563eb` or `#2563ebcc` is kept as written, so `\newcommand{\bluequote}[1]{>[color=#2563eb]#1[/color]}` takes one argument.
+
+An argument may run over several lines and paragraphs. Blank lines at its start and end are dropped, so `{` and `}` may sit on lines of their own, and in a text macro the argument continues the container its parameter is in: every line of `> #1` stays in the quote (or of `b> #1` in the colored box), every paragraph of `- #1` or `1. #1` in the list item, and in a heading (`## #1`) or table row (`| #1 |`) the lines join with spaces. Inline Markdown cannot cross a paragraph, so a wrapper right around the parameter, such as `[color=#2563eb]#1[/color]`, `**#1**`, `~~#1~~` or a highlight, is closed and opened again around each paragraph, list item and heading of the argument; code blocks, tables and rules in it are left unwrapped. In the Visual editor an argument may run over paragraphs, quotes, lists (task lists too), headings, code blocks and rules, as in the Markdown; the blocks it covers are hidden behind its expansion, shown in the block where the macro starts. Display math and tables end the stretch an argument can cover there, so equation counters keep document order. Braces in an argument count wherever they are, code included, so a code block with an unbalanced `{` cannot sit in one.
+
 ### Math macros and text macros
 
 A body wrapped entirely in `$…$`, `$$…$$`, `\(…\)` or `\[…\]` makes a **math macro**. Its LaTeX goes in wherever it is used:

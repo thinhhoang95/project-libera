@@ -28,6 +28,8 @@ import {
 import { DeepSearchDialog } from "@/components/libera/deep-search-dialog";
 import { importReferenceFile, isReferenceImportPath, referenceImportSummary } from "@/lib/references/import";
 import { FileTypeIcon, fileTypeLabel } from "@/components/libera/file-type";
+import { TagChip } from "@/components/libera/file-tags";
+import { timeAgo } from "@/lib/collab/ui/wording";
 import { SUPPORTED_UPLOAD_EXTENSIONS } from "@/lib/storage/constants";
 import { ModalDialog } from "@/components/libera/modal-dialog";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
@@ -418,6 +420,38 @@ const NoteLinksContext = createContext<NoteLinks>({
   backlinkCounts: new Map(),
   forwardLinkCounts: new Map(),
 });
+
+/** Tags per file path, shown in the file-name tooltip. */
+const FileTagsContext = createContext<Record<string, string[]>>({});
+
+const RELATIVE_EDIT_LIMIT_MS = 30 * 86_400_000;
+
+function lastEditedLabel(updatedAt: string) {
+  const edited = Date.parse(updatedAt);
+  if (!Number.isFinite(edited)) return "";
+  const age = Date.now() - edited;
+  return age < RELATIVE_EDIT_LIMIT_MS
+    ? `Edited ${timeAgo(Math.max(0, age))}`
+    : `Edited ${new Date(edited).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
+}
+
+function FileTooltipDetails({ file, tags }: { file: LiberaFileNode; tags: string[] }) {
+  const edited = lastEditedLabel(file.updatedAt);
+  return (
+    <>
+      {tags.length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
+        </div>
+      ) : null}
+      {edited ? (
+        <div className="mt-1 font-normal text-muted-foreground" title={new Date(file.updatedAt).toLocaleString()}>
+          {edited}
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 function addContainerCounts(counts: Map<string, number>, filePath: string) {
   const parts = filePath.split("/");
@@ -953,6 +987,7 @@ export function NotebookPanel({
         ) : null}
 
         <NoteLinksContext.Provider value={noteLinks}>
+        <FileTagsContext.Provider value={tree.fileTags}>
         <div className="space-y-2">
           <StarredFilesSection
             activeTabId={activeTabId}
@@ -1043,6 +1078,7 @@ export function NotebookPanel({
             />
           ))}
         </div>
+        </FileTagsContext.Provider>
         </NoteLinksContext.Provider>
       </div>
 
@@ -1725,6 +1761,7 @@ function TreeNodeRow({
   visibleNodeLimitForPath: (path: string) => number;
 }) {
   const noteLinks = useContext(NoteLinksContext);
+  const fileTags = useContext(FileTagsContext);
 
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
@@ -1856,6 +1893,7 @@ function TreeNodeRow({
       data-forwardlink={isForwardLink || undefined}
       draggable
       fullName={node.name}
+      renderDetails={() => <FileTooltipDetails file={node} tags={fileTags[node.path] ?? []} />}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
       type="button"
       onClick={() => onOpenFile(node)}

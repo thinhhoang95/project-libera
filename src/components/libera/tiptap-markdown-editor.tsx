@@ -19,6 +19,7 @@ import { Braces, Bold, Italic, Underline, Strikethrough, List, ListOrdered, List
 import katex from "katex";
 import { Selection, type Transaction } from "@tiptap/pm/state";
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor, type VisualScrollRestore } from "@/lib/tiptap-scroll-anchor";
+import { keepScrollOnReflow, proseMirrorReflowAdapter } from "@/lib/reflow-scroll-anchor";
 import { useCanvasViewStateCapture } from "./canvas-view-state";
 import { closeHistory } from "@tiptap/pm/history";
 import { createMarkdownExtensions } from "@/lib/tiptap-markdown";
@@ -575,6 +576,14 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
       window.cancelAnimationFrame(frame);
       if (visualScrollFrameRef.current === frame) visualScrollFrameRef.current = null;
     };
+  }, [editor]);
+
+  // Side panels and window resizes rewrap the page; hold the reader's place.
+  // The tab-switch restore above owns the position while it is still active.
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!editor || !container) return;
+    return keepScrollOnReflow(container, proseMirrorReflowAdapter(editor.view, container, () => scrollRestoreRef.current?.active() ?? false));
   }, [editor]);
 
   useEffect(() => {

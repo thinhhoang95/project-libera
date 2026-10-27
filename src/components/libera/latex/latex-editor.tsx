@@ -20,6 +20,7 @@ import { latexMathPreview } from "@/lib/latex/codemirror/preview";
 import { latexSnippetCompletionSource } from "@/lib/latex/codemirror/snippets";
 import { snippetBodyFromSelection } from "@/lib/latex/snippets";
 import { decideReviewHunks, latexReviewExtension, reviewHunksField, type ReviewHunk } from "@/lib/latex/codemirror/review";
+import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import {
   compiledLocationForPosition, latexSyncExtension, markCompileShown, markCompileStarted, positionForCompiledLine, revealPosition,
 } from "@/lib/latex/codemirror/sync";
@@ -266,6 +267,10 @@ export function LatexEditor({
       created.dispatch({ effects: EditorView.scrollIntoView(created.state.selection.main.head, { y: "center" }) });
     }
 
+    // Side panels and window resizes rewrap long lines; hold the reader's place
+    // once the tab-switch restore above has run.
+    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created, () => restoreFrame !== undefined));
+
     const unregisterSelection = registerEditorSelectionReader(wrapperRef.current ?? host, () => {
       const selection = created.state.selection.main;
       return created.state.sliceDoc(selection.from, selection.to);
@@ -279,6 +284,7 @@ export function LatexEditor({
       if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       publishDraft();
+      releaseReflow();
       binding?.destroy();
       created.destroy();
       viewRef.current = null;

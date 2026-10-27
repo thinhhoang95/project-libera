@@ -13,6 +13,7 @@ import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useSt
 import { createPortal } from "react-dom";
 import { ClipboardPaste, Copy, Scissors, Volume2 } from "lucide-react";
 import { speakMarkdown } from "@/lib/tts/player";
+import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import { codeHighlightStyle, codeLanguageName, findCodeLanguage, loadCodeLanguage } from "@/lib/code-languages";
 import { useCanvasViewStateCapture } from "@/components/libera/canvas-view-state";
 import type { TextTabViewState } from "@/components/libera/types";
@@ -195,6 +196,10 @@ export function CodeEditor({
       if (!disposed && support) created.dispatch({ effects: language.reconfigure(support) });
     });
 
+    // Side panels and window resizes rewrap long lines; hold the reader's place
+    // once the tab-switch restore above has run.
+    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created, () => restoreFrame !== undefined));
+
     const unregisterSelection = registerEditorSelectionReader(wrapperRef.current ?? host, () => {
       const selection = created.state.selection.main;
       return created.state.sliceDoc(selection.from, selection.to);
@@ -209,6 +214,7 @@ export function CodeEditor({
       if (restoreFrame === undefined) reportViewState(created);
       if (viewStateTimerRef.current !== null) clearTimeout(viewStateTimerRef.current);
       if (!binding) publishDraft();
+      releaseReflow();
       binding?.destroy();
       created.destroy();
       viewRef.current = null;

@@ -49,6 +49,7 @@ import type { MarkdownSourceEditorProps } from "./types";
 import { speakMarkdown } from "@/lib/tts/player";
 import { headingNumberingSpec, headingNumberingTransactions, isHeadingNumberingEdit } from "@/lib/markdown-codemirror/heading-numbering";
 import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering";
+import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import { useHeadingNumbering } from "../heading-numbering-state";
 import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
 
@@ -468,6 +469,8 @@ export function MarkdownCodeMirrorEditor({
       },
     });
     viewRef.current = created;
+    // Side panels and window resizes rewrap long lines; hold the reader's place.
+    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created));
     adapter.attach(created, {
       applyEdit: (edit) => created.dispatch(textareaEditSpec(created.state, edit)),
       applyValue: (text) => applyIncomingText(text, "value"),
@@ -493,6 +496,7 @@ export function MarkdownCodeMirrorEditor({
       latest.current.onSelectionChange?.({ start: from, end: to });
       if (fileLinkFrameRef.current !== null) window.cancelAnimationFrame(fileLinkFrameRef.current);
       latest.current.onViewChange?.(null);
+      releaseReflow();
       adapter.detach();
       created.destroy();
       viewRef.current = null;

@@ -737,7 +737,7 @@ function TranscribeCard({ fileName, setup, onStart, error, onDownload, onCancelD
       <label className="mb-2.5 flex items-center justify-between gap-3 text-xs">
         <span className="inline-flex items-center gap-1.5 text-muted-foreground"><Users aria-hidden className="h-3.5 w-3.5" /> Speakers</span>
         <select
-          className="h-7 min-w-0 rounded-md border border-input bg-card px-2 text-xs"
+          className="libera-sidebar-search-input h-8 min-w-0 appearance-none rounded-lg border border-input bg-card pl-2.5 pr-2 text-xs text-foreground outline-none transition hover:bg-muted focus-visible:border-ring disabled:opacity-50"
           value={speakers}
           disabled={!status.diarization}
           onChange={(event) => setSpeakers(Number(event.target.value))}
