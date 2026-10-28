@@ -99,6 +99,27 @@ test("macros defined in terms of macros expand, and recursion stops", () => {
   assert.ok(expanded.trimEnd().endsWith("\\loop" + "!".repeat(17)));
 });
 
+test("hex colors stay as written and ## is a literal #, so neither counts as a parameter", () => {
+  const definitions = parseMacroDefinitions(String.raw`\newcommand{\bluequote}[1]{>[color=#2563eb]#1[/color]}` + "\n" + String.raw`\tag[1] = ##1 #1` + "\n" + String.raw`\bad[1] = #2`);
+  assert.deepEqual(definitions.errors.map((error) => error.message), [String.raw`\bad uses #2 but takes 1 argument`]);
+  const source = `${FENCE}libera-macro\n\\newcommand{\\bluequote}[1]{>[color=#2563eb]#1[/color]}\n\\tag = ##1 #1\n${FENCE}\n\n\\bluequote{Hi} \\tag{x}\n`;
+  assert.ok(expandMarkdownMacros(source)!.markdown.includes(">[color=#2563eb]Hi[/color] #1 x"));
+});
+
+test("an argument over several lines continues the quote, list item, heading or table row of its parameter", () => {
+  const definitions = String.raw`\newcommand{\q}[1]{>[color=#2563eb]#1[/color]}
+\newcommand{\item}[1]{1. #1}
+\newcommand{\h}[1]{## #1}
+\newcommand{\row}[2]{| #1 | #2 |}`;
+  const expand = (text: string) => expandMarkdownMacros(`${FENCE}libera-macro\n${definitions}\n${FENCE}\n\n${text}\n`)!.markdown.trim();
+  assert.equal(expand("\\q{\nblah\nblah blah\n\nnext\n}"), ">[color=#2563eb]blah\n>blah blah[/color]\n>\n>[color=#2563eb]next[/color]");
+  assert.equal(expand("\\item{first\n\nsecond}"), "1. first\n\n   second");
+  assert.equal(expand("\\h{long\ntitle}"), "## long title");
+  assert.equal(expand("| a | b |\n| - | - |\n\\row{x\ny}{z}"), "| a | b |\n| - | - |\n| x y | z |");
+  assert.equal(expand("> \\q{a\n>\n> b}"), "> >[color=#2563eb]a[/color]\n> >\n> >[color=#2563eb]b[/color]");
+  assert.equal(expand("\\h{x}"), "## x", "## before a space is a heading, not an escaped #");
+});
+
 test("the preview renders expansions while keeping source positions of the original", () => {
   const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content: DOCUMENT }));
   assert.ok(html.includes("Theorem 1 (Pythagoras)."));
@@ -152,6 +173,67 @@ test("the Visual editor shows expansions, reveals the source at the caret and sa
   } finally {
     editor.destroy();
   }
+});
+
+test("in the Visual editor an argument may run over paragraphs, which hide behind the expansion", () => {
+  const editor = mount(`${FENCE}libera-macro\n\\newcommand{\\note}[1]{**Note:** #1}\n${FENCE}\n\nBefore.\n\n\\note{blah\n\nblah blah\n\n}\n\n\\note{one line}\n`);
+  try {
+    const state = tiptapMacrosKey.getState(editor.state)!;
+    assert.deepEqual(state.invocations.map((invocation) => invocation.markdown), ["**Note:** blah\n\nblah blah", "**Note:** one line"]);
+    const paragraphs = [...editor.view.dom.querySelectorAll(":scope > p")];
+    assert.deepEqual(paragraphs.map((paragraph) => paragraph.classList.contains("libera-macro-hidden")), [false, false, true, true, false]);
+    assert.ok(paragraphs[1].querySelector(".libera-macro-expansion")?.textContent?.includes("blah blah"));
+    assert.equal(editor.state.doc.textBetween(state.invocations[0].from, state.invocations[0].to, "\n"), "\\note{blah\nblah blah\n}");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("in the Visual editor an argument may run over quotes, lists, headings and code, which hide behind the expansion", () => {
+  const body = "\\note{intro\n\n> quoted\n>\n> more\n\n- a\n  - nested\n3. c\n\n- [x] done\n\n## Heading\n\n```js\nk()\n```\n}\n\nAfter.\n\n> \\q{a\n>\n> b}\n\n\\note{x\n\n- a\n- b}\n";
+  const editor = mount(`${FENCE}libera-macro\n\\newcommand{\\note}[1]{**Note:** #1}\n\\newcommand{\\q}[1]{>[color=#2563eb]#1[/color]}\n${FENCE}\n\n${body}`);
+  try {
+    const state = tiptapMacrosKey.getState(editor.state)!;
+    assert.deepEqual(state.invocations.map((invocation) => invocation.markdown), [
+      "**Note:** intro\n\n> quoted\n>\n> more\n\n- a\n  - nested\n\n3. c\n\n- [x] done\n\n## Heading\n\n```js\nk()\n```",
+      ">[color=#2563eb]a[/color]\n>\n>[color=#2563eb]b[/color]",
+      "**Note:** x\n\n- a\n- b",
+    ]);
+    const top = [...editor.view.dom.children].map((element) => `${element.tagName.toLowerCase()}${element.classList.contains("libera-macro-hidden") ? " hidden" : ""}`);
+    assert.deepEqual(top.slice(1), ["p", "blockquote hidden", "ul hidden", "ol hidden", "ul hidden", "h2 hidden", "pre hidden", "p hidden", "p", "blockquote", "p", "ul hidden"]);
+    const [first] = state.invocations;
+    assert.ok(editor.view.dom.children[1].querySelector(".libera-macro-expansion blockquote"), "the expansion renders the quote");
+    assert.equal(editor.state.doc.textBetween(first.from, first.to, "\n").split("\n").at(-1), "}");
+    assert.equal(expandMarkdownMacros(editor.getMarkdown())!.markdown.includes("**Note:** intro"), true);
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("inline wrappers around a parameter close and open again at each paragraph, list item and box line", () => {
+  const definitions = String.raw`\newcommand{\q}[1]{>[color=#2563eb]#1[/color]}
+\newcommand{\b}[1]{**#1**}
+\newcommand{\box}[1]{b> #1}
+\newcommand{\note}[1]{**Note:** #1}`;
+  const expand = (text: string) => expandMarkdownMacros(`${FENCE}libera-macro\n${definitions}\n${FENCE}\n\n${text}\n`)!.markdown.trim();
+  assert.equal(expand("\\q{This is it.\n\nThis is so great}"), ">[color=#2563eb]This is it.[/color]\n>\n>[color=#2563eb]This is so great[/color]");
+  assert.equal(expand("\\q{a\nb}"), ">[color=#2563eb]a\n>b[/color]", "lines of one paragraph share a wrapper");
+  assert.equal(expand("\\q{intro\n\n- a\n- b}"), ">[color=#2563eb]intro[/color]\n>\n>- [color=#2563eb]a[/color]\n>- [color=#2563eb]b[/color]");
+  assert.equal(expand("\\b{a\n\nb}"), "**a**\n\n**b**");
+  assert.equal(expand("\\box{a\n\nb}"), "b> a\nb>\nb> b");
+  assert.equal(expand("\\note{a\n\nb}"), "**Note:** a\n\nb", "a label before the parameter is not a wrapper");
+
+  const source = `${FENCE}libera-macro\n${definitions}\n${FENCE}\n\n\\q{This is it.\n\nThis is so great\n}\n`;
+  const editor = mount(source);
+  try {
+    const expansion = editor.view.dom.querySelector(".libera-macro-expansion")!;
+    assert.ok(!expansion.textContent!.includes("[color"), "the Visual editor colors both paragraphs");
+    assert.equal(expansion.querySelectorAll("blockquote p").length, 2);
+    assert.equal([...expansion.querySelectorAll("blockquote span")].filter((span) => /color/i.test(span.getAttribute("style") ?? "")).length, 2);
+  } finally {
+    editor.destroy();
+  }
+  assert.ok(!renderToStaticMarkup(createElement(MarkdownRenderer, { content: source })).includes("[color"), "so does the preview");
 });
 
 test("the Visual editor writes a backslash before a letter as typed, and still escapes punctuation", () => {

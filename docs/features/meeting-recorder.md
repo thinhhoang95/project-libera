@@ -11,15 +11,21 @@ The recording opens in a tab of its own, beside your notes, and records right aw
 
 ## The recording tab
 
-The tab is laid out like the voice memo player:
+The tab is laid out like a voice memo: the page shows what is being recorded, and the **Recording** tab of the left panel's rail, which appears and opens with it, holds the recorder's controls (**Controls** in the toolbar brings it back).
 
 - **Title.** Click the name ("Recording 2026-10-19 14.30" by default) to rename it; it becomes the file name, and the tab follows it. Under it, the last thing said, once live transcription is on.
 - **Live waveform and clock.** The waveform scrolls through the last twenty seconds or so; the clock counts recorded audio, so pauses do not add to it.
-- **Pause / Resume** (Space). The microphone is muted while paused, and what was recorded so far is saved first. If the microphone is unplugged, the recording pauses with a message; **Resume** opens the microphone again.
-- **Stop & save** saves the recording into the notebook (see [Saving](#saving)).
-- **Delete** (the bin) throws the recording away after asking, and closes the tab.
-- **Live recap** fills the middle of the tab (see [Live Recap](#live-recap)).
-- **Transcript** (T) shows and hides the live transcript at the side; its edge resizes it.
+- **Pause / Resume** (Space; a button beside the waveform and in the Recording tab). The microphone is muted while paused, and what was recorded so far is saved first. If the microphone is unplugged, the recording pauses with a message; **Resume** opens the microphone again.
+- **Stop & save** (Recording tab) saves the recording into the notebook (see [Saving](#saving)).
+- **Delete the recording** (Recording tab) throws it away after asking, and closes the tab.
+- The **Live transcribe** and **Live recap** switches, **Update the recap now** and the speech model download are in the Recording tab too.
+- **Live recap** and **Transcript** share the page, side by side when it is wide enough (see [Live Recap](#live-recap)).
+
+## Correcting while you record
+
+Both the recap and the live transcript are editable while you record: click a point or a line and type. Enter breaks it in two or starts a new one, Backspace at the start joins it to the one before, Delete at the end joins the next, and Escape puts it back. **Add a point** under the recap adds one of your own. New passages keep arriving below the ones you changed.
+
+Changes are kept in memory while you type and sent **once, when the editing ends** (you click outside the recap or the transcript, switch tabs, or the window closes); **Stop & save** sends any still pending first. Transcript corrections are kept beside the recording's pieces (`edits.json`), so they survive a crash too. The saved transcript is then the live one as you left it, rather than the words regrouped. A recap point you wrote or changed is yours: the model is told so (it sees it marked `*`), and any change it proposes to it is dropped. If a change cannot be sent, the Recording tab says so and the change is kept and sent again the next time the editing ends.
 
 The recording goes on while you work in other tabs, or after you close its tab: a small bar at the bottom left shows the clock, with Pause/Resume, Stop and **Show**, which brings the tab back. The tab can be split beside a note like any other, to take notes during the meeting.
 
@@ -37,16 +43,16 @@ Parakeet is an offline model: it hears a whole piece of audio at once rather tha
 
 ## Live Recap
 
-The **Live recap** switch keeps a bullet-point summary in the middle of the recording tab: topics, decisions, numbers, open questions and action items, with the time each point came up.
+The **Live recap** switch keeps a bullet-point summary on the recording tab: topics, decisions, numbers, open questions and action items, with the time each point came up.
 
 The recap is **amended, never rewritten**, so what you have read stays where it was. Each update shows the model the bullets so far, each with its number, and only the part of the transcript it has not read yet. The model answers with at most four changes, each either:
 
 - **add** a bullet at the end, for something new; or
 - **update** one existing bullet by its number, when the meeting adds to it or corrects it.
 
-Bullets are never deleted or reordered, and a bullet that repeats one already there is dropped. Bullets added or changed by the latest update are highlighted for a few seconds.
+The model never deletes or reorders bullets, and a bullet that repeats one already there is dropped (you can do both yourself; see [Correcting while you record](#correcting-while-you-record)). Bullets added or changed by the latest update are highlighted for a few seconds.
 
-- It updates once about 90 new words have been transcribed and at least 40 seconds have passed since the last update. **Update** brings it up to date now.
+- It updates once about 90 new words have been transcribed and at least 40 seconds have passed since the last update. **Update the recap now** brings it up to date.
 - It needs live transcription, and an OpenRouter API key (Preferences → AI). It uses the AI model chosen for **Formatting** in Preferences → AI, at low reasoning effort. Only the transcript text is sent, never the audio.
 - If an update fails (no network, for example), the error shows under the bullets and the next update tries again with everything not yet read.
 
@@ -57,8 +63,8 @@ Both switches are remembered for the next recording.
 **Stop** sends the last few seconds, waits for Parakeet to transcribe them, and lets the recap read the rest of the transcript. Then it saves into the notebook (or folder):
 
 - **The recording**, as AAC in an `.m4a` file (64 kbps, about 29 MB an hour) when ffmpeg or macOS's `afconvert` is available, otherwise as WAV (about 115 MB an hour). A name already taken gets `-1`, `-2`, ….
-- **Its transcript**, when live transcription was on: the voice memo's transcript, with search, quoting into AI Chat, exports and links to moments like any other (see [Voice memos](voice-memos.md)).
-- **A recap note**, `<name> recap.md`, when the recap has bullets. Each bullet links to the moment it was first heard (`Weekly sync.m4a#t=754`), so clicking a time plays the recording from there.
+- **Its transcript**, when live transcription was on (with your corrections): the voice memo's transcript, with search, quoting into AI Chat, exports and links to moments like any other (see [Voice memos](voice-memos.md)).
+- **A recap note**, `<name> recap.md`, when the recap has bullets (yours included). Each bullet links to the moment it was first heard (`Weekly sync.m4a#t=754`), so clicking a time plays the recording from there.
 
 The recording tab turns into the saved voice memo, in place, and the recap note opens beside it. If saving fails (the notebook was removed, for example), the recording stays open, paused, with the error, and nothing is lost: **Stop & save** tries again.
 
@@ -93,8 +99,8 @@ The recorder talks to these routes:
 | --- | --- |
 | `GET /api/recordings` | Recordings left unfinished |
 | `POST /api/recordings` | Start a recording (`notebook`, `parentPath`, `name`, `liveTranscribe`, `liveRecap`) |
-| `GET /api/recordings/:id?after=&recap=` | Progress, new transcript passages, the recap when it changed |
-| `PATCH /api/recordings/:id` | Rename, switch live transcription or the recap |
+| `GET /api/recordings/:id?after=&recap=` | Progress, new transcript passages, the recap when it changed (with the whole transcript, `after=0`, also the transcript corrections) |
+| `PATCH /api/recordings/:id` | Rename, switch live transcription or the recap, keep corrections (`transcriptEdits`, `recapEdits`) |
 | `DELETE /api/recordings/:id` | Throw the recording away |
 | `PUT /api/recordings/:id/chunks/:index?start=` | Save a piece (16 kHz mono 16-bit WAV) |
 | `POST /api/recordings/:id/recap` | Bring the recap up to date now |
@@ -104,10 +110,11 @@ The recorder talks to these routes:
 
 - Live transcription runs the transcription worker at lower priority with up to four threads, like voice memos. On a slow computer it may fall behind during a long meeting; it catches up, and Stop waits for it to finish.
 - The recap is written in the language of the transcript.
-- The live transcript groups words into passages within each piece (at pauses over 1.2 s); the saved transcript groups them across the whole recording (at pauses over 1.5 s).
+- The live transcript groups words into passages within each piece (at pauses over 1.2 s); the saved transcript groups them across the whole recording (at pauses over 1.5 s), unless you corrected the live transcript, which is then kept as you left it.
 
 ## Checks
 
 `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/recording.test.ts`
+`node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/transcript-edits.test.ts`
 
 Covers reading the model's replies (code fences, unknown bullets, deletes, malformed JSON), applying changes without removing or reordering bullets and without duplicates, the prompt (bullet numbers, context, only unread transcript), the recap note's links to moments, and a recording that survives a simulated crash: pieces saved twice, a malformed piece refused, the recording listed as unfinished after the server forgets it, the next piece number and position, and saving it as one file with its pieces removed.

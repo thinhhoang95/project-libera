@@ -1,5 +1,6 @@
 "use client";
 import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "@/lib/markdown-boxes";
+import { shiftMarkdownListItems, type ListIndentDirection } from "@/lib/markdown-list-indent";
 
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
@@ -16,6 +17,7 @@ import type {
   PdfAnnotationsPayload,
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
+import { pendingSaves } from "@/components/libera/pending-saves";
 import { pythonSidecarHref } from "@/lib/python/sidecar";
 import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import type {
@@ -83,6 +85,7 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 // Snips are read at the model's own page scale (up to four 512 px tiles across).
 const SNIP_MAX_EDGE = 2048;
 import { readIncludeDocumentContext } from "./ai-document-context-preference";
+import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "./ai-edit-thread";
 import { latexDocumentTemplate } from "@/lib/latex/project";
 import type { AiFeature, Provenance } from "@/lib/collab/protocol/actor";
 import { useSharedTabs } from "@/lib/collab/bindings/react-shared-tabs";
@@ -759,6 +762,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       });
       setAuthenticated(true);
       setPassword("");
+      // The desktop app opens this user's sign-in screen at the next start.
+      void window.liberaProfiles?.signedIn().catch(() => {});
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Login failed.");
     } finally {
@@ -769,6 +774,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function handleLogout() {
     try { await workspaceManager.checkpoint(); await flushPendingState(); }
     catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
+    await window.liberaProfiles?.signedOut();
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
     }).catch(() => null);
@@ -1236,6 +1242,16 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     });
   }
 
+  /** Unsaved text, ink or annotations (pending-saves.ts). */
+  function tabUnsaved(tab: OpenTab) {
+    return tab.status === "dirty" || pendingSaves.isDirty(tab.file.path);
+  }
+
+  /** Close without saving: unsaved ink and annotations are dropped, with their recovery copy. */
+  function discardPendingSaves(tabIds: string[]) {
+    for (const tab of tabs) if (tabIds.includes(tab.id)) pendingSaves.discard(tab.file.path);
+  }
+
   const closeTabsWithoutConfirm = useCallback((tabIds: string[]) => {
     const closingTabIds = new Set(tabIds);
 
@@ -1287,7 +1303,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const closeTab = useCallback((tabId: string) => {
     const tab = tabs.find((currentTab) => currentTab.id === tabId);
 
-    if (tab && !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) {
+    if (tab && ((!isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.isDirty(tab.file.path))) {
       setWorkspaceConfirmDialog({
         mode: "close-tab",
         tabId,
@@ -1312,7 +1328,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    const dirtyTabCount = otherTabs.filter((currentTab) => !isSharedRegistryTab(currentTab.id) && getTabDraft(currentTab) !== currentTab.saved).length;
+    const dirtyTabCount = otherTabs.filter((currentTab) => (!isSharedRegistryTab(currentTab.id) && getTabDraft(currentTab) !== currentTab.saved) || pendingSaves.isDirty(currentTab.file.path)).length;
     const otherTabIds = otherTabs.map((currentTab) => currentTab.id);
 
     if (dirtyTabCount > 0) {
@@ -1623,6 +1639,43 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       selectionStart: nextSelectionStart,
       selectionEnd: nextSelectionEnd,
     });
+  }
+
+  /** The toolbar's Indent / Outdent list item buttons in the Source editor. */
+  function shiftMarkdownList(direction: ListIndentDirection) {
+    if (!activeTab || activeTab.file.fileType !== "markdown") {
+      return;
+    }
+
+    const textarea = textareaRef.current;
+    const scrollState = getMarkdownTextareaScrollState();
+    const draft = textarea?.value ?? getTabDraft(activeTab);
+    const start = textarea?.selectionStart ?? draft.length;
+    const end = textarea?.selectionEnd ?? draft.length;
+    const result = shiftMarkdownListItems(draft, start, end, direction);
+
+    if (!result) {
+      textarea?.focus();
+      return;
+    }
+
+    const selection = { selectionStart: result.nextStart, selectionEnd: result.nextEnd };
+
+    if (
+      textarea &&
+      replaceTextareaSelectionWithUndo(textarea, {
+        ...scrollState,
+        ...result.changed,
+        nextSelectionStart: result.nextStart,
+        nextSelectionEnd: result.nextEnd,
+      })
+    ) {
+      restoreMarkdownTextarea({ ...scrollState, ...selection });
+      return;
+    }
+
+    setActiveDraft(result.nextValue, { base: draft });
+    restoreMarkdownTextarea({ ...scrollState, ...selection });
   }
 
   /** Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of the active Markdown editor, in the source or the visual editor. */
@@ -2499,16 +2552,20 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
-      const payload = await apiRequest<{ rewrittenText: string }>("/api/ai-rewrite", {
+      const includeDocument = readIncludeDocumentContext();
+      const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
+      const payload = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
         method: "POST",
         body: JSON.stringify({
           text: selectedText,
           prompt,
-          ...(readIncludeDocumentContext()
+          ...(includeDocument
             ? { before: draft.slice(0, selection.start), after: draft.slice(selection.end) }
             : {}),
+          thread,
         }),
       });
+      recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
       )}`;
@@ -2555,13 +2612,17 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
-      const payload = await apiRequest<{ markdown: string }>("/api/ai-write", {
+      const includeDocument = readIncludeDocumentContext();
+      const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
+      const payload = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
         method: "POST",
         body: JSON.stringify({
           prompt,
-          ...(readIncludeDocumentContext() ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+          ...(includeDocument ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
+          thread,
         }),
       });
+      recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
       const suggested = suggestSharedAi(tabId, draft, {
         start: position,
@@ -2792,14 +2853,30 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     }
   }
 
+  /** Writes a tab's unsaved ink and annotations (pending-saves.ts); reports a failure on the tab. */
+  async function savePendingFor(tab: OpenTab) {
+    try {
+      await pendingSaves.save(tab.file.path);
+    } catch (error) {
+      updateTab(tab.id, (current) => ({ ...current, status: "error", error: error instanceof Error ? error.message : "Save failed." }));
+    }
+  }
+
   async function saveActiveTab() {
-    if (!activeTab || !isTextFileType(activeTab.file.fileType)) {
+    if (!activeTab) {
       return;
     }
 
-    // Shared tabs have no Save: every edit is already on this device. Show
-    // the status pill's detail instead (map §6).
+    // PDFs, images and the like: their annotations and ink are all there is to save.
+    if (!isTextFileType(activeTab.file.fileType)) {
+      await savePendingFor(activeTab);
+      return;
+    }
+
+    // Shared tabs have no Save for their text: every edit is already on this
+    // device. Their ink blocks still save. Show the status pill's detail (map §6).
     if (isSharedTab(activeTab.id)) {
+      await savePendingFor(activeTab);
       sharedRegistry.revealStatus(activeTab.id);
       return;
     }
@@ -2830,6 +2907,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const draft = getTabDraft(activeTab);
 
     if (draft === activeTab.saved && activeTab.status !== "error") {
+      // The text is saved; a note's ink blocks may not be.
+      await savePendingFor(activeTab);
       return;
     }
 
@@ -2851,6 +2930,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         saved: draft,
         status: latestDraft === draft ? "clean" : "dirty",
       }));
+      // With the note's text, its ink blocks and their renderings.
+      await savePendingFor(activeTab);
       await refreshTree(activeTab.file.notebook);
     } catch (error) {
       updateTab(activeTab.id, (tab) => ({
@@ -2950,6 +3031,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
             ...notebookValues,
           }),
         }, () => ({ moved: { from: previousName, to: nextName }, notebookGroup }));
+        pendingSaves.moveUnsaved(previousName, nextName, { prefix: true });
         await applyCompleteTree(nextTree);
         // The File menu lists linked folders by name.
         if (notebookDialog.notebook.folder && previousName !== nextName) {
@@ -3290,6 +3372,10 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      if (annotations.some((annotation) => annotation.type === "space")) {
+        // Until export can make pages taller (docs/create-space-plan.md, phase 2).
+        setWorkspaceError("The PDF was exported without its spaces: spaces, and the notes and ink in them, can't be exported yet.");
+      }
     } catch (error) {
       setWorkspaceError(error instanceof Error ? error.message : "Could not export the annotated PDF.");
     }
@@ -3443,6 +3529,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
    */
   function retargetOpenTab(fromPath: string, payload: LiberaFilePayload | LiberaFileMovePayload) {
     const nextId = payload.file.path;
+    // Unsaved ink and annotations follow, before the views re-render under the new path.
+    pendingSaves.moveUnsaved(fromPath, nextId, { sources: "imageSources" in payload ? payload.imageSources : undefined });
     const openTab = tabs.find((tab) => tab.file.path === fromPath);
     let moved: ReturnType<typeof movedTabText> = null;
     if (openTab) {
@@ -3501,7 +3589,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   ) {
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
-    if (openTab?.status === "dirty" && !options?.skipDirtyCheck) {
+    if (openTab && tabUnsaved(openTab) && !options?.skipDirtyCheck) {
       setWorkspaceConfirmDialog({
         mode: "move-file-node",
         file,
@@ -3540,7 +3628,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
-    if (openTab?.status === "dirty" && !options?.skipDirtyCheck) {
+    if (openTab && tabUnsaved(openTab) && !options?.skipDirtyCheck) {
       setWorkspaceConfirmDialog({
         mode: "move-file-folder",
         file,
@@ -3603,7 +3691,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   async function archiveFileNode(file: LiberaFileNode) {
     const openTab = tabs.find((tab) => tab.file.path === file.path);
 
-    if (openTab?.status === "dirty") {
+    if (openTab && tabUnsaved(openTab)) {
       setWorkspaceError("Save or close the file before archiving it.");
       return;
     }
@@ -3644,6 +3732,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           name,
         }),
       }, () => ({ moved: { from: folder.path, to: nextPath } }));
+      pendingSaves.moveUnsaved(folder.path, nextPath, { prefix: true });
       await applyCompleteTree(nextTree);
       updateExpanded((current) => {
         const next = new Set<string>();
@@ -3823,7 +3912,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function archiveFolderNode(folder: LiberaFolderNode) {
     const dirtyTabCount = tabs.filter(
-      (tab) => isPathWithinPrefix(tab.file.path, folder.path) && tab.status === "dirty",
+      (tab) => isPathWithinPrefix(tab.file.path, folder.path) && tabUnsaved(tab),
     ).length;
 
     if (dirtyTabCount > 0) {
@@ -3871,10 +3960,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
     try {
       if (workspaceConfirmDialog.mode === "close-tab") {
+        discardPendingSaves([workspaceConfirmDialog.tabId]);
         closeTabWithoutConfirm(workspaceConfirmDialog.tabId);
       }
 
       if (workspaceConfirmDialog.mode === "close-tabs") {
+        discardPendingSaves(workspaceConfirmDialog.tabIds);
         closeTabsWithoutConfirm(workspaceConfirmDialog.tabIds);
       }
 
@@ -4173,7 +4264,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   useEffect(() => {
     function protectUnsavedDrafts(event: BeforeUnloadEvent) {
-      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved)) {
+      if (tabs.some((tab) => !isSharedRegistryTab(tab.id) && getTabDraft(tab) !== tab.saved) || pendingSaves.anyDirty(tabs.map((tab) => tab.file.path))) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -4280,6 +4371,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       insertExistingMarkdownImage,
       insertMarkdownImage,
       insertMarkdown,
+      shiftMarkdownList,
       insertCitation,
       insertBibliographyMarker,
       activeMarkdownDraft: activeTab?.file.fileType === "markdown" ? activeTab.draft : null,

@@ -9,6 +9,7 @@ import {
 } from "@/lib/storage/file-types";
 import { copyFileIfExists, ensureParentDirectory, pathExists, writeJsonForSource } from "@/lib/storage/fs-utils";
 import { readFileSignature } from "@/lib/storage/file-signature";
+import { cachedPdfIdentity, parsePdfIdentity } from "@/lib/storage/pdf-identity";
 import {
   ensureAdminRoot,
   filePathFromParts,
@@ -29,6 +30,7 @@ import { StorageError, toStorageError } from "@/lib/storage/errors";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
 import { normalizePdfCommentThreads } from "@/lib/pdf-comments";
+import { normalizeSpaceLayout, reconcilePdfSpaces } from "@/lib/pdf-space";
 import type {
   ImageAnnotationsPayload,
   PdfAnnotation,
@@ -41,6 +43,7 @@ import type {
   PdfInkAnnotation,
   PdfShapeAnnotation,
   PdfShapeKind,
+  PdfSpaceAnnotation,
   PdfTextAnnotation,
   PdfTextAnnotationFont,
 } from "@/lib/types";
@@ -81,6 +84,11 @@ function normalizeAnnotationPoint(input: unknown): PdfAnnotationPoint {
   const point = (input && typeof input === "object" ? input : {}) as Partial<PdfAnnotationPoint>;
 
   return { x: clampNumber(point.x, 0, 1, 0), y: clampNumber(point.y, 0, 1, 0) };
+}
+
+/** The space a note or drawing sits in; orphaned references are dropped after all are read. */
+function spaceReference(value: unknown): { space?: string } {
+  return typeof value === "string" && value.trim() ? { space: value.slice(0, 120) } : {};
 }
 
 function inkColor(value: unknown) {
@@ -165,6 +173,7 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
         rect: normalizeAnnotationRect(
           (candidate as Partial<{ rect: Partial<PdfAnnotationRect> }>).rect ?? {},
         ),
+        ...spaceReference((candidate as Partial<PdfTextAnnotation>).space),
         createdAt,
         updatedAt,
       });
@@ -183,6 +192,7 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
           strokeWidth: clampNumber(shape.strokeWidth, 0.5, 24, 2),
           from: normalizeAnnotationPoint(shape.from),
           to: normalizeAnnotationPoint(shape.to),
+          ...spaceReference(shape.space),
           createdAt,
           updatedAt,
         });
@@ -203,6 +213,24 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
           color: inkColor(ink.color),
           strokeWidth: clampNumber(ink.strokeWidth, 0.5, 24, 2),
           points,
+          ...spaceReference(ink.space),
+          createdAt,
+          updatedAt,
+        });
+      }
+    }
+
+    if (type === "space") {
+      const space = candidate as Partial<PdfSpaceAnnotation>;
+      const layout = normalizeSpaceLayout(space);
+
+      if (layout) {
+        annotations.push({
+          id,
+          type,
+          pageNumber,
+          ...layout,
+          ...(typeof space.fill === "string" && HEX_COLOR_PATTERN.test(space.fill) ? { fill: space.fill } : {}),
           createdAt,
           updatedAt,
         });
@@ -210,13 +238,83 @@ function normalizePdfAnnotations(input: unknown): PdfAnnotation[] {
     }
   }
 
-  return annotations;
+  return reconcilePdfSpaces(annotations);
+}
+
+// Every field normalizePdfAnnotations reads, by type. Keep in step with it.
+const PDF_ANNOTATION_COMMON_FIELDS = ["id", "type", "pageNumber", "createdAt", "updatedAt"];
+const PDF_ANNOTATION_FIELDS: Record<PdfAnnotation["type"], readonly string[]> = {
+  highlight: ["color", "rects", "quote", "markup"],
+  text: ["text", "fontSize", "color", "fontFamily", "rect", "space"],
+  shape: ["shape", "color", "strokeWidth", "from", "to", "space"],
+  ink: ["color", "strokeWidth", "points", "space"],
+  space: ["y", "height", "band", "column", "fill"],
+};
+const MAX_PRESERVED_ANNOTATIONS = 1_000;
+const MAX_PRESERVED_JSON_LENGTH = 256 * 1024;
+
+function isKnownPdfAnnotationType(type: unknown): type is PdfAnnotation["type"] {
+  return typeof type === "string" && Object.hasOwn(PDF_ANNOTATION_FIELDS, type);
+}
+
+function fitsPreservedJson(value: unknown) {
+  try {
+    return (JSON.stringify(value) ?? "").length <= MAX_PRESERVED_JSON_LENGTH;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keeps what a newer Libera stored and this build cannot read: annotations of
+ * unknown types, and unknown fields of annotations it does know. The viewer
+ * never receives them, so saving its list must not delete them.
+ */
+function withPreservedUnknowns(stored: unknown, annotations: PdfAnnotation[]): unknown[] {
+  const result: unknown[] = [...annotations];
+  if (!Array.isArray(stored)) return result;
+  const indexById = new Map(annotations.map((annotation, index) => [annotation.id, index]));
+  const ids = new Set(indexById.keys());
+  let preserved = 0;
+
+  for (const item of stored) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    if (typeof entry.id !== "string") continue;
+
+    if (isKnownPdfAnnotationType(entry.type)) {
+      const index = indexById.get(entry.id);
+      if (index === undefined || annotations[index].type !== entry.type) continue;
+      const known = PDF_ANNOTATION_FIELDS[entry.type];
+      const extras = Object.entries(entry).filter(([key, value]) =>
+        key !== "__proto__" &&
+        !PDF_ANNOTATION_COMMON_FIELDS.includes(key) &&
+        !known.includes(key) &&
+        fitsPreservedJson(value));
+      if (extras.length) result[index] = { ...annotations[index], ...Object.fromEntries(extras) };
+    } else if (
+      typeof entry.type === "string" &&
+      preserved < MAX_PRESERVED_ANNOTATIONS &&
+      !ids.has(entry.id) &&
+      fitsPreservedJson(entry)
+    ) {
+      result.push(entry);
+      ids.add(entry.id);
+      preserved++;
+    }
+  }
+
+  return result;
 }
 
 function normalizeImageAnnotations(input: unknown): PdfTextAnnotation[] {
-  return normalizePdfAnnotations(input).filter(
-    (annotation): annotation is PdfTextAnnotation => annotation.type === "text",
-  );
+  // Images have no spaces, so every note sits on the image itself.
+  return normalizePdfAnnotations(input).flatMap((annotation) => {
+    if (annotation.type !== "text") return [];
+    const note = { ...annotation };
+    delete note.space;
+    return [note];
+  });
 }
 
 /** Enumerate annotated files without following symlinks or entering app/dependency state. */
@@ -319,7 +417,7 @@ async function pdfSidecarForRead(notebook: string, name: string, pathParts: stri
   return annotationsPath;
 }
 
-type PdfSidecar = { annotations?: unknown; comments?: unknown };
+type PdfSidecar = { annotations?: unknown; comments?: unknown; source?: unknown };
 
 /** The sidecar's JSON, or an empty one when the PDF has none yet. */
 async function readPdfSidecar(annotationsPath: string): Promise<PdfSidecar> {
@@ -387,9 +485,16 @@ async function updatePdfSidecar<T>(relativePath: string, change: (sidecar: PdfSi
   return withPdfSidecar(annotationsPath, async () => {
     const { sidecar, result } = change(await readPdfSidecar(annotationsPath));
     const comments = Array.isArray(sidecar.comments) && sidecar.comments.length ? { comments: sidecar.comments } : {};
-    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments }, sourcePath, signature);
+    // The PDF's bytes, so the notes can find it again after a rename outside Libera (pdf-sidecars.ts).
+    const source = await cachedPdfIdentity(sourcePath).catch(() => parsePdfIdentity(sidecar.source));
+    await writeJsonForSource(annotationsPath, { annotations: Array.isArray(sidecar.annotations) ? sidecar.annotations : [], ...comments, ...(source ? { source } : {}) }, sourcePath, signature);
     return result;
   });
+}
+
+/** Records the PDF's identity in an existing side-car written before side-cars kept it. */
+export async function recordPdfAnnotationsSource(relativePath: string) {
+  await updatePdfSidecar(relativePath, (sidecar) => ({ sidecar, result: undefined }));
 }
 
 export async function readPdfAnnotations(
@@ -413,7 +518,10 @@ export async function writePdfAnnotations(
 ): Promise<PdfAnnotationsPayload> {
   const { notebook, pathParts } = splitFilePath(relativePath);
   const normalizedAnnotations = normalizePdfAnnotations(annotations);
-  await updatePdfSidecar(relativePath, (sidecar) => ({ sidecar: { ...sidecar, annotations: normalizedAnnotations }, result: undefined }));
+  await updatePdfSidecar(relativePath, (sidecar) => ({
+    sidecar: { ...sidecar, annotations: withPreservedUnknowns(sidecar.annotations, normalizedAnnotations) },
+    result: undefined,
+  }));
   // Highlight quotes are Global Search passages of the PDF.
   notifySearchChanges([relativeFilePath(notebook, pathParts)]);
 

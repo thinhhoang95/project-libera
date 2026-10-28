@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, jsonError } from "@/lib/api";
-import { anchorAt, commentsKey, decideAgentSuggestions, decideSuggestions, requestAgentRevision, reviewString, startReviewRound, syncReview, undoReview, redoReview, type ReviewRange } from "@/lib/markdown-review";
+import { anchorAt, commentsKey, decideAgentSuggestions, decideSuggestions, replayReviewEdits, requestAgentRevision, reviewString, startReviewRound, undoReview, redoReview, type ReviewRange } from "@/lib/markdown-review";
 import { loadReview, readReview, updateReview, moveReviewPath, listRecoverableReviews } from "@/lib/storage/markdown-reviews";
 import { StorageError } from "@/lib/storage/errors";
 export const runtime = "nodejs";
@@ -32,7 +32,8 @@ export async function POST(request: NextRequest) {
     }
     if (!Number.isInteger(body.revision)) throw new Error("Review revision is required.");
     const result = await updateReview(reviewString(body.id, "document ID", 100), body.revision, (stored) => {
-      let doc = syncReview(stored, snapshot);
+      // `edits`: the text changes the window recorded since `stored`'s snapshot.
+      let doc = replayReviewEdits(stored, body.edits, snapshot);
       const thread = doc.threads.find((t) => t.id === body.threadId);
       const text = () => { const value = reviewString(body.text, "comment", 20_000).trim(); if (!value) throw new Error("Enter a comment."); return value; };
       const range = () => anchorAt(snapshot, body.range as ReviewRange);

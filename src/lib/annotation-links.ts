@@ -17,7 +17,7 @@ export function findRememberedAnnotation(path: string, id: string | undefined) {
 
 /** "Highlight “…”" / "Note “…”", or a generic name when the text is unknown. */
 export function annotationLinkLabel(annotation: PdfAnnotation | undefined, fallback: string) {
-  if (!annotation || annotation.type === "shape" || annotation.type === "ink") return fallback;
+  if (!annotation || annotation.type === "shape" || annotation.type === "ink" || annotation.type === "space") return fallback;
   const text = annotation.type === "highlight" ? annotation.quote ?? "" : annotation.text;
   return markdownLinkQuoteLabel(text) || fallback;
 }
@@ -25,6 +25,7 @@ export function annotationLinkLabel(annotation: PdfAnnotation | undefined, fallb
 export function annotationAnchorRect(annotation: PdfAnnotation): PdfAnnotationRect {
   if (annotation.type === "text") return annotation.rect;
   if (annotation.type === "shape" || annotation.type === "ink") return drawingBounds(annotation);
+  if (annotation.type === "space") return { x: 0, y: annotation.y, width: 1, height: 0 };
   const [first, ...rest] = annotation.rects;
   if (!first) return { x: 0, y: 0, width: 0, height: 0 };
   // The union of a highlight's line boxes.

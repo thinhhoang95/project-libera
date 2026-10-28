@@ -80,10 +80,13 @@ export type PdfTabViewState = {
    * instead of restoring the saved scroll position (set when following a link). */
   revealSelectedAnnotation?: boolean;
   textColor?: string;
-  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser";
+  tool?: "select" | "highlight" | "text" | "draw" | "shape" | "eraser" | "space";
   zoom?: number;
-  /** One-shot request (Global Search) to show a page and find a passage on it. */
-  reveal?: { page: number; text?: string; nonce: number };
+  /**
+   * One-shot request (Global Search, the Outlines tab) to show a page and find
+   * a passage on it; `top` scrolls that far down the page (0–1), for bookmarks.
+   */
+  reveal?: { page: number; text?: string; top?: number; nonce: number };
 };
 
 export type LatexTabViewState = {
@@ -115,7 +118,7 @@ export type ImageTabViewState = {
   /** One-shot request, cleared by the viewer: select and show the annotation. */
   revealSelectedAnnotation?: boolean;
   textColor?: string;
-  tool?: "select" | "text";
+  tool?: "select" | "text" | "ink";
   zoom?: number;
 };
 
@@ -414,6 +417,7 @@ export type LiberaWorkspace = {
     selection?: { end: number; start: number },
   ) => Promise<void>;
   insertMarkdown: (before: string, after?: string, placeholder?: string) => void;
+  shiftMarkdownList: (direction: "indent" | "outdent") => void;
   moveFileFromPrompt: (tab: OpenTab) => Promise<void>;
   moveFileToFolder: (file: LiberaFileNode, destinationPath: string) => Promise<void>;
   openFile: (

@@ -1,20 +1,18 @@
 "use client";
 
 import { ImageIcon, ListIndentDecrease, ListIndentIncrease, Loader2, PenLine, Sparkles, Volume2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MarkdownImageSelection } from "@/components/libera/types";
-import { IncludeDocumentContextCheckbox } from "../ai-document-context-preference";
+import { AiEditOptions } from "../ai-edit-thread";
 import { QuickPromptInput } from "../quick-prompt-input";
 import { PasteMenuItems, type MenuPasteMode } from "../paste-menu-items";
+import { changeSelectedHeadingLevels, findMarkdownImageInText } from "@/lib/markdown-source";
 
 /* The Source editor's right-click menu: Paste, Paste with Peer Heading Level, Read Out Loud, AI Format, Indent/Unindent Headings,
  * AI Rewrite, Write with AI and AI Image to Markdown. Same items, labels and
- * keyboard behaviour as the textarea editor's menu, so either editor feels the
- * same and the same tests find the same controls. */
+ * keyboard behaviour for both editor engines. DOM selection stays in the editor. */
 
 export type SourceContextMenuState = {
-  canIndent: boolean;
-  canUnindent: boolean;
   end: number;
   hasText: boolean;
   image?: MarkdownImageSelection;
@@ -34,14 +32,22 @@ export function sourceContextMenuPosition(clientX: number, clientY: number, hasT
   };
 }
 
+export function sourceContextMenuState(text: string, start: number, end: number, clientX: number, clientY: number): SourceContextMenuState {
+  const hasText = !!text.slice(start, end).trim();
+  const image = findMarkdownImageInText(text, start, end);
+  return { start, end, hasText, image, ...sourceContextMenuPosition(clientX, clientY, hasText, !!image) };
+}
+
 const ITEM_CLASS = "flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60";
 const SUBMIT_CLASS = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50";
 
 export function MarkdownSourceContextMenu({
   aiWorking,
+  documentPath,
   formatting,
   imageConverting,
   menu,
+  text,
   onClose,
   onFormat,
   onHeadingLevels,
@@ -52,9 +58,12 @@ export function MarkdownSourceContextMenu({
   onWrite,
 }: {
   aiWorking: boolean;
+  /** Keys the cached AI Rewrite / Write with AI thread. */
+  documentPath?: string;
   formatting: boolean;
   imageConverting: boolean;
   menu: SourceContextMenuState;
+  text: string;
   onClose: () => void;
   onFormat: () => void;
   onHeadingLevels: (direction: "indent" | "unindent") => void;
@@ -66,6 +75,12 @@ export function MarkdownSourceContextMenu({
 }) {
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [writePrompt, setWritePrompt] = useState("");
+  const [promptMenu, setPromptMenu] = useState(menu);
+  if (promptMenu !== menu) {
+    setPromptMenu(menu);
+    setRewritePrompt("");
+    setWritePrompt("");
+  }
   const menuRef = useRef<HTMLDivElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const writeInputRef = useRef<HTMLTextAreaElement>(null);
@@ -99,6 +114,11 @@ export function MarkdownSourceContextMenu({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [menu]);
+
+  const { canIndent, canUnindent } = useMemo(() => ({
+    canIndent: menu.start !== menu.end && changeSelectedHeadingLevels(text, menu.start, menu.end, "indent").changed,
+    canUnindent: menu.start !== menu.end && changeSelectedHeadingLevels(text, menu.start, menu.end, "unindent").changed,
+  }), [text, menu]);
 
   function rewrite() {
     const prompt = rewritePrompt.trim();
@@ -139,11 +159,11 @@ export function MarkdownSourceContextMenu({
             {formatting ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden className="h-4 w-4" />}
             {formatting ? "Formatting..." : "AI Format"}
           </button>
-          <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!menu.canIndent} onClick={() => onHeadingLevels("indent")}>
+          <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!canIndent} onClick={() => onHeadingLevels("indent")}>
             <ListIndentIncrease aria-hidden className="h-4 w-4" />
             Indent Headings
           </button>
-          <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!menu.canUnindent} onClick={() => onHeadingLevels("unindent")}>
+          <button className={ITEM_CLASS} type="button" role="menuitem" disabled={!canUnindent} onClick={() => onHeadingLevels("unindent")}>
             <ListIndentDecrease aria-hidden className="h-4 w-4" />
             Unindent Headings
           </button>
@@ -186,7 +206,7 @@ export function MarkdownSourceContextMenu({
             <PenLine aria-hidden className="h-4 w-4" />
           </button>
         </div>
-        <IncludeDocumentContextCheckbox id="ai-document-context" />
+        <AiEditOptions id="ai-document-context" documentPath={documentPath} />
       </form>
       {menu.image ? (
         <button className={ITEM_CLASS} type="button" role="menuitem" disabled={aiWorking} onClick={onImageToMarkdown}>

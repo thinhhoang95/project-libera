@@ -1793,6 +1793,135 @@ button.border[class*="border-white"]:hover {
   z-index: 15;
 }
 
+/* Create space: blank room opened in the page (docs/create-space-plan.md).
+   Fills sit above the text layer and below ink and notes; the controls and
+   the tool's surface sit above the drawing surface and below notes. */
+.pdf-space-boxes,
+.pdf-space-chrome {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.pdf-space-boxes {
+  z-index: 12;
+}
+
+/* Sheets waiting to render show the paper they will be drawn on. */
+.libera-pdf-viewer[data-pdf-paper] .libera-pdf-sheet,
+.libera-pdf-viewer[data-pdf-paper] .libera-pdf-sheet > div:first-child { background: var(--libera-pdf-paper); }
+
+.pdf-space-chrome {
+  z-index: 27;
+}
+
+.pdf-space-box {
+  /* PDFs are paper; a space without a sampled fill is white, also in dark
+     mode, or the editor theme's paper (pdf-paper-color.ts). */
+  background: var(--libera-pdf-paper, #fff);
+  position: absolute;
+}
+
+.pdf-space-box[data-editable] {
+  outline: 1px dashed rgb(13 148 136 / 0.55);
+  outline-offset: -1px;
+  pointer-events: auto;
+}
+
+.pdf-space-box[data-selected] {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.pdf-space-filler {
+  background: var(--libera-pdf-paper, #fff);
+  position: absolute;
+}
+
+/* Filler can't hold notes or ink; the hatching says so while spaces are being made. */
+.pdf-space-filler[data-active]::after {
+  background: repeating-linear-gradient(135deg, rgb(100 116 139 / 0.18) 0 2px, transparent 2px 8px);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.pdf-space-surface {
+  cursor: row-resize;
+  inset: 0;
+  pointer-events: auto;
+  position: absolute;
+  touch-action: none;
+}
+
+.pdf-space-cut {
+  border-top: 2px dashed rgb(217 119 6 / 0.9);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  transform: translateY(-1px);
+}
+
+.pdf-space-cut[data-snapped] {
+  border-top-color: var(--ring);
+}
+
+.pdf-space-controls {
+  pointer-events: none;
+  position: absolute;
+}
+
+.pdf-space-delete {
+  align-items: center;
+  background: rgb(9 9 11 / 0.72);
+  border-radius: 9999px;
+  color: #fff;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: auto;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  transition: opacity 120ms;
+  width: 18px;
+}
+
+.pdf-space-controls:hover .pdf-space-delete,
+.pdf-space-delete:focus-visible {
+  opacity: 1;
+}
+
+.pdf-space-grip {
+  bottom: -4px;
+  cursor: ns-resize;
+  height: 8px;
+  left: 0;
+  pointer-events: auto;
+  position: absolute;
+  right: 0;
+  touch-action: none;
+}
+
+.pdf-space-grip::after {
+  background: var(--ring);
+  border-radius: 2px;
+  content: "";
+  height: 3px;
+  left: 50%;
+  opacity: 0.55;
+  position: absolute;
+  top: 2.5px;
+  transform: translateX(-50%);
+  width: 36px;
+}
+
+.pdf-space-grip:hover::after {
+  opacity: 1;
+}
+
 .pdf-highlight-hit {
   background: transparent;
   border: 0;
@@ -2257,6 +2386,51 @@ button.border[class*="border-white"]:hover {
 .libera-python-figure.is-running img { opacity: .55; transition: opacity .2s; }
 .libera-python-figure-bar { position: absolute; top: .5rem; right: .5rem; display: flex; align-items: center; gap: .25rem; padding: .2rem .25rem .2rem .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 500 .75rem/1.2 var(--font-sans); box-shadow: 0 2px 8px rgb(0 0 0 / .08); opacity: 0; transition: opacity .15s; }
 .libera-python-figure:hover .libera-python-figure-bar, .libera-python-figure:focus-within .libera-python-figure-bar, .libera-python-figure.is-running .libera-python-figure-bar { opacity: 1; }
+/* A Markdown ink block (ink/tiptap-ink-block.tsx). Ink is drawn on paper in
+   every theme, as PDF pages are, so its colors match the note's SVG. */
+.libera-ink-block { position: relative; margin: 1em 0; white-space: normal; user-select: none; }
+.libera-tiptap .libera-ink-block.ProseMirror-selectednode { outline: none; }
+.libera-ink-paper { position: relative; width: 100%; border: 1px dashed var(--border); border-radius: .5rem; background: #fff; overflow: hidden; }
+.libera-ink-block.is-active .libera-ink-paper { border-style: solid; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.libera-ink-surface { position: absolute; inset: 0; touch-action: none; }
+.libera-ink-surface[data-mouse-draws] { cursor: crosshair; }
+.libera-ink-surface[data-mouse-draws][data-ink-tool="eraser"] { cursor: cell; }
+.libera-ink-surface canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.libera-ink-highlight { mix-blend-mode: multiply; }
+.libera-ink-cursor { position: absolute; left: 0; top: 0; border: 1.5px solid; border-radius: 999px; pointer-events: none; opacity: .7; }
+.libera-ink-block-toolbar { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; max-width: 100%; flex-wrap: wrap; }
+.libera-ink-toolbar { align-items: center; background: var(--card); border: 1px solid var(--border); border-radius: .6rem; box-shadow: 0 4px 14px rgb(0 0 0 / .1); display: inline-flex; gap: 6px; padding: 3px 6px; }
+.libera-ink-toolbar .annotation-choice { align-items: center; border: 1px solid transparent; border-radius: 8px; color: var(--muted-foreground); display: inline-flex; height: 28px; justify-content: center; padding: 0; width: 28px; }
+.libera-ink-toolbar .annotation-choice:disabled { opacity: .4; }
+.libera-ink-toolbar .annotation-choice[aria-checked="true"] { background: var(--surface-blue, var(--muted)); border-color: color-mix(in srgb, var(--accent) 22%, var(--card)); color: var(--accent); }
+.libera-ink-toolbar .annotation-swatch { align-items: center; border: 0; border-radius: 999px; display: inline-flex; height: 26px; justify-content: center; padding: 0; width: 26px; }
+.libera-ink-custom-color input { width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+.libera-ink-eraser-dot { border: 1.5px solid currentColor; border-radius: 999px; display: inline-block; }
+.libera-ink-presets { align-items: center; display: inline-flex; gap: 2px; }
+.libera-ink-selection { align-items: center; display: inline-flex; gap: 4px; }
+.libera-ink-selection-count { color: var(--muted-foreground); font-size: 12px; padding: 0 4px; white-space: nowrap; }
+.libera-ink-preset { position: relative; display: inline-flex; }
+.libera-ink-preset > button:first-child { width: 22px; height: 22px; border-radius: 999px; border: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; }
+.libera-ink-preset > button:first-child > span { width: 16px; height: 16px; border-radius: 4px; background: var(--swatch); border: 1px solid rgb(15 23 42 / .16); }
+.libera-ink-preset-remove { position: absolute; top: -5px; right: -5px; display: none; width: 14px; height: 14px; border-radius: 999px; border: 0; padding: 0; align-items: center; justify-content: center; background: var(--muted); color: var(--foreground); }
+.libera-ink-preset:hover .libera-ink-preset-remove { display: inline-flex; }
+.libera-ink-grip { position: absolute; left: 50%; bottom: -5px; width: 44px; height: 10px; transform: translateX(-50%); border-radius: 999px; background: var(--accent); cursor: ns-resize; touch-action: none; }
+.libera-ink-block-error { margin: .25em 0 0; font-size: .75rem; color: var(--destructive, #b91c1c); }
+/* Ink on photos: notebook images (ink/image-ink-layer.tsx) and gallery photos (ink/photo-ink-layer.tsx). */
+.libera-ink-toolbar-slot { display: inline-flex; }
+.libera-ink-toolbar-slot .libera-ink-toolbar { box-shadow: none; }
+.libera-ink-image-error, .libera-photo-ink-error { position: absolute; left: 8px; bottom: 8px; margin: 0; border-radius: 6px; background: var(--card); color: var(--destructive, #b91c1c); font-size: .75rem; padding: 2px 8px; }
+.libera-ink-surface.is-stale { opacity: .45; }
+.libera-photo-ink-bar { display: flex; justify-content: center; padding: 0 8px 8px; }
+.libera-photo-ink-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.libera-photo-ink-actions { align-items: center; border-left: 1px solid rgb(255 255 255 / .2); display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 4px; padding-left: 10px; }
+.libera-photo-ink-action { align-items: center; border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; display: inline-flex; font-size: .8125rem; gap: .4rem; padding: .3rem .7rem; }
+.libera-photo-ink-action.is-primary:not(:disabled) { background: rgb(255 255 255 / .16); }
+.libera-photo-ink-action:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
+.libera-photo-ink-action:disabled { opacity: .45; }
+.libera-photo-ink-action.is-danger { border-color: #f87171; color: #fecaca; }
+.libera-photo-ink-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100% - 24px); border-radius: .75rem; background: #fff; color: #111; font-size: .8125rem; padding: .5rem .75rem; box-shadow: 0 4px 14px rgb(0 0 0 / .25); }
+.libera-photo-ink-notice button { align-items: center; display: inline-flex; gap: .4rem; border: 1px solid #d4d4d8; border-radius: .5rem; padding: .2rem .6rem; }
 .libera-python-figure-bar button { border-radius: .35rem; padding: .2rem .45rem; color: var(--foreground); background: transparent; cursor: pointer; }
 .libera-python-figure-bar button:hover:not(:disabled) { background: var(--muted); }
 .libera-python-figure-bar button:disabled { color: var(--muted-foreground); cursor: progress; }
@@ -2273,54 +2447,47 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap blockquote[data-box-color] a { color: inherit; }
 .libera-tiptap blockquote[data-box-color] :is(pre, code, th, [data-type="block-math"]) { color: var(--foreground); }
 
-/* Heading accent from Preferences → Markdown (use-markdown-accents.ts), with a
-   lighter shade for the dark theme. Bold lead-ins (markdown-lead-in.ts) and
-   list bullets and numbers share it. Colored boxes and text colored by hand keep their own color. */
-:root[data-heading-color="blue"] { --libera-heading-accent: #1d4ed8; }
-:root[data-heading-color="indigo"] { --libera-heading-accent: #4338ca; }
-:root[data-heading-color="teal"] { --libera-heading-accent: #0f766e; }
-:root[data-heading-color="green"] { --libera-heading-accent: #15803d; }
-:root[data-heading-color="purple"] { --libera-heading-accent: #7e22ce; }
-:root[data-heading-color="rose"] { --libera-heading-accent: #be123c; }
-:root[data-heading-color="orange"] { --libera-heading-accent: #c2410c; }
-:root.dark[data-heading-color="blue"] { --libera-heading-accent: #93c5fd; }
-:root.dark[data-heading-color="indigo"] { --libera-heading-accent: #a5b4fc; }
-:root.dark[data-heading-color="teal"] { --libera-heading-accent: #5eead4; }
-:root.dark[data-heading-color="green"] { --libera-heading-accent: #86efac; }
-:root.dark[data-heading-color="purple"] { --libera-heading-accent: #d8b4fe; }
-:root.dark[data-heading-color="rose"] { --libera-heading-accent: #fda4af; }
-:root.dark[data-heading-color="orange"] { --libera-heading-accent: #fdba74; }
-/* Spectrum: a color per heading level; lists and lead-ins take the H2 blue. */
-:root[data-heading-color="spectrum"] { --libera-heading-accent: #1d4ed8; }
-:root.dark[data-heading-color="spectrum"] { --libera-heading-accent: #93c5fd; }
-:root[data-heading-color="spectrum"] h1 { --libera-level-accent: #4338ca; }
-:root[data-heading-color="spectrum"] h3 { --libera-level-accent: #0f766e; }
-:root[data-heading-color="spectrum"] h4 { --libera-level-accent: #15803d; }
-:root[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #475569; }
-:root.dark[data-heading-color="spectrum"] h1 { --libera-level-accent: #a5b4fc; }
-:root.dark[data-heading-color="spectrum"] h3 { --libera-level-accent: #5eead4; }
-:root.dark[data-heading-color="spectrum"] h4 { --libera-level-accent: #86efac; }
-:root.dark[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #cbd5e1; }
-/* Custom: the palette from Preferences (use-markdown-accents.ts) is chosen for
-   the light theme; the dark theme mixes each color halfway to white. */
-:root[data-heading-color="custom"] { --libera-heading-accent: var(--libera-custom-lists); }
-:root[data-heading-color="custom"] h1 { --libera-level-accent: var(--libera-custom-h1); }
-:root[data-heading-color="custom"] h2 { --libera-level-accent: var(--libera-custom-h2); }
-:root[data-heading-color="custom"] h3 { --libera-level-accent: var(--libera-custom-h3); }
-:root[data-heading-color="custom"] h4 { --libera-level-accent: var(--libera-custom-h4); }
-:root[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: var(--libera-custom-h5); }
-:root.dark[data-heading-color="custom"] { --libera-heading-accent: color-mix(in oklab, var(--libera-custom-lists) 50%, white); }
-:root.dark[data-heading-color="custom"] h1 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h1) 50%, white); }
-:root.dark[data-heading-color="custom"] h2 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h2) 50%, white); }
-:root.dark[data-heading-color="custom"] h3 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h3) 50%, white); }
-:root.dark[data-heading-color="custom"] h4 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h4) 50%, white); }
-:root.dark[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h5) 50%, white); }
-:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+/* Editor themes from Preferences → Markdown (use-editor-themes.ts), with a
+   light and a dark set of colors each. The visual editor's theme also gives
+   rendered previews their heading colors; bold lead-ins (markdown-lead-in.ts)
+   and list bullets and numbers take its list color. Colored boxes and text
+   colored by hand keep their own color. Inside a themed page the app's surface
+   tokens are redefined from its background and text, so code blocks, quotes,
+   gutters and search panels follow the theme. */
+:root[data-editor-theme-visual] { --libera-theme-h1: var(--libera-editor-visual-light-h1); --libera-theme-h2: var(--libera-editor-visual-light-h2); --libera-theme-h3: var(--libera-editor-visual-light-h3); --libera-theme-h4: var(--libera-editor-visual-light-h4); --libera-theme-h5: var(--libera-editor-visual-light-h5); --libera-theme-lists: var(--libera-editor-visual-light-lists); }
+:root.dark[data-editor-theme-visual] { --libera-theme-h1: var(--libera-editor-visual-dark-h1); --libera-theme-h2: var(--libera-editor-visual-dark-h2); --libera-theme-h3: var(--libera-editor-visual-dark-h3); --libera-theme-h4: var(--libera-editor-visual-dark-h4); --libera-theme-h5: var(--libera-editor-visual-dark-h5); --libera-theme-lists: var(--libera-editor-visual-dark-lists); }
+:root[data-editor-theme-visual] { --libera-heading-accent: var(--libera-theme-lists); }
+:root[data-editor-theme-visual] h1 { --libera-level-accent: var(--libera-theme-h1); }
+:root[data-editor-theme-visual] h2 { --libera-level-accent: var(--libera-theme-h2); }
+:root[data-editor-theme-visual] h3 { --libera-level-accent: var(--libera-theme-h3); }
+:root[data-editor-theme-visual] h4 { --libera-level-accent: var(--libera-theme-h4); }
+:root[data-editor-theme-visual] :is(h5, h6, [role="heading"]) { --libera-level-accent: var(--libera-theme-h5); }
+:root[data-editor-theme-visual] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   :is(h1, h2, h3, h4, h5, h6, [role="heading"]):not(blockquote[data-box-color] *) { color: var(--libera-level-accent, var(--libera-heading-accent)); }
-:root[data-heading-color][data-bold-lead-ins] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+:root[data-editor-theme-visual][data-bold-lead-ins] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   .libera-lead-in:not(blockquote[data-box-color] *, span[style^="color:"] *, span[style*="; color:"] *) { color: var(--libera-heading-accent); }
-:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+:root[data-editor-theme-visual] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   li:not(blockquote[data-box-color] *)::marker { color: var(--libera-heading-accent); }
+:root[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-light-background); --libera-page-text: var(--libera-editor-visual-light-text); }
+:root.dark[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-dark-background); --libera-page-text: var(--libera-editor-visual-dark-text); }
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-light-background); --libera-page-text: var(--libera-editor-source-light-text); --markdown-editor-heading-1: var(--libera-editor-source-light-h1); --markdown-editor-heading-2: var(--libera-editor-source-light-h2); --markdown-editor-heading-3: var(--libera-editor-source-light-h3); --markdown-editor-heading-4: var(--libera-editor-source-light-h4); }
+:root.dark[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-dark-background); --libera-page-text: var(--libera-editor-source-dark-text); --markdown-editor-heading-1: var(--libera-editor-source-dark-h1); --markdown-editor-heading-2: var(--libera-editor-source-dark-h2); --markdown-editor-heading-3: var(--libera-editor-source-dark-h3); --markdown-editor-heading-4: var(--libera-editor-source-dark-h4); }
+:root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-light-background); --libera-page-text: var(--libera-editor-latex-light-text); --latex-heading: var(--libera-editor-latex-light-h1); }
+:root.dark[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-dark-background); --libera-page-text: var(--libera-editor-latex-dark-text); --latex-heading: var(--libera-editor-latex-dark-h1); }
+:root[data-editor-theme-visual] .libera-visual-page,
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source),
+:root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) {
+  --card: var(--libera-page-bg);
+  --card-foreground: var(--libera-page-text);
+  --foreground: var(--libera-page-text);
+  --background: color-mix(in oklab, var(--libera-page-text) 4%, var(--libera-page-bg));
+  --muted: color-mix(in oklab, var(--libera-page-text) 7%, var(--libera-page-bg));
+  --muted-foreground: color-mix(in oklab, var(--libera-page-text) 62%, var(--libera-page-bg));
+  --border: color-mix(in oklab, var(--libera-page-text) 13%, var(--libera-page-bg));
+  --input: color-mix(in oklab, var(--libera-page-text) 20%, var(--libera-page-bg));
+  background-color: var(--card);
+  color: var(--foreground);
+}
 .libera-tiptap .selectedCell { background: var(--muted); }
 .libera-tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .libera-tiptap ul[data-type="taskList"] li { display: flex; gap: .5em; }
@@ -2335,7 +2502,7 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap .libera-macro-source { background: color-mix(in srgb, var(--primary) 10%, transparent); border-radius: .2rem; font-family: var(--font-mono, ui-monospace, monospace); font-size: .92em; }
 .libera-tiptap .libera-macro-expansion { cursor: text; border-radius: .2rem; box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--primary) 35%, transparent); }
 .libera-tiptap .libera-macro-expansion:hover { background: var(--muted); }
-.libera-tiptap .libera-macro-expansion-block { display: block; box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 35%, transparent); padding-left: .6em; }
+.libera-tiptap .libera-macro-expansion-block { display: block; border-radius: 0; box-shadow: inset 2px 0 0 color-mix(in srgb, var(--primary) 35%, transparent); padding-left: .6em; }
 .libera-tiptap .libera-macro-expansion-block > :first-child { margin-top: 0; }
 .libera-tiptap .libera-macro-expansion-block > :last-child { margin-bottom: 0; }
 .libera-tiptap .libera-macro-expansion [data-type="block-math"] { margin: .5em 0; }
@@ -2779,6 +2946,11 @@ html.dark .libera-chat-glow[data-active="true"] { opacity: 0.4; }
 @media (prefers-reduced-motion: no-preference) {
   .libera-chat-glow[data-active="true"] { animation: libera-chat-glow-flow 6s linear infinite; }
 }
+/* The same wash rises from behind the composer, flowing the other way; the
+   composer covers its brightest band, so it runs a little hotter. */
+.libera-chat-glow-bottom { inset: auto 0 0 0; height: 12rem; -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%); mask-image: linear-gradient(to top, #000 0%, transparent 100%); animation-direction: reverse !important; }
+.libera-chat-glow-bottom[data-active="true"] { opacity: 0.42; }
+html.dark .libera-chat-glow-bottom[data-active="true"] { opacity: 0.55; }
 @keyframes libera-chat-glow-flow { from { background-position: 0% 0; } to { background-position: 300% 0; } }
 
 /* While an AI action runs, the same Gemini-style wash spans the tab strip and
@@ -2942,3 +3114,8 @@ html.dark .libera-left-panel { --libera-contextual: #b4a2f5; }
 .libera-left-panel .libera-rail-contextual .libera-sidebar-icon-button[aria-selected="true"] { background: color-mix(in srgb, var(--libera-contextual) 17%, transparent); color: var(--libera-contextual); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--libera-contextual) 22%, transparent); }
 @keyframes libera-rail-contextual-in { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .libera-rail-contextual { animation: none; } }
+
+/* The edit pencil on comment cards: a quiet, small gray icon. */
+.review-comment-icon.review-comment-pen, html.dark .review-comment-icon.review-comment-pen { color: var(--muted-foreground); }
+.review-comment-icon.review-comment-pen svg { width: 13px; height: 13px; }
+.review-comment-icon.review-comment-pen:hover:not(:disabled) { color: var(--foreground); opacity: 1; }

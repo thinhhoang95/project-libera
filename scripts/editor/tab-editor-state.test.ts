@@ -43,7 +43,9 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
   }
   Object.defineProperty(globalThis, "Worker", { configurable: true, value: PreviewWorker });
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => Response.json(emptyTree());
+  globalThis.fetch = async (input) => String(input).includes("/api/recordings")
+    ? Response.json({ recordings: [] })
+    : Response.json(emptyTree());
   const host = document.getElementById("root")!;
   const root = createRoot(host);
 
@@ -70,6 +72,8 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
   async function scrollVisual(left: number, top: number) {
     await act(async () => {
       const scroller = visualScroller();
+      // A reader's scroll starts with the wheel, which ends a restore still settling.
+      scroller.dispatchEvent(new dom.window.WheelEvent("wheel"));
       scroller.scrollLeft = left;
       scroller.scrollTop = top;
       scroller.dispatchEvent(new dom.window.Event("scroll"));

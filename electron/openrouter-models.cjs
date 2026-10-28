@@ -17,6 +17,18 @@ function voiceList(input) {
     : [];
 }
 
+/** OpenRouter lists USD per token; Preferences shows and routes by USD per million tokens. */
+function modelPrice(entry) {
+  if (entry.price && Number.isFinite(entry.price.prompt) && Number.isFinite(entry.price.completion)) {
+    return { prompt: entry.price.prompt, completion: entry.price.completion };
+  }
+  const prompt = Number(entry.pricing?.prompt);
+  const completion = Number(entry.pricing?.completion);
+  if (entry.pricing?.prompt === undefined || !Number.isFinite(prompt) || !Number.isFinite(completion) || prompt < 0 || completion < 0) return null;
+  const perMillion = (value) => Math.round(value * 1_000_000 * 10_000) / 10_000;
+  return { prompt: perMillion(prompt), completion: perMillion(completion) };
+}
+
 function normalizeOpenRouterModels(input) {
   const entries = Array.isArray(input?.data) ? input.data : Array.isArray(input) ? input : [];
   const seen = new Set();
@@ -28,6 +40,7 @@ function normalizeOpenRouterModels(input) {
     seen.add(id);
     const name = typeof entry.name === "string" ? entry.name.trim().slice(0, 200) : "";
     const inputModalities = entry.architecture?.input_modalities ?? entry.inputModalities;
+    const price = modelPrice(entry);
     models.push({
       id,
       name: name || id,
@@ -35,6 +48,8 @@ function normalizeOpenRouterModels(input) {
         ? Number(entry.context_length ?? entry.contextLength)
         : 0,
       vision: Array.isArray(inputModalities) ? inputModalities.includes("image") : entry.vision === true,
+      // Routing's price ceilings are judged against it.
+      ...(price ? { price } : {}),
       // Text-to-speech models name their voices, for Read aloud's voice suggestions.
       ...(voiceList(entry.supported_voices ?? entry.voices).length ? { voices: voiceList(entry.supported_voices ?? entry.voices) } : {}),
     });

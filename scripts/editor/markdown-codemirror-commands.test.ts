@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { JSDOM } from "jsdom";
 import { undo } from "@codemirror/commands";
-import { ChangeSet, EditorState } from "@codemirror/state";
+import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { MARKDOWN_HIGHLIGHT_COLORS, MARKDOWN_TEXT_COLORS } from "../../src/lib/markdown-colors";
 import { createMarkdownBoxInsertion, MARKDOWN_BOX_SHORTCUTS } from "../../src/lib/markdown-boxes";
@@ -24,7 +24,7 @@ import { smartPasteMarkdown } from "../../src/lib/markdown-smart-paste";
  * text and the selection. */
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
-for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "Element", "Node", "MutationObserver", "Event"] as const) {
+for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "Element", "Node", "MutationObserver", "Event"] as const) {
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
 }
 for (const key of ["getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"] as const) {
@@ -244,6 +244,81 @@ test("Tab and Shift+Tab change selected heading levels like the textarea editor"
   editor.destroy();
 });
 
+test("Enter inserts a plain newline and Backspace deletes one character or the selection", () => {
+  const cases: [string, KeyboardEventInit, string, number, number, string, number][] = [
+    ["Enter", {}, "    text", 8, 8, "    text\n", 9],
+    ["Enter", { shiftKey: true }, "    text", 8, 8, "    text\n", 9],
+    ["Enter", {}, "    text", 4, 8, "    \n", 5],
+    ["Enter", {}, "- item", 6, 6, "- item\n", 7],
+    ["Backspace", {}, "    text", 4, 4, "   text", 3],
+    ["Backspace", { shiftKey: true }, "    text", 4, 4, "   text", 3],
+    ["Backspace", {}, "\t text", 2, 2, "\ttext", 1],
+    ["Backspace", {}, "one\ntwo", 4, 4, "onetwo", 3],
+    ["Backspace", {}, "Hello world", 6, 11, "Hello ", 6],
+    ["Backspace", {}, "a🙂b", 3, 3, "ab", 1],
+  ];
+  for (const [key, init, value, start, end, expected, caret] of cases) {
+    const editor = codeMirrorWith(value, start, end);
+    try {
+      const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+      editor.view.contentDOM.dispatchEvent(event);
+      assert.equal(event.defaultPrevented, true);
+      assert.deepEqual(snapshot(editor.textarea), { value: expected, start: caret, end: caret }, `${key} ${JSON.stringify(init)} on ${JSON.stringify(value)}`);
+    } finally {
+      editor.destroy();
+    }
+  }
+});
+
+test("the source keymap does not add line moving, copying, indenting, deleting or comment shortcuts", () => {
+  const shortcuts: [string, KeyboardEventInit][] = [
+    ["ArrowUp", { altKey: true }], ["ArrowDown", { altKey: true }],
+    ["ArrowUp", { altKey: true, shiftKey: true }], ["ArrowDown", { altKey: true, shiftKey: true }],
+    ["[", { ctrlKey: true }], ["]", { ctrlKey: true }],
+    ["K", { ctrlKey: true, shiftKey: true }], ["Enter", { ctrlKey: true }],
+    ["\\", { ctrlKey: true, altKey: true }], ["/", { ctrlKey: true }],
+  ];
+  const value = "first\n    second\nthird";
+  for (const [key, init] of shortcuts) {
+    const editor = codeMirrorWith(value, 11, 11);
+    try {
+      const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+      editor.view.contentDOM.dispatchEvent(event);
+      assert.equal(event.defaultPrevented, false, `${key} ${JSON.stringify(init)} is left to the platform`);
+      assert.deepEqual(snapshot(editor.textarea), { value, start: 11, end: 11 });
+    } finally {
+      editor.destroy();
+    }
+  }
+});
+
+test("the source keymap keeps caret, word and document navigation, selection and undo/redo", () => {
+  const editor = codeMirrorWith("one two\nthree", 0, 0);
+  const press = (key: string, init: KeyboardEventInit = {}) => editor.view.contentDOM.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+  try {
+    press("ArrowRight");
+    assert.equal(editor.textarea.selectionStart, 1);
+    press("ArrowRight", { ctrlKey: true });
+    assert.equal(editor.textarea.selectionStart, 3);
+    press("End");
+    assert.equal(editor.textarea.selectionStart, 7);
+    press("Home", { shiftKey: true });
+    assert.deepEqual([editor.textarea.selectionStart, editor.textarea.selectionEnd], [0, 7]);
+    press("End", { ctrlKey: true });
+    assert.equal(editor.textarea.selectionStart, 13);
+    press("a", { ctrlKey: true });
+    assert.deepEqual([editor.textarea.selectionStart, editor.textarea.selectionEnd], [0, 13]);
+    press("Backspace");
+    assert.equal(editor.textarea.value, "");
+    press("z", { ctrlKey: true });
+    assert.equal(editor.textarea.value, "one two\nthree");
+    press("y", { ctrlKey: true });
+    assert.equal(editor.textarea.value, "");
+  } finally {
+    editor.destroy();
+  }
+});
+
 test("Smart Paste and rich paste compute the textarea editor's result", () => {
   const document = "# 1. Intro\n\n## 1.1 Scope\n\nText.\n\n# 2. Method\n\n## 2.1 Data\n";
   const at = document.indexOf("# 2. Method");
@@ -333,4 +408,29 @@ test("a minimal value change keeps the caret, the selection and undo", () => {
   undo(editor.view);
   assert.equal(editor.view.state.doc.toString(), "Alpha\n\nBeta gamma", "outside changes stay undoable");
   editor.destroy();
+});
+
+test("value synchronization compares normalized line endings before computing a minimal diff", () => {
+  const state = EditorState.create({ doc: "one\ntwo" });
+  assert.equal(valueChangeSpec(state, "one\r\ntwo"), null);
+  const spec = valueChangeSpec(state, "one\r\nthree")!;
+  assert.equal(state.update(spec).state.doc.toString(), "one\nthree");
+});
+
+test("Home and Shift+Home use the native visual boundary without toggling indentation or wrap points", () => {
+  const editor = codeMirrorWith("    indented text", 12, 12);
+  try {
+    editor.view.moveToLineBoundary = () => EditorSelection.cursor(0);
+    const press = (shiftKey = false) => editor.view.contentDOM.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Home", shiftKey, bubbles: true, cancelable: true }));
+    press();
+    assert.equal(editor.textarea.selectionStart, 0);
+    editor.textarea.setSelectionRange(12, 12);
+    press(true);
+    assert.deepEqual([editor.textarea.selectionStart, editor.textarea.selectionEnd], [0, 12]);
+    // At a wrap point, a repeated Home stays at that visual boundary.
+    editor.view.moveToLineBoundary = () => EditorSelection.cursor(8);
+    editor.textarea.setSelectionRange(12, 12);
+    press(); press();
+    assert.equal(editor.textarea.selectionStart, 8);
+  } finally { editor.destroy(); }
 });

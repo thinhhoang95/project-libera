@@ -12,6 +12,7 @@ import {
   Move,
   Pause,
   Pencil,
+  PenLine,
   Play,
   ScanSearch,
   Trash2,
@@ -19,7 +20,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MouseEvent, PointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiRequest } from "@/components/libera/api-client";
 import { DetectionTool } from "@/components/libera/detection/detection-tool";
@@ -28,6 +29,7 @@ import { downloadImage, openImageSaveMenu, subscribeImageSaved, type ImageSaveDe
 import { copyImage, formatBytes } from "@/components/libera/photo-viewer";
 import { imageElementRectToPngFile } from "@/components/libera/screenshot-capture";
 import { ScreenshotSnipLayer } from "@/components/libera/screenshot-snip-layer";
+import { ImageInkLayer } from "@/components/libera/ink/image-ink-layer";
 import {
   ANNOTATION_UI_SELECTOR,
   DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
@@ -43,7 +45,9 @@ import {
 import { TextAnnotationStyleControls } from "@/components/libera/annotation-style-controls";
 import type { ImageTabViewState } from "@/components/libera/types";
 import { useCanvasPaneFocused } from "@/components/libera/canvas-pane-context";
-import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { useAnnotationWriter, type AnnotationWriter } from "./use-annotation-writer";
+import { SaveStatusButton } from "./save-status-button";
+import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import { panCenteringRect, rememberFileAnnotations } from "@/lib/annotation-links";
 import {
   DEFAULT_PDF_TEXT_COLOR,
@@ -62,7 +66,6 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
 const ZOOM_FACTOR = 1.5;
 const DOUBLE_CLICK_ZOOM = 2.5;
-const SAVE_DEBOUNCE_MS = 350;
 const SLIDESHOW_MS = 4000;
 const INFO_STORAGE_KEY = "libera.imageViewer.infoOpen";
 const iconButton = "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-input text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
@@ -113,7 +116,7 @@ function formatDate(value?: string) {
     : "";
 }
 
-type ImageTool = "select" | "text";
+type ImageTool = "select" | "text" | "ink";
 
 type Point = {
   x: number;
@@ -144,7 +147,6 @@ export function ImageViewer({
   const stageRef = useRef<HTMLDivElement>(null);
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfTextAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<PdfTextAnnotation[]>([]);
   // The file whose annotations have finished loading (successfully or not).
@@ -184,6 +186,9 @@ export function ImageViewer({
     "idle",
   );
   const lastPointerRef = useRef<Point | null>(null);
+  // The annotations load before the writer is made; the load reads it through this ref.
+  const annotationWriterRef = useRef<AnnotationWriter<PdfTextAnnotation> | null>(null);
+  const [inkToolbarSlot, setInkToolbarSlot] = useState<HTMLElement | null>(null);
 
   const selectedAnnotation = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedAnnotationId),
@@ -210,13 +215,17 @@ export function ImageViewer({
     apiRequest<ImageAnnotationsPayload>(
       `/api/image-annotations?path=${encodeURIComponent(filePath)}`,
     )
-      .then((payload) => {
+      .then(async (payload) => {
         if (!active) {
           return;
         }
 
-        latestAnnotationsRef.current = payload.annotations;
-        setAnnotations(payload.annotations);
+        // Unsaved notes kept from before a crash or restart come back unsaved.
+        const kept = await annotationWriterRef.current?.recover();
+        if (!active) return;
+        const loadedAnnotations = kept ?? payload.annotations;
+        latestAnnotationsRef.current = loadedAnnotations;
+        setAnnotations(loadedAnnotations);
         setAnnotationsLoadedPath(filePath);
       })
       .catch((loadError) => {
@@ -232,20 +241,6 @@ export function ImageViewer({
 
     return () => {
       active = false;
-
-      // Leaving the image (another tab, or the next photo) still saves the
-      // last edit instead of dropping it with the debounce.
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = null;
-        const pending = latestAnnotationsRef.current;
-        apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({ path: filePath, annotations: pending }),
-        })
-          .then((payload) => broadcastSavedAnnotations("image", filePath, payload.annotations))
-          .catch(() => undefined);
-      }
     };
   }, [annotatable, filePath]);
 
@@ -282,8 +277,10 @@ export function ImageViewer({
   // Another window showing this image saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.
   const localSavePendingRef = useRef(false);
+  useEffect(() => { localSavePendingRef.current = false; }, [filePath]);
   useAnnotationSync<PdfTextAnnotation>("image", filePath, (remoteAnnotations) => {
-    if (!annotatable || localSavePendingRef.current) {
+    // Unsaved annotations here (recovered ones too) are not replaced by another window's save.
+    if (!annotatable || localSavePendingRef.current || annotationWriterRef.current?.dirty) {
       return;
     }
 
@@ -291,45 +288,26 @@ export function ImageViewer({
     setAnnotations(remoteAnnotations);
   });
 
+  const annotationWriter = useAnnotationWriter<PdfTextAnnotation>("image", filePath, (savedAnnotations) => {
+    localSavePendingRef.current = false;
+    latestAnnotationsRef.current = savedAnnotations;
+    setAnnotations(savedAnnotations);
+    setSaveStatus("saved");
+  }, (saveError) => {
+    setSaveStatus("error");
+    setError(saveError instanceof Error ? saveError.message : "Could not save image annotations.");
+  });
+  useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfTextAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
-      setSaveStatus("saving");
+      // Written on Save (pending-saves.ts); until then the file shows as unsaved.
+      setSaveStatus("idle");
       localSavePendingRef.current = true;
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-
-      saveTimeoutRef.current = setTimeout(() => {
-        saveTimeoutRef.current = null;
-        apiRequest<ImageAnnotationsPayload>("/api/image-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({
-            path: filePath,
-            annotations: latestAnnotationsRef.current,
-          }),
-        })
-          .then((payload) => {
-            localSavePendingRef.current = false;
-            latestAnnotationsRef.current = payload.annotations;
-            setAnnotations(payload.annotations);
-            setSaveStatus("saved");
-            broadcastSavedAnnotations("image", filePath, payload.annotations);
-          })
-          .catch((saveError) => {
-            localSavePendingRef.current = false;
-            setSaveStatus("error");
-            setError(
-              saveError instanceof Error
-                ? saveError.message
-                : "Could not save image annotations.",
-            );
-          });
-      }, SAVE_DEBOUNCE_MS);
+      annotationWriter.schedule(nextAnnotations);
     },
-    [filePath],
+    [annotationWriter],
   );
 
   function resetView() {
@@ -427,8 +405,16 @@ export function ImageViewer({
     return () => stage.removeEventListener("wheel", handleWheel);
   }, [fullscreen, screenshotSnipping, zoomTo]);
 
+  /** A finger dragged over ink while drawing pans the image (ink-input). */
+  function panBy(dx: number, dy: number) {
+    const nextPan = { x: transformRef.current.pan.x + dx, y: transformRef.current.pan.y + dy };
+    transformRef.current.pan = nextPan;
+    setPan(nextPan);
+    updateViewState({ panX: nextPan.x, panY: nextPan.y });
+  }
+
   function handleDoubleClick(event: MouseEvent<HTMLDivElement>) {
-    if (screenshotSnipping || tool === "text" || (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) {
+    if (screenshotSnipping || tool === "text" || tool === "ink" || (event.target as HTMLElement).closest(ANNOTATION_UI_SELECTOR)) {
       return;
     }
 
@@ -454,7 +440,7 @@ export function ImageViewer({
       updateViewState({ selectedAnnotationId: "" });
     }
 
-    if (tool === "text") {
+    if (tool === "text" || tool === "ink") {
       return;
     }
 
@@ -910,6 +896,25 @@ export function ImageViewer({
             <Type aria-hidden className="h-4 w-4" />
             Text
           </button>
+          <button
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-sm font-medium ${
+              tool === "ink"
+                ? "border-foreground bg-primary text-primary-foreground"
+                : "border-input hover:bg-muted"
+            }`}
+            type="button"
+            aria-pressed={tool === "ink"}
+            data-viewer-tool="ink"
+            title="Draw on the image with a pen, mouse or finger"
+            onClick={() => {
+              setTool("ink");
+              updateViewState({ tool: "ink" });
+            }}
+          >
+            <PenLine aria-hidden className="h-4 w-4" />
+            Draw
+          </button>
+          {tool === "ink" ? <span ref={setInkToolbarSlot} className="libera-ink-toolbar-slot" /> : <>
           <TextAnnotationStyleControls
             color={selectedAnnotation?.color ?? textColor}
             fontFamily={selectedAnnotation?.fontFamily ?? fontFamily}
@@ -928,18 +933,11 @@ export function ImageViewer({
           >
             <Trash2 aria-hidden className="h-4 w-4" />
           </button>
+          </>}
           </> : <span className="text-xs text-muted-foreground">View only</span>}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
-          <span className="mr-2 text-xs text-muted-foreground">
-            {saveStatus === "saving"
-              ? "Saving"
-              : saveStatus === "saved"
-                ? "Saved"
-                : saveStatus === "error"
-                  ? "Save failed"
-                  : ""}
-          </span>
+          {annotatable ? <SaveStatusButton path={filePath} status={saveStatus} /> : null}
           <button
             aria-label="Zoom out"
             className={iconButton}
@@ -1042,7 +1040,7 @@ export function ImageViewer({
         className={`relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-6 ${
           screenshotSnipping
             ? "cursor-crosshair"
-            : tool === "text"
+            : tool === "text" || tool === "ink"
               ? "cursor-crosshair"
               : isPanning
                 ? "cursor-grabbing"
@@ -1082,6 +1080,14 @@ export function ImageViewer({
                 })
               }
             />
+            {annotatable && naturalSize.width ? <ImageInkLayer
+              filePath={filePath}
+              naturalSize={naturalSize}
+              drawing={tool === "ink" && !screenshotSnipping}
+              zoom={zoom}
+              toolbarSlot={inkToolbarSlot}
+              onPan={panBy}
+            /> : null}
             {annotatable ? <TextAnnotationLayer
               annotations={annotations}
               drawing={tool === "text"}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowDownWideNarrow,
@@ -11,7 +11,6 @@ import {
   ArchiveRestore,
   CalendarDays,
   CalendarSearch,
-  Check,
   FolderDown,
   FolderInput,
   FolderMinus,
@@ -52,14 +51,13 @@ import { collabClient } from "@/lib/collab/ui/client";
 import { useCollabStatus, useHostEvents } from "@/lib/collab/ui/hooks";
 import { ALBUM_ROLE_LABEL } from "@/lib/collab/ui/wording";
 import { ModalDialog } from "@/components/libera/modal-dialog";
+import { VirtualPhotoGrid } from "@/components/libera/virtual-photo-grid";
 import { PhotoViewer, type PhotoViewerChat, type PhotoViewerViewState } from "@/components/libera/photo-viewer";
 import type { GalleryTabPlacement } from "@/components/libera/gallery-tabs";
 import {
   DEFAULT_GALLERY_ZOOM,
-  GALLERY_GAP,
   GALLERY_ZOOM_LEVELS,
-  justifiedRows,
-  photoRatio,
+  galleryRows,
   type GalleryLayoutMode,
 } from "@/lib/gallery-layout";
 import {
@@ -160,6 +158,18 @@ function menuPosition(element: HTMLElement) {
   return { x: Math.max(8, Math.min(rect.left, window.innerWidth - 240)), y: rect.bottom + 4 };
 }
 
+function useStableCallback<Args extends unknown[], Result>(callback: (...args: Args) => Result) {
+  const ref = useRef(callback);
+  useLayoutEffect(() => { ref.current = callback; });
+  return useCallback((...args: Args) => ref.current(...args), []);
+}
+
+function rememberPhotoView(id: string, state: PhotoViewerViewState) {
+  session.photoViews.delete(id);
+  session.photoViews.set(id, state);
+  if (session.photoViews.size > 64) session.photoViews.delete(session.photoViews.keys().next().value!);
+}
+
 export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }: {
   /** Opens a photo as an editor tab, or beside the focused panel, like a notebook image. */
   onOpenInCanvas?: (photo: GalleryPhoto, placement: GalleryTabPlacement) => void;
@@ -197,7 +207,6 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const [width, setWidth] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
   const wheelRef = useRef(0);
   const restoredScrollRef = useRef<string | null>(null);
 
@@ -229,6 +238,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   const myAccountId = useCollabStatus().status?.account?.id;
   const photos = useMemo(() => filterPhotos(viewPhotos, filter, myAccountId), [filter, myAccountId, viewPhotos]);
   const groups = useMemo(() => groupPhotos(photos, grouping), [grouping, photos]);
+  const rowLayout = useMemo(() => galleryRows(groups, layout.mode, width, GALLERY_ZOOM_LEVELS[layout.zoom]), [groups, layout.mode, layout.zoom, width]);
   const filtering = filterCount(filter) > 0;
 
   // Everyone who added photos to this view, yourself first, for the filter.
@@ -246,8 +256,9 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
   }, [filter.contributors, memberNames, myAccountId, viewPhotos]);
   const viewDays = useMemo(() => {
     if (!viewPhotos.length) return { min: "", max: "" };
-    const times = viewPhotos.map((photo) => Date.parse(photo.createdAt));
-    return { min: toDay(new Date(Math.min(...times))), max: toDay(new Date(Math.max(...times))) };
+    let low = Infinity, high = -Infinity;
+    for (const photo of viewPhotos) { const time = Date.parse(photo.createdAt); low = Math.min(low, time); high = Math.max(high, time); }
+    return { min: toDay(new Date(low)), max: toDay(new Date(high)) };
   }, [viewPhotos]);
   const shownTimes = useMemo(() => photos.map((photo) => Date.parse(photo.createdAt)), [photos]);
 
@@ -269,14 +280,10 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
 
   function jumpToPhoto(photo: GalleryPhoto | undefined) {
     const scroller = scrollRef.current;
-    const tile = photo && scroller?.querySelector<HTMLElement>(`[data-photo-id="${CSS.escape(photo.id)}"]`);
-    if (!photo || !scroller || !tile) return;
-    const top = (element: Element) => element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-    // Show the section's heading too when the photo is near the top of its section.
-    const section = tile.closest("section");
-    const sectionTop = section ? top(section) : -Infinity;
-    const tileTop = top(tile);
-    scroller.scrollTop = tileTop - sectionTop < scroller.clientHeight / 2 ? sectionTop : tileTop - 16;
+    const position = photo && rowLayout.photoTops.get(photo.id);
+    if (!photo || !scroller || !position) return;
+    scroller.scrollTop = position.top - position.sectionTop < scroller.clientHeight / 2 ? position.sectionTop : position.top - 16;
+    scroller.dispatchEvent(new Event("scroll"));
     setLandedId(photo.id);
   }
 
@@ -337,7 +344,7 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
     return new Set([...selection].filter((id) => present.has(id)));
   }, [photos, selection]);
   const selecting = selected.size > 0;
-  const selectedPhotos = photos.filter((photo) => selected.has(photo.id));
+  const selectedPhotos = useMemo(() => photos.filter((photo) => selected.has(photo.id)), [photos, selected]);
   const allSelectedStarred = selectedPhotos.length > 0 && selectedPhotos.every((photo) => photo.starred);
   const selectionLocked = selectedPhotos.some((photo) => photo.shared && !canChangeSharedPhotos(photo.shared));
   const selectionShared = selectedPhotos.some((photo) => photo.shared);
@@ -667,6 +674,11 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
 
   const title = view.kind === "album" ? currentAlbum?.name ?? "" : view.kind === "albums" ? "Albums" : view.kind === "shared" ? "Shared" : view.kind === "starred" ? "Starred" : inArchive ? "Protected Archive" : "Photos";
   const size = GALLERY_ZOOM_LEVELS[layout.zoom];
+  const togglePhoto = useStableCallback(toggleSelection);
+  const togglePhotoGroup = useStableCallback(toggleGroup);
+  const openPhoto = useCallback((photo: GalleryPhoto) => setViewingId(photo.id), []);
+  const starPhoto = useStableCallback((photo: GalleryPhoto) => void setStarred([photo.id], !photo.starred));
+  const contextPhoto = useStableCallback(openPhotoMenu);
   // The seeker takes the place of the scroll bar beside the photos.
   const seeking = Boolean(contents) && showGrid && photos.length > 0;
 
@@ -766,27 +778,15 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
           <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{describeFilter(filter, memberNames)}</p>
           <button type="button" className={`${secondary} mt-4`} onClick={() => setFilter(NO_FILTER)}>Clear filter</button>
         </div>
-        : <div ref={contentRef}>{groups.map((group) => {
-          const allSelected = group.photos.every((photo) => selected.has(photo.id));
-          return <section key={group.key} className="pt-5">
-            <div className="group/day mb-2 flex items-center gap-2">
-              <button type="button" aria-label={`${allSelected ? "Deselect" : "Select"} photos from ${group.label}`}
-                className={`flex h-5 w-5 items-center justify-center rounded-full border transition ${allSelected ? "border-primary bg-primary text-primary-foreground" : `border-muted-foreground/50 ${selecting ? "" : "opacity-0 group-hover/day:opacity-100 focus-visible:opacity-100"}`}`}
-                onClick={() => toggleGroup(group.photos)}>{allSelected && <Check className="h-3 w-3" />}</button>
-              <h3 className="text-sm font-medium">{group.label}</h3>
-            </div>
-            <PhotoGroup photos={group.photos} mode={layout.mode} size={size} width={width - 32} selected={selected} selecting={selecting}
-              thumbnailUrl={inArchive ? archiveRawUrl : galleryRawUrl}
-              onToggle={toggleSelection} onOpen={(photo) => setViewingId(photo.id)} onStar={inArchive ? undefined : (photo) => void setStarred([photo.id], !photo.starred)}
-              onContextMenu={openPhotoMenu} landedId={landedId} />
-          </section>;
-        })}</div>}
+        : <VirtualPhotoGrid groups={groups} layout={rowLayout} justified={layout.mode === "justified"} size={size} scrollRef={scrollRef}
+            selected={selected} landedId={landedId} thumbnailUrl={inArchive ? archiveRawUrl : galleryRawUrl}
+            onToggle={togglePhoto} onToggleGroup={togglePhotoGroup} onOpen={openPhoto} onStar={inArchive ? undefined : starPhoto} onContextMenu={contextPhoto} />}
     </div>
-    {seeking && <TimelineSeeker scrollRef={scrollRef} contentRef={contentRef} layoutKey={`${viewKey}:${grouping}:${layout.mode}:${layout.zoom}:${width}:${photos.length}:${photos[0]?.id}`} />}
+    {seeking && <TimelineSeeker scrollRef={scrollRef} rows={rowLayout.timeline} layoutKey={`${viewKey}:${grouping}:${layout.mode}:${layout.zoom}:${width}:${photos.length}:${photos[0]?.id}`} />}
     </div>
 
     {viewingIndex >= 0 && contents && <PhotoViewer initialViewState={inArchive ? undefined : session.photoViews.get(photos[viewingIndex].id)}
-      onViewStateChange={inArchive ? undefined : (state) => { session.photoViews.set(photos[viewingIndex].id, state); }}
+      onViewStateChange={inArchive ? undefined : (state) => { rememberPhotoView(photos[viewingIndex].id, state); }}
       rawUrl={inArchive ? archiveRawUrl : galleryRawUrl} photos={photos} index={viewingIndex} albums={contents.albums}
       onNavigate={(photo) => setViewingId(photo.id)} onClose={() => setViewingId(null)} chat={inArchive ? undefined : chat}
       actions={inArchive ? {
@@ -865,77 +865,6 @@ export function ImageGalleryView({ onOpenInCanvas, chat, onViewingPhotoChange }:
       </>}>
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : <p className="text-sm text-muted-foreground">Photos saved to notebook folders are not affected.</p>}
     </ModalDialog>}
-  </div>;
-}
-
-function PhotoGroup({ photos, mode, size, width, selected, selecting, thumbnailUrl, onToggle, onOpen, onStar, onContextMenu, landedId }: {
-  photos: GalleryPhoto[];
-  mode: GalleryLayoutMode;
-  size: number;
-  width: number;
-  selected: Set<string>;
-  selecting: boolean;
-  thumbnailUrl: (photo: GalleryPhoto, thumbnail: boolean) => string;
-  onToggle: (photo: GalleryPhoto, event: ReactMouseEvent) => void;
-  onOpen: (photo: GalleryPhoto) => void;
-  onStar?: (photo: GalleryPhoto) => void;
-  onContextMenu?: (photo: GalleryPhoto, event: ReactMouseEvent) => void;
-  landedId?: string | null;
-}) {
-  const tile = (photo: GalleryPhoto, style: CSSProperties) => <PhotoTile key={photo.id} photo={photo} thumbnail={thumbnailUrl(photo, true)} style={style} compact={size < 100} landed={photo.id === landedId}
-    selected={selected.has(photo.id)} selecting={selecting}
-    onToggle={(event) => onToggle(photo, event)} onOpen={() => onOpen(photo)} onStar={onStar && (() => onStar(photo))}
-    onContextMenu={onContextMenu && ((event) => onContextMenu(photo, event))} />;
-
-  if (mode === "grid" || width <= 0) {
-    return <div className="grid" style={{ gap: GALLERY_GAP, gridTemplateColumns: `repeat(auto-fill, minmax(min(${size}px, 100%), 1fr))` }}>
-      {photos.map((photo) => tile(photo, { aspectRatio: "1 / 1" }))}
-    </div>;
-  }
-
-  const ratios = photos.map((photo) => photoRatio(photo.width, photo.height));
-  return <div className="flex flex-col" style={{ gap: GALLERY_GAP }}>
-    {justifiedRows(ratios, width, size).map((row) => <div key={row.start} className="flex" style={{ gap: GALLERY_GAP, height: row.height }}>
-      {photos.slice(row.start, row.end).map((photo, offset) => tile(photo, { width: ratios[row.start + offset] * row.height, height: row.height, flex: "none" }))}
-    </div>)}
-  </div>;
-}
-
-function PhotoTile({ photo, thumbnail, style, compact, landed, selected, selecting, onToggle, onOpen, onStar, onContextMenu }: {
-  photo: GalleryPhoto;
-  /** Jump to date landed here. */
-  landed?: boolean;
-  thumbnail: string;
-  style: CSSProperties;
-  compact: boolean;
-  selected: boolean;
-  selecting: boolean;
-  onToggle: (event: ReactMouseEvent) => void;
-  onOpen: () => void;
-  onStar?: () => void;
-  onContextMenu?: (event: ReactMouseEvent) => void;
-}) {
-  return <div className={`group/tile relative overflow-hidden ${selected ? "rounded-lg bg-primary/10" : "bg-muted"}`} style={style} onContextMenu={onContextMenu}
-    data-photo-id={photo.id} data-photo-time={photo.createdAt}>
-    {landed && <span aria-hidden className="pointer-events-none absolute inset-0 z-10 animate-pulse ring-4 ring-inset ring-primary" />}
-    <button type="button" className="block h-full w-full" aria-label={photo.prompt ? `Open “${photo.prompt.slice(0, 80)}”` : `Open ${photo.name}`}
-      onClick={(event) => (selecting || event.shiftKey || event.metaKey || event.ctrlKey ? onToggle(event) : onOpen())}>
-      {/* eslint-disable-next-line @next/next/no-img-element -- local authenticated files */}
-      <img src={thumbnail} alt="" loading="lazy" decoding="async" draggable={false}
-        className={`h-full w-full object-cover transition-transform duration-150 ${selected ? "scale-[0.86] rounded-lg" : ""}`} />
-    </button>
-    <span aria-hidden className={`pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-black/40 to-transparent opacity-0 transition-opacity ${selected ? "" : "group-hover/tile:opacity-100"}`} />
-    <button type="button" role="checkbox" aria-checked={selected} aria-label={`Select ${photo.name}`}
-      className={`absolute left-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 transition ${selected ? "border-primary bg-primary text-primary-foreground opacity-100" : `border-white/90 bg-black/10 text-transparent hover:text-white/90 ${selecting ? "opacity-100" : "opacity-0 group-hover/tile:opacity-100 focus-visible:opacity-100"}`}`}
-      onClick={(event) => { event.stopPropagation(); onToggle(event); }}>
-      <Check className="h-3.5 w-3.5" />
-    </button>
-    {!compact && !selecting && onStar && <button type="button" aria-label={photo.starred ? `Unstar ${photo.name}` : `Star ${photo.name}`} aria-pressed={photo.starred}
-      className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-0 transition hover:bg-black/30 focus-visible:opacity-100 group-hover/tile:opacity-100"
-      onClick={(event) => { event.stopPropagation(); onStar(); }}>
-      <Star className={`h-4 w-4 drop-shadow ${photo.starred ? "fill-amber-400 text-amber-400" : ""}`} />
-    </button>}
-    {photo.starred && !selected && <Star aria-label="Starred" className="pointer-events-none absolute bottom-1.5 left-1.5 h-4 w-4 fill-amber-400 text-amber-400 drop-shadow" />}
   </div>;
 }
 

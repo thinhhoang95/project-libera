@@ -8,6 +8,11 @@ import type { RecapBullet } from "@/lib/recording/types";
  * and the model answers with a few operations, adding a bullet or changing
  * one by id. Bullets are never removed, so what the reader has already seen
  * stays where it was.
+ *
+ * The reader can write in the recap too (RecapEdit): change a bullet, break
+ * it in two, join two, add or remove one. A bullet the reader touched is
+ * theirs: it is marked for the model, and the model's changes to it are
+ * dropped.
  */
 
 /** Transcript a recap update waits for, unless the recording ends. */
@@ -30,6 +35,7 @@ Rules:
 - "add" appends a new bullet for a new topic, decision, number, question or action item.
 - "update" replaces the text of an existing bullet, only when the new transcript adds to it or corrects it. Keep what the bullet already said unless it was wrong.
 - Never delete bullets, never reorder them, never repeat a point that is already there.
+- Bullets marked * after their id were written or corrected by a person: never update them.
 - At most ${MAX_OPERATIONS} operations. When the new transcript adds nothing worth noting (small talk, filler, a repeat), reply {"operations": []}.
 - Each bullet is one plain sentence of at most 25 words, in the language of the transcript. Name who decided or owns something when the transcript says so. No Markdown, no leading dash.
 - The transcript comes from speech recognition: fix obvious misheard words from context, and do not invent anything that was not said.`;
@@ -45,7 +51,7 @@ function transcriptLines(words: TimedWord[]) {
 }
 
 export function recapUserMessage(bullets: RecapBullet[], earlier: TimedWord[], fresh: TimedWord[]) {
-  const list = bullets.length ? bullets.map((bullet) => `[${bullet.id}] ${bullet.text}`).join("\n") : "(none yet)";
+  const list = bullets.length ? bullets.map((bullet) => `[${bullet.id}${bullet.edited ? "*" : ""}] ${bullet.text}`).join("\n") : "(none yet)";
   const context = earlier.slice(-CONTEXT_WORDS);
   return `Bullets so far:
 ${list}
@@ -103,6 +109,62 @@ export function applyRecapOperations(bullets: RecapBullet[], operations: RecapOp
     }
   }
   return { bullets: next, changed: [...changed] };
+}
+
+/** The reader's changes to the recap. New bullets carry a negative id until the server numbers them. */
+export type RecapEdit =
+  | { op: "update"; id: number; text: string }
+  | { op: "add"; id: number; after: number | null; text: string; at: number }
+  | { op: "remove"; id: number };
+
+const MAX_EDITS = 400;
+
+/** Edits sent by the recorder, kept only when well formed. */
+export function cleanRecapEdits(value: unknown): RecapEdit[] | null {
+  if (!Array.isArray(value) || value.length > MAX_EDITS) return null;
+  const edits: RecapEdit[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+    const { op, id, after, text, at } = entry as Record<string, unknown>;
+    if (!Number.isInteger(id)) return null;
+    const clean = typeof text === "string" ? text.replace(/\s+/g, " ").trim().slice(0, MAX_BULLET_LENGTH * 2) : null;
+    if (op === "update" && clean !== null) edits.push({ op, id: id as number, text: clean });
+    else if (op === "add" && clean !== null && (after === null || Number.isInteger(after))) {
+      edits.push({ op, id: id as number, after: after as number | null, text: clean, at: typeof at === "number" && Number.isFinite(at) ? Math.max(0, at) : 0 });
+    } else if (op === "remove") edits.push({ op, id: id as number });
+    else return null;
+  }
+  return edits;
+}
+
+/**
+ * The bullets after the reader's edits, in order. The recorder shows its
+ * edits this way while they are being made, with the new bullets' own
+ * (negative) ids; the server applies them for good with `number` set, giving
+ * new bullets the next ids. Bullets left empty are dropped when numbering.
+ */
+export function applyRecapEdits(bullets: RecapBullet[], edits: RecapEdit[], { number = false } = {}): RecapBullet[] {
+  const next = bullets.map((bullet) => ({ ...bullet }));
+  const ids = new Map<number, number>();
+  let nextId = next.reduce((highest, bullet) => Math.max(highest, bullet.id), 0) + 1;
+  const resolve = (id: number) => ids.get(id) ?? id;
+  for (const edit of edits) {
+    if (edit.op === "add") {
+      const id = number ? nextId++ : edit.id;
+      ids.set(edit.id, id);
+      const bullet: RecapBullet = { id, text: edit.text, addedAt: edit.at, changedAt: edit.at, edited: true };
+      const position = edit.after === null ? 0 : next.findIndex((candidate) => candidate.id === resolve(edit.after!)) + 1;
+      // After a bullet that is gone (the model never removes one, so another reader's edit): at the end.
+      next.splice(edit.after !== null && position === 0 ? next.length : position, 0, bullet);
+    } else if (edit.op === "update") {
+      const bullet = next.find((candidate) => candidate.id === resolve(edit.id));
+      if (bullet && bullet.text !== edit.text) Object.assign(bullet, { text: edit.text, edited: true });
+    } else {
+      const index = next.findIndex((candidate) => candidate.id === resolve(edit.id));
+      if (index >= 0) next.splice(index, 1);
+    }
+  }
+  return number ? next.filter((bullet) => bullet.text.trim()) : next;
 }
 
 /**

@@ -5,7 +5,7 @@ import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import katex from "katex";
 import type { MathMarkerSettings } from "./math-markers";
 import {
-  emptyMacroDefinitions, expandMacroLatex, expandMacroText, isMacroBlockLanguage, parseMacroDefinitions,
+  emptyMacroDefinitions, expandMacroLatex, expandMacroText, isMacroBlockLanguage, parseMacroDefinitions, removeLinePrefix,
   type MarkdownMacroDefinitions,
 } from "./markdown-macros";
 
@@ -62,6 +62,101 @@ function textblockSource(node: ProseMirrorNode, pos: number) {
   return { text, atoms, position };
 }
 
+type Segment = { start: number; length: number; map: (offset: number, bias: "start" | "end") => number };
+const LISTS = new Set(["bulletList", "orderedList", "taskList"]);
+
+/**
+ * A run of blocks as the Markdown they stand for: quotes, list items and
+ * headings with their markers, so an argument may run in and out of them, as
+ * it can in the Markdown. Code blocks and rules are kept as written; blocks
+ * Markdown cannot nest this way (tables, display math) are left to `nested`.
+ */
+class BlocksSource {
+  text = "";
+  atoms: Array<{ start: number; pos: number }> = [];
+  /** Code, where nothing expands. */
+  opaque: Array<{ start: number; end: number }> = [];
+  nested: Array<{ node: ProseMirrorNode; pos: number }> = [];
+  private segments: Segment[] = [];
+
+  /** Adds a block at `pos`; false for one that is not Markdown text. `blank` is the line before it, null for none (the items of a list). */
+  add(node: ProseMirrorNode, pos: number, first = "", rest = "", blank: string | null = rest.trimEnd()): boolean {
+    const name = node.type.name;
+    if (name === "blockquote") {
+      // A colored box is `b>`.
+      const quote = `${node.attrs.color ?? ""}>`;
+      node.forEach((child, offset, index) => this.child(child, pos + 1 + offset, index ? `${rest}${quote} ` : `${first}${quote} `, `${rest}${quote} `, index ? `${rest}${quote}` : blank));
+      return true;
+    }
+    if (LISTS.has(name)) {
+      node.forEach((item, offset, index) => {
+        const marker = name === "orderedList" ? `${Number(node.attrs.start ?? 1) + index}. ` : name === "taskList" ? `- [${item.attrs.checked ? "x" : " "}] ` : "- ";
+        this.child(item, pos + 1 + offset, `${index ? rest : first}${marker}`, rest + " ".repeat(name === "taskList" ? 2 : marker.length), index ? null : blank);
+      });
+      return true;
+    }
+    if (name === "listItem" || name === "taskItem") {
+      node.forEach((child, offset, index) => this.child(child, pos + 1 + offset, index ? rest : first, rest, index ? (LISTS.has(child.type.name) ? null : rest.trimEnd()) : blank));
+      return true;
+    }
+    if (node.type.spec.code || name === "horizontalRule") {
+      const content = node.textContent;
+      const fence = "`".repeat(Math.max(3, ...[...content.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+      const lines = node.type.spec.code ? [`${fence}${node.attrs.language ?? ""}`, ...content.split("\n"), fence] : ["---"];
+      this.open(first, blank);
+      const start = this.text.length;
+      this.text += lines.join(`\n${rest}`);
+      this.opaque.push({ start, end: this.text.length });
+      this.segments.push({ start, length: this.text.length - start, map: (_, bias) => bias === "start" ? pos : pos + node.nodeSize });
+      return true;
+    }
+    if (!node.isTextblock) return false;
+    const part = textblockSource(node, pos);
+    this.open(first + (name === "heading" ? `${"#".repeat(Number(node.attrs.level ?? 1))} ` : ""), blank);
+    let local = 0;
+    const lines = part.text.split("\n");
+    lines.forEach((line, index) => {
+      if (index) this.text += `\n${rest}`;
+      const lineStart = local;
+      const start = this.text.length;
+      for (const atom of part.atoms) if (atom.start >= lineStart && atom.start <= lineStart + line.length) this.atoms.push({ start: start + atom.start - lineStart, pos: atom.pos });
+      this.segments.push({ start, length: line.length, map: (offset, bias) => part.position(lineStart + offset, bias) });
+      this.text += line;
+      local += line.length + 1;
+    });
+    return true;
+  }
+
+  /** A block inside a quote or list; one that is not Markdown text stands as an object, expanded on its own. */
+  private child(node: ProseMirrorNode, pos: number, first: string, rest: string, blank: string | null) {
+    if (this.add(node, pos, first, rest, blank)) return;
+    this.open(first, blank);
+    this.segments.push({ start: this.text.length, length: 1, map: (_, bias) => bias === "start" ? pos : pos + node.nodeSize });
+    this.opaque.push({ start: this.text.length, end: this.text.length + 1 });
+    this.text += OBJECT;
+    this.nested.push({ node, pos });
+  }
+
+  private open(first: string, blank: string | null) {
+    if (this.text || this.segments.length) this.text += blank === null ? "\n" : `\n${blank}\n`;
+    this.text += first;
+  }
+
+  /** The document position of an offset; one in a marker starts the text after it, or ends the text before it. */
+  position(offset: number, bias: "start" | "end") {
+    let index = this.segments.length - 1;
+    while (index > 0 && this.segments[index].start > offset) index--;
+    const segment = this.segments[index];
+    const previous = this.segments[index - 1];
+    if (bias === "end" && previous && offset <= segment.start && offset > previous.start + previous.length) return previous.map(previous.length, "end");
+    if (offset - segment.start > segment.length) {
+      const next = this.segments[index + 1];
+      return bias === "start" && next ? next.map(0, "start") : segment.map(segment.length, "end");
+    }
+    return segment.map(Math.max(0, offset - segment.start), bias);
+  }
+}
+
 function hasCounters(doc: ProseMirrorNode) {
   return doc.textBetween(0, doc.content.size, "\n", (leaf) => String(leaf.attrs.latex ?? "")).includes("\\counter-");
 }
@@ -78,27 +173,45 @@ export function computeMacroState(doc: ProseMirrorNode, mathMarkers?: MathMarker
   const counters = new Map<string, number>();
   const invocations: MacroInvocation[] = [];
   const math = new Map<number, string>();
-  doc.descendants((node, pos) => {
+  const expand = (source: BlocksSource) => {
+    if (source.text.includes("\\")) {
+      for (const replacement of expandMacroText(source.text, definitions, counters, mathMarkers).replacements) {
+        if (source.opaque.some((range) => replacement.start >= range.start && replacement.start < range.end)) continue;
+        if (replacement.kind === "math") {
+          const atom = source.atoms.find((candidate) => candidate.start === replacement.start);
+          if (atom) math.set(atom.pos, replacement.text);
+        } else if (replacement.kind !== "block") {
+          invocations.push({
+            from: source.position(replacement.start, "start"),
+            to: source.position(replacement.end, "end"),
+            // The expansion renders inside the quote or list, which gives its lines their prefix.
+            markdown: removeLinePrefix(replacement.text, replacement.prefix ?? ""),
+          });
+        }
+      }
+    }
+    for (const { node, pos } of source.nested) other(node, pos);
+  };
+  // Consecutive blocks read as one source; display math and tables end it, so counters keep document order.
+  const walk = (parent: ProseMirrorNode, contentStart: number) => {
+    let source = new BlocksSource();
+    parent.forEach((child, offset) => {
+      const pos = contentStart + offset;
+      if (source.add(child, pos)) return;
+      expand(source);
+      source = new BlocksSource();
+      other(child, pos);
+    });
+    expand(source);
+  };
+  const other = (node: ProseMirrorNode, pos: number) => {
     if (node.type.name === "blockMath") {
       const latex = String(node.attrs.latex ?? "");
       const expanded = expandMacroLatex(latex, definitions, counters);
       if (expanded !== latex) math.set(pos, expanded);
-      return false;
-    }
-    if (node.type.spec.code) return false;
-    if (!node.isTextblock) return true;
-    const source = textblockSource(node, pos);
-    if (!source.text.includes("\\")) return false;
-    for (const replacement of expandMacroText(source.text, definitions, counters, mathMarkers).replacements) {
-      if (replacement.kind === "math") {
-        const atom = source.atoms.find((candidate) => candidate.start === replacement.start);
-        if (atom) math.set(atom.pos, replacement.text);
-      } else if (replacement.kind !== "block") {
-        invocations.push({ from: source.position(replacement.start, "start"), to: source.position(replacement.end, "end"), markdown: replacement.text });
-      }
-    }
-    return false;
-  });
+    } else if (!node.isLeaf && !node.isInline) walk(node, pos + 1);
+  };
+  walk(doc, 0);
   return { definitions, invocations, math };
 }
 
@@ -157,6 +270,18 @@ function invocationDecorations(editor: Editor, state: EditorState) {
     }
     const length = invocation.to - invocation.from;
     decorations.push(Decoration.inline(invocation.from, invocation.to, { class: "libera-macro-hidden" }));
+    // Blocks an argument runs over are hidden whole (a quote or list with its markers); the expansion shows in the first.
+    state.doc.nodesBetween(invocation.from, invocation.to, (node, pos) => {
+      if (pos <= invocation.from || node.isInline) return !node.isTextblock;
+      // Where its last text ends, so a list whose last item ends with the argument goes too.
+      let end = pos + node.nodeSize;
+      let last = node;
+      for (; !last.isTextblock && last.lastChild?.isBlock; last = last.lastChild) end--;
+      if (last.isTextblock) end--;
+      if (end > invocation.to) return !node.isTextblock;
+      decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: "libera-macro-hidden" }));
+      return false;
+    });
     decorations.push(Decoration.widget(invocation.from, (view, getPos) => {
       const { fragment, inline } = renderExpansion(editor, invocation.markdown);
       const element = document.createElement(inline ? "span" : "div");

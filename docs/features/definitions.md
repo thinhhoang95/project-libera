@@ -57,7 +57,7 @@ It sends the list (at most 15 passages, with the count of the rest) back to the 
 
 ## The side-car file
 
-The cards are stored in a side-car JSON file next to the notebook's other Libera data: `<notebook>/.libera/definitions/by-path/<folders>/<file name>.json`. A linked folder keeps it in Libera's data directory instead. Renaming, moving, copying, archiving or deleting the document (or its folder) in Libera does the same to the side-car. In a shared notebook it stays on this computer: each member has their own cards.
+The cards are stored in a side-car JSON file next to the notebook's other Libera data: `<notebook>/.libera/definitions/by-path/<folders>/<file name>.json`. A linked folder keeps it in Libera's data directory instead. Renaming, moving, copying, archiving or deleting the document (or its folder) in Libera does the same to the side-car. A PDF's cards also follow it when it is renamed or deleted outside Libera, as its annotations do ([PDF outlines and annotations](pdf-outlines.md#pdfs-changed-outside-libera)). In a shared notebook it stays on this computer: each member has their own cards.
 
 The file records the model and the time the cards were made, and the document's size and SHA-256 hash. When the document has changed since then, the tab says so and offers **Regenerate**. If the cards were made from unsaved changes, they show as changed until the document is saved.
 

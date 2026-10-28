@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { citedKeys } from "@/lib/references/citation-syntax";
 import { ARCHIVE_DIR } from "@/lib/storage/constants";
@@ -18,11 +18,16 @@ import { readWorkspaceMetadata } from "@/lib/storage/workspace-metadata";
 // files, drops deleted ones, and writes the index only when it changed.
 // Keys are stored as written (aliases and unknown keys included); the client
 // resolves them against the library and merges in its open drafts.
+//
+// Entries hold only what follows from a file's bytes, never its timestamps or
+// size: a touched, re-downloaded or checked-out file does not rewrite the
+// index, and computers sharing a synced notebook write the same index.
+// Metadata cannot replace the byte check (see readTextSnapshot).
 
 // Version 3 verifies content identity; version 2 added narrative `@key` candidates.
 export const CITATION_INDEX_VERSION = 3;
 
-type CitationIndexFile = { mtimeMs: number; size: number; contentHash: string; keys: string[] };
+type CitationIndexFile = { contentHash: string; keys: string[] };
 type CitationIndex = { version: typeof CITATION_INDEX_VERSION; files: Record<string, CitationIndexFile> };
 
 export type NotebookCitations = {
@@ -37,7 +42,7 @@ export type CitationIndexStats = { files: number; read: number; written: boolean
 
 /** The tree's cap for linked folders, which may be large projects rather than notebooks. */
 const LINKED_FOLDER_ENTRY_LIMIT = 20_000;
-/** Files stat'ed or read at once. */
+/** Files read at once. */
 const CONCURRENCY = 32;
 
 export function citationIndexPath(notebook: string) {
@@ -46,7 +51,7 @@ export function citationIndexPath(notebook: string) {
 
 function isIndexFile(value: unknown): value is CitationIndexFile {
   const file = value as CitationIndexFile;
-  return Boolean(file) && typeof file === "object" && typeof file.mtimeMs === "number" && typeof file.size === "number" &&
+  return Boolean(file) && typeof file === "object" &&
     typeof file.contentHash === "string" && Array.isArray(file.keys) && file.keys.every((key) => typeof key === "string");
 }
 
@@ -55,7 +60,8 @@ async function readCitationIndex(indexPath: string): Promise<CitationIndex> {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     if (index?.version === CITATION_INDEX_VERSION && index.files && typeof index.files === "object") {
       const files: Record<string, CitationIndexFile> = {};
-      for (const [file, entry] of Object.entries(index.files)) if (isIndexFile(entry)) files[file] = entry;
+      // Older entries also held mtimeMs and size: ignored, and dropped when the index next changes.
+      for (const [file, entry] of Object.entries(index.files)) if (isIndexFile(entry)) files[file] = { contentHash: entry.contentHash, keys: entry.keys };
       return { version: CITATION_INDEX_VERSION, files };
     }
   } catch {
@@ -116,21 +122,20 @@ async function rebuild(notebook: string, includeArchive: boolean) {
   }
   let read = 0;
   await forEachLimited(files, async ({ relativePath, absolutePath }) => {
-    let stats;
-    try { stats = await stat(absolutePath); } catch { return; }
     let snapshot;
     try { snapshot = await readTextSnapshot(absolutePath); } catch { return; }
     const cached = previous.files[relativePath];
     if (cached && cached.contentHash === snapshot.contentHash) {
-      next.files[relativePath] = { ...cached, mtimeMs: stats.mtimeMs, size: stats.size };
+      next.files[relativePath] = cached;
       return;
     }
     read += 1;
-    next.files[relativePath] = { mtimeMs: stats.mtimeMs, size: stats.size, contentHash: snapshot.contentHash, keys: citedKeys(snapshot.content, { allNarrative: true }) };
+    next.files[relativePath] = { contentHash: snapshot.contentHash, keys: citedKeys(snapshot.content, { allNarrative: true }) };
   });
-  // Stable order keeps the comparison and the file independent of stat timing.
+  // Stable order keeps the comparison and the file independent of read timing.
   next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  const changed = JSON.stringify(previous.files) !== JSON.stringify(next.files);
+  const sortedPrevious = Object.fromEntries(Object.entries(previous.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const changed = JSON.stringify(sortedPrevious) !== JSON.stringify(next.files);
   if (changed) await writeJsonAtomically(indexPath, next, () => assertDirectorySignature(root, identity));
   const visible = Object.entries(next.files).filter(([file]) => includeArchive || !isArchived(file));
   return { visible, stats: { files: files.length, read, written: changed } satisfies CitationIndexStats };

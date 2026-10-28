@@ -74,7 +74,7 @@ const LIBRARY: ReferenceLibrary = { version: 1, revision: 2, style: "apa", entri
 let m: {
   createRoot: typeof import("react-dom/client").createRoot;
   PdfViewer: typeof import("../../src/components/libera/pdf-viewer").PdfViewer;
-  OutlinePanel: typeof import("../../src/components/libera/outline-panel").OutlinePanel;
+  PdfAnnotationsPanel: typeof import("../../src/components/libera/pdf-annotations-panel").PdfAnnotationsPanel;
   PdfQuoteCiteHost: typeof import("../../src/components/libera/references/pdf-quote-cite").PdfQuoteCiteHost;
   pdfPageLabelsFor: typeof import("../../src/components/libera/references/pdf-page-labels").pdfPageLabelsFor;
   useLiberaWorkspace: typeof import("../../src/components/libera/use-libera-workspace").useLiberaWorkspace;
@@ -87,7 +87,7 @@ before(async () => {
   const [client, viewer, outline, quote, labels, workspace, api, workspaces, library] = await Promise.all([
     import("react-dom/client"),
     import("../../src/components/libera/pdf-viewer"),
-    import("../../src/components/libera/outline-panel"),
+    import("../../src/components/libera/pdf-annotations-panel"),
     import("../../src/components/libera/references/pdf-quote-cite"),
     import("../../src/components/libera/references/pdf-page-labels"),
     import("../../src/components/libera/use-libera-workspace"),
@@ -96,7 +96,7 @@ before(async () => {
     import("../../src/components/libera/references/use-reference-library"),
   ]);
   m = {
-    createRoot: client.createRoot, PdfViewer: viewer.PdfViewer, OutlinePanel: outline.OutlinePanel, PdfQuoteCiteHost: quote.PdfQuoteCiteHost,
+    createRoot: client.createRoot, PdfViewer: viewer.PdfViewer, PdfAnnotationsPanel: outline.PdfAnnotationsPanel, PdfQuoteCiteHost: quote.PdfQuoteCiteHost,
     pdfPageLabelsFor: labels.pdfPageLabelsFor, useLiberaWorkspace: workspace.useLiberaWorkspace, emptyTree: api.emptyTree,
     emptyWorkspaceLibrary: workspaces.emptyWorkspaceLibrary, resetReferenceLibraryCache: library.resetReferenceLibraryCache,
   };
@@ -199,7 +199,7 @@ test("dragging a selection carries application/x-libera-citation and plain text"
   }
 });
 
-test("the PDF outline's highlight context menu quotes and cites", async () => {
+test("the PDF annotations panel's highlight context menu quotes and cites", async () => {
   globalThis.fetch = (async () => Response.json({ annotations: [HIGHLIGHT, { ...HIGHLIGHT, id: "h2", quote: undefined, pageNumber: 2 }] })) as typeof fetch;
   const host = document.createElement("div");
   document.body.append(host);
@@ -207,7 +207,7 @@ test("the PDF outline's highlight context menu quotes and cites", async () => {
   const watch = watchQuotes();
   const activeTab = { id: "t", file: { kind: "file", name: "smith.pdf", path: PDF_PATH, notebook: "Notes", fileType: "pdf", createdAt: NOW, updatedAt: NOW, size: 1 }, draft: "", saved: "", status: "clean" } as OpenTab;
   try {
-    await act(async () => root.render(createElement(m.OutlinePanel, { activeTab, textareaRef: { current: null }, onOpenFile: async () => {}, onSetDraft: () => {} })));
+    await act(async () => root.render(createElement(m.PdfAnnotationsPanel, { activeTab, onOpenFile: async () => {} })));
     await settle(10);
     const rows = [...host.querySelectorAll<HTMLButtonElement>("button")].filter((button) => /p\. \d/.test(button.textContent ?? ""));
     assert.equal(rows.length, 2);

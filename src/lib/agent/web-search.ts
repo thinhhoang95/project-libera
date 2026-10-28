@@ -74,7 +74,7 @@ Usage:
         const completion = await createOpenRouterCompletion([
           { role: "system", content: SEARCH_INSTRUCTIONS },
           { role: "user", content: query },
-        ], { model, webSearch: { maxResults }, maxTokens: 1_500, signal: context.signal });
+        ], { model, webSearch: { maxResults }, provider: getAiFunctionOptions("chat").provider, maxTokens: 1_500, signal: context.signal });
         if (completion.usage) recordUsage(context, completion.usage);
         if (!completion.content.trim() && !completion.webCitations?.length) throw new Error("The search returned nothing.");
         const result: WebSearchResult = { model, answer: completion.content, citations: completion.webCitations ?? [] };

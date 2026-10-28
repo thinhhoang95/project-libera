@@ -1,69 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { getStateRoot } from "./paths";
 import { StorageError } from "./errors";
+import { findReviewDocument, isSafeReviewId, readReviewDocument, readReviewDocuments, withReviewTransaction, type ReviewTransaction } from "./review-files";
 import { agentSuggestionTitle, anchorAt, newReview, syncReview, type AgentSuggestion, type ReviewDocument, type ReviewRange } from "../markdown-review";
 
-type ReviewDatabase = { schemaVersion: 1; documents: ReviewDocument[] };
-const databasePath = () => path.join(getStateRoot(), ".libera", "markdown-reviews.json");
-async function readDatabase(): Promise<ReviewDatabase> {
-  try {
-    const db = JSON.parse(await readFile(databasePath(), "utf8"));
-    if (db.schemaVersion !== 1 || !Array.isArray(db.documents)) throw new Error("Unsupported review database.");
-    return db;
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, documents: [] }; throw error; }
-}
-// One atomic database keeps document identities and their paths consistent
-// during folder moves. An OS lock also coordinates separate Next workers.
-async function transaction<T>(fn: (db: ReviewDatabase, unchanged: () => void) => T | Promise<T>): Promise<T> {
-  const target = databasePath();
-  await mkdir(path.dirname(target), { recursive: true });
-  let lock;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try { lock = await open(`${target}.lock`, "wx", 0o600); await lock.writeFile(String(process.pid)); break; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // Recover a lock left by a dead worker. Never steal from a live owner.
-      try {
-        const owner = Number(await readFile(`${target}.lock`, "utf8"));
-        if (Number.isInteger(owner) && owner > 0) {
-          try { process.kill(owner, 0); }
-          catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ESRCH") await rm(`${target}.lock`, { force: true }); }
-        } else if (Date.now() - (await stat(`${target}.lock`)).mtimeMs > 30_000) await rm(`${target}.lock`, { force: true });
-      } catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause; }
-      await delay(50);
-    }
-  }
-  if (!lock) throw new StorageError("Review storage is busy. Retry; if the app crashed, restart it and check the review storage lock.", 409);
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  try {
-    const db = await readDatabase();
-    const before = JSON.stringify(db);
-    let dirty = true;
-    const result = await fn(db, () => { dirty = false; });
-    if (!dirty || JSON.stringify(db) === before) return result;
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(JSON.stringify(db)); await handle.sync(); } finally { await handle.close(); }
-    await rename(temporary, target);
-    return result;
-  } finally { await rm(temporary, { force: true }); await lock.close(); await rm(`${target}.lock`, { force: true }); }
+// Each document's review is its own file (review-files.ts), so a write
+// rewrites only the document it changed. A lock coordinates separate Next
+// workers and the Electron host.
+function transaction<T>(fn: (tx: ReviewTransaction<ReviewDocument>) => T | Promise<T>): Promise<T> {
+  return withReviewTransaction(getStateRoot(), fn, () => new StorageError("Review storage is busy. Retry; if the app crashed, restart it and check the review storage lock.", 409));
 }
 export async function loadReview(key: string, snapshot: string) {
-  // Atomic rename makes an existing snapshot safe to read without a write lock.
-  const existing = (await readDatabase()).documents.find((d) => d.key === key);
+  // Atomic rename makes an existing review safe to read without a write lock.
+  const existing = await findReviewDocument<ReviewDocument>(getStateRoot(), key);
   if (existing) return existing;
-  return transaction((db, unchanged) => {
-    let doc = db.documents.find((d) => d.key === key);
-    if (doc) unchanged();
-    if (!doc) { doc = newReview(key, snapshot, randomUUID()); db.documents.push(doc); }
+  return transaction(async (tx) => {
+    let doc = await tx.find(key);
+    if (!doc) { doc = newReview(key, snapshot, randomUUID()); tx.put(doc); }
     return doc;
   });
 }
 /** A document's stored review, or null when it has none. Never creates one. */
 export async function findReview(key: string) {
-  return (await readDatabase()).documents.find((d) => d.key === key) ?? null;
+  return findReviewDocument<ReviewDocument>(getStateRoot(), key);
 }
 /**
  * Add comment threads to a document's review, creating it if needed. `snapshot`
@@ -71,24 +30,22 @@ export async function findReview(key: string) {
  * Review mode is turned on so the new comments are highlighted.
  */
 export async function addReviewThreads(key: string, snapshot: string, threads: { range: ReviewRange; text: string; author?: "agent" }[]) {
-  return transaction((db) => {
-    let index = db.documents.findIndex((d) => d.key === key);
-    if (index < 0) { db.documents.push(newReview(key, snapshot, randomUUID())); index = db.documents.length - 1; }
-    const doc = syncReview(db.documents[index], snapshot);
+  return transaction(async (tx) => {
+    const doc = syncReview(await tx.find(key) ?? newReview(key, snapshot, randomUUID()), snapshot);
     const createdAt = new Date().toISOString();
     for (const thread of threads) {
       doc.threads.push({ id: randomUUID(), anchor: anchorAt(snapshot, thread.range), messages: [{ id: randomUUID(), text: thread.text, createdAt, ...(thread.author ? { author: thread.author } : {}) }], status: "open" });
     }
     doc.enabled = true;
     doc.revision++;
-    db.documents[index] = doc;
+    tx.put(doc);
     return doc;
   });
 }
 /** Add a reply to one of a document's review threads. StorageError 404 when the review or thread is gone. */
 export async function addReviewReply(key: string, threadId: string, text: string, author?: "agent") {
-  return transaction((db) => {
-    const doc = db.documents.find((d) => d.key === key);
+  return transaction(async (tx) => {
+    const doc = await tx.find(key);
     const thread = doc?.threads.find((t) => t.id === threadId);
     if (!doc || !thread) throw new StorageError("Comment thread was not found.", 404);
     const message = { id: randomUUID(), text, createdAt: new Date().toISOString(), ...(author ? { author } : {}) };
@@ -114,10 +71,8 @@ export type AgentSuggestionInput = {
  * mode is turned on so the suggestions show.
  */
 export async function addAgentSuggestions(key: string, snapshot: string, suggestions: AgentSuggestionInput[]) {
-  return transaction((db) => {
-    let index = db.documents.findIndex((d) => d.key === key);
-    if (index < 0) { db.documents.push(newReview(key, snapshot, randomUUID())); index = db.documents.length - 1; }
-    const doc = syncReview(db.documents[index], snapshot);
+  return transaction(async (tx) => {
+    const doc = syncReview(await tx.find(key) ?? newReview(key, snapshot, randomUUID()), snapshot);
     const createdAt = new Date().toISOString();
     const added: AgentSuggestion[] = suggestions.map((input) => {
       const anchor = anchorAt(snapshot, input.range);
@@ -136,58 +91,72 @@ export async function addAgentSuggestions(key: string, snapshot: string, suggest
     doc.agentSuggestions = [...(doc.agentSuggestions ?? []), ...added];
     doc.enabled = true;
     doc.revision++;
-    db.documents[index] = doc;
+    tx.put(doc);
     return doc;
   });
 }
 export async function readReview(id: string) {
-  const doc = (await readDatabase()).documents.find((d) => d.id === id);
+  const doc = await readReviewDocument<ReviewDocument>(getStateRoot(), id);
   if (!doc) throw new StorageError("Review document was not found.", 404);
   return doc;
 }
+/**
+ * Apply `change` to the stored review at `revision`. A change that leaves the
+ * document as it was (a sync against the same text) returns it unchanged: no
+ * new revision and no write.
+ */
 export async function updateReview(id: string, revision: number, change: (doc: ReviewDocument) => ReviewDocument) {
-  return transaction((db) => {
-    const index = db.documents.findIndex((d) => d.id === id);
-    if (index < 0) throw new StorageError("Review document was not found.", 404);
-    if (db.documents[index].revision !== revision) throw new StorageError("Review changed in another window. Reload review before retrying.", 409);
-    const next = change(structuredClone(db.documents[index]));
+  if (!isSafeReviewId(id)) throw new StorageError("Review document was not found.", 404);
+  return transaction(async (tx) => {
+    const stored = await tx.get(id);
+    if (!stored) throw new StorageError("Review document was not found.", 404);
+    if (stored.revision !== revision) throw new StorageError("Review changed in another window. Reload review before retrying.", 409);
+    const next = change(structuredClone(stored));
+    if (JSON.stringify(next) === JSON.stringify(stored)) return stored;
     next.revision = revision + 1;
-    db.documents[index] = next;
+    tx.put(next);
     return next;
   });
 }
+const under = (key: string, folder: string) => key === folder || key.startsWith(`${folder}/`);
 export async function moveReviewPath(from: string, to: string) {
-  return transaction((db) => {
-    for (const doc of db.documents) if (doc.key === from || doc.key.startsWith(`${from}/`)) {
-      doc.key = to + doc.key.slice(from.length); doc.revision++;
+  return transaction(async (tx) => {
+    // A review whose file has not synced yet still follows its file.
+    for (const [id, key] of tx.keys()) if (under(key, from)) {
+      const doc = await tx.getIfPresent(id);
+      if (doc) { doc.key = to + doc.key.slice(from.length); doc.revision++; }
+      else tx.rekey(id, to + key.slice(from.length));
     }
   });
 }
 export async function deleteReviewPath(key: string) {
-  return transaction((db) => { db.documents = db.documents.filter((d) => d.key !== key && !d.key.startsWith(`${key}/`)); });
+  return transaction((tx) => { for (const [id, stored] of tx.keys()) if (under(stored, key)) tx.remove(id); });
 }
 export async function copyReviewPath(from: string, to: string) {
-  return transaction((db) => {
-    const originals = db.documents.filter((d) => d.key === from || d.key.startsWith(`${from}/`));
-    for (const original of originals) {
+  return transaction(async (tx) => {
+    for (const [id, key] of tx.keys()) if (under(key, from)) {
+      const original = await tx.getIfPresent(id);
+      if (!original) continue;
       const copied = newReview(to + original.key.slice(from.length), original.snapshot, randomUUID());
       copied.enabled = original.enabled;
       copied.threads = structuredClone(original.threads).map((t) => ({ ...t, id: randomUUID(), messages: t.messages.map((m) => ({ ...m, id: randomUUID() })) }));
-      db.documents.push(copied);
+      tx.put(copied);
     }
   });
 }
 export async function listRecoverableReviews() {
-  return (await readDatabase()).documents.filter((d) => d.key.startsWith("draft:") && (d.threads.length || d.session)).map((d) => ({ id: d.id, key: d.key, snapshot: d.snapshot, commentCount: d.threads.length }));
+  return (await readReviewDocuments<ReviewDocument>(getStateRoot(), (key) => key.startsWith("draft:"))).filter((d) => d.threads.length || d.session).map((d) => ({ id: d.id, key: d.key, snapshot: d.snapshot, commentCount: d.threads.length }));
 }
 /** Add review documents kept elsewhere, skipping ones the library already has. */
 export async function mergeReviewDocuments(documents: ReviewDocument[]) {
   if (!documents.length) return;
-  return transaction((db, unchanged) => {
-    const ids = new Set(db.documents.map((d) => d.id));
-    const keys = new Set(db.documents.map((d) => d.key));
-    const added = documents.filter((d) => d && typeof d.id === "string" && typeof d.key === "string" && !ids.has(d.id) && !keys.has(d.key));
-    if (!added.length) { unchanged(); return; }
-    db.documents.push(...added);
+  return transaction((tx) => {
+    const keys = tx.keys();
+    const ids = new Set(keys.map(([id]) => id));
+    const paths = new Set(keys.map(([, key]) => key));
+    for (const doc of documents) {
+      if (!doc || typeof doc.id !== "string" || typeof doc.key !== "string" || ids.has(doc.id) || paths.has(doc.key)) continue;
+      tx.put(isSafeReviewId(doc.id) ? doc : { ...doc, id: randomUUID() });
+    }
   });
 }

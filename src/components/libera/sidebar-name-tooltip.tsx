@@ -1,11 +1,13 @@
 "use client";
 
 import { useId, useState } from "react";
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 type SidebarNameTooltipButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   fullName: string;
+  /** Extra lines under the name, rendered when the tooltip opens so times stay fresh. */
+  renderDetails?: () => ReactNode;
 };
 
 export function SidebarNameTooltipButton({
@@ -16,6 +18,7 @@ export function SidebarNameTooltipButton({
   onFocus,
   onMouseEnter,
   onMouseLeave,
+  renderDetails,
   ...buttonProps
 }: SidebarNameTooltipButtonProps) {
   const tooltipId = useId();
@@ -64,7 +67,7 @@ export function SidebarNameTooltipButton({
       {position && typeof document !== "undefined"
         ? createPortal(
             <div
-              className="pointer-events-none fixed z-[110] -translate-y-1/2 break-all rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-lg"
+              className="pointer-events-none fixed z-[110] -translate-y-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-lg"
               id={tooltipId}
               role="tooltip"
               style={{
@@ -73,7 +76,8 @@ export function SidebarNameTooltipButton({
                 top: position.top,
               }}
             >
-              {fullName}
+              <div className="break-all">{fullName}</div>
+              {renderDetails?.()}
             </div>,
             document.body,
           )

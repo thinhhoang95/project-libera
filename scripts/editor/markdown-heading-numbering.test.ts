@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, type TransactionSpec } from "@codemirror/state";
 import { Editor } from "@tiptap/core";
 import { ySyncAnnotation } from "y-codemirror.next";
 import {
@@ -11,7 +11,8 @@ import {
   getStructuralHeadingNumbers,
   mapOffsetThroughTextChanges,
 } from "../../src/lib/markdown-heading-numbering";
-import { headingNumberingExtension, headingNumberingSpec } from "../../src/lib/markdown-codemirror/heading-numbering";
+import { headingNumberingTransactions, headingNumberingSpec } from "../../src/lib/markdown-codemirror/heading-numbering";
+import { markdownValueSync } from "../../src/lib/markdown-codemirror/value-sync";
 import { createMarkdownExtensions } from "../../src/lib/tiptap-markdown";
 import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "../../src/lib/tiptap-heading-numbering";
 import { numberTiptapHeadings, removeTiptapHeadingNumbers } from "../../src/lib/tiptap-editor-actions";
@@ -73,23 +74,32 @@ test("documents count as numbered when every heading but the title is", () => {
   assert.equal(detectMarkdownHeadingNumbering(""), null);
 });
 
-test("CodeMirror renumbers local edits in the same transaction, but not undo or remote edits", () => {
+test("CodeMirror appends renumbering after local edits, but leaves history and outside text alone", () => {
   let enabled = true;
-  const extension = headingNumberingExtension(() => ({ enabled, skipTitle: true }));
-  const start = EditorState.create({ doc: "# Title\n\n## 1. A\n\n", extensions: [extension] });
+  const start = EditorState.create({ doc: "# Title\n\n## 1. A\n\n" });
+  const update = (spec: TransactionSpec) => headingNumberingTransactions([start.update(spec)], { enabled, skipTitle: true });
   const end = start.doc.length;
-  const typed = start.update({ changes: { from: end, insert: "## " }, selection: EditorSelection.cursor(end + 3), userEvent: "input.type" }).state;
+  const transactions = update({ changes: { from: end, insert: "## " }, selection: EditorSelection.cursor(end + 3), userEvent: "input.type" });
+  assert.equal(transactions.length, 2, "the edit and renumbering are separate transactions");
+  const typed = transactions.at(-1)!.state;
   assert.equal(typed.doc.toString(), "# Title\n\n## 1. A\n\n## 2. ");
   assert.equal(typed.selection.main.head, typed.doc.length);
 
   const insertAt = start.doc.toString().indexOf("## 1. A");
   const insertion = { changes: { from: insertAt, insert: "## New\n\n" }, userEvent: "input.paste" };
-  assert.equal(start.update(insertion).state.doc.toString(), "# Title\n\n## 1. New\n\n## 2. A\n\n");
-  assert.equal(start.update({ ...insertion, userEvent: "undo" }).state.doc.toString(), "# Title\n\n## New\n\n## 1. A\n\n");
-  assert.equal(start.update({ ...insertion, userEvent: undefined, annotations: ySyncAnnotation.of({} as never) }).state.doc.toString(), "# Title\n\n## New\n\n## 1. A\n\n");
+  assert.equal(update(insertion).at(-1)!.newDoc.toString(), "# Title\n\n## 1. New\n\n## 2. A\n\n");
+  for (const patch of [
+    { userEvent: "undo" }, { userEvent: "redo" },
+    { annotations: ySyncAnnotation.of({} as never) },
+    { annotations: markdownValueSync.of("value") }, { annotations: markdownValueSync.of("review") },
+  ]) {
+    const result = update({ ...insertion, ...patch });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].newDoc.toString(), "# Title\n\n## New\n\n## 1. A\n\n");
+  }
 
   enabled = false;
-  assert.equal(start.update(insertion).state.doc.toString(), "# Title\n\n## New\n\n## 1. A\n\n");
+  assert.equal(update(insertion).at(-1)!.newDoc.toString(), "# Title\n\n## New\n\n## 1. A\n\n");
   const spec = headingNumberingSpec(EditorState.create({ doc: "# T\n\n## A" }), { enabled: true, skipTitle: true });
   assert.deepEqual(spec?.changes, [{ from: 8, insert: "1. ", to: 8 }]);
 });

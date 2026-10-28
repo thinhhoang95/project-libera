@@ -17,7 +17,7 @@ export function readIncludeDocumentContext() {
   }
 }
 
-function saveIncludeDocumentContext(value: boolean) {
+export function saveIncludeDocumentContext(value: boolean) {
   unstoredValue = value;
   try {
     window.localStorage.setItem(STORAGE_KEY, String(value));
@@ -37,10 +37,6 @@ function subscribe(onChange: () => void) {
   };
 }
 
-export function IncludeDocumentContextCheckbox({ id }: { id: string }) {
-  const checked = useSyncExternalStore(subscribe, readIncludeDocumentContext, () => true);
-  return <label htmlFor={id} title="Applies to AI Rewrite and Write with AI" className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-    <input id={id} type="checkbox" checked={checked} onChange={(event) => saveIncludeDocumentContext(event.target.checked)} />
-    Include whole document as context
-  </label>;
+export function useIncludeDocumentContext() {
+  return useSyncExternalStore(subscribe, readIncludeDocumentContext, () => true);
 }

@@ -167,6 +167,54 @@ type Mounted = Awaited<ReturnType<typeof mountTextarea>> | Awaited<ReturnType<ty
 const EDITORS: Array<[string, (value: string) => Promise<Mounted>]> = [["textarea", mountTextarea], ["CodeMirror", mountCodeMirror]];
 const popup = () => document.querySelector<HTMLElement>("[data-citation-popup]");
 
+for (const [name, mount] of EDITORS) {
+  test(`${name}: entering a file-link destination clears the last inserted citation dismissal`, async () => {
+    setup();
+    const editor = await mount("");
+    const target = "textarea" in editor ? editor.textarea : editor.view.contentDOM;
+    try {
+      await editor.type("[@sm] [file](", 4);
+      await editor.key("Enter");
+      const text = editor.text;
+      assert.match(text, /^\[@(?:smith2020sparse|smythe2021)\]/);
+      assert.equal(popup(), null);
+      await editor.type(text, text.length);
+      await act(async () => { target.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+      await settle(30);
+      assert.equal(popup(), null, "a link destination owns its picker");
+      await editor.type(text, text.indexOf("]"));
+      await act(async () => { target.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+      await settle(30);
+      assert.ok(popup(), "returning to the previously inserted key is a new query");
+    } finally { await editor.dispose(); }
+  });
+
+  test(`${name}: citation hover uses the shared dismissal rules and Ctrl+click excludes trailing whitespace`, async () => {
+    setup();
+    const editor = await mount("See [@smith2020sparse, p. 12] and text.");
+    const target = "textarea" in editor ? editor.textarea : editor.view.contentDOM;
+    if ("view" in editor) {
+      editor.view.posAtCoords = ({ x }) => Math.floor(x / 8);
+      editor.view.coordsAtPos = (offset) => ({ left: offset * 8, right: offset * 8, top: 0, bottom: 20 });
+    }
+    const at = (offset: number) => ({ clientX: offset * 8 + 4, clientY: 10, bubbles: true, cancelable: true });
+    try {
+      await act(async () => { target.dispatchEvent(new dom.window.MouseEvent("mousemove", at(8))); });
+      await settle(300);
+      assert.ok(document.querySelector('[aria-label="Citation details"]'));
+      await act(async () => { window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", cancelable: true })); });
+      assert.equal(document.querySelector('[aria-label="Citation details"]'), null);
+      const outside = new dom.window.MouseEvent("mousedown", { ...at(29), ctrlKey: true, button: 0 });
+      await act(async () => { target.dispatchEvent(outside); });
+      assert.equal(opened.length, 0);
+      const inside = new dom.window.MouseEvent("mousedown", { ...at(10), ctrlKey: true, button: 0 });
+      await act(async () => { target.dispatchEvent(inside); });
+      assert.equal(inside.defaultPrevented, true);
+      assert.equal(opened[0].locator?.page, 12);
+    } finally { await editor.dispose(); }
+  });
+}
+
 // [label, text, caret (default: the end)]
 const NO_TRIGGER: Array<[string, string, number?]> = [
   ["email", "Write to me@exa"],

@@ -4,7 +4,7 @@
 // marked migratedTo and kept, owner only, and idempotent on a second run.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import { readAnchor, resolveAnchor } from "../../src/lib/collab/anchors";
 import { ControlRoutes, type LocalCommentsSummary, type MigrateCommentsResponse } from "../../src/lib/collab/local-api";
 import { anchorAt, newReview, type ReviewDocument } from "../../src/lib/markdown-review";
 import type { MigratableDocument } from "../../electron/collab/control/review-migration";
+import { readReviewDocuments } from "../../src/lib/storage/review-files";
 import { joinNotebook, resolvePath, shareNotebook, startPeer, until, type P2Peer } from "./support/p2-peers";
 import { removeDataDir, startServerProcess } from "./support/server-process";
 
@@ -86,8 +87,10 @@ test("moving local review comments to a shared notebook", { timeout: 240_000 }, 
     }
     assert.equal(readAnchor(replica.annotations, byFirst.get("This one lost its text")!.anchorId), null, "no anchor for text that is gone");
 
-    // Local copies are marked, not deleted.
-    const stored = JSON.parse(readFileSync(database, "utf8")) as { documents: MigratableDocument[] };
+    // Local copies are marked, not deleted. The single-file database the test
+    // wrote was moved to one file per document on first use.
+    assert.ok(existsSync(`${database}.migrated`));
+    const stored = { documents: await readReviewDocuments<MigratableDocument>(alice.library) };
     assert.equal(stored.documents.length, 2);
     const local = stored.documents.find((item) => item.id === "review-notes")!;
     assert.equal(local.threads.length, 3);

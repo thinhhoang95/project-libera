@@ -55,6 +55,8 @@ import {
   notebookPath,
   pdfAnnotationsPath,
   pdfAnnotationsDirectoryPath,
+  pdfOutlinePath,
+  pdfOutlinesDirectoryPath,
   rawFileUrl,
   relativeFilePath,
   splitDirectoryPath,
@@ -70,6 +72,7 @@ import {
   renameFileMetadataPathPrefix,
 } from "@/lib/storage/workspace-metadata";
 import { isTextFileType, type LiberaFileMovePayload, type LiberaFilePayload } from "@/lib/types";
+import { copyInkFolder, copyInkThroughEdit, deleteInkFolder, moveInkFolder, supportsInk } from "@/lib/storage/ink";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { copyTranscript } from "@/lib/storage/transcripts";
 import { supportsDefinitions } from "@/lib/storage/definitions";
@@ -315,7 +318,9 @@ export async function renameFolder(relativePath: string, nextName: string) {
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
+  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, [
     ...parentParts,
     safeNextName,
@@ -387,7 +392,9 @@ export async function archiveFolder(relativePath: string) {
   await moveFileIfExists(imageAnnotationsDirectoryPath(current.notebook, current.pathParts), imageAnnotationsDirectoryPath(current.notebook, nextParts));
   await moveAudioSidecarDirectories(current.notebook, current.pathParts, nextParts);
   await moveFileIfExists(definitionsDirectoryPath(current.notebook, current.pathParts), definitionsDirectoryPath(current.notebook, nextParts));
+  await moveFileIfExists(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), pdfOutlinesDirectoryPath(current.notebook, nextParts));
   await moveFolderPythonSidecars(notes, currentRelativePath, nextRelativePath);
+  await moveInkFolder(current.notebook, current.pathParts, current.notebook, nextParts);
   await movePdfTextCacheDirectory(current.notebook, current.pathParts, nextParts);
   await moveReviewPath(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
   await moveReferenceAttachments(relativeFilePath(current.notebook, current.pathParts), relativeFilePath(current.notebook, nextParts));
@@ -421,6 +428,8 @@ export async function deleteFolder(relativePath: string) {
     await rm(directory, { force: true, recursive: true });
   }
   await rm(definitionsDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
+  await rm(pdfOutlinesDirectoryPath(current.notebook, current.pathParts), { force: true, recursive: true });
+  await deleteInkFolder(current.notebook, current.pathParts);
   for (const document of markdown) await deletePythonSidecar(document.documentPath);
   await cleanupMarkdownImageAssets(current.notebook, markdown);
   await deleteReviewPath(relativeFilePath(current.notebook, current.pathParts));
@@ -605,6 +614,7 @@ export async function deleteFile(relativePath: string) {
 
   if (fileType === "pdf") {
     await rm(pdfAnnotationsPath(notebook, pathParts), { force: true });
+    await rm(pdfOutlinePath(notebook, pathParts), { force: true });
     await deletePdfTextCache(notebook, pathParts);
   }
 
@@ -617,6 +627,7 @@ export async function deleteFile(relativePath: string) {
   }
 
   if (supportsDefinitions(relativePath)) await rm(definitionsPath(notebook, pathParts), { force: true });
+  if (supportsInk(fileType)) await deleteInkFolder(notebook, pathParts);
 
   if (markdown !== null) {
     await deletePythonSidecar(relativeFilePath(notebook, pathParts));
@@ -690,6 +701,8 @@ export async function saveEditedImageCopy(relativePath: string, edits: PhotoEdit
   );
 
   await writeFile(available.path, body, { flag: "wx" });
+  // The copy keeps the original's ink, moved with the crop and turns.
+  await copyInkThroughEdit(relativeFilePath(notebook, pathParts), relativeFilePath(notebook, [...directoryParts, available.name]), edits);
   notifySearchChanges([relativeFilePath(notebook, [...directoryParts, available.name])]);
 
   return {
@@ -753,8 +766,13 @@ async function moveRelatedMetadata(
       nextNotebook,
       nextPathParts,
     );
+    await moveFileIfExists(
+      pdfOutlinePath(currentNotebook, currentPathParts),
+      pdfOutlinePath(nextNotebook, nextPathParts),
+    );
   } else if (currentFileType === "pdf") {
     await rm(pdfAnnotationsPath(currentNotebook, currentPathParts), { force: true });
+    await rm(pdfOutlinePath(currentNotebook, currentPathParts), { force: true });
     await deletePdfTextCache(currentNotebook, currentPathParts);
   }
 
@@ -786,6 +804,12 @@ async function moveRelatedMetadata(
     if (nextFileType === currentFileType) await moveFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
     else await rm(definitionsPath(currentNotebook, currentPathParts), { force: true });
   }
+
+  // Ink chunks are per kind of file (PDF pages, a note's blocks), so ink only follows the same kind.
+  if (supportsInk(currentFileType)) {
+    if (nextFileType === currentFileType) await moveInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
+    else await deleteInkFolder(currentNotebook, currentPathParts);
+  }
 }
 
 async function copyRelatedMetadata(
@@ -801,6 +825,8 @@ async function copyRelatedMetadata(
       pdfAnnotationsPath(nextNotebook, nextPathParts),
     );
     await copyPdfTextCache(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
+    // The outline describes the bytes, which the copy shares.
+    await copyFileIfExists(pdfOutlinePath(currentNotebook, currentPathParts), pdfOutlinePath(nextNotebook, nextPathParts));
   }
 
   if (currentFileType === "image") {
@@ -823,6 +849,8 @@ async function copyRelatedMetadata(
   if (supportsDefinitionsType(currentFileType)) {
     await copyFileIfExists(definitionsPath(currentNotebook, currentPathParts), definitionsPath(nextNotebook, nextPathParts));
   }
+
+  if (supportsInk(currentFileType)) await copyInkFolder(currentNotebook, currentPathParts, nextNotebook, nextPathParts);
 }
 
 function supportsDefinitionsType(fileType: string) {

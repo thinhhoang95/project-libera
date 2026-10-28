@@ -10,13 +10,14 @@ import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "../../src
 import { getTiptapBlockInsertionRange } from "../../src/lib/tiptap-editor-actions";
 import { TiptapEditorActions } from "../../src/components/libera/tiptap-editor-actions";
 import { QuickPromptsContext } from "../../src/components/libera/quick-prompt-input";
+import { clearAiEditThread } from "../../src/components/libera/ai-edit-thread";
 import { POST as write } from "../../src/app/api/ai-write/route";
 import { POST as rewrite } from "../../src/app/api/ai-rewrite/route";
 import { readDocumentContext } from "../../src/lib/ai-document-context";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../src/lib/auth";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
-for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "Element", "Node", "MouseEvent", "KeyboardEvent", "DOMParser", "MutationObserver", "getComputedStyle"] as const) {
+for (const key of ["window", "document", "navigator", "Event", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "Element", "Node", "MouseEvent", "KeyboardEvent", "DOMParser", "MutationObserver", "getComputedStyle"] as const) {
   Object.defineProperty(globalThis, key, { value: key === "getComputedStyle" ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key], configurable: true });
 }
 Object.assign(globalThis, { requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout });
@@ -141,11 +142,15 @@ test("AI Rewrite expands slash commands and the document-context checkbox persis
   document.body.append(host);
   const root = createRoot(host);
   const originalFetch = globalThis.fetch;
-  const bodies: Record<string, string>[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  const threads: { id: string; turns: unknown[] }[] = [];
   globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-    bodies.push(JSON.parse(String(init?.body)));
-    return Response.json({ rewrittenText: "Rewritten" });
+    const { thread, ...body } = JSON.parse(String(init?.body));
+    bodies.push(body);
+    threads.push(thread);
+    return Response.json({ rewrittenText: "Rewritten", thread: { id: thread.id, caching: true, turn: { user: "u", assistant: "Rewritten" } } });
   }) as typeof fetch;
+  const cacheChip = () => document.querySelector<HTMLButtonElement>('button[aria-label^="Cached AI thread"]');
   const openMenu = async () => {
     await act(async () => {
       editor.commands.setTextSelection({ from: 1, to: 8 });
@@ -168,18 +173,32 @@ test("AI Rewrite expands slash commands and the document-context checkbox persis
     await typePrompt(input, "Shorter");
     await pressEnter(input);
     assert.deepEqual(bodies[0], { text: "Rewrite", prompt: "Shorter", before: "", after: " me\n\nAfter" });
+    assert.deepEqual(threads[0].turns, [], "the first request starts a thread");
     editor.commands.undo();
 
     checkbox = await openMenu();
+    assert.equal(cacheChip()?.textContent, "1", "the cache indicator shows the thread continues");
     await act(async () => { checkbox.click(); });
     assert.equal(window.localStorage.getItem("libera-ai-include-document-context"), "false");
+    assert.ok(!cacheChip(), "changing the document context ends the thread");
     input = document.querySelector<HTMLTextAreaElement>("#visual-ai-rewrite")!;
     await typePrompt(input, "Shorter");
     await pressEnter(input);
     assert.deepEqual(bodies[1], { text: "Rewrite", prompt: "Shorter" });
+    assert.notEqual(threads[1].id, threads[0].id);
+    assert.deepEqual(threads[1].turns, []);
     editor.commands.undo();
     assert.equal((await openMenu()).checked, false, "the choice is remembered");
+    await act(async () => { cacheChip()!.click(); });
+    assert.ok(!cacheChip(), "clicking the indicator clears the cache");
+    input = document.querySelector<HTMLTextAreaElement>("#visual-ai-rewrite")!;
+    await typePrompt(input, "Shorter");
+    await pressEnter(input);
+    assert.notEqual(threads[2].id, threads[1].id, "the next request starts from scratch");
+    assert.deepEqual(threads[2].turns, []);
+    editor.commands.undo();
   } finally {
+    clearAiEditThread("Notebook/note.md");
     window.localStorage.clear();
     globalThis.fetch = originalFetch;
     await act(async () => root.unmount());
@@ -197,11 +216,12 @@ test("document context is clipped around the marked spot", () => {
 });
 
 test("AI routes mark the insertion point or selection in the whole document", async () => {
-  const keys = ["OPENROUTER_API_KEY", "LIBERA_AI_REWRITE_MODEL"];
+  const keys = ["OPENROUTER_API_KEY", "LIBERA_AI_REWRITE_MODEL", "LIBERA_AI_REWRITE_PROMPT_CACHING"];
   const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const originalFetch = globalThis.fetch;
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.LIBERA_AI_REWRITE_MODEL = "custom/rewrite";
+  process.env.LIBERA_AI_REWRITE_PROMPT_CACHING = "false";
   const calls: { model: string; messages: { role: string; content: string }[] }[] = [];
   globalThis.fetch = async (input, init) => {
     if (String(input).endsWith("/endpoints")) return Response.json({ data: { endpoints: [] } });
@@ -222,6 +242,59 @@ test("AI routes mark the insertion point or selection in the whole document", as
     assert.equal((await rewrite(request({ text: "Body", prompt: "Shorten", before: "# Essay\n\n", after: "\n\nEnd" }))).status, 200);
     assert.match(calls.at(-1)!.messages[1].content, /^Full document, with the selected Markdown marked:\n<document>\n# Essay\n\n<<SELECTION START>>Body<<SELECTION END>>\n\nEnd\n<\/document>\n\nRewrite instruction:\nShorten\n\nSelected Markdown:\nBody$/);
     assert.match(calls.at(-1)!.messages[0].content, /<<SELECTION START>> and <<SELECTION END>>/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const key of keys) { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key]; }
+  }
+});
+
+test("AI Rewrite and Write with AI continue one cached thread per document", async () => {
+  const keys = ["OPENROUTER_API_KEY", "LIBERA_AI_REWRITE_MODEL", "LIBERA_AI_REWRITE_PROMPT_CACHING", "LIBERA_AI_WRITE_PROMPT_CACHING"];
+  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = "test-key";
+  process.env.LIBERA_AI_REWRITE_MODEL = "cache/rewrite";
+  delete process.env.LIBERA_AI_REWRITE_PROMPT_CACHING;
+  delete process.env.LIBERA_AI_WRITE_PROMPT_CACHING;
+  const calls: { session_id?: string; provider: { only?: string[] }; messages: { role: string; content: string | { text: string; cache_control?: object }[] }[] }[] = [];
+  let reply = "Short";
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/endpoints")) return Response.json({ data: { endpoints: [{ tag: "anthropic", supported_parameters: ["cache_control"] }] } });
+    calls.push(JSON.parse(String(init?.body)));
+    return Response.json({ choices: [{ message: { content: reply } }], usage: { prompt_tokens: 3000, completion_tokens: 5, prompt_tokens_details: { cached_tokens: calls.length > 1 ? 2800 : 0 } } });
+  };
+  const request = (body: unknown) => new NextRequest("http://localhost/api/ai-rewrite", { method: "POST", headers: { cookie: `${SESSION_COOKIE_NAME}=${createSessionToken()}` }, body: JSON.stringify(body) });
+  const text = (content: string | { text: string }[]) => typeof content === "string" ? content : content.map((part) => part.text).join("");
+  const long = "Lorem ipsum dolor sit amet.\n".repeat(200);
+  try {
+    const first = await (await rewrite(request({ text: "Body", prompt: "Shorten", before: `# Essay\n\n${long}`, after: "\n\nEnd", thread: { id: "thread-0001", turns: [] } }))).json();
+    assert.equal(first.rewrittenText, "Short");
+    assert.equal(first.thread.id, "thread-0001");
+    assert.equal(first.thread.caching, true);
+    assert.match(first.thread.turn.user, /^Full document, with the selected Markdown marked:\n<document>\n# Essay/);
+    assert.equal(first.thread.turn.assistant, "Short");
+    assert.equal(calls[0].session_id, "thread-0001", "sticky routing keeps the thread on one provider");
+    assert.deepEqual(calls[0].provider.only, ["anthropic"]);
+
+    reply = "New paragraph";
+    const second = await (await write(request({ prompt: "Add a conclusion", before: `# Essay\n\n${long}Short`, after: "\n\nEnd", thread: { id: "thread-0001", turns: [first.thread.turn] } }))).json();
+    assert.equal(second.markdown, "New paragraph");
+    assert.deepEqual(second.thread.usage, { inputTokens: 3000, outputTokens: 5, cachedTokens: 2800 });
+    const messages = calls[1].messages;
+    assert.deepEqual(messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
+    assert.equal(text(messages[0].content), text(calls[0].messages[0].content), "rewrite and write share one system prompt");
+    assert.equal(text(messages[1].content), first.thread.turn.user, "the first turn is replayed byte for byte");
+    const followUp = text(messages[3].content);
+    assert.match(followUp, /^Current text around the spot, with the insertion point marked:\n<excerpt>\n/);
+    assert.match(followUp, /Short<<INSERT HERE>>\n\nEnd\n<\/excerpt>/);
+    assert.ok(!followUp.includes("# Essay") && followUp.length < 4000, "follow-ups send only an excerpt, not the document again");
+    assert.ok(Array.isArray(messages[0].content) && messages[0].content.at(-1)?.cache_control, "explicit providers get cache breakpoints");
+
+    assert.equal((await rewrite(request({ text: "Body", prompt: "Shorten", thread: { id: "bad id!", turns: [] } }))).status, 400);
+    process.env.LIBERA_AI_REWRITE_PROMPT_CACHING = "false";
+    const uncached = await (await write(request({ prompt: "Add", thread: { id: "thread-0001", turns: [first.thread.turn] } }))).json();
+    assert.equal(uncached.thread.caching, false, "the client drops the thread when caching is off");
+    assert.equal(calls.at(-1)!.messages.length, 2, "no history is resent without caching");
   } finally {
     globalThis.fetch = originalFetch;
     for (const key of keys) { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key]; }

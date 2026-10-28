@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import type { Stats } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import type { ArchiveContents, GalleryAlbum, GalleryContents, GalleryPhoto } from "@/lib/image-generation";
+import { galleryImageSize } from "@/lib/image-generation";
 import { hasEdits, type PhotoEdits } from "@/lib/photo-edits";
 import { editedPhotoFormat, renderEditedPhoto } from "@/lib/photo-edits-server";
 import { StorageError } from "@/lib/storage/errors";
@@ -15,6 +17,18 @@ import { findAvailableFilePath, moveFileIfExists, movePath, pathExists } from "@
 import { assertSafeUserSegment, getDataRoot } from "@/lib/storage/paths";
 import { notifySearchChanges } from "@/lib/storage/search-updates";
 import { pruneGalleryChatPhotos } from "@/lib/storage/document-chat";
+import {
+  copyPhotoInk,
+  deletePhotoInk,
+  movePhotoInk,
+  photoEditedInPlace,
+  photoReverted,
+  readPhotoInk,
+  renderPhotoWithInk,
+  resolveChangedPhotoInk,
+  writePhotoInk,
+  type PhotoLocation,
+} from "@/lib/storage/gallery-ink";
 
 // libvips can keep source files open after metadata/thumbnail reads. Windows
 // then rejects deletes, moves and replacements of those photos with EBUSY.
@@ -106,6 +120,10 @@ function absolutePath(relative: string) {
 function protectedRoot() {
   return path.join(getGalleryRoot(), PROTECTED_DIR);
 }
+
+/** Where a photo's ink is kept (gallery-ink.ts): beside the gallery, or the Protected Archive. */
+const inkInGallery = (id: string): PhotoLocation => ({ root: getGalleryRoot(), id });
+const inkInArchive = (id: string): PhotoLocation => ({ root: protectedRoot(), id });
 
 function folderOf(relative: string) {
   const slash = relative.indexOf("/");
@@ -263,6 +281,7 @@ async function reconcile(index: GalleryIndex) {
 
   for (const id of missing) {
     await removeOriginal(index.photos[id]);
+    await deletePhotoInk(inkInGallery(id));
     delete index.photos[id];
   }
   for (const album of index.albums) album.photoIds = [...new Set(album.photoIds.filter((id) => index.photos[id]))];
@@ -270,6 +289,14 @@ async function reconcile(index: GalleryIndex) {
 }
 
 let queue: Promise<unknown> = Promise.resolve();
+let reconciledRoot = "";
+let reconciledAt = 0;
+let reconciledIdentity = "";
+
+async function indexIdentity() {
+  const stats = await stat(indexPath()).catch(() => null);
+  return stats ? `${stats.ino}:${stats.mtimeMs}:${stats.size}` : "";
+}
 const thumbnailReads = new Set<Promise<unknown>>();
 // Snapshots share this transient array so cleanup can append notices before returning.
 const deletionNotices = new WeakMap<GalleryIndex, string[]>();
@@ -283,8 +310,9 @@ function queuedThumbnail<T>(read: () => Promise<T>): Promise<T> {
   return task;
 }
 
-function thumbnailName(relative: string, stats: Pick<PhotoRecord, "size" | "mtimeMs">) {
-  return `${createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex")}.webp`;
+function thumbnailName(relative: string, stats: Pick<PhotoRecord, "size" | "mtimeMs">, size = THUMBNAIL_SIZE) {
+  const hash = createHash("sha1").update(`${relative}\0${stats.size}\0${stats.mtimeMs}`).digest("hex");
+  return `${hash}${size === THUMBNAIL_SIZE ? "" : `-${size}`}.webp`;
 }
 
 /** Cached previews are disposable; sweep old versions and pre-existing orphaned files. */
@@ -294,14 +322,17 @@ async function pruneThumbnails(records: Record<string, PhotoRecord>, root: strin
   try { entries = await readdir(directory, { withFileTypes: true }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   const current = new Set(Object.values(records).map((record) => thumbnailName(record.path, record)));
-  await Promise.all(entries.filter((entry) => entry.isFile() && /^[a-f0-9]{40}\.webp$/.test(entry.name) && !current.has(entry.name))
+  await Promise.all(entries.filter((entry) => entry.isFile() && /^[a-f0-9]{40}(?:-(?:160|320|1280|2048))?\.webp$/.test(entry.name) && !current.has(entry.name.replace(/-(160|320|1280|2048)(?=\.webp$)/, "")))
     .map((entry) => rm(path.join(directory, entry.name), { force: true })));
 }
 
 /** Run one gallery change at a time against a freshly reconciled index. */
-function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promise<T> {
+function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T, forceScan = false): Promise<T> {
   const reads = [...thumbnailReads];
   const next = queue.then(() => Promise.allSettled(reads)).then(async () => {
+    // A canceled HTTP reader may finish before its native image job releases
+    // the source file. Windows mutations must wait for those jobs too.
+    await Promise.allSettled([...renderingThumbnails.values()].map((job) => job.promise));
     const index = await loadIndex();
     const notices: string[] = [];
     deletionNotices.set(index, notices);
@@ -310,12 +341,15 @@ function withGallery<T>(change: (index: GalleryIndex) => Promise<T> | T): Promis
     const searchablePhotos = () => JSON.stringify(Object.entries(index.photos).map(([id, photo]) =>
       [id, photo.path, photo.size, photo.mtimeMs, photo.prompt]));
     const photosBefore = searchablePhotos();
-    await reconcile(index);
-    await reconcileArchive(index);
+    // Reuse recent scans during rapid UI changes. Explicit reads always scan.
+    const scan = forceScan || reconciledRoot !== getGalleryRoot() || Date.now() - reconciledAt > 1000 || reconciledIdentity !== await indexIdentity();
+    if (scan) { await reconcile(index); await reconcileArchive(index); }
     const result = await change(index);
     await pruneThumbnails(index.photos, getGalleryRoot());
     await pruneThumbnails(index.archive, protectedRoot());
     if (JSON.stringify(index) !== before) await saveIndex(index);
+    if (scan) { reconciledRoot = getGalleryRoot(); reconciledAt = Date.now(); }
+    reconciledIdentity = await indexIdentity();
     const remaining = new Set([...Object.keys(index.photos), ...Object.keys(index.archive)]);
     notices.push(...new Set([...idsBefore.filter((id) => !remaining.has(id)), ...await pruneGalleryChatPhotos(remaining)]));
     if (searchablePhotos() !== photosBefore) notifySearchChanges(undefined, true);
@@ -417,6 +451,7 @@ async function copyRecordInto(index: GalleryIndex, id: string, folder: string, n
     width: record.width,
     height: record.height,
   };
+  await copyPhotoInk(inkInGallery(id), inkInGallery(copyId), destination.path, null);
   return copyId;
 }
 
@@ -434,8 +469,26 @@ async function placeRecordIn(index: GalleryIndex, id: string, folder: string, { 
   return id;
 }
 
-export function getGallery() {
-  return withGallery(toContents);
+export function getGallery({ incremental = false } = {}) {
+  return withGallery(toContents, !incremental);
+}
+
+/** A detail read shares mutation ordering but never rescans every photo. */
+export function getGalleryPhotoDetails(id: string, archived = false) {
+  const next = queue.then(async () => {
+    const index = await loadIndex();
+    if (archived) {
+      const record = index.archive[id];
+      if (!record) throw new StorageError("That photo was not found.", 404);
+      return { root: protectedRoot(), albums: [], photos: [{ ...toPhoto(id, record, record.albumIds), path: `${PROTECTED_DIR}/${record.path}`, name: record.path, folder: record.folder, archivedAt: record.archivedAt }] };
+    }
+    const record = findPhoto(index, id);
+    const photo = toPhoto(id, record, index.albums.filter((album) => album.photoIds.includes(id)).map((album) => album.id));
+    const albums: GalleryAlbum[] = index.albums.map((album) => ({ id: album.id, name: album.name, folder: album.folder, count: album.photoIds.length, createdAt: album.createdAt }));
+    return { root: getGalleryRoot(), photos: [photo], albums };
+  });
+  queue = next.catch(() => undefined);
+  return next;
 }
 
 /** Create an album; its photos are moved into a new folder named after it. */
@@ -547,9 +600,9 @@ export function setPhotosStarred(ids: string[], starred: boolean) {
 }
 
 /** Thumbnails are keyed by the file's identity, inside `root` (the gallery or the archive). */
-async function thumbnailPathFor(relative: string, root = getGalleryRoot()) {
+async function thumbnailPathFor(relative: string, root = getGalleryRoot(), size = THUMBNAIL_SIZE) {
   const stats = await stat(path.join(root, ...relative.split("/")));
-  return path.join(root, THUMBNAILS_DIR, thumbnailName(relative, stats));
+  return path.join(root, THUMBNAILS_DIR, thumbnailName(relative, stats, size));
 }
 
 export function deletePhotos(ids: string[]) {
@@ -565,6 +618,7 @@ export function deletePhotos(ids: string[]) {
       if (!record) continue;
       await rm(absolutePath(record.path), { force: true });
       await removeOriginal(record);
+      await deletePhotoInk(inkInGallery(id));
       delete index.photos[id];
       deleted += 1;
     }
@@ -604,6 +658,7 @@ async function reconcileArchive(index: GalleryIndex) {
     });
     if (!stats?.isFile()) {
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      await deletePhotoInk(inkInArchive(id));
       delete index.archive[id];
     } else if (record.mtimeMs !== stats.mtimeMs || record.size !== stats.size) {
       Object.assign(record, { mtimeMs: stats.mtimeMs, size: stats.size }, await imageSize(path.join(protectedRoot(), record.path)));
@@ -629,6 +684,7 @@ export function archivePhotos(ids: string[]) {
       const destination = await findAvailableFilePath(protectedRoot(), path.posix.basename(record.path));
       await movePath(absolutePath(record.path), destination.path);
       const original = record.original ? await moveOriginal(record.original, getGalleryRoot(), protectedRoot()) : undefined;
+      await movePhotoInk(inkInGallery(id), inkInArchive(id));
       index.archive[id] = {
         ...record,
         path: destination.name,
@@ -646,7 +702,7 @@ export function archivePhotos(ids: string[]) {
 }
 
 export function getArchive() {
-  return withGallery(toArchiveContents);
+  return withGallery(toArchiveContents, true);
 }
 
 /** Put archived photos back in the folder and albums they came from, where those still exist. */
@@ -664,6 +720,7 @@ export function restoreArchivedPhotos(ids: string[]) {
         path: folder ? `${folder}/${destination.name}` : destination.name,
         original: record.original ? await moveOriginal(record.original, protectedRoot(), getGalleryRoot()) : undefined,
       };
+      await movePhotoInk(inkInArchive(id), inkInGallery(id));
       delete restoredRecord.archivedAt;
       delete restoredRecord.folder;
       delete restoredRecord.albumIds;
@@ -685,6 +742,7 @@ export function deleteArchivedPhotos(ids: string[]) {
       if (!record) continue;
       await rm(path.join(protectedRoot(), record.path), { force: true });
       if (record.original) await rm(path.join(protectedRoot(), ORIGINALS_DIR, record.original), { force: true });
+      await deletePhotoInk(inkInArchive(id));
       delete index.archive[id];
       deleted += 1;
     }
@@ -796,6 +854,8 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
         ...await imageSize(destination.path),
       };
       if (canChange) for (const album of index.albums) if (album.photoIds.includes(id)) album.photoIds.push(copyId);
+      // The copy keeps the photo's ink, moved with the crop and turns.
+      await copyPhotoInk(inkInGallery(id), inkInGallery(copyId), destination.path, edits);
       return { id: copyId, gallery: toContents(index) };
     }
 
@@ -822,6 +882,8 @@ export function editPhoto(id: string, edits: PhotoEdits, mode: "replace" | "copy
     if (nextRelative !== record.path) await rm(current, { force: true });
     const stats = await stat(absolutePath(nextRelative));
     Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    // Ink stays a layer: its view takes the edit's turns and crop (gallery-ink.ts).
+    await photoEditedInPlace(inkInGallery(id), absolutePath(nextRelative), edits);
     // The album's members see what was done (the watcher shares the edited file).
     if (shared) {
       void updateSharedAlbum(shared.projectId, { photos: [{ name: path.posix.basename(nextRelative), edits: edits as unknown as Record<string, unknown> }] })
@@ -856,6 +918,7 @@ export function revertPhoto(id: string) {
     if (previousOriginal && previousOriginal !== original) await removeOriginal(record);
     const stats = await stat(absolutePath(restored));
     Object.assign(record, { path: restored, original: undefined, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(restored)));
+    await photoReverted(inkInGallery(id), absolutePath(restored));
     return toContents(index);
   });
 }
@@ -870,21 +933,75 @@ async function readPhotoFile(photo: PhotoFile) {
   };
 }
 
-async function readThumbnail(photo: PhotoFile, root: string) {
-  // Vector images are already small and scale cleanly.
-  if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
-  const target = await thumbnailPathFor(photo.relative, root);
+type ThumbnailJob = { promise: Promise<{ name: string; body: Buffer; contentType: string }>; controller: AbortController; readers: number; settled: boolean };
+const renderingThumbnails = new Map<string, ThumbnailJob>();
+let activeThumbnailRenders = 0;
+const thumbnailRenderWaiters: Array<() => void> = [];
+
+async function acquireThumbnailRender(signal: AbortSignal) {
+  signal.throwIfAborted();
+  if (activeThumbnailRenders < 2) { activeThumbnailRenders++; return; }
+  await new Promise<void>((resolve, reject) => {
+    const ready = () => { signal.removeEventListener("abort", aborted); resolve(); };
+    const aborted = () => {
+      const index = thumbnailRenderWaiters.indexOf(ready);
+      if (index >= 0) thumbnailRenderWaiters.splice(index, 1);
+      reject(signal.reason);
+    };
+    thumbnailRenderWaiters.push(ready);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+async function renderThumbnail(photo: PhotoFile, target: string, size: number, signal: AbortSignal) {
+  await acquireThumbnailRender(signal);
   try {
-    return { name: photo.name, body: await readFile(target), contentType: "image/webp" };
-  } catch {
-    const body = await sharp(photo.absolute, { animated: false })
-      .rotate()
-      .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "inside", withoutEnlargement: true })
-      .webp({ quality: 78 })
-      .toBuffer();
+    signal.throwIfAborted();
+    const body = await sharp(photo.absolute, { animated: false }).rotate()
+      .resize(size, size, { fit: "inside", withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
+    signal.throwIfAborted();
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, body).catch(() => undefined);
     return { name: photo.name, body, contentType: "image/webp" };
+  } finally {
+    const next = thumbnailRenderWaiters.shift();
+    if (next) next(); else activeThumbnailRenders--;
+  }
+}
+
+async function readThumbnail(photo: PhotoFile, root: string, size = THUMBNAIL_SIZE, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  // Vector images are already small and scale cleanly.
+  if (path.extname(photo.name).toLowerCase() === ".svg") return readPhotoFile(photo);
+  const target = await thumbnailPathFor(photo.relative, root, size);
+  try {
+    return { name: photo.name, body: await readFile(target, { signal }), contentType: "image/webp" };
+  } catch {
+    signal?.throwIfAborted();
+    let job = renderingThumbnails.get(target);
+    if (!job || job.controller.signal.aborted) {
+      const controller = new AbortController();
+      const created: ThumbnailJob = { controller, readers: 0, settled: false, promise: null! };
+      created.promise = renderThumbnail(photo, target, size, controller.signal).finally(() => {
+        created.settled = true;
+        if (renderingThumbnails.get(target) === created) renderingThumbnails.delete(target);
+      });
+      job = created; renderingThumbnails.set(target, job);
+    }
+    const current = job;
+    current.readers++;
+    let aborted: (() => void) | undefined;
+    try {
+      return await (signal ? Promise.race([current.promise, new Promise<never>((_resolve, reject) => {
+        aborted = () => reject(signal.reason);
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+      })]) : current.promise);
+    } finally {
+      if (aborted) signal?.removeEventListener("abort", aborted);
+      current.readers--;
+      if (!current.readers && !current.settled) current.controller.abort();
+    }
   }
 }
 
@@ -893,10 +1010,10 @@ export async function readGalleryPhoto(photoPath: string) {
 }
 
 /** Thumbnails are cached by the file's identity on disk, so edits made anywhere show up. */
-export async function readGalleryThumbnail(photoPath: string) {
+export async function readGalleryThumbnail(photoPath: string, requestedSize = THUMBNAIL_SIZE, signal?: AbortSignal) {
   const photo = resolvePhotoPath(photoPath);
   const root = getGalleryRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize), signal));
 }
 
 /** Validate an archived photo's file name from a request. */
@@ -913,10 +1030,29 @@ export async function readArchivedPhoto(name: string) {
 }
 
 /** Archive thumbnails are cached inside the archive folder, never beside the gallery's. */
-export async function readArchivedThumbnail(name: string) {
+export async function readArchivedThumbnail(name: string, requestedSize = THUMBNAIL_SIZE, signal?: AbortSignal) {
   const photo = resolveArchivedPath(name);
   const root = protectedRoot();
-  return queuedThumbnail(() => readThumbnail(photo, root));
+  return queuedThumbnail(() => readThumbnail(photo, root, galleryImageSize(requestedSize), signal));
+}
+
+async function streamPhotoFile(photo: PhotoFile, signal?: AbortSignal) {
+  // Open before returning the response so missing files remain normal API errors.
+  const handle = await open(photo.absolute, "r");
+  try {
+    const stats = await handle.stat();
+    const stream = handle.createReadStream({ highWaterMark: 64 * 1024, autoClose: true, signal });
+    const body = Readable.toWeb(stream, { strategy: { highWaterMark: 64 * 1024, size: (chunk: Uint8Array) => chunk.byteLength } }) as ReadableStream<Uint8Array>;
+    return { name: photo.name, body, size: stats.size, contentType: CONTENT_TYPES[path.extname(photo.name).toLowerCase()] ?? "application/octet-stream" };
+  } catch (error) { await handle.close(); throw error; }
+}
+
+export function streamGalleryPhoto(photoPath: string, signal?: AbortSignal) {
+  return streamPhotoFile(resolvePhotoPath(photoPath), signal);
+}
+
+export function streamArchivedPhoto(name: string, signal?: AbortSignal) {
+  return streamPhotoFile(resolveArchivedPath(name), signal);
 }
 
 // ------------------------------------------------------------ sharing (collaboration)
@@ -1019,6 +1155,89 @@ export async function shareGalleryPhoto(photoId: string, options: ShareOptions =
 }
 
 /** Copies photos out of shared albums into this gallery, where they stay whatever happens to the album. */
+// ---- Ink (gallery-ink.ts) ------------------------------------------------------
+//
+// Reads and saves look the photo up in the index without the full gallery
+// scan withGallery makes: ink is saved every few seconds while drawing.
+
+/** A gallery photo's file and ink. Archived photos' ink stays behind the archive's lock: not here. */
+async function inkTarget(id: string) {
+  const index = await loadIndex();
+  const record = index.photos[id];
+  if (!record) throw new StorageError("Photo not found.", 404);
+  return { location: inkInGallery(id), absolute: absolutePath(record.path), edited: Boolean(record.original), record };
+}
+
+/** Shares the gallery's queue without a scan, so ink cannot race a move, edit or delete. */
+function withGalleryInk<T>(id: string, work: (target: Awaited<ReturnType<typeof inkTarget>>) => Promise<T>): Promise<T> {
+  const next = queue.then(async () => work(await inkTarget(id)));
+  queue = next.catch(() => undefined);
+  return next;
+}
+
+export function readGalleryPhotoInk(id: string) {
+  return withGalleryInk(id, (target) => readPhotoInk(target.location, target.absolute));
+}
+
+export function writeGalleryPhotoInk(id: string, ops: unknown) {
+  return withGalleryInk(id, (target) => {
+    if (path.extname(target.record.path).toLowerCase() === ".svg") throw new StorageError("Vector images cannot be drawn on here.");
+    return writePhotoInk(target.location, target.absolute, target.edited, ops);
+  });
+}
+
+export function resolveGalleryPhotoInk(id: string, action: "keep" | "discard") {
+  return withGalleryInk(id, async (target) => {
+    await resolveChangedPhotoInk(target.location, target.absolute, action);
+    return readPhotoInk(target.location, target.absolute);
+  });
+}
+
+/** The photo with its ink drawn on, for saving elsewhere; the photo is not changed. */
+export function exportGalleryPhotoWithInk(id: string) {
+  return withGalleryInk(id, async (target) => {
+    const { format, extension } = editedPhotoFormat(target.record.path);
+    const body = await renderPhotoWithInk(target.location, target.absolute, format);
+    if (!body) throw new StorageError("This photo has no ink.", 404);
+    const stem = path.posix.basename(target.record.path, path.extname(target.record.path));
+    return { name: `${stem} (with ink)${extension}`, body, contentType: CONTENT_TYPES[extension] ?? "application/octet-stream" };
+  });
+}
+
+/**
+ * Draws the ink into the photo itself, as an edit: the first original is kept
+ * so Revert brings the photo back without it. The ink layer is then cleared.
+ */
+export function flattenGalleryPhotoInk(id: string) {
+  return withGallery(async (index) => {
+    const record = findPhoto(index, id);
+    if (await sharedFolder(getGalleryRoot(), folderOf(record.path))) throw new StorageError("Ink cannot be drawn into a shared album's photo. Export it with ink instead.", 409);
+    const { format, extension } = editedPhotoFormat(record.path);
+    const body = await renderPhotoWithInk(inkInGallery(id), absolutePath(record.path), format);
+    if (!body) throw new StorageError("This photo has no ink.", 404);
+    const current = absolutePath(record.path);
+    if (!record.original) {
+      const backupName = `${id}${path.extname(record.path).toLowerCase()}`;
+      await mkdir(path.join(getGalleryRoot(), ORIGINALS_DIR), { recursive: true });
+      await copyFile(current, path.join(getGalleryRoot(), ORIGINALS_DIR, backupName));
+      record.original = backupName;
+    }
+    const nextRelative = withExtension(record.path, extension);
+    const temporary = `${absolutePath(nextRelative)}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, body);
+      await rename(temporary, absolutePath(nextRelative));
+    } finally {
+      await rm(temporary, { force: true });
+    }
+    if (nextRelative !== record.path) await rm(current, { force: true });
+    const stats = await stat(absolutePath(nextRelative));
+    Object.assign(record, { path: nextRelative, size: stats.size, mtimeMs: stats.mtimeMs }, await imageSize(absolutePath(nextRelative)));
+    await deletePhotoInk(inkInGallery(id));
+    return toContents(index);
+  });
+}
+
 export function savePhotosToGallery(ids: string[]) {
   return withGallery(async (index) => {
     const saved: string[] = [];

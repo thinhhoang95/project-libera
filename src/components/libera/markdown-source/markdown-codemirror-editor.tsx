@@ -1,42 +1,45 @@
 "use client";
 
 import { isolateHistory } from "@codemirror/commands";
-import { Compartment, EditorState, Prec, type ChangeSet } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { Compartment, EditorState, Prec, type ChangeSet, type Transaction } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { beginAiActivity } from "@/lib/ai-activity";
 import {
-  changeHeadingLevels, fileLinkDestinationAt, markdownFormatCommand, sourcePasteEdit, textareaEditSpec,
+  textareaEditSpec,
 } from "@/lib/markdown-codemirror/commands";
 import { setFindMatches } from "@/lib/markdown-codemirror/find";
 import { citationEditorHandlers, setCitationLibrary } from "@/lib/markdown-codemirror/citations";
 import { DOCUMENT_STYLE_REQUEST_EVENT, textChange, writeDocumentStyleForPath, type DocumentStyleRequestDetail } from "@/lib/references/document-style";
-import { citationTriggerAt, citedKeys as documentCitedKeys } from "@/lib/references/citation-syntax";
-import { citationInsertion, mayTriggerCitation, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
+import { citationInsertion, narrativeInsertionAllowed } from "@/lib/references/reference-suggestions";
 import type { Citation } from "@/lib/references/types";
 import { liberaMathMarkers } from "@/lib/markdown-codemirror/libera-syntax";
 import { markdownSourceSetup } from "@/lib/markdown-codemirror/setup";
-import type { CodeMirrorTextareaAdapter } from "@/lib/markdown-codemirror/textarea-adapter";
+import { normalizeSourceLineEndings, type CodeMirrorTextareaAdapter } from "@/lib/markdown-codemirror/textarea-adapter";
 import {
   markdownValueSync, minimalTextChange, rebaseTextChange, replacesWholeDocument,
 } from "@/lib/markdown-codemirror/value-sync";
-import { findTextMatches, replaceTextMatches, type TextMatch } from "@/lib/text-find";
 import type { MarkdownFileLinkSelection } from "@/components/libera/types";
-import { useCanvasViewStateCapture } from "../canvas-view-state";
 import { registerEditorSelectionReader } from "../editor-selection-registry";
 import {
-  MARKDOWN_SHORTCUT_FORMATS, changeSelectedHeadingLevels, findMarkdownImageInText, getClipboardImageFiles,
-  getDroppedImageFiles, hasImageDragItem, SOURCE_DRAFT_DELAY_MS,
-} from "../markdown-editor";
-import { MarkdownFileLinkPopup, buildMarkdownFileLinkSections, flattenMarkdownFileLinkSections } from "../markdown-file-link-popup";
+  changeSelectedHeadingLevels, getChangedTextRange, sourceClipboardContents, sourceDragKind, getDroppedImageFiles,
+  SELECTION_CHANGE_DEBOUNCE_MS, handleSourceKey, fileLinkPopupKey, refreshSourcePopupOnKeyUp,
+  sourceFileLinkContext, sameFileLinkPopup, sourceHeadingLinkEdit, sourceCitationContext, sameCitationPopup,
+  sourcePasteEdit, sourcePasteMode, sourceFormatEdit, sourceSelectionAfterChange, type FileLinkPopupContext, type CitationPopupContext, type SourceKey, type HeadingLevelChangeDirection,
+} from "@/lib/markdown-source";
+import { MarkdownFileLinkPopup, MarkdownHeadingLinkPopup, buildMarkdownFileLinkSections, flattenMarkdownFileLinkSections } from "../markdown-file-link-popup";
 import { useCodeMirrorReview } from "../use-editor-review";
-import { MarkdownSourceContextMenu, sourceContextMenuPosition, type SourceContextMenuState } from "./markdown-source-context-menu";
+import { MarkdownSourceContextMenu, sourceContextMenuState, type SourceContextMenuState } from "./markdown-source-context-menu";
 import { MarkdownSourceFindBar } from "./markdown-source-find-bar";
+import { useMarkdownSourceDraft } from "./use-markdown-source-draft";
+import { useMarkdownSourceFind } from "./use-markdown-source-find";
+import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
+import { filterMarkdownHeadingAnchors, type MarkdownHeadingAnchor } from "@/lib/markdown-heading-anchors";
 import {
-  CitationPopup, citationPopupPosition, openCitationAttachment, useSingleCitationDocument, type CitationPopupHandle,
+  CitationPopup, openCitationAttachment, useEditorCitationHover, useSingleCitationDocument, type CitationPopupHandle,
 } from "../references/citation-popup";
 import { CitationCardItems } from "../references/citation-hover-card";
 import { referenceKeyResolver, useReferenceRender } from "../references/reference-render-context";
@@ -44,8 +47,9 @@ import { droppedQuoteMarkdown, hasPdfQuoteDrag, pdfQuoteFromDrop } from "../refe
 import { quoteBlockInsertion } from "@/lib/references/pdf-quote";
 import type { MarkdownSourceEditorProps } from "./types";
 import { speakMarkdown } from "@/lib/tts/player";
-import { headingNumberingExtension, headingNumberingSpec } from "@/lib/markdown-codemirror/heading-numbering";
+import { headingNumberingSpec, headingNumberingTransactions, isHeadingNumberingEdit } from "@/lib/markdown-codemirror/heading-numbering";
 import { detectMarkdownHeadingNumbering } from "@/lib/markdown-heading-numbering";
+import { codeMirrorReflowAdapter, keepScrollOnReflow } from "@/lib/reflow-scroll-anchor";
 import { useHeadingNumbering } from "../heading-numbering-state";
 import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
 
@@ -54,20 +58,6 @@ import { readClipboardText, type MenuPasteMode } from "../paste-menu-items";
  * stands behind the workspace's textarea ref through `adapter`, so the shared
  * toolbar, outline, slides, snipping and scroll sync drive it unchanged. */
 
-const SELECTION_CHANGE_DEBOUNCE_MS = 120;
-const PUBLISHED_DRAFT_MEMORY = 20;
-const FILE_LINK_POPUP_WIDTH = 384;
-const FILE_LINK_POPUP_HEIGHT = 384;
-
-type FileLinkPopupContext = {
-  destinationEnd: number;
-  destinationStart: number;
-  query: string;
-  x: number;
-  y: number;
-};
-
-type CitationPopupContext = { from: number; to: number; query: string; insideCitation: boolean; citedKeys: string[]; x: number; y: number; before: string };
 type CitationTooltip = { id: number; dom: HTMLElement; citation: Citation };
 
 /** The shared citation card's contents, inside a CodeMirror hover tooltip. */
@@ -75,8 +65,6 @@ function CitationTooltipContent({ citation }: { citation: Citation }) {
   const document = useSingleCitationDocument(citation);
   return <CitationCardItems citation={citation} document={document} />;
 }
-
-type FindState = { open: boolean; query: string; replacement: string; wildcards: boolean; active: number; text: string };
 
 /** The document position under a pointer event, or null when layout is not
  * available (a hidden pane); callers then keep the current selection. */
@@ -87,10 +75,6 @@ function positionAt(view: EditorView, event: MouseEvent) {
     return null;
   }
 }
-
-const sameFileLinkPopup = (left: FileLinkPopupContext | null, right: FileLinkPopupContext | null) =>
-  left?.destinationEnd === right?.destinationEnd && left?.destinationStart === right?.destinationStart &&
-  left?.query === right?.query && left?.x === right?.x && left?.y === right?.y;
 
 export function MarkdownCodeMirrorEditor({
   adapter,
@@ -125,10 +109,13 @@ export function MarkdownCodeMirrorEditor({
   const viewRef = useRef<EditorView | null>(null);
   const [view, setView] = useState<EditorView | null>(null);
   const [contextMenu, setContextMenu] = useState<SourceContextMenuState | null>(null);
+  const contextMenuOpenRef = useRef(false);
+  const clearReviewSelectionRef = useRef(() => {});
+  useLayoutEffect(() => { contextMenuOpenRef.current = contextMenu !== null; }, [contextMenu]);
   const [draggingImage, setDraggingImage] = useState(false);
-  const [find, setFind] = useState<FindState>({ open: false, query: "", replacement: "", wildcards: false, active: 0, text: "" });
-  const findRef = useRef(find);
-  const findInputRef = useRef<HTMLInputElement>(null);
+  const [findText, setFindText] = useState(value);
+  const findOpenRef = useRef(false);
+  const [sourceTextareaRef] = useState(() => ({ current: adapter.asTextarea() }));
   const [fileLinkPopup, setFileLinkPopup] = useState<FileLinkPopupContext | null>(null);
   const [activeFileLinkIndex, setActiveFileLinkIndex] = useState(0);
   const fileLinkPopupRef = useRef<FileLinkPopupContext | null>(null);
@@ -142,34 +129,27 @@ export function MarkdownCodeMirrorEditor({
   const citationPopupHandleRef = useRef<CitationPopupHandle>(null);
   const [citationTooltips, setCitationTooltips] = useState<CitationTooltip[]>([]);
   const referenceRender = useReferenceRender();
+  const citationHover = useEditorCitationHover();
   const referenceRenderRef = useRef(referenceRender);
   useLayoutEffect(() => { referenceRenderRef.current = referenceRender; }, [referenceRender]);
 
   // Draft flow (same contract as the textarea editor and the LaTeX editor).
-  const lastPublishedRef = useRef(value);
-  const publishedDraftsRef = useRef<string[]>([]);
-  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
   // Changes since `lastPublishedRef`, to rebase outside values in external mode.
   const changesSinceBaseRef = useRef<ChangeSet | null>(null);
   const pendingValueRef = useRef<string | null>(null);
   const previousFilePathRef = useRef(activeFilePath);
   const initialRef = useRef({ value, documentSource, mathMarkers, extensions });
-  const extensionsCompartment = useRef(new Compartment()).current;
-  const mathCompartment = useRef(new Compartment()).current;
+  const [extensionsCompartment] = useState(() => new Compartment());
+  const [mathCompartment] = useState(() => new Compartment());
 
   const latest = useRef({ onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null });
   // Keymaps are built once with the view; they call the current handlers.
-  const handlersRef = useRef<{
-    chooseActiveFileLink: () => boolean;
-    moveFileLinkSelection: (step: number) => boolean;
-    openFind: (query?: string) => void;
-  }>({ chooseActiveFileLink: () => false, moveFileLinkSelection: () => false, openFind: () => {} });
+  const handlersRef = useRef<{ key: (event: SourceKey) => boolean }>({ key: () => false });
   useLayoutEffect(() => {
     latest.current = { onChange, onSelectionChange, onInsertImageFile, onViewChange, smartPaste, mathMarkers, referenceNotebook: referenceRender?.notebook ?? null };
   });
-  useLayoutEffect(() => { findRef.current = find; }, [find]);
-  // Structural heading numbering, read by the view's transaction filter.
+  // Structural heading numbering, read by the view's dispatch handler.
   // Switching it on (or changing its title setting) renumbers now; opening a
   // document never edits it.
   const headingNumbering = useHeadingNumbering(activeFilePath, () => detectMarkdownHeadingNumbering(value));
@@ -182,33 +162,11 @@ export function MarkdownCodeMirrorEditor({
     if (spec) view.dispatch({ ...spec, userEvent: "input.numbering" });
   }, [headingNumbering, view]);
 
-  /** Publishes the live text as the tab draft now, and returns it. This is the
-   * reader registered with the workspace (`getTabDraft`). */
-  const readDraft = useCallback(() => {
-    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
-    draftTimerRef.current = null;
-    const current = viewRef.current;
-    if (!current) return lastPublishedRef.current;
-    const text = current.state.doc.toString();
-    if (text !== lastPublishedRef.current) {
-      lastPublishedRef.current = text;
-      changesSinceBaseRef.current = null;
-      publishedDraftsRef.current.push(text);
-      if (publishedDraftsRef.current.length > PUBLISHED_DRAFT_MEMORY) publishedDraftsRef.current.shift();
-      latest.current.onChange(text);
-    }
-    return text;
-  }, []);
-
-  const schedulePublish = useCallback(() => {
-    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
-    // Keep workspace, outline and review renders out of the typing path; they
-    // read the exact live draft through `readDraft` whenever they need it.
-    draftTimerRef.current = setTimeout(function publishAfterPause() {
-      if (viewRef.current?.composing) draftTimerRef.current = setTimeout(publishAfterPause, SOURCE_DRAFT_DELAY_MS);
-      else startTransition(() => { readDraft(); });
-    }, SOURCE_DRAFT_DELAY_MS);
-  }, [readDraft]);
+  const { readDraft, schedulePublish, lastPublishedRef, publishedDraftsRef, draftTimerRef } = useMarkdownSourceDraft(value, {
+    readText: () => viewRef.current?.state.doc.toString() ?? null,
+    isComposing: () => !!viewRef.current?.compositionStarted,
+    onChange, onPublish: () => { changesSinceBaseRef.current = null; }, onRegisterDraft,
+  });
 
   const emitSelection = useCallback(() => {
     const current = viewRef.current;
@@ -251,54 +209,24 @@ export function MarkdownCodeMirrorEditor({
   const refreshCitationPopup = useCallback(() => {
     const current = viewRef.current;
     const previous = citationPopupRef.current;
-    let next: CitationPopupContext | null = null;
-    if (current?.hasFocus && current.state.selection.main.empty && !fileLinkPopupRef.current) {
-      const cursor = current.state.selection.main.head;
-      if (mayTriggerCitation(current.state.sliceDoc(Math.max(0, cursor - 260), cursor))) {
-        const text = current.state.doc.toString();
-        const mathMarkers = latest.current.mathMarkers;
-        const trigger = citationTriggerAt(text, cursor, { mathMarkers });
-        const dismissed = citationInsertedRef.current;
-        // The `@key` a choice just inserted is not a new query: stay closed until the caret leaves it.
-        if (!(trigger && dismissed && dismissed.from === trigger.from && dismissed.query === trigger.query)) {
-          citationInsertedRef.current = null;
-          if (trigger) {
-            const same = previous?.from === trigger.from;
-            next = {
-              from: trigger.from,
-              to: cursor,
-              query: trigger.query,
-              insideCitation: trigger.insideCitation,
-              citedKeys: same ? previous.citedKeys : documentCitedKeys(text, { mathMarkers, resolves: citationResolverRef.current }),
-              ...(same ? { x: previous.x, y: previous.y } : citationPopupPosition(adapter.clientPointForOffset(trigger.from))),
-              before: trigger.from > 0 ? text[trigger.from - 1] : "",
-            };
-          }
-        }
-      } else citationInsertedRef.current = null;
-    }
-    if (previous && next && previous.from === next.from && previous.to === next.to && previous.query === next.query && previous.insideCitation === next.insideCitation) return;
-    if (!previous && !next) return;
-    citationPopupRef.current = next;
-    setCitationPopup(next);
+    const text = current?.state.doc.toString() ?? "";
+    const selection = current?.state.selection.main;
+    const result = sourceCitationContext(text, selection?.from ?? 0, selection?.to ?? 0, {
+      fileLinkOpen: !!fileLinkPopupRef.current, previous, inserted: citationInsertedRef.current,
+      mathMarkers: latest.current.mathMarkers, resolves: citationResolverRef.current,
+      point: (offset) => adapter.clientPointForOffset(offset),
+    });
+    citationInsertedRef.current = result.inserted;
+    if (sameCitationPopup(previous, result.popup)) return;
+    citationPopupRef.current = result.popup;
+    setCitationPopup(result.popup);
   }, [adapter]);
 
   const refreshFileLinkPopup = useCallback(() => {
     const current = viewRef.current;
-    let next: FileLinkPopupContext | null = null;
-    if (current?.hasFocus && current.state.selection.main.empty) {
-      const cursor = current.state.selection.main.head;
-      const context = fileLinkDestinationAt(current.state.doc.toString(), cursor);
-      if (context) {
-        const point = adapter.clientPointForOffset(cursor);
-        const width = Math.min(FILE_LINK_POPUP_WIDTH, window.innerWidth - 16);
-        next = {
-          ...context,
-          x: Math.max(8, Math.min(point.x, window.innerWidth - width - 8)),
-          y: Math.max(8, Math.min(point.y + 6, window.innerHeight - FILE_LINK_POPUP_HEIGHT - 8)),
-        };
-      }
-    }
+    const selection = current?.state.selection.main;
+    const next = current && selection ? sourceFileLinkContext(current.state.doc.toString(), selection.from, selection.to,
+      fileLinkPopupRef.current, () => adapter.clientPointForOffset(selection.head)) : null;
     const previous = fileLinkPopupRef.current;
     if (next?.query !== previous?.query) setActiveFileLinkIndex(0);
     if (sameFileLinkPopup(previous, next)) return;
@@ -318,9 +246,10 @@ export function MarkdownCodeMirrorEditor({
   /** Applies a whole text coming from outside the editor (workspace draft,
    * review result) without replacing the document. */
   const applyIncomingText = useCallback((text: string, source: "value" | "review") => {
+    text = normalizeSourceLineEndings(text);
     const current = viewRef.current;
     if (!current) return;
-    if (current.composing) {
+    if (current.compositionStarted) {
       // Never rewrite text under an active IME composition; apply when it ends.
       pendingValueRef.current = text;
       return;
@@ -357,56 +286,38 @@ export function MarkdownCodeMirrorEditor({
     if (change) current.dispatch({ changes: change, annotations });
     lastPublishedRef.current = text;
     changesSinceBaseRef.current = null;
-  }, [readDraft]);
+  }, [readDraft, draftTimerRef, lastPublishedRef, publishedDraftsRef]);
+
+  function applyEdit(edit: Parameters<typeof textareaEditSpec>[1]) {
+    replaceTextareaSelectionWithUndo(adapter.asTextarea(), { ...edit, scrollTop: adapter.scrollTop, scrollLeft: adapter.scrollLeft });
+  }
 
   // Create the view once. Later prop changes reconfigure it in place.
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const initial = initialRef.current;
+    let compositionEdit: Transaction | null = null;
     const closeMenus = () => {
       setContextMenu(null);
       closeFileLinkPopup();
     };
-    const formatKeys = Object.entries(MARKDOWN_SHORTCUT_FORMATS).map(([key, format]) => ({
-      key: `Mod-${key}`,
-      run: (target: EditorView) => {
-        closeMenus();
-        markdownFormatCommand(format)(target);
-        readDraft();
-        return true;
-      },
-    }));
-    const headingKey = (direction: "indent" | "unindent") => (target: EditorView) => {
-      if (!changeHeadingLevels(target, direction)) return false;
-      closeMenus();
-      readDraft();
-      return true;
-    };
-    const popupOpen = () => fileLinkPopupRef.current !== null;
-    const citationKey = (key: string, shiftKey = false) => () => citationPopupRef.current !== null && (citationPopupHandleRef.current?.handleKey({ key, shiftKey }) ?? false);
-
     const state = EditorState.create({
       doc: initial.value,
       extensions: [
-        // The citation popup takes the arrows, Enter (Shift+Enter: narrative), Tab and Escape while open.
-        Prec.highest(keymap.of([
-          ...["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].map((key) => ({ key, run: citationKey(key) })),
-          { key: "Shift-Enter", run: citationKey("Enter", true) },
-        ])),
-        // The file-link picker takes the arrows, Enter and Escape while open.
-        Prec.highest(keymap.of([
-          { key: "Escape", run: () => { if (!popupOpen()) return false; closeFileLinkPopup(); return true; } },
-          { key: "ArrowDown", run: () => handlersRef.current.moveFileLinkSelection(1) },
-          { key: "ArrowUp", run: () => handlersRef.current.moveFileLinkSelection(-1) },
-          { key: "Enter", run: () => handlersRef.current.chooseActiveFileLink() },
-        ])),
-        Prec.high(keymap.of([
-          ...formatKeys,
-          { key: "Tab", run: headingKey("indent") },
-          { key: "Shift-Tab", run: headingKey("unindent") },
-          { key: "Mod-f", run: () => { handlersRef.current.openFind(); return true; } },
-        ])),
+        Prec.highest(EditorView.domEventHandlers({
+          keydown: (event) => {
+            if (!handlersRef.current.key(event)) return false;
+            event.preventDefault();
+            return true;
+          },
+          keyup: (event) => {
+            if (event.key !== "Escape") scheduleSelection();
+            if (refreshSourcePopupOnKeyUp(event.key)) scheduleFileLinkPopupRefresh();
+            return false;
+          },
+          click: () => { scheduleFileLinkPopupRefresh(); scheduleSelection(); return false; },
+        })),
         markdownSourceSetup(),
         mathCompartment.of(liberaMathMarkers.of(initial.mathMarkers ?? {})),
         EditorView.updateListener.of((update) => {
@@ -415,16 +326,17 @@ export function MarkdownCodeMirrorEditor({
               ? changesSinceBaseRef.current.compose(update.changes)
               : update.changes;
             const fromOutside = update.transactions.every((tr) => !tr.docChanged || tr.annotation(markdownValueSync));
+            if (!fromOutside) clearReviewSelectionRef.current();
             // In value mode, text applied from the workspace is already its draft.
             if (initial.documentSource === "external" || !fromOutside) schedulePublish();
-            if (findRef.current.open) {
+            if (findOpenRef.current || contextMenuOpenRef.current) {
               const text = update.state.doc.toString();
-              setFind((currentFind) => ({ ...currentFind, text }));
+              setFindText(text);
             }
           }
           if (update.docChanged || update.selectionSet) {
             scheduleSelection();
-            scheduleFileLinkPopupRefresh();
+            if (update.docChanged) scheduleFileLinkPopupRefresh();
           }
           if (update.focusChanged) {
             if (update.view.hasFocus) scheduleFileLinkPopupRefresh();
@@ -439,33 +351,30 @@ export function MarkdownCodeMirrorEditor({
             const data = event.clipboardData;
             if (!data) return false;
             const { from, to } = target.state.selection.main;
-            const images = getClipboardImageFiles(data);
-            if (images.length) {
+            const contents = sourceClipboardContents(data);
+            if (contents.kind === "image") {
               event.preventDefault();
               closeMenus();
-              void latest.current.onInsertImageFile(images[0], { start: from, end: to });
+              void latest.current.onInsertImageFile(contents.image, { start: from, end: to });
               return true;
             }
-            const markdown = data.getData("text/markdown");
-            const edit = sourcePasteEdit(target.state.doc.toString(), { start: from, end: to }, {
-              markdown,
-              html: markdown ? "" : data.getData("text/html"),
-              plain: data.getData("text/plain"),
-            }, { mathMarkers: latest.current.mathMarkers, smartPaste: latest.current.smartPaste ? "child" : false });
+            const edit = sourcePasteEdit(target.state.doc.toString(), { start: from, end: to }, contents.clipboard, { mathMarkers: latest.current.mathMarkers, smartPaste: sourcePasteMode(latest.current.smartPaste) });
             if (!edit) return false;
             event.preventDefault();
             closeMenus();
-            target.dispatch({ ...textareaEditSpec(target.state, edit), userEvent: "input.paste", scrollIntoView: true });
+            applyEdit(edit);
             readDraft();
+            window.requestAnimationFrame(() => { emitSelection(); scheduleFileLinkPopupRefresh(); });
             return true;
           },
           dragover: (event) => {
-            if (hasPdfQuoteDrag(event.dataTransfer)) {
+            const kind = sourceDragKind(event.dataTransfer, hasPdfQuoteDrag(event.dataTransfer));
+            if (kind === "quote") {
               event.preventDefault();
               event.dataTransfer!.dropEffect = "copy";
               return true;
             }
-            if (!event.dataTransfer || !hasImageDragItem(event.dataTransfer)) return false;
+            if (!event.dataTransfer || kind !== "image") return false;
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
             setDraggingImage(true);
@@ -485,8 +394,7 @@ export function MarkdownCodeMirrorEditor({
               void droppedQuoteMarkdown(quote, latest.current.referenceNotebook).then((markdown) => {
                 if (!markdown || viewRef.current !== target) return;
                 const insertion = quoteBlockInsertion(target.state.doc.toString(), offset, markdown);
-                target.dispatch({ changes: { from: insertion.from, insert: insertion.text }, selection: { anchor: insertion.caret }, userEvent: "input.drop", scrollIntoView: true });
-                target.focus();
+                applyEdit({ selectionStart: insertion.from, selectionEnd: insertion.from, replacement: insertion.text, nextSelectionStart: insertion.caret, nextSelectionEnd: insertion.caret });
                 readDraft();
               });
               return true;
@@ -508,31 +416,31 @@ export function MarkdownCodeMirrorEditor({
               from = to = pos;
               target.dispatch({ selection: { anchor: pos } });
             }
-            const text = target.state.doc.toString();
-            const hasText = !!text.slice(from, to).trim();
-            const image = findMarkdownImageInText(text, from, to);
-            setContextMenu({
-              ...sourceContextMenuPosition(event.clientX, event.clientY, hasText, !!image),
-              start: from,
-              end: to,
-              hasText,
-              image,
-              canIndent: from !== to && changeSelectedHeadingLevels(text, from, to, "indent").changed,
-              canUnindent: from !== to && changeSelectedHeadingLevels(text, from, to, "unindent").changed,
-            });
+            setFindText(target.state.doc.toString());
+            setContextMenu(sourceContextMenuState(target.state.doc.toString(), from, to, event.clientX, event.clientY));
             return true;
           },
           compositionend: () => {
             // CodeMirror finishes the composition after this event.
             window.setTimeout(() => {
+              const current = viewRef.current;
+              if (!current || current.compositionStarted) return;
               const pending = pendingValueRef.current;
-              if (pending !== null && pending !== viewRef.current?.state.doc.toString()) applyIncomingText(pending, "value");
+              if (pending !== null && pending !== current.state.doc.toString()) applyIncomingText(pending, "value");
+              else if (compositionEdit) {
+                const main = current.state.selection.main;
+                const shrunk = compositionEdit.newDoc.length < compositionEdit.startState.doc.length;
+                const spec = headingNumberingSpec(current.state, headingNumberingRef.current, shrunk && main.empty ? main.head : undefined);
+                if (spec) current.dispatch(spec);
+              }
+              compositionEdit = null;
               pendingValueRef.current = null;
             }, 0);
             return false;
           },
         }),
         citationEditorHandlers.of({
+          pointer: citationHover.show,
           hover: (dom, citation) => {
             const id = Math.random();
             // Render synchronously so CodeMirror measures the tooltip with its content.
@@ -542,13 +450,27 @@ export function MarkdownCodeMirrorEditor({
           },
           open: (citation) => openCitationAttachment(referenceRenderRef.current, citation),
         }),
-        headingNumberingExtension(() => headingNumberingRef.current),
         extensionsCompartment.of(initial.extensions ?? []),
       ],
     });
 
-    const created = new EditorView({ state, parent: host });
+    const created = new EditorView({
+      state,
+      parent: host,
+      dispatchTransactions: (transactions, target) => {
+        if (target.compositionStarted) {
+          const edit = transactions.filter((tr) => tr.docChanged).at(-1);
+          if (edit) compositionEdit = isHeadingNumberingEdit(edit) ? edit : null;
+          target.update(transactions);
+        } else {
+          if (transactions.some((tr) => tr.docChanged)) compositionEdit = null;
+          target.update(headingNumberingTransactions(transactions, headingNumberingRef.current));
+        }
+      },
+    });
     viewRef.current = created;
+    // Side panels and window resizes rewrap long lines; hold the reader's place.
+    const releaseReflow = keepScrollOnReflow(created.scrollDOM, codeMirrorReflowAdapter(created));
     adapter.attach(created, {
       applyEdit: (edit) => created.dispatch(textareaEditSpec(created.state, edit)),
       applyValue: (text) => applyIncomingText(text, "value"),
@@ -574,23 +496,13 @@ export function MarkdownCodeMirrorEditor({
       latest.current.onSelectionChange?.({ start: from, end: to });
       if (fileLinkFrameRef.current !== null) window.cancelAnimationFrame(fileLinkFrameRef.current);
       latest.current.onViewChange?.(null);
+      releaseReflow();
       adapter.detach();
       created.destroy();
       viewRef.current = null;
     };
     // The view is created once per mount; everything it calls is read through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useLayoutEffect(() => {
-    const unregister = onRegisterDraft?.(readDraft);
-    window.addEventListener("pagehide", readDraft);
-    return () => { readDraft(); unregister?.(); window.removeEventListener("pagehide", readDraft); };
-  }, [onRegisterDraft, readDraft]);
-  useCanvasViewStateCapture(readDraft);
-
-  useEffect(() => () => {
-    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
   }, []);
 
   // Adopt outside changes to the draft, ignoring echoes of drafts this editor
@@ -611,7 +523,7 @@ export function MarkdownCodeMirrorEditor({
       return;
     }
     applyIncomingText(value, "value");
-  }, [activeFilePath, value, applyIncomingText]);
+  }, [activeFilePath, value, applyIncomingText, lastPublishedRef, publishedDraftsRef]);
 
   useEffect(() => {
     if (view) view.dispatch({ effects: extensionsCompartment.reconfigure(extensions ?? []) });
@@ -631,12 +543,16 @@ export function MarkdownCodeMirrorEditor({
       const text = view.state.doc.toString();
       const next = writeDocumentStyleForPath(activeFilePath, text, detail.style);
       if (next === text) return;
-      view.dispatch({ changes: textChange(text, next), annotations: isolateHistory.of("full"), userEvent: "input" });
+      const change = textChange(text, next);
+      applyEdit({ selectionStart: change.from, selectionEnd: change.to, replacement: change.insert,
+        ...sourceSelectionAfterChange(adapter.selectionStart, adapter.selectionEnd, change) });
       readDraft();
     };
     window.addEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
     return () => window.removeEventListener(DOCUMENT_STYLE_REQUEST_EVENT, onRequest);
-  }, [view, activeFilePath, readDraft]);
+    // applyEdit uses the stable textarea adapter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, activeFilePath, readDraft, adapter]);
 
   // Citation chips mark keys the notebook's library does not know.
   const citationLibraryKeys = referenceRender?.library ? referenceRender.entriesByKey : null;
@@ -650,128 +566,37 @@ export function MarkdownCodeMirrorEditor({
   // Review mode: comment anchors, agentic-review suggestions, the comment
   // gesture and read-only locking come from the shared CodeMirror review hook.
   const applyReviewText = useCallback((text: string) => applyIncomingText(text, "review"), [applyIncomingText]);
-  useCodeMirrorReview(view, applyReviewText);
+  const review = useCodeMirrorReview(view, applyReviewText, sourceTextareaRef);
+  useLayoutEffect(() => { clearReviewSelectionRef.current = () => review?.clearSelection(); }, [review]);
 
   const aiWorking = formatting || imageConverting;
   useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
 
   // Find and Replace ---------------------------------------------------------
 
-  const matches = useMemo(
-    () => (find.open ? findTextMatches(find.text, find.query, { wildcards: find.wildcards }) : []),
-    [find.open, find.text, find.query, find.wildcards],
-  );
-  const activeMatch = matches.length ? ((find.active % matches.length) + matches.length) % matches.length : 0;
-
+  const find = useMarkdownSourceFind({
+    text: findText, textareaRef: sourceTextareaRef, readText: () => adapter.value, updateText: setFindText,
+    commitText: (textarea, text) => { textarea.value = text; }, readDraft, closeContextMenu: () => setContextMenu(null),
+  });
+  useLayoutEffect(() => { findOpenRef.current = find.open; }, [find.open]);
+  const matches = find.matches;
+  const activeMatch = matches.length ? (find.active + matches.length) % matches.length : 0;
   useEffect(() => {
-    if (!view) return;
-    view.dispatch({ effects: setFindMatches.of({ matches: find.open ? matches : [], active: activeMatch }) });
-  }, [view, find.open, matches, activeMatch]);
-
-  function selectMatch(index: number, list: TextMatch[]) {
-    if (!list.length) return;
-    const normalized = ((index % list.length) + list.length) % list.length;
-    const match = list[normalized];
-    setFind((current) => ({ ...current, active: normalized }));
-    window.requestAnimationFrame(() => {
-      viewRef.current?.dispatch({
-        selection: { anchor: match.start, head: match.end },
-        effects: EditorView.scrollIntoView(match.start, { y: "center" }),
-      });
-    });
-  }
-
-  function openFind(nextQuery?: string) {
-    const current = viewRef.current;
-    if (!current) return;
-    const text = current.state.doc.toString();
-    const { from, to } = current.state.selection.main;
-    const selected = text.slice(from, to);
-    const query = nextQuery ?? (selected.includes("\n") ? "" : selected);
-    setContextMenu(null);
-    setFind((previous) => ({ ...previous, open: true, text, ...(query ? { query, active: 0 } : {}) }));
-    if (query) selectMatch(0, findTextMatches(text, query, { wildcards: findRef.current.wildcards }));
-    window.requestAnimationFrame(() => {
-      findInputRef.current?.focus();
-      findInputRef.current?.select();
-    });
-  }
-
-  function closeFind() {
-    const current = viewRef.current;
-    const scrollTop = current?.scrollDOM.scrollTop ?? 0;
-    const scrollLeft = current?.scrollDOM.scrollLeft ?? 0;
-    setFind((previous) => ({ ...previous, open: false }));
-    current?.focus();
-    window.requestAnimationFrame(() => {
-      if (!current) return;
-      // Focusing must not move the viewport the user was reading.
-      current.scrollDOM.scrollTop = scrollTop;
-      current.scrollDOM.scrollLeft = scrollLeft;
-    });
-  }
-
-  function updateFindQuery(query: string) {
-    const list = findTextMatches(find.text, query, { wildcards: find.wildcards });
-    setFind((current) => ({ ...current, query, active: 0 }));
-    if (list.length) selectMatch(0, list);
-  }
-
-  function updateWildcards(wildcards: boolean) {
-    const list = findTextMatches(find.text, find.query, { wildcards });
-    setFind((current) => ({ ...current, wildcards, active: 0 }));
-    if (list.length) selectMatch(0, list);
-  }
-
-  function replaceMatches(list: TextMatch[]) {
-    const current = viewRef.current;
-    if (!current || !list.length) return;
-    const text = current.state.doc.toString();
-    const first = list[0];
-    const last = list.at(-1)!;
-    const replacement = replaceTextMatches(
-      text.slice(first.start, last.end),
-      list.map((match) => ({ start: match.start - first.start, end: match.end - first.start })),
-      find.replacement,
-    );
-    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    current.dispatch(textareaEditSpec(current.state, {
-      selectionStart: first.start,
-      selectionEnd: last.end,
-      replacement,
-      nextSelectionStart: first.start + replacement.length,
-      nextSelectionEnd: first.start + replacement.length,
-    }));
-    readDraft();
-    const nextText = current.state.doc.toString();
-    const nextList = findTextMatches(nextText, find.query, { wildcards: find.wildcards });
-    const nextOffset = first.start + find.replacement.length;
-    const nextIndex = list.length === 1 ? Math.max(0, nextList.findIndex((match) => match.start >= nextOffset)) : 0;
-    setFind((previous) => ({ ...previous, text: nextText, active: nextIndex }));
-    if (nextList.length) selectMatch(nextIndex, nextList);
-    window.requestAnimationFrame(() => focused?.focus());
-  }
+    if (view) view.dispatch({ effects: setFindMatches.of({ matches, active: activeMatch }) });
+  }, [view, matches, activeMatch]);
 
   // File-link picker -----------------------------------------------------------
 
   const fileLinkSections = useMemo(
-    () => fileLinkPopup
+    () => fileLinkPopup && !fileLinkPopup.headings
       ? buildMarkdownFileLinkSections({ activeFilePath, files, openTabs: readOpenTabs?.() ?? openTabs ?? [], query: fileLinkPopup.query, recentFiles })
       : [],
     [activeFilePath, fileLinkPopup, files, openTabs, readOpenTabs, recentFiles],
   );
+  const headingLinkOptions = useMemo(() => fileLinkPopup?.headings ? filterMarkdownHeadingAnchors(fileLinkPopup.headings, fileLinkPopup.query) : null, [fileLinkPopup]);
   const fileLinkOptions = useMemo(() => flattenMarkdownFileLinkSections(fileLinkSections), [fileLinkSections]);
-  const selectedFileLinkIndex = fileLinkOptions.length ? Math.min(activeFileLinkIndex, fileLinkOptions.length - 1) : 0;
-  const fileLinkKeysRef = useRef({ options: fileLinkOptions, selected: selectedFileLinkIndex });
-  useLayoutEffect(() => { fileLinkKeysRef.current = { options: fileLinkOptions, selected: selectedFileLinkIndex }; });
-
-  function moveFileLinkSelection(step: number) {
-    const count = fileLinkKeysRef.current.options.length;
-    if (!fileLinkPopupRef.current || !count) return false;
-    setActiveFileLinkIndex((current) => (current + step + count) % count);
-    return true;
-  }
-
+  const linkOptionCount = headingLinkOptions ? headingLinkOptions.length : fileLinkOptions.length;
+  const selectedFileLinkIndex = linkOptionCount ? Math.min(activeFileLinkIndex, linkOptionCount - 1) : 0;
   function insertFileLink(selection: MarkdownFileLinkSelection) {
     const popup = fileLinkPopupRef.current;
     const range = popup ? { start: popup.destinationStart, end: popup.destinationEnd } : undefined;
@@ -779,15 +604,59 @@ export function MarkdownCodeMirrorEditor({
     onInsertFileLink(selection, range);
   }
 
-  function chooseActiveFileLink() {
-    const { options, selected } = fileLinkKeysRef.current;
-    if (!fileLinkPopupRef.current || !options.length) return false;
-    insertFileLink(options[selected]);
+  function insertHeadingLink(heading: MarkdownHeadingAnchor) {
+    const popup = fileLinkPopupRef.current;
+    closeFileLinkPopup();
+    if (!popup) return;
+    applyEdit(sourceHeadingLinkEdit(adapter.value, popup, heading));
+    readDraft();
+  }
+
+  function applyHeadingLevelChange(direction: HeadingLevelChangeDirection, range?: { start: number; end: number }) {
+    const current = viewRef.current;
+    if (!current) return false;
+    const text = current.state.doc.toString();
+    const result = changeSelectedHeadingLevels(text, range?.start ?? adapter.selectionStart, range?.end ?? adapter.selectionEnd, direction);
+    if (!result.hasHeading) return false;
+    setContextMenu(null);
+    closeFileLinkPopup();
+    if (result.changed) {
+      applyEdit({ ...getChangedTextRange(text, result.nextValue), nextSelectionStart: result.nextStart, nextSelectionEnd: result.nextEnd });
+      readDraft();
+    }
+    window.requestAnimationFrame(() => {
+      current.focus();
+      adapter.setSelectionRange(result.nextStart, result.nextEnd);
+      emitSelection();
+      scheduleFileLinkPopupRefresh();
+    });
     return true;
   }
 
   useLayoutEffect(() => {
-    handlersRef.current = { chooseActiveFileLink, moveFileLinkSelection, openFind };
+    handlersRef.current.key = (event) => handleSourceKey(event, {
+      citation: (key) => !!citationPopupRef.current && !!citationPopupHandleRef.current?.handleKey(key),
+      fileLink: (key) => {
+        if (!fileLinkPopupRef.current) return false;
+        const action = fileLinkPopupKey(key, linkOptionCount);
+        if (action === "close") closeFileLinkPopup();
+        else if (action === "next") setActiveFileLinkIndex((current) => (current + 1) % linkOptionCount);
+        else if (action === "previous") setActiveFileLinkIndex((current) => (current - 1 + linkOptionCount) % linkOptionCount);
+        else if (action === "choose") {
+          if (headingLinkOptions) insertHeadingLink(headingLinkOptions[selectedFileLinkIndex]);
+          else insertFileLink(fileLinkOptions[selectedFileLinkIndex]);
+        }
+        return action !== null;
+      },
+      format: (format) => {
+        setContextMenu(null); closeFileLinkPopup();
+        applyEdit(sourceFormatEdit(adapter.value, adapter.selectionStart, adapter.selectionEnd, format));
+        readDraft();
+        window.requestAnimationFrame(() => { emitSelection(); scheduleFileLinkPopupRefresh(); });
+      },
+      heading: applyHeadingLevelChange,
+      find: find.openFind,
+    });
   });
 
   // Citation popup -------------------------------------------------------------
@@ -801,34 +670,26 @@ export function MarkdownCodeMirrorEditor({
     // An inserted `@key` (inside brackets or narrative) must not reopen the popup.
     citationInsertedRef.current = insertion.text.startsWith("@") ? { from: popup.from, query: key } : null;
     closeCitationPopup();
-    current.dispatch({
-      changes: { from: popup.from, to: popup.to, insert: insertion.text },
-      selection: { anchor: popup.from + insertion.caret },
-      annotations: isolateHistory.of("full"),
-      userEvent: "input.complete",
-      scrollIntoView: true,
-    });
-    current.focus();
+    applyEdit({ selectionStart: popup.from, selectionEnd: popup.to, replacement: insertion.text,
+      nextSelectionStart: popup.from + insertion.caret, nextSelectionEnd: popup.from + insertion.caret });
     readDraft();
+    window.requestAnimationFrame(emitSelection);
   }
 
   // Context menu ---------------------------------------------------------------
 
   /** Paste or Paste with Peer Heading Level, from the right-click menu. */
   async function pasteFromMenu(menu: SourceContextMenuState, mode: MenuPasteMode) {
+    const options = { insertPlain: true, mathMarkers: latest.current.mathMarkers, smartPaste: sourcePasteMode(latest.current.smartPaste, mode) };
     const clipboard = await readClipboardText();
     const current = viewRef.current;
     if (!current) return;
-    const edit = sourcePasteEdit(current.state.doc.toString(), { start: menu.start, end: menu.end }, clipboard, {
-      insertPlain: true,
-      mathMarkers: latest.current.mathMarkers,
-      smartPaste: mode === "peer" ? "peer" : latest.current.smartPaste ? "child" : false,
-    });
+    const edit = sourcePasteEdit(current.state.doc.toString(), { start: menu.start, end: menu.end }, clipboard, options);
     if (!edit) return;
     closeFileLinkPopup();
-    current.dispatch({ ...textareaEditSpec(current.state, edit), userEvent: "input.paste", scrollIntoView: true });
+    applyEdit(edit);
     readDraft();
-    current.focus();
+    window.requestAnimationFrame(() => { emitSelection(); scheduleFileLinkPopupRefresh(); });
   }
 
   function runMenuAction(action: (menu: SourceContextMenuState) => void) {
@@ -853,20 +714,20 @@ export function MarkdownCodeMirrorEditor({
 
       {find.open ? (
         <MarkdownSourceFindBar
-          activeIndex={activeMatch}
-          findInputRef={findInputRef}
+          activeIndex={find.active}
+          findInputRef={find.findInputRef}
           matchCount={matches.length}
           query={find.query}
           replacement={find.replacement}
           wildcards={find.wildcards}
-          onClose={closeFind}
-          onNext={() => selectMatch(activeMatch + 1, matches)}
-          onPrevious={() => selectMatch(activeMatch - 1, matches)}
-          onQueryChange={updateFindQuery}
-          onReplace={() => { if (matches[activeMatch]) replaceMatches([matches[activeMatch]]); }}
-          onReplaceAll={() => replaceMatches(matches)}
-          onReplacementChange={(replacement) => setFind((current) => ({ ...current, replacement }))}
-          onWildcardsChange={updateWildcards}
+          onClose={find.closeFind}
+          onNext={find.next}
+          onPrevious={find.previous}
+          onQueryChange={find.updateQuery}
+          onReplace={find.replace}
+          onReplaceAll={find.replaceAll}
+          onReplacementChange={find.setReplacement}
+          onWildcardsChange={find.updateWildcards}
         />
       ) : null}
 
@@ -878,21 +739,16 @@ export function MarkdownCodeMirrorEditor({
 
       {contextMenu ? (
         <MarkdownSourceContextMenu
-          key={`${contextMenu.x}:${contextMenu.y}:${contextMenu.start}:${contextMenu.end}`}
           aiWorking={aiWorking}
+          documentPath={activeFilePath}
           formatting={formatting}
           imageConverting={imageConverting}
           menu={contextMenu}
+          text={findText}
           onClose={() => setContextMenu(null)}
           onPaste={(mode) => runMenuAction((menu) => { void pasteFromMenu(menu, mode); })}
           onFormat={() => runMenuAction((menu) => { if (!aiWorking) void onAiFormatSelection({ start: menu.start, end: menu.end }); })}
-          onHeadingLevels={(direction) => runMenuAction((menu) => {
-            const current = viewRef.current;
-            if (!current || !changeHeadingLevels(current, direction, { start: menu.start, end: menu.end })) return;
-            closeFileLinkPopup();
-            readDraft();
-            current.focus();
-          })}
+          onHeadingLevels={(direction) => applyHeadingLevelChange(direction, contextMenu)}
           onRewrite={(prompt) => runMenuAction((menu) => { void onAiRewriteSelection({ start: menu.start, end: menu.end }, prompt); })}
           onWrite={(prompt) => runMenuAction((menu) => { void onAiWriteAt(menu.end, prompt); })}
           onImageToMarkdown={() => runMenuAction((menu) => { if (menu.image && !aiWorking) void onAiImageToMarkdown(menu.image); })}
@@ -915,9 +771,12 @@ export function MarkdownCodeMirrorEditor({
           onClose={closeCitationPopup}
         />
       ) : null}
+      {citationHover.element}
       {citationTooltips.map((tooltip) => createPortal(<CitationTooltipContent citation={tooltip.citation} />, tooltip.dom, String(tooltip.id)))}
 
-      {fileLinkPopup ? (
+      {fileLinkPopup && headingLinkOptions ? (
+        <MarkdownHeadingLinkPopup activeIndex={selectedFileLinkIndex} headings={headingLinkOptions} x={fileLinkPopup.x} y={fileLinkPopup.y} onSelect={insertHeadingLink} />
+      ) : fileLinkPopup ? (
         <MarkdownFileLinkPopup
           activeIndex={selectedFileLinkIndex}
           sections={fileLinkSections}

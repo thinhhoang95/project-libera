@@ -4,6 +4,7 @@ export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T>
   const response = await fetch(url, {
     ...init,
     headers: {
+      ...(url.startsWith("/api/gallery") ? { "X-Libera-Gallery": "catalog" } : {}),
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...init?.headers,
     },

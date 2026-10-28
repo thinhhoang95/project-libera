@@ -1,6 +1,7 @@
 import { readSseData } from "./text-stream";
 import { parseOpenRouterUsage, type TokenUsage } from "./chat-token-usage";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint, withPromptCacheBreakpoints } from "./openrouter-prompt-cache";
+import { DEFAULT_ROUTING, toOpenRouterProvider, type OpenRouterProviderPreferences } from "./openrouter-routing";
 import { recordOpenRouterUsage } from "./storage/usage-ledger";
 
 const OPENROUTER_CHAT_COMPLETIONS_URL =
@@ -129,21 +130,13 @@ async function readOpenRouterError(response: Response) {
 export type WebCitation = { url: string; title?: string; content?: string };
 
 /**
- * Provider routing that keeps OpenRouter on the cheapest eligible endpoint
- * instead of load-balancing across all of them. Optional price ceilings (USD
- * per million tokens) make a request fail rather than land on a pricey one.
+ * Provider routing for requests that belong to no AI function: the cheapest
+ * eligible endpoint instead of load-balancing across all of them. Optional
+ * price ceilings (USD per million tokens) make a request fail rather than
+ * land on a pricey one. AI functions pass their own (Preferences → AI).
  */
-export function getCostRouting() {
-  const ceiling = (name: string) => {
-    const value = Number(process.env[name]);
-    return Number.isFinite(value) && value > 0 ? value : undefined;
-  };
-  const prompt = ceiling("LIBERA_OPENROUTER_MAX_PROMPT_PRICE");
-  const completion = ceiling("LIBERA_OPENROUTER_MAX_COMPLETION_PRICE");
-  return {
-    sort: "price" as const,
-    ...(prompt || completion ? { max_price: { ...(prompt ? { prompt } : {}), ...(completion ? { completion } : {}) } } : {}),
-  };
+export function getCostRouting(): OpenRouterProviderPreferences {
+  return toOpenRouterProvider(DEFAULT_ROUTING);
 }
 
 /** Which OpenRouter generation served a request, and the provider OpenRouter routed it to. */
@@ -153,6 +146,8 @@ type CompletionOptions = {
   model?: string; promptCaching?: boolean; sessionId?: string; reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" }; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: TokenUsage, generation: OpenRouterGeneration) => void;
   /** Let the model search the web through OpenRouter's web plugin. Results come back as `webCitations`. */
   webSearch?: { maxResults?: number };
+  /** OpenRouter provider routing (Preferences → AI); without it, the cheapest provider. */
+  provider?: OpenRouterProviderPreferences;
 };
 
 async function requestOpenRouterCompletion(
@@ -182,7 +177,7 @@ async function requestOpenRouterCompletion(
     body: JSON.stringify({
       model,
       ...(options.sessionId ? { session_id: options.sessionId } : {}),
-      provider: { ...getCostRouting(), ...caching?.provider },
+      provider: { ...(options.provider ?? getCostRouting()), ...caching?.provider },
       ...(options.reasoning ? { reasoning: options.reasoning } : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       ...(options.webSearch ? { plugins: [{ id: "web", ...(options.webSearch.maxResults ? { max_results: options.webSearch.maxResults } : {}) }] } : {}),

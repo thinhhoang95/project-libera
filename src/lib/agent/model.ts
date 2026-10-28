@@ -1,4 +1,5 @@
-import { getCostRouting, getOpenRouterApiKey } from "@/lib/openrouter";
+import { getOpenRouterApiKey } from "@/lib/openrouter";
+import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 import { getPromptCacheRouting, withGeminiPromptCacheBreakpoint } from "@/lib/openrouter-prompt-cache";
 import { parseOpenRouterUsage, type TokenUsage } from "@/lib/chat-token-usage";
 import { recordOpenRouterUsage } from "@/lib/storage/usage-ledger";
@@ -186,7 +187,8 @@ async function openStream(options: CallModelOptions) {
     : caching?.breakpoints === "rolling" ? withAgentCacheBreakpoints(options.messages) : options.messages;
   const { reasoning, temperature } = optionalParameters(options.model, options.profile, caching?.provider.only);
   const provider = {
-    ...getCostRouting(),
+    // The agent runs on AI Chat's settings, routing included.
+    ...getOpenRouterRouting("chat"),
     ...(caching ? caching.provider : {}),
     // Only route to providers that honor every parameter, tools included;
     // otherwise a request can land where tools are silently ignored.

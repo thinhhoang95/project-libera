@@ -59,6 +59,10 @@ export function getCodeMirrorTextareaAdapter(target: unknown): CodeMirrorTextare
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+export function normalizeSourceLineEndings(value: string) {
+  return value.replace(/\r\n?/g, "\n");
+}
+
 export class CodeMirrorTextareaAdapter {
   private view: EditorView | null = null;
   private driver: CodeMirrorAdapterDriver | null = null;
@@ -71,7 +75,7 @@ export class CodeMirrorTextareaAdapter {
   readonly tagName = "LIBERA-CODEMIRROR-SOURCE";
 
   constructor(initialValue: string) {
-    this.fallbackValue = initialValue;
+    this.fallbackValue = normalizeSourceLineEndings(initialValue);
     adapters.add(this);
   }
 
@@ -106,6 +110,7 @@ export class CodeMirrorTextareaAdapter {
     this.fallbackValue = this.value;
     const { from, to } = view.state.selection.main;
     this.pendingSelection = { start: from, end: to };
+    this.pendingScroll = { left: view.scrollDOM.scrollLeft, top: view.scrollDOM.scrollTop };
     for (const entry of this.listeners) this.targetFor(entry.type)?.removeEventListener(entry.type, entry.listener, entry.options);
     this.view = null;
     this.driver = null;
@@ -130,12 +135,12 @@ export class CodeMirrorTextareaAdapter {
 
   /** The text reported while no view is attached (before load, after unmount). */
   setDetachedValue(next: string) {
-    if (!this.view) this.fallbackValue = next;
+    if (!this.view) this.fallbackValue = normalizeSourceLineEndings(next);
   }
 
   set value(next: string) {
     if (this.driver) this.driver.applyValue(next);
-    else this.fallbackValue = next;
+    else this.fallbackValue = normalizeSourceLineEndings(next);
   }
 
   get selectionStart() {
@@ -158,13 +163,13 @@ export class CodeMirrorTextareaAdapter {
 
   setSelectionRange(start: number, end: number) {
     const view = this.view;
+    const length = view?.state.doc.length ?? this.fallbackValue.length;
+    const head = clamp(end, 0, length);
+    const anchor = clamp(start, 0, head);
     if (!view) {
-      this.pendingSelection = { start, end };
+      this.pendingSelection = { start: anchor, end: head };
       return;
     }
-    const length = view.state.doc.length;
-    const anchor = clamp(Math.min(start, end), 0, length);
-    const head = clamp(Math.max(start, end), 0, length);
     // A textarea never scrolls on setSelectionRange; callers scroll explicitly.
     view.dispatch({ selection: { anchor, head } });
   }

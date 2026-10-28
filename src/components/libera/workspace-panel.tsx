@@ -111,12 +111,8 @@ import {
   parseMarkdownSlides,
   type MarkdownSlide,
 } from "@/lib/markdown-slides";
-import {
-  getMarkdownEditorFontStack,
-  getRenderedMarkdownFontStack,
-  getWysiwygEditorFontStack,
-  type MarkdownPreferences,
-} from "@/lib/markdown-preferences";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import { editorThemeFontStacks, useResolvedEditorThemes } from "@/components/libera/use-editor-themes";
 import {
   getTextareaOffsetAtVisualProgress,
   getTextareaViewportAnchorOffset,
@@ -183,6 +179,7 @@ type WorkspacePanelProps = {
   onInsertImage: (file: File) => Promise<void>;
   onInsertMarkdown: (before: string, after?: string, placeholder?: string) => void;
   onInsertMarkdownTable: (rows: number, columns: number) => void;
+  onShiftMarkdownList: (direction: "indent" | "outdent") => void;
   onOpenFile: (file: LiberaFileNode, options?: { viewState?: OpenTabViewState }) => Promise<void>;
   /** Shows another image from the same folder in this image tab. */
   onShowImage?: (file: LiberaFileNode) => void;
@@ -582,6 +579,7 @@ const PANEL_CALLBACKS = [
   "onInsertImage",
   "onInsertMarkdown",
   "onInsertMarkdownTable",
+  "onShiftMarkdownList",
   "onOpenFile",
   "onShowImage",
   "onSaveEditedImageCopy",
@@ -685,6 +683,7 @@ function WorkspacePanelContent({
   onInsertImage,
   onInsertMarkdown,
   onInsertMarkdownTable,
+  onShiftMarkdownList,
   onOpenFile,
   onShowImage,
   onSaveEditedImageCopy,
@@ -696,6 +695,7 @@ function WorkspacePanelContent({
   onReadMarkdownSelectionLinks,
   onStartScreenshotSnip,
 }: PanelContentProps) {
+  const [markdownSelectedText, setMarkdownSelectedText] = useState("");
   const [existingImageDialogOpen, setExistingImageDialogOpen] = useState(false);
   const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [markdownSplitDragging, setMarkdownSplitDragging] = useState(false);
@@ -736,15 +736,14 @@ function WorkspacePanelContent({
   const markdownZoom = displayPreferences.textScale;
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
-  const markdownEditorFontFamily = getMarkdownEditorFontStack(
-    markdownPreferences.editorFontFamily,
-  );
-  const wysiwygEditorFontFamily = getWysiwygEditorFontStack(
-    markdownPreferences.wysiwygEditorFontFamily,
-  );
-  const renderedMarkdownFontFamily = getRenderedMarkdownFontStack(
-    markdownPreferences.renderedMarkdownFontFamily,
-  );
+  // Each editor's typeface comes from its theme (Preferences → Markdown → Themes).
+  const editorThemes = useResolvedEditorThemes();
+  const {
+    source: markdownEditorFontFamily,
+    latex: latexEditorFontFamily,
+    visual: wysiwygEditorFontFamily,
+    rendered: renderedMarkdownFontFamily,
+  } = useMemo(() => editorThemeFontStacks(editorThemes), [editorThemes]);
   // ```chart and ```html live blocks render in the note's preview, as in slides.
   const renderMarkdownCodeBlock = useNotebookCodeBlockRenderer(
     activeTab?.file.fileType === "markdown" ? activeTab.file.path : undefined,
@@ -1451,6 +1450,7 @@ function WorkspacePanelContent({
 
   function handleMarkdownSelectionChange(selection: { end: number; start: number }) {
     const markdownDraft = textareaRef.current?.value ?? activeMarkdownDraft;
+    setMarkdownSelectedText(selection.end > selection.start ? markdownDraft.slice(selection.start, selection.end) : "");
 
     updateMarkdownViewState({
       line: getMarkdownLineForOffset(markdownDraft, selection.start),
@@ -1843,7 +1843,7 @@ function WorkspacePanelContent({
           tab={activeTab}
           collab={sharedCodeMirror ?? undefined}
           files={files}
-          fontFamily={markdownEditorFontFamily}
+          fontFamily={latexEditorFontFamily}
           fontSizePx={markdownFontSizePx}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}
@@ -1916,6 +1916,7 @@ function WorkspacePanelContent({
             onExpandMacros={handleExpandMacros}
             onInsert={onInsertMarkdown}
             onInsertTable={onInsertMarkdownTable}
+            onShiftList={onShiftMarkdownList}
             onInsertExistingImage={() => setExistingImageDialogOpen(true)}
             onInsertFromGallery={() => setGalleryPickerOpen(true)}
             onInsertImage={onInsertImage}
@@ -2100,7 +2101,7 @@ function WorkspacePanelContent({
               </div>
             </div>
           )}
-          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={markdownPreferences.baseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange} />} collab={sharedStatus} />
+          <MarkdownStatusBar key={activeTab.id} content={activeTab.draft} selectedText={markdownSelectedText} trailing={<MarkdownDisplayZoom compact markdownBaseFontSize={markdownPreferences.baseFontSize} markdownZoom={markdownZoom} onMarkdownZoomChange={handleMarkdownZoomChange} />} collab={sharedStatus} />
           {markdownSlidesPresenting && activeMarkdownSlidesDeck ? (
             <MarkdownSlidesPresenter
               baseLineHeight={markdownPreferences.baseLineHeight}
@@ -2191,10 +2192,11 @@ function WorkspacePanelContent({
           />
         </NoteMathMarkersProvider>
       ) : activeTab.recording ? (
-        <RecordingTabView key={activeTab.id} recordingId={activeTab.recording.id} />
+        <RecordingTabView key={activeTab.id} tabId={activeTab.id} recordingId={activeTab.recording.id} />
       ) : activeTab.file.fileType === "audio" ? (
         <VoiceMemoViewer
           key={activeTab.id}
+          tabId={activeTab.id}
           file={activeTab.file}
           src={activeTab.rawUrl}
           siblings={audioSiblings}

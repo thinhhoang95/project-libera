@@ -99,7 +99,7 @@ test("Electron: the real preload works the same in a sandboxed window", { skip: 
     assert.equal(sandboxed.pageHasNoNode, true);
     const expected = [
       "liberaClipboard", "liberaCollab", "liberaDirectory", "liberaExport", "liberaFileExplorer", "liberaMenu", "liberaPersistence",
-      "liberaPlatform", "liberaPreferences", "liberaSearch", "liberaSetup", "liberaUpdater", "liberaWindow", "liberaWorkspaces",
+      "liberaPlatform", "liberaPreferences", "liberaProfiles", "liberaSearch", "liberaSetup", "liberaUpdater", "liberaWindow", "liberaWorkspaces",
     ];
     assert.deepEqual(Object.keys(sandboxed.globals ?? {}).sort(), expected);
     assert.deepEqual(sandboxed.globals, unsandboxed.globals, "same API shape as without the sandbox");

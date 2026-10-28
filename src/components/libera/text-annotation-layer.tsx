@@ -53,6 +53,9 @@ type TextAnnotationLayerProps = {
   /** Resolves relative image paths inside Markdown notes. */
   documentPath?: string;
   drawing: boolean;
+  /** A note added by the host (such as one in a new space) to open for typing once it appears. */
+  editRequestId?: string;
+  onEditRequestHandled?: (id: string) => void;
   interactive: boolean;
   /** Font size (unscaled) used to size a note placed with a single click. */
   newAnnotationFontSize?: number;
@@ -449,6 +452,8 @@ export function TextAnnotationLayer({
   annotations,
   documentPath = "",
   drawing,
+  editRequestId = "",
+  onEditRequestHandled,
   interactive,
   newAnnotationFontSize = DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   pageSize,
@@ -492,6 +497,17 @@ export function TextAnnotationLayer({
       selectedAnnotationId,
     };
   });
+
+  // Each request opens its note once, as soon as the note is on this page.
+  const [handledEditRequest, setHandledEditRequest] = useState("");
+  if (editRequestId && editRequestId !== handledEditRequest && annotations.some((annotation) => annotation.id === editRequestId)) {
+    setHandledEditRequest(editRequestId);
+    setExpandedId("");
+    setEditing({ id: editRequestId });
+  }
+  useLayoutEffect(() => {
+    if (editRequestId && handledEditRequest === editRequestId) onEditRequestHandled?.(editRequestId);
+  }, [editRequestId, handledEditRequest, onEditRequestHandled]);
 
   const handlers = useMemo<NoteHandlers>(() => {
     function findAnnotation(id: string) {

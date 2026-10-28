@@ -119,6 +119,7 @@ function logLines(write, prefix, chunk) {
  * @param {(frame: Electron.WebFrameMain) => boolean} [options.isTrustedFrame] only app pages may attach
  * @param {() => void} [options.onUpdateRequired] the server needs a newer app (close 4026)
  * @param {() => Electron.BrowserWindow | null} [options.getMainWindow]
+ * @param {() => string} [options.getUserData] stands in for userData (electron/profiles.cjs)
  */
 function createCollabHost(options = {}) {
   const enabled = isCollabEnabled();
@@ -259,7 +260,8 @@ function createCollabHost(options = {}) {
     post({
       t: "start",
       protocol: PARENT_PROTOCOL_VERSION,
-      userData: app.getPath("userData"),
+      // The running profile's folder: each user has their own sign-in and databases.
+      userData: options.getUserData?.() ?? app.getPath("userData"),
       dataDir,
       appVersion: app.getVersion(),
       port,
@@ -403,7 +405,6 @@ function createCollabHost(options = {}) {
    * should quit); that instance focuses its window.
    */
   function claimSingleInstance() {
-    if (!enabled) return true;
     if (!app.requestSingleInstanceLock()) return false;
     app.on("second-instance", () => {
       const window = options.getMainWindow?.();

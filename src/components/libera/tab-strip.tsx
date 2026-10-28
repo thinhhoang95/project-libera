@@ -15,6 +15,7 @@ import { WindowControls } from "@/components/libera/window-controls";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
 import { RequestReviewButton } from "./collab/reviews";
+import { pendingSaves, usePendingSavesVersion } from "./pending-saves";
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -149,6 +150,7 @@ export function TabStrip({
   onCloseCanvasPanel,
   onCloseOtherCanvasPanels,
 }: TabStripProps) {
+  usePendingSavesVersion();
   const [draggingTabId, setDraggingTabId] = useState("");
   const [dragOverTabId, setDragOverTabId] = useState("");
 
@@ -216,7 +218,8 @@ export function TabStrip({
             const isActive = activeTabId === tab.id;
             const isDragging = draggingTabId === tab.id;
             const isDragTarget = dragOverTabId === tab.id && draggingTabId !== tab.id;
-            const isDirty = tab.status === "dirty";
+            // Unsaved text, or unsaved ink and annotations (pending-saves.ts).
+            const isDirty = tab.status === "dirty" || pendingSaves.isDirty(tab.file.path);
             const isOnCanvas = canvasPanelCount > 1 && visibleTabIds.includes(tab.id);
 
             return (

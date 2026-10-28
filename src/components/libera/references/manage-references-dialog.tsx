@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, Download, FileText, FileType2, Globe, Loader2, Merge, Undo2 } from "lucide-react";
+import { ArrowDown, ArrowUp, CircleCheck, Copy, Download, FileText, FileType2, Globe, Library, Loader2, Merge, RefreshCw, Tag, Trash2, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { ModalDialog } from "@/components/libera/modal-dialog";
@@ -102,9 +102,11 @@ export async function exportReferences(request: { notebook: string; format: Expo
 // Merge and delete confirmations
 // ---------------------------------------------------------------------------
 
-const cancelButton = "rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted";
-const primaryButton = "rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90";
-const destructiveButton = "rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white";
+const cancelButton = "inline-flex items-center gap-1.5 rounded-lg border border-input px-3 py-1.5 text-sm font-medium hover:bg-muted";
+const primaryButton = "inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90";
+const destructiveButton = "inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-sm font-medium text-white";
+/** The bulk actions toolbar: a small outlined button with its icon. */
+const toolbarButton = "inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50";
 
 /** What merging `others` into `keep` produces, field by field (a preview; the `merge` op does the real work). */
 export function mergePreview(keep: ReferenceEntry, others: ReferenceEntry[]) {
@@ -159,7 +161,7 @@ function MergeDialogBody({ group, onClose, onMerge }: { group: ReferenceEntry[];
       footer={
         <>
           <button type="button" className={cancelButton} onClick={onClose}>Cancel</button>
-          <button type="button" className={primaryButton} disabled={busy} onClick={() => void merge()}>Merge into {keep.key}</button>
+          <button type="button" className={primaryButton} disabled={busy} onClick={() => void merge()}><Merge aria-hidden className="h-4 w-4" /> Merge into {keep.key}</button>
         </>
       }
     >
@@ -237,7 +239,7 @@ export function DeleteReferencesDialog({ entries, citing, onClose, onDelete }: D
       footer={
         <>
           <button type="button" className={cancelButton} onClick={onClose}>Cancel</button>
-          <button type="button" className={destructiveButton} disabled={busy} onClick={() => void remove()}>Delete</button>
+          <button type="button" className={destructiveButton} disabled={busy} onClick={() => void remove()}><Trash2 aria-hidden className="h-4 w-4" /> Delete</button>
         </>
       }
     >
@@ -611,8 +613,8 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
       <div className="flex min-h-0 flex-col gap-2" onKeyDown={onKeyDown} role="group" aria-label="References table">
         <div className="flex flex-wrap items-center gap-2">
           <div className="libera-links-tabs flex-1" role="tablist">
-            <button type="button" role="tab" aria-selected={tab === "all"} onClick={() => setTab("all")}>All references <span className="libera-links-count">{rows.length}</span></button>
-            <button type="button" role="tab" aria-selected={tab === "duplicates"} onClick={() => setTab("duplicates")}>Duplicates <span className="libera-links-count">{duplicateGroups.length}</span></button>
+            <button type="button" role="tab" aria-selected={tab === "all"} onClick={() => setTab("all")}><Library aria-hidden className="h-3.5 w-3.5" /> All references <span className="libera-links-count">{rows.length}</span></button>
+            <button type="button" role="tab" aria-selected={tab === "duplicates"} onClick={() => setTab("duplicates")}><Copy aria-hidden className="h-3.5 w-3.5" /> Duplicates <span className="libera-links-count">{duplicateGroups.length}</span></button>
           </div>
           <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50" disabled={!undo.canUndo || busy} title={undo.stale ? "The last change was changed again elsewhere and cannot be undone" : undo.label ? `Undo ${undo.label} (⌘/Ctrl+Z)` : "Nothing to undo"} onClick={() => void undo.run().catch((undoError: Error) => setError(undoError.message))}>
             <Undo2 aria-hidden className="h-3.5 w-3.5" /> Undo
@@ -629,9 +631,9 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
           <>
             <div className="flex flex-wrap items-center gap-2 text-xs" aria-label="Bulk actions" role="toolbar">
               <span className="text-muted-foreground">{selectedEntries.length} selected</span>
-              <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={selectedEntries.length < 2 || busy} onClick={() => setMergeGroup(selectedEntries)}>Merge selected</button>
-              <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy || Boolean(bulk)} title="Look the selected references up again" onClick={() => void reresolveSelected(selectedEntries)}>Re-resolve</button>
-              <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => void run(selectedEntries.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" })), `Confirm ${selectedEntries.length} references`, `${selectedEntries.length} marked confirmed.`)}>Mark confirmed</button>
+              <button type="button" className={toolbarButton} disabled={selectedEntries.length < 2 || busy} onClick={() => setMergeGroup(selectedEntries)}><Merge aria-hidden className="h-3.5 w-3.5" /> Merge selected</button>
+              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy || Boolean(bulk)} title="Look the selected references up again" onClick={() => void reresolveSelected(selectedEntries)}><RefreshCw aria-hidden className="h-3.5 w-3.5" /> Re-resolve</button>
+              <button type="button" className={toolbarButton} disabled={!selectedEntries.length || busy} onClick={() => void run(selectedEntries.filter((entry) => entry.status !== "confirmed").map((entry) => ({ op: "update", id: entry.id, status: "confirmed" })), `Confirm ${selectedEntries.length} references`, `${selectedEntries.length} marked confirmed.`)}><CircleCheck aria-hidden className="h-3.5 w-3.5" /> Mark confirmed</button>
               <select className="h-7 px-2 text-xs" aria-label="Change type of selected" disabled={!selectedEntries.length || busy} value="" onChange={(event) => {
                 const type = event.target.value as CslItemType;
                 if (type) void run(selectedEntries.filter((entry) => entry.csl.type !== type).map((entry) => ({ op: "update", id: entry.id, csl: { type } })), `Change type of ${selectedEntries.length} references`, `Type changed to ${CSL_TYPE_LABELS[type]}.`);
@@ -647,7 +649,7 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                 void tagSelected(selectedEntries, add, []);
               }}>
                 <input className="h-7 w-28 rounded-lg border border-input bg-transparent px-2 text-xs" aria-label="Tag for selected" placeholder="Tag" list="manage-references-tags" disabled={!selectedEntries.length || busy} value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} />
-                <button type="submit" className="rounded-lg border border-input px-2.5 py-1 font-medium hover:bg-muted disabled:opacity-50" disabled={!selectedEntries.length || busy || !tagDraft.trim()}>Add tag</button>
+                <button type="submit" className={toolbarButton} disabled={!selectedEntries.length || busy || !tagDraft.trim()}><Tag aria-hidden className="h-3.5 w-3.5" /> Add tag</button>
                 <datalist id="manage-references-tags">
                   {libraryTags(Object.values(library.entries)).map((item) => <option key={item.tag} value={item.tag} />)}
                 </datalist>
@@ -670,13 +672,13 @@ export function ManageReferencesDialog({ open, notebook, library, citations, dup
                 <option value="">Export selection…</option>
                 {EXPORT_FORMATS.map((format) => <option key={format.id} value={format.id}>{format.label}</option>)}
               </select>
-              <button type="button" className="rounded-lg border border-input px-2.5 py-1 font-medium text-destructive hover:bg-destructive-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => setDeleting(selectedEntries)}>Delete</button>
+              <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2.5 py-1 font-medium text-destructive hover:bg-destructive-muted disabled:opacity-50" disabled={!selectedEntries.length || busy} onClick={() => setDeleting(selectedEntries)}><Trash2 aria-hidden className="h-3.5 w-3.5" /> Delete</button>
             </div>
             {bulk ? (
               <div className="flex items-center gap-2 rounded-lg bg-muted p-2 text-xs" role="status" aria-label="Re-resolve progress">
                 <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
                 <span className="min-w-0 flex-1 truncate">Re-resolving {bulk.done + 1} of {bulk.total}… <span className="font-mono">{bulk.key}</span></span>
-                <button type="button" className="rounded-lg border border-input px-2 py-0.5 font-medium hover:bg-card" onClick={() => bulkRef.current?.abort()}>Cancel</button>
+                <button type="button" className="inline-flex items-center gap-1 rounded-lg border border-input px-2 py-0.5 font-medium hover:bg-card" onClick={() => bulkRef.current?.abort()}><X aria-hidden className="h-3 w-3" /> Cancel</button>
               </div>
             ) : null}
             <div

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { apiRequest } from "@/components/libera/api-client";
 import { beginAiActivity } from "@/lib/ai-activity";
 import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
-import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload } from "@/lib/transcription/types";
+import type { AudioPeaksPayload, TranscriptionJob, TranscriptionSetupStatus, TranscriptPayload, TranscriptSegment } from "@/lib/transcription/types";
 
 const ACTIVE_STATES = new Set<TranscriptionJob["state"]>(["queued", "decoding", "diarizing", "transcribing", "saving"]);
 
@@ -70,6 +70,15 @@ export function useTranscript(path: string) {
     cancel: () => send({ method: "DELETE" }, `?path=${encodeURIComponent(path)}`),
     remove: () => send({ method: "DELETE" }, `?path=${encodeURIComponent(path)}&transcript=1`),
     renameSpeaker: (index: number, name: string) => send({ method: "PATCH", body: JSON.stringify({ path, speakers: { [index]: name } }) }),
+    /** The reader's corrections, saved once the editing ends; `keepalive` lets the save outlive a closing window. */
+    saveSegments: (segments: TranscriptSegment[], { keepalive = false } = {}) => {
+      const body = JSON.stringify({ path, segments });
+      // A keepalive request may carry at most 64 KB; a longer transcript is sent as usual.
+      return apiRequest<TranscriptPayload>("/api/transcripts", { method: "PATCH", keepalive: keepalive && body.length < 60_000, body }).then(apply, (failure: unknown) => {
+        fail(failure);
+        throw failure;
+      });
+    },
   };
 }
 

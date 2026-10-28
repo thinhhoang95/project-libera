@@ -103,7 +103,7 @@ Legend: **Ported** (same behaviour), **Different** (deliberately different, why 
 | Slide decks (slide outline navigation, restore to slide, presenter) | Ported | Slide outline calls `focus`, `setSelectionRange`, `scrollTextareaToOffset` on the adapter. |
 | Outline navigation, heading drag/move/delete restore | Ported | Same adapter calls. |
 | Global Search reveal | Ported | `scrollTextareaToOffset(..., { block: "center" })` → `EditorView.scrollIntoView`. |
-| Right-click menu: AI Format, Indent/Unindent Headings, AI Rewrite (quick prompts with `/`), Write with AI (+ "Include whole document as context"), AI Image to Markdown | Ported | Same items, labels and callbacks. Right-click outside the selection moves the caret first (as a browser does in a textarea, and as the LaTeX editor does). |
+| Right-click menu: AI Format, Indent/Unindent Headings, AI Rewrite (quick prompts with `/`), Write with AI (+ "Whole document" toggle and cached-thread icon), AI Image to Markdown | Ported | Same items, labels and callbacks. Right-click outside the selection moves the caret first (as a browser does in a textarea, and as the LaTeX editor does). |
 | AI activity indicator while formatting/converting | Ported | `beginAiActivity`. |
 
 ### Find and Replace

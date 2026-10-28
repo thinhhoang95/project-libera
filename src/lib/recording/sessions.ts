@@ -7,7 +7,9 @@ import { isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { createMarkdownFileLinkDestination } from "@/lib/markdown-file-links";
 import { createOpenRouterCompletion } from "@/lib/openrouter";
 import {
+  applyRecapEdits,
   applyRecapOperations,
+  cleanRecapEdits,
   parseRecapOperations,
   RECAP_MAX_NEW_WORDS,
   RECAP_MIN_INTERVAL_MS,
@@ -30,6 +32,7 @@ import { StorageError } from "@/lib/storage/errors";
 import { assertDirectoryExists, findAvailableFilePath } from "@/lib/storage/fs-utils";
 import { filePathFromParts, getDataRoot, itemPath, splitDirectoryPath } from "@/lib/storage/paths";
 import { writeTranscript } from "@/lib/storage/transcripts";
+import { applySegmentEdits, cleanSegmentEdits, countWords, type SegmentEdits } from "@/lib/transcription/edits";
 import { detectAsrModel, SPEECH_MODELS } from "@/lib/transcription/models";
 import { groupSegments, wordsFromTokens, type TimedWord } from "@/lib/transcription/plan";
 import { findAudioDecoder, getTranscriptionPreferences, type AudioDecoder } from "@/lib/transcription/settings";
@@ -47,7 +50,9 @@ import { getTranscriptionWorker } from "@/lib/transcription/worker-client";
  *
  * Finishing joins the chunks into one recording in the notebook (AAC when
  * ffmpeg or afconvert is there, WAV otherwise), with the live transcript as its
- * transcript and the live recap as a note beside it.
+ * transcript and the live recap as a note beside it. The reader may correct
+ * both while recording; their transcript edits are kept beside the chunks
+ * (edits.json) and the finished transcript is the live one as they left it.
  */
 
 type ChunkRecord = { index: number; start: number; samples: number; transcribed: boolean };
@@ -72,6 +77,8 @@ type Runtime = {
   /** Recognized words by chunk index. */
   words: Map<number, TimedWord[]>;
   recap: RecordingRecap;
+  /** The reader's edits to the live transcript. */
+  edits: SegmentEdits | null;
   transcribeError: string;
   transcribing: Promise<void> | null;
   recapping: Promise<void> | null;
@@ -102,15 +109,17 @@ async function writeJson(file: string, value: unknown) {
 }
 
 /** Writes in order, each with the state as it is when its turn comes. */
-function persist(runtime: Runtime, what: "meta" | "recap" = "meta") {
+function persist(runtime: Runtime, what: "meta" | "recap" | "edits" = "meta") {
   runtime.saving = runtime.saving.then(() => what === "meta"
     ? writeJson(path.join(runtime.directory, "session.json"), runtime.meta)
-    : writeJson(path.join(runtime.directory, "recap.json"), {
-      version: runtime.recap.version,
-      bullets: runtime.recap.bullets,
-      wordsRead: runtime.recap.wordsRead,
-      lastChanged: runtime.recap.lastChanged,
-    } satisfies StoredRecap)).catch((error) => {
+    : what === "edits"
+      ? writeJson(path.join(runtime.directory, "edits.json"), runtime.edits)
+      : writeJson(path.join(runtime.directory, "recap.json"), {
+        version: runtime.recap.version,
+        bullets: runtime.recap.bullets,
+        wordsRead: runtime.recap.wordsRead,
+        lastChanged: runtime.recap.lastChanged,
+      } satisfies StoredRecap)).catch((error) => {
     console.warn(`Could not save recording ${runtime.meta.id}: ${error instanceof Error ? error.message : error}`);
   });
   return runtime.saving;
@@ -156,7 +165,14 @@ async function loadRuntime(id: string): Promise<Runtime | null> {
     // No recap yet.
   }
 
-  return { meta, directory, words, recap, transcribeError: "", transcribing: null, recapping: null, lastRecapAt: 0, saving: Promise.resolve() };
+  let edits: SegmentEdits | null = null;
+  try {
+    edits = cleanSegmentEdits(JSON.parse(await readFile(path.join(directory, "edits.json"), "utf8")), Number.MAX_SAFE_INTEGER);
+  } catch {
+    // The transcript was not edited.
+  }
+
+  return { meta, directory, words, recap, edits, transcribeError: "", transcribing: null, recapping: null, lastRecapAt: 0, saving: Promise.resolve() };
 }
 
 async function getRuntime(id: string) {
@@ -201,6 +217,7 @@ export async function createRecording(input: { notebook?: string; parentPath?: s
     directory: folder,
     words: new Map(),
     recap: emptyRecap(),
+    edits: null,
     transcribeError: "",
     transcribing: null,
     recapping: null,
@@ -250,6 +267,8 @@ function status(runtime: Runtime, after: number, recapVersion: number): Recordin
   const { id, name, directory, createdAt, state, liveTranscribe, liveRecap, chunks } = runtime.meta;
   const segments = liveSegments(runtime);
   const from = Math.max(0, Math.min(segments.length, Math.floor(after) || 0));
+  // The last segment may still grow when the next chunk continues a sentence, so it is sent again.
+  const segmentsFrom = Math.max(0, from - 1);
   return {
     id,
     name,
@@ -265,9 +284,10 @@ function status(runtime: Runtime, after: number, recapVersion: number): Recordin
     liveRecap,
     pendingChunks: liveTranscribe ? chunks.filter((chunk) => !chunk.transcribed).length : 0,
     transcribeError: runtime.transcribeError,
-    // The last segment may still grow when the next chunk continues a sentence, so it is sent again.
-    segments: segments.slice(Math.max(0, from - 1)),
+    segments: segments.slice(segmentsFrom),
+    segmentsFrom,
     segmentCount: segments.length,
+    ...(segmentsFrom === 0 ? { transcriptEdits: runtime.edits } : {}),
     recap: recapVersion === runtime.recap.version && !runtime.recap.updating ? null : runtime.recap,
     recapVersion: runtime.recap.version,
   };
@@ -277,8 +297,32 @@ export async function getRecordingStatus(id: string, after = 0, recapVersion = -
   return status(await getRuntime(id), after, recapVersion);
 }
 
-export async function updateRecording(id: string, changes: { name?: unknown; liveTranscribe?: unknown; liveRecap?: unknown }) {
+/**
+ * Renames the recording, turns live transcription or the recap on or off, or
+ * keeps the reader's edits: `transcriptEdits` replaces the transcript edits,
+ * `recapEdits` are applied to the recap as it is now (the model may have
+ * amended it while the reader typed).
+ */
+export async function updateRecording(id: string, changes: { name?: unknown; liveTranscribe?: unknown; liveRecap?: unknown; transcriptEdits?: unknown; recapEdits?: unknown }) {
   const runtime = await getRuntime(id);
+  if (runtime.meta.state !== "recording" && (changes.transcriptEdits !== undefined || changes.recapEdits !== undefined)) {
+    throw new StorageError("The recording is being saved; edits can no longer be made.", 409);
+  }
+  if (changes.transcriptEdits !== undefined) {
+    const edits = changes.transcriptEdits === null ? null : cleanSegmentEdits(changes.transcriptEdits, liveSegments(runtime).length);
+    if (changes.transcriptEdits !== null && !edits) throw new StorageError("The transcript edits are not readable.");
+    runtime.edits = edits;
+    await persist(runtime, "edits");
+  }
+  if (changes.recapEdits !== undefined) {
+    const edits = cleanRecapEdits(changes.recapEdits);
+    if (!edits) throw new StorageError("The recap edits are not readable.");
+    runtime.recap.bullets = applyRecapEdits(runtime.recap.bullets, edits, { number: true });
+    // The reader's own changes do not glow as news.
+    runtime.recap.lastChanged = [];
+    runtime.recap.version += 1;
+    await persist(runtime, "recap");
+  }
   const name = cleanName(changes.name);
   if (name) runtime.meta.name = name;
   if (typeof changes.liveTranscribe === "boolean") runtime.meta.liveTranscribe = changes.liveTranscribe;
@@ -390,7 +434,8 @@ function updateRecap(runtime: Runtime, { force = false } = {}): Promise<void> {
         { role: "system", content: RECAP_SYSTEM_PROMPT },
         { role: "user", content: recapUserMessage(runtime.recap.bullets, words.slice(0, read), fresh) },
       ], getAiFunctionOptions("recordingRecap"));
-      const operations = parseRecapOperations(reply.content, new Set(runtime.recap.bullets.map((bullet) => bullet.id)));
+      // Bullets the reader wrote or corrected are theirs; changes to them are dropped.
+      const operations = parseRecapOperations(reply.content, new Set(runtime.recap.bullets.filter((bullet) => !bullet.edited).map((bullet) => bullet.id)));
       const { bullets, changed } = applyRecapOperations(runtime.recap.bullets, operations, fresh[0]?.start ?? 0);
       runtime.recap.bullets = bullets;
       runtime.recap.lastChanged = changed;
@@ -523,7 +568,9 @@ export async function finishRecording(id: string): Promise<FinishedRecording> {
       : await writeUploadedFile(destination.notebook, upload, runtime.meta.directory);
 
     const words = allWords(runtime);
-    if (words.length) {
+    // The live transcript as the reader corrected it, or the words in passages for reading.
+    const segments = runtime.edits ? applySegmentEdits(liveSegments(runtime), runtime.edits).filter((segment) => segment.text.trim()) : groupSegments(words);
+    if (segments.length) {
       let audioStats = { size: upload.size, modifiedAt: new Date().toISOString() };
       try {
         const info = await stat(filePathFromParts(destination.notebook, [...destination.pathParts, audioName]));
@@ -531,7 +578,6 @@ export async function finishRecording(id: string): Promise<FinishedRecording> {
       } catch {
         // A shared recording may only be a blob so far.
       }
-      const segments = groupSegments(words);
       const transcript: Transcript = {
         version: TRANSCRIPT_VERSION,
         createdAt: new Date().toISOString(),
@@ -541,7 +587,7 @@ export async function finishRecording(id: string): Promise<FinishedRecording> {
         diarization: null,
         speakers: [],
         segments,
-        stats: { words: words.length, chunks: runtime.meta.chunks.length, elapsedMs: 0 },
+        stats: { words: runtime.edits ? countWords(segments) : words.length, chunks: runtime.meta.chunks.length, elapsedMs: 0 },
       };
       await writeTranscript(node.path, transcript);
     }

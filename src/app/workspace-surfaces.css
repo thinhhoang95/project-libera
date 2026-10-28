@@ -58,7 +58,11 @@ html.dark.libera-glass .libera-glass-panel.libera-chat-panel {
 .libera-editor-toolbar .toolbar-button { border-radius: 8px; color: var(--muted-foreground); transition: background 140ms, color 140ms; }
 .libera-editor-toolbar button:not(:disabled):hover { color: var(--accent); background: var(--muted); }
 .libera-editor-toolbar button[aria-pressed="true"] { color: var(--accent); background: var(--surface-blue); }
-.libera-editor-toolbar select { border-color: var(--input); color: var(--surface-ink); border-radius: 9px; min-height: 32px; background: var(--card); }
+.libera-editor-toolbar select { border-color: var(--input); color: var(--surface-ink); border-radius: 9px; min-height: 32px; background: #ffffff85; box-shadow: 0 2px 5px #4e699a03; font-size: 12px; outline: none; transition: background 140ms, border-color 140ms; }
+.libera-editor-toolbar select:hover:not(:disabled) { background: var(--muted); }
+.libera-editor-toolbar select:focus-visible { border-color: var(--ring); }
+html.dark .libera-editor-toolbar select { background: #b3c8ef0d; }
+html.dark .libera-editor-toolbar select:hover:not(:disabled) { background: var(--muted); }
 .libera-visual-editor { --markdown-page-gutter: clamp(22px, 3vw, 44px); }
 .libera-visual-editor .libera-visual-page { padding: 30px var(--markdown-page-gutter) 44px; }
 /* The adjustable content wrapper owns the column width. Do not cap its editor
@@ -143,9 +147,10 @@ html.libera-glass .libera-chat-panel::before { border-radius: inherit; backgroun
 .libera-chat-panel .libera-chat-markdown pre { background: color-mix(in srgb, var(--card) 70%, transparent); border: 1px solid var(--border); border-radius: 10px; }
 .libera-chat-panel .libera-chat-markdown a { color: var(--accent); }
 .libera-chat-panel .libera-chat-form { background: linear-gradient(0deg, var(--muted), transparent); }
+.libera-chat-panel[data-ai-active="true"] .libera-chat-form { background: transparent; }
 .libera-chat-context { padding: 0 4px; color: var(--muted-foreground); }
 .libera-chat-panel .libera-chat-context p { font-size: 10px; }
-.libera-chat-composer { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--card)); border-radius: 13px; background: var(--card); box-shadow: 0 2px 10px #547bd009; transition: border-color 150ms, box-shadow 150ms; }
+.libera-chat-composer { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--card)); border-radius: 13px; background: color-mix(in srgb, var(--card) 62%, transparent); backdrop-filter: blur(10px) saturate(1.4); -webkit-backdrop-filter: blur(10px) saturate(1.4); box-shadow: 0 2px 10px #547bd009; transition: border-color 150ms, box-shadow 150ms; }
 .libera-chat-composer:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent); }
 .libera-chat-panel .libera-chat-composer textarea { border: 0; border-radius: 13px; background: transparent; height: 38px; min-height: 38px; overflow-y: hidden; padding: 12px 14px 6px; transition: height 150ms, min-height 150ms; }
 .libera-chat-panel .libera-chat-composer textarea:focus { height: 70px; min-height: 70px; overflow-y: auto; }

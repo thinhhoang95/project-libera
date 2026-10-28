@@ -3,6 +3,7 @@ import type { AiReasoningEffort } from "@/lib/ai-preferences";
 import { extractFigurePlaceholders, type MarkdownHeading } from "@/lib/document-ocr/markdown-pages";
 import { mathMarkerSystemInstruction, type MathMarkerSettings } from "@/lib/math-markers";
 import { createOpenRouterCompletion, getOpenRouterApiKey, normalizeMarkdownOutput } from "@/lib/openrouter";
+import { getOpenRouterRouting } from "@/lib/openrouter-routing";
 
 // Preferences → AI → Convert PDF to Markdown. Read from the desktop config
 // file on each request, like Where Was I, so a change applies without a
@@ -85,7 +86,7 @@ export async function readPageWithOpenRouter(
       const result = await createOpenRouterCompletion([
         { role: "system", content: pageSystemPrompt(mathMarkers) },
         { role: "user", content: [{ type: "text", text: `Transcribe page ${page.pageNumber}.` }, attachment] },
-      ], { model: settings.model, reasoning: { effort: settings.reasoningEffort }, maxTokens: 16_000, signal });
+      ], { model: settings.model, reasoning: { effort: settings.reasoningEffort }, provider: getOpenRouterRouting("pdfToMarkdown"), maxTokens: 16_000, signal });
       const markdown = normalizeMarkdownOutput(result.content.trim()).replace(/\[\^PAGE-/g, `[^${page.pageNumber}-`);
       if (!markdown.trim() && attempt < RETRIES) continue;
       return { ...extractFigurePlaceholders(markdown), incomplete: result.finishReason === "length" };
@@ -113,7 +114,7 @@ export async function tidyHeadingLevels(headings: MarkdownHeading[], signal?: Ab
   const result = await createOpenRouterCompletion([
     { role: "system", content: HEADINGS_PROMPT },
     { role: "user", content: list },
-  ], { model: settings.model, reasoning: { effort: settings.reasoningEffort }, signal });
+  ], { model: settings.model, reasoning: { effort: settings.reasoningEffort }, provider: getOpenRouterRouting("pdfToMarkdown"), signal });
   try {
     const json = result.content.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
     const levels = (JSON.parse(json) as { levels?: unknown }).levels;

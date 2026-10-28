@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { getOpenRouterModel } from "./openrouter";
+import { getOpenRouterRouting, type OpenRouterProviderPreferences } from "./openrouter-routing";
 
 export type AiFunction = "formatting" | "rewrite" | "write" | "chat" | "review" | "recordingRecap" | "imageToMarkdown" | "latex" | "references";
 export type AiReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -26,22 +27,27 @@ function normalizeAlternativeModels(value: unknown, defaultModel: string) {
     .slice(0, 50);
 }
 
-export function getAiFunctionOptions(name: AiFunction): { model: string; reasoning: { effort: AiReasoningEffort }; promptCaching: boolean } {
+/** A function's model settings and its OpenRouter provider routing, read fresh for each request. */
+export function getAiFunctionOptions(name: AiFunction): { model: string; reasoning: { effort: AiReasoningEffort }; promptCaching: boolean; provider: OpenRouterProviderPreferences } {
+  return { ...getModelOptions(name), provider: getOpenRouterRouting(name) };
+}
+
+function getModelOptions(name: AiFunction): { model: string; reasoning: { effort: AiReasoningEffort }; promptCaching: boolean } {
   const prefix = `LIBERA_AI_${ENV_NAMES[name]}`;
   const parentName = PARENTS[name];
-  const parent = parentName ? getAiFunctionOptions(parentName) : undefined;
+  const parent = parentName ? getModelOptions(parentName) : undefined;
   // References default to the formatting model: both turn text into structured output.
-  const model = process.env[`${prefix}_MODEL`]?.trim() || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : name === "references" ? getAiFunctionOptions("formatting").model : getOpenRouterModel());
+  const model = process.env[`${prefix}_MODEL`]?.trim() || parent?.model || (name === "latex" ? "openai/gpt-5.6-luna" : name === "references" ? getModelOptions("formatting").model : getOpenRouterModel());
   const configuredEffort = process.env[`${prefix}_REASONING_EFFORT`];
   const lowEffort = name === "latex" || name === "references" || name === "recordingRecap";
   const effort: AiReasoningEffort = configuredEffort && EFFORTS.has(configuredEffort) ? configuredEffort as AiReasoningEffort : lowEffort ? "low" : parent?.reasoning.effort ?? "medium";
   const configuredCaching = process.env[`${prefix}_PROMPT_CACHING`];
-  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "recordingRecap" ? false : parent?.promptCaching ?? name === "chat";
+  const promptCaching = configuredCaching === "true" ? true : configuredCaching === "false" ? false : name === "recordingRecap" ? false : parent?.promptCaching ?? (name === "chat" || name === "rewrite");
   return { model, reasoning: { effort }, promptCaching };
 }
 
 export function getAiChatModels() {
-  const defaultModel = getAiFunctionOptions("chat").model;
+  const defaultModel = getModelOptions("chat").model;
   const environmentValue = process.env.LIBERA_AI_CHAT_ALTERNATIVE_MODELS;
 
   if (typeof environmentValue === "string") {

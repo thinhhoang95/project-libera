@@ -3,13 +3,17 @@
 import { MarkdownReviewProvider } from "@/components/libera/markdown-review-context";
 import { ReviewPaletteCommands, ReviewPopover } from "@/components/libera/markdown-review-ui";
 import { DefinitionsPaletteCommands } from "@/components/libera/definitions-panel";
+import { PdfOutlinePaletteCommands } from "@/components/libera/pdf-outline-panel";
+import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
+import { EditorThemesContext, NO_EDITOR_THEMES, useEditorThemes } from "@/components/libera/use-editor-themes";
+import type { ResolvedEditorThemes } from "../../electron/editor-themes.cjs";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, X } from "lucide-react";
+import { BookMarked, BookOpen, ChartColumnStacked, Columns2, FilePlus2, FileSearch, Images, Layers3, ListTree, LogOut, MessageSquare, MessageSquareText, PanelLeft, Rows2, Save, ScanSearch, Settings, X } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { apiRequest } from "@/components/libera/api-client";
 import { createDeferredSave, registerStateFlusher } from "@/components/libera/deferred-save";
@@ -56,7 +60,7 @@ import { ReadAloudBar } from "@/components/libera/read-aloud";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
-import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
+import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, OPEN_RAIL_TAB_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -64,9 +68,24 @@ type LiberaAppProps = {
   markdownPreferences: MarkdownPreferences;
   markdownDisplayPreferences?: Partial<MarkdownDisplayPreferences>;
   quickPrompts?: QuickPrompt[];
+  editorThemes?: ResolvedEditorThemes;
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
+
+/** The sections of the desktop Preferences window, as palette commands. */
+const PREFERENCES_SECTIONS: Array<{ section?: string; title: string; keywords?: string }> = [
+  { title: "Open Preferences…" },
+  { section: "general", title: "Preferences: General", keywords: "theme dark mode data directory api key password" },
+  { section: "markdown", title: "Preferences: Markdown", keywords: "editor heading numbering source accent" },
+  { section: "ai", title: "Preferences: AI", keywords: "openrouter model quick prompts chat" },
+  { section: "search", title: "Preferences: Search", keywords: "index embedding images" },
+  { section: "speech", title: "Preferences: Speech", keywords: "transcription dictation voice" },
+  { section: "read-aloud", title: "Preferences: Read Aloud", keywords: "tts text to speech voice" },
+  { section: "detection", title: "Preferences: Detection and Segmentation", keywords: "objects photos models" },
+  { section: "users", title: "Preferences: Users", keywords: "profiles accounts" },
+  { section: "io", title: "Preferences: I/O", keywords: "import export backup" },
+];
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 560;
@@ -91,9 +110,11 @@ export function LiberaApp({
   markdownPreferences,
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
+  editorThemes = NO_EDITOR_THEMES,
 }: LiberaAppProps) {
   const aiActive = useAiActivity();
   useMarkdownAccents(markdownPreferences);
+  const resolvedEditorThemes = useEditorThemes(editorThemes);
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -108,16 +129,27 @@ export function LiberaApp({
     setActiveLeftPanel(panel);
   }, []);
   // A page's contextual rail tab opens with the page, as Word shows Table Design
-  // for a new table, and goes when another tab takes over, returning the
-  // panel to the one in use before.
-  const contextualPanels = contextualPanelTabs(workspace.activeTab).map((tab) => tab.id);
-  const contextualPanelKey = contextualPanels.join(" ");
+  // for a new table; a PDF's Annotations tab only appears. Either goes when
+  // another tab takes over, returning the panel to the one in use before.
+  const contextualRailTabs = contextualPanelTabs(workspace.activeTab);
+  const contextualPanelKey = contextualRailTabs.map((tab) => tab.id).join(" ");
+  const autoOpenPanel = contextualRailTabs.find((tab) => tab.autoOpen)?.id ?? null;
   useEffect(() => {
     const available = contextualPanelKey ? contextualPanelKey.split(" ") : [];
-    setActiveLeftPanel((current) => available.length
-      ? available[0] as ContextualPanelTab
-      : isContextualPanelTab(current) ? lastCanvasPanelRef.current : current);
-  }, [contextualPanelKey]);
+    setActiveLeftPanel((current) => autoOpenPanel
+      ?? (isContextualPanelTab(current) && !available.includes(current) ? lastCanvasPanelRef.current : current));
+  }, [contextualPanelKey, autoOpenPanel]);
+  // A tab's view asks for its rail tab, for example the voice memo for its transcription controls.
+  useEffect(() => {
+    const onOpenRailTab = (event: Event) => {
+      const panel = (event as CustomEvent<unknown>).detail;
+      if (typeof panel !== "string" || !isContextualPanelTab(panel)) return;
+      changeLeftPanel(panel);
+      setNotebooksCollapsed(false);
+    };
+    window.addEventListener(OPEN_RAIL_TAB_EVENT, onOpenRailTab);
+    return () => window.removeEventListener(OPEN_RAIL_TAB_EVENT, onOpenRailTab);
+  }, [changeLeftPanel]);
   const openComments = useCallback(() => {
     changeLeftPanel("comments");
     setNotebooksCollapsed(false);
@@ -467,6 +499,17 @@ export function LiberaApp({
       { id: "app:panel-gallery", title: "Show image gallery", group: general, icon: Images, shortcut: "Ctrl/⌘+5", keywords: "photos", run: showPanel("gallery") },
       { id: "app:panel-references", title: "Show references", group: general, icon: BookMarked, shortcut: "Ctrl/⌘+7", keywords: "citations bibliography", run: showPanel("references") },
       { id: "app:page-spending", title: "Show OpenRouter spending", group: general, icon: ChartColumnStacked, detail: "Token use and cost by period, model and component", keywords: "usage cost tokens billing credits statistics money price", run: () => openPageRef.current("spending") },
+      { id: "app:logout", title: "Log out", group: general, icon: LogOut, keywords: "logout sign out switch user lock", run: () => void workspace.handleLogout() },
+      ...(window.liberaPreferences
+        ? PREFERENCES_SECTIONS.map(({ section, title, keywords }) => ({
+            id: `app:preferences-${section ?? "open"}`,
+            title,
+            group: "Preferences",
+            icon: Settings,
+            keywords: `settings preferences ${keywords ?? ""}`,
+            run: () => void window.liberaPreferences?.open(section),
+          }))
+        : []),
     ];
   });
 
@@ -516,6 +559,7 @@ export function LiberaApp({
         onInsertImage={workspace.insertMarkdownImage}
         onInsertMarkdown={workspace.insertMarkdown}
         onInsertMarkdownTable={workspace.insertMarkdownTable}
+        onShiftMarkdownList={workspace.shiftMarkdownList}
         onOpenFile={workspace.openFile}
         onShowImage={(file) => {
           if (tab) workspace.showImageInTab(tab.id, file);
@@ -550,10 +594,16 @@ export function LiberaApp({
   return (
     <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
     <QuickPromptsContext.Provider value={quickPrompts}>
+    <EditorThemesContext.Provider value={resolvedEditorThemes}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
     <DefinitionsPaletteCommands activeTab={workspace.activeTab} onShow={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); }} />
+    <PdfOutlinePaletteCommands
+      activeTab={workspace.activeTab}
+      onShowOutlines={() => { changeLeftPanel("outlines"); setNotebooksCollapsed(false); showOutlineView("outline"); }}
+      onShowAnnotations={() => { changeLeftPanel("pdf-annotations"); setNotebooksCollapsed(false); }}
+    />
     <CollabProvider
       onNotebookJoined={async (notebook) => {
         await workspace.refreshTree(notebook).catch(() => undefined);
@@ -845,6 +895,7 @@ export function LiberaApp({
     </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
+    </EditorThemesContext.Provider>
     </QuickPromptsContext.Provider>
     </MarkdownDisplayPreferencesProvider>
   );

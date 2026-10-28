@@ -26,6 +26,7 @@ import { MARKDOWN_ASSETS_DIR, MARKDOWN_EXTENSIONS } from "@/lib/storage/constant
 import type { MarkdownImageAssetPayload } from "@/lib/types";
 import { assertNotSharedItem, isSharedNotebookPath } from "@/lib/collab/shared-notebook";
 import { markdownImageSources, rewriteMarkdownImageSources } from "@/lib/markdown-image-sources";
+import { isInkBlockRenderingName } from "@/lib/ink/block";
 import { legacyPythonSidecarPath, ownsPythonFigureSource, parsePythonFigureSource, previousPythonFigureSources, pythonFigureFolder, pythonFigureSourcePrefix, pythonSidecarPath, withPreviousPythonFigureSources } from "@/lib/python/sidecar";
 
 export { markdownImageSources } from "@/lib/markdown-image-sources";
@@ -184,8 +185,10 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
         if (!entry.isFile() || entry.name.toLowerCase().endsWith(".py")) continue;
         // A figure the note's Python just made waits for the agent (or the
         // editor's Re-run) to put it in the note; a save meanwhile keeps it.
-        // A deleted note's figures go with it, placed or not.
-        if (noteExists && parsePythonFigureSource(entry.name)) continue;
+        // A deleted note's figures go with it, placed or not. Ink block
+        // renderings are kept the same way: Undo can bring a block back, and a
+        // new block's rendering is written before the note is saved with it.
+        if (noteExists && (parsePythonFigureSource(entry.name) || isInkBlockRenderingName(entry.name))) continue;
         candidates.add(`${prefix}/${entry.name}`);
       }
     }
@@ -193,7 +196,7 @@ export async function cleanupMarkdownImageAssets(notebook: string, previous: Mar
   for (const candidate of candidates) {
     if (references.has(candidate.toLowerCase())) continue;
     // ProseMirror history can refer to any prior version, regardless of its age.
-    if (parsePythonFigureSource(candidate) && previous.some((document) => documents.some((saved) => saved.documentPath === document.documentPath))) continue;
+    if ((parsePythonFigureSource(candidate) || isInkBlockRenderingName(path.basename(candidate))) && previous.some((document) => documents.some((saved) => saved.documentPath === document.documentPath))) continue;
     const asset = markdownAssetPath(notebook, candidate);
     await rm(asset.targetPath, { force: true });
     directories.add(path.dirname(asset.targetPath));
@@ -446,6 +449,11 @@ export async function getMarkdownImageAsset(documentPath: string, assetPath: str
 
   const asset = markdownAssetPath(notebook, assetPath);
   const fileName = path.basename(asset.normalized);
+  // An ink block's rendering (lib/ink/block.ts) is the one SVG a note shows;
+  // it is written by Libera from strokes and served with scripts disabled.
+  if (isInkBlockRenderingName(fileName)) {
+    return { body: await readFile(asset.targetPath), contentType: "image/svg+xml", assetPath: asset.normalized, fileName };
+  }
   const fileType = assertSupportedFileName(fileName);
 
   if (fileType !== "image") {

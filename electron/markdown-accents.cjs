@@ -1,8 +1,7 @@
-// Heading accent colors for the visual editor and rendered Markdown, shared by
-// Preferences (Electron) and the Next server. Each name maps to light and dark
-// shades in globals.css ([data-heading-color]); "spectrum" gives each heading
-// level its own color, "custom" uses the palette chosen in Preferences, and
-// "none" keeps headings plain.
+// The heading accent saved before editor themes (editor-themes.cjs), which
+// migrates it to the visual editor's theme: each name became a built-in theme,
+// "custom" a theme of the user's own, and "none" the Plain theme. Bold lead-ins
+// are still a preference of their own.
 const MARKDOWN_HEADING_COLORS = ["none", "blue", "indigo", "teal", "green", "purple", "rose", "orange", "spectrum", "custom"];
 const DEFAULT_MARKDOWN_HEADING_COLOR = "blue";
 

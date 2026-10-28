@@ -18,6 +18,12 @@ export function readDocumentContext(body: { before?: unknown; after?: unknown },
   return { before, after };
 }
 
+/** Longest AI Rewrite / Write with AI thread before a request starts a new one. */
+export const MAX_AI_EDIT_TURNS = 20;
+
+/** How a cached AI Rewrite / Write with AI thread shares the document (see src/lib/ai-edit.ts). */
+export const AI_EDIT_THREAD_RULES = `* Several requests on the same document may follow one another in this conversation. The document is shared once, with the first request. It changes afterwards: your earlier results may have been applied, and the user may have edited it. Later requests therefore show only the current text around the selection or insertion point; trust it over the earlier copy of the document. Answer only the latest request.`;
+
 export function formatDocumentContext(context: AiDocumentContext, marked: string) {
   return `<document>
 ${context.before}${marked}${context.after}

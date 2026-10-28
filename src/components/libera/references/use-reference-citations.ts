@@ -20,6 +20,12 @@ export type OpenReferenceDraft = { path: string; text: string };
 export type CitingDocuments = Map<string, Set<string>>;
 
 export const CITATION_SCAN_DELAY_MS = 300;
+/**
+ * Returning to the window refetches at most this often. Each fetch reads every
+ * saved Markdown file in the notebook (metadata cannot be trusted to show a
+ * change); saves and tree changes refetch through `refreshToken` regardless.
+ */
+export const CITATION_FOCUS_REFRESH_MS = 5000;
 
 const EMPTY_INDEX: ReferenceCitationIndex = { byFile: {}, byKey: {} };
 
@@ -104,9 +110,11 @@ export function useReferenceCitations(notebook: string | null, openDrafts: OpenR
     { notebook: null, index: EMPTY_INDEX, error: null, loading: false },
   );
   const requestRef = useRef(0);
+  const lastLoadRef = useRef(0);
 
   const reload = useCallback(async () => {
     if (!notebook) return;
+    lastLoadRef.current = Date.now();
     const request = ++requestRef.current;
     setState((current) => ({ ...current, loading: true }));
     try {
@@ -126,7 +134,7 @@ export function useReferenceCitations(notebook: string | null, openDrafts: OpenR
   }, [reload, refreshToken]);
 
   useEffect(() => {
-    const refresh = () => void reload();
+    const refresh = () => { if (Date.now() - lastLoadRef.current >= CITATION_FOCUS_REFRESH_MS) void reload(); };
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [reload]);

@@ -181,7 +181,7 @@ async function waitPill(page: CdpPage, state: string, who: string, timeoutMs = 3
 
 async function localLogin(instance: LiberaInstance) {
   const page = instance.page!;
-  await page.fill(`document.querySelector("input[placeholder='Enter your password']")`, instance.localPassword, "login password field", 60_000);
+  await page.fill(`document.querySelector("input#password")`, instance.localPassword, "login password field", 60_000);
   await page.click(`document.querySelector("form button[type=submit]")`, "login button");
   await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[aria-label="Left panel tabs"]') && !!document.querySelector("button[aria-label^='Collaboration']")`), {
     timeoutMs: 30_000,

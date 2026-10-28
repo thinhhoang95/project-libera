@@ -2,6 +2,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Extension, type 
 import { Decoration, EditorView, ViewPlugin, hoverTooltip, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { Citation, CitationOccurrence } from "@/lib/references/types";
 import { CITATION_SYNC_SCAN_LIMIT, liberaCitationAt, liberaCitations, liberaMathMarkers } from "./libera-syntax";
+import { sourceCitationHit } from "@/lib/markdown-source";
 
 /* Citations in the CodeMirror Source editor (plan.md §4.2 "Source editors").
  *
@@ -36,6 +37,8 @@ export type CitationEditorHandlers = {
   hover?: (dom: HTMLElement, citation: Citation) => (() => void) | void;
   /** Ctrl/Cmd+click: open the cited attachment. True when something was opened. */
   open?: (citation: Citation) => boolean;
+  /** Source panes share the textarea's hover timing and card; other hosts may use native tooltips. */
+  pointer?: (target: { citation: Citation; rect: () => DOMRect | null } | null) => void;
 };
 
 export const citationEditorHandlers = Facet.define<CitationEditorHandlers, CitationEditorHandlers>({
@@ -161,25 +164,47 @@ export function citationHoverSource(view: EditorView, pos: number, side: -1 | 1)
   };
 }
 
-const citationHover = hoverTooltip(citationHoverSource, { hoverTime: 250 });
+const citationHover = hoverTooltip((view, pos, side) => view.state.facet(citationEditorHandlers).pointer ? null : citationHoverSource(view, pos, side), { hoverTime: 250 });
 
 /** Ctrl/Cmd+click at `pos`: open the attachment of the citation there. True when something opened. */
 export function openCitationAt(view: EditorView, pos: number) {
   const open = view.state.facet(citationEditorHandlers).open;
-  const occurrence = open ? citationNear(view.state, pos, 1) : null;
-  return Boolean(occurrence && open!(occurrence.citation));
+  const occurrence = open ? liberaCitationAt(view.state, pos) : null;
+  const library = view.state.field(citationLibraryField, false) ?? null;
+  return Boolean(occurrence && citationShown(occurrence, library) && open!(occurrence.citation));
+}
+
+function citationAtPointer(view: EditorView, event: MouseEvent) {
+  let pos: number | null = null;
+  try { pos = view.posAtCoords({ x: event.clientX, y: event.clientY }); } catch { return null; }
+  if (pos === null) return null;
+  const library = view.state.field(citationLibraryField, false);
+  const point = (offset: number) => {
+    const coords = view.coordsAtPos(offset);
+    return { x: coords?.left ?? 0, y: coords?.bottom ?? 0 };
+  };
+  return sourceCitationHit(pos, event.clientX, (offset) => liberaCitationAt(view.state, offset), point, library ? (key) => library.has(key) : null);
 }
 
 const citationClick = EditorView.domEventHandlers({
+  mousemove(event, view) {
+    const pointer = view.state.facet(citationEditorHandlers).pointer;
+    if (!pointer) return false;
+    const found = citationAtPointer(view, event);
+    pointer(found ? { citation: found.citation, rect: () => {
+      const start = view.coordsAtPos(found.start), end = view.coordsAtPos(found.end);
+      if (!start || !end) return null;
+      const left = start.top === end.top ? start.left : view.scrollDOM.getBoundingClientRect().left;
+      const right = start.top === end.top ? end.left : left + 1;
+      return new DOMRect(left, start.top, Math.max(1, right - left), end.bottom - start.top);
+    } } : null);
+    return false;
+  },
+  mouseleave(_event, view) { view.state.facet(citationEditorHandlers).pointer?.(null); return false; },
   mousedown(event, view) {
     if (event.button !== 0 || !(event.metaKey || event.ctrlKey)) return false;
-    let pos: number | null = null;
-    try {
-      pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-    } catch {
-      pos = null;
-    }
-    if (pos === null || !openCitationAt(view, pos)) return false;
+    const found = citationAtPointer(view, event);
+    if (!found || !view.state.facet(citationEditorHandlers).open?.(found.citation)) return false;
     event.preventDefault();
     return true;
   },

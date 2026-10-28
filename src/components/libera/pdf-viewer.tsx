@@ -29,6 +29,7 @@ import {
   Type,
   Underline,
   Undo2,
+  UnfoldVertical,
   Volume2,
   Waves,
   ZoomIn,
@@ -56,6 +57,24 @@ import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rend
 import { PDF_TEXT_ITEM_ATTRIBUTE, PdfLayoutStore, pdfRangePages, pdfSelectionMarkdown } from "@/components/libera/pdf-copy";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
+import { usePdfPaperColor } from "@/components/libera/use-pdf-paper-color";
+import { isPdfPaperColor } from "@/lib/pdf-paper-color";
+import { PdfSpaceLayer } from "@/components/libera/pdf-space-layer";
+import { assignTextPieces, pieceShiftStyle, usePdfSpaceRaster } from "@/components/libera/pdf-space-raster";
+import {
+  IDENTITY_PAGE_GEOMETRY,
+  annotationToSurface,
+  areaFromSurface,
+  patchFromSurface,
+  pdfPageGeometry,
+  rigidPointsFromSurface,
+  rigidRectFromSurface,
+  textRectToSurface,
+  textRectsFromSurface,
+  type PdfPageGeometry,
+} from "@/lib/pdf-space-geometry";
+import { placeSpaceCut } from "@/lib/pdf-space-layout";
+import { PDF_SPACE_MIN_HEIGHT, availableSpaceHeight, columnBounds, isFullWidthBand, sameBand } from "@/lib/pdf-space";
 import { usePdfFind } from "@/components/libera/use-pdf-find";
 import { buildPdfSearchPage, highlightPdfMatches, type PdfSearchMatch, type PdfSearchPage } from "@/components/libera/pdf-find";
 import { apiRequest } from "@/components/libera/api-client";
@@ -65,7 +84,9 @@ import { changePdfComments, onPdfCommentFocus, pdfCommentsState, selectPdfCommen
 import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
-import { broadcastSavedAnnotations, useAnnotationSync } from "@/components/libera/annotation-sync";
+import { useAnnotationWriter } from "./use-annotation-writer";
+import { SaveStatusButton } from "./save-status-button";
+import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
   pngFileFromBlob,
@@ -131,6 +152,7 @@ import type {
   PdfCommentSegment,
   PdfMarkupStyle,
   PdfShapeKind,
+  PdfSpaceAnnotation,
   PdfTextAnnotation,
   PdfTextAnnotationFont,
 } from "@/lib/types";
@@ -152,6 +174,12 @@ const PDF_PAGE_RENDER_CONCURRENCY = 2;
 const PDF_SCROLL_STATE_INTERVAL_MS = 150;
 const EMPTY_ANNOTATIONS: PdfAnnotation[] = [];
 const EMPTY_SEARCH_MATCHES: PdfSearchMatch[] = [];
+const EMPTY_PAGE_GEOMETRIES = new Map<number, PdfPageGeometry>();
+// A space opened with a click: about three lines of body text, in PDF points.
+const DEFAULT_SPACE_HEIGHT_PT = 40;
+// Room kept around the note placed in a new space, in page fractions: across
+// the page, inside the text margins; in a column, just inside the column.
+const SPACE_NOTE_INSET = { page: 0.1, column: 0.015, y: 0.006 };
 const EMPTY_HISTORY: { undo: HistoryEntry[]; redo: HistoryEntry[] } = { undo: [], redo: [] };
 
 type PdfTool = NonNullable<PdfTabViewState["tool"]>;
@@ -230,6 +258,7 @@ const TOOL_SHORTCUTS: Record<string, PdfTool> = {
   p: "draw",
   s: "shape",
   e: "eraser",
+  g: "space",
 };
 
 const TOOL_SHORTCUT_KEYS = Object.fromEntries(
@@ -312,7 +341,11 @@ function intersectClientRect(rect: DOMRect, bounds: DOMRect) {
 }
 
 /** A text selection inside the viewer, as line boxes and quote on each page it spans; null without one. */
-function selectionPageRects(selection: Selection | null, viewer: HTMLElement | null) {
+function selectionPageRects(
+  selection: Selection | null,
+  viewer: HTMLElement | null,
+  geometryOf: (pageNumber: number) => PdfPageGeometry = () => IDENTITY_PAGE_GEOMETRY,
+) {
   if (!selection || selection.isCollapsed || !selection.rangeCount || !viewer) {
     return null;
   }
@@ -334,9 +367,11 @@ function selectionPageRects(selection: Selection | null, viewer: HTMLElement | n
 
     if (rects.length) {
       const textLayer = page.querySelector(".pdf-text-layer");
+      const pageNumber = Number(page.dataset.pdfPageContent);
       pages.push({
-        pageNumber: Number(page.dataset.pdfPageContent),
-        rects: mergeHighlightRects(rects, bounds.width, bounds.height).map(normalizeRect),
+        pageNumber,
+        // Measured on the page as displayed; stored on the original page.
+        rects: textRectsFromSurface(geometryOf(pageNumber), mergeHighlightRects(rects, bounds.width, bounds.height)).map(normalizeRect),
         quote: textLayer ? pdfHighlightQuote(range, textLayer) : undefined,
       });
     }
@@ -499,11 +534,31 @@ function readPdfZoomAnchor(scroller: HTMLElement, pages: Map<number, HTMLElement
   let anchor: { pageNumber: number; bounds: DOMRect } | null = null;
 
   // Map order is registration order, which a re-mounted page can change.
-  for (const pageNumber of [...pages.keys()].sort((a, b) => a - b)) {
+  const pageNumbers = [...pages.keys()].sort((a, b) => a - b);
+  let low = 0;
+  let high = pageNumbers.length - 1;
+  // Space previews capture this every frame; measure logarithmically even
+  // when reading near the end of a long document.
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const bounds = pages.get(pageNumbers[middle])!.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) break;
+    if (bounds.bottom < centerY) low = middle + 1;
+    else high = middle;
+  }
+  if (low === high && high >= 0) {
+    const pageNumber = pageNumbers[low];
     const bounds = pages.get(pageNumber)!.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) continue;
-    anchor = { pageNumber, bounds };
-    if (bounds.bottom >= centerY) break;
+    if (bounds.width > 0 && bounds.height > 0) anchor = { pageNumber, bounds };
+  }
+  if (!anchor) {
+    // A hidden or partially mounted viewer may have zero-sized sheets.
+    for (const pageNumber of pageNumbers) {
+      const bounds = pages.get(pageNumber)!.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) continue;
+      anchor = { pageNumber, bounds };
+      if (bounds.bottom >= centerY) break;
+    }
   }
 
   if (!anchor) return null;
@@ -663,6 +718,8 @@ export function PdfViewer({
   );
   const [tool, setTool] = useState<PdfTool>(initialViewState?.tool ?? "select");
   const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
+  // Pages are drawn on the visual editor theme's paper; "" keeps them white.
+  const paperColor = usePdfPaperColor();
   const [fontSize, setFontSize] = useState(
     initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   );
@@ -700,8 +757,8 @@ export function PdfViewer({
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
   );
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestAnnotationsRef = useRef<PdfAnnotation[]>([]);
+  const automaticSpaceNotesRef = useRef(new Set<string>());
   const viewStateSelectedAnnotationId = initialViewState?.selectedAnnotationId;
   const activeSelectedAnnotationId =
     typeof viewStateSelectedAnnotationId === "string"
@@ -711,21 +768,33 @@ export function PdfViewer({
   useEffect(() => {
     activeSelectedAnnotationIdRef.current = activeSelectedAnnotationId;
   }, [activeSelectedAnnotationId]);
-  const pageLayouts = useMemo(
+  const annotationsByPage = useStablePageGroups(annotations);
+  // While a space is dragged open, its page shows the draft spaces.
+  const [spaceDraft, setSpaceDraft] = useState<{ pageNumber: number; spaces: PdfSpaceAnnotation[] } | null>(null);
+  const pageGeometries = useStablePageGeometries(annotationsByPage, spaceDraft);
+  const pageGeometriesRef = useRef(pageGeometries);
+  useLayoutEffect(() => {
+    pageGeometriesRef.current = pageGeometries;
+  });
+  const geometryOf = useCallback(
+    (pageNumber: number) => pageGeometriesRef.current.get(pageNumber) ?? IDENTITY_PAGE_GEOMETRY,
+    [],
+  );
+  const pageLayouts = useStablePageLayouts(useMemo(
     () =>
       basePageLayouts.map((layout) => ({
         ...layout,
-        height: layout.height * zoom,
+        // Spaces make a page taller as displayed; the PDF page is unchanged.
+        height: layout.height * zoom * (pageGeometries.get(layout.pageNumber)?.scale ?? 1),
         width: layout.width * zoom,
       })),
-    [basePageLayouts, zoom],
-  );
+    [basePageLayouts, pageGeometries, zoom],
+  ));
 
   const selectedAnnotation = useMemo(
     () => annotations.find((annotation) => annotation.id === activeSelectedAnnotationId),
     [activeSelectedAnnotationId, annotations],
   );
-  const annotationsByPage = useStablePageGroups(annotations);
   // Review comments live beside the markup in the same sidecar, but have their
   // own store and route: they are outside undo, and the agent replies to them.
   const review = useMarkdownReview();
@@ -760,10 +829,10 @@ export function PdfViewer({
     scrollContainer.scrollTop = scrollTopCenteringRect(
       pageBounds.top - containerBounds.top + scrollContainer.scrollTop,
       pageBounds.height,
-      unionRect(segment.rects),
+      unionRect(segment.rects.map((rect) => textRectToSurface(geometryOf(segment.pageNumber), rect))),
       scrollContainer.clientHeight,
     );
-  }), [filePath]);
+  }), [filePath, geometryOf]);
 
   const selectedTextAnnotation =
     selectedAnnotation?.type === "text" ? selectedAnnotation : null;
@@ -989,8 +1058,16 @@ export function PdfViewer({
 
         setPdfDocument(loadedDocument);
         setBasePageLayouts(loadedPageLayouts);
-        latestAnnotationsRef.current = annotationsPayload.annotations;
-        setAnnotations(annotationsPayload.annotations);
+        // Unsaved notes kept from before a crash or restart come back unsaved.
+        const kept = await annotationWriterRef.current.recover();
+        if (!active) return;
+        const loadedAnnotations = kept ?? annotationsPayload.annotations;
+        latestAnnotationsRef.current = loadedAnnotations;
+        automaticSpaceNotesRef.current.clear();
+        setAnnotations(loadedAnnotations);
+        if (kept) {
+          localSavePendingRef.current = true;
+        }
         historyRef.current = EMPTY_HISTORY;
         setHistory(EMPTY_HISTORY);
       } catch (loadError) {
@@ -1013,10 +1090,6 @@ export function PdfViewer({
       controller.abort();
       destroyLoadingTask();
       forgetPdfAnnotations(filePath);
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
     };
   }, [filePath, src]);
 
@@ -1103,7 +1176,13 @@ export function PdfViewer({
     const frame = window.requestAnimationFrame(() => {
       pendingScrollRestoreRef.current = null;
       const page = Math.max(1, Math.min(reveal.page, pageLayouts.length));
-      pageElementRefs.current.get(page)?.scrollIntoView({ block: "start", inline: "nearest" });
+      const pageElement = pageElementRefs.current.get(page);
+      pageElement?.scrollIntoView({ block: "start", inline: "nearest" });
+      // A bookmark's spot on the page, a little above it so its line is not at the very edge.
+      const scroller = scrollContainerRef.current;
+      if (pageElement && scroller && typeof reveal.top === "number" && reveal.top > 0) {
+        scroller.scrollTop += Math.max(0, pageElement.offsetHeight * reveal.top - 24);
+      }
       if (reveal.text) findTextRef.current(reveal.text, page);
       updateViewState({ reveal: undefined });
     });
@@ -1137,7 +1216,7 @@ export function PdfViewer({
       scrollContainer.scrollTop = scrollTopCenteringRect(
         pageBounds.top - containerBounds.top + scrollContainer.scrollTop,
         pageBounds.height,
-        annotationAnchorRect(annotation),
+        annotationAnchorRect(annotationToSurface(annotation, geometryOf(annotation.pageNumber))),
         scrollContainer.clientHeight,
       );
       pendingScrollRestoreRef.current = null;
@@ -1152,7 +1231,7 @@ export function PdfViewer({
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [loading, pageLayouts.length, pdfDocument, revealSelectedAnnotation, updateCurrentPage, updateViewState]);
+  }, [geometryOf, loading, pageLayouts.length, pdfDocument, revealSelectedAnnotation, updateCurrentPage, updateViewState]);
 
   useEffect(() => {
     rememberFileAnnotations(filePath, annotations);
@@ -1172,6 +1251,30 @@ export function PdfViewer({
     }
     flushPendingScrollViewState();
   }, [flushPendingScrollViewState]);
+
+  // Changes to spaces on pages above the one being read would slide it; the
+  // reading position is captured before such a change and restored after it.
+  const readingAnchorRef = useRef<PdfZoomAnchor | null>(null);
+  const captureReadingAnchor = useCallback(() => {
+    const scroller = scrollContainerRef.current;
+    if (scroller && !pendingScrollRestoreRef.current) {
+      readingAnchorRef.current = readPdfZoomAnchor(scroller, pageElementRefs.current);
+    }
+  }, []);
+  const shownGeometriesRef = useRef(pageGeometries);
+  useLayoutEffect(() => {
+    const previous = shownGeometriesRef.current;
+    shownGeometriesRef.current = pageGeometries;
+    const anchor = readingAnchorRef.current;
+    readingAnchorRef.current = null;
+    const scroller = scrollContainerRef.current;
+    const page = anchor && pageElementRefs.current.get(anchor.pageNumber);
+    if (!anchor || !scroller || !page || previous === pageGeometries) return;
+    const pages = new Set([...previous.keys(), ...pageGeometries.keys()]);
+    if ([...pages].some((pageNumber) => pageNumber < anchor.pageNumber && previous.get(pageNumber) !== pageGeometries.get(pageNumber))) {
+      restorePdfZoomAnchor(scroller, page, anchor);
+    }
+  }, [pageGeometries]);
 
   const setPageElement = useCallback((pageNumber: number, element: HTMLElement | null) => {
     if (element) {
@@ -1230,12 +1333,15 @@ export function PdfViewer({
   // Another window showing this PDF saved annotations: adopt them unless this
   // window has its own edit in flight, which will be saved over them anyway.
   const localSavePendingRef = useRef(false);
+  useEffect(() => { localSavePendingRef.current = false; }, [filePath]);
   useAnnotationSync<PdfAnnotation>("pdf", filePath, (remoteAnnotations) => {
     if (localSavePendingRef.current) {
       return;
     }
 
+    captureReadingAnchor();
     latestAnnotationsRef.current = remoteAnnotations;
+    automaticSpaceNotesRef.current.clear();
     setAnnotations(remoteAnnotations);
     // Undoing past another window's save would silently revert its edits.
     historyRef.current = EMPTY_HISTORY;
@@ -1243,50 +1349,31 @@ export function PdfViewer({
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: remoteAnnotations });
   });
 
+  const annotationWriter = useAnnotationWriter<PdfAnnotation>("pdf", filePath, (savedAnnotations) => {
+    localSavePendingRef.current = false;
+    latestAnnotationsRef.current = savedAnnotations;
+    setAnnotations(savedAnnotations);
+    dispatchPdfAnnotationsUpdated({ path: filePath, annotations: savedAnnotations });
+    setSaveStatus("saved");
+  }, (saveError) => {
+    setSaveStatus("error");
+    setError(saveError instanceof Error ? saveError.message : "Could not save PDF annotations.");
+  });
   const saveAnnotations = useCallback(
     (nextAnnotations: PdfAnnotation[]) => {
       latestAnnotationsRef.current = nextAnnotations;
       setAnnotations(nextAnnotations);
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
-      setSaveStatus("saving");
+      // Written on Save (pending-saves.ts); until then the file shows as unsaved.
+      setSaveStatus("idle");
       localSavePendingRef.current = true;
-
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-
-      saveTimeoutRef.current = setTimeout(() => {
-        apiRequest<PdfAnnotationsPayload>("/api/pdf-annotations", {
-          method: "PATCH",
-          body: JSON.stringify({
-            path: filePath,
-            annotations: latestAnnotationsRef.current,
-          }),
-        })
-          .then((payload) => {
-            localSavePendingRef.current = false;
-            latestAnnotationsRef.current = payload.annotations;
-            setAnnotations(payload.annotations);
-            dispatchPdfAnnotationsUpdated({
-              path: filePath,
-              annotations: payload.annotations,
-            });
-            setSaveStatus("saved");
-            broadcastSavedAnnotations("pdf", filePath, payload.annotations);
-          })
-          .catch((saveError) => {
-            localSavePendingRef.current = false;
-            setSaveStatus("error");
-            setError(
-              saveError instanceof Error
-                ? saveError.message
-                : "Could not save PDF annotations.",
-            );
-          });
-      }, 350);
+      annotationWriter.schedule(nextAnnotations);
     },
-    [filePath],
+    [filePath, annotationWriter],
   );
+  // The PDF loads before this writer is made; it reads the writer through a ref.
+  const annotationWriterRef = useRef(annotationWriter);
+  useLayoutEffect(() => { annotationWriterRef.current = annotationWriter; });
 
   function applyZoom(nextValue: number) {
     const nextZoom = clamp(nextValue, MIN_ZOOM, MAX_ZOOM);
@@ -1449,6 +1536,7 @@ export function PdfViewer({
   }, [selectAnnotationId]);
 
   const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+    if ("text" in patch && patch.text?.trim()) automaticSpaceNotesRef.current.delete(id);
     const keys = Object.keys(patch).sort();
     // Typing coalesces with the note's creation; restyling with itself. Each
     // drag stays its own step.
@@ -1474,22 +1562,34 @@ export function PdfViewer({
   }, [commitAnnotations]);
 
   const deleteAnnotations = useCallback((ids: string[], historyKey?: string) => {
-    const doomed = new Set(ids);
     const current = latestAnnotationsRef.current;
+    const doomed = new Set(ids);
+    // A space goes with everything in it.
+    for (const annotation of current) {
+      if ("space" in annotation && annotation.space && doomed.has(annotation.space)) doomed.add(annotation.id);
+    }
     const next = current.filter((annotation) => !doomed.has(annotation.id));
 
     if (next.length !== current.length) {
       const [only] = ids;
       const abandoned = ids.length === 1 ? current.find((annotation) => annotation.id === only) : undefined;
       const { undo, redo } = historyRef.current;
+      const last = undo.at(-1);
 
-      if (abandoned?.type === "text" && !abandoned.text.trim() && undo.at(-1)?.key === `note:${only}`) {
+      if (abandoned?.type === "text" && !abandoned.text.trim() && automaticSpaceNotesRef.current.has(only)) {
+        // This was only the space's empty editor. Remove the shell from
+        // history too, while keeping each space gesture as its own step.
+        const withoutNote = (entry: HistoryEntry) => ({ ...entry, annotations: entry.annotations.filter((annotation) => annotation.id !== only) });
+        replaceHistory({ undo: undo.map(withoutNote), redo: redo.map(withoutNote) });
+        saveAnnotations(next);
+      } else if (abandoned?.type === "text" && !abandoned.text.trim() && last?.key === `note:${only}`) {
         // A note abandoned empty leaves no step behind to undo into.
         replaceHistory({ undo: undo.slice(0, -1), redo });
         saveAnnotations(next);
       } else {
         commitAnnotations(() => next, historyKey);
       }
+      for (const id of doomed) automaticSpaceNotesRef.current.delete(id);
     }
 
     if (doomed.has(activeSelectedAnnotationIdRef.current)) {
@@ -1514,6 +1614,7 @@ export function PdfViewer({
         ? { undo: undo.slice(0, -1), redo: [...redo, counterpart] }
         : { undo: [...undo, counterpart], redo: redo.slice(0, -1) },
     );
+    captureReadingAnchor();
     saveAnnotations(entry.annotations);
 
     const selectedId = activeSelectedAnnotationIdRef.current;
@@ -1521,12 +1622,12 @@ export function PdfViewer({
     if (selectedId && !entry.annotations.some((annotation) => annotation.id === selectedId)) {
       selectAnnotationId("");
     }
-  }, [replaceHistory, saveAnnotations, selectAnnotationId]);
+  }, [captureReadingAnchor, replaceHistory, saveAnnotations, selectAnnotationId]);
 
   /** Marks up the current text selection, split across every page it spans. */
   const markSelection = useCallback((color: string, markup: PdfMarkupStyle) => {
     const selection = window.getSelection();
-    const pages = selectionPageRects(selection, viewerRef.current);
+    const pages = selectionPageRects(selection, viewerRef.current, geometryOf);
 
     if (!selection || !pages) {
       return false;
@@ -1554,17 +1655,17 @@ export function PdfViewer({
 
     commitAnnotations((current) => [...current, ...created]);
     return true;
-  }, [commitAnnotations]);
+  }, [commitAnnotations, geometryOf]);
 
   const newTextStyleRef = useRef({ color: textColor, fontFamily, fontSize });
   useEffect(() => {
     newTextStyleRef.current = { color: textColor, fontFamily, fontSize };
   }, [fontFamily, fontSize, textColor]);
 
-  const addTextAnnotation = useCallback((pageNumber: number, rect: PdfAnnotationRect) => {
+  const newNote = useCallback((pageNumber: number, rect: PdfAnnotationRect, space?: string): PdfTextAnnotation => {
     const timestamp = nowIso();
     const style = newTextStyleRef.current;
-    const annotation: PdfTextAnnotation = {
+    return {
       id: createAnnotationId(),
       type: "text",
       pageNumber,
@@ -1573,14 +1674,59 @@ export function PdfViewer({
       color: style.color,
       fontFamily: style.fontFamily,
       rect,
+      ...(space ? { space } : {}),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+  }, []);
+
+  const addTextAnnotation = useCallback((pageNumber: number, rect: PdfAnnotationRect, space?: string) => {
+    const annotation = newNote(pageNumber, rect, space);
 
     selectAnnotationId(annotation.id);
     commitAnnotations((current) => [...current, annotation], `note:${annotation.id}`);
     return annotation.id;
-  }, [commitAnnotations, selectAnnotationId]);
+  }, [commitAnnotations, newNote, selectAnnotationId]);
+
+  // The note a new space opens with; its page starts editing it.
+  const [noteToEdit, setNoteToEdit] = useState<{ id: string; pageNumber: number } | null>(null);
+  const editRequestHandled = useCallback((id: string) => {
+    setNoteToEdit((current) => current?.id === id ? null : current);
+  }, []);
+  // Your own space edits keep what is above them still, on every page; only
+  // changes made elsewhere (undo, another window) restore the reading position.
+  const previewSpaces = useCallback((pageNumber: number, spaces: PdfSpaceAnnotation[] | null) => {
+    setSpaceDraft(spaces ? { pageNumber, spaces } : null);
+  }, []);
+  const commitSpace = useCallback((space: PdfSpaceAnnotation, created: boolean) => {
+    const currentSpaces = latestAnnotationsRef.current.filter((annotation): annotation is PdfSpaceAnnotation =>
+      annotation.type === "space" && annotation.pageNumber === space.pageNumber);
+    if (!created && !currentSpaces.some((current) => current.id === space.id)) return;
+    const maxHeight = availableSpaceHeight(currentSpaces, created ? undefined : space.id);
+    if (maxHeight < PDF_SPACE_MIN_HEIGHT) return;
+    space = { ...space, height: Math.min(maxHeight, Math.max(PDF_SPACE_MIN_HEIGHT, space.height)) };
+    if (!created) {
+      commitAnnotations(
+        (current) => current.map((annotation) => annotation.id === space.id ? space : annotation),
+      );
+      return;
+    }
+
+    // Typing starts at once in a note filling the new space.
+    const { x0, x1 } = columnBounds(space.band, space.column);
+    const inset = isFullWidthBand(space.band) ? SPACE_NOTE_INSET.page : SPACE_NOTE_INSET.column;
+    const note = newNote(space.pageNumber, {
+      x: x0 + inset,
+      y: SPACE_NOTE_INSET.y,
+      width: Math.max(0.05, x1 - x0 - inset * 2),
+      height: Math.max(0.01, space.height - SPACE_NOTE_INSET.y * 2),
+    }, space.id);
+    automaticSpaceNotesRef.current.add(note.id);
+    selectAnnotationId(note.id);
+    setNoteToEdit({ id: note.id, pageNumber: note.pageNumber });
+    commitAnnotations((current) => [...current, space, note], `space:${space.id}`);
+  }, [commitAnnotations, newNote, selectAnnotationId]);
+  const deleteSpace = useCallback((id: string) => deleteAnnotations([id]), [deleteAnnotations]);
 
   const addDrawing = useCallback((pageNumber: number, draft: PdfDrawingDraft) => {
     const timestamp = nowIso();
@@ -1606,6 +1752,7 @@ export function PdfViewer({
   );
 
   const exitTextEditing = useCallback(() => {
+    setNoteToEdit(null);
     setTool("select");
     updateViewState({ tool: "select" });
   }, [updateViewState]);
@@ -1781,8 +1928,8 @@ export function PdfViewer({
         return;
       }
 
-      if (event.key === "Escape" && (tool === "draw" || tool === "shape" || tool === "eraser")) {
-        // Put the pen down first; the next Esc clears the selection.
+      if (event.key === "Escape" && tool !== "select") {
+        // Put the tool down first; the next Esc clears the selection.
         event.preventDefault();
         setTool("select");
         updateViewState({ tool: "select" });
@@ -1997,7 +2144,7 @@ export function PdfViewer({
   /** Opens the comment box for the current text selection, whose passage stays marked while you write. */
   function startComment() {
     const selection = window.getSelection();
-    const pages = selectionPageRects(selection, viewerRef.current);
+    const pages = selectionPageRects(selection, viewerRef.current, geometryOf);
     const scrollContainer = scrollContainerRef.current;
 
     if (!selection || !pages || !scrollContainer) {
@@ -2131,7 +2278,8 @@ export function PdfViewer({
 
   return (
     <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} data-pdf-markup={markupStyle} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
-      style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor } as React.CSSProperties}
+      data-pdf-paper={paperColor ? "" : undefined}
+      style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor, ...(paperColor ? { "--libera-pdf-paper": paperColor } : {}) } as React.CSSProperties}
       onCopy={handleCopy}
       onPointerDown={(event) => {
         if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
@@ -2190,6 +2338,14 @@ export function PdfViewer({
             label="Erase"
             title="Eraser: drag across pen strokes, shapes and markup"
             tool="eraser"
+            onSelect={selectTool}
+          />
+          <PdfToolButton
+            active={tool === "space"}
+            icon={UnfoldVertical}
+            label="Space"
+            title="Create space: drag down at a line to open room for notes and ink"
+            tool="space"
             onSelect={selectTool}
           />
 
@@ -2301,15 +2457,7 @@ export function PdfViewer({
               className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-input px-1.5 hover:bg-muted"
             />
           ) : null}
-          <span className="mr-2 text-xs text-muted-foreground">
-            {saveStatus === "saving"
-              ? "Saving"
-              : saveStatus === "saved"
-                ? "Saved"
-                : saveStatus === "error"
-                  ? "Save failed"
-                  : ""}
-          </span>
+          <SaveStatusButton path={filePath} status={saveStatus} />
           {pageLayouts.length > 0 ? (
             <span className="mr-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
               Page {Math.min(currentPage, pageLayouts.length)}/{pageLayouts.length}
@@ -2482,6 +2630,9 @@ export function PdfViewer({
               <PdfPageView
                 key={`${filePath}-${layout.pageNumber}`}
                 annotations={annotationsByPage.get(layout.pageNumber) ?? EMPTY_ANNOTATIONS}
+                geometry={pageGeometries.get(layout.pageNumber) ?? IDENTITY_PAGE_GEOMETRY}
+                noteToEdit={noteToEdit?.pageNumber === layout.pageNumber ? noteToEdit.id : ""}
+                onEditRequestHandled={editRequestHandled}
                 commentMarks={commentMarksByPage.get(layout.pageNumber) ?? EMPTY_COMMENT_MARKS}
                 documentPath={filePath}
                 drawingMode={drawingMode}
@@ -2491,6 +2642,7 @@ export function PdfViewer({
                 textContentCache={textContentCache}
                 layoutStore={layoutStore}
                 pdfDocument={pdfDocument}
+                paperColor={paperColor}
                 searchMatches={pdfFind.matchesByPage.get(layout.pageNumber) ?? EMPTY_SEARCH_MATCHES}
                 activeSearchMatch={activeSearchMatch?.pageNumber === layout.pageNumber ? activeSearchMatch : undefined}
                 renderActive={
@@ -2510,6 +2662,9 @@ export function PdfViewer({
                 zoom={zoom}
                 onAddDrawing={addDrawing}
                 onAddTextAnnotation={addTextAnnotation}
+                onCommitSpace={commitSpace}
+                onDeleteSpace={deleteSpace}
+                onPreviewSpaces={previewSpaces}
                 onCancelScreenshotSnip={cancelScreenshotSnip}
                 onDeleteAnnotation={deleteAnnotation}
                 onEraseAnnotations={eraseAnnotations}
@@ -2530,6 +2685,11 @@ export function PdfViewer({
 
 type PdfPageContentProps = {
   annotations: PdfAnnotation[];
+  /** Where things are on this page with its spaces. */
+  geometry: PdfPageGeometry;
+  /** A note the page should open for typing once it appears. */
+  noteToEdit: string;
+  onEditRequestHandled: (id: string) => void;
   commentMarks: PdfCommentMark[];
   documentPath: string;
   drawingMode: PdfDrawingMode;
@@ -2539,6 +2699,8 @@ type PdfPageContentProps = {
   activeSearchMatch?: PdfSearchMatch;
   pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
+  /** The page fill from the editor theme, or "" for white. */
+  paperColor: string;
   textContentCache: PdfTextContentCache;
   layoutStore: PdfLayoutStore;
   requestRenderSlot: RequestRenderSlot;
@@ -2547,7 +2709,10 @@ type PdfPageContentProps = {
   tool: PdfTool;
   zoom: number;
   onAddDrawing: (pageNumber: number, draft: PdfDrawingDraft) => void;
-  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect) => string;
+  onAddTextAnnotation: (pageNumber: number, rect: PdfAnnotationRect, space?: string) => string;
+  onCommitSpace: (space: PdfSpaceAnnotation, created: boolean) => void;
+  onDeleteSpace: (id: string) => void;
+  onPreviewSpaces: (pageNumber: number, spaces: PdfSpaceAnnotation[] | null) => void;
   onCancelScreenshotSnip: () => void;
   onDeleteAnnotation: (id: string) => void;
   onEraseAnnotations: (ids: string[], gestureKey: string) => void;
@@ -2586,7 +2751,7 @@ const PdfPageView = memo(function PdfPageView({
         {renderActive ? (
           <PdfPageContent {...contentProps} />
         ) : (
-          <PdfAnnotationScrollAnchors annotations={annotations} pageSize={pageLayout} />
+          <PdfAnnotationScrollAnchors annotations={annotations} geometry={contentProps.geometry} pageSize={pageLayout} />
         )}
       </div>
       <div className="absolute bottom-2 right-2 rounded bg-zinc-950/75 px-2 py-1 text-xs font-medium text-white">
@@ -2598,6 +2763,9 @@ const PdfPageView = memo(function PdfPageView({
 
 function PdfPageContent({
   annotations,
+  geometry,
+  noteToEdit,
+  onEditRequestHandled,
   commentMarks,
   documentPath,
   drawingMode,
@@ -2607,6 +2775,7 @@ function PdfPageContent({
   activeSearchMatch,
   pageLayout,
   pdfDocument,
+  paperColor,
   textContentCache,
   layoutStore,
   requestRenderSlot,
@@ -2617,21 +2786,34 @@ function PdfPageContent({
   onAddDrawing,
   onAddTextAnnotation,
   onCancelScreenshotSnip,
+  onCommitSpace,
   onDeleteAnnotation,
+  onDeleteSpace,
   onEraseAnnotations,
   onExitTextEditing,
+  onPreviewSpaces,
   onScreenshotSnip,
   onSelectAnnotation,
   onSelectComment,
   onUpdateAnnotation,
 }: PdfPageContentProps) {
   const pageNumber = pageLayout.pageNumber;
+  const spaced = geometry !== IDENTITY_PAGE_GEOMETRY;
+  // The original page, in CSS pixels; the sheet is taller by its spaces.
+  const sheetHeight = pageLayout.height / geometry.scale;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rasterHostRef = useRef<HTMLDivElement>(null);
   const detailHostRef = useRef<HTMLDivElement>(null);
+  const geometryRef = useRef(geometry);
+  useLayoutEffect(() => {
+    geometryRef.current = geometry;
+  });
+  const raster = usePdfSpaceRaster({ canvasRef, hostRef: rasterHostRef, geometry });
+  const { renderFinished, renderStarted } = raster;
   const pageRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [rendering, setRendering] = useState(true);
-  const [searchLayer, setSearchLayer] = useState<{ textDivs: HTMLElement[]; page: PdfSearchPage } | null>(null);
+  const [searchLayer, setSearchLayer] = useState<{ textDivs: HTMLElement[]; page: PdfSearchPage; size: AnnotationSurfaceSize } | null>(null);
   const revealedSearchMatchRef = useRef<PdfSearchMatch | undefined>(undefined);
 
   useEffect(() => {
@@ -2672,6 +2854,7 @@ function PdfPageContent({
 
       setRendering(true);
       releaseRenderSlot = await requestRenderSlot();
+      renderStarted();
 
       if (!active) {
         return;
@@ -2695,6 +2878,8 @@ function PdfPageContent({
         canvasContext,
         viewport,
         transform,
+        // The paper fill pdf.js draws anyway; it costs nothing extra.
+        background: paperColor || undefined,
       });
       // Cancellation can reject while text extraction is still pending.
       // Observe that rejection immediately; Promise.all below still handles it.
@@ -2719,8 +2904,9 @@ function PdfPageContent({
       if (active) {
         // Copy maps selected spans back to their text items for Markdown rebuilding.
         textLayer.textDivs.forEach((div, index) => div.setAttribute(PDF_TEXT_ITEM_ATTRIBUTE, String(index)));
+        renderFinished();
         layoutStore.record(page, textContent);
-        setSearchLayer({ textDivs: textLayer.textDivs, page: buildPdfSearchPage(textContent) });
+        setSearchLayer({ textDivs: textLayer.textDivs, page: buildPdfSearchPage(textContent), size: { width: viewport.width / zoom, height: viewport.height / zoom } });
         setRendering(false);
       }
     }
@@ -2744,9 +2930,19 @@ function PdfPageContent({
       textLayer?.cancel();
       releaseSlot();
     };
-  }, [layoutStore, pageNumber, pdfDocument, requestRenderSlot, textContentCache, zoom]);
+  }, [layoutStore, pageNumber, paperColor, pdfDocument, renderFinished, renderStarted, requestRenderSlot, textContentCache, zoom]);
 
-  usePdfDetailCanvas({ hostRef: detailHostRef, pdfDocument, pageNumber, scale: zoom });
+  usePdfDetailCanvas({ hostRef: detailHostRef, surfaceRef: pageRef, geometry, pdfDocument, pageNumber, scale: zoom, background: paperColor });
+
+  // Text spans move with the piece of the page they sit in.
+  const structureKey = geometry.structureKey;
+  const textWasSpacedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (searchLayer && (structureKey || textWasSpacedRef.current)) {
+      assignTextPieces(searchLayer.textDivs, geometryRef.current, searchLayer.size);
+    }
+    textWasSpacedRef.current = !!structureKey;
+  }, [searchLayer, structureKey]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2762,37 +2958,95 @@ function PdfPageContent({
     };
   }, []);
 
-  const { drawings, highlights, textAnnotations } = useMemo(() => {
+  const { drawings, highlights, textAnnotations, spaces } = useMemo(() => {
     const pageDrawings: PdfDrawingAnnotation[] = [];
     const pageHighlights: PdfHighlightAnnotation[] = [];
     const pageTextAnnotations: PdfTextAnnotation[] = [];
+    const pageSpaces: PdfSpaceAnnotation[] = [];
 
     for (const annotation of annotations) {
       if (annotation.type === "highlight") {
         pageHighlights.push(annotation);
       } else if (annotation.type === "text") {
         pageTextAnnotations.push(annotation);
-      } else {
+      } else if (isDrawingAnnotation(annotation)) {
         pageDrawings.push(annotation);
+      } else if (annotation.type === "space") {
+        pageSpaces.push(annotation);
       }
     }
 
-    return { drawings: pageDrawings, highlights: pageHighlights, textAnnotations: pageTextAnnotations };
-  }, [annotations]);
-  const addDrawing = useCallback(
-    (draft: PdfDrawingDraft) => onAddDrawing(pageNumber, draft),
-    [onAddDrawing, pageNumber],
+    return {
+      drawings: pageDrawings.map((annotation) => annotationToSurface(annotation, geometry)),
+      highlights: pageHighlights.map((annotation) => annotationToSurface(annotation, geometry)),
+      textAnnotations: pageTextAnnotations.map((annotation) => annotationToSurface(annotation, geometry)),
+      spaces: pageSpaces,
+    };
+  }, [annotations, geometry]);
+  const surfaceCommentMarks = useMemo(
+    () => spaced
+      ? commentMarks.map((mark) => ({ ...mark, rects: mark.rects.map((rect) => textRectToSurface(geometry, rect)) }))
+      : commentMarks,
+    [commentMarks, geometry, spaced],
   );
+  // Layers report positions on the page as displayed; the host stores them on the original page.
+  const addDrawing = useCallback((draft: PdfDrawingDraft) => {
+    const shown = geometryRef.current;
+    if (draft.type === "ink") {
+      onAddDrawing(pageNumber, { ...draft, ...rigidPointsFromSurface(shown, draft.points) });
+      return;
+    }
+    const { points: [from, to], space } = rigidPointsFromSurface(shown, [draft.from, draft.to]);
+    onAddDrawing(pageNumber, { ...draft, from, to, ...(space ? { space } : {}) });
+  }, [onAddDrawing, pageNumber]);
   const selectedHighlight = highlights.find((highlight) => highlight.id === selectedAnnotationId);
-  const addTextAnnotation = useCallback(
-    (rect: PdfAnnotationRect) => onAddTextAnnotation(pageNumber, rect),
-    [onAddTextAnnotation, pageNumber],
+  const addTextAnnotation = useCallback((rect: PdfAnnotationRect) => {
+    const placed = rigidRectFromSurface(geometryRef.current, rect);
+    return onAddTextAnnotation(pageNumber, placed.rect, placed.space);
+  }, [onAddTextAnnotation, pageNumber]);
+  const annotationsRef = useRef(annotations);
+  useLayoutEffect(() => {
+    annotationsRef.current = annotations;
+  });
+  const updateAnnotation = useCallback((id: string, patch: Partial<PdfAnnotation>) => {
+    const original = annotationsRef.current.find((annotation) => annotation.id === id);
+    onUpdateAnnotation(id, original ? patchFromSurface(original, patch, geometryRef.current) : patch);
+  }, [onUpdateAnnotation]);
+  const placeCut = useCallback((point: { x: number; y: number }, fullWidth: boolean, snap: boolean) => {
+    const mask = raster.inkMask(sheetHeight / Math.max(pageLayout.width, 1));
+    // The page's stored blocks decide its columns, so its spaces always agree.
+    const stored = spaces.reduce<PdfSpaceAnnotation["band"][]>(
+      (bands, space) => bands.some((band) => sameBand(band, space.band)) ? bands : [...bands, space.band],
+      [],
+    );
+    // A space on the themed paper itself keeps no fill and follows the paper
+    // (globals.css), so no theme color is saved with the annotations.
+    const fill = mask && !isPdfPaperColor(mask.background, paperColor) ? mask.background : undefined;
+    return { ...placeSpaceCut(mask, point, stored, { fullWidth, snap }), ...(fill ? { fill } : {}) };
+  }, [pageLayout.width, paperColor, raster, sheetHeight, spaces]);
+  const spaceContentBottom = useCallback((id: string) => {
+    let bottom = 0;
+    for (const annotation of annotationsRef.current) {
+      if (!("space" in annotation) || annotation.space !== id) continue;
+      if (annotation.type === "text") bottom = Math.max(bottom, annotation.rect.y + annotation.rect.height);
+      else if (annotation.type === "ink") for (const point of annotation.points) bottom = Math.max(bottom, point.y);
+      else if (annotation.type === "shape") bottom = Math.max(bottom, annotation.from.y, annotation.to.y);
+    }
+    return bottom;
+  }, []);
+  const previewSpaces = useCallback(
+    (spaces: PdfSpaceAnnotation[] | null) => onPreviewSpaces(pageNumber, spaces),
+    [onPreviewSpaces, pageNumber],
+  );
+  const captureSnip = useCallback(
+    (rect: PdfAnnotationRect) => onScreenshotSnip(pageNumber, areaFromSurface(geometryRef.current, rect)),
+    [onScreenshotSnip, pageNumber],
   );
 
   // Highlights sit under the transparent text layer so text stays selectable
   // through them; clicks are hit-tested here instead.
   function selectHighlightAtPoint(event: React.MouseEvent<HTMLDivElement>) {
-    if (tool !== "select" || !pageRef.current || (!highlights.length && !commentMarks.length)) {
+    if (tool !== "select" || !pageRef.current || (!highlights.length && !surfaceCommentMarks.length)) {
       return;
     }
 
@@ -2828,7 +3082,7 @@ function PdfPageContent({
     }
 
     // A commented passage opens its card in the Comments panel.
-    const comment = [...commentMarks].reverse().find((mark) =>
+    const comment = [...surfaceCommentMarks].reverse().find((mark) =>
       mark.rects.some(
         (rect) =>
           x >= rect.x - slackX &&
@@ -2848,10 +3102,14 @@ function PdfPageContent({
       ref={pageRef}
       className="absolute inset-0 overflow-hidden bg-card"
       data-pdf-page-content={pageNumber}
+      data-pdf-spaced={spaced || undefined}
+      style={pieceShiftStyle(geometry, sheetHeight)}
       onClick={selectHighlightAtPoint}
     >
       <canvas ref={canvasRef} className="absolute inset-0 z-0" />
-      <div ref={detailHostRef} className="pointer-events-none absolute inset-0 z-0" aria-hidden />
+      <div ref={detailHostRef} className="pointer-events-none absolute left-0 top-0 z-[1]" style={{ width: pageLayout.width, height: sheetHeight }} aria-hidden />
+      {/* Empty without spaces; with spaces it holds the page's moved pieces, under the detail. */}
+      <div ref={rasterHostRef} className="pointer-events-none absolute left-0 top-0 z-0" style={{ width: pageLayout.width, height: sheetHeight }} aria-hidden />
 
       <div className="pdf-highlight-layer" aria-hidden>
         {highlights.map((annotation) => (
@@ -2859,9 +3117,9 @@ function PdfPageContent({
         ))}
       </div>
 
-      {commentMarks.length ? (
+      {surfaceCommentMarks.length ? (
         <div className="pdf-comment-layer" aria-hidden>
-          {commentMarks.flatMap((mark) => mark.rects.map((rect, index) => (
+          {surfaceCommentMarks.flatMap((mark) => mark.rects.map((rect, index) => (
             <span
               key={`${mark.id}:${index}`}
               className="pdf-comment-mark"
@@ -2876,11 +3134,32 @@ function PdfPageContent({
       <div
         ref={textLayerRef}
         className="pdf-text-layer"
-        style={{ pointerEvents: (tool === "select" || tool === "highlight") && !screenshotSnipping ? "auto" : "none" }}
+        style={{
+          pointerEvents: (tool === "select" || tool === "highlight") && !screenshotSnipping ? "auto" : "none",
+          // Spans moved below the original page must stay visible.
+          overflow: spaced ? "visible" : undefined,
+        }}
       />
 
+      {spaced || tool === "space" ? <PdfSpaceLayer
+        active={tool === "space" && !screenshotSnipping}
+        editable={(tool === "space" || tool === "select") && !screenshotSnipping}
+        geometry={geometry}
+        pageNumber={pageNumber}
+        pageSize={pageLayout}
+        selectedId={selectedAnnotationId}
+        spaces={spaces}
+        defaultHeight={DEFAULT_SPACE_HEIGHT_PT * zoom / Math.max(sheetHeight, 1)}
+        contentBottom={spaceContentBottom}
+        placeCut={placeCut}
+        onPreview={previewSpaces}
+        onCommit={onCommitSpace}
+        onDelete={onDeleteSpace}
+        onSelect={onSelectAnnotation}
+      /> : null}
+
       <div className="pdf-highlight-ui-layer">
-        {commentMarks.filter((mark) => mark.badge && mark.id !== DRAFT_COMMENT_ID).map((mark) => {
+        {surfaceCommentMarks.filter((mark) => mark.badge && mark.id !== DRAFT_COMMENT_ID).map((mark) => {
           const first = mark.rects[0];
           return (
             <button
@@ -2918,7 +3197,7 @@ function PdfPageContent({
             documentPath={documentPath}
             pageSize={pageLayout}
             onDelete={onDeleteAnnotation}
-            onUpdate={onUpdateAnnotation}
+            onUpdate={updateAnnotation}
           />
         ) : null}
       </div>
@@ -2934,14 +3213,16 @@ function PdfPageContent({
         onAdd={addDrawing}
         onErase={onEraseAnnotations}
         onSelect={onSelectAnnotation}
-        onUpdate={onUpdateAnnotation}
+        onUpdate={updateAnnotation}
       />
 
       <TextAnnotationLayer
         annotations={textAnnotations}
         documentPath={documentPath}
         drawing={tool === "text"}
-        interactive={(tool === "select" || tool === "text") && !screenshotSnipping}
+        editRequestId={noteToEdit}
+        onEditRequestHandled={onEditRequestHandled}
+        interactive={(tool === "select" || tool === "text" || tool === "space") && !screenshotSnipping}
         newAnnotationFontSize={newAnnotationFontSize}
         pageSize={pageLayout}
         selectedAnnotationId={selectedAnnotationId}
@@ -2950,14 +3231,14 @@ function PdfPageContent({
         onDeleteAnnotation={onDeleteAnnotation}
         onExitTextEditing={onExitTextEditing}
         onSelectAnnotation={onSelectAnnotation}
-        onUpdateAnnotation={onUpdateAnnotation}
+        onUpdateAnnotation={updateAnnotation}
       />
 
       <ScreenshotSnipLayer
         active={screenshotSnipping}
         pageSize={pageLayout}
         onCancel={onCancelScreenshotSnip}
-        onCapture={(rect) => onScreenshotSnip(pageNumber, rect)}
+        onCapture={captureSnip}
       />
 
       {rendering ? (
@@ -2972,19 +3253,24 @@ function PdfPageContent({
 
 function PdfAnnotationScrollAnchors({
   annotations,
+  geometry,
   pageSize,
 }: {
   annotations: PdfAnnotation[];
+  geometry: PdfPageGeometry;
   pageSize: AnnotationSurfaceSize;
 }) {
   return (
     <div className="pointer-events-none absolute inset-0">
-      {annotations.map((annotation) => {
+      {annotations.map((shown) => {
+        const annotation = annotationToSurface(shown, geometry);
         const rect = annotation.type === "highlight"
           ? annotation.rects[0]
           : annotation.type === "text"
             ? annotation.rect
-            : drawingBounds(annotation);
+            : isDrawingAnnotation(annotation)
+              ? drawingBounds(annotation)
+              : null;
 
         if (!rect) {
           return null;
@@ -3215,6 +3501,71 @@ function groupAnnotationsByPage(
   }
 
   return next;
+}
+
+function spacesSignature(spaces: readonly PdfSpaceAnnotation[]) {
+  return JSON.stringify(spaces.map((space) => [space.id, space.y, space.height, space.band, space.column, space.fill, space.createdAt]));
+}
+
+/**
+ * Each page's geometry, kept as the same object while the page's spaces are
+ * unchanged, so typing a note or adding a highlight does not re-render pages.
+ */
+function useStablePageGeometries(
+  annotationsByPage: Map<number, PdfAnnotation[]>,
+  draft: { pageNumber: number; spaces: PdfSpaceAnnotation[] } | null,
+) {
+  const [cache, setCache] = useState(() => ({
+    byPage: new Map<number, { source: PdfAnnotation[]; draft: PdfSpaceAnnotation[] | undefined; signature: string; geometry: PdfPageGeometry }>(),
+    groups: null as Map<number, PdfAnnotation[]> | null,
+    draft: null as typeof draft,
+    geometries: EMPTY_PAGE_GEOMETRIES,
+  }));
+
+  if (cache.groups === annotationsByPage && cache.draft === draft) {
+    return cache.geometries;
+  }
+
+  const byPage: typeof cache.byPage = new Map();
+  const pages = new Set(annotationsByPage.keys());
+  if (draft) pages.add(draft.pageNumber);
+
+  for (const pageNumber of pages) {
+    const source = annotationsByPage.get(pageNumber) ?? EMPTY_ANNOTATIONS;
+    const preview = draft?.pageNumber === pageNumber ? draft.spaces : undefined;
+    const before = cache.byPage.get(pageNumber);
+    if (before?.source === source && before.draft === preview) {
+      byPage.set(pageNumber, before);
+      continue;
+    }
+    const spaces = preview ?? source.filter((annotation): annotation is PdfSpaceAnnotation => annotation.type === "space");
+    const signature = spaces.length ? spacesSignature(spaces) : "";
+    byPage.set(pageNumber, { source, draft: preview, signature, geometry: before?.signature === signature ? before.geometry : pdfPageGeometry(spaces) });
+  }
+
+  const spaced = [...byPage].filter(([, entry]) => entry.geometry !== IDENTITY_PAGE_GEOMETRY);
+  const unchanged = spaced.length === cache.geometries.size && spaced.every(([pageNumber, entry]) => cache.geometries.get(pageNumber) === entry.geometry);
+  const geometries = unchanged ? cache.geometries : new Map(spaced.map(([pageNumber, entry]) => [pageNumber, entry.geometry]));
+  setCache({ byPage, groups: annotationsByPage, draft, geometries });
+  return geometries;
+}
+
+/** Page layouts, reusing each page's previous object while its size is unchanged. */
+function useStablePageLayouts(layouts: PdfPageLayout[]) {
+  const [cache, setCache] = useState({ source: layouts, stable: layouts });
+
+  if (cache.source === layouts) {
+    return cache.stable;
+  }
+
+  const stable = layouts.map((layout, index) => {
+    const before = cache.stable[index];
+    return before && before.pageNumber === layout.pageNumber && before.width === layout.width && before.height === layout.height
+      ? before
+      : layout;
+  });
+  setCache({ source: layouts, stable });
+  return stable;
 }
 
 /**

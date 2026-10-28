@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { act, createElement } from "react";
+import { act, createElement, useRef } from "react";
+import type { Editor } from "@tiptap/core";
 import { JSDOM } from "jsdom";
 import type { PdfTabViewState } from "../../src/components/libera/types";
-import type { PdfAnnotation } from "../../src/lib/types";
+import type { PdfAnnotation, PdfSpaceAnnotation } from "../../src/lib/types";
 import { PDF_DETAIL_MARGIN, PDF_MAX_CANVAS_PIXELS } from "../../src/components/libera/pdf-rendering";
 import { captureCanvasViewState } from "../../src/components/libera/canvas-view-state";
+import { assignTextPieces, usePdfSpaceRaster } from "../../src/components/libera/pdf-space-raster";
+import { usePdfDetailCanvas } from "../../src/components/libera/use-pdf-detail-canvas";
+import { IDENTITY_PAGE_GEOMETRY, pdfPageGeometry, type PdfPageGeometry } from "../../src/lib/pdf-space-geometry";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -17,10 +22,12 @@ function deferred<T>() {
 
 test("PDF viewer performance and lifecycle regressions", async (t) => {
   const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: "http://localhost", pretendToBeVisual: true });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "Element", "Node", "KeyboardEvent", "CustomEvent"] as const) {
+  for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "Element", "Node", "KeyboardEvent", "CustomEvent", "DOMParser", "MutationObserver"] as const) {
     Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   }
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { getComputedStyle: dom.window.getComputedStyle.bind(dom.window), requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window) });
+  Object.defineProperty(dom.window.HTMLElement.prototype, "isContentEditable", { configurable: true, get() { return this.closest('[contenteditable="true"]') !== null; } });
   Object.defineProperty(window, "devicePixelRatio", { value: 2 });
   Object.assign(dom.window.HTMLElement.prototype, { setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => false });
   const context = {} as CanvasRenderingContext2D;
@@ -90,6 +97,8 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
   let destroys = 0;
   let signals: AbortSignal[] = [];
   const changes: PdfTabViewState[] = [];
+  const at = "2026-10-24T00:00:00.000Z";
+  const space = (id = "space", height = 0.25): PdfSpaceAnnotation => ({ id, type: "space", pageNumber: 1, y: 0.5, height, band: { top: 0.5, bottom: 0.5, splits: [] }, column: 0, createdAt: at, updatedAt: at });
   function normalLoad(annotations: PdfAnnotation[] = []) {
     getDocumentImpl = () => ({ promise: Promise.resolve(pdf), destroy: async () => { destroys++; } });
     globalThis.fetch = async (input, init) => {
@@ -107,7 +116,7 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       onCompleteScreenshotSnip: async () => undefined,
     })));
   }
-  async function unmount() { await act(async () => root.unmount()); root = createRoot(host); }
+  async function unmount() { await act(async () => root.unmount()); root = createRoot(host); resetPendingSavesForTests(); }
   // JSDOM has no layout: model the viewer's fixed padding/gaps and each page's
   // actual CSS size, including pages outside the PDF render window. Sheets
   // stretch to the widest page, centred until they overflow the viewport.
@@ -609,6 +618,12 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
 
       await key({ key: "Escape" });
       assert.equal(changes.at(-1)?.tool, "select", "Esc puts the eraser down");
+      for (const [shortcut, tool] of [["h", "highlight"], ["t", "text"], ["s", "shape"], ["g", "space"]]) {
+        await key({ key: shortcut });
+        assert.equal(changes.at(-1)?.tool, tool);
+        await key({ key: "Escape" });
+        assert.equal(changes.at(-1)?.tool, "select", `Esc puts the ${tool} tool down`);
+      }
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select highlight"]')!.click());
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Change to underline"]')!.click());
       const mark = page.querySelector<HTMLElement>(".pdf-highlight-mark")!;
@@ -617,6 +632,12 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       assert.ok(host.querySelector('[aria-label="Change to red"]')?.hasAttribute("data-active"), "pastel ink swaps for a pen ink");
 
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+      assert.equal(saved.length, 0, "drawing writes nothing until Save");
+      await act(async () => {
+        host.querySelector<HTMLButtonElement>('[title="Save annotations and ink (Ctrl+S)"]')!.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      assert.equal(saved.length, 1, "one write for every change made");
       const last = saved.at(-1)!;
       assert.deepEqual(last.map((annotation) => annotation.type).sort(), ["highlight", "ink", "shape"]);
       const arrow = last.find((annotation) => annotation.type === "shape");
@@ -732,6 +753,386 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
         host.removeAttribute("data-command-scope");
         dom.window.Element.prototype.getClientRects = getClientRects;
       }
+    });
+    await t.test("text pieces follow tagged PDF spans and respect cuts close to a span's top", () => {
+      const geometry = pdfPageGeometry([space()]);
+      const spans = [document.createElement("span"), document.createElement("span")];
+      Object.assign(spans[0].style, { left: "10%", top: "49.95%" });
+      Object.assign(spans[1].style, { left: "calc(var(--scale-factor) * 61.2px)", top: "calc(var(--scale-factor) * 475.2px)" });
+      assignTextPieces(spans, geometry, { width: 612, height: 792 });
+      assert.equal(spans[0].style.translate, "0 var(--pdf-piece-0, 0px)");
+      assert.equal(spans[1].style.translate, "0 var(--pdf-piece-1, 0px)");
+      assignTextPieces(spans, IDENTITY_PAGE_GEOMETRY, { width: 612, height: 792 });
+      assert.ok(spans.every((span) => span.style.translate === ""));
+    });
+    await t.test("removing the last space never resizes an in-flight PDF.js target", async () => {
+      let raster!: ReturnType<typeof usePdfSpaceRaster>;
+      function Raster({ geometry }: { geometry: PdfPageGeometry }) {
+        const canvasRef = useRef<HTMLCanvasElement>(null);
+        const hostRef = useRef<HTMLDivElement>(null);
+        raster = usePdfSpaceRaster({ canvasRef, hostRef, geometry });
+        return createElement("div", null, createElement("canvas", { ref: canvasRef }), createElement("div", { ref: hostRef }));
+      }
+      Object.assign(context, { drawImage() {} });
+      await act(async () => root.render(createElement(Raster, { geometry: pdfPageGeometry([space()]) })));
+      const canvas = host.querySelector("canvas")!;
+      canvas.width = 1224;
+      canvas.height = 1584;
+      raster.renderStarted();
+      raster.renderFinished();
+      const pieces = [...host.querySelectorAll("canvas")].slice(1);
+      assert.equal(canvas.width, 0, "the pieces own the completed bitmap");
+      raster.renderStarted();
+      canvas.width = 1500;
+      canvas.height = 2000;
+      await act(async () => root.render(createElement(Raster, { geometry: IDENTITY_PAGE_GEOMETRY })));
+      assert.deepEqual([canvas.width, canvas.height], [1500, 2000], "the active render target is untouched");
+      assert.ok(pieces.every((piece) => piece.width > 0), "the previous rendering stays until the replacement is ready");
+      raster.renderFinished();
+      assert.equal(canvas.style.visibility, "");
+      assert.ok(pieces.every((piece) => piece.width === 0 && piece.height === 0));
+      assert.equal(host.querySelectorAll("canvas").length, 1);
+      await unmount();
+    });
+    await t.test("a detail render that finishes after unmount releases its bitmap", async () => {
+      const finished = deferred<void>();
+      let target: HTMLCanvasElement | undefined;
+      const getContext = dom.window.HTMLCanvasElement.prototype.getContext;
+      dom.window.HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+        return { ...context, canvas: this };
+      } as unknown as typeof getContext;
+      const document = {
+        getPage: async () => ({
+          getViewport: () => ({ width: 2448, height: 3168 }),
+          render: ({ canvasContext }: { canvasContext: CanvasRenderingContext2D }) => {
+            target = canvasContext.canvas;
+            return { promise: finished.promise, cancel() {} };
+          },
+        }),
+      };
+      function Detail() {
+        const hostRef = useRef<HTMLDivElement>(null);
+        usePdfDetailCanvas({ hostRef, pdfDocument: document as never, pageNumber: 1, scale: 4 });
+        return createElement("div", { ref: hostRef });
+      }
+      try {
+        await act(async () => root.render(createElement(Detail)));
+        host.firstElementChild!.getBoundingClientRect = () => ({ left: 0, top: 0, right: 2448, bottom: 3168, width: 2448, height: 3168 } as DOMRect);
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 180)); });
+        assert.ok(target && target.width > 0);
+        await unmount();
+        await act(async () => finished.resolve());
+        assert.deepEqual([target!.width, target!.height], [0, 0]);
+      } finally {
+        dom.window.HTMLCanvasElement.prototype.getContext = getContext;
+      }
+    });
+    await t.test("a space drag focuses its note on release, preserves fast typing, and commits once", async () => {
+      normalLoad();
+      const loadFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => init?.method === "PATCH"
+        ? Response.json({ annotations: JSON.parse(String(init.body)).annotations }) : loadFetch(input, init);
+      await mount({ tool: "space" });
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const surface = page.querySelector<HTMLElement>(".pdf-space-surface")!;
+      surface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: parseFloat(page.parentElement!.style.height) } as DOMRect);
+      await act(async () => surface.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 300 })));
+      const before = renders.length;
+      await act(async () => {
+        for (let clientY = 310; clientY <= 380; clientY += 10) surface.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY }));
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      });
+      assert.equal(page.parentElement!.style.height, "872px");
+      assert.equal(page.querySelectorAll("canvas").length, 3);
+      assert.equal(renders.length, before, "opening a cut only repartitions the bitmap");
+      await act(async () => surface.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 100, clientY: 380 })));
+      const editor = page.querySelector<HTMLElement>(".pdf-note-editor")! as HTMLElement & { editor: Editor };
+      assert.ok(editor);
+      assert.equal(document.activeElement, editor, "focus is ready before the next timer/frame");
+      const key = new dom.window.KeyboardEvent("keydown", { key: "p", bubbles: true, cancelable: true });
+      await act(async () => {
+        editor.dispatchEvent(key);
+        editor.editor.commands.insertContent("First keys");
+      });
+      assert.equal(key.defaultPrevented, false, "the first letter is not a viewer shortcut");
+      assert.equal(host.querySelector("[data-pdf-path]")!.getAttribute("data-pdf-tool"), "space");
+      await act(async () => editor.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+      assert.ok(page.querySelector(".pdf-note")?.textContent?.includes("First keys"));
+      await act(async () => observers.at(-1)!.show(5));
+      await act(async () => observers.at(-1)!.show(1));
+      assert.equal(host.querySelector(".pdf-note-editor"), null, "an acknowledged edit request is not replayed on remount");
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+      // Typing is its own step; the following undo removes the space and its note.
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+      assert.equal(host.querySelector(".pdf-space-box"), null);
+      assert.equal(host.querySelector(".pdf-note"), null);
+      await unmount();
+      globalThis.fetch = loadFetch;
+    });
+    await t.test("abandoning the new space's empty note keeps only the space gestures in history", async () => {
+      normalLoad();
+      await mount({ tool: "space" });
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const surface = page.querySelector<HTMLElement>(".pdf-space-surface")!;
+      surface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: 792 } as DOMRect);
+      await act(async () => {
+        surface.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 300 }));
+        surface.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 100, clientY: 300 }));
+      });
+      const editor = page.querySelector<HTMLElement>(".pdf-note-editor")!;
+      await act(async () => {
+        const grip = page.querySelector<HTMLElement>(".pdf-space-grip")!;
+        grip.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientY: 340 }));
+        grip.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientY: 390 }));
+        grip.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientY: 390 }));
+      });
+      await act(async () => editor.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+      assert.equal(page.querySelector(".pdf-note"), null);
+      assert.ok(page.querySelector(".pdf-space-box"));
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+      assert.equal(page.querySelector(".pdf-note"), null, "undoing a resize does not bring the abandoned editor back");
+      assert.ok(Math.abs(parseFloat(page.parentElement!.style.height) - 832) < 1e-6);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+      assert.equal(page.querySelector(".pdf-space-box"), null);
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Redo"]')!.click());
+      assert.ok(page.querySelector(".pdf-space-box"));
+      assert.equal(page.querySelector(".pdf-note"), null);
+      await unmount();
+    });
+    await t.test("space previews near the end of a long document measure logarithmically", async () => {
+      normalLoad();
+      getDocumentImpl = () => ({ promise: Promise.resolve({ ...pdf, numPages: 100, getPage: async () => pages[0] }), destroy: async () => { destroys++; } });
+      await mount({ tool: "space" });
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      await act(async () => observers.at(-1)!.show(100));
+      const { scroller, sheets } = installPdfGeometry();
+      scroller.scrollTop = 99 * 812;
+      let measured = 0;
+      for (const sheet of sheets) {
+        const bounds = sheet.getBoundingClientRect.bind(sheet);
+        sheet.getBoundingClientRect = () => { measured++; return bounds(); };
+      }
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="100"]')!;
+      const surface = page.querySelector<HTMLElement>(".pdf-space-surface")!;
+      surface.getBoundingClientRect = () => ({ left: 0, top: 104, width: 612, height: parseFloat(page.parentElement!.style.height) } as DOMRect);
+      await act(async () => surface.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 300 })));
+      await act(async () => {
+        surface.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY: 350 }));
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      });
+      assert.ok(measured <= 9, `a preview measured ${measured} sheets`);
+      await act(async () => host.querySelector<HTMLButtonElement>('[data-viewer-tool="select"]')!.click());
+      await unmount();
+    });
+    await t.test("leaving the space tool cancels its draft and any queued pointer frame", async () => {
+      normalLoad();
+      await mount({ tool: "space" });
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const surface = page.querySelector<HTMLElement>(".pdf-space-surface")!;
+      surface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: parseFloat(page.parentElement!.style.height) } as DOMRect);
+      await act(async () => surface.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 300 })));
+      await act(async () => {
+        surface.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY: 380 }));
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      });
+      assert.ok(page.querySelector(".pdf-space-box"));
+      await act(async () => {
+        surface.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY: 400 }));
+        host.querySelector<HTMLButtonElement>('[data-viewer-tool="select"]')!.click();
+      });
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      assert.equal(page.parentElement!.style.height, "792px");
+      assert.equal(page.querySelector(".pdf-space-box"), null);
+      assert.equal(page.querySelectorAll("canvas").length, 1);
+      assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.disabled, true);
+      await unmount();
+    });
+    await t.test("a new space stops at the page budget without evicting stored spaces", async () => {
+      normalLoad([
+        { ...space("a", 1), y: 0.2, band: { top: 0.2, bottom: 0.2, splits: [] } },
+        { ...space("b", 1), y: 0.4, band: { top: 0.4, bottom: 0.4, splits: [] } },
+        { ...space("c", 0.9), y: 0.6, band: { top: 0.6, bottom: 0.6, splits: [] } },
+      ]);
+      await mount({ tool: "space" });
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const surface = page.querySelector<HTMLElement>(".pdf-space-surface")!;
+      surface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: parseFloat(page.parentElement!.style.height) } as DOMRect);
+      await act(async () => surface.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 3050 })));
+      await act(async () => {
+        surface.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientX: 100, clientY: 3450 }));
+        surface.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 100, clientY: 3450 }));
+      });
+      assert.equal(page.querySelectorAll(".pdf-space-box").length, 4);
+      for (const id of ["a", "b", "c"]) assert.ok(page.querySelector(`[data-pdf-space-id="${id}"]`));
+      assert.equal(parseFloat(page.parentElement!.style.height), 792 * 4);
+      await unmount();
+    });
+    await t.test("consecutive resize drags each keep their own undo step", async () => {
+      normalLoad([space()]);
+      const loadFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => init?.method === "PATCH"
+        ? Response.json({ annotations: JSON.parse(String(init.body)).annotations }) : loadFetch(input, init);
+      try {
+        await mount({ tool: "space" });
+        const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+        const height = () => parseFloat(page.parentElement!.style.height);
+        const resize = (from: number, to: number) => act(async () => {
+          const grip = page.querySelector<HTMLElement>(".pdf-space-grip")!;
+          grip.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientY: from }));
+          grip.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientY: to }));
+          grip.dispatchEvent(new dom.window.MouseEvent("pointerup", { bubbles: true, button: 0, clientY: to }));
+        });
+        await resize(600, 650);
+        assert.ok(Math.abs(height() - 1040) < 1e-6);
+        await resize(650, 700);
+        assert.ok(Math.abs(height() - 1090) < 1e-6);
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+        assert.ok(Math.abs(height() - 1040) < 1e-6);
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.click());
+        assert.ok(Math.abs(height() - 990) < 1e-6);
+      } finally {
+        await unmount();
+        globalThis.fetch = loadFetch;
+      }
+    });
+    await t.test("remote space edits preserve reading position and cancel a conflicting resize", async () => {
+      normalLoad([space()]);
+      await mount({ tool: "space" });
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      const { scroller, sheets } = installPdfGeometry();
+      scroller.scrollTop = 1100;
+      const readingTop = sheets[1].getBoundingClientRect().top;
+      const channel = new BroadcastChannel("libera-annotations:pdf:paper.pdf");
+      const remote = async (annotations: PdfAnnotation[]) => act(async () => {
+        channel.postMessage({ sender: "another-window", kind: "pdf", path: "paper.pdf", annotations });
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      });
+      try {
+        await remote([space("space", 0.5)]);
+        assert.equal((sheets[0].firstElementChild as HTMLElement).style.height, "1188px");
+        assert.ok(Math.abs(sheets[1].getBoundingClientRect().top - readingTop) < 1e-6);
+        const grip = host.querySelector<HTMLElement>(".pdf-space-grip")!;
+        await act(async () => grip.dispatchEvent(new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientY: 792 })));
+        await act(async () => {
+          grip.dispatchEvent(new dom.window.MouseEvent("pointermove", { bubbles: true, clientY: 900 }));
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        });
+        assert.equal(parseFloat((sheets[0].firstElementChild as HTMLElement).style.height), 1296);
+        await remote([]);
+        assert.equal(host.querySelector(".pdf-space-box"), null, "the removed grip cannot leave a stale preview behind");
+        assert.equal((sheets[0].firstElementChild as HTMLElement).style.height, "792px");
+        assert.equal(host.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.disabled, true);
+      } finally {
+        channel.close();
+        await unmount();
+      }
+    });
+    await t.test("comment focus centres the displayed passage across a space", async () => {
+      normalLoad([space()]);
+      await mount();
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      const { scroller } = installPdfGeometry();
+      const loadFetch = globalThis.fetch;
+      const { loadPdfComments, focusPdfComment } = await import("../../src/components/libera/pdf-comments-store");
+      globalThis.fetch = async (input, init) => String(input).startsWith("/api/pdf-comments")
+        ? Response.json({ threads: [{ id: "comment", status: "open", createdAt: at, updatedAt: at, messages: [], anchor: {
+          quote: "Across the cut", segments: [{ pageNumber: 1, rects: [
+            { x: 0.1, y: 0.45, width: 0.3, height: 0.02 },
+            { x: 0.1, y: 0.6, width: 0.3, height: 0.02 },
+          ] }],
+        } }] }) : loadFetch(input, init);
+      try {
+        await act(async () => loadPdfComments("paper.pdf"));
+        await act(async () => focusPdfComment("paper.pdf", "comment"));
+        const expected = 24 + ((0.45 + 0.6 + 0.25 + 0.02) / 2) * 792 - 300;
+        assert.ok(Math.abs(scroller.scrollTop - expected) < 1e-6);
+      } finally {
+        globalThis.fetch = async (input, init) => String(input).startsWith("/api/pdf-comments") ? Response.json({ threads: [] }) : loadFetch(input, init);
+        await act(async () => loadPdfComments("paper.pdf"));
+        globalThis.fetch = loadFetch;
+        await unmount();
+      }
+    });
+    await t.test("spaces open the page as displayed and keep annotations attached", async () => {
+      const at = "2026-10-24T00:00:00.000Z";
+      const note = (id: string, y: number, extra: object = {}) => ({
+        id, type: "text", pageNumber: 1, text: id, fontSize: 10, rect: { x: 0.1, y, width: 0.3, height: 0.05 }, createdAt: at, updatedAt: at, ...extra,
+      }) as PdfAnnotation;
+      normalLoad([
+        { id: "space", type: "space", pageNumber: 1, y: 0.5, height: 0.25, band: { top: 0.5, bottom: 0.5, splits: [] }, column: 0, createdAt: at, updatedAt: at },
+        note("in-space", 0.02, { space: "space" }),
+        note("below", 0.6),
+        note("above", 0.2),
+      ]);
+      const loadFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => init?.method === "PATCH"
+        ? Response.json({ annotations: JSON.parse(String(init.body)).annotations })
+        : loadFetch(input, init);
+      // Pieces are cut from the page canvas.
+      Object.assign(context, { drawImage() {} });
+      await mount();
+      const viewer = host.querySelector<HTMLElement>("[data-pdf-path]")!;
+      viewer.focus();
+      const sheet = (pageNumber: number) => host.querySelector<HTMLElement>(`[data-pdf-page-number="${pageNumber}"]`)!.firstElementChild as HTMLElement;
+      const page = () => host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const top = (id: string) => parseFloat(host.querySelector<HTMLElement>(`[data-pdf-annotation-id="${id}"]`)!.style.top);
+      const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} ≠ ${expected}`);
+
+      assert.equal(sheet(1).style.height, "990px", "the page is a quarter page taller");
+      assert.equal(sheet(2).style.height, "792px");
+      assert.equal(page().style.getPropertyValue("--pdf-piece-1"), "198px");
+      assert.equal(page().querySelectorAll("canvas").length, 3, "the page canvas and two pieces");
+      near(top("above"), 0.2 * 792);
+      near(top("in-space"), 0.52 * 792);
+      near(top("below"), 0.85 * 792);
+
+      await act(async () => { await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); });
+      const { scroller, sheets } = installPdfGeometry();
+      scroller.scrollTop = 1100;
+      const editedTop = sheets[0].getBoundingClientRect().top;
+
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete space"]')!.click());
+      assert.equal(sheet(1).style.height, "792px");
+      assert.equal(host.querySelector('[data-pdf-annotation-id="in-space"]'), null, "what was in the space went with it");
+      near(top("below"), 0.6 * 792);
+      assert.equal(page().querySelectorAll("canvas").length, 1, "the page canvas shows the page again");
+      near(sheets[0].getBoundingClientRect().top, editedTop);
+
+      // Undo is not an edit under the pointer: the page being read stays still.
+      const readingTop = sheets[1].getBoundingClientRect().top;
+      await act(async () => viewer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true })));
+      assert.equal(sheet(1).style.height, "990px", "undo brings the space back");
+      near(top("in-space"), 0.52 * 792);
+      near(sheets[1].getBoundingClientRect().top, readingTop);
+      await unmount();
+      globalThis.fetch = loadFetch;
+    });
+    await t.test("a space in one column moves that column and what is below the block, not the other column", async () => {
+      const at = "2026-10-24T00:00:00.000Z";
+      const note = (id: string, x: number, y: number) => ({
+        id, type: "text", pageNumber: 1, text: id, fontSize: 10, rect: { x, y, width: 0.2, height: 0.05 }, createdAt: at, updatedAt: at,
+      }) as PdfAnnotation;
+      normalLoad([
+        { id: "left-space", type: "space", pageNumber: 1, y: 0.5, height: 0.25, band: { top: 0.2, bottom: 0.8, splits: [0.5] }, column: 0, createdAt: at, updatedAt: at },
+        note("left-below", 0.1, 0.6),
+        note("right-below", 0.6, 0.6),
+        note("under-block", 0.6, 0.9),
+      ]);
+      Object.assign(context, { drawImage() {} });
+      await mount();
+      const page = host.querySelector<HTMLElement>('[data-pdf-page-content="1"]')!;
+      const top = (id: string) => parseFloat(host.querySelector<HTMLElement>(`[data-pdf-annotation-id="${id}"]`)!.style.top);
+      const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} ≠ ${expected}`);
+
+      assert.equal((page.parentElement as HTMLElement).style.height, "990px");
+      near(top("left-below"), 0.85 * 792);
+      near(top("right-below"), 0.6 * 792);
+      near(top("under-block"), 1.15 * 792);
+      const box = page.querySelector<HTMLElement>(".pdf-space-box")!;
+      assert.deepEqual([box.style.left, box.style.width, box.style.top], ["0px", "306px", `${0.5 * 792}px`]);
+      // Above the block, the two columns, the left column below its cut, and below the block.
+      assert.equal(page.querySelectorAll("canvas").length, 1 + 5);
+      await unmount();
     });
     await t.test("closing during fetch aborts both requests and never starts PDF.js", async () => {
       signals = [];

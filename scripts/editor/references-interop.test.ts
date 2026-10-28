@@ -420,7 +420,7 @@ test("the citation index reads only new and changed files and drops deleted ones
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     assert.equal(index.version, 3, "version 3 verifies saved content as well as narrative citation candidates");
     assert.deepEqual(Object.keys(index.files), ["Notes/a.md", "Notes/c.md", "Notes/sub/b.md"]);
-    assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["contentHash", "keys", "mtimeMs", "size"]);
+    assert.deepEqual(Object.keys(index.files["Notes/a.md"]).sort(), ["contentHash", "keys"], "no timestamps or sizes, which differ between computers");
     const indexMtime = (await stat(indexPath)).mtimeMs;
 
     result = await refreshNotebookCitations("Notes");
@@ -433,10 +433,25 @@ test("the citation index reads only new and changed files and drops deleted ones
     result = await refreshNotebookCitations("Notes");
     assert.deepEqual(result.byFile["Notes/a.md"], ["q", "w"]);
     assert.equal(result.stats.read, 1);
+    const afterEdit = await readFile(indexPath, "utf8");
+    const afterEditMtime = (await stat(indexPath)).mtimeMs;
     await utimes(path.join(root, "a.md"), fixed, new Date(fixed.getTime() + 5000));
     result = await refreshNotebookCitations("Notes");
     assert.deepEqual(result.byFile["Notes/a.md"], ["q", "w"]);
     assert.equal(result.stats.read, 0, "timestamp-only changes reuse parsed citations");
+    assert.equal(result.stats.written, false, "timestamp-only changes do not rewrite the index");
+    assert.equal(await readFile(indexPath, "utf8"), afterEdit);
+    assert.equal((await stat(indexPath)).mtimeMs, afterEditMtime);
+
+    // An index written with the older per-file mtimeMs and size is read as is, not rewritten.
+    const legacy = JSON.parse(afterEdit) as { files: Record<string, object> };
+    for (const entry of Object.values(legacy.files)) Object.assign(entry, { mtimeMs: 1, size: 2 });
+    legacy.files = Object.fromEntries(Object.entries(legacy.files).reverse());
+    await writeFile(indexPath, JSON.stringify(legacy));
+    const legacyMtime = (await stat(indexPath)).mtimeMs;
+    result = await refreshNotebookCitations("Notes");
+    assert.deepEqual(result.stats, { files: 3, read: 0, written: false });
+    assert.equal((await stat(indexPath)).mtimeMs, legacyMtime);
 
     await writeFile(path.join(root, "e.md"), "[@new]");
     await unlink(path.join(root, "sub/b.md"));

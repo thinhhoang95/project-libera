@@ -1,5 +1,6 @@
 import type { Plugin } from "unified";
 import type { Root } from "mdast";
+import { MARKDOWN_BOX_SHORTCUTS } from "./markdown-boxes";
 import { escapedAt, mathMarkerPairs, matchMath, preferredMathMarkerPair, type MathMarkerPair, type MathMarkerSettings } from "./math-markers";
 
 /**
@@ -26,7 +27,7 @@ export const MARKDOWN_MACROS_INSTRUCTION = "A Markdown note may define macros in
 
 export type MarkdownMacro = {
   name: string;
-  /** Number of `{…}` arguments, `#1` … `#9` in the body. */
+  /** Number of `{…}` arguments, `#1` … `#9` in the body (`##` is a literal `#`). */
   arity: number;
   /** Markdown, or LaTeX for a math macro. */
   body: string;
@@ -48,12 +49,31 @@ export type MarkdownMacroReplacement = {
   outStart: number;
   text: string;
   kind: "macro" | "counter" | "math" | "block";
+  /** The quote or list prefix the text's later lines were given, to take off where it renders inside that container. */
+  prefix?: string;
 };
 
 const MAX_DEPTH = 16;
 const COUNTER = /^\\counter-([A-Za-z][A-Za-z0-9_]*)/;
 const REMARK_MATH_PAIRS: MathMarkerPair[] = [{ open: "$$", close: "$$", display: true }, { open: "$", close: "$", display: false }];
 const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})([^\n]*)$/;
+/** A quote's `>`, or a colored box's `b>`, at the start of a line. */
+const QUOTE = `(?:[${MARKDOWN_BOX_SHORTCUTS}]>(?!>)|>)`;
+const CONTAINER_PREFIX = new RegExp(`^(?:[ \\t]*(?:${QUOTE}[ \\t]?|(?:[-*+]|\\d{1,9}[.)])[ \\t]+))*`, "i");
+/** A line's quote prefix, then its list item or heading marker. */
+const LINE_MARKERS = new RegExp(`^([ \\t]*(?:${QUOTE}[ \\t]?)*)((?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+(?:\\[[ xX]\\][ \\t]+)?|#{1,6}[ \\t]+)?)`, "i");
+/** Inline Markdown that may wrap a parameter, `[color=#2563eb]#1[/color]` or `**#1**`: an opener before it and its closer. */
+const WRAPPERS: Array<[RegExp, (open: string) => string]> = [
+  [/\[color=#[0-9A-Fa-f]{3,8}\]$/, () => "[/color]"],
+  [new RegExp(`[${MARKDOWN_BOX_SHORTCUTS}]?>>>$`, "i"), () => "<<<"],
+  [/(?:\*\*|__|~~|==|\*|_)$/, (open) => open],
+];
+/**
+ * `#1`…`#9` is a parameter and `##1` a literal `#1`, as in LaTeX (`##` before
+ * anything else is Markdown, such as a heading). A hex color (`#2563eb`,
+ * `#2563ebcc`) stays as written, so colors need no escaping.
+ */
+const PARAMETER = /##(?=[1-9])|#(?![0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?(?![0-9A-Za-z_]))([1-9])/g;
 
 export function isMacroBlockLanguage(info: unknown) {
   return String(info ?? "").trim().split(/\s+/)[0] === MACRO_BLOCK_LANGUAGE;
@@ -78,7 +98,7 @@ function readGroup(source: string, index: number) {
 
 function highestParameter(body: string) {
   let highest = 0;
-  for (const match of body.matchAll(/#([1-9])/g)) highest = Math.max(highest, Number(match[1]));
+  for (const match of body.matchAll(PARAMETER)) if (match[1]) highest = Math.max(highest, Number(match[1]));
   return highest;
 }
 
@@ -220,8 +240,24 @@ function readArguments(source: string, index: number, arity: number) {
   return { args, end: index };
 }
 
-function substitute(body: string, args: string[]) {
-  return body.replace(/#([1-9])/g, (whole, n: string) => args[Number(n) - 1] ?? whole);
+/**
+ * Puts arguments into a body. In a text macro an argument over several lines
+ * continues the container its parameter is in: each line of `> #1` stays in
+ * the quote and of `- #1` in the list item, while a heading or table row gets
+ * it on one line. Blank lines at its edges (`{` and `}` on lines of their own) go.
+ */
+function substitute(body: string, args: string[], text: boolean) {
+  return body.replace(PARAMETER, (whole, n: string | undefined, offset: number) => {
+    if (!n) return "#";
+    const arg = args[Number(n) - 1];
+    if (arg === undefined || !text || !arg.includes("\n")) return arg ?? whole;
+    const value = arg.replace(/^(?:[ \t]*\n)+/, "").replace(/(?:\n[ \t]*)+$/, "");
+    const line = body.slice(body.lastIndexOf("\n", offset - 1) + 1, offset);
+    if (/^[ \t]*(?:#{1,6}[ \t]|\|)/.test(line)) return value.replace(/[ \t]*\n\s*/g, " ");
+    const lineEnd = body.indexOf("\n", offset);
+    const { open, close } = wrappersAround(line, body.slice(offset + whole.length, lineEnd < 0 ? body.length : lineEnd));
+    return continueLines(rewrap(value, open, close), continuationPrefix(line));
+  });
 }
 
 /** The invocation (or counter) at `index`, which holds a backslash. */
@@ -239,8 +275,8 @@ function invoke(source: string, index: number, context: ExpandContext, depth: nu
   const read = readArguments(source, index + 1 + name!.length, macro.arity);
   if (!read) return null;
   // An argument running over lines of a quote or list loses their prefix; the expansion gets it back.
-  const args = prefix ? read.args.map((arg) => arg.split(`\n${prefix}`).join("\n")) : read.args;
-  const body = substitute(macro.body, args);
+  const args = read.args.map((arg) => removeLinePrefix(arg, prefix));
+  const body = substitute(macro.body, args, !macro.math);
   const text = macro.math ? expandMath(body, context, depth + 1) : expandText(body, context, depth + 1);
   return { end: read.end, text, kind: "macro" as const, macro };
 }
@@ -262,19 +298,96 @@ function expandMath(latex: string, context: ExpandContext, depth: number) {
   return output + latex.slice(copied);
 }
 
-/** What precedes an inserted line in this container: `> ` stays, list markers become spaces. */
+/** The inline openers right before a parameter whose closers come right after it, innermost first. */
+function wrappersAround(before: string, after: string) {
+  let open = "";
+  let close = "";
+  for (let found = true; found;) {
+    found = false;
+    for (const [pattern, closer] of WRAPPERS) {
+      const opener = pattern.exec(before)?.[0];
+      const end = opener && closer(opener);
+      if (!opener || !end || !after.startsWith(end)) continue;
+      open = opener + open;
+      close += end;
+      before = before.slice(0, -opener.length);
+      after = after.slice(end.length);
+      found = true;
+      break;
+    }
+  }
+  return { open, close };
+}
+
+/**
+ * Inline Markdown cannot cross a paragraph, list item or heading, so an
+ * argument of several gets its wrapper closed and opened again around each
+ * (the body has the first opener and the last closer). Code, tables and rules
+ * are left unwrapped.
+ */
+function rewrap(value: string, open: string, close: string) {
+  if (!open || !value.includes("\n")) return value;
+  const out: string[] = [];
+  let running = true;
+  let last = -1;
+  let fence = "";
+  const end = () => {
+    if (running && last >= 0) out[last] += close;
+    else if (running) out.push(close, "");
+    running = false;
+  };
+  value.split("\n").forEach((line, index) => {
+    if (fence) {
+      out.push(line);
+      if (line.replace(/^[ \t]*(?:>[ \t]?)*/, "").trim().startsWith(fence)) fence = "";
+      return;
+    }
+    const [markers, quote, marker] = LINE_MARKERS.exec(line)!;
+    const content = line.slice(markers.length);
+    const fenceOpen = /^[ \t]*(`{3,}|~{3,})/.exec(line.slice(quote.length));
+    if (!line.slice(quote.length).trim() || fenceOpen || /^[ \t]*(?:\||(?:[-*_][ \t]*){3,}$)/.test(line.slice(quote.length))) {
+      end();
+      if (fenceOpen) fence = fenceOpen[1];
+      out.push(line);
+      return;
+    }
+    if (index === 0 && markers) end();
+    if (!running || (marker && index > 0)) {
+      end();
+      out.push(markers + open + content);
+      running = true;
+    } else out.push(line);
+    last = out.length - 1;
+  });
+  // The body's closer needs an opener to close.
+  if (!running) out.push("", open);
+  return out.join("\n");
+}
+
+/** What precedes an inserted line in this container: `> ` and `b> ` stay, list markers become spaces. */
 function continuationPrefix(lineBefore: string) {
-  const prefix = /^(?:[ \t]*(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+))*/.exec(lineBefore)![0];
+  const prefix = CONTAINER_PREFIX.exec(lineBefore)![0];
   return prefix.replace(/[-*+]|\d{1,9}[.)]/g, (marker) => " ".repeat(marker.length));
+}
+
+/** Takes `prefix` off the lines after the first, as written in a quote or list (a blank quote line may be a bare `>`). */
+export function removeLinePrefix(text: string, prefix: string) {
+  if (!prefix || !text.includes("\n")) return text;
+  return text.split("\n").map((line, index) => index === 0 ? line : line.startsWith(prefix) ? line.slice(prefix.length) : line.trimEnd() === prefix.trimEnd() ? "" : line).join("\n");
+}
+
+/** Writes `prefix` before every line after the first; a blank line gets it without trailing spaces. */
+function continueLines(text: string, prefix: string) {
+  return prefix ? text.replace(/\n([^\n]*)/g, (_, line: string) => `\n${line ? prefix + line : prefix.trimEnd()}`) : text;
 }
 
 function expandText(source: string, context: ExpandContext, depth: number, emit?: (replacement: MarkdownMacroReplacement) => void) {
   let output = "";
   let copied = 0;
   let lineStart = 0;
-  const replace = (start: number, end: number, text: string, kind: MarkdownMacroReplacement["kind"]) => {
+  const replace = (start: number, end: number, text: string, kind: MarkdownMacroReplacement["kind"], prefix?: string) => {
     output += source.slice(copied, start);
-    emit?.({ start, end, outStart: output.length, text, kind });
+    emit?.({ start, end, outStart: output.length, text, kind, ...(prefix ? { prefix } : {}) });
     output += text;
     copied = end;
   };
@@ -324,8 +437,8 @@ function expandText(source: string, context: ExpandContext, depth: number, emit?
         ? `${context.display.open}\n${text}\n${context.display.close}`
         : `${context.inline.open}${text}${context.inline.close}`;
     }
-    if (text.includes("\n")) text = text.replace(/\n/g, `\n${prefix}`);
-    replace(i, result.end, text, result.kind);
+    text = continueLines(text, prefix);
+    replace(i, result.end, text, result.kind, prefix);
     i = result.end;
   }
   return output + source.slice(copied);

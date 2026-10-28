@@ -137,6 +137,9 @@ export function validParameterValues(model: ImageGenerationModel, values: ImageP
 }
 
 export type GalleryPhoto = {
+  /** The catalog omits prompts/models; fetch details only when opening a photo. */
+  detailsDeferred?: boolean;
+  detailsVersion?: string;
   /** Stable id that survives moves, renames and edits. */
   id: string;
   /** Path inside the gallery folder, `folder/name.png` or `name.png`. */
@@ -239,4 +242,19 @@ export function galleryRawUrl(photo: Pick<GalleryPhoto, "path" | "updatedAt" | "
   const query = new URLSearchParams({ v: `${photo.updatedAt}-${photo.size}` });
   if (thumbnail) query.set("thumbnail", "1");
   return `/api/gallery/raw/${photo.path.split("/").map(encodeURIComponent).join("/")}?${query}`;
+}
+
+export const GALLERY_IMAGE_SIZES = [160, 320, 640, 1280, 2048] as const;
+
+export function galleryImageSize(requested: number) {
+  return GALLERY_IMAGE_SIZES.find((size) => size >= requested) ?? 2048;
+}
+
+/** The same URL is used by preloads and the viewer, so the browser can reuse it. */
+export function sizedGalleryUrl(url: string, edge = 2048) {
+  const [pathname, search] = url.split("?");
+  const query = new URLSearchParams(search);
+  query.set("thumbnail", "1");
+  query.set("size", String(galleryImageSize(edge)));
+  return `${pathname}?${query}`;
 }

@@ -13,6 +13,11 @@ import { useMarkdownReview } from "./markdown-review-context";
 
 const VISUAL_SELECTION_ERROR = "This visual selection could not be mapped to Markdown. Use the source editor to comment on this passage.";
 
+function sourceCommentPoint(input: { getBoundingClientRect: () => DOMRect }) {
+  const rect = input.getBoundingClientRect();
+  return { x: rect.left + 30, y: rect.top + 30 };
+}
+
 type Review = NonNullable<ReturnType<typeof useMarkdownReview>>;
 
 /**
@@ -82,7 +87,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
       const review = latest.current.r;
       if (!review?.enabled) return;
       if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "m") {
-        event.preventDefault(); event.stopImmediatePropagation(); const rect = input!.getBoundingClientRect(); review.select({ start: input!.selectionStart, end: input!.selectionEnd }, rect.left + 30, rect.top + 30);
+        event.preventDefault(); event.stopImmediatePropagation(); const point = sourceCommentPoint(input!); review.select({ start: input!.selectionStart, end: input!.selectionEnd }, point.x, point.y);
       }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === input!.value) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === input!.value) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
@@ -96,7 +101,7 @@ export function useSourceReview(textareaRef: RefObject<HTMLTextAreaElement | nul
   }, [register, textareaRef]);
   return r;
 }
-export function useCodeMirrorReview(view: EditorView | null, apply: (text: string) => void) {
+export function useCodeMirrorReview(view: EditorView | null, apply: (text: string) => void, sourceTextarea?: RefObject<HTMLTextAreaElement | null>) {
   const r = useMarkdownReview();
   const latest = useRef({ r, apply });
   useLayoutEffect(() => { latest.current = { r, apply }; }, [r, apply]);
@@ -107,7 +112,8 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     const root = view.contentDOM;
     const range = () => { const { from, to } = view.state.selection.main; return { start: from, end: to }; };
     let claimed: Event | null = null;
-    const unregister = register({ isComposing: () => view.composing, snapshot: () => { if (view.composing) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
+    const composing = () => sourceTextarea ? view.compositionStarted : view.composing;
+    const unregister = register({ isComposing: composing, snapshot: () => { if (composing()) throw new Error("Finish composing text before reviewing."); return view.state.doc.toString(); }, apply: (text) => latest.current.apply(text),
       selection: () => { const { from, to } = view.state.selection.main; return to > from ? { start: from, end: to } : null; }, focus: (target) => {
       const length = view.state.doc.length;
       const anchor = Math.min(target.start, length), head = Math.min(target.end, length);
@@ -115,7 +121,7 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
       view.focus();
     } });
     function select(event: MouseEvent) {
-      if (!latest.current.r?.enabled || view!.composing || event.button !== 0) return;
+      if (!latest.current.r?.enabled || composing() || (!sourceTextarea && event.button !== 0)) return;
       // Let CodeMirror settle the selection from this mouseup first.
       const { clientX, clientY } = event;
       window.setTimeout(() => latest.current.r?.enabled && latest.current.r.select(range(), clientX, clientY), 0);
@@ -125,7 +131,10 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
       if (!review?.enabled) return;
       const text = () => view!.state.doc.toString();
       if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "m") {
-        event.preventDefault(); event.stopImmediatePropagation(); const rect = view!.coordsAtPos(view!.state.selection.main.head); review.select(range(), rect?.left ?? 30, rect?.bottom ?? 30);
+        event.preventDefault(); event.stopImmediatePropagation();
+        const rect = sourceTextarea?.current ? null : view!.coordsAtPos(view!.state.selection.main.head);
+        const point = sourceTextarea?.current ? sourceCommentPoint(sourceTextarea.current) : { x: rect?.left ?? 30, y: rect?.bottom ?? 30 };
+        review.select(range(), point.x, point.y);
       }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.undo.at(-1)?.after === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("undo"); }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z" && review.doc?.redo?.at(-1)?.before === text()) { event.preventDefault(); event.stopImmediatePropagation(); void review.action("redo"); }
@@ -135,7 +144,7 @@ export function useCodeMirrorReview(view: EditorView | null, apply: (text: strin
     const changed = () => latest.current.r?.clearSelection();
     root.addEventListener("input", changed); root.addEventListener("mouseup", select); root.addEventListener("keydown", key, true); root.addEventListener("keydown", escape);
     return () => { unregister(); root.removeEventListener("input", changed); root.removeEventListener("mouseup", select); root.removeEventListener("keydown", key, true); root.removeEventListener("keydown", escape); };
-  }, [view, register]);
+  }, [view, register, sourceTextarea]);
   useEffect(() => { if (view) { installCodeMirrorReview(view); setCodeMirrorReviewLocked(view, !!r?.locked); } }, [view, r?.locked]);
   const sharedDoc = !!r?.shared;
   const reportViewport = r?.reportViewport;

@@ -3,43 +3,27 @@
 import { DefinitionsPanel } from "@/components/libera/definitions-panel";
 import { OUTLINE_VIEW_EVENT, readStoredOutlineView, storeOutlineView, type OutlinePanelView } from "@/components/libera/outline-view";
 import { LatexOutline } from "@/components/libera/latex/latex-outline";
+import { PdfDocumentOutline } from "@/components/libera/pdf-outline-panel";
 import {
   ChevronDown,
   ChevronRight,
-  Circle,
-  GripVertical,
-  Highlighter,
-  Minus,
-  MoveUpRight,
-  PenLine,
-  Quote,
+  ListTree,
   Search,
-  Square,
-  StickyNote,
-  Strikethrough,
   Trash2,
-  Underline,
-  Waves,
   X,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, RefObject } from "react";
-import { apiRequest } from "@/components/libera/api-client";
 import { useMarkdownDisplayPreferences } from "@/components/libera/markdown-display-preferences";
 import { MarkdownSlidesOutlinePreview } from "@/components/libera/markdown-slides-outline-preview";
 import { SidebarNameTooltipButton } from "@/components/libera/sidebar-name-tooltip";
-import {
-  PDF_ANNOTATIONS_UPDATED_EVENT,
-  type PdfAnnotationsUpdatedDetail,
-} from "@/components/libera/pdf-annotation-events";
 import type { OpenTab } from "@/components/libera/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { scrollTextareaToOffset } from "@/lib/textarea-position";
 import { MARKDOWN_OUTLINE_NAVIGATE_EVENT, type MarkdownOutlineNavigateDetail } from "@/lib/markdown-outline-navigation";
-import { normalizePdfHighlightQuote } from "@/lib/pdf-highlight-quote";
-import { PDF_QUOTE_CITE_EVENT, type PdfQuoteCiteDetail } from "@/lib/references/pdf-quote";
 import type { MathMarkerSettings } from "@/lib/math-markers";
-import type { LiberaFileNode, PdfAnnotation, PdfAnnotationsPayload, PdfHighlightAnnotation } from "@/lib/types";
+import type { LiberaFileNode } from "@/lib/types";
 
 type OutlinePanelProps = {
   activeTab?: OpenTab;
@@ -397,85 +381,6 @@ function useMarkdownOutline(activeTab?: OpenTab) {
     : { draft: "", headings: [], tabId: "" };
 }
 
-const MARKUP_LABELS = {
-  underline: "Underline",
-  strikethrough: "Strikethrough",
-  squiggly: "Squiggly underline",
-} as const;
-
-const SHAPE_LABELS = {
-  rectangle: "Rectangle",
-  ellipse: "Ellipse",
-  line: "Line",
-  arrow: "Arrow",
-} as const;
-
-function annotationLabel(annotation: PdfAnnotation) {
-  if (annotation.type === "text") {
-    return annotation.text.trim() || "Text annotation";
-  }
-
-  if (annotation.type === "shape") {
-    return SHAPE_LABELS[annotation.shape];
-  }
-
-  if (annotation.type === "ink") {
-    return "Pen drawing";
-  }
-
-  const quote = annotation.quote ? normalizePdfHighlightQuote(annotation.quote) : "";
-
-  if (quote) {
-    return quote;
-  }
-
-  return annotation.markup ? MARKUP_LABELS[annotation.markup] : "Highlight";
-}
-
-function annotationIcon(annotation: PdfAnnotation) {
-  const className = "h-4 w-4 shrink-0 text-muted-foreground";
-
-  if (annotation.type === "text") {
-    return <StickyNote aria-hidden className={className} />;
-  }
-
-  if (annotation.type === "ink") {
-    return <PenLine aria-hidden className={className} />;
-  }
-
-  if (annotation.type === "shape") {
-    const Icon = { rectangle: Square, ellipse: Circle, line: Minus, arrow: MoveUpRight }[annotation.shape];
-
-    return <Icon aria-hidden className={className} />;
-  }
-
-  const Icon = annotation.markup
-    ? { underline: Underline, strikethrough: Strikethrough, squiggly: Waves }[annotation.markup]
-    : Highlighter;
-
-  return <Icon aria-hidden className={className} />;
-}
-
-function scrollPdfAnnotationIntoView(annotation: PdfAnnotation) {
-  window.requestAnimationFrame(() => {
-    const escapedAnnotationId = CSS.escape(annotation.id);
-    // With a split canvas several PDFs can be on screen; prefer the focused pane.
-    const root = document.querySelector<HTMLElement>('[data-canvas-pane-focused="true"]') ?? document;
-    const annotationElement = root.querySelector<HTMLElement>(
-      `[data-pdf-annotation-id="${escapedAnnotationId}"]`,
-    );
-
-    if (annotationElement) {
-      annotationElement.scrollIntoView({ block: "center", inline: "nearest" });
-      return;
-    }
-
-    root
-      .querySelector<HTMLElement>(`[data-pdf-page-number="${annotation.pageNumber}"]`)
-      ?.scrollIntoView({ block: "start", inline: "nearest" });
-  });
-}
-
 export function OutlinePanel({
   activeTab,
   textareaRef,
@@ -551,8 +456,17 @@ export function OutlinePanel({
           />
         ) : activeTab?.file.fileType === "latex" ? (
           <LatexOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
-        ) : activeTab?.file.fileType === "pdf" ? (
-          <PdfOutline key={activeTab.id} activeTab={activeTab} onOpenFile={onOpenFile} />
+        ) : activeTab?.file.fileType === "pdf" && !activeTab.gallery ? (
+          <PdfDocumentOutline
+            key={activeTab.file.path}
+            activeTab={activeTab}
+            expansionLevel={outlineExpansionLevel}
+            onExpansionLevelChange={(level) => {
+              updatePreferences({ outlineExpansionLevel: level });
+              flushPreferences();
+            }}
+            onOpenFile={onOpenFile}
+          />
         ) : (
           <EmptyOutline />
         )}
@@ -913,12 +827,16 @@ function MarkdownOutline({
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
         </span>
       </label>
+      <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <ListTree aria-hidden className="h-3.5 w-3.5" />
+        <span className="min-w-0 flex-1 truncate">Headings</span>
+      </div>
       {!activeTab ? (
         <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
           Open a Markdown file to see headings.
         </p>
       ) : filteredHeadings.length ? (
-        <div className="space-y-1">
+        <div className="space-y-0.5" role="tree" aria-label={`Headings of ${activeTab.file.name}`}>
           {filteredHeadings.map(({ heading, hasChildren, expanded }) => {
             const activeDropPlacement =
               dropTarget?.headingId === heading.id ? dropTarget.placement : null;
@@ -928,8 +846,12 @@ function MarkdownOutline({
             return (
               <div
                 key={heading.id}
+                role="treeitem"
+                aria-level={heading.level}
+                aria-selected={isActive}
+                aria-expanded={hasChildren ? expanded : undefined}
                 className="flex items-start gap-0.5"
-                style={{ paddingLeft: `${(heading.level - 1) * 12}px` }}
+                style={{ paddingLeft: normalizedQuery ? 0 : `${(heading.level - 1) * 12}px` }}
               >
                 {hasChildren ? (
                   <button
@@ -946,7 +868,7 @@ function MarkdownOutline({
                   </button>
                 ) : <span aria-hidden className="w-5 shrink-0" />}
                 <SidebarNameTooltipButton
-                  className={`relative flex min-w-0 flex-1 items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted ${
+                  className={`relative flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
                     outlineIsCurrent ? "cursor-grab active:cursor-grabbing" : ""
                   } ${
                     isDragging ? "opacity-45" : ""
@@ -979,16 +901,9 @@ function MarkdownOutline({
                   {activeDropPlacement === "after" ? (
                     <span className="pointer-events-none absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-accent" />
                   ) : null}
-                  <GripVertical
-                    aria-hidden
-                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                  />
-                  <span className="w-8 shrink-0 rounded bg-muted px-1.5 py-0.5 text-center text-[10px] font-semibold text-muted-foreground">
-                    H{heading.level}
-                  </span>
-                  <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{heading.text}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {heading.line}
+                  <span className={`min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] ${heading.level === 1 ? "font-medium" : ""}`}>{heading.text}</span>
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    L. {heading.line}
                   </span>
                 </SidebarNameTooltipButton>
               </div>
@@ -1000,9 +915,9 @@ function MarkdownOutline({
           {headings.length ? "No matching headings." : "No headings in this Markdown file."}
         </p>
       )}
-      {contextMenu ? (
+      {contextMenu ? createPortal(
         <div
-          className="fixed z-50 w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
+          className="fixed z-[100] w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
           role="menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
@@ -1016,265 +931,8 @@ function MarkdownOutline({
             <Trash2 aria-hidden className="h-4 w-4" />
             Delete Section
           </button>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function PdfOutline({
-  activeTab,
-  onOpenFile,
-}: {
-  activeTab?: OpenTab;
-  onOpenFile: (
-    file: LiberaFileNode,
-    options?: { viewState?: OpenTab["viewState"] },
-  ) => Promise<void>;
-}) {
-  const [query, setQuery] = useState("");
-  const [outlineState, setOutlineState] = useState<{
-    annotations: PdfAnnotation[];
-    error: string;
-    path: string;
-  }>({
-    annotations: [],
-    error: "",
-    path: "",
-  });
-  const filePath = activeTab?.file.path ?? "";
-  const annotations = useMemo(
-    () => (outlineState.path === filePath ? outlineState.annotations : []),
-    [filePath, outlineState.annotations, outlineState.path],
-  );
-  const error = outlineState.path === filePath ? outlineState.error : "";
-  const loading = Boolean(activeTab) && outlineState.path !== filePath;
-  // A highlight's context menu: Quote and cite.
-  const [contextMenu, setContextMenu] = useState<{ annotation: PdfHighlightAnnotation; x: number; y: number } | null>(null);
-
-  useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [contextMenu]);
-
-  function openAnnotationContextMenu(event: ReactMouseEvent<HTMLButtonElement>, annotation: PdfAnnotation) {
-    if (annotation.type !== "highlight" || !annotation.quote?.trim()) return;
-    event.preventDefault();
-    const menuWidth = 192;
-    const menuHeight = 44;
-    setContextMenu({
-      annotation,
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
-    });
-  }
-
-  function quoteHighlight(annotation: PdfHighlightAnnotation) {
-    setContextMenu(null);
-    const quote = normalizePdfHighlightQuote(annotation.quote ?? "");
-    if (!quote || !filePath) return;
-    window.dispatchEvent(new CustomEvent<PdfQuoteCiteDetail>(PDF_QUOTE_CITE_EVENT, {
-      detail: { quote, path: filePath, page: annotation.pageNumber },
-    }));
-  }
-
-  useEffect(() => {
-    if (!filePath) {
-      return;
-    }
-
-    const abortController = new AbortController();
-    const path = filePath;
-
-    apiRequest<PdfAnnotationsPayload>(
-      `/api/pdf-annotations?path=${encodeURIComponent(path)}`,
-      { signal: abortController.signal },
-    )
-      .then((payload) =>
-        setOutlineState({
-          annotations: payload.annotations,
-          error: "",
-          path,
-        }),
-      )
-      .catch((fetchError) => {
-        if (fetchError instanceof DOMException && fetchError.name === "AbortError") {
-          return;
-        }
-
-        setOutlineState({
-          annotations: [],
-          error:
-            fetchError instanceof Error
-              ? fetchError.message
-              : "Could not load PDF annotations.",
-          path,
-        });
-      });
-
-    return () => abortController.abort();
-  }, [filePath]);
-
-  useEffect(() => {
-    function handleAnnotationsUpdated(event: Event) {
-      const detail = (event as CustomEvent<PdfAnnotationsUpdatedDetail>).detail;
-
-      if (detail.path === filePath) {
-        setOutlineState({
-          annotations: detail.annotations,
-          error: "",
-          path: detail.path,
-        });
-      }
-    }
-
-    window.addEventListener(PDF_ANNOTATIONS_UPDATED_EVENT, handleAnnotationsUpdated);
-    return () =>
-      window.removeEventListener(PDF_ANNOTATIONS_UPDATED_EVENT, handleAnnotationsUpdated);
-  }, [filePath]);
-
-  async function navigateToAnnotation(annotation: PdfAnnotation) {
-    if (!activeTab) {
-      return;
-    }
-
-    await onOpenFile(activeTab.file, {
-      viewState: {
-        pdf: {
-          selectedAnnotationId: annotation.id,
-        },
-      },
-    });
-    scrollPdfAnnotationIntoView(annotation);
-  }
-
-  const sortedAnnotations = useMemo(
-    () =>
-      [...annotations].sort(
-        (left, right) =>
-          left.pageNumber - right.pageNumber ||
-          Date.parse(left.createdAt) - Date.parse(right.createdAt),
-      ),
-    [annotations],
-  );
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredAnnotations = useMemo(
-    () => sortedAnnotations.filter((annotation) =>
-      annotationLabel(annotation).toLowerCase().includes(normalizedQuery) ||
-      `p. ${annotation.pageNumber}`.includes(normalizedQuery),
-    ),
-    [sortedAnnotations, normalizedQuery],
-  );
-
-  return (
-    <section>
-      <div className="relative mb-3">
-        <Search
-          aria-hidden
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <input
-          aria-label="Search PDF annotations"
-          className="libera-sidebar-search-input h-10 w-full rounded-xl border border-input bg-card px-9 text-sm outline-none transition focus:border-ring"
-          placeholder="Search annotations"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            if (event.key === "Escape") {
-              setQuery("");
-            } else if (event.key === "Enter" && filteredAnnotations[0]) {
-              event.preventDefault();
-              void navigateToAnnotation(filteredAnnotations[0]);
-            }
-          }}
-        />
-        {query ? (
-          <button
-            aria-label="Clear annotation search"
-            className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
-            type="button"
-            onClick={() => setQuery("")}
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            <X aria-hidden className="h-4 w-4" />
-          </button>
-        ) : null}
-      </div>
-      <div className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        <Highlighter aria-hidden className="h-3.5 w-3.5" />
-        PDF Outlines
-      </div>
-      {!activeTab ? (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          Open a PDF to see annotations.
-        </p>
-      ) : loading ? (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          Loading annotations.
-        </p>
-      ) : error ? (
-        <p className="rounded-lg border border-destructive/40 bg-destructive-muted px-3 py-4 text-sm text-destructive">
-          {error}
-        </p>
-      ) : filteredAnnotations.length ? (
-        <div className="space-y-1">
-          {filteredAnnotations.map((annotation) => {
-            const label = annotationLabel(annotation);
-
-            return (
-              <SidebarNameTooltipButton
-                key={annotation.id}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                fullName={label}
-                type="button"
-                onClick={() => void navigateToAnnotation(annotation)}
-                onContextMenu={(event) => openAnnotationContextMenu(event, annotation)}
-              >
-                {annotationIcon(annotation)}
-                <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{label}</span>
-                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                  p. {annotation.pageNumber}
-                </span>
-              </SidebarNameTooltipButton>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="rounded-lg border border-dashed border-input px-3 py-4 text-sm text-muted-foreground">
-          {sortedAnnotations.length ? "No matching annotations." : "No annotations in this PDF."}
-        </p>
-      )}
-      {contextMenu ? (
-        <div
-          className="fixed z-50 w-48 rounded-lg border border-border bg-card p-1 shadow-lg"
-          role="menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <button
-            className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm font-medium hover:bg-muted"
-            type="button"
-            role="menuitem"
-            onClick={() => quoteHighlight(contextMenu.annotation)}
-          >
-            <Quote aria-hidden className="h-4 w-4" />
-            Quote and cite
-          </button>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </section>
   );

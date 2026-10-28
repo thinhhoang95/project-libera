@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { RunSnapshots } from "../../src/lib/agent/snapshots";
@@ -7,6 +7,7 @@ import type { ToolContext } from "../../src/lib/agent/tools";
 import type { AgentEvent, AgentPermission } from "../../src/lib/agent/types";
 import type { ReviewDocument } from "../../src/lib/markdown-review";
 import { updateReferenceLibrary } from "../../src/lib/storage/references";
+import { readReviewDocuments } from "../../src/lib/storage/review-files";
 import type { CslItem, ReferenceEntryInput, ReferenceLibrary, ReferenceLibraryOp } from "../../src/lib/references/types";
 
 // Shared by the fact-check tests: a temporary library with a notebook
@@ -103,8 +104,7 @@ export function makeContext(permission: AgentPermission = "read-only", patch: Pa
 }
 
 export async function reviews(root: string): Promise<ReviewDocument[]> {
-  try { return (JSON.parse(await readFile(path.join(root, ".libera", "markdown-reviews.json"), "utf8")) as { documents: ReviewDocument[] }).documents; }
-  catch { return []; }
+  return readReviewDocuments<ReviewDocument>(root);
 }
 
 // ---------------------------------------------------------------------------

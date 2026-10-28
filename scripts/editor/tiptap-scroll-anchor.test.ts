@@ -7,6 +7,7 @@ import { EditorState } from "@tiptap/pm/state";
 import { EditorView } from "@tiptap/pm/view";
 
 import { captureVisualScrollAnchor, startVisualScrollRestore, type VisualScrollAnchor } from "../../src/lib/tiptap-scroll-anchor";
+import { proseMirrorReflowAdapter } from "../../src/lib/reflow-scroll-anchor";
 
 const schema = new Schema({
   nodes: {
@@ -147,6 +148,40 @@ test("no anchor is captured without layout, or for a position the document no lo
     // A reload replaced the document: fall back to the pixel offset.
     startVisualScrollRestore(page.view, page.container, { left: 0, top: 50, anchor: { pos: 9999, offset: 0 } }).cancel();
     assert.equal(page.container.scrollTop, 50);
+  } finally {
+    page.close();
+  }
+});
+
+test("a width-change anchor falls back to the block when the text at the top has no box", () => {
+  // A 400px figure, then text; the reader is 20px into block 2, whose first
+  // line is a macro expansion in front of its hidden (`display: none`) source.
+  const page = mountPage([400, 100, 100, 100, 100, 100]);
+  try {
+    const { DOMRect } = page.container.ownerDocument.defaultView!;
+    const hidden = page.blockPos(2) + 1;
+    let lineInBlock = 30;
+    page.view.posAtCoords = () => ({ pos: hidden, inside: -1 });
+    page.view.coordsAtPos = (pos) => pos === hidden
+      ? new DOMRect()
+      : new DOMRect(0, page.blockTop(2) + lineInBlock, 0, 20);
+    page.container.scrollTop = 520;
+    const adapter = proseMirrorReflowAdapter(page.view, page.container);
+    const anchor = adapter.capture();
+    assert.deepEqual(anchor, { pos: page.blockPos(2), offset: -20, block: true });
+
+    // The editor narrows and the figure above grows: the block comes back.
+    page.heights[0] = 600;
+    adapter.apply(anchor!);
+    assert.equal(page.blockTop(2), -20);
+
+    // Visible text keeps its exact line, even as it moves within its block.
+    page.view.posAtCoords = () => ({ pos: hidden + 5, inside: -1 });
+    const precise = adapter.capture();
+    assert.deepEqual(precise, { pos: hidden + 5, offset: 10 });
+    lineInBlock = 50;
+    adapter.apply(precise!);
+    assert.equal(page.blockTop(2) + lineInBlock, 10);
   } finally {
     page.close();
   }

@@ -9,6 +9,7 @@ import { subscribeHostEvents } from "@/lib/collab/ui/bridge";
 // indexer, batched: the host already coalesces writes, and the indexer dedupes.
 const FORWARD_DELAY_MS = 1_000;
 const AUDIO_PATH = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
+const PDF_PATH = /\.pdf$/i;
 
 export function useForwardSharedFileChanges(): void {
   useEffect(() => {
@@ -38,6 +39,16 @@ export function useForwardSharedFileChanges(): void {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ moves, removed }),
+          }).catch(() => undefined);
+        }
+        // PDFs' local side-cars (annotations, outline, definitions) too.
+        const pdfMoves = event.moves.filter((move) => PDF_PATH.test(move.from));
+        const pdfRemoved = event.removed.filter((path) => PDF_PATH.test(path));
+        if (pdfMoves.length || pdfRemoved.length) {
+          void fetch("/api/pdf-sidecars", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ moves: pdfMoves, removed: pdfRemoved }),
           }).catch(() => undefined);
         }
       }

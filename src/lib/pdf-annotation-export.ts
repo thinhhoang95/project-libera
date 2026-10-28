@@ -340,6 +340,8 @@ export async function burnPdfAnnotations(
   const byPage = new Map<number, PdfAnnotation[]>();
 
   for (const annotation of annotations) {
+    // Spaces, and what sits in them, are not exported yet (docs/create-space-plan.md, phase 2).
+    if (annotation.type === "space" || ("space" in annotation && annotation.space)) continue;
     if (annotation.pageNumber >= 1 && annotation.pageNumber <= pages.length) {
       byPage.set(annotation.pageNumber, [...(byPage.get(annotation.pageNumber) ?? []), annotation]);
     }
@@ -359,7 +361,7 @@ export async function burnPdfAnnotations(
         ops.push(...shapeOps(annotation, size));
       } else if (annotation.type === "ink") {
         ops.push(...inkOps(annotation, size));
-      } else if (renderNote && annotation.text.trim()) {
+      } else if (annotation.type === "text" && renderNote && annotation.text.trim()) {
         const x = annotation.rect.x * size.width;
         const y = annotation.rect.y * size.height;
         const image = await renderNote(annotation, {

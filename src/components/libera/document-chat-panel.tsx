@@ -25,7 +25,11 @@ import { ChatTokenUsage } from "./chat-token-usage";
 import { chatUsageRequests } from "@/lib/chat-token-usage";
 import { apiRequest } from "./api-client";
 import { keepGalleryChatPhoto, subscribeGalleryPhotoDeletions } from "./gallery-store";
+import { GalleryPhotoPicker, galleryPhotoFile } from "./gallery-photo-picker";
+import type { GalleryPhoto } from "@/lib/image-generation";
+import { popupReferenceMenu, type ReferenceMenuItem } from "./references/native-reference-menu";
 import { filterGalleryChatPhotos, galleryPhotoIdFromSource } from "@/lib/document-chat";
+import { agentWriteOverlap, agentWriteScope, type AgentWriteScope } from "./agent-write-scope";
 import { createDeferredSave, registerStateFlusher, stateRequestKeepalive } from "./deferred-save";
 import { CHAT_QUOTE_EVENT, CHAT_REASONING_EFFORTS, chatHasPhotoSource, type ChatQuoteDetail, isChatMode, isChatReasoningEffort, chatExportFileName, exportChatMarkdown, formatChatTimestamp, MAX_CHAT_PHOTOS, MAX_CHAT_PHOTO_BYTES, messagesWithoutExcludedDocuments, newChatContexts, newDocumentContext, normalizeChatResponseMarkdown, type ChatMessage, type ChatMode, type ChatPhoto, validateChatStore, type ChatContext, type ChatStore, type DocumentChat } from "@/lib/document-chat";
 import { AGENT_PERMISSIONS, agentPermissionLabel, compactAgentRunRecord, isAgentPermission, MAX_SUBAGENT_STEPS, type AgentPermission, type AgentRunRecord, type UndoResult } from "@/lib/agent/types";
@@ -35,6 +39,10 @@ import {
   DEFINITIONS_REQUEST_EVENT, DEFINITIONS_RUN_FINISHED_EVENT, DEFINITIONS_UPDATED_EVENT, definitionsPrompt,
   type DefinitionsRequestDetail, type DefinitionsRunFinishedDetail, type DefinitionsUpdatedDetail,
 } from "@/lib/definitions";
+import {
+  PDF_OUTLINE_REQUEST_EVENT, PDF_OUTLINE_RUN_FINISHED_EVENT, PDF_OUTLINE_UPDATED_EVENT, pdfOutlinePrompt,
+  type PdfOutlineRequestDetail, type PdfOutlineRunFinishedDetail, type PdfOutlineUpdatedDetail,
+} from "@/lib/pdf-outline";
 
 import { DEFAULT_CHAT_FONT_SIZE, MIN_CHAT_FONT_SIZE, MAX_CHAT_FONT_SIZE, isChatFontSize } from "@/lib/chat-preferences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
@@ -144,6 +152,10 @@ const isStoredFlag = (value: unknown): value is "true" | "false" => value === "t
 const FACT_CHECK_SKILL = "fact-check-citations";
 /** The agent skill the Definitions tab preloads (src/lib/agent/skills/extract-definitions.ts). */
 const DEFINITIONS_SKILL = "extract-definitions";
+/** The agent skill the Outlines tab preloads for a PDF (src/lib/agent/skills/generate-pdf-outline.ts). */
+const PDF_OUTLINE_SKILL = "generate-pdf-outline";
+/** Where a run started for a tab reports that it ended. */
+type SkillRunFinished = { event: string; requestId: string };
 
 /** The first message of a run started by a Fact-check citations button. */
 export function factCheckPrompt(path: string) {
@@ -252,6 +264,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const [error, setError] = useState("");
   const [storageError, setStorageError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
   const [exportSnapshot, setExportSnapshot] = useState<ChatExport | null>(null);
   const [exporting, setExporting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -260,8 +273,14 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const searchJumpRef = useRef<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
-  const deletedRequestRef = useRef<AbortController | null>(null);
-  const [pending, setPending] = useState<string | null>(null);
+  // Each chat runs on its own, so several can respond at once: the running
+  // chats, their requests, and the files each running Agent may change.
+  const requestsRef = useRef(new Map<string, AbortController>());
+  const writeScopesRef = useRef(new Map<string, AgentWriteScope>());
+  const deletedRequestsRef = useRef(new WeakSet<AbortController>());
+  const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(() => new Set());
+  // A run's outcome stays with its chat, so one finishing out of view does not show over another.
+  const [runFeedback, setRunFeedback] = useState<Record<string, { error?: string; notice?: string }>>({});
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -289,7 +308,6 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     await apiRequest("/api/document-chat/state", { method: "PUT", body, keepalive: stateRequestKeepalive(body) });
     setStorageError("");
   }, () => setStorageError("Chat history could not be saved. The next conversation action will retry saving.")), []);
-  const requestRef = useRef<AbortController | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const handledAttachmentRequest = useRef<string | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -299,6 +317,24 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   const followResponseRef = useRef(true);
   const readingPositionsRef = useRef(new Map<string, { top: number; follow: boolean }>());
   const chat = store?.chats.find((item) => item.id === store.activeId);
+  /** The chat in view is responding. */
+  const pending = !!chat && runningIds.has(chat.id);
+  const feedback = chat ? runFeedback[chat.id] : undefined;
+  const shownError = error || feedback?.error || "";
+  const shownNotice = notice || feedback?.notice || "";
+  // A chat's last outcome shows until you leave it, so a stale "Response stopped" does not greet you later.
+  const viewedChatId = chat?.id;
+  const previousChatId = useRef(viewedChatId);
+  useEffect(() => {
+    const left = previousChatId.current;
+    previousChatId.current = viewedChatId;
+    if (left && left !== viewedChatId) setRunFeedback((current) => {
+      if (!(left in current)) return current;
+      const next = { ...current };
+      delete next[left];
+      return next;
+    });
+  }, [viewedChatId]);
   const mode: ChatMode = chat?.mode ?? "chat";
   const agentMode = mode === "agent";
   const permission: AgentPermission = chat?.agentPermission ?? defaultPermission;
@@ -384,7 +420,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       });
       setStore(restored, history !== null);
     }).catch(() => { if (!disposed) setStorageError("Saved chats could not be loaded. Reload the app to retry."); });
-    return () => { disposed = true; requestRef.current?.abort(); };
+    const requests = requestsRef.current;
+    return () => { disposed = true; for (const controller of requests.values()) controller.abort(); };
   }, [historyWriter, setStore]);
 
   useLayoutEffect(() => { latestStore.current = store; }, [store]);
@@ -562,6 +599,39 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     finally { setLoadingPhotos(false); }
   }
 
+  async function attachGalleryPhotos(photos: GalleryPhoto[]) {
+    if (!chat || loadingPhotos) return;
+    const id = chat.id;
+    const fresh = photos.filter((photo) => !chat.photos?.some((item) => item.source === `gallery:${photo.id}`));
+    if ((chat.photos?.length ?? 0) + fresh.length > MAX_CHAT_PHOTOS) throw new Error(`Attach up to ${MAX_CHAT_PHOTOS} photos per message.`);
+    setLoadingPhotos(true);
+    setError("");
+    try {
+      const attached = await Promise.all(fresh.map(async (photo): Promise<ChatPhoto> => {
+        const file = await galleryPhotoFile(photo);
+        if (!file.size || file.size > MAX_CHAT_PHOTO_BYTES) throw new Error(`${photo.name} must be 5 MB or smaller to attach.`);
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error(`Could not read ${photo.name}.`));
+          reader.readAsDataURL(file);
+        });
+        return { id: crypto.randomUUID(), name: photo.name, dataUrl, source: `gallery:${photo.id}` };
+      }));
+      updateChat(id, (current) => ({ ...current, photos: [...(current.photos ?? []), ...attached] }));
+      setGalleryPickerOpen(false);
+    } finally { setLoadingPhotos(false); }
+  }
+
+  async function openAttachMenu(button: HTMLButtonElement) {
+    const bounds = button.getBoundingClientRect();
+    const items: ReferenceMenuItem[] = [
+      { id: "upload", label: "Upload from Computer…", onSelect: () => photoInputRef.current?.click() },
+      { id: "gallery", label: "Choose from Gallery…", onSelect: () => setGalleryPickerOpen(true) },
+    ];
+    if (!await popupReferenceMenu(items, { x: bounds.left, y: bounds.top })) photoInputRef.current?.click();
+  }
+
   const attachFile = useCallback(async (file: LiberaFileNode, requestedTab?: OpenTab): Promise<boolean> => {
     if (!chat || loadingFiles) return false;
     const chatId = chat.id;
@@ -675,7 +745,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }, [attachmentRequest, attachFile, chat, loadingFiles, onAttachmentHandled, review]);
 
   function startEdit(message: { id: string; text: string }) {
-    if (pending || requestRef.current || loadingPhotos || loadingFiles) return;
+    if (pending || loadingPhotos || loadingFiles) return;
     setEditing({ id: message.id, text: message.text });
   }
   function submitEdit() {
@@ -693,7 +763,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   }
 
   function branch(messageId: string) {
-    if (!chat || requestRef.current || loadingPhotos || loadingFiles) return;
+    if (!chat || pending || loadingPhotos || loadingFiles) return;
     const index = chat.messages.findIndex((message) => message.id === messageId && message.role === "assistant");
     if (index < 0) return;
     const branched: DocumentChat = { ...chat, id: crypto.randomUUID(), title: `${chat.title} (branch)`, titleEdited: true,
@@ -707,27 +777,22 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   // A Fact-check citations button (References panel, Markdown toolbars) or the
   // Definitions tab asks for an Agent run: open the panel, start a new Agent
   // chat with the request as its prompt, and send it with the skill preloaded.
-  const skillRequestRef = useRef<{ chatId: string; prompt: string; skill: string; definitionsRequestId?: string } | null>(null);
+  const skillRequestRef = useRef<{ chatId: string; prompt: string; skill: string; finished?: SkillRunFinished } | null>(null);
   const sendRef = useRef<typeof send | null>(null);
   // Before the effect below, so it sends with this render's chat and settings.
   useEffect(() => { sendRef.current = send; });
   useEffect(() => {
     /** Starts the request's chat; returns why it cannot start, or "". */
-    function startSkillRun(request: { prompt: string; skill: string; webSearch?: boolean; definitionsRequestId?: string }) {
+    function startSkillRun(request: { prompt: string; skill: string; webSearch?: boolean; finished?: SkillRunFinished }) {
       if (!store) return "The AI panel is still loading.";
       onCollapsedChange(false);
       review?.setChatReview(false);
-      if (requestRef.current) {
-        const message = "Wait for the current reply to finish, or stop it, before starting a new agent run.";
-        setError(message);
-        return message;
-      }
       if (typeof request.webSearch === "boolean") setAllowWebSearch(request.webSearch);
       const active = store.chats.find((item) => item.id === store.activeId);
-      // An untouched chat is reused rather than left behind empty.
-      const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length ? active : null;
+      // An untouched chat is reused rather than left behind empty; other chats keep responding.
+      const reuse = active && !active.messages.length && !active.selections.length && !active.photos?.length && !requestsRef.current.has(active.id) ? active : null;
       const next: DocumentChat = { ...(reuse ?? createChat("agent", defaultPermission)), mode: "agent", agentPermission: reuse?.agentPermission ?? defaultPermission, prompt: request.prompt };
-      skillRequestRef.current = { chatId: next.id, prompt: request.prompt, skill: request.skill, ...(request.definitionsRequestId ? { definitionsRequestId: request.definitionsRequestId } : {}) };
+      skillRequestRef.current = { chatId: next.id, prompt: request.prompt, skill: request.skill, ...(request.finished ? { finished: request.finished } : {}) };
       setStore((current) => current && (reuse
         ? { ...current, chats: current.chats.map((item) => item.id === next.id ? next : item) }
         : { chats: [next, ...current.chats], activeId: next.id }));
@@ -743,14 +808,24 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     function requestDefinitions(event: Event) {
       const detail = (event as CustomEvent<DefinitionsRequestDetail>).detail;
       if (!detail?.path) return;
-      const error = startSkillRun({ prompt: definitionsPrompt(detail.path), skill: DEFINITIONS_SKILL, definitionsRequestId: detail.requestId });
+      const finished = { event: DEFINITIONS_RUN_FINISHED_EVENT, requestId: detail.requestId };
+      const error = startSkillRun({ prompt: definitionsPrompt(detail.path), skill: DEFINITIONS_SKILL, finished });
       if (error) window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: detail.requestId, error } }));
+    }
+    function requestPdfOutline(event: Event) {
+      const detail = (event as CustomEvent<PdfOutlineRequestDetail>).detail;
+      if (!detail?.path) return;
+      const finished = { event: PDF_OUTLINE_RUN_FINISHED_EVENT, requestId: detail.requestId };
+      const error = startSkillRun({ prompt: pdfOutlinePrompt(detail.path), skill: PDF_OUTLINE_SKILL, finished });
+      if (error) window.dispatchEvent(new CustomEvent<PdfOutlineRunFinishedDetail>(PDF_OUTLINE_RUN_FINISHED_EVENT, { detail: { requestId: detail.requestId, error } }));
     }
     window.addEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
     window.addEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+    window.addEventListener(PDF_OUTLINE_REQUEST_EVENT, requestPdfOutline);
     return () => {
       window.removeEventListener(FACT_CHECK_REQUEST_EVENT, requestFactCheck);
       window.removeEventListener(DEFINITIONS_REQUEST_EVENT, requestDefinitions);
+      window.removeEventListener(PDF_OUTLINE_REQUEST_EVENT, requestPdfOutline);
     };
   }, [store, defaultPermission, onCollapsedChange, review, setStore]);
 
@@ -759,27 +834,41 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     if (!request || !chat || pending || chat.id !== request.chatId || chat.mode !== "agent" || chat.prompt !== request.prompt) return;
     skillRequestRef.current = null;
     const run = sendRef.current?.(undefined, undefined, { skill: request.skill }) ?? Promise.resolve();
-    const { definitionsRequestId } = request;
-    if (definitionsRequestId) {
-      void run.finally(() => window.dispatchEvent(new CustomEvent<DefinitionsRunFinishedDetail>(DEFINITIONS_RUN_FINISHED_EVENT, { detail: { requestId: definitionsRequestId } })));
+    const { finished } = request;
+    if (finished) {
+      void run.catch(() => undefined).then((refused) => window.dispatchEvent(new CustomEvent<{ requestId: string; error?: string }>(finished.event, { detail: { requestId: finished.requestId, ...(refused ? { error: refused } : {}) } })));
     }
   }, [chat, pending]);
 
-  async function send(retryMessageId?: string, edit?: { id: string; text: string }, options: { skill?: string } = {}) {
+  /** Sends the chat in view; resolves to why it could not start, if it did not. */
+  async function send(retryMessageId?: string, edit?: { id: string; text: string }, options: { skill?: string } = {}): Promise<string | undefined> {
+    const refuse = (message: string) => { setError(message); return message; };
     const replay = Boolean(retryMessageId || edit);
-    if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length && !pendingPhoto) || requestRef.current || loadingPhotos || loadingFiles) return;
-    if (!replay && pendingPhoto && (chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) { setError(`Attach up to ${MAX_CHAT_PHOTOS} photos per message, including the one you are viewing.`); return; }
+    if (!chat || (!replay && !chat.prompt.trim() && !chat.photos?.length && !pendingPhoto) || requestsRef.current.has(chat.id) || loadingPhotos || loadingFiles) return;
+    if (!replay && pendingPhoto && (chat.photos?.length ?? 0) >= MAX_CHAT_PHOTOS) return refuse(`Attach up to ${MAX_CHAT_PHOTOS} photos per message, including the one you are viewing.`);
     const retryIndex = retryMessageId ? chat.messages.findIndex((message) => message.id === retryMessageId && message.role === "assistant") : -1;
     if (retryMessageId && (retryIndex < 1 || chat.messages[retryIndex - 1].role !== "user")) return;
     const editIndex = edit ? chat.messages.findIndex((item) => item.id === edit.id && item.role === "user") : -1;
     if (edit && (editIndex < 0 || (!edit.text.trim() && !chat.messages[editIndex].photos?.length))) return;
     if (replay && hasUnrevertedAgentChanges(chat.messages.slice(retryMessageId ? retryIndex : editIndex))) {
-      setError("Undo the agent's file changes in the replies below first, so regenerating does not lose track of them.");
-      return;
+      return refuse("Undo the agent's file changes in the replies below first, so regenerating does not lose track of them.");
     }
     const agent = chat.mode === "agent";
-    if (agent && permission === "notebook" && !agentNotebook) { setError("Open a file or select a notebook first, so the agent knows which notebook it may change."); return; }
+    if (agent && permission === "notebook" && !agentNotebook) return refuse("Open a file or select a notebook first, so the agent knows which notebook it may change.");
     const id = chat.id;
+    // The skills started from buttons (fact-check, definitions, PDF outline) never edit files.
+    // The server's own pick: the notebook of the active file, else the selected one.
+    const runNotebook = activeTab && !activeTab.untitled && !activeTab.gallery ? activeTab.file.path.split("/")[0] : agentWorkspaceRef.current?.notebook;
+    const writeScope = agent && !options.skill ? agentWriteScope(permission, runNotebook,
+      tabs.filter((tab) => !tab.untitled && !tab.gallery && isTextFileType(tab.file.fileType)).map((tab) => ({ path: tab.file.path, notebook: tab.file.notebook }))) : null;
+    if (writeScope) {
+      for (const [otherId, other] of writeScopesRef.current) {
+        const overlap = otherId === id ? null : agentWriteOverlap(writeScope, other);
+        if (!overlap) continue;
+        const title = store?.chats.find((item) => item.id === otherId)?.title ?? "another chat";
+        return refuse(`The agent in “${title}” may still change ${overlap}. Wait for it to finish or stop it first, so the two runs do not edit the same files. A Read Only agent can run alongside it.`);
+      }
+    }
     const prompt = chat.prompt;
     const selections = chat.selections;
     const photos = chat.photos ?? [];
@@ -788,10 +877,17 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     const messages = edit ? [...chat.messages.slice(0, editIndex), { ...chat.messages[editIndex], text: edit.text.trim(), createdAt: new Date().toISOString() }]
       : retryMessageId ? chat.messages.slice(0, retryIndex) : [...chat.messages, message];
     const controller = new AbortController();
-    requestRef.current = controller;
-    setPending(id);
+    requestsRef.current.set(id, controller);
+    if (writeScope) writeScopesRef.current.set(id, writeScope);
+    setRunningIds((current) => new Set(current).add(id));
     setError("");
     setNotice("");
+    const report = (outcome: { error?: string; notice?: string }) => setRunFeedback((current) => {
+      const next = { ...current };
+      if (outcome.error || outcome.notice) next[id] = outcome; else delete next[id];
+      return next;
+    });
+    report({});
     let committed = false;
     const assistantId = crypto.randomUUID();
     let createdAt: string | undefined;
@@ -913,6 +1009,8 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             }
           } else if (event.type === "definitions_saved") {
             window.dispatchEvent(new CustomEvent<DefinitionsUpdatedDetail>(DEFINITIONS_UPDATED_EVENT, { detail: { path: event.path } }));
+          } else if (event.type === "pdf_outline_saved") {
+            window.dispatchEvent(new CustomEvent<PdfOutlineUpdatedDetail>(PDF_OUTLINE_UPDATED_EVENT, { detail: { path: event.path } }));
           } else if (event.type === "suggestions_added") {
             if (event.count) {
               const existing = run.suggestions?.find((entry) => entry.path === event.path);
@@ -957,9 +1055,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           run.outcome = "error";
         }
         publish();
-        if (failure || run.outcome === "error") setError(failure || doneMessage || "The agent run failed.");
-        else if (doneMessage) setNotice(doneMessage);
-        if (keptDrafts.length) setNotice(`You kept typing in ${keptDrafts.join(", ")}, so your unsaved version stays in the editor. The agent's version is saved on disk; saving the tab replaces it.`);
+        const failed = failure || run.outcome === "error";
+        report({
+          ...(failed ? { error: failure || doneMessage || "The agent run failed." } : {}),
+          ...(keptDrafts.length ? { notice: `You kept typing in ${keptDrafts.join(", ")}, so your unsaved version stays in the editor. The agent's version is saved on disk; saving the tab replaces it.` }
+            : !failed && doneMessage ? { notice: doneMessage } : {}),
+        });
         completed = !failure && run.outcome !== "error";
       } else {
         const response = await fetch("/api/document-chat", {
@@ -980,7 +1081,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
         completed = true;
       }
     } catch (cause) {
-      if (deletedRequestRef.current === controller) return;
+      if (deletedRequestsRef.current.has(controller)) return;
       await syncQueue;
       const produced = run ? runStarted && (run.steps.length > 0 || run.changes.length > 0) : !!answer;
       if (produced) {
@@ -988,20 +1089,22 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           run.outcome = controller.signal.aborted ? "stopped" : "error";
           publish();
         } else publish("interrupted");
-        setError(controller.signal.aborted ? "" : cause instanceof Error ? cause.message : "Chat failed.");
+        report(controller.signal.aborted ? {} : { error: cause instanceof Error ? cause.message : "Chat failed." });
       } else {
-        setError(controller.signal.aborted ? replay ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed.");
+        report({ error: controller.signal.aborted ? replay ? "Regeneration stopped. The original conversation was restored." : "Response stopped. Your prompt is ready to send again." : cause instanceof Error ? cause.message : "Chat failed." });
         if (committed) updateChat(id, (current) => replay ? { ...current, messages: chat.messages } : ({ ...current, messages: current.messages.filter((item) => item.id !== message.id && item.id !== assistantId), prompt: current.prompt || prompt, photos: [...photos, ...(current.photos ?? [])].slice(0, MAX_CHAT_PHOTOS), selections: [...selections, ...current.selections] }));
       }
     } finally {
       if (updateTimer !== undefined) window.clearTimeout(updateTimer);
-      requestRef.current = null;
-      setPending(null);
+      if (requestsRef.current.get(id) === controller) requestsRef.current.delete(id);
+      writeScopesRef.current.delete(id);
+      setRunningIds((current) => { const next = new Set(current); next.delete(id); return next; });
       if (run?.changes.length) await agentWorkspaceRef.current?.refreshAfterChanges(run.changes.filter((change) => change.created).map((change) => change.path));
     }
     // Auto Read: speak the reply once it is complete, never a stopped or failed one.
     const spoken = run ? agentRunText(run) : answer;
-    if (completed && autoReadRef.current && spoken.trim()) speakMarkdown(spoken, { sourceId: `chat:${assistantId}`, label: run ? "Libera Agent" : "Libera AI" });
+    // A reply finishing in a chat that is out of view is not read over the one being read.
+    if (completed && autoReadRef.current && spoken.trim() && latestStore.current?.activeId === id) speakMarkdown(spoken, { sourceId: `chat:${assistantId}`, label: run ? "Libera Agent" : "Libera AI" });
   }
 
   async function undoAgentChanges(messageId: string, run: AgentRunRecord, paths?: string[]) {
@@ -1123,10 +1226,13 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
 
   function deleteChats(ids: string[]) {
     if (!store || !ids.length) return;
-    if (pending && ids.includes(pending)) {
-      deletedRequestRef.current = requestRef.current;
-      requestRef.current?.abort();
+    for (const id of ids) {
+      const controller = requestsRef.current.get(id);
+      if (!controller) continue;
+      deletedRequestsRef.current.add(controller);
+      controller.abort();
     }
+    setRunFeedback((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !ids.includes(id))));
     const fallback = createChat(defaultMode, defaultPermission);
     setStore((current) => {
       if (!current) return current;
@@ -1141,8 +1247,9 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   if (collapsed) return null;
   if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
 
-  return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card">
-    <div aria-hidden className="libera-chat-glow" data-active={pending === chat?.id} />
+  return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
+    <div aria-hidden className="libera-chat-glow" data-active={pending} />
+    <div aria-hidden className="libera-chat-glow libera-chat-glow-bottom" data-active={pending} />
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
         <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>
@@ -1157,7 +1264,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
               setError("");
             }}
           >
-            {store?.chats.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+            {store?.chats.map((item) => <option key={item.id} value={item.id}>{runningIds.has(item.id) ? `${item.title} · Responding…` : item.title}</option>)}
           </select>
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         </div>
@@ -1193,20 +1300,20 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
       {/* Mode and permission are chosen before a conversation starts, then fixed. */}
       {!chat?.messages.length && !showingSearchResults && <div className="libera-chat-modebar libera-window-no-drag flex shrink-0 items-center justify-center gap-2">
         <div className="libera-mode-switch" role="group" aria-label="Assistant mode">
-          <button type="button" aria-pressed={!agentMode} disabled={!chat || !!pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
-          <button type="button" aria-pressed={agentMode} disabled={!chat || !!pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
+          <button type="button" aria-pressed={!agentMode} disabled={!chat || pending} title="Chat: talk through the open document and your attachments" onClick={() => changeMode("chat")}><MessagesSquare aria-hidden size={13} />Chat</button>
+          <button type="button" aria-pressed={agentMode} disabled={!chat || pending} title="Agent: searches your library, reads files, and can edit them" onClick={() => changeMode("agent")}><Bot aria-hidden size={13} />Agent</button>
         </div>
         {agentMode && <label className="libera-agent-permission" title={`Agent permission: ${agentPermissionLabel(permission, sharedAgent)}`}>
           <span className="sr-only">Agent permission</span>
-          <select value={permission} disabled={!chat || !!pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
+          <select value={permission} disabled={!chat || pending} onChange={(event) => { const next = event.target.value; if (isAgentPermission(next)) changePermission(next); }}>
             {AGENT_PERMISSIONS.map((item) => <option key={item} value={item}>{agentPermissionLabel(item, sharedAgent)}</option>)}
           </select>
           <ChevronDown aria-hidden size={13} />
         </label>}
-        {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search`} aria-pressed={allowWebSearch} aria-label="Web search" disabled={!!pending} onClick={() => changeWebSearch(!allowWebSearch)}
+        {agentMode && <button type="button" className={`${buttonClass} libera-agent-web-search`} aria-pressed={allowWebSearch} aria-label="Web search" disabled={pending} onClick={() => changeWebSearch(!allowWebSearch)}
           title={allowWebSearch ? "Web search on: the agent can search the web (through OpenRouter's web plugin). Click to turn off" : "Web search off: click to let the agent search the web for facts that are not in your library"}><Globe aria-hidden size={14} /></button>}
       </div>}
-        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending === chat?.id ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${showingSearchResults ? "hidden" : !chat?.messages.length ? "flex flex-col" : ""}`}
+        <div ref={logRef} role="log" aria-label="Chat messages" aria-live={pending ? "off" : "polite"} tabIndex={0} className={`libera-chat-log min-h-0 min-w-0 flex-1 space-y-4 overflow-auto overscroll-x-contain p-4 [overflow-anchor:none] ${showingSearchResults ? "hidden" : !chat?.messages.length ? "flex flex-col" : ""}`}
           onScroll={(event) => {
             const log = event.currentTarget;
             followResponseRef.current = log.scrollHeight - log.clientHeight - log.scrollTop < 48;
@@ -1266,7 +1373,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             <p className="libera-chat-context-hint">{includedPhoto ? "The photo you are viewing is included." : includedDocument ? (activeTab?.file.fileType === "pdf" ? "Your current PDF’s text will be included." : viewingRecording ? "The transcript of the recording you are playing is included." : activeTab?.file.fileType === "latex" ? "Your current LaTeX source is included." : activeTab?.file.fileType === "text" ? `Your current ${activeTab.file.name} is included.` : "Your current Markdown draft is included.") : "Type @ to bring a file into the conversation."}</p>
             {!viewedPhoto && <p className="libera-chat-context-hint">{viewingRecording ? <>Quote lines from the transcript with <kbd>⌘/Ctrl + Shift + L</kbd> or its quote button.</> : <>Add selected paragraphs with <kbd>⌘/Ctrl + Shift + L</kbd>.</>}</p>}
           </div>}
-          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} data-message-id={message.id} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={!!pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
+          {chat?.messages.map((message, messageIndex) => <article key={message.id} data-role={message.role} data-message-id={message.id} className="libera-chat-message min-w-0 space-y-2 text-sm"><div className="flex items-center justify-between gap-2"><p className="libera-chat-speaker text-xs font-semibold text-muted-foreground">{message.role === "assistant" && (message.agent ? <Bot aria-hidden size={13} /> : <Sparkles aria-hidden size={13} />)}{message.role === "user" ? "You" : message.agent ? "Libera Agent" : "Libera AI"}</p>{message.role === "user" && editing?.id !== message.id && <button type="button" className="libera-window-no-drag libera-sidebar-icon-button -my-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground disabled:opacity-40" aria-label="Edit message" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's changes below before editing this message" : "Edit message (regenerates from here)"} disabled={pending || loadingPhotos || loadingFiles || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => startEdit(message)}><Pencil aria-hidden size={14} /></button>}</div>{message.contexts?.map((context, index) => {
             const label = context.kind === "document" ? context.name : context.kind === "comments" ? `Comments on ${context.name} (${commentsContextSummary(context)})` : selectionExcerpt(context.text);
             const ContextIcon = context.kind === "document" ? FileText : context.kind === "comments" ? MessageSquareText : TextSelect;
             return <details key={index} className="rounded-md bg-muted p-2 text-xs"><summary className="cursor-pointer break-all" aria-label={`${context.kind === "document" ? "Document" : context.kind === "comments" ? "Review comments" : "Selection"}: ${label}`}><ContextIcon aria-hidden size={13} className="mr-1 inline-block align-middle" /><span className="align-middle">{label}</span></summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{context.text}</pre></details>;
@@ -1288,16 +1395,16 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
                 {reading ? <Square aria-hidden size={13} /> : <Volume2 aria-hidden size={14} />}
               </button>;
             })()}
-            <button type="button" className={buttonClass} aria-label="Regenerate response" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's file changes before regenerating" : "Regenerate response (replaces this response and later messages)"} disabled={!!pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user" || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
-            <button type="button" className={buttonClass} aria-label="Branch conversation" title="Branch into a new chat from this response" disabled={!!pending || loadingPhotos || loadingFiles} onClick={() => branch(message.id)}><GitBranch aria-hidden size={14} /></button>
+            <button type="button" className={buttonClass} aria-label="Regenerate response" title={hasUnrevertedAgentChanges(chat.messages.slice(messageIndex)) ? "Undo the agent's file changes before regenerating" : "Regenerate response (replaces this response and later messages)"} disabled={pending || loadingPhotos || loadingFiles || chat.messages[messageIndex - 1]?.role !== "user" || hasUnrevertedAgentChanges(chat.messages.slice(messageIndex))} onClick={() => void send(message.id)}><RotateCcw aria-hidden size={14} /></button>
+            <button type="button" className={buttonClass} aria-label="Branch conversation" title="Branch into a new chat from this response" disabled={pending || loadingPhotos || loadingFiles} onClick={() => branch(message.id)}><GitBranch aria-hidden size={14} /></button>
             {message.createdAt ? <time className="ml-1 text-xs tabular-nums" dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>{formatChatTimestamp(message.createdAt, now)}</time> : <span className="ml-1 text-xs">Time unavailable</span>}
           </div>}</article>)}
-          {pending === chat?.id && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
+          {pending && chat?.messages.at(-1)?.role !== "assistant" && <p role="status" className="libera-chat-thinking w-fit text-sm text-muted-foreground">Thinking…</p>}
         </div>
         <form className="libera-chat-form shrink-0 space-y-2 p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {fontSizeError && <p role="alert" className="text-xs text-destructive">{fontSizeError}</p>}
-          {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-          {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
+          {storageError && <p role="alert" className="text-xs text-destructive">{storageError}</p>}{shownError && <p role="alert" className="text-xs text-destructive">{shownError}</p>}
+          {shownNotice && <p role="status" className="text-xs text-muted-foreground">{shownNotice}</p>}
           {agentMode && <div className="libera-chat-context flex items-center gap-1"><Bot aria-hidden size={13} className="shrink-0" />
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={viewedFile?.path}>{`${viewedFile ? `Viewing ${viewedFile.name} · ` : ""}${permission === "read-only" ? "Read only"
               : sharedAgent ? (permission === "open-files" ? `Can suggest in ${openTextFileCount} open file${openTextFileCount === 1 ? "" : "s"}` : `Can suggest in ${agentNotebook}`)
@@ -1343,11 +1450,12 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
             className="w-auto max-w-24 cursor-pointer appearance-none border-0 bg-transparent px-1 py-2 text-xs text-muted-foreground shadow-none outline-none focus-visible:underline"
             value={chat?.reasoningEffort ?? defaultReasoningEffort} disabled={!chat}
             onChange={(event) => { const effort = event.target.value; if (chat && isChatReasoningEffort(effort)) updateChat(chat.id, (current) => ({ ...current, reasoningEffort: effort })); }}
-          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || !!pending} onClick={() => photoInputRef.current?.click()}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => requestRef.current?.abort()}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
+          >{CHAT_REASONING_EFFORTS.map((effort) => <option key={effort} value={effort}>{effort === "xhigh" ? "Extra High" : effort[0].toUpperCase() + effort.slice(1)}</option>)}</select><button type="button" className={`${buttonClass} libera-chat-attach`} aria-label="Add photos" title="Add photos" disabled={!chat || loadingPhotos || pending} aria-haspopup="menu" onClick={(event) => void openAttachMenu(event.currentTarget)}><Paperclip size={18} /></button>{pending ? <button type="button" className={`${buttonClass} libera-chat-send`} aria-label="Stop response" onClick={() => { if (chat) requestsRef.current.get(chat.id)?.abort(); }}><Square size={14} /></button> : <button type="submit" className={`${buttonClass} libera-chat-send`} aria-label="Send message" disabled={loadingPhotos || loadingFiles || (!chat?.prompt.trim() && !chat?.photos?.length && !pendingPhoto)}><ArrowUp size={18} /></button>}</div></div>
           </div>
           {chat && <ChatTokenUsage chat={chat} model={model} models={models} onModelChange={changeModel} />}
         </form>
     </div>
+    <GalleryPhotoPicker open={galleryPickerOpen} onClose={() => setGalleryPickerOpen(false)} onInsert={attachGalleryPhotos} />
     <ModalDialog open={menuOpen} title="Chat" onClose={() => setMenuOpen(false)}>
       <div className="flex flex-col gap-2">
         <button type="button" className="rounded-lg p-2 text-left text-sm hover:bg-muted" onClick={() => void handleChatAction("search")}>Search</button>

@@ -45,8 +45,8 @@ export type NewDrawingStyle = {
 
 /** A drawing about to be added; the host fills in id, page and timestamps. */
 export type PdfDrawingDraft =
-  | Pick<PdfShapeAnnotation, "type" | "shape" | "color" | "strokeWidth" | "from" | "to">
-  | Pick<PdfInkAnnotation, "type" | "color" | "strokeWidth" | "points">;
+  | Pick<PdfShapeAnnotation, "type" | "shape" | "color" | "strokeWidth" | "from" | "to" | "space">
+  | Pick<PdfInkAnnotation, "type" | "color" | "strokeWidth" | "points" | "space">;
 
 type Handle = "from" | "to" | "nw" | "ne" | "se" | "sw";
 

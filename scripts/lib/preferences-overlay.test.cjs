@@ -31,7 +31,7 @@ function createHost() {
   parent.contentView = container;
   parent.isDestroyed = () => Boolean(parent.destroyed);
   parent.focus = () => { parent.focused = true; };
-  parent.webContents = { focus: () => { parent.workspaceFocused = true; } };
+  parent.webContents = { session: {}, focus: () => { parent.workspaceFocused = true; } };
   const host = createPreferencesOverlay(parent, { WebContentsView, preload: "/preload.cjs" });
   const view = container.child;
   return { host, parent, view, resize: (next) => { size = next; container.emit("bounds-changed"); } };
@@ -39,6 +39,7 @@ function createHost() {
 
 test("Preferences covers the parent content, tracks resizing, and focuses only after loading", () => {
   const { host, parent, view, resize } = createHost();
+  assert.equal(view.options.webPreferences.session, parent.webContents.session);
   assert.equal(view.background, "#00000000");
   assert.equal(view.visible, false);
   assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1200, height: 800 });

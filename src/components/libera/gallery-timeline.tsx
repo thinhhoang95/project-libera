@@ -195,15 +195,14 @@ function seekLabel(time: number) {
  * photos start, hovering shows the month at that point, and dragging scrolls
  * through the whole gallery at once.
  */
-export function TimelineSeeker({ scrollRef, contentRef, layoutKey }: {
+export function TimelineSeeker({ scrollRef, rows, layoutKey }: {
   scrollRef: RefObject<HTMLDivElement | null>;
-  /** Photo tiles inside carry `data-photo-time`. */
-  contentRef: RefObject<HTMLDivElement | null>;
+  /** Calculated row offsets; offscreen tiles never need to be mounted. */
+  rows: Rows;
   /** Changes when the photos or their layout change. */
   layoutKey: string;
 }) {
   const railRef = useRef<HTMLDivElement>(null);
-  const [rows, setRows] = useState<Rows>({ tops: [], times: [] });
   const [metrics, setMetrics] = useState({ scrollTop: 0, maxScroll: 0, clientHeight: 0, rail: 0 });
   const [hover, setHover] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -211,43 +210,28 @@ export function TimelineSeeker({ scrollRef, contentRef, layoutKey }: {
 
   const measure = useCallback(() => {
     const scroller = scrollRef.current;
-    const content = contentRef.current;
-    if (!scroller || !content) return;
-    const base = scroller.getBoundingClientRect().top - scroller.scrollTop;
-    const tops: number[] = [];
-    const times: number[] = [];
-    let last = -Infinity;
-    for (const tile of content.querySelectorAll<HTMLElement>("[data-photo-time]")) {
-      const top = Math.round(tile.getBoundingClientRect().top - base);
-      if (top <= last) continue;
-      last = top;
-      tops.push(top);
-      times.push(Date.parse(tile.dataset.photoTime!));
-    }
-    setRows({ tops, times });
+    if (!scroller) return;
     setMetrics({ scrollTop: scroller.scrollTop, maxScroll: Math.max(0, scroller.scrollHeight - scroller.clientHeight), clientHeight: scroller.clientHeight, rail: (railRef.current?.clientHeight ?? 0) - 2 * SEEKER_PADDING });
-  }, [contentRef, scrollRef]);
+  }, [scrollRef]);
 
-  useLayoutEffect(() => { measure(); }, [layoutKey, measure]);
+  useLayoutEffect(() => { measure(); }, [layoutKey, rows, measure]);
   useEffect(() => {
     const scroller = scrollRef.current;
-    const content = contentRef.current;
-    if (!scroller || !content) return;
+    if (!scroller) return;
     let frame = 0;
     const later = () => { window.cancelAnimationFrame(frame); frame = window.requestAnimationFrame(measure); };
     const observer = new ResizeObserver(later);
     observer.observe(scroller);
-    observer.observe(content);
     let idle = 0;
     const scrolled = () => {
-      setMetrics((current) => ({ ...current, scrollTop: scroller.scrollTop }));
+      later();
       setScrolling(true);
       window.clearTimeout(idle);
       idle = window.setTimeout(() => setScrolling(false), 900);
     };
     scroller.addEventListener("scroll", scrolled, { passive: true });
     return () => { observer.disconnect(); window.cancelAnimationFrame(frame); window.clearTimeout(idle); scroller.removeEventListener("scroll", scrolled); };
-  }, [contentRef, measure, scrollRef]);
+  }, [measure, scrollRef]);
 
   const { maxScroll, rail, scrollTop, clientHeight } = metrics;
   const toY = useCallback((offset: number) => SEEKER_PADDING + (maxScroll ? Math.min(1, offset / maxScroll) : 0) * rail, [maxScroll, rail]);

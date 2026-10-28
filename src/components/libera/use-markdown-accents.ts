@@ -4,23 +4,15 @@ import { useEffect } from "react";
 import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 
 /**
- * Marks the page with the heading accent from Preferences → Markdown; the
- * colors themselves live in globals.css under [data-heading-color]. A custom
- * palette is handed to that CSS as --libera-custom-* variables.
+ * Marks the page when bold lead-ins take the heading color (Preferences →
+ * Markdown). The heading colors come from the visual editor's theme
+ * (use-editor-themes.ts); globals.css applies both.
  */
-export function useMarkdownAccents({ headingColor, headingPalette, boldLeadIns }: Pick<MarkdownPreferences, "headingColor" | "headingPalette" | "boldLeadIns">) {
-  const { h1, h2, h3, h4, h5, lists } = headingPalette;
+export function useMarkdownAccents({ boldLeadIns }: Pick<MarkdownPreferences, "boldLeadIns">) {
   useEffect(() => {
+    if (!boldLeadIns) return;
     const root = document.documentElement;
-    if (headingColor === "none") return;
-    root.dataset.headingColor = headingColor;
-    if (boldLeadIns) root.dataset.boldLeadIns = "true";
-    const custom = headingColor === "custom" ? Object.entries({ h1, h2, h3, h4, h5, lists }) : [];
-    for (const [key, color] of custom) root.style.setProperty(`--libera-custom-${key}`, color);
-    return () => {
-      delete root.dataset.headingColor;
-      delete root.dataset.boldLeadIns;
-      for (const [key] of custom) root.style.removeProperty(`--libera-custom-${key}`);
-    };
-  }, [headingColor, boldLeadIns, h1, h2, h3, h4, h5, lists]);
+    root.dataset.boldLeadIns = "true";
+    return () => { delete root.dataset.boldLeadIns; };
+  }, [boldLeadIns]);
 }

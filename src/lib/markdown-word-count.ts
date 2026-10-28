@@ -27,7 +27,7 @@ function citationsAsWords(content: string) {
   return last ? text + withoutMarker.slice(last) : withoutMarker;
 }
 
-function countMarkdownWords(content: string) {
+export function countMarkdownWords(content: string) {
   const visibleText = citationsAsWords(content)
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`\n]*`/g, " ")

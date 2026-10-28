@@ -53,7 +53,7 @@ test("each AI endpoint uses its own model and effort; chat overrides remain loca
     assert.equal(getAiFunctionOptions("chat").reasoning.effort, "xhigh");
     delete process.env.LIBERA_AI_FORMATTING_MODEL;
     process.env.LIBERA_AI_FORMATTING_REASONING_EFFORT = "invalid";
-    assert.deepEqual(getAiFunctionOptions("formatting"), { model: "legacy/model", reasoning: { effort: "medium" }, promptCaching: false });
+    assert.deepEqual(getAiFunctionOptions("formatting"), { model: "legacy/model", reasoning: { effort: "medium" }, promptCaching: false, provider: { sort: "price" } });
   } finally {
     globalThis.fetch = originalFetch;
     for (const key of keys) { if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key]; }

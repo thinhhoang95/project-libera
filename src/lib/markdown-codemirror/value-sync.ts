@@ -63,7 +63,7 @@ export function replacesWholeDocument(change: TextChange, length: number) {
  * change. Selection and history are kept: CodeMirror maps the selection
  * through the change, and the change stays undoable like any other edit. */
 export function valueChangeSpec(state: EditorState, next: string, source: "value" | "review" = "value"): TransactionSpec | null {
-  const change = minimalTextChange(state.doc.toString(), next);
+  const change = minimalTextChange(state.doc.toString(), state.toText(next).toString());
   if (!change) return null;
   return { changes: change, annotations: markdownValueSync.of(source) };
 }

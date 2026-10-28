@@ -1,7 +1,7 @@
 // One-time move of local review comments to a shared notebook (Phase 2).
 //
-// Before sharing, review threads live in `<library>/.libera/markdown-reviews.json`
-// (src/lib/storage/markdown-reviews.ts), keyed by Libera path. Once a notebook
+// Before sharing, review threads live in `<library>/.libera/reviews/`, one file
+// per document (src/lib/storage/review-files.ts), keyed by Libera path. Once a notebook
 // is shared its files show server threads instead, so the owner can move the
 // old ones over: each thread gets an anchor in the document's annotations
 // (from its stored range, when the quote still matches the current text) and
@@ -9,17 +9,15 @@
 // threads are marked `migratedTo`, never deleted, so nothing is lost if the
 // server copy is later removed.
 //
-// The Next server writes the same file under an OS lock file; the host is a
-// separate process, so it follows the same protocol (`<file>.lock` created
-// exclusively and holding the owner's pid, atomic rename) instead of importing
-// the Next storage module, which resolves its paths from Next's environment.
+// The Next server writes the same files; the host is a separate process, so it
+// uses review-files.ts directly with the library root (and so the same lock)
+// instead of the Next storage module, which resolves its paths from Next's
+// environment.
 
-import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, rm, stat } from "node:fs/promises";
-import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { createHash } from "node:crypto";
 
 import type { ReviewDocument, ReviewThread } from "../../../src/lib/markdown-review";
+import { readReviewDocuments, withReviewTransaction } from "../../../src/lib/storage/review-files";
 
 export interface ReviewDatabase {
   schemaVersion: 1;
@@ -36,69 +34,25 @@ export interface MigrationMarker {
 export type MigratableThread = ReviewThread & { migratedTo?: MigrationMarker };
 export type MigratableDocument = Omit<ReviewDocument, "threads"> & { threads: MigratableThread[] };
 
-export function reviewDatabasePath(libraryRoot: string): string {
-  return path.join(libraryRoot, ".libera", "markdown-reviews.json");
-}
-
 export async function readReviewDatabase(libraryRoot: string): Promise<ReviewDatabase> {
-  try {
-    const parsed = JSON.parse(await readFile(reviewDatabasePath(libraryRoot), "utf8")) as ReviewDatabase;
-    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.documents)) throw new Error("Unsupported review database.");
-    return parsed;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { schemaVersion: 1, documents: [] };
-    throw error;
-  }
+  return { schemaVersion: 1, documents: await readReviewDocuments<MigratableDocument>(libraryRoot) };
 }
 
-/** Runs `change` on the database under the review storage lock and writes it back atomically. */
+/**
+ * Runs `change` on every stored document under the review storage lock and
+ * writes back the ones it changed or added.
+ */
 export async function updateReviewDatabase(libraryRoot: string, change: (db: ReviewDatabase) => void): Promise<void> {
-  const target = reviewDatabasePath(libraryRoot);
-  const lockPath = `${target}.lock`;
-  let lock;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      lock = await open(lockPath, "wx", 0o600);
-      await lock.writeFile(String(process.pid));
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      // Same recovery rule as the Next side: only a dead owner's lock is removed.
-      try {
-        const owner = Number(await readFile(lockPath, "utf8"));
-        if (Number.isInteger(owner) && owner > 0) {
-          try {
-            process.kill(owner, 0);
-          } catch (cause) {
-            if ((cause as NodeJS.ErrnoException).code === "ESRCH") await rm(lockPath, { force: true });
-          }
-        } else if (Date.now() - (await stat(lockPath)).mtimeMs > 30_000) {
-          await rm(lockPath, { force: true });
-        }
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-      }
-      await delay(50);
+  await withReviewTransaction<MigratableDocument, void>(libraryRoot, async (tx) => {
+    const documents: MigratableDocument[] = [];
+    for (const [id] of tx.keys()) {
+      const doc = await tx.getIfPresent(id);
+      if (doc) documents.push(doc);
     }
-  }
-  if (!lock) throw new Error("Review storage is busy. Try again in a moment.");
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  try {
-    const db = await readReviewDatabase(libraryRoot);
+    const db: ReviewDatabase = { schemaVersion: 1, documents };
     change(db);
-    const handle = await open(temporary, "wx", 0o600);
-    try {
-      await handle.writeFile(JSON.stringify(db));
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, target);
-  } finally {
-    await rm(temporary, { force: true });
-    await lock.close();
-    await rm(lockPath, { force: true });
-  }
+    for (const doc of db.documents) tx.put(doc);
+  });
 }
 
 /** Review documents of one notebook folder ("Notebook/...") with threads not yet migrated. */

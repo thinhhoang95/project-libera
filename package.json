@@ -1,7 +1,7 @@
 {
   "name": "project-libera",
   "productName": "Libera for Vy Tran",
-  "version": "7.5.0",
+  "version": "8.0.0-beta",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -27,6 +27,7 @@
     "test:electron-release": "node --test scripts/**/*.test.cjs",
     "test:editor": "node --require ./scripts/editor/setup.cjs --import tsx --test scripts/editor/*.test.ts",
     "lint": "eslint",
+    "bench:ink": "node --import tsx scripts/editor/ink-bench.ts",
     "test:editor-worker-bundle": "node scripts/editor/check-heading-worker-bundle.cjs",
     "search:download-model": "node scripts/download-embeddinggemma.cjs",
     "models:download": "node --import tsx scripts/download-models.ts",
@@ -84,6 +85,7 @@
     "next": "16.2.6",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
+    "perfect-freehand": "1.2.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",

@@ -1,7 +1,7 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
+import { deleteCharBackwardStrict, history, historyKeymap, insertNewline, redoSelection, standardKeymap, undoSelection } from "@codemirror/commands";
 import { EditorState, type Extension } from "@codemirror/state";
 import {
   EditorView, drawSelection, dropCursor, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers,
@@ -12,10 +12,12 @@ import type { MathMarkerSettings } from "@/lib/math-markers";
 import { findMatchesField } from "./find";
 import { citationDecorations } from "./citations";
 import { liberaSyntax } from "./libera-syntax";
+import { SOURCE_EDITOR_LABEL, SOURCE_PANE_PADDING, SOURCE_SPELLCHECK, SOURCE_TAB_SIZE } from "@/lib/markdown-source";
+import { sourceLineStart } from "./commands";
 
 /* The CodeMirror Markdown Source editor's base configuration: GFM with fenced
  * code highlighted by language-data, Libera's syntax layer, history and the
- * app theme. Keymaps that differ from CodeMirror's defaults (formatting,
+ * app theme. App shortcuts (formatting,
  * headings, find, the file-link picker) are added by the component, which owns
  * the React state they open. */
 
@@ -45,6 +47,7 @@ const fencedCodeHighlightStyle = HighlightStyle.define(codeHighlightStyle.specs.
 const sourceTheme = EditorView.theme({
   "&": { height: "100%" },
   ".cm-content": { paddingInline: "0" },
+  "&.cm-editor .cm-content": { paddingBlock: SOURCE_PANE_PADDING },
   // Long words and URLs wrap anywhere, as the textarea does.
   ".cm-line": { overflowWrap: "anywhere" },
 });
@@ -54,7 +57,7 @@ export type MarkdownSourceSetupOptions = {
   mathMarkers?: MathMarkerSettings;
 };
 
-export function markdownSourceSetup({ ariaLabel = "Source Markdown editor", mathMarkers }: MarkdownSourceSetupOptions = {}): Extension {
+export function markdownSourceSetup({ ariaLabel = SOURCE_EDITOR_LABEL, mathMarkers }: MarkdownSourceSetupOptions = {}): Extension {
   return [
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -73,8 +76,17 @@ export function markdownSourceSetup({ ariaLabel = "Source Markdown editor", math
     citationDecorations(),
     findMatchesField,
     sourceTheme,
-    EditorState.tabSize.of(4),
-    keymap.of([...defaultKeymap, ...historyKeymap]),
-    EditorView.contentAttributes.of({ "aria-label": ariaLabel, spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+    EditorState.tabSize.of(SOURCE_TAB_SIZE),
+    keymap.of([
+      { key: "Enter", run: insertNewline, shift: insertNewline },
+      { key: "Backspace", run: deleteCharBackwardStrict, shift: deleteCharBackwardStrict, preventDefault: true },
+      ...standardKeymap.filter(({ key }) => key !== "Enter" && key !== "Backspace").map((binding) =>
+        binding.key === "Home" ? { ...binding, run: sourceLineStart(), shift: sourceLineStart(true) }
+          : binding.mac === "Cmd-ArrowLeft" ? { ...binding, run: sourceLineStart(false, true), shift: sourceLineStart(true, true) }
+            : binding),
+      ...historyKeymap.filter(({ run }) => run !== undoSelection && run !== redoSelection),
+    ]),
+    // CodeMirror defaults these to off/no; a textarea inherits the browser's defaults.
+    EditorView.contentAttributes.of({ "aria-label": ariaLabel, spellcheck: String(SOURCE_SPELLCHECK), autocorrect: "on", autocapitalize: "sentences", writingsuggestions: "true", translate: "yes" }),
   ];
 }
