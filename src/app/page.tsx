@@ -3,6 +3,7 @@ import { LiberaApp } from "@/components/libera-app";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { getConfiguredMarkdownPreferences } from "@/lib/markdown-preferences-config";
 import { getConfiguredQuickPrompts } from "@/lib/quick-prompts-config";
+import { getConfiguredEditorThemes } from "@/lib/editor-themes-config";
 import { readMarkdownDisplayPreferences } from "@/lib/storage/markdown-display-preferences";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ export default async function Home() {
       markdownPreferences={markdownPreferences}
       markdownDisplayPreferences={await readMarkdownDisplayPreferences()}
       quickPrompts={getConfiguredQuickPrompts()}
+      editorThemes={getConfiguredEditorThemes()}
     />
   );
 }

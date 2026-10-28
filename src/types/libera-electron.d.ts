@@ -132,6 +132,7 @@ declare global {
       setButtonsVisible: (visible: boolean) => Promise<void>;
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
+      onEditorThemesChanged?: (listener: (themes: import("../../electron/editor-themes.cjs").ResolvedEditorThemes) => void) => () => void;
     };
     liberaUpdater?: {
       getState: () => Promise<LiberaUpdaterState>;

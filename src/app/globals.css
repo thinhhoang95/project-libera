@@ -1807,13 +1807,18 @@ button.border[class*="border-white"]:hover {
   z-index: 12;
 }
 
+/* Sheets waiting to render show the paper they will be drawn on. */
+.libera-pdf-viewer[data-pdf-paper] .libera-pdf-sheet,
+.libera-pdf-viewer[data-pdf-paper] .libera-pdf-sheet > div:first-child { background: var(--libera-pdf-paper); }
+
 .pdf-space-chrome {
   z-index: 27;
 }
 
 .pdf-space-box {
-  /* PDFs are paper; a space without a sampled fill is white, also in dark mode. */
-  background: #fff;
+  /* PDFs are paper; a space without a sampled fill is white, also in dark
+     mode, or the editor theme's paper (pdf-paper-color.ts). */
+  background: var(--libera-pdf-paper, #fff);
   position: absolute;
 }
 
@@ -1829,7 +1834,7 @@ button.border[class*="border-white"]:hover {
 }
 
 .pdf-space-filler {
-  background: #fff;
+  background: var(--libera-pdf-paper, #fff);
   position: absolute;
 }
 
@@ -2442,54 +2447,47 @@ button.border[class*="border-white"]:hover {
 .libera-tiptap blockquote[data-box-color] a { color: inherit; }
 .libera-tiptap blockquote[data-box-color] :is(pre, code, th, [data-type="block-math"]) { color: var(--foreground); }
 
-/* Heading accent from Preferences → Markdown (use-markdown-accents.ts), with a
-   lighter shade for the dark theme. Bold lead-ins (markdown-lead-in.ts) and
-   list bullets and numbers share it. Colored boxes and text colored by hand keep their own color. */
-:root[data-heading-color="blue"] { --libera-heading-accent: #1d4ed8; }
-:root[data-heading-color="indigo"] { --libera-heading-accent: #4338ca; }
-:root[data-heading-color="teal"] { --libera-heading-accent: #0f766e; }
-:root[data-heading-color="green"] { --libera-heading-accent: #15803d; }
-:root[data-heading-color="purple"] { --libera-heading-accent: #7e22ce; }
-:root[data-heading-color="rose"] { --libera-heading-accent: #be123c; }
-:root[data-heading-color="orange"] { --libera-heading-accent: #c2410c; }
-:root.dark[data-heading-color="blue"] { --libera-heading-accent: #93c5fd; }
-:root.dark[data-heading-color="indigo"] { --libera-heading-accent: #a5b4fc; }
-:root.dark[data-heading-color="teal"] { --libera-heading-accent: #5eead4; }
-:root.dark[data-heading-color="green"] { --libera-heading-accent: #86efac; }
-:root.dark[data-heading-color="purple"] { --libera-heading-accent: #d8b4fe; }
-:root.dark[data-heading-color="rose"] { --libera-heading-accent: #fda4af; }
-:root.dark[data-heading-color="orange"] { --libera-heading-accent: #fdba74; }
-/* Spectrum: a color per heading level; lists and lead-ins take the H2 blue. */
-:root[data-heading-color="spectrum"] { --libera-heading-accent: #1d4ed8; }
-:root.dark[data-heading-color="spectrum"] { --libera-heading-accent: #93c5fd; }
-:root[data-heading-color="spectrum"] h1 { --libera-level-accent: #4338ca; }
-:root[data-heading-color="spectrum"] h3 { --libera-level-accent: #0f766e; }
-:root[data-heading-color="spectrum"] h4 { --libera-level-accent: #15803d; }
-:root[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #475569; }
-:root.dark[data-heading-color="spectrum"] h1 { --libera-level-accent: #a5b4fc; }
-:root.dark[data-heading-color="spectrum"] h3 { --libera-level-accent: #5eead4; }
-:root.dark[data-heading-color="spectrum"] h4 { --libera-level-accent: #86efac; }
-:root.dark[data-heading-color="spectrum"] :is(h5, h6, [role="heading"]) { --libera-level-accent: #cbd5e1; }
-/* Custom: the palette from Preferences (use-markdown-accents.ts) is chosen for
-   the light theme; the dark theme mixes each color halfway to white. */
-:root[data-heading-color="custom"] { --libera-heading-accent: var(--libera-custom-lists); }
-:root[data-heading-color="custom"] h1 { --libera-level-accent: var(--libera-custom-h1); }
-:root[data-heading-color="custom"] h2 { --libera-level-accent: var(--libera-custom-h2); }
-:root[data-heading-color="custom"] h3 { --libera-level-accent: var(--libera-custom-h3); }
-:root[data-heading-color="custom"] h4 { --libera-level-accent: var(--libera-custom-h4); }
-:root[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: var(--libera-custom-h5); }
-:root.dark[data-heading-color="custom"] { --libera-heading-accent: color-mix(in oklab, var(--libera-custom-lists) 50%, white); }
-:root.dark[data-heading-color="custom"] h1 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h1) 50%, white); }
-:root.dark[data-heading-color="custom"] h2 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h2) 50%, white); }
-:root.dark[data-heading-color="custom"] h3 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h3) 50%, white); }
-:root.dark[data-heading-color="custom"] h4 { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h4) 50%, white); }
-:root.dark[data-heading-color="custom"] :is(h5, h6, [role="heading"]) { --libera-level-accent: color-mix(in oklab, var(--libera-custom-h5) 50%, white); }
-:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+/* Editor themes from Preferences → Markdown (use-editor-themes.ts), with a
+   light and a dark set of colors each. The visual editor's theme also gives
+   rendered previews their heading colors; bold lead-ins (markdown-lead-in.ts)
+   and list bullets and numbers take its list color. Colored boxes and text
+   colored by hand keep their own color. Inside a themed page the app's surface
+   tokens are redefined from its background and text, so code blocks, quotes,
+   gutters and search panels follow the theme. */
+:root[data-editor-theme-visual] { --libera-theme-h1: var(--libera-editor-visual-light-h1); --libera-theme-h2: var(--libera-editor-visual-light-h2); --libera-theme-h3: var(--libera-editor-visual-light-h3); --libera-theme-h4: var(--libera-editor-visual-light-h4); --libera-theme-h5: var(--libera-editor-visual-light-h5); --libera-theme-lists: var(--libera-editor-visual-light-lists); }
+:root.dark[data-editor-theme-visual] { --libera-theme-h1: var(--libera-editor-visual-dark-h1); --libera-theme-h2: var(--libera-editor-visual-dark-h2); --libera-theme-h3: var(--libera-editor-visual-dark-h3); --libera-theme-h4: var(--libera-editor-visual-dark-h4); --libera-theme-h5: var(--libera-editor-visual-dark-h5); --libera-theme-lists: var(--libera-editor-visual-dark-lists); }
+:root[data-editor-theme-visual] { --libera-heading-accent: var(--libera-theme-lists); }
+:root[data-editor-theme-visual] h1 { --libera-level-accent: var(--libera-theme-h1); }
+:root[data-editor-theme-visual] h2 { --libera-level-accent: var(--libera-theme-h2); }
+:root[data-editor-theme-visual] h3 { --libera-level-accent: var(--libera-theme-h3); }
+:root[data-editor-theme-visual] h4 { --libera-level-accent: var(--libera-theme-h4); }
+:root[data-editor-theme-visual] :is(h5, h6, [role="heading"]) { --libera-level-accent: var(--libera-theme-h5); }
+:root[data-editor-theme-visual] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   :is(h1, h2, h3, h4, h5, h6, [role="heading"]):not(blockquote[data-box-color] *) { color: var(--libera-level-accent, var(--libera-heading-accent)); }
-:root[data-heading-color][data-bold-lead-ins] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+:root[data-editor-theme-visual][data-bold-lead-ins] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   .libera-lead-in:not(blockquote[data-box-color] *, span[style^="color:"] *, span[style*="; color:"] *) { color: var(--libera-heading-accent); }
-:root[data-heading-color] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
+:root[data-editor-theme-visual] :is(.libera-tiptap, .markdown-preview-pane .markdown-renderer, .markdown-preview-window .markdown-renderer)
   li:not(blockquote[data-box-color] *)::marker { color: var(--libera-heading-accent); }
+:root[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-light-background); --libera-page-text: var(--libera-editor-visual-light-text); }
+:root.dark[data-editor-theme-visual] .libera-visual-page { --libera-page-bg: var(--libera-editor-visual-dark-background); --libera-page-text: var(--libera-editor-visual-dark-text); }
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-light-background); --libera-page-text: var(--libera-editor-source-light-text); --markdown-editor-heading-1: var(--libera-editor-source-light-h1); --markdown-editor-heading-2: var(--libera-editor-source-light-h2); --markdown-editor-heading-3: var(--libera-editor-source-light-h3); --markdown-editor-heading-4: var(--libera-editor-source-light-h4); }
+:root.dark[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source) { --libera-page-bg: var(--libera-editor-source-dark-background); --libera-page-text: var(--libera-editor-source-dark-text); --markdown-editor-heading-1: var(--libera-editor-source-dark-h1); --markdown-editor-heading-2: var(--libera-editor-source-dark-h2); --markdown-editor-heading-3: var(--libera-editor-source-dark-h3); --markdown-editor-heading-4: var(--libera-editor-source-dark-h4); }
+:root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-light-background); --libera-page-text: var(--libera-editor-latex-light-text); --latex-heading: var(--libera-editor-latex-light-h1); }
+:root.dark[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) { --libera-page-bg: var(--libera-editor-latex-dark-background); --libera-page-text: var(--libera-editor-latex-dark-text); --latex-heading: var(--libera-editor-latex-dark-h1); }
+:root[data-editor-theme-visual] .libera-visual-page,
+:root[data-editor-theme-source] :is(.libera-markdown-codemirror, .markdown-editor-source),
+:root[data-editor-theme-latex] .libera-latex-editor:not(.libera-markdown-codemirror, .libera-code-editor) {
+  --card: var(--libera-page-bg);
+  --card-foreground: var(--libera-page-text);
+  --foreground: var(--libera-page-text);
+  --background: color-mix(in oklab, var(--libera-page-text) 4%, var(--libera-page-bg));
+  --muted: color-mix(in oklab, var(--libera-page-text) 7%, var(--libera-page-bg));
+  --muted-foreground: color-mix(in oklab, var(--libera-page-text) 62%, var(--libera-page-bg));
+  --border: color-mix(in oklab, var(--libera-page-text) 13%, var(--libera-page-bg));
+  --input: color-mix(in oklab, var(--libera-page-text) 20%, var(--libera-page-bg));
+  background-color: var(--card);
+  color: var(--foreground);
+}
 .libera-tiptap .selectedCell { background: var(--muted); }
 .libera-tiptap ul[data-type="taskList"] { list-style: none; padding-left: 0; }
 .libera-tiptap ul[data-type="taskList"] li { display: flex; gap: .5em; }

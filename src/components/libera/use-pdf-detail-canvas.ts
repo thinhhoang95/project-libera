@@ -113,6 +113,7 @@ export function usePdfDetailCanvas({
   pdfDocument,
   pageNumber,
   scale,
+  background = "",
   active = true,
 }: {
   hostRef: RefObject<HTMLElement | null>;
@@ -121,6 +122,8 @@ export function usePdfDetailCanvas({
   pdfDocument: PDFDocumentProxy;
   pageNumber: number;
   scale: number;
+  /** The page fill, as for the page canvas; "" is white. */
+  background?: string;
   active?: boolean;
 }) {
   // Resizing a space only moves pieces, which the detail follows through CSS.
@@ -197,6 +200,7 @@ export function usePdfDetailCanvas({
         canvasContext,
         viewport,
         transform: [scaleX, 0, 0, scaleY, -rect.x * scaleX, -rect.y * scaleY],
+        background: background || undefined,
       });
       renderTask = task;
 
@@ -246,7 +250,7 @@ export function usePdfDetailCanvas({
       observer.disconnect();
       // The current detail stays (stretched) until the next render replaces it.
     };
-  }, [active, hostRef, pageNumber, pdfDocument, scale, structureKey, surfaceRef]);
+  }, [active, background, hostRef, pageNumber, pdfDocument, scale, structureKey, surfaceRef]);
 
   useEffect(() => {
     const host = hostRef.current;

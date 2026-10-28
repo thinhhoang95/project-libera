@@ -1,5 +1,6 @@
 const { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } = require("./math-markers.cjs");
 const { normalizeMarkdownHeadingColor, normalizeMarkdownHeadingPalette, normalizeMarkdownBoldLeadIns } = require("./markdown-accents.cjs");
+const { BUILT_IN_EDITOR_THEMES, normalizeEditorThemes, resolveEditorThemes, createEditorThemesFile, parseEditorThemesFile } = require("./editor-themes.cjs");
 const {
   app,
   BrowserWindow,
@@ -626,6 +627,7 @@ function normalizedImportedPreferences(input) {
     markdownHeadingColor: normalizeMarkdownHeadingColor(input.markdownHeadingColor),
     markdownHeadingPalette: normalizeMarkdownHeadingPalette(input.markdownHeadingPalette),
     markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(input.markdownBoldLeadIns),
+    markdownEditorThemes: normalizeEditorThemes(input.markdownEditorThemes, { headingColor: input.markdownHeadingColor, headingPalette: input.markdownHeadingPalette, textFont: input.wysiwygEditorFontFamily, codeFont: input.markdownEditorFontFamily }),
     openaiApiKey,
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input.aiFunctions, openRouterModel),
@@ -657,6 +659,49 @@ async function exportPreferences(parentWindow) {
   });
 
   return { canceled: false, fileName: path.basename(result.filePath) };
+}
+
+async function exportEditorThemes(parentWindow, themes) {
+  const file = createEditorThemesFile(themes);
+  if (!file.themes.length) throw new Error("There are no themes to export.");
+  const baseName = file.themes.length === 1
+    ? file.themes[0].name.replace(/[^\p{L}\p{N} _-]+/gu, "").trim() || "theme"
+    : "libera-editor-themes";
+  const result = await dialog.showSaveDialog(parentWindow, {
+    title: "Export Editor Themes",
+    defaultPath: path.join(app.getPath("documents"), `${baseName}.json`),
+    filters: [{ name: "JSON files", extensions: ["json"] }],
+  });
+
+  if (result.canceled || !result.filePath) return { canceled: true };
+
+  await fsp.writeFile(result.filePath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+  return { canceled: false, fileName: path.basename(result.filePath), count: file.themes.length };
+}
+
+async function importEditorThemes(parentWindow) {
+  const result = await dialog.showOpenDialog(parentWindow, {
+    title: "Import Editor Themes",
+    properties: ["openFile"],
+    filters: [{ name: "JSON files", extensions: ["json"] }],
+  });
+
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+
+  const filePath = result.filePaths[0];
+  if ((await fsp.stat(filePath)).size > 1024 * 1024) {
+    throw new Error("The selected themes file is too large.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error("The selected file is not valid JSON.");
+    throw error;
+  }
+
+  return { canceled: false, fileName: path.basename(filePath), themes: parseEditorThemesFile(parsed) };
 }
 
 async function importPreferences(parentWindow) {
@@ -745,6 +790,8 @@ function getConfigStatus(config = readConfig()) {
     markdownHeadingColor: normalizeMarkdownHeadingColor(config.markdownHeadingColor),
     markdownHeadingPalette: normalizeMarkdownHeadingPalette(config.markdownHeadingPalette),
     markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(config.markdownBoldLeadIns),
+    markdownEditorThemes: normalizeEditorThemes(config.markdownEditorThemes, { headingColor: config.markdownHeadingColor, headingPalette: config.markdownHeadingPalette, textFont: config.wysiwygEditorFontFamily, codeFont: config.markdownEditorFontFamily }),
+    editorThemeBuiltIns: BUILT_IN_EDITOR_THEMES,
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
@@ -1010,9 +1057,8 @@ function validateSetupInput(input, existingConfig) {
     markdownBaseLineHeight,
     markdownPdfBaseFontSize,
     markdownPdfBaseLineHeight,
-    markdownHeadingColor: normalizeMarkdownHeadingColor(input?.markdownHeadingColor),
-    markdownHeadingPalette: normalizeMarkdownHeadingPalette(input?.markdownHeadingPalette),
     markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(input?.markdownBoldLeadIns),
+    markdownEditorThemes: normalizeEditorThemes(input?.markdownEditorThemes, { headingColor: existingConfig.markdownHeadingColor, headingPalette: existingConfig.markdownHeadingPalette, textFont: existingConfig.wysiwygEditorFontFamily, codeFont: existingConfig.markdownEditorFontFamily }),
     openaiApiKey,
     openRouterModel,
     aiFunctions: normalizeAiPreferences(input?.aiFunctions ?? existingConfig.aiFunctions, openRouterModel),
@@ -1099,6 +1145,10 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:export-preferences", () => exportPreferences(setupWindow));
 
+    ipcMain.handle("setup:export-editor-themes", (_event, themes) => exportEditorThemes(setupWindow, themes));
+
+    ipcMain.handle("setup:import-editor-themes", () => importEditorThemes(setupWindow));
+
     ipcMain.handle("setup:list-openrouter-models", async (_event, options) => {
       // Speech-to-text and text-to-speech models are listed apart from the chat models.
       const catalog = options?.kind === "speech"
@@ -1184,16 +1234,12 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         dataDir: validated.dataDir,
         markdownInlineMathMarkers: validated.markdownInlineMathMarkers,
         markdownBlockMathMarkers: validated.markdownBlockMathMarkers,
-        markdownEditorFontFamily: validated.markdownEditorFontFamily,
-        wysiwygEditorFontFamily: validated.wysiwygEditorFontFamily,
-        renderedMarkdownFontFamily: validated.renderedMarkdownFontFamily,
         markdownBaseFontSize: validated.markdownBaseFontSize,
         markdownBaseLineHeight: validated.markdownBaseLineHeight,
         markdownPdfBaseFontSize: validated.markdownPdfBaseFontSize,
         markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
-        markdownHeadingColor: validated.markdownHeadingColor,
-        markdownHeadingPalette: validated.markdownHeadingPalette,
         markdownBoldLeadIns: validated.markdownBoldLeadIns,
+        markdownEditorThemes: validated.markdownEditorThemes,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
@@ -1214,6 +1260,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       }
       nativeTheme.themeSource = nextConfig.themePreference;
       mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
+      // Editor themes apply at once; the server reads them from the config file.
+      mainWindow?.webContents.send("editor-themes:changed", resolveEditorThemes(nextConfig.markdownEditorThemes));
       savedConfig = nextConfig;
       setupHost.close();
 
@@ -1231,6 +1279,8 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:check-detection-model");
       ipcMain.removeHandler("setup:reveal-search-index");
       ipcMain.removeHandler("setup:export-preferences");
+      ipcMain.removeHandler("setup:export-editor-themes");
+      ipcMain.removeHandler("setup:import-editor-themes");
       ipcMain.removeHandler("setup:list-openrouter-models");
       ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:list-profiles");
@@ -1491,7 +1541,7 @@ async function openConfigurationWindow(section = "") {
 
     // The server reads Search preferences while it runs; they need no restart.
     const requiresRestart = Object.keys(updatedConfig).some(
-      (key) => key !== "themePreference" && key !== "search" && (key === "aiFunctions"
+      (key) => key !== "themePreference" && key !== "search" && key !== "markdownEditorThemes" && (key === "aiFunctions"
         // The server reads Where Was I, PDF to Markdown and routing from the config file on each request.
         ? JSON.stringify({ ...updatedConfig.aiFunctions, whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined }) !== JSON.stringify({ ...normalizeAiPreferences(previousConfig.aiFunctions, normalizeOpenRouterModel(previousConfig.openRouterModel)), whereWasI: undefined, pdfToMarkdown: undefined, routing: undefined })
         : key === "quickPrompts"

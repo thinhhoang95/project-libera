@@ -11,6 +11,7 @@ import {
   waitForReferencesReady,
 } from "@/components/libera/references/reference-render-context";
 import {
+  DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY,
   getRenderedMarkdownFontStack,
   type MarkdownPreferences,
 } from "@/lib/markdown-preferences";
@@ -29,6 +30,8 @@ type PendingRender = {
 
 type MarkdownPdfExportPageProps = {
   markdownPreferences: MarkdownPreferences;
+  /** The visual editor theme's text font; "" is the system font. */
+  textFont: string;
 };
 
 function normalizePayload(payload: MarkdownPdfExportPayload): MarkdownPdfExportPayload {
@@ -109,6 +112,7 @@ async function waitForExportReady(root: HTMLElement) {
 
 export function MarkdownPdfExportPage({
   markdownPreferences,
+  textFont,
 }: MarkdownPdfExportPageProps) {
   const [payload, setPayload] = useState<MarkdownPdfExportPayload | null>(null);
   const pendingRendersRef = useRef<PendingRender[]>([]);
@@ -117,7 +121,7 @@ export function MarkdownPdfExportPage({
     () => (payload?.kind === "slides" ? parseMarkdownSlides(payload.content) : null),
     [payload],
   );
-  const documentFontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
+  const documentFontFamily = getRenderedMarkdownFontStack(textFont || DEFAULT_RENDERED_MARKDOWN_FONT_FAMILY);
   const renderCodeBlock = useNotebookCodeBlockRenderer(payload?.documentPath, documentFontFamily, "export");
 
   useEffect(() => {
@@ -193,7 +197,7 @@ export function MarkdownPdfExportPage({
             baseLineHeight={markdownPreferences.baseLineHeight}
             deck={deck}
             documentPath={payload.documentPath}
-            fontFamily={getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily)}
+            fontFamily={documentFontFamily}
             mathMarkers={markdownPreferences}
           />
         </ReferenceRenderProvider>

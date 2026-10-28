@@ -57,6 +57,8 @@ import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rend
 import { PDF_TEXT_ITEM_ATTRIBUTE, PdfLayoutStore, pdfRangePages, pdfSelectionMarkdown } from "@/components/libera/pdf-copy";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
+import { usePdfPaperColor } from "@/components/libera/use-pdf-paper-color";
+import { isPdfPaperColor } from "@/lib/pdf-paper-color";
 import { PdfSpaceLayer } from "@/components/libera/pdf-space-layer";
 import { assignTextPieces, pieceShiftStyle, usePdfSpaceRaster } from "@/components/libera/pdf-space-raster";
 import {
@@ -716,6 +718,8 @@ export function PdfViewer({
   );
   const [tool, setTool] = useState<PdfTool>(initialViewState?.tool ?? "select");
   const [zoom, setZoom] = useState(initialViewState?.zoom ?? 1);
+  // Pages are drawn on the visual editor theme's paper; "" keeps them white.
+  const paperColor = usePdfPaperColor();
   const [fontSize, setFontSize] = useState(
     initialViewState?.fontSize ?? DEFAULT_TEXT_ANNOTATION_FONT_SIZE,
   );
@@ -2274,7 +2278,8 @@ export function PdfViewer({
 
   return (
     <div ref={viewerRef} tabIndex={-1} data-pdf-path={filePath} data-pdf-tool={tool} data-pdf-markup={markupStyle} className="libera-media-viewer libera-pdf-viewer flex min-h-0 flex-1 flex-col overflow-hidden bg-muted outline-none"
-      style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor } as React.CSSProperties}
+      data-pdf-paper={paperColor ? "" : undefined}
+      style={{ "--pdf-highlight-color": highlightColor, "--pdf-markup-color": markupColor, ...(paperColor ? { "--libera-pdf-paper": paperColor } : {}) } as React.CSSProperties}
       onCopy={handleCopy}
       onPointerDown={(event) => {
         if (!(event.target as HTMLElement).closest("button, input, textarea, select, a, [contenteditable]")) {
@@ -2637,6 +2642,7 @@ export function PdfViewer({
                 textContentCache={textContentCache}
                 layoutStore={layoutStore}
                 pdfDocument={pdfDocument}
+                paperColor={paperColor}
                 searchMatches={pdfFind.matchesByPage.get(layout.pageNumber) ?? EMPTY_SEARCH_MATCHES}
                 activeSearchMatch={activeSearchMatch?.pageNumber === layout.pageNumber ? activeSearchMatch : undefined}
                 renderActive={
@@ -2693,6 +2699,8 @@ type PdfPageContentProps = {
   activeSearchMatch?: PdfSearchMatch;
   pageLayout: PdfPageLayout;
   pdfDocument: PDFDocumentProxy;
+  /** The page fill from the editor theme, or "" for white. */
+  paperColor: string;
   textContentCache: PdfTextContentCache;
   layoutStore: PdfLayoutStore;
   requestRenderSlot: RequestRenderSlot;
@@ -2767,6 +2775,7 @@ function PdfPageContent({
   activeSearchMatch,
   pageLayout,
   pdfDocument,
+  paperColor,
   textContentCache,
   layoutStore,
   requestRenderSlot,
@@ -2869,6 +2878,8 @@ function PdfPageContent({
         canvasContext,
         viewport,
         transform,
+        // The paper fill pdf.js draws anyway; it costs nothing extra.
+        background: paperColor || undefined,
       });
       // Cancellation can reject while text extraction is still pending.
       // Observe that rejection immediately; Promise.all below still handles it.
@@ -2919,9 +2930,9 @@ function PdfPageContent({
       textLayer?.cancel();
       releaseSlot();
     };
-  }, [layoutStore, pageNumber, pdfDocument, renderFinished, renderStarted, requestRenderSlot, textContentCache, zoom]);
+  }, [layoutStore, pageNumber, paperColor, pdfDocument, renderFinished, renderStarted, requestRenderSlot, textContentCache, zoom]);
 
-  usePdfDetailCanvas({ hostRef: detailHostRef, surfaceRef: pageRef, geometry, pdfDocument, pageNumber, scale: zoom });
+  usePdfDetailCanvas({ hostRef: detailHostRef, surfaceRef: pageRef, geometry, pdfDocument, pageNumber, scale: zoom, background: paperColor });
 
   // Text spans move with the piece of the page they sit in.
   const structureKey = geometry.structureKey;
@@ -3008,8 +3019,11 @@ function PdfPageContent({
       (bands, space) => bands.some((band) => sameBand(band, space.band)) ? bands : [...bands, space.band],
       [],
     );
-    return { ...placeSpaceCut(mask, point, stored, { fullWidth, snap }), ...(mask ? { fill: mask.background } : {}) };
-  }, [pageLayout.width, raster, sheetHeight, spaces]);
+    // A space on the themed paper itself keeps no fill and follows the paper
+    // (globals.css), so no theme color is saved with the annotations.
+    const fill = mask && !isPdfPaperColor(mask.background, paperColor) ? mask.background : undefined;
+    return { ...placeSpaceCut(mask, point, stored, { fullWidth, snap }), ...(fill ? { fill } : {}) };
+  }, [pageLayout.width, paperColor, raster, sheetHeight, spaces]);
   const spaceContentBottom = useCallback((id: string) => {
     let bottom = 0;
     for (const annotation of annotationsRef.current) {

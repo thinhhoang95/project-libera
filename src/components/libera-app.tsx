@@ -7,6 +7,8 @@ import { PdfOutlinePaletteCommands } from "@/components/libera/pdf-outline-panel
 import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
+import { EditorThemesContext, NO_EDITOR_THEMES, useEditorThemes } from "@/components/libera/use-editor-themes";
+import type { ResolvedEditorThemes } from "../../electron/editor-themes.cjs";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
 
@@ -66,6 +68,7 @@ type LiberaAppProps = {
   markdownPreferences: MarkdownPreferences;
   markdownDisplayPreferences?: Partial<MarkdownDisplayPreferences>;
   quickPrompts?: QuickPrompt[];
+  editorThemes?: ResolvedEditorThemes;
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
@@ -107,9 +110,11 @@ export function LiberaApp({
   markdownPreferences,
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
+  editorThemes = NO_EDITOR_THEMES,
 }: LiberaAppProps) {
   const aiActive = useAiActivity();
   useMarkdownAccents(markdownPreferences);
+  const resolvedEditorThemes = useEditorThemes(editorThemes);
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -589,6 +594,7 @@ export function LiberaApp({
   return (
     <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
     <QuickPromptsContext.Provider value={quickPrompts}>
+    <EditorThemesContext.Provider value={resolvedEditorThemes}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
@@ -889,6 +895,7 @@ export function LiberaApp({
     </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
+    </EditorThemesContext.Provider>
     </QuickPromptsContext.Provider>
     </MarkdownDisplayPreferencesProvider>
   );

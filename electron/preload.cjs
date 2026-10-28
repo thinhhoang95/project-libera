@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   selectSearchIndexFile: (mode) => ipcRenderer.invoke("setup:select-search-index-file", mode),
   revealSearchIndex: (filePath) => ipcRenderer.invoke("setup:reveal-search-index", filePath),
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
+  exportEditorThemes: (themes) => ipcRenderer.invoke("setup:export-editor-themes", themes),
+  importEditorThemes: () => ipcRenderer.invoke("setup:import-editor-themes"),
   listOpenRouterModels: (options) => ipcRenderer.invoke("setup:list-openrouter-models", options),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
   listProfiles: () => ipcRenderer.invoke("setup:list-profiles"),
@@ -137,6 +139,11 @@ contextBridge.exposeInMainWorld("liberaWindow", {
     const handler = (_event, theme) => listener(theme);
     ipcRenderer.on("theme:changed", handler);
     return () => ipcRenderer.removeListener("theme:changed", handler);
+  },
+  onEditorThemesChanged: (listener) => {
+    const handler = (_event, themes) => listener(themes);
+    ipcRenderer.on("editor-themes:changed", handler);
+    return () => ipcRenderer.removeListener("editor-themes:changed", handler);
   },
 });
 

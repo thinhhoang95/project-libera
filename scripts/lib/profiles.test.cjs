@@ -68,6 +68,7 @@ function mainHarness() {
     mode: "configuration", setupHost: { webContents: setupContents, close() {} }, setupWindow: window,
     savedConfig: null, nativeTheme: {},
     validateSetupInput: (input, existing) => ({ ...existing, ...input }),
+    resolveEditorThemes: require("../../electron/editor-themes.cjs").resolveEditorThemes,
     normalizedImportedPreferences: (input) => input, parsePreferencesBackup: (input) => input,
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     isSameOrigin: (a, b) => new URL(a).origin === new URL(b).origin,

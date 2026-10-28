@@ -19,6 +19,7 @@ const PREFERENCE_KEYS = Object.freeze([
   "markdownHeadingColor",
   "markdownHeadingPalette",
   "markdownBoldLeadIns",
+  "markdownEditorThemes",
   "openaiApiKey",
   "openRouterModel",
   "aiFunctions",

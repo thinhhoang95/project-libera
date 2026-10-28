@@ -5,27 +5,30 @@ import { RefreshCw } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { useNotebookCodeBlockRenderer } from "@/components/libera/slide-live-blocks";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
+import { editorThemeFontStacks, useEditorThemes } from "@/components/libera/use-editor-themes";
+import type { ResolvedEditorThemes } from "../../../electron/editor-themes.cjs";
 import { ReferenceRenderProvider, referenceNotebookForPath } from "@/components/libera/references/reference-render-context";
-import {
-  getRenderedMarkdownFontStack,
-  type MarkdownPreferences,
-} from "@/lib/markdown-preferences";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
 
 type Snapshot = { content: string; documentPath: string; title: string };
 
 export function MarkdownPreviewPage({
   markdownPreferences,
+  editorThemes,
 }: {
   markdownPreferences: MarkdownPreferences;
+  /** The preview takes the visual editor's heading colors. */
+  editorThemes: ResolvedEditorThemes;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const request = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const fontFamily = getRenderedMarkdownFontStack(markdownPreferences.renderedMarkdownFontFamily);
-  const renderCodeBlock = useNotebookCodeBlockRenderer(snapshot?.documentPath, fontFamily);
   useMarkdownAccents(markdownPreferences);
+  const themes = useEditorThemes(editorThemes);
+  const fontFamily = editorThemeFontStacks(themes).rendered;
+  const renderCodeBlock = useNotebookCodeBlockRenderer(snapshot?.documentPath, fontFamily);
 
   const refresh = useCallback(() => {
     if (!window.opener || window.opener.closed) {

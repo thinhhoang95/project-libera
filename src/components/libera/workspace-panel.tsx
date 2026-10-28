@@ -111,12 +111,8 @@ import {
   parseMarkdownSlides,
   type MarkdownSlide,
 } from "@/lib/markdown-slides";
-import {
-  getMarkdownEditorFontStack,
-  getRenderedMarkdownFontStack,
-  getWysiwygEditorFontStack,
-  type MarkdownPreferences,
-} from "@/lib/markdown-preferences";
+import type { MarkdownPreferences } from "@/lib/markdown-preferences";
+import { editorThemeFontStacks, useResolvedEditorThemes } from "@/components/libera/use-editor-themes";
 import {
   getTextareaOffsetAtVisualProgress,
   getTextareaViewportAnchorOffset,
@@ -740,15 +736,14 @@ function WorkspacePanelContent({
   const markdownZoom = displayPreferences.textScale;
   const markdownZoomScale = markdownZoom / 100;
   const markdownFontSizePx = markdownPreferences.baseFontSize * markdownZoomScale;
-  const markdownEditorFontFamily = getMarkdownEditorFontStack(
-    markdownPreferences.editorFontFamily,
-  );
-  const wysiwygEditorFontFamily = getWysiwygEditorFontStack(
-    markdownPreferences.wysiwygEditorFontFamily,
-  );
-  const renderedMarkdownFontFamily = getRenderedMarkdownFontStack(
-    markdownPreferences.renderedMarkdownFontFamily,
-  );
+  // Each editor's typeface comes from its theme (Preferences → Markdown → Themes).
+  const editorThemes = useResolvedEditorThemes();
+  const {
+    source: markdownEditorFontFamily,
+    latex: latexEditorFontFamily,
+    visual: wysiwygEditorFontFamily,
+    rendered: renderedMarkdownFontFamily,
+  } = useMemo(() => editorThemeFontStacks(editorThemes), [editorThemes]);
   // ```chart and ```html live blocks render in the note's preview, as in slides.
   const renderMarkdownCodeBlock = useNotebookCodeBlockRenderer(
     activeTab?.file.fileType === "markdown" ? activeTab.file.path : undefined,
@@ -1848,7 +1843,7 @@ function WorkspacePanelContent({
           tab={activeTab}
           collab={sharedCodeMirror ?? undefined}
           files={files}
-          fontFamily={markdownEditorFontFamily}
+          fontFamily={latexEditorFontFamily}
           fontSizePx={markdownFontSizePx}
           lineHeight={markdownPreferences.baseLineHeight}
           readOpenTabs={readOpenTabs}
