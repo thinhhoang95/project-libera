@@ -69,12 +69,15 @@ async function writeNote(name: string, text: string) {
 
 async function withIndexer(context: TestContext, run: (indexer: SearchIndexer, directory: string) => Promise<void>) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-search-triggers-"));
-  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES", "LIBERA_SEARCH_BACKGROUND_INDEXING"];
+  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES", "LIBERA_SEARCH_BACKGROUND_INDEXING", "LIBERA_SEARCH_EMBEDDING_INTERVAL_MINUTES", "LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC", "LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES"];
   const previous = keys.map((key) => process.env[key]);
   const store = globalThis as { [INDEXER_KEY]?: SearchIndexer };
   const previousIndexer = store[INDEXER_KEY];
   keys.forEach((key) => { delete process.env[key]; });
   process.env.LIBERA_DATA_DIR = directory;
+  // Power policy is covered separately; these fixtures run without Electron.
+  process.env.LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC = "0";
+  process.env.LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES = "0";
   process.env.LIBERA_SEARCH_INDEX_FILE = path.join(directory, "index.sqlite");
   process.env.LIBERA_SEARCH_DIMENSIONS = "128";
   process.env.LIBERA_SEARCH_INDEX_IMAGES = "0";
@@ -317,6 +320,8 @@ test("storage hooks debounce changes, update only affected paths, and never buil
       await internals(indexer).running;
       assert.equal(db.keyword('"Final"', 10).length, 0);
       assert.equal(fullScan.mock.callCount(), 0);
+      assert.ok(db.counts().embeddedChunks < db.counts().chunks, "keyword changes do not bypass the embedding interval");
+      await indexer.requestScan({ force: true, manual: true, incremental: true });
       assert.equal(db.counts().embeddedChunks, db.counts().chunks);
     } finally { context.mock.timers.reset(); }
   });
@@ -461,6 +466,9 @@ test("continuous file rewrites back off instead of keeping inference hot, then c
       context.mock.timers.tick(1);
       await internals(indexer).running;
       const db = indexer.database()!;
+      assert.equal(db.counts().embeddedChunks, 0, "the automatic retry still respects the embedding interval");
+      assert.equal(db.chunkRows(db.keyword('"Version"', 10).map((hit) => hit.id))[0].text, "Version 3.", "keyword indexing catches up during the interval");
+      await indexer.requestScan({ force: true, manual: true });
       assert.equal(db.counts().embeddedChunks, 1);
       assert.equal(db.chunkRows(db.keyword('"Version"', 10).map((hit) => hit.id))[0].text, "Version 3.");
       assert.equal(indexer.status().error, undefined);

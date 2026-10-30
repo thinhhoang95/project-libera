@@ -49,7 +49,7 @@ function shutdownHarness() {
     statefulContents: new Set(), childWindows: new Set(), startupInProgress: false,
     shutdownComplete: false, shutdownPromise: null, isQuitting: false, pendingProfileSwitch: null,
     nextProcess: server, ipcMain, requestStateFlush, app, process: new EventEmitter(), console,
-    updaterService: { dispose() {} }, stopProcessTree: async (child) => { stops.push(child); },
+    updaterService: { dispose() {} }, disposePowerState: null, stopProcessTree: async (child) => { stops.push(child); },
     collabHost: { stop: async () => {} },
     dialog: { showErrorBox: (title, message) => errors.push({ title, message }) },
   });

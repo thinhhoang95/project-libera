@@ -227,7 +227,7 @@ export async function runSearch(request: SearchRequest): Promise<SearchResponse>
   if (fileIds && !fileIds.length) return { results: [], mode: "keyword", terms, tookMs: Date.now() - started };
 
   const worker = getSearchWorker();
-  if (worker.configure(getSearchPreferences())) indexer.requestScan({ force: true, manual: false });
+  if (worker.configure(getSearchPreferences())) indexer.requestScan({ force: true, manual: false, immediate: true });
   const warnings: string[] = [];
   const filter = kinds.length ? kinds : undefined;
   let nearest: Array<{ id: number; similarity: number }> = [];

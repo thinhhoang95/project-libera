@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SESSION_EXPIRED_HEADER } from "@/lib/auth-session";
 import {
   ARCHIVE_COOKIE_NAME,
   createArchiveToken,
@@ -16,7 +17,9 @@ export function requireAuth(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   if (!verifySessionToken(token)) {
-    return jsonError("Authentication required.", 401);
+    const response = jsonError("Authentication required.", 401);
+    response.headers.set(SESSION_EXPIRED_HEADER, "1");
+    return response;
   }
 
   return null;

@@ -53,7 +53,7 @@ import type {
   RenderTask,
 } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
-import { PdfTextContentCache, pdfCanvasSize } from "@/components/libera/pdf-rendering";
+import { PdfTextContentCache, pdfCanvasSize, retainPdfPage } from "@/components/libera/pdf-rendering";
 import { PDF_TEXT_ITEM_ATTRIBUTE, PdfLayoutStore, pdfRangePages, pdfSelectionMarkdown } from "@/components/libera/pdf-copy";
 import { writeMarkdownClipboard } from "@/lib/markdown-clipboard";
 import { usePdfDetailCanvas } from "@/components/libera/use-pdf-detail-canvas";
@@ -85,7 +85,6 @@ import { sortPdfCommentThreads } from "@/lib/pdf-comments";
 import { dispatchPdfAnnotationsUpdated, forgetPdfAnnotations } from "@/components/libera/pdf-annotation-events";
 import { annotationAnchorRect, rememberFileAnnotations, scrollTopCenteringRect } from "@/lib/annotation-links";
 import { useAnnotationWriter } from "./use-annotation-writer";
-import { SaveStatusButton } from "./save-status-button";
 import { useAnnotationSync } from "@/components/libera/annotation-sync";
 import {
   canvasToPngBlob,
@@ -754,9 +753,6 @@ export function PdfViewer({
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenuPosition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">(
-    "idle",
-  );
   const latestAnnotationsRef = useRef<PdfAnnotation[]>([]);
   const automaticSpaceNotesRef = useRef(new Set<string>());
   const viewStateSelectedAnnotationId = initialViewState?.selectedAnnotationId;
@@ -1354,9 +1350,7 @@ export function PdfViewer({
     latestAnnotationsRef.current = savedAnnotations;
     setAnnotations(savedAnnotations);
     dispatchPdfAnnotationsUpdated({ path: filePath, annotations: savedAnnotations });
-    setSaveStatus("saved");
   }, (saveError) => {
-    setSaveStatus("error");
     setError(saveError instanceof Error ? saveError.message : "Could not save PDF annotations.");
   });
   const saveAnnotations = useCallback(
@@ -1365,7 +1359,6 @@ export function PdfViewer({
       setAnnotations(nextAnnotations);
       dispatchPdfAnnotationsUpdated({ path: filePath, annotations: nextAnnotations });
       // Written on Save (pending-saves.ts); until then the file shows as unsaved.
-      setSaveStatus("idle");
       localSavePendingRef.current = true;
       annotationWriter.schedule(nextAnnotations);
     },
@@ -2457,7 +2450,6 @@ export function PdfViewer({
               className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-input px-1.5 hover:bg-muted"
             />
           ) : null}
-          <SaveStatusButton path={filePath} status={saveStatus} />
           {pageLayouts.length > 0 ? (
             <span className="mr-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
               Page {Math.min(currentPage, pageLayouts.length)}/{pageLayouts.length}
@@ -2834,6 +2826,7 @@ function PdfPageContent({
     let renderTask: RenderTask | null = null;
     let textLayer: TextLayer | null = null;
     let releaseRenderSlot: (() => void) | null = null;
+    let releasePageResources: (() => void) | null = null;
 
     function releaseSlot() {
       if (!releaseRenderSlot) {
@@ -2861,6 +2854,7 @@ function PdfPageContent({
       }
 
       const page: PDFPageProxy = await pdfDocument.getPage(pageNumber);
+      releasePageResources = retainPdfPage(page);
       const viewport = page.getViewport({ scale: zoom });
 
       if (!active) {
@@ -2920,7 +2914,10 @@ function PdfPageContent({
           setRendering(false);
         }
       })
-      .finally(() => {
+      .finally(async () => {
+        // Cancellation is asynchronous: keep resources until PDF.js stops drawing.
+        await renderTask?.promise.catch(() => undefined);
+        releasePageResources?.();
         releaseSlot();
       });
 

@@ -288,6 +288,7 @@ async function getLinkedFolderNode(
     color: metadata.color,
     emoji: metadata.emoji,
     illustration: metadata.illustration,
+    illustrationPath: metadata.illustrationPath,
     groupId:
       metadata.groupId && options.validGroupIds.has(metadata.groupId)
         ? metadata.groupId
@@ -344,6 +345,7 @@ export async function getTree(options: { includeArchive?: boolean } = {}): Promi
       color: metadata.color,
       emoji: metadata.emoji,
       illustration: metadata.illustration,
+      illustrationPath: metadata.illustrationPath,
       groupId:
         metadata.groupId && validGroupIds.has(metadata.groupId)
           ? metadata.groupId

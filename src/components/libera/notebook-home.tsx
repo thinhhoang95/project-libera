@@ -11,6 +11,7 @@ import {
   FileText,
   FolderOpen,
   Image as ImageIcon,
+  ImagePlus,
   LayoutGrid,
   List,
   Mic,
@@ -28,6 +29,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  Fragment,
   PointerEvent,
   WheelEvent,
   useEffect,
@@ -50,7 +52,9 @@ import {
 import type { LiberaFileNode, LiberaNotebookNode, LiberaTreeNode } from "@/lib/types";
 
 import styles from "./notebook-home.module.css";
-import { notebookIllustrationUrl } from "@/lib/notebook-illustrations";
+import { notebookCoverUrl } from "@/lib/notebook-illustrations";
+import { NotebookIllustrationDialog } from "@/components/libera/notebook-illustration-dialog";
+import { useNotebookIllustrationLibrary } from "@/components/libera/use-notebook-illustrations";
 import {
   DEFAULT_NOTEBOOK_FILE_SORT,
   DEFAULT_NOTEBOOK_FILE_VIEW,
@@ -64,6 +68,7 @@ import {
 import { useWorkspaceView } from "./workspace-view-context";
 import { WhereWasICard } from "./where-was-i-card";
 import { useRecorderLauncher } from "@/components/libera/recording/meeting-recorder";
+import { fullDateLabel, relativeTimeLabel } from "@/lib/relative-time";
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 5;
@@ -80,6 +85,8 @@ type NotebookHomeProps = {
   onCreateSlides: (notebook: string) => Promise<void>;
   onCreateLatex?: (notebook: string) => Promise<void>;
   onOpenFile: (file: LiberaFileNode) => Promise<void>;
+  /** Copies an illustration into the notebook as its cover; null goes back to a random one. */
+  onChangeIllustration?: (notebook: string, illustration: string | null) => Promise<void>;
 };
 
 type Point = {
@@ -134,8 +141,12 @@ export function NotebookHome({
   onCreateSlides,
   onCreateLatex,
   onOpenFile,
+  onChangeIllustration,
 }: NotebookHomeProps) {
   const recorder = useRecorderLauncher();
+  const illustrationLibrary = useNotebookIllustrationLibrary();
+  const coverUrl = notebookCoverUrl(notebook, illustrationLibrary);
+  const [changingIllustration, setChangingIllustration] = useState(false);
   const { files, notes, images, folders } = useMemo(
     () => collectNotebookFiles(notebook.children),
     [notebook.children],
@@ -190,9 +201,6 @@ export function NotebookHome({
     new Date(file.updatedAt) > new Date(latest) ? file.updatedAt : latest,
     notebook.updatedAt,
   );
-  const formatDate = (value: string) => new Date(value).toLocaleDateString(undefined, {
-    day: "numeric", month: "short", year: "numeric",
-  });
   const relativePath = (file: LiberaFileNode) => file.path.startsWith(`${notebook.path}/`)
     ? file.path.slice(notebook.path.length + 1) : file.path;
   const trimmedFileSearchQuery = fileSearchQuery.trim();
@@ -207,7 +215,7 @@ export function NotebookHome({
       <section
         className={styles.cover}
         aria-label={notebook.name}
-        style={{ "--notebook-illustration": `url("${notebookIllustrationUrl(notebook.illustration, notebook.createdAt)}")` } as CSSProperties}
+        style={{ "--notebook-illustration": `url("${coverUrl}")` } as CSSProperties}
       >
         <div className={styles.coverInner}>
           <header className={styles.header}>
@@ -219,7 +227,7 @@ export function NotebookHome({
                 <h2 className={styles.title}>{notebook.name}</h2>
                 <p className={styles.metadata}>
                   <FileText aria-hidden size={15} /> {notes.length} {notes.length === 1 ? "note" : "notes"}
-                  <span aria-hidden>·</span> Updated {formatDate(updatedAt)}
+                  <span aria-hidden>·</span> <time dateTime={updatedAt} title={fullDateLabel(updatedAt)}>Updated {relativeTimeLabel(updatedAt)}</time>
                 </p>
               </div>
             </div>
@@ -230,6 +238,7 @@ export function NotebookHome({
                   ...(onCreateLatex ? [{ label: "LaTeX document", icon: <FileCode2 aria-hidden size={16} />, onSelect: () => onCreateLatex(notebook.name) }] : []),
                   { label: "Slides", icon: <FilePlus2 aria-hidden size={16} />, onSelect: () => onCreateSlides(notebook.name) },
                   ...(recorder && !recorder.busy ? [{ label: "Audio recording", icon: <Mic aria-hidden size={16} />, onSelect: () => recorder.startRecording(notebook.name) }] : []),
+                  ...(onChangeIllustration ? [{ label: "Change illustration", icon: <ImagePlus aria-hidden size={16} />, onSelect: () => setChangingIllustration(true), separated: true }] : []),
                 ]}
               />
             </div>
@@ -285,7 +294,7 @@ export function NotebookHome({
           <div className={styles.stat} data-tone="blue"><span className={styles.statIcon}><FileText aria-hidden /></span><div><strong>{notes.length}</strong><span>Notes</span></div></div>
           <div className={styles.stat} data-tone="green"><span className={styles.statIcon}><ImageIcon aria-hidden /></span><div><strong>{images.length}</strong><span>Images</span></div></div>
           <div className={styles.stat} data-tone="amber"><span className={styles.statIcon}><FolderOpen aria-hidden /></span><div><strong>{folders}</strong><span>Folders</span></div></div>
-          <div className={styles.stat} data-tone="violet"><span className={styles.statIcon}><CalendarDays aria-hidden /></span><div><span>Last updated</span><strong className={styles.statDate}>{formatDate(updatedAt)}</strong></div></div>
+          <div className={styles.stat} data-tone="violet"><span className={styles.statIcon}><CalendarDays aria-hidden /></span><div><span>Last updated</span><strong className={styles.statDate} title={fullDateLabel(updatedAt)}>{relativeTimeLabel(updatedAt)}</strong></div></div>
         </section>
 
         <section aria-labelledby="notebook-files">
@@ -330,7 +339,7 @@ export function NotebookHome({
                         <Tag aria-hidden size={12} />{tags.length ? null : <span>Add tag</span>}
                       </button>
                     </span>
-                    <time className={styles.fileDate} dateTime={file.updatedAt}>{formatDate(file.updatedAt)}</time>
+                    <time className={styles.fileDate} dateTime={file.updatedAt} title={fullDateLabel(file.updatedAt)}>{relativeTimeLabel(file.updatedAt)}</time>
                     <ArrowUpRight aria-hidden className={styles.openArrow} size={16} />
                   </div>
                 );
@@ -375,6 +384,14 @@ export function NotebookHome({
             setPreviewIndex(null);
             onOpenFile(image);
           }}
+        />
+      ) : null}
+      {changingIllustration && onChangeIllustration ? (
+        <NotebookIllustrationDialog
+          notebook={notebook}
+          coverUrl={coverUrl}
+          onChange={onChangeIllustration}
+          onClose={() => setChangingIllustration(false)}
         />
       ) : null}
     </div>
@@ -598,7 +615,7 @@ function ImagePreviewModal({
   );
 }
 
-type NewMenuItem = { label: string; icon: ReactNode; onSelect: () => void };
+type NewMenuItem = { label: string; icon: ReactNode; onSelect: () => void; separated?: boolean };
 
 /** The cover's single "New" button; opens a menu of the file kinds a notebook can create. */
 function NewMenu({ items }: { items: NewMenuItem[] }) {
@@ -652,14 +669,16 @@ function NewMenu({ items }: { items: NewMenuItem[] }) {
       {open ? (
         <div ref={menuRef} role="menu" aria-label="Create new" className={styles.newMenuList} onKeyDown={onMenuKeyDown}>
           {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              onClick={() => { setOpen(false); item.onSelect(); }}
-            >
-              {item.icon} {item.label}
-            </button>
+            <Fragment key={item.label}>
+              {item.separated ? <div role="separator" className={styles.newMenuSeparator} /> : null}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setOpen(false); item.onSelect(); }}
+              >
+                {item.icon} {item.label}
+              </button>
+            </Fragment>
           ))}
         </div>
       ) : null}

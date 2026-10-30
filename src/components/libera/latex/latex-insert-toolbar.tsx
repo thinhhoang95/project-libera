@@ -3,40 +3,31 @@
 import { startCompletion } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
 import {
-  Bold, BookMarked, BookmarkPlus, Check, ChevronDown, Code, Columns2, Hash, Heading, Image as ImageIcon, Italic, Link, List,
-  Pencil, Puzzle, Quote, Sigma, Superscript, Table, Trash2,
+  Bold, BookMarked, ChevronDown, Code, Columns2, Hash, Heading, Image as ImageIcon, Italic, Link, List,
+  Puzzle, Quote, Sigma, Superscript, Table,
 } from "lucide-react";
 import { useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { wrapSelection, type LatexProjectFile } from "@/lib/latex/codemirror/editing";
 import { ensurePackages, insertSnippetText, insertTemplate } from "@/lib/latex/codemirror/snippets";
 import {
-  BIBLATEX_STYLES, BIBTEX_STYLES, CODE_LANGUAGES, bibliographyBlock, codeTemplate, figureTemplate, listTemplate, literalField, matchingSnippets,
+  BIBLATEX_STYLES, BIBTEX_STYLES, CODE_LANGUAGES, bibliographyBlock, codeTemplate, figureTemplate, listTemplate, literalField,
   preambleInsertion, readBibliographySetup, restyleBibliography, sideBySideTemplate, snippetBodyFromSelection, tableTemplate,
-  type BibliographyStyle, type LatexSnippet,
+  type BibliographyStyle,
 } from "@/lib/latex/snippets";
 import type { LatexEditorHandle } from "./latex-editor";
 import type { LatexSnippetDialogRequest } from "./latex-snippet-dialog";
 import { deleteLatexSnippet, useLatexSnippets } from "./latex-snippets-store";
+import { nativeMenuPointBelow, popupNativeMenu, type NativeMenuEntry } from "../native-menu";
 import { TABLE_GRID_MENU_WIDTH, TableGridPicker } from "../table-grid-picker";
 import { ToolbarMenu } from "../toolbar-menu";
 
 type MenuId = "heading" | "list" | "math" | "figure" | "subfigures" | "table" | "code" | "bibliography" | "snippets";
 
-const itemClass = "flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-foreground hover:bg-muted focus-visible:bg-muted focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
-const sectionLabelClass = "px-2.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
-
 /** The selection as the text of a one-line template field. */
 const field = (selection: string, fallback: string) => literalField(selection.trim().replace(/\s*\n\s*/g, " ")) || fallback;
 
-function MenuItem({ icon, label, detail, checked, disabled, onSelect }: { icon?: ReactNode; label: ReactNode; detail?: ReactNode; checked?: boolean; disabled?: boolean; onSelect: () => void }) {
-  return (
-    <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={itemClass} disabled={disabled} onClick={onSelect}>
-      {checked !== undefined ? <Check aria-hidden className={`h-4 w-4 shrink-0 ${checked ? "" : "invisible"}`} /> : icon}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {detail ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{detail}</span> : null}
-    </button>
-  );
-}
+/** A greyed-out line naming the items below it, as a native menu has no section headings. */
+const heading = (id: string, label: string): NativeMenuEntry => ({ id, label, enabled: false });
 
 type LatexInsertToolbarProps = {
   editorRef: MutableRefObject<LatexEditorHandle | null>;
@@ -50,7 +41,7 @@ type LatexInsertToolbarProps = {
 
 /** Insert tools for .tex files, shown in the LaTeX toolbar after Recompile:
  * formatting, structure, math, floats, code, references, bibliography and
- * saved snippets. */
+ * saved snippets. Their menus are native ones, except the table size grid. */
 export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice }: LatexInsertToolbarProps) {
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
@@ -119,11 +110,100 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
     if (body.trim()) onSnippetDialog({ mode: "create", body });
   }
 
-  const hasSelection = (() => {
-    const selection = editorRef.current?.view.state.selection.main;
-    return !!selection && !selection.empty;
-  })();
-  const bibliography = open === "bibliography" ? readBibliographySetup(editorRef.current?.view.state.doc.toString() ?? "") : null;
+  async function removeSnippet(name: string, id: string) {
+    if (!window.confirm(`Delete the snippet /${name}?`)) return;
+    try { await deleteLatexSnippet(id); } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "Could not delete the snippet.");
+    }
+  }
+
+  /** A native menu's items, read from the editor as it is when the menu opens. */
+  function menuItems(id: Exclude<MenuId, "table">): NativeMenuEntry[] {
+    switch (id) {
+      case "heading":
+        return (["chapter", "section", "subsection", "subsubsection", "paragraph"] as const).map((command) => ({
+          id: command, label: command[0].toUpperCase() + command.slice(1),
+          onSelect: () => template((selection) => `\\${command}{\${${field(selection, "Title")}}}\${}`),
+        }));
+      case "list":
+        return [
+          { id: "itemize", label: "Bulleted List", onSelect: () => template((selection) => listTemplate("itemize", selection)) },
+          { id: "enumerate", label: "Numbered List", onSelect: () => template((selection) => listTemplate("enumerate", selection)) },
+          { id: "description", label: "Description List", onSelect: () => template((selection) => listTemplate("description", selection)) },
+        ];
+      case "math":
+        return [
+          { id: "inline", label: "Inline Math", onSelect: () => template((selection) => `\\(\${${field(selection, "")}}\\)\${}`) },
+          { id: "display", label: "Display Math", onSelect: () => template((selection) => `\\[\n\t\${${field(selection, "")}}\n\\]\${}`) },
+          { id: "equation", label: "Numbered Equation", onSelect: () => template((selection) => `\\begin{equation}\n\t\${${field(selection, "")}}\n\t\\label{eq:\${label}}\n\\end{equation}\${}`) },
+          { id: "align", label: "Aligned Equations", onSelect: () => template(() => "\\begin{align}\n\t${a} &= ${b} \\\\\n\t${c} &= ${d}\n\\end{align}${}", ["amsmath"]) },
+          { id: "cases", label: "Cases", onSelect: () => template(() => "\\begin{cases}\n\t${value} & \\text{if } ${condition} \\\\\n\t${other} & \\text{otherwise}\n\\end{cases}${}", ["amsmath"]) },
+          { id: "matrix", label: "Matrix", onSelect: () => template(() => "\\begin{pmatrix}\n\t${a} & ${b} \\\\\n\t${c} & ${d}\n\\end{pmatrix}${}", ["amsmath"]) },
+          { id: "fraction", label: "Fraction", onSelect: () => template((selection) => `\\frac{\${${field(selection, "numerator")}}}{\${denominator}}\${}`) },
+        ];
+      case "figure":
+        return [
+          { id: "empty", label: "Empty Figure", onSelect: () => template(() => figureTemplate(), ["graphicx"]) },
+          ...(images.length ? [{ type: "separator" } as const, heading("images", "Images in This Folder")] : []),
+          ...images.map((file) => ({ id: `image:${file.path}`, label: file.path, onSelect: () => template(() => figureTemplate(file.path), ["graphicx"]) })),
+        ];
+      case "subfigures":
+        return [
+          { id: "two", label: "Two Figures Side by Side", onSelect: () => template(() => sideBySideTemplate(2), ["graphicx", "subcaption"]) },
+          { id: "three", label: "Three Figures in a Row", onSelect: () => template(() => sideBySideTemplate(3), ["graphicx", "subcaption"]) },
+        ];
+      case "code":
+        return [
+          { id: "verbatim", label: "Verbatim", onSelect: () => template((selection) => codeTemplate("verbatim", selection)) },
+          { id: "listing", label: "Listing", onSelect: () => template((selection) => codeTemplate("listing", selection), ["listings"]) },
+          {
+            id: "languages", label: "Listing in a Language",
+            submenu: CODE_LANGUAGES.map((language) => ({ id: `language:${language}`, label: language, onSelect: () => template((selection) => codeTemplate("listing", selection, language), ["listings"]) })),
+          },
+        ];
+      case "bibliography": {
+        // A document uses BibTeX or biblatex; only its own styles can be switched to.
+        const bibliography = readBibliographySetup(editorRef.current?.view.state.doc.toString() ?? "");
+        const styles = (system: BibliographyStyle["system"], list: BibliographyStyle[]): NativeMenuEntry[] => list.map((style) => ({
+          id: `${system}:${style.value}`, label: style.label, type: "checkbox",
+          checked: bibliography.system === system && bibliography.style === style.value,
+          enabled: !bibliography.system || bibliography.system === system,
+          onSelect: () => applyBibliographyStyle(style),
+        }));
+        return [
+          heading("bibtex", "BibTeX"), ...styles("bibtex", BIBTEX_STYLES),
+          { type: "separator" },
+          heading("biblatex", "biblatex"), ...styles("biblatex", BIBLATEX_STYLES),
+        ];
+      }
+      case "snippets": {
+        const selection = editorRef.current?.view.state.selection.main;
+        const sorted = [...snippets].sort((left, right) => left.name.localeCompare(right.name));
+        const each = (prefix: string, action: (snippet: (typeof sorted)[number]) => void) => sorted.map((snippet) => ({ id: `${prefix}:${snippet.id}`, label: `/${snippet.name}`, onSelect: () => action(snippet) }));
+        return [
+          ...(sorted.length
+            ? each("insert", (snippet) => edit((view) => { insertSnippetText(view, snippet.body); }))
+            : [heading("none", "No Snippets Yet")]),
+          { type: "separator" },
+          { id: "add", label: "Add Selection as Snippet…", enabled: !!selection && !selection.empty, onSelect: addSelectionAsSnippet },
+          ...(sorted.length ? [
+            { id: "rename", label: "Rename", submenu: each("rename", (snippet) => onSnippetDialog({ mode: "rename", snippet })) },
+            { id: "delete", label: "Delete", submenu: each("delete", (snippet) => void removeSnippet(snippet.name, snippet.id)) },
+          ] : []),
+        ];
+      }
+    }
+  }
+
+  async function toggleMenu(id: MenuId, element: HTMLElement) {
+    if (id === "table") {
+      setOpen((current) => current === id ? null : id);
+      return;
+    }
+    setOpen(id);
+    await popupNativeMenu(menuItems(id), nativeMenuPointBelow(element));
+    setOpen((current) => current === id ? null : current);
+  }
 
   function button(id: MenuId | null, label: string, icon: ReactNode, onClick?: () => void, shortcut?: string) {
     const isMenu = id !== null;
@@ -138,7 +218,7 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         aria-expanded={isMenu ? open === id : undefined}
         // Keep the editor's selection highlighted while using the toolbar.
         onMouseDown={(event) => event.preventDefault()}
-        onClick={isMenu ? () => setOpen((current) => current === id ? null : id) : onClick}
+        onClick={isMenu ? (event) => void toggleMenu(id, event.currentTarget) : onClick}
       >
         {icon}
         {isMenu ? <ChevronDown aria-hidden className="h-3 w-3 opacity-70" /> : null}
@@ -172,14 +252,13 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
       {separator}
       <button
         type="button"
-        ref={(element) => { if (element) anchors.current.set("snippets", element); else anchors.current.delete("snippets"); }}
         className="libera-latex-snippets-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
         aria-label={`Snippets${snippets.length ? ` (${snippets.length})` : ""}`}
         aria-haspopup="menu"
         aria-expanded={open === "snippets"}
         title="Insert, rename or delete saved snippets. Type /name in the editor to insert one."
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => setOpen((current) => current === "snippets" ? null : "snippets")}
+        onClick={(event) => void toggleMenu("snippets", event.currentTarget)}
       >
         <Puzzle aria-hidden className="h-3.5 w-3.5" />
         Snippets
@@ -187,175 +266,11 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         <ChevronDown aria-hidden className="h-3 w-3 opacity-70" />
       </button>
 
-      {open === "heading" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Heading" width={220} onClose={close}>
-          {(["chapter", "section", "subsection", "subsubsection", "paragraph"] as const).map((command) => (
-            <MenuItem key={command} label={command[0].toUpperCase() + command.slice(1)} detail={`\\${command}`}
-              onSelect={() => template((selection) => `\\${command}{\${${field(selection, "Title")}}}\${}`)} />
-          ))}
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "list" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="List" width={240} onClose={close}>
-          <MenuItem label="Bulleted list" detail="itemize" onSelect={() => template((selection) => listTemplate("itemize", selection))} />
-          <MenuItem label="Numbered list" detail="enumerate" onSelect={() => template((selection) => listTemplate("enumerate", selection))} />
-          <MenuItem label="Description list" detail="description" onSelect={() => template((selection) => listTemplate("description", selection))} />
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "math" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Math" width={260} onClose={close}>
-          <MenuItem label="Inline math" detail="\( \)" onSelect={() => template((selection) => `\\(\${${field(selection, "")}}\\)\${}`)} />
-          <MenuItem label="Display math" detail="\[ \]" onSelect={() => template((selection) => `\\[\n\t\${${field(selection, "")}}\n\\]\${}`)} />
-          <MenuItem label="Numbered equation" detail="equation" onSelect={() => template((selection) => `\\begin{equation}\n\t\${${field(selection, "")}}\n\t\\label{eq:\${label}}\n\\end{equation}\${}`)} />
-          <MenuItem label="Aligned equations" detail="align" onSelect={() => template(() => "\\begin{align}\n\t${a} &= ${b} \\\\\n\t${c} &= ${d}\n\\end{align}${}", ["amsmath"])} />
-          <MenuItem label="Cases" detail="cases" onSelect={() => template(() => "\\begin{cases}\n\t${value} & \\text{if } ${condition} \\\\\n\t${other} & \\text{otherwise}\n\\end{cases}${}", ["amsmath"])} />
-          <MenuItem label="Matrix" detail="pmatrix" onSelect={() => template(() => "\\begin{pmatrix}\n\t${a} & ${b} \\\\\n\t${c} & ${d}\n\\end{pmatrix}${}", ["amsmath"])} />
-          <MenuItem label="Fraction" detail="\frac" onSelect={() => template((selection) => `\\frac{\${${field(selection, "numerator")}}}{\${denominator}}\${}`)} />
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "figure" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Insert figure" width={300} onClose={close}>
-          <MenuItem icon={<ImageIcon aria-hidden className="h-4 w-4 shrink-0" />} label="Empty figure" detail="figure" onSelect={() => template(() => figureTemplate(), ["graphicx"])} />
-          {images.length ? <div className={sectionLabelClass}>Images in this folder</div> : null}
-          {images.map((file) => (
-            <MenuItem key={file.path} label={<span className="font-mono text-xs" title={file.path}>{file.path}</span>} onSelect={() => template(() => figureTemplate(file.path), ["graphicx"])} />
-          ))}
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "subfigures" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Side-by-side graphics" width={260} onClose={close}>
-          <MenuItem label="Two figures side by side" detail="subfigure" onSelect={() => template(() => sideBySideTemplate(2), ["graphicx", "subcaption"])} />
-          <MenuItem label="Three figures in a row" detail="subfigure" onSelect={() => template(() => sideBySideTemplate(3), ["graphicx", "subcaption"])} />
-          <p className="px-2.5 pb-1 pt-2 text-xs text-muted-foreground">Each panel gets its own caption and label. Uses the subcaption package.</p>
-        </ToolbarMenu>
-      ) : null}
-
       {open === "table" ? (
         <ToolbarMenu anchorRef={anchorRef} label="Insert table" width={TABLE_GRID_MENU_WIDTH} onClose={close}>
           <TableGridPicker onPick={(rows, columns) => template(() => tableTemplate(rows, columns), ["booktabs"])} />
         </ToolbarMenu>
       ) : null}
-
-      {open === "code" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Code block" width={240} onClose={close}>
-          <MenuItem label="Verbatim" detail="verbatim" onSelect={() => template((selection) => codeTemplate("verbatim", selection))} />
-          <MenuItem label="Listing" detail="lstlisting" onSelect={() => template((selection) => codeTemplate("listing", selection), ["listings"])} />
-          <div className={sectionLabelClass}>Listing in a language</div>
-          {CODE_LANGUAGES.map((language) => (
-            <MenuItem key={language} label={language} onSelect={() => template((selection) => codeTemplate("listing", selection, language), ["listings"])} />
-          ))}
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "bibliography" && bibliography ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Bibliography style" width={330} onClose={close}>
-          <p className="px-2.5 pb-1 pt-1.5 text-xs text-muted-foreground">
-            {bibliography.system ? "Choose a style to switch this document’s bibliography." : `Inserts a bibliography for ${bibFile} at the cursor.`}
-          </p>
-          <div className={sectionLabelClass}>BibTeX</div>
-          {BIBTEX_STYLES.map((style) => (
-            <MenuItem key={style.value} label={style.label} detail={style.value} checked={bibliography.system === "bibtex" && bibliography.style === style.value}
-              disabled={bibliography.system === "biblatex"} onSelect={() => applyBibliographyStyle(style)} />
-          ))}
-          <div className={sectionLabelClass}>biblatex</div>
-          {BIBLATEX_STYLES.map((style) => (
-            <MenuItem key={style.value} label={style.label} detail={style.value} checked={bibliography.system === "biblatex" && bibliography.style === style.value}
-              disabled={bibliography.system === "bibtex"} onSelect={() => applyBibliographyStyle(style)} />
-          ))}
-          {bibliography.system ? <p className="px-2.5 pb-1 pt-2 text-xs text-muted-foreground">This document uses {bibliography.system === "biblatex" ? "biblatex" : "BibTeX"}, so only its styles apply.</p> : null}
-        </ToolbarMenu>
-      ) : null}
-
-      {open === "snippets" ? (
-        <ToolbarMenu anchorRef={anchorRef} label="Snippets" width={340} onClose={close}>
-          <SnippetsMenu
-            snippets={snippets}
-            hasSelection={hasSelection}
-            onInsert={(snippet) => edit((view) => { insertSnippetText(view, snippet.body); })}
-            onAdd={addSelectionAsSnippet}
-            onRename={(snippet) => { close(); onSnippetDialog({ mode: "rename", snippet }); }}
-            onError={onNotice}
-          />
-        </ToolbarMenu>
-      ) : null}
     </div>
-  );
-}
-
-function SnippetsMenu({ snippets, hasSelection, onInsert, onAdd, onRename, onError }: {
-  snippets: LatexSnippet[];
-  hasSelection: boolean;
-  onInsert: (snippet: LatexSnippet) => void;
-  onAdd: () => void;
-  onRename: (snippet: LatexSnippet) => void;
-  onError: (message: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const shown = query.trim() ? matchingSnippets(snippets, query.trim().replace(/^\//, "")) : [...snippets].sort((left, right) => left.name.localeCompare(right.name));
-
-  async function remove(snippet: LatexSnippet) {
-    setDeleting(snippet.id);
-    try { await deleteLatexSnippet(snippet.id); } catch (reason) {
-      onError(reason instanceof Error ? reason.message : "Could not delete the snippet.");
-    } finally { setDeleting(null); setConfirming(null); }
-  }
-
-  return (
-    <>
-      {snippets.length > 5 ? (
-        <input
-          data-autofocus
-          type="search"
-          value={query}
-          placeholder="Filter snippets"
-          aria-label="Filter snippets"
-          className="mb-1 w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter" && shown[0]) { event.preventDefault(); onInsert(shown[0]); } }}
-        />
-      ) : null}
-      {!snippets.length ? (
-        <p className="px-2.5 py-2 text-sm text-muted-foreground">No snippets yet. Select some LaTeX, right-click it and choose <span className="font-medium text-foreground">Add as Snippet</span>.</p>
-      ) : !shown.length ? (
-        <p className="px-2.5 py-2 text-sm text-muted-foreground">No snippet matches “{query}”.</p>
-      ) : (
-        <ul className="flex flex-col">
-          {shown.map((snippet) => (
-            <li key={snippet.id} className="group flex items-center gap-0.5 rounded hover:bg-muted focus-within:bg-muted">
-              {confirming === snippet.id ? (
-                <div className="flex w-full items-center gap-2 px-2.5 py-1.5 text-sm">
-                  <span className="min-w-0 flex-1 truncate">Delete <span className="font-mono">/{snippet.name}</span>?</span>
-                  <button type="button" role="menuitem" className="rounded px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10" disabled={deleting === snippet.id} onClick={() => void remove(snippet)}>Delete</button>
-                  <button type="button" role="menuitem" className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-card" onClick={() => setConfirming(null)}>Cancel</button>
-                </div>
-              ) : (
-                <>
-                  <button type="button" role="menuitem" className="min-w-0 flex-1 rounded px-2.5 py-1.5 text-left focus-visible:outline-none" title={snippet.body.slice(0, 800)} onClick={() => onInsert(snippet)}>
-                    <span className="block truncate font-mono text-sm text-foreground">/{snippet.name}</span>
-                    <span className="block truncate font-mono text-[11px] text-muted-foreground">{snippet.body.split("\n").find((line) => line.trim())?.trim()}</span>
-                  </button>
-                  <button type="button" className="libera-latex-icon-button opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`Rename /${snippet.name}`} title="Rename" onClick={() => onRename(snippet)}>
-                    <Pencil aria-hidden className="h-3.5 w-3.5" />
-                  </button>
-                  <button type="button" className="libera-latex-icon-button is-danger opacity-0 focus-visible:opacity-100 group-hover:opacity-100" aria-label={`Delete /${snippet.name}`} title="Delete" onClick={() => setConfirming(snippet.id)}>
-                    <Trash2 aria-hidden className="h-3.5 w-3.5" />
-                  </button>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-1 border-t border-border pt-1">
-        <MenuItem icon={<BookmarkPlus aria-hidden className="h-4 w-4 shrink-0" />} label="Add selection as snippet…" disabled={!hasSelection} onSelect={onAdd} />
-        <p className="px-2.5 pb-1 pt-1 text-xs text-muted-foreground">Tip: type <span className="font-mono">/name</span> in the editor to insert a snippet.</p>
-      </div>
-    </>
   );
 }

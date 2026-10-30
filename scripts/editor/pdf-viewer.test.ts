@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
+import { pendingSaves, resetPendingSavesForTests } from "../../src/components/libera/pending-saves";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { act, createElement, useRef } from "react";
@@ -634,7 +634,8 @@ test("PDF viewer performance and lifecycle regressions", async (t) => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
       assert.equal(saved.length, 0, "drawing writes nothing until Save");
       await act(async () => {
-        host.querySelector<HTMLButtonElement>('[title="Save annotations and ink (Ctrl+S)"]')!.click();
+        // Save in the file actions menu and Ctrl+S (workspace) both write through pending-saves.
+        await pendingSaves.save("paper.pdf");
         await new Promise((resolve) => setTimeout(resolve, 50));
       });
       assert.equal(saved.length, 1, "one write for every change made");

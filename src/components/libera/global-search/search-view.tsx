@@ -103,7 +103,18 @@ function hasImages(parts: SearchQueryPart[]) {
   return parts.some((part) => part.type === "image");
 }
 
-export function statusSummary(status: SearchIndexStatus | null) {
+const relativeTime = new Intl.RelativeTimeFormat("en", { numeric: "always" });
+
+/** "in 40 minutes", "in 3 hours", "in 2 days": a schedule read at a glance. */
+export function timeUntil(iso: string, now = Date.now()) {
+  const ms = Date.parse(iso) - now;
+  if (!Number.isFinite(ms) || ms < 60_000) return "in under a minute";
+  if (ms < 3_600_000) return relativeTime.format(Math.ceil(ms / 60_000), "minute");
+  if (ms < 86_400_000) return relativeTime.format(Math.max(1, Math.round(ms / 3_600_000)), "hour");
+  return relativeTime.format(Math.round(ms / 86_400_000), "day");
+}
+
+export function statusSummary(status: SearchIndexStatus | null, now = Date.now()) {
   if (!status) return { busy: false, text: "Checking the index…" };
   if (status.state === "scanning") return { busy: true, text: status.total ? `Scanning ${status.done} of ${status.total} files` : "Looking for changes…" };
   if (status.state === "embedding") {
@@ -113,11 +124,26 @@ export function statusSummary(status: SearchIndexStatus | null) {
   if (status.state === "error") return { busy: false, text: "Indexing stopped" };
   if (!status.exists) return { busy: false, text: "No index yet" };
   if (status.mismatch) return { busy: false, text: `${status.files.toLocaleString()} files · vectors need re-embedding` };
+  if (status.embeddingDeferred === "battery") return { busy: false, text: "Embeddings waiting for power adapter" };
+  if (status.embeddingDeferred === "power-unknown") return { busy: false, text: "Embeddings waiting for power status" };
+  if (status.embeddingDeferred === "interval") {
+    return { busy: false, text: `${status.files.toLocaleString()} files indexed · embeddings ${status.nextEmbeddingAt ? timeUntil(status.nextEmbeddingAt, now) : "scheduled"}` };
+  }
   const pending = status.model.configured ? status.chunks - status.embeddedChunks : 0;
   return {
     busy: false,
     text: `${status.files.toLocaleString()} files indexed${pending > 0 && status.model.state !== "error" ? ` · ${pending.toLocaleString()} waiting` : ""}`,
   };
+}
+
+/** The line under the summary when nothing is running. */
+export function scheduleSummary(status: SearchIndexStatus | null, now = Date.now()) {
+  if (!status) return "Connecting…";
+  if (status.state === "paused") return "Update once or resume indexing";
+  if (status.backgroundIndexing === false) return "Updates only when requested";
+  if (status.nextKeywordUpdateAt) return `Next keyword update ${timeUntil(status.nextKeywordUpdateAt, now)}`;
+  if (status.embeddingDeferred) return "Keyword index up to date";
+  return "Up to date as files change";
 }
 
 export function SearchView({

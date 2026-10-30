@@ -17,6 +17,7 @@ import type {
   PdfAnnotationsPayload,
 } from "@/lib/types";
 import { apiRequest, emptyTree, encodeFilePath } from "@/components/libera/api-client";
+import { monitorSessionExpiration } from "./session-expiration";
 import { pendingSaves } from "@/components/libera/pending-saves";
 import { pythonSidecarHref } from "@/lib/python/sidecar";
 import { latestPdfAnnotations } from "@/components/libera/pdf-annotation-events";
@@ -322,6 +323,8 @@ const FOCUS_TREE_REFRESH_INTERVAL_MS = 5000;
 
 export function useLiberaWorkspace(initialAuthenticated: boolean) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
+  const sessionEndedRef = useRef(false);
+  const sessionCleanupRef = useRef<AbortController | null>(null);
   const [saveDraftTabId, setSaveDraftTabId] = useState<string | null>(null);
   const [saveDraftError, setSaveDraftError] = useState("");
   const [saveDraftSubmitting, setSaveDraftSubmitting] = useState(false);
@@ -441,6 +444,12 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     },
   });
   const visibleTree = workspaceManager.visibleTree;
+  const expireSessionRef = useRef(expireSession);
+  useLayoutEffect(() => { expireSessionRef.current = expireSession; });
+  useEffect(() => {
+    if (!authenticated) return;
+    return monitorSessionExpiration(() => expireSessionRef.current());
+  }, [authenticated]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const firstNotebook = visibleTree.notebooks[0]?.name ?? "";
   const selectedNotebook = visibleTree.notebooks.find(
@@ -752,6 +761,9 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // A slow response from expiry cleanup must not clear the new login cookie.
+    sessionCleanupRef.current?.abort();
+    sessionCleanupRef.current = null;
     setBusy(true);
     setAuthError("");
 
@@ -760,6 +772,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         method: "POST",
         body: JSON.stringify({ password }),
       });
+      sessionEndedRef.current = false;
       setAuthenticated(true);
       setPassword("");
       // The desktop app opens this user's sign-in screen at the next start.
@@ -772,13 +785,42 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   async function handleLogout() {
+    if (sessionEndedRef.current) return;
     try { await workspaceManager.checkpoint(); await flushPendingState(); }
-    catch { setWorkspaceError("Could not save your workspace. Please try signing out again."); return; }
-    await window.liberaProfiles?.signedOut();
+    catch {
+      if (!sessionEndedRef.current) setWorkspaceError("Could not save your workspace. Please try signing out again.");
+      return;
+    }
+    if (sessionEndedRef.current) return;
+    await window.liberaProfiles?.signedOut().catch(() => undefined);
     await apiRequest<{ authenticated: false }>("/api/auth/logout", {
       method: "POST",
     }).catch(() => null);
+    clearSignedInWorkspace();
+  }
+
+  function expireSession() {
+    if (sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+    try { workspaceManager.checkpointLocally(); }
+    catch { /* A recovery failure must not keep an expired session open. */ }
+    clearSignedInWorkspace();
+    setAuthError("Your session expired. Please sign in again.");
+    // Neither native bookkeeping nor a server request may delay the lock screen.
+    void window.liberaProfiles?.signedOut().catch(() => undefined);
+    const cleanup = new AbortController();
+    sessionCleanupRef.current = cleanup;
+    void apiRequest("/api/auth/logout", { method: "POST", signal: cleanup.signal })
+      .catch(() => undefined)
+      .finally(() => { if (sessionCleanupRef.current === cleanup) sessionCleanupRef.current = null; });
+  }
+
+  function clearSignedInWorkspace() {
+    sessionEndedRef.current = true;
     setAuthenticated(false);
+    setBusy(false);
+    setPassword("");
+    setWorkspaceError("");
     setTree(emptyTree());
     latestDraftByTabIdRef.current = {};
     setTabs([]);
@@ -2994,6 +3036,15 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     setWorkspaceInputDialog((current) => (current ? { ...current, error } : current));
   }
 
+  /** Copies an illustration into a notebook as its cover; null goes back to a random one. */
+  async function changeNotebookIllustration(notebook: string, illustration: string | null) {
+    const nextTree = await apiRequest<LiberaTree>("/api/notebooks/illustration", {
+      method: "PUT",
+      body: JSON.stringify({ notebook, illustration }),
+    });
+    await applyCompleteTree(nextTree);
+  }
+
   async function submitNotebookDialog(values: NotebookFormValues) {
     if (!notebookDialog) {
       return;
@@ -4430,6 +4481,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       toggleFileStar,
       toggleNotebook,
       updateNotebookViewOptions,
+      changeNotebookIllustration,
       openFileTagsDialog,
       closeFileTagsDialog,
       saveFileTags,

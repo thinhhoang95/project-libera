@@ -133,6 +133,7 @@ declare global {
       setTheme: (theme: "light" | "dark" | "system") => Promise<void>;
       onThemeChanged: (listener: (theme: "light" | "dark" | "system") => void) => () => void;
       onEditorThemesChanged?: (listener: (themes: import("../../electron/editor-themes.cjs").ResolvedEditorThemes) => void) => () => void;
+      onNotebookIllustrationsChanged?: (listener: (library: import("../../electron/notebook-illustrations.cjs").NotebookIllustrationLibrary) => void) => () => void;
     };
     liberaUpdater?: {
       getState: () => Promise<LiberaUpdaterState>;

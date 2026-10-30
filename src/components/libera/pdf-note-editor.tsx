@@ -147,6 +147,14 @@ export function PdfNoteEditor({
         return true;
       },
       handleKeyDown(_view, event) {
+        // Ctrl+S saves the file: hand over the last keystrokes first, and let it through.
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && pendingRef.current !== null && editorRef.current) {
+          window.clearTimeout(pendingRef.current);
+          pendingRef.current = null;
+          callbacksRef.current.onChange(noteMarkdown(editorRef.current, pairsRef.current));
+          return false;
+        }
+
         if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
           event.preventDefault();
           callbacksRef.current.onEscape();

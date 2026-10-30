@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isNotebookIllustration, legacyNotebookIllustration } from "@/lib/notebook-illustrations";
+import { isNotebookCoverFile } from "../../../electron/notebook-illustrations.cjs";
 import {
   DEFAULT_NOTEBOOK_COLOR,
   DEFAULT_NOTEBOOK_EMOJI,
@@ -48,6 +49,7 @@ export function normalizeNotebookMetadata(
     illustration: isNotebookIllustration(input?.illustration)
       ? input.illustration
       : legacyNotebookIllustration(input?.createdAt?.trim() || fallbackCreatedAt),
+    ...(isNotebookCoverFile(input?.illustrationPath) ? { illustrationPath: input.illustrationPath } : {}),
   };
 }
 

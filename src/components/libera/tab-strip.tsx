@@ -413,10 +413,11 @@ function ActiveFileActions({
   const isLatex = activeTab.file.fileType === "latex";
   const isPdf = activeTab.file.fileType === "pdf";
   const isImage = activeTab.file.fileType === "image";
+  const isText = activeTab.file.fileType === "text";
   // Gallery photos are renamed, moved and deleted from the gallery itself.
   const isGalleryPhoto = isGalleryTab(activeTab);
   const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
-  const downloadContent = isMarkdown || isLatex ? activeTab.draft : undefined;
+  const downloadContent = isMarkdown || isLatex || isText ? activeTab.draft : undefined;
 
   async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
     if (!activeTab) {
@@ -432,6 +433,12 @@ function ActiveFileActions({
     const point = nativeMenuPointFromButton(event.currentTarget);
     // Shared files have a version history.
     const historyItems = historyMenuItems(activeTab.id);
+    // PDFs and images: their unsaved annotations and ink (pending-saves.ts).
+    const viewerSaveItem = {
+      id: "save",
+      label: "Save",
+      enabled: activeTab.status !== "saving" && pendingSaves.isDirty(activeTab.file.path),
+    };
 
     setActionMenuOpen(true);
 
@@ -480,7 +487,7 @@ function ActiveFileActions({
                   ],
                 },
               ]
-            : isLatex
+            : isLatex || isText
               ? [
                   {
                     id: "save",
@@ -491,6 +498,7 @@ function ActiveFileActions({
                 ]
               : isPdf
                 ? [
+                    viewerSaveItem,
                     {
                       id: "download",
                       label: "Download",
@@ -501,7 +509,7 @@ function ActiveFileActions({
                     },
                   ]
                 : isImage
-                  ? [{ id: "save-image", label: "Save", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
+                  ? [viewerSaveItem, { id: "save-image", label: "Save a Copy", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
                   : [{ id: "download-original", label: "Download" }]),
           ...(isGalleryPhoto
             ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])

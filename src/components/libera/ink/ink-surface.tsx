@@ -134,6 +134,7 @@ export function InkSurface({ frame, viewSize, matrix, zoom = 1, strokes, tools, 
     let size: InkCanvasSize = { cssWidth: 0, cssHeight: 0, scale: 1, dpr: 1 };
     let toUnitsMatrix: InkMatrix = IDENTITY_INK_MATRIX;
     let frameRequest = 0;
+    let visible = true;
 
     // ---- The gesture in progress -------------------------------------------
     let drawing: { samples: InkSample[]; predicted: InkSample[]; style: NonNullable<ReturnType<typeof activeInkStyle>>; width: number } | null = null;
@@ -155,7 +156,7 @@ export function InkSurface({ frame, viewSize, matrix, zoom = 1, strokes, tools, 
 
     const paintLive = () => {
       frameRequest = 0;
-      if (!liveContext) return;
+      if (!liveContext || !visible) return;
       liveContext.setTransform(1, 0, 0, 1, 0, 0);
       liveContext.clearRect(0, 0, live.width, live.height);
       applyInkTransform(liveContext, size);
@@ -183,7 +184,7 @@ export function InkSurface({ frame, viewSize, matrix, zoom = 1, strokes, tools, 
       }
       liveContext.setLineDash([]);
     };
-    const requestPaint = () => { frameRequest ||= requestAnimationFrame(paintLive); };
+    const requestPaint = () => { if (visible) frameRequest ||= requestAnimationFrame(paintLive); };
 
     const measure = () => {
       const cssWidth = root.clientWidth;
@@ -197,17 +198,31 @@ export function InkSurface({ frame, viewSize, matrix, zoom = 1, strokes, tools, 
       size = { cssWidth, cssHeight, scale, dpr, matrix: matrixNow };
       toUnitsMatrix = invert(matrixNow);
       renderer.resize(size);
-      sizeCanvas(live, size);
+      if (visible) sizeCanvas(live, size);
       requestPaint();
     };
     measureRef.current = measure;
+    const unsubscribePower = inkPower.subscribe(measure);
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(root);
 
     // Without IntersectionObserver (some test DOMs), surfaces simply keep their canvases.
     const visibility = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(([entry]) => {
-      if (entry?.isIntersecting) renderer.restore();
-      else renderer.release();
+      if (!entry || entry.isIntersecting === visible) return;
+      if (entry.isIntersecting) {
+        // Refresh size/power while still released, then restore all backing stores.
+        measure();
+        visible = true;
+        renderer.restore();
+        sizeCanvas(live, size);
+        requestPaint();
+      } else {
+        visible = false;
+        cancelAnimationFrame(frameRequest);
+        frameRequest = 0;
+        renderer.release();
+        live.width = live.height = 0;
+      }
     }, { rootMargin: RELEASE_MARGIN });
     visibility?.observe(root);
 
@@ -451,6 +466,9 @@ export function InkSurface({ frame, viewSize, matrix, zoom = 1, strokes, tools, 
       inkSelection.release(owner);
       resizeObserver.disconnect();
       visibility?.disconnect();
+      unsubscribePower();
+      renderer.release();
+      live.width = live.height = 0;
       measureRef.current = () => undefined;
       clearSelectionRef.current = () => undefined;
       rendererRef.current = null;

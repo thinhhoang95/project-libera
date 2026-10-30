@@ -60,12 +60,15 @@ async function writeNote(relativePath: string, text: string) {
 async function withIndexer(context: TestContext, run: (indexer: SearchIndexer, directory: string) => Promise<void>) {
   await pendingReferenceReattach();
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-references-search-"));
-  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES", "LIBERA_SEARCH_BACKGROUND_INDEXING"];
+  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES", "LIBERA_SEARCH_BACKGROUND_INDEXING", "LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC", "LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES"];
   const previous = keys.map((key) => process.env[key]);
   const store = globalThis as { [INDEXER_KEY]?: SearchIndexer };
   const previousIndexer = store[INDEXER_KEY];
   keys.forEach((key) => { delete process.env[key]; });
   process.env.LIBERA_DATA_DIR = directory;
+  // Power policy is covered separately; these fixtures run without Electron.
+  process.env.LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC = "0";
+  process.env.LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES = "0";
   process.env.LIBERA_SEARCH_INDEX_FILE = path.join(directory, "index.sqlite");
   process.env.LIBERA_SEARCH_DIMENSIONS = "128";
   process.env.LIBERA_SEARCH_INDEX_IMAGES = "0";

@@ -2425,7 +2425,6 @@ button.border[class*="border-white"]:hover {
 .libera-photo-ink-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .libera-photo-ink-actions { align-items: center; border-left: 1px solid rgb(255 255 255 / .2); display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 4px; padding-left: 10px; }
 .libera-photo-ink-action { align-items: center; border: 1px solid rgb(255 255 255 / .2); border-radius: .5rem; color: #fff; display: inline-flex; font-size: .8125rem; gap: .4rem; padding: .3rem .7rem; }
-.libera-photo-ink-action.is-primary:not(:disabled) { background: rgb(255 255 255 / .16); }
 .libera-photo-ink-action:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
 .libera-photo-ink-action:disabled { opacity: .45; }
 .libera-photo-ink-action.is-danger { border-color: #f87171; color: #fecaca; }

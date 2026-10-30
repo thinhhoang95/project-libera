@@ -171,6 +171,8 @@ export type LiberaTreeNode = LiberaFileNode | LiberaFolderNode;
 
 export type LiberaNotebookMetadata = {
   illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
+  /** A cover the user picked: a copy kept beside the metadata, overriding `illustration`. */
+  illustrationPath?: string;
   createdAt: string;
   color: string;
   emoji: string;
@@ -205,6 +207,7 @@ export type LiberaNotebookNode = {
   /** Present when this entry is an external folder linked into the library. */
   folder?: LiberaLinkedFolderInfo;
   illustration?: import("@/lib/notebook-illustrations").NotebookIllustration;
+  illustrationPath?: string;
   kind: "notebook";
   name: string;
   path: string;

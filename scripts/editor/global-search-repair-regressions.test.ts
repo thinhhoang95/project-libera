@@ -30,12 +30,15 @@ function deferred() {
 
 async function withIndexer(run: (indexer: SearchIndexer, directory: string) => Promise<void>) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "libera-repair-regression-"));
-  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES"];
+  const keys = ["LIBERA_DATA_DIR", "LIBERA_CONFIG_PATH", "LIBERA_SEARCH_INDEX_FILE", "LIBERA_SEARCH_TEXT_WEIGHTS", "LIBERA_SEARCH_VISION_WEIGHTS", "LIBERA_SEARCH_DIMENSIONS", "LIBERA_SEARCH_INDEX_IMAGES", "LIBERA_SEARCH_EMBEDDING_INTERVAL_MINUTES", "LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC", "LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES"];
   const previous = keys.map((key) => process.env[key]);
   const store = globalThis as { [INDEXER_KEY]?: SearchIndexer };
   const previousIndexer = store[INDEXER_KEY];
   keys.forEach((key) => { delete process.env[key]; });
   process.env.LIBERA_DATA_DIR = directory;
+  // Power policy is covered separately; these fixtures run without Electron.
+  process.env.LIBERA_SEARCH_EMBEDDING_ONLY_ON_AC = "0";
+  process.env.LIBERA_SEARCH_KEYWORD_INTERVAL_MINUTES = "0";
   process.env.LIBERA_SEARCH_INDEX_FILE = path.join(directory, "index.sqlite");
   process.env.LIBERA_SEARCH_DIMENSIONS = "128";
   process.env.LIBERA_SEARCH_INDEX_IMAGES = "0";
@@ -222,6 +225,8 @@ for (const fallback of [false, true]) {
       await writeFile(process.env.LIBERA_SEARCH_TEXT_WEIGHTS!, "original model");
       await indexer.requestScan({ force: true });
       assert.equal(indexer.vectorsUsable, true);
+      assert.equal(db.counts().embeddedChunks, 1, "restoring weights does not bypass the embedding interval");
+      await indexer.requestScan({ force: true, manual: true });
       assert.equal(db.counts().embeddedChunks, 3, "restoring compatible weights resumes the queue");
     });
   });

@@ -97,6 +97,9 @@ test("theme files round-trip without ids and reject other files", () => {
 test("Preferences picks, duplicates, imports and saves editor themes", async () => {
   let saved;
   let exported;
+  // The native theme menu: records its items and picks the queued label.
+  let menuItems = [];
+  let pickLabel = null;
   const dom = new JSDOM(readFileSync(path.join(__dirname, "../../electron/setup.html"), "utf8"), {
     url: "http://localhost/?mode=configuration",
     runScripts: "dangerously",
@@ -105,6 +108,14 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
       window.confirm = () => true;
       window.requestAnimationFrame = (callback) => setTimeout(callback, 0);
       window.queryLocalFonts = async () => [{ family: "Zed Sans" }, { family: "Alpha Mono" }, { family: "Zed Sans" }];
+      window.liberaMenu = {
+        popup: async ({ items }) => {
+          menuItems = items;
+          const picked = items.find((item) => item.label === pickLabel);
+          pickLabel = null;
+          return picked?.id ?? null;
+        },
+      };
       window.liberaSetup = {
         getState: async () => ({
           dataDir: "/tmp/notebooks",
@@ -133,17 +144,20 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
     assert.equal(tile("sepia").getAttribute("aria-checked"), "true");
 
     // Right-click Night and duplicate it.
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const menuLabels = () => menuItems.map((item) => item.label);
+    pickLabel = "Duplicate";
     tile("custom-a1").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
-    const menuItem = (label) => Array.from(document.querySelectorAll("#editor-theme-menu button")).find((button) => button.textContent === label);
-    assert.ok(menuItem("Delete"));
-    menuItem("Duplicate").click();
+    await settle();
+    assert.ok(menuLabels().includes("Delete"));
     assert.ok(Array.from(document.querySelectorAll(".editor-theme-name")).some((name) => name.textContent === "Night copy"));
 
     // Built-ins can be exported but not deleted.
+    pickLabel = "Export…";
     tile("paper").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
-    assert.equal(menuItem("Delete"), undefined);
-    menuItem("Export…").click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
+    await settle();
+    assert.equal(menuLabels().includes("Delete"), false);
     assert.equal(exported[0].name, "Paper");
 
     document.querySelector("#editor-theme-import").click();
@@ -169,8 +183,9 @@ test("Preferences picks, duplicates, imports and saves editor themes", async () 
 
     // Deleting the visual editor's theme returns it to the app colors.
     document.querySelector('.editor-theme-scopes [data-scope="visual"]').click();
+    pickLabel = "Delete";
     tile("custom-a1").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
-    menuItem("Delete").click();
+    await settle();
 
     document.querySelector("#setup-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));

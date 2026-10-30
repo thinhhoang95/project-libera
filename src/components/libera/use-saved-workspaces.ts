@@ -131,7 +131,12 @@ export function useSavedWorkspaces(options: Options) {
   }
 
   useEffect(() => {
-    if (!options.authenticated || !options.tree.root) return;
+    if (!options.authenticated) {
+      locked.current = false;
+      readyRef.current = false;
+      return;
+    }
+    if (!options.tree.root) return;
     let cancelled = false;
     readyRef.current = false;
     lastSaved.current = lastJournal.current = "";
@@ -319,6 +324,13 @@ export function useSavedWorkspaces(options: Options) {
       const next = remapWorkspacePaths(snapshot(), from, to);
       publish(next);
       void persist(next).catch((error: Error) => current.current.onError(error.message));
+    },
+    // Expiry cannot use the authenticated API. Capture mounted editors before
+    // the sign-in screen replaces them, using the existing recovery journal.
+    checkpointLocally: () => {
+      if (!readyRef.current) return;
+      const next = locked.current ? pendingSnapshot.current : snapshot();
+      if (next) { libraryRef.current = next; journal(next); }
     },
     checkpoint: async () => { if (readyRef.current) await persist(snapshot()); },
   };

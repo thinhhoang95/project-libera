@@ -349,10 +349,19 @@ export function PhotoEditor({ src, copyOnly = false, onCancel, onSave }: {
     function handleKey(event: KeyboardEvent) {
       if (event.target instanceof Element && event.target.closest("input, textarea, select")) return;
       if (event.key === "Escape" && !dirty && !saving) { event.preventDefault(); onCancel(); }
-      else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s" && dirty && !saving) { event.preventDefault(); void save(copyOnly ? "copy" : "replace"); }
+    }
+    // Ctrl+S is the editor's while it is open: captured before the image tab's Save sees it.
+    function handleSaveKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (dirty && !saving) void save(copyOnly ? "copy" : "replace");
     }
     window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
+    window.addEventListener("keydown", handleSaveKey, true);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("keydown", handleSaveKey, true);
+    };
     // `save` reads the latest edits through this effect's dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, saving, edits, onCancel]);

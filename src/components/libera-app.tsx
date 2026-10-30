@@ -8,6 +8,8 @@ import { showOutlineView } from "@/components/libera/outline-view";
 import { MarkdownDisplayPreferencesProvider } from "@/components/libera/markdown-display-preferences";
 import { useMarkdownAccents } from "@/components/libera/use-markdown-accents";
 import { EditorThemesContext, NO_EDITOR_THEMES, useEditorThemes } from "@/components/libera/use-editor-themes";
+import { NotebookIllustrationsContext, useNotebookIllustrations } from "@/components/libera/use-notebook-illustrations";
+import { DEFAULT_NOTEBOOK_ILLUSTRATIONS, type NotebookIllustrationLibrary } from "../../electron/notebook-illustrations.cjs";
 import type { ResolvedEditorThemes } from "../../electron/editor-themes.cjs";
 import { QuickPromptsContext } from "@/components/libera/quick-prompt-input";
 import type { MarkdownDisplayPreferences } from "@/lib/markdown-display-preferences";
@@ -69,6 +71,7 @@ type LiberaAppProps = {
   markdownDisplayPreferences?: Partial<MarkdownDisplayPreferences>;
   quickPrompts?: QuickPrompt[];
   editorThemes?: ResolvedEditorThemes;
+  notebookIllustrations?: NotebookIllustrationLibrary;
 };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "libera.sidebarWidth";
@@ -111,10 +114,12 @@ export function LiberaApp({
   markdownDisplayPreferences,
   quickPrompts = NO_QUICK_PROMPTS,
   editorThemes = NO_EDITOR_THEMES,
+  notebookIllustrations = DEFAULT_NOTEBOOK_ILLUSTRATIONS,
 }: LiberaAppProps) {
   const aiActive = useAiActivity();
   useMarkdownAccents(markdownPreferences);
   const resolvedEditorThemes = useEditorThemes(editorThemes);
+  const illustrationLibrary = useNotebookIllustrations(notebookIllustrations);
   const { authenticated, workspace } = useLiberaWorkspace(initialAuthenticated);
   const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [activeLeftPanel, setActiveLeftPanel] = useState<LeftPanelTab>("notebook");
@@ -544,6 +549,7 @@ export function LiberaApp({
         onAiWriteAt={workspace.writeWithAiAt}
         onCreateMarkdown={workspace.createMarkdownFromPrompt}
         onCreateSlides={workspace.createMarkdownSlidesFromPrompt}
+        onChangeNotebookIllustration={workspace.changeNotebookIllustration}
         onCreateLatex={workspace.createLatexFromPrompt}
         onCreateNotebook={workspace.openCreateNotebookDialog}
         onCancelScreenshotSnip={workspace.cancelScreenshotSnip}
@@ -595,6 +601,7 @@ export function LiberaApp({
     <MarkdownDisplayPreferencesProvider initialPreferences={markdownDisplayPreferences}>
     <QuickPromptsContext.Provider value={quickPrompts}>
     <EditorThemesContext.Provider value={resolvedEditorThemes}>
+    <NotebookIllustrationsContext.Provider value={illustrationLibrary}>
     <WorkspaceViewContext.Provider value={{ view: workspace.workspaceManager.activeWorkspace?.view, updateView: workspace.workspaceManager.updateView }}>
     <MarkdownReviewProvider activeTab={workspace.activeTab} getDraft={workspace.getReviewDraft} applyDraft={workspace.applyReviewDraft} recoverDraft={workspace.recoverReviewDraft} openChat={() => changeChatCollapsed(false)} openComments={openComments}>
     <ReviewPaletteCommands />
@@ -895,6 +902,7 @@ export function LiberaApp({
     </CollabProvider>
     </MarkdownReviewProvider>
     </WorkspaceViewContext.Provider>
+    </NotebookIllustrationsContext.Provider>
     </EditorThemesContext.Provider>
     </QuickPromptsContext.Provider>
     </MarkdownDisplayPreferencesProvider>

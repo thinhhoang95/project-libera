@@ -158,6 +158,7 @@ type WorkspacePanelProps = {
   onAiWriteAt: (offset: number, prompt: string) => Promise<void>;
   onCreateMarkdown: (notebook: string) => Promise<void>;
   onCreateSlides: (notebook: string) => Promise<void>;
+  onChangeNotebookIllustration?: (notebook: string, illustration: string | null) => Promise<void>;
   onCreateLatex?: (notebook: string) => Promise<void>;
   onCreateNotebook: () => void;
   onCancelScreenshotSnip: () => void;
@@ -564,6 +565,7 @@ const PANEL_CALLBACKS = [
   "onAiWriteAt",
   "onCreateMarkdown",
   "onCreateSlides",
+  "onChangeNotebookIllustration",
   "onCreateLatex",
   "onCreateNotebook",
   "onEditFileTags",
@@ -669,6 +671,7 @@ function WorkspacePanelContent({
   onAiWriteAt,
   onCreateMarkdown,
   onCreateSlides,
+  onChangeNotebookIllustration,
   onCreateLatex,
   onCreateNotebook,
   onCancelScreenshotSnip,
@@ -1404,13 +1407,20 @@ function WorkspacePanelContent({
     };
   }, [focused, previewFullscreen, setActivePreviewTabId, textareaRef]);
 
+  // PDFs and images save their unsaved annotations and ink (pending-saves.ts).
   useLayoutEffect(() => {
-    if (activeFileType !== "markdown" || !activeTabId) {
+    const viewer = activeFileType === "pdf" || activeFileType === "image";
+    if ((activeFileType !== "markdown" && !viewer) || !activeTabId) {
       return;
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (!focused || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
+        return;
+      }
+
+      // A photo editor open over the image has saved its own edits.
+      if (viewer && event.defaultPrevented) {
         return;
       }
 
@@ -1764,6 +1774,7 @@ function WorkspacePanelContent({
           onCreateSlides={onCreateSlides}
           onCreateLatex={onCreateLatex}
           onOpenFile={onOpenFile}
+          onChangeIllustration={onChangeNotebookIllustration}
         />
       );
     }

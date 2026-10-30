@@ -38,7 +38,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("Search preferences load, choose weights and save with the other preferences", async () => {
   const { dom, calls } = openPreferences({
-    search: { textWeights: "/old/model_q4.onnx", visionWeights: "", dimensions: 512, visionTokens: 280, indexImages: false, backgroundIndexing: true, indexFile: "" },
+    search: { textWeights: "/old/model_q4.onnx", visionWeights: "", dimensions: 512, visionTokens: 280, indexImages: false, backgroundIndexing: true, embeddingIntervalMinutes: 60, embeddingOnlyOnAC: false, keywordIntervalMinutes: 300, indexFile: "" },
   });
 
   try {
@@ -51,6 +51,18 @@ test("Search preferences load, choose weights and save with the other preference
     assert.equal(document.querySelector("#search-dimensions").value, "512");
     assert.equal(document.querySelector("#search-vision-tokens").value, "280");
     assert.equal(document.querySelector("#search-index-images").checked, false);
+    assert.equal(document.querySelector("#search-embedding-interval").value, "180");
+    assert.equal(document.querySelector("#search-embedding-only-on-ac").checked, false, "preserve an explicitly saved off setting");
+    assert.deepEqual(Array.from(document.querySelector("#search-embedding-interval").options, (option) => [option.value, option.textContent]), [
+      ["180", "3 hours"], ["720", "12 hours"], ["1440", "1 day"], ["10080", "7 days"],
+    ]);
+    assert.equal(document.querySelector("#search-keyword-interval").value, "480", "a value between choices rounds up");
+    assert.deepEqual(Array.from(document.querySelector("#search-keyword-interval").options, (option) => [option.value, option.textContent]), [
+      ["60", "1 hour"], ["240", "4 hours"], ["480", "8 hours"], ["1440", "1 day"], ["4320", "3 days"],
+    ]);
+    document.querySelector("#search-keyword-interval").value = "1440";
+    document.querySelector("#search-embedding-interval").value = "720";
+    document.querySelector("#search-embedding-only-on-ac").checked = true;
 
     document.querySelector("#search-text-weights-button").click();
     document.querySelector("#search-vision-weights-button").click();
@@ -75,6 +87,9 @@ test("Search preferences load, choose weights and save with the other preference
       visionTokens: "280",
       indexImages: true,
       backgroundIndexing: true,
+      keywordIntervalMinutes: "1440",
+      embeddingIntervalMinutes: "720",
+      embeddingOnlyOnAC: true,
       indexFile: "/local/copied.sqlite",
       readingModelDirectory: "/models/granite-docling-258M-ONNX",
     });
@@ -94,13 +109,15 @@ test("Preferences can open at the Search section", async () => {
     assert.equal(document.querySelector("#search-dimensions").value, "768");
     assert.equal(document.querySelector("#search-vision-tokens").value, "140");
     assert.equal(document.querySelector("#search-background-indexing").checked, true);
+    assert.equal(document.querySelector("#search-embedding-interval").value, "180");
+    assert.equal(document.querySelector("#search-embedding-only-on-ac").checked, true);
   } finally {
     dom.window.close();
   }
 });
 
 test("Search preferences are part of preference backups", () => {
-  const search = { textWeights: "/models/model_q4.onnx", dimensions: 256 };
+  const search = { textWeights: "/models/model_q4.onnx", dimensions: 256, embeddingIntervalMinutes: 720, embeddingOnlyOnAC: true };
   const backup = createPreferencesBackup({ dataDir: "/notes", search, sessionSecret: "secret" });
   assert.deepEqual(backup.preferences.search, search);
   assert.deepEqual(parsePreferencesBackup(backup).search, search);

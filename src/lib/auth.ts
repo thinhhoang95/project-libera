@@ -105,13 +105,13 @@ function createToken(subject: TokenSubject, maxAgeSeconds: number) {
 
 function verifyToken(token: string | undefined, subject: TokenSubject) {
   if (!token) {
-    return false;
+    return null;
   }
 
   const [encodedPayload, signature] = token.split(".");
 
   if (!encodedPayload || !signature) {
-    return false;
+    return null;
   }
 
   const expectedSignature = createHmac("sha256", getSessionSecret())
@@ -119,7 +119,7 @@ function verifyToken(token: string | undefined, subject: TokenSubject) {
     .digest("base64url");
 
   if (!safeEqual(signature, expectedSignature)) {
-    return false;
+    return null;
   }
 
   try {
@@ -127,9 +127,11 @@ function verifyToken(token: string | undefined, subject: TokenSubject) {
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as Partial<SessionPayload>;
 
-    return payload.sub === subject && typeof payload.exp === "number" && payload.exp > Date.now();
+    return payload.sub === subject && typeof payload.exp === "number" && Number.isFinite(payload.exp) && payload.exp > Date.now()
+      ? payload as SessionPayload
+      : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -138,7 +140,11 @@ export function createSessionToken() {
 }
 
 export function verifySessionToken(token: string | undefined) {
-  return verifyToken(token, SESSION_SUBJECT);
+  return getSessionExpiresAt(token) !== null;
+}
+
+export function getSessionExpiresAt(token: string | undefined) {
+  return verifyToken(token, SESSION_SUBJECT)?.exp ?? null;
 }
 
 export function createArchiveToken() {
@@ -146,7 +152,7 @@ export function createArchiveToken() {
 }
 
 export function verifyArchiveToken(token: string | undefined) {
-  return verifyToken(token, ARCHIVE_SUBJECT);
+  return verifyToken(token, ARCHIVE_SUBJECT) !== null;
 }
 
 export function getSessionCookieOptions() {

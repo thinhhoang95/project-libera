@@ -11,6 +11,7 @@ type BatteryManager = EventTarget & { charging: boolean };
 
 let onBattery = false;
 let started = false;
+const listeners = new Set<() => void>();
 
 function start() {
   if (started) return;
@@ -18,13 +19,23 @@ function start() {
   const getBattery = (globalThis.navigator as Navigator & { getBattery?: () => Promise<BatteryManager> } | undefined)?.getBattery;
   if (typeof getBattery !== "function") return;
   void getBattery.call(navigator).then((battery) => {
-    const update = () => { onBattery = !battery.charging; };
+    const update = () => {
+      const next = !battery.charging;
+      if (next === onBattery) return;
+      onBattery = next;
+      listeners.forEach((listener) => listener());
+    };
     update();
     battery.addEventListener("chargingchange", update);
   }, () => undefined);
 }
 
 export const inkPower = {
+  subscribe(listener: () => void) {
+    listeners.add(listener);
+    start();
+    return () => { listeners.delete(listener); };
+  },
   get onBattery() {
     start();
     return onBattery;

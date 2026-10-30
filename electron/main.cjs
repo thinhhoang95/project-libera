@@ -1,6 +1,8 @@
 const { normalizeMathMarkers, DEFAULT_INLINE_MATH_MARKERS, DEFAULT_BLOCK_MATH_MARKERS } = require("./math-markers.cjs");
 const { normalizeMarkdownHeadingColor, normalizeMarkdownHeadingPalette, normalizeMarkdownBoldLeadIns } = require("./markdown-accents.cjs");
 const { BUILT_IN_EDITOR_THEMES, normalizeEditorThemes, resolveEditorThemes, createEditorThemesFile, parseEditorThemesFile } = require("./editor-themes.cjs");
+const { BUILT_IN_ILLUSTRATION_SETS, normalizeNotebookIllustrations, resolveNotebookIllustrations } = require("./notebook-illustrations.cjs");
+const { illustrationExists, illustrationFilePath, saveNotebookIllustrations } = require("./notebook-illustration-store.cjs");
 const {
   app,
   BrowserWindow,
@@ -9,7 +11,9 @@ const {
   clipboard,
   dialog,
   ipcMain,
+  nativeImage,
   nativeTheme,
+  powerMonitor,
   session,
   shell,
 } = require("electron");
@@ -23,6 +27,7 @@ const { spawn } = require("node:child_process");
 const { normalizeAiPreferences, aiPreferencesEnvironment } = require("./ai-preferences.cjs");
 const { normalizeQuickPrompts, validateQuickPrompts } = require("./quick-prompts.cjs");
 const { normalizeLatexSnippets } = require("./latex-snippets.cjs");
+const { publishPowerState } = require("./power-state.cjs");
 const { INDEX_FILE_NAME, MODEL_FOLDERS, defaultModelsDirectory, defaultSearchIndexFile, normalizeSearchPreferences } = require("./search-preferences.cjs");
 const { normalizeTranscriptionPreferences } = require("./transcription-preferences.cjs");
 const { inspectKokoroFolder, normalizeTtsPreferences } = require("./tts-preferences.cjs");
@@ -102,6 +107,7 @@ let openRouterModelCatalog = null;
 let openRouterTranscriptionModelCatalog = null;
 let openRouterSpeechModelCatalog = null;
 let nextProcess = null;
+let disposePowerState = null;
 let mainWindow = null;
 let nextServerUrl = "";
 let isQuitting = false;
@@ -634,6 +640,8 @@ function normalizedImportedPreferences(input) {
     quickPrompts: validateQuickPrompts(input.quickPrompts ?? []),
     // Backups made before snippets existed leave the saved snippets alone.
     ...(Object.hasOwn(input, "latexSnippets") ? { latexSnippets: normalizeLatexSnippets(input.latexSnippets) } : {}),
+    // The images stay in the library; a backup holds only the sets and the choice.
+    ...(Object.hasOwn(input, "notebookIllustrations") ? { notebookIllustrations: normalizeNotebookIllustrations(input.notebookIllustrations) } : {}),
     ...(Object.hasOwn(input, "search") ? { search: normalizeSearchPreferences(input.search) } : {}),
     ...(Object.hasOwn(input, "transcription") ? { transcription: normalizeTranscriptionPreferences(input.transcription) } : {}),
     ...(Object.hasOwn(input, "tts") ? { tts: normalizeTtsPreferences(input.tts) } : {}),
@@ -762,6 +770,58 @@ async function importPreferences(parentWindow) {
   });
 }
 
+function libraryAdminRoot(dataDir) {
+  return typeof dataDir === "string" && dataDir ? path.join(dataDir, "users", ADMIN_USER) : "";
+}
+
+// Small previews for Preferences, made once per file version.
+const illustrationThumbnails = new Map();
+function illustrationThumbnail(filePath) {
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch {
+    return "";
+  }
+  const key = `${filePath}:${stats.mtimeMs}`;
+  if (!illustrationThumbnails.has(key)) {
+    const image = nativeImage.createFromPath(filePath);
+    illustrationThumbnails.set(key, image.isEmpty()
+      ? ""
+      : `data:image/jpeg;base64,${image.resize({ width: 264, quality: "good" }).toJPEG(80).toString("base64")}`);
+  }
+  return illustrationThumbnails.get(key);
+}
+
+// public/ in a source checkout; the standalone server's copy in a build.
+function builtInIllustrationPath(file) {
+  const appRoot = getAppRoot();
+  const parts = file.split("/");
+  return [path.join(appRoot, "public", "images", ...parts), path.join(appRoot, ".next", "standalone", "public", "images", ...parts)]
+    .find((candidate) => fs.existsSync(candidate)) ?? "";
+}
+
+/** The sets for Preferences, each image with a thumbnail. */
+function notebookIllustrationsStatus(config) {
+  const adminRoot = libraryAdminRoot(config.dataDir);
+  const preferences = normalizeNotebookIllustrations(config.notebookIllustrations);
+  return {
+    selected: preferences.selected,
+    sets: preferences.sets.map((set) => ({
+      ...set,
+      images: set.images.map((image) => ({
+        ...image,
+        thumbnail: adminRoot ? illustrationThumbnail(illustrationFilePath(adminRoot, set.id, image.id)) : "",
+      })).filter((image) => image.thumbnail),
+    })),
+  };
+}
+
+function resolvedNotebookIllustrations(config) {
+  const adminRoot = libraryAdminRoot(config.dataDir);
+  return resolveNotebookIllustrations(config.notebookIllustrations, adminRoot ? { exists: illustrationExists(adminRoot) } : {});
+}
+
 function getConfigStatus(config = readConfig()) {
   return {
     themePreference: normalizeThemePreference(config.themePreference),
@@ -792,6 +852,13 @@ function getConfigStatus(config = readConfig()) {
     markdownBoldLeadIns: normalizeMarkdownBoldLeadIns(config.markdownBoldLeadIns),
     markdownEditorThemes: normalizeEditorThemes(config.markdownEditorThemes, { headingColor: config.markdownHeadingColor, headingPalette: config.markdownHeadingPalette, textFont: config.wysiwygEditorFontFamily, codeFont: config.markdownEditorFontFamily }),
     editorThemeBuiltIns: BUILT_IN_EDITOR_THEMES,
+    notebookIllustrations: notebookIllustrationsStatus(config),
+    notebookIllustrationBuiltIns: BUILT_IN_ILLUSTRATION_SETS.map((set) => ({
+      id: set.id,
+      name: set.name,
+      builtIn: true,
+      images: set.images.map((image) => ({ id: image.id, thumbnail: illustrationThumbnail(builtInIllustrationPath(image.file)) })),
+    })),
     openRouterModel: normalizeOpenRouterModel(config.openRouterModel),
     aiFunctions: normalizeAiPreferences(config.aiFunctions, normalizeOpenRouterModel(config.openRouterModel)),
     quickPrompts: normalizeQuickPrompts(config.quickPrompts),
@@ -1149,6 +1216,20 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
     ipcMain.handle("setup:import-editor-themes", () => importEditorThemes(setupWindow));
 
+    // The picture an illustration was cropped from, to crop it again.
+    ipcMain.handle("setup:read-notebook-illustration-source", async (event, setId, imageId) => {
+      if (event.sender !== setupHost.webContents) return null;
+      const adminRoot = libraryAdminRoot(readConfig().dataDir);
+      if (!adminRoot) return null;
+      for (const kind of ["source", "image"]) {
+        try {
+          const buffer = await fsp.readFile(illustrationFilePath(adminRoot, setId, imageId, kind));
+          return { dataUrl: `data:image/jpeg;base64,${buffer.toString("base64")}`, cropped: kind === "image" };
+        } catch {}
+      }
+      return null;
+    });
+
     ipcMain.handle("setup:list-openrouter-models", async (_event, options) => {
       // Speech-to-text and text-to-speech models are listed apart from the chat models.
       const catalog = options?.kind === "speech"
@@ -1225,6 +1306,15 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
 
       await fsp.mkdir(validated.dataDir, { recursive: true });
 
+      // Illustrations live in the library, so they are written before the config names them.
+      const notebookIllustrations = await saveNotebookIllustrations(input?.notebookIllustrations ?? existingConfig.notebookIllustrations, {
+        adminRoot: libraryAdminRoot(validated.dataDir),
+        previousAdminRoot: libraryAdminRoot(existingConfig.dataDir),
+        checkImage: (buffer) => {
+          if (nativeImage.createFromBuffer(buffer).isEmpty()) throw new Error("An illustration could not be opened.");
+        },
+      });
+
       const nextConfig = {
         ...existingConfig,
         themePreference: validated.themePreference,
@@ -1240,6 +1330,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
         markdownPdfBaseLineHeight: validated.markdownPdfBaseLineHeight,
         markdownBoldLeadIns: validated.markdownBoldLeadIns,
         markdownEditorThemes: validated.markdownEditorThemes,
+        notebookIllustrations,
         openaiApiKey: validated.openaiApiKey || existingConfig.openaiApiKey,
         openRouterModel: validated.openRouterModel,
         aiFunctions: validated.aiFunctions,
@@ -1262,6 +1353,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       mainWindow?.webContents.send("theme:changed", nextConfig.themePreference);
       // Editor themes apply at once; the server reads them from the config file.
       mainWindow?.webContents.send("editor-themes:changed", resolveEditorThemes(nextConfig.markdownEditorThemes));
+      mainWindow?.webContents.send("notebook-illustrations:changed", resolvedNotebookIllustrations(nextConfig));
       savedConfig = nextConfig;
       setupHost.close();
 
@@ -1281,6 +1373,7 @@ async function createSetupWindow({ mode = "setup", parentWindow = null, section 
       ipcMain.removeHandler("setup:export-preferences");
       ipcMain.removeHandler("setup:export-editor-themes");
       ipcMain.removeHandler("setup:import-editor-themes");
+      ipcMain.removeHandler("setup:read-notebook-illustration-source");
       ipcMain.removeHandler("setup:list-openrouter-models");
       ipcMain.removeHandler("setup:import-preferences");
       ipcMain.removeHandler("setup:list-profiles");
@@ -1873,7 +1966,9 @@ function installExportHandlers() {
 }
 
 function getWindowFromIpcEvent(event) {
-  const window = BrowserWindow.fromWebContents(event.sender);
+  // Preferences is a view over the workspace window, not a window of its own.
+  const window = BrowserWindow.fromWebContents(event.sender)
+    ?? BrowserWindow.getAllWindows().find((candidate) => candidate.contentView.children.some((view) => view.webContents === event.sender));
 
   return window && !window.isDestroyed() ? window : null;
 }
@@ -2219,6 +2314,9 @@ function isSameOrigin(url, appUrl) {
 }
 
 async function startNextServer(config) {
+  const powerStateFile = path.join(app.getPath("temp"), `libera-power-${process.pid}-${randomBytes(8).toString("hex")}.json`);
+  disposePowerState?.();
+  disposePowerState = publishPowerState(powerMonitor, powerStateFile);
   const appRoot = getAppRoot();
   const mode = process.env.LIBERA_ELECTRON_NEXT_MODE === "dev" ? "dev" : "start";
   const port = await getFreePort();
@@ -2232,6 +2330,7 @@ async function startNextServer(config) {
     LIBERA_CONFIG_PATH: getConfigPath(),
     LIBERA_DATA_DIR: config.dataDir,
     LIBERA_ELECTRON: "1",
+    LIBERA_POWER_STATE_PATH: powerStateFile,
     LIBERA_SEARCH_WORKER_PATH: path.join(__dirname, "search-worker.mjs"),
     LIBERA_DOCUMENT_OCR_WORKER_PATH: path.join(__dirname, "document-ocr-worker.mjs"),
     LIBERA_TRANSCRIPTION_WORKER_PATH: path.join(__dirname, "transcription-worker.mjs"),
@@ -2619,6 +2718,8 @@ function prepareToQuit() {
     await flushAppState();
     isQuitting = true;
     updaterService.dispose();
+    disposePowerState?.();
+    disposePowerState = null;
     // The host flushes its SQLite work and closes before Next goes away.
     await collabHost.stop().catch((error) => {
       console.error(`Could not stop the collaboration host: ${error.message}`);

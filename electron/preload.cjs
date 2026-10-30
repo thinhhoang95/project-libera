@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("liberaSetup", {
   exportPreferences: () => ipcRenderer.invoke("setup:export-preferences"),
   exportEditorThemes: (themes) => ipcRenderer.invoke("setup:export-editor-themes", themes),
   importEditorThemes: () => ipcRenderer.invoke("setup:import-editor-themes"),
+  readNotebookIllustrationSource: (setId, imageId) => ipcRenderer.invoke("setup:read-notebook-illustration-source", setId, imageId),
   listOpenRouterModels: (options) => ipcRenderer.invoke("setup:list-openrouter-models", options),
   importPreferences: () => ipcRenderer.invoke("setup:import-preferences"),
   listProfiles: () => ipcRenderer.invoke("setup:list-profiles"),
@@ -144,6 +145,11 @@ contextBridge.exposeInMainWorld("liberaWindow", {
     const handler = (_event, themes) => listener(themes);
     ipcRenderer.on("editor-themes:changed", handler);
     return () => ipcRenderer.removeListener("editor-themes:changed", handler);
+  },
+  onNotebookIllustrationsChanged: (listener) => {
+    const handler = (_event, library) => listener(library);
+    ipcRenderer.on("notebook-illustrations:changed", handler);
+    return () => ipcRenderer.removeListener("notebook-illustrations:changed", handler);
   },
 });
 

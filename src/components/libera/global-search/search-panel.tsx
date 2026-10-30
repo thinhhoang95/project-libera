@@ -2,7 +2,7 @@
 
 import { Clock3, Database, Loader2, Pause, Play, RefreshCw, RotateCcw, Settings2, Sparkles, X } from "lucide-react";
 import { useState } from "react";
-import { statusSummary } from "@/components/libera/global-search/search-view";
+import { scheduleSummary, statusSummary } from "@/components/libera/global-search/search-view";
 import {
   forgetRecentSearches,
   nudgeSearchStatus,
@@ -110,7 +110,7 @@ export function SearchPanel({ onOpenPreferences }: { onOpenPreferences?: () => v
             <span className="min-w-0 flex-1">
               <span role="status" className="block truncate text-sm font-medium">{summary.text}</span>
               <span className="block truncate text-xs text-muted-foreground" title={working ? status?.current : status?.indexPath}>
-                {working && status?.current ? fileName(status.current) : status?.state === "paused" ? "Update once or resume indexing" : status?.backgroundIndexing === false ? "Updates only when requested" : status ? "Up to date as files change" : "Connecting…"}
+                {working && status?.current ? fileName(status.current) : scheduleSummary(status)}
               </span>
             </span>
             {progress !== null ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{progress}%</span> : null}

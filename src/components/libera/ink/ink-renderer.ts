@@ -19,7 +19,8 @@ import type { InkFrame, InkRect, InkSample, InkStroke } from "@/lib/ink/types";
  */
 
 /** Canvas backing stores larger than this are drawn at a lower resolution. */
-const MAX_CANVAS_PIXELS = 16_000_000;
+export const INK_MAX_CANVAS_PIXELS = 16_000_000;
+export const INK_MAX_CANVAS_DIMENSION = 8192;
 /** Device pixel ratios above this cost memory and fill rate for no visible gain on ink. */
 const MAX_DPR = 2;
 
@@ -132,7 +133,13 @@ const MAX_DPR_ON_BATTERY = 1.5;
 export function inkCanvasRatio(cssWidth: number, cssHeight: number, devicePixelRatio = globalThis.devicePixelRatio || 1, zoom = 1, onBattery = false) {
   const area = Math.max(1, cssWidth * cssHeight);
   const cap = (onBattery ? MAX_DPR_ON_BATTERY : MAX_DPR) * Math.max(1, zoom);
-  return Math.max(0.5, Math.min(devicePixelRatio * Math.max(1, zoom), cap, Math.sqrt(MAX_CANVAS_PIXELS / area)));
+  return Math.min(
+    devicePixelRatio * Math.max(1, zoom),
+    cap,
+    Math.sqrt(INK_MAX_CANVAS_PIXELS / area),
+    INK_MAX_CANVAS_DIMENSION / Math.max(1, cssWidth),
+    INK_MAX_CANVAS_DIMENSION / Math.max(1, cssHeight),
+  );
 }
 
 /** Sets a context to draw in stroke units for a surface of this size. */
@@ -143,8 +150,8 @@ export function applyInkTransform(context: CanvasRenderingContext2D, size: InkCa
 }
 
 export function sizeCanvas(canvas: HTMLCanvasElement, size: InkCanvasSize) {
-  const width = Math.max(1, Math.round(size.cssWidth * size.dpr));
-  const height = Math.max(1, Math.round(size.cssHeight * size.dpr));
+  const width = Math.max(1, Math.floor(size.cssWidth * size.dpr));
+  const height = Math.max(1, Math.floor(size.cssHeight * size.dpr));
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
 }
