@@ -78,6 +78,12 @@ declare global {
       notifyChanged: () => Promise<void>;
       onCommand: (listener: (command: LiberaDirectoryCommand) => void) => () => void;
     };
+    liberaReferences?: {
+      /** An existing .bib file, or (mode "create") the path for a new one. Null when canceled. */
+      chooseBibFile: (mode: "open" | "create") => Promise<string | null>;
+      /** Show a tethered .bib file (absolute path) in Finder or Explorer. */
+      revealBibFile: (filePath: string) => Promise<boolean>;
+    };
     liberaPlatform?: {
       isElectron: boolean;
       platform: string;

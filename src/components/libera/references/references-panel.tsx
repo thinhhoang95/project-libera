@@ -13,6 +13,7 @@ import {
   Download,
   FileSearch,
   FileUp,
+  Link2,
   ListChecks,
   Loader2,
   MoreVertical,
@@ -60,6 +61,7 @@ import {
   type BibliographyRequest,
   type DocumentExportFormat,
 } from "@/components/libera/references/bibliography-actions";
+import { BibTetherDialog } from "@/components/libera/references/bib-tether-dialog";
 import { ReferenceCard } from "@/components/libera/references/reference-card";
 import {
   changedTags,
@@ -103,6 +105,7 @@ import {
   useReferenceCitations,
   type OpenReferenceDraft,
 } from "@/components/libera/references/use-reference-citations";
+import { tetherStateText, useBibTether } from "@/components/libera/references/use-bib-tether";
 import { useReferenceJobs } from "@/components/libera/references/use-reference-jobs";
 import { useReferenceLibrary } from "@/components/libera/references/use-reference-library";
 import { useReferencePreferences } from "@/components/libera/references/use-reference-preferences";
@@ -113,6 +116,7 @@ import {
   type RevertCitationRewriteInTab,
 } from "@/components/libera/references/rewrite-citations-dialog";
 import { isReferenceUndoShortcut, useReferenceUndo } from "@/components/libera/references/use-reference-undo";
+import type { TetherStatus } from "@/lib/references/bib-tether-types";
 import { findDuplicateGroups } from "@/lib/references/dedupe";
 import { isActiveReferenceJob, type ReferenceJobRequest, type ReferenceJobStatus } from "@/lib/references/jobs-types";
 import {
@@ -465,6 +469,8 @@ function ReferencesPanelBody({
   const [deleting, setDeleting] = useState<ReferenceEntry[] | null>(null);
   const [mergeGroup, setMergeGroup] = useState<ReferenceEntry[] | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
+  const [tetherOpen, setTetherOpen] = useState(false);
+  const bibTether = useBibTether(notebook);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
@@ -1193,6 +1199,11 @@ function ReferencesPanelBody({
       .catch((exportError: Error) => setNotice({ tone: "error", text: exportError.message })),
     onImport: () => { setOpenId(null); setAddBox({ id: Date.now(), query: "" }); },
     onManage: () => setManageOpen(true),
+    tether: bibTether.status,
+    onTether: () => setTetherOpen(true),
+    onSyncTether: () => void bibTether.run({ action: "sync" })
+      .then((status) => setNotice(status?.state === "synced" ? { tone: "info", text: `${status.fileName} is in sync.` } : { tone: "error", text: status ? `${status.fileName}: ${status.message ?? tetherStateText(status)}` : "The notebook is no longer tethered." }))
+      .catch((syncError: Error) => setNotice({ tone: "error", text: syncError.message })),
     jobActive: jobs.active,
     onGenerate: () => void generateForPdfs(),
     autoCreate: library?.settings?.autoCreateForPdfs,
@@ -1393,6 +1404,8 @@ function ReferencesPanelBody({
         </div>
       </PanelHeading>
       <DocumentStylePicker notebook={notebook} documentPath={activeDocumentPath ?? null} draft={activeMarkdownDraft} styleFiles={styleFiles} />
+      {bibTether.status ? <TetherStatusLine status={bibTether.status} onOpen={() => setTetherOpen(true)} /> : null}
+      {bibTether.error ? <p role="alert" className="mx-3 mb-2 text-xs text-destructive">{bibTether.error}</p> : null}
 
       {notice ? (
         <div role={notice.tone === "error" ? "alert" : "status"} className={`mx-3 mb-2 flex items-start gap-2 rounded-lg p-2 text-[11px] leading-relaxed ${notice.tone === "error" ? "bg-destructive-muted text-destructive" : "libera-panel-card"}`}>
@@ -1633,6 +1646,14 @@ function ReferencesPanelBody({
           if (keep && merged.some((entry) => citingOf(entry).length)) offerRewrite(mergeRewriteMap(keep, merged), { kind: "merge", keep: keep.key });
         }}
       />
+      <BibTetherDialog
+        open={tetherOpen}
+        notebook={notebook}
+        status={bibTether.status}
+        run={bibTether.run}
+        onClose={() => setTetherOpen(false)}
+        onDone={(text) => setNotice({ tone: "info", text })}
+      />
       {library ? (
         <ManageReferencesDialog
           open={manageOpen}
@@ -1672,6 +1693,25 @@ function ReferencesPanelBody({
         />
       ) : null}
     </div>
+  );
+}
+
+/** The tethered .bib file under the heading: its name and state; opens the tether dialog. */
+function TetherStatusLine({ status, onOpen }: { status: TetherStatus; onOpen: () => void }) {
+  const attention = status.state !== "synced";
+  return (
+    <button
+      type="button"
+      className={`mx-3 mb-2 flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[11px] hover:bg-muted ${attention ? "bg-destructive-muted text-destructive" : "text-muted-foreground"}`}
+      title={`${status.displayPath}${status.message ? `\n${status.message}` : ""}`}
+      aria-label={`Tethered to ${status.fileName}: ${tetherStateText(status)}`}
+      onClick={onOpen}
+      data-tether-state={status.state}
+    >
+      {attention ? <AlertCircle aria-hidden className="h-3.5 w-3.5 shrink-0" /> : <Link2 aria-hidden className="h-3.5 w-3.5 shrink-0" />}
+      <span className="shrink-0 font-medium">{status.fileName}</span>
+      <span className="min-w-0 truncate">· {tetherStateText(status)}</span>
+    </button>
   );
 }
 
@@ -1790,6 +1830,10 @@ type PanelMenuProps = {
   onExport: (format: ExportFormat) => void;
   onImport: () => void;
   onManage: () => void;
+  /** The notebook's tethered .bib file, or null. */
+  tether: TetherStatus | null;
+  onTether: () => void;
+  onSyncTether: () => void;
   jobActive: boolean;
   onGenerate: () => void;
   /** The notebook's setting: on, off, or unset (follow the preference). */
@@ -1824,6 +1868,12 @@ function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: numbe
     { id: "export", label: "Export library", submenu: EXPORT_FORMATS.map((format) => ({
       id: `export:${format.id}`, label: `${format.label} (.${format.extension})`, onSelect: () => props.onExport(format.id),
     })) },
+    ...(props.tether ? [
+      { id: "tether", label: `Tethered to ${props.tether.fileName}…`, onSelect: props.onTether },
+      { id: "tether-sync", label: "Sync the .bib file now", onSelect: props.onSyncTether },
+    ] : [
+      { id: "tether", label: "Tether to a .bib file…", onSelect: props.onTether },
+    ]),
     { type: "separator" },
     { id: "copy-list", label: "Copy reference list", onSelect: props.onCopyList },
     { id: "export-list", label: "Export reference list…", submenu: BIBLIOGRAPHY_FORMATS.map((format) => ({
@@ -1860,6 +1910,9 @@ function PanelMenu({
   onExport,
   onImport,
   onManage,
+  tether,
+  onTether,
+  onSyncTether,
   jobActive,
   onGenerate,
   autoCreate,
@@ -1922,6 +1975,15 @@ function PanelMenu({
           <span className="font-mono text-[11px] text-muted-foreground">.{format.extension}</span>
         </button>
       ))}
+      <button type="button" role="menuitem" className={item} title={tether ? tether.displayPath : "Keep this library and a .bib file in step, both ways"} onClick={act(onTether)}>
+        <Link2 aria-hidden className="h-4 w-4" />
+        <span className="min-w-0 flex-1 truncate">{tether ? `Tethered to ${tether.fileName}…` : "Tether to a .bib file…"}</span>
+      </button>
+      {tether ? (
+        <button type="button" role="menuitem" className={item} onClick={act(onSyncTether)}>
+          <RefreshCw aria-hidden className="h-4 w-4" /> Sync the .bib file now
+        </button>
+      ) : null}
       <div className="my-1 h-px bg-border" />
       <p className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><TextQuote aria-hidden className="h-3.5 w-3.5" /> Reference list</p>
       <button type="button" role="menuitem" className={item} title="The whole library, formatted in the citation style" onClick={act(onCopyList)}>

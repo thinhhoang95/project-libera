@@ -1766,7 +1766,37 @@ function resolveContextItemPath(relativePath) {
   return targetPath;
 }
 
+/** A .bib file to tether a notebook's References to: an existing one, or a new one (Save dialog). */
+async function chooseBibFile(parentWindow, mode) {
+  const filters = [{ name: "BibTeX files", extensions: ["bib"] }];
+  if (mode === "create") {
+    const result = await (parentWindow ? dialog.showSaveDialog(parentWindow, {
+      title: "New .bib file", buttonLabel: "Create", defaultPath: path.join(app.getPath("documents"), "references.bib"), filters,
+    }) : dialog.showSaveDialog({ title: "New .bib file", buttonLabel: "Create", defaultPath: path.join(app.getPath("documents"), "references.bib"), filters }));
+    if (result.canceled || !result.filePath) return null;
+    return path.extname(result.filePath).toLowerCase() === ".bib" ? result.filePath : `${result.filePath}.bib`;
+  }
+  const result = await showOpenDialogFor(parentWindow, { title: "Tether to a .bib file", buttonLabel: "Tether", properties: ["openFile"], filters });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+}
+
 function installDirectoryModeHandlers() {
+  const trustedReferencesSender = (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return window && !window.isDestroyed() && (window === mainWindow || childWindows.has(window)) &&
+      event.sender.session === getProfileSession() && event.senderFrame === event.sender.mainFrame &&
+      nextServerUrl && isSameOrigin(event.senderFrame.url, nextServerUrl);
+  };
+  ipcMain.handle("references:choose-bib", (event, mode) => {
+    if (!trustedReferencesSender(event)) return null;
+    return chooseBibFile(BrowserWindow.fromWebContents(event.sender), mode === "create" ? "create" : "open");
+  });
+  ipcMain.handle("references:reveal-bib", (event, filePath) => {
+    if (!trustedReferencesSender(event) || typeof filePath !== "string" || filePath.includes("\0") || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== ".bib") return false;
+    try { if (!fs.statSync(filePath).isFile()) return false; } catch { return false; }
+    shell.showItemInFolder(filePath);
+    return true;
+  });
   ipcMain.handle("directory:choose-folder", (event) =>
     showDirectoryDialog(BrowserWindow.fromWebContents(event.sender) ?? mainWindow));
   ipcMain.handle("directory:choose-file", (event) =>

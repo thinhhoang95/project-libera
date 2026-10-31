@@ -117,6 +117,11 @@ contextBridge.exposeInMainWorld("liberaPersistence", {
   },
 });
 
+contextBridge.exposeInMainWorld("liberaReferences", {
+  chooseBibFile: (mode) => ipcRenderer.invoke("references:choose-bib", mode),
+  revealBibFile: (filePath) => ipcRenderer.invoke("references:reveal-bib", filePath),
+});
+
 contextBridge.exposeInMainWorld("liberaDirectory", {
   chooseFolder: () => ipcRenderer.invoke("directory:choose-folder"),
   chooseFile: () => ipcRenderer.invoke("directory:choose-file"),

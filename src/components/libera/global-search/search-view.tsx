@@ -297,7 +297,6 @@ export function SearchView({
     }
   }
 
-  const summary = statusSummary(status);
   const modelOff = status && !status.model.configured;
   const visionOff = status && status.model.configured && !status.model.vision;
 
@@ -314,10 +313,6 @@ export function SearchView({
       <header className="libera-window-drag-region flex min-h-14 items-center gap-2 border-b border-border px-4 py-2">
         <ScanSearch aria-hidden className="h-4 w-4 text-accent" />
         <h2 className="mr-auto text-sm font-semibold">Search</h2>
-        <span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {summary.busy ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
-          {summary.text}
-        </span>
       </header>
 
       <div className="border-b border-border px-4 pb-3 pt-4">

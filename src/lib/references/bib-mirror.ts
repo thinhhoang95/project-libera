@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomically } from "@/lib/storage/fs-utils";
-import { notebookPath, notebookSystemDirectoryPath } from "@/lib/storage/paths";
+import { filePathFromParts, notebookPath, notebookSystemDirectoryPath, splitFilePath } from "@/lib/storage/paths";
 import { serializeBibtex } from "./bibtex";
 import type { ReferenceLibrary } from "./types";
 
@@ -89,6 +89,29 @@ async function writeAtomically(target: string, text: string) {
   }
 }
 
+async function tetherOwnsMirror(notebook: string, candidates: string[]) {
+  const statePath = path.join(notebookSystemDirectoryPath(notebook), "references", "bib-tether.json");
+  let text: string;
+  try { text = await readFile(statePath, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  try {
+    const { target } = JSON.parse(text) as { target: { kind: string; path: string } };
+    let absolute = target.path;
+    if (target.kind === "notebook") absolute = filePathFromParts(notebook, target.path.split("/"));
+    else if (target.kind === "library") {
+      const { notebook: owner, pathParts } = splitFilePath(target.path);
+      absolute = filePathFromParts(owner, pathParts);
+    }
+    const identity = await realpath(absolute).catch(() => path.resolve(absolute));
+    for (const candidate of candidates) if (identity === await realpath(candidate).catch(() => path.resolve(candidate))) return true;
+    return false;
+  } catch {
+    return true; // Damaged tether history must not authorize a mirror overwrite.
+  }
+}
+
 /**
  * Bring the notebook's mirror up to date with `library`. Does nothing when
  * the setting is off. Never overwrites a references.bib that was changed
@@ -99,6 +122,11 @@ export async function writeBibMirror(notebook: string, library: ReferenceLibrary
   const mainPath = `${notebook}/${BIB_MIRROR_FILE}`;
   if (!library.settings?.bibMirror) return { status: "disabled", path: mainPath, entries };
   const root = notebookPath(notebook);
+  // One owner per output: a tether preserves external edits and custom fields,
+  // whereas the generated mirror replaces its entire output.
+  if (await tetherOwnsMirror(notebook, [path.join(root, BIB_MIRROR_FILE), path.join(root, BIB_MIRROR_FALLBACK_FILE)])) {
+    return { status: "disabled", path: mainPath, entries };
+  }
   const text = renderBibMirror(library);
   const hash = sha256(text);
   const state = await readState(notebook);

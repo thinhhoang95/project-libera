@@ -54,6 +54,22 @@ type RawEntry = {
   line: number;
   /** Lowercase field name → raw LaTeX value after macro expansion. */
   fields: Map<string, string>;
+  /** Where the entry sits in the scanned text (see BibtexEntryLayout). */
+  layout: BibtexEntryLayout;
+};
+
+/**
+ * Where an entry sits in the text that was scanned (BOM removed, line
+ * endings LF): `start` at its `@`, `end` just after its closing delimiter,
+ * the key's span, and each field's span from its name to the end of its
+ * value. Used to edit one entry of a .bib file in place (bib-tether.ts).
+ */
+export type BibtexEntryLayout = {
+  start: number;
+  end: number;
+  keyStart: number;
+  keyEnd: number;
+  fields: Array<{ name: string; start: number; end: number; value: string }>;
 };
 
 class ParseFailure extends Error {
@@ -74,6 +90,8 @@ class BibtexScanner {
   readonly macros = new Map<string, string>(MONTH_MACROS.map((macro, index) => [macro, MONTH_NAMES[index][0].toUpperCase() + MONTH_NAMES[index].slice(1)]));
   readonly entries: RawEntry[] = [];
   readonly errors: ReferenceParseError[] = [];
+  /** Entries and @string blocks that could not be read at all (a structural error, not a warning). */
+  failures = 0;
 
   constructor(private readonly text: string) {
     for (let index = 0; index < text.length; index += 1) if (text[index] === "\n") this.lineStarts.push(index + 1);
@@ -111,6 +129,7 @@ class BibtexScanner {
       } catch (error) {
         if (!(error instanceof ParseFailure)) throw error;
         this.errors.push({ line: this.lineAt(error.offset), message: error.message });
+        this.failures += 1;
         this.recover(at);
       }
     }
@@ -179,12 +198,14 @@ class BibtexScanner {
     let keyEnd = this.index;
     while (keyEnd < text.length && !/[\s,]/.test(text[keyEnd]) && text[keyEnd] !== close && !(close === "}" && text[keyEnd] === "{")) keyEnd += 1;
     const key = text.slice(this.index, keyEnd);
+    const layout: BibtexEntryLayout = { start, end: start, keyStart: this.index, keyEnd, fields: [] };
     this.index = keyEnd;
     this.skipSpace();
-    const entry: RawEntry = { type, key, line: this.lineAt(start), fields: new Map() };
+    const entry: RawEntry = { type, key, line: this.lineAt(start), fields: new Map(), layout };
     const label = key ? `"${key}"` : `at line ${entry.line}`;
     if (text[this.index] === close) {
       this.index += 1;
+      layout.end = this.index;
       this.entries.push(entry);
       return;
     }
@@ -204,6 +225,7 @@ class BibtexScanner {
       FIELD_NAME.lastIndex = this.index;
       const name = FIELD_NAME.exec(text)?.[0];
       if (!name) throw new ParseFailure(`Unexpected "${char}" in entry ${label}`, this.index);
+      const fieldStart = this.index;
       this.index += name.length;
       this.skipSpace();
       if (text[this.index] !== "=") throw new ParseFailure(`Expected "=" after field "${name}" in entry ${label}`, this.index);
@@ -211,11 +233,13 @@ class BibtexScanner {
       const valueStart = this.index;
       const value = this.readValue(name, close);
       const field = name.toLowerCase();
+      layout.fields.push({ name: field, start: fieldStart, end: this.index, value });
       if (entry.fields.has(field)) this.errors.push({ line: this.lineAt(valueStart), message: `Duplicate field "${field}" in entry ${label}; the first value is kept` });
       else entry.fields.set(field, value);
       this.skipSpace(true);
       if (text[this.index] !== "," && text[this.index] !== close) throw new ParseFailure(`Expected "," or "${close}" after field "${name}" in entry ${label}`, this.index);
     }
+    layout.end = this.index;
     this.entries.push(entry);
   }
 
@@ -531,8 +555,24 @@ function toEntry(raw: RawEntry, retrievedAt: string) {
  * the parse.
  */
 export function parseBibtex(text: string, options: BibtexParseOptions = {}): ReferenceParseResult {
+  return parseBibtexWithLayout(text, options).result;
+}
+
+/** The text the scanner reads: no BOM, LF line endings. Layout offsets refer to it. */
+export function normalizeBibtexText(text: string) {
+  return text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+}
+
+/**
+ * parseBibtex, plus where each entry sits in the normalized text (same
+ * order as `result.entries`) and how many blocks failed to parse at all.
+ * A failed block's entries are missing from the result, so a caller that
+ * syncs the file must not read their absence as a deletion.
+ */
+export function parseBibtexWithLayout(text: string, options: BibtexParseOptions = {}) {
   const retrievedAt = options.retrievedAt ?? new Date().toISOString();
-  const scanner = new BibtexScanner(text.replace(/^﻿/, "").replace(/\r\n?/g, "\n"));
+  const normalized = normalizeBibtexText(text);
+  const scanner = new BibtexScanner(normalized);
   scanner.run();
   const errors = [...scanner.errors];
   const seen = new Map<string, number>();
@@ -544,7 +584,8 @@ export function parseBibtex(text: string, options: BibtexParseOptions = {}): Ref
   resolveCrossrefs(scanner.entries, errors);
   const entries = scanner.entries.map((entry) => toEntry(entry, retrievedAt));
   errors.sort((a, b) => a.line - b.line);
-  return { entries, errors };
+  const result: ReferenceParseResult = { entries, errors };
+  return { result, text: normalized, layouts: scanner.entries.map((entry) => entry.layout), failures: scanner.failures };
 }
 
 // ---------------------------------------------------------------------------
