@@ -18,9 +18,9 @@ import {
 import { FormattedReference } from "@/components/libera/references/reference-candidates";
 import { RetractionBadge } from "@/components/libera/references/retraction-badge";
 import { userProvenance } from "@/components/libera/references/reference-edit-form";
-import { CITE_UNAVAILABLE, StatusBadge } from "@/components/libera/references/reference-row";
+import { citeActions, CITE_UNAVAILABLE, StatusBadge, type CiteSyntax, type LatexCiteCommand } from "@/components/libera/references/reference-row";
 import { isValidCitationKey } from "@/lib/references/keys";
-import { citationSnippets, type CitationSnippet } from "@/lib/references/occurrences";
+import { citationSnippets, citationSyntaxForPath, SNIPPET_CONTEXT, type CitationSnippet } from "@/lib/references/occurrences";
 import { formatNameForDisplay, parsePersonList } from "@/lib/references/names";
 import { parseDateText } from "@/lib/references/normalize";
 import type {
@@ -116,9 +116,10 @@ type CardProps = {
   library: ReferenceLibrary;
   citing: string[];
   canCite: boolean;
+  citeSyntax?: CiteSyntax;
   apply: (ops: ReferenceLibraryOp[], label: string) => Promise<unknown>;
   onBack: () => void;
-  onCite: () => void;
+  onCite: (command?: LatexCiteCommand) => void;
   onCopy: (text: string, what: string) => void;
   /** Copy the reference formatted in the notebook's style, as text and HTML. */
   onCopyFormatted: () => void;
@@ -149,7 +150,7 @@ type CardProps = {
 
 export const CONFIRM_NEXT_SHORTCUT = "⌘/Ctrl+Shift+Enter";
 
-export function ReferenceCard({ notebook, entry, library, citing, canCite, apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations, position, onPrevious, onNext, reviewLeft = 0, onConfirmNext, attachableFiles, knownTags, onTag, loadDocument, onOpenCitation }: CardProps) {
+export function ReferenceCard({ notebook, entry, library, citing, canCite, citeSyntax = "markdown", apply, onBack, onCite, onCopy, onCopyFormatted, onReresolve, onOpenPath, onEditAll, onDelete, onUpdateCitations, position, onPrevious, onNext, reviewLeft = 0, onConfirmNext, attachableFiles, knownTags, onTag, loadDocument, onOpenCitation }: CardProps) {
   const [error, setError] = useState("");
   const reviewing = entry.status !== "confirmed";
 
@@ -190,9 +191,15 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
           </div>
         ) : null}
         <div className="flex-1" />
-        <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Cite at cursor" title={canCite ? "Cite at cursor" : CITE_UNAVAILABLE} disabled={!canCite} onClick={onCite}>
-          <Quote aria-hidden className="h-4 w-4" />
-        </button>
+        {citeSyntax === "latex" ? citeActions("latex").map(({ command, label }) => (
+          <button key={command} type="button" className="libera-sidebar-icon-button inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-1.5 font-mono text-[11px] disabled:opacity-40" aria-label={label} title={canCite ? label : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite(command)}>
+            {`\\${command}`}
+          </button>
+        )) : (
+          <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg disabled:opacity-40" aria-label="Cite at cursor" title={canCite ? "Cite at cursor" : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite()}>
+            <Quote aria-hidden className="h-4 w-4" />
+          </button>
+        )}
         <button type="button" className="libera-sidebar-icon-button inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg" aria-label="Re-resolve" title="Look this reference up again" onClick={onReresolve}>
           <RotateCw aria-hidden className="h-4 w-4" />
         </button>
@@ -223,7 +230,7 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, apply
             <div className="flex items-center gap-2 pt-1">
               {onConfirmNext && reviewLeft > 0 ? (
                 <>
-                  <button type="button" className="libera-panel-primary h-8 flex-1 px-3" title={`Confirm, then open the next reference to review (${CONFIRM_NEXT_SHORTCUT})`} onClick={onConfirmNext}>
+                  <button type="button" className="libera-panel-primary h-8 flex-1 px-3" title={`Confirm, then open the next reference to review${citeSyntax === "latex" ? "" : ` (${CONFIRM_NEXT_SHORTCUT})`}`} onClick={onConfirmNext}>
                     <ChevronsRight aria-hidden className="h-4 w-4" /> Confirm &amp; next
                   </button>
                   <button type="button" className="libera-panel-button h-8 px-3" onClick={() => void run([{ op: "update", id: entry.id, status: "confirmed" }], `Confirm ${entry.key}`)}>
@@ -690,7 +697,7 @@ function CitingSection({ entry, citing, onOpenPath, loadDocument, onOpenCitation
     setShown((current) => ({ ...current, [path]: { state: "loading" } }));
     try {
       const text = await loadDocument(path);
-      setShown((current) => current[path] ? { ...current, [path]: { state: "done", snippets: citationSnippets(text, keys) } } : current);
+      setShown((current) => current[path] ? { ...current, [path]: { state: "done", snippets: citationSnippets(text, keys, SNIPPET_CONTEXT, citationSyntaxForPath(path)) } } : current);
     } catch (loadError) {
       setShown((current) => current[path] ? { ...current, [path]: { state: "error", message: loadError instanceof Error ? loadError.message : "The document could not be read." } } : current);
     }

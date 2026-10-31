@@ -64,6 +64,7 @@ import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-r
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
 import { contextualPanelTabs, isContextualPanelTab, isPageKind, OPEN_PAGE_EVENT, OPEN_RAIL_TAB_EVENT, type ContextualPanelTab, type PageKind } from "@/components/libera/page-tabs";
+import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 
 type LiberaAppProps = {
   yourName?: string;
@@ -289,22 +290,29 @@ export function LiberaApp({
   });
   const openReferenceDrafts = useMemo(
     () => workspace.tabs
-      .filter((tab) => tab.file.fileType === "markdown" && !tab.untitled && tab.draft !== tab.saved)
+      .filter((tab) => (tab.file.fileType === "markdown" || isLatexCitingPath(tab.file.path)) && !tab.untitled && tab.draft !== tab.saved)
       .map((tab) => ({ path: tab.file.path, text: tab.draft })),
     [workspace.tabs],
   );
+  const activeLatexSource = workspace.activeTab?.file.fileType === "latex" && isLatexCitingPath(workspace.activeTab.file.name) && !workspace.activeTab.page ? workspace.activeTab : null;
   const references: LeftPanelReferences = {
     activeMarkdownDraft: workspace.activeMarkdownDraft,
     activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
     openDrafts: openReferenceDrafts,
-    canCite: workspace.activeTab?.file.fileType === "markdown",
-    onCite: (key) => { workspace.insertCitation(key); },
-    onCiteMany: (keys) => { workspace.insertCitation(keys); },
+    activeLatexDraft: activeLatexSource ? activeLatexSource.draft : null,
+    canCite: workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource),
+    citeSyntax: activeLatexSource ? "latex" : "markdown",
+    onCite: (key, command) => { workspace.insertCitation(key, command); },
+    onCiteMany: (keys, command) => { workspace.insertCitation(keys, command); },
     onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
     onOpenPath: agentWorkspace.openFile,
     // The citation is selected and revealed, as a Global Search hit is.
-    onOpenCitation: (path, { start, end, line }) => {
-      const open = (file: LiberaFileNode) => void workspace.openFile(file, { viewState: { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } } });
+    onOpenCitation: (path, { start, end, line, snippet }) => {
+      const open = (file: LiberaFileNode) => void workspace.openFile(file, {
+        viewState: isLatexCitingPath(file.path)
+          ? { latex: { line, revealRange: { start, end, snippet, nonce: Date.now() } } }
+          : { markdown: { line, selectionStart: start, selectionEnd: start, reveal: { start, end, nonce: Date.now() } } },
+      });
       const file = workspace.files.find((item) => item.path === path);
       if (file) { open(file); return; }
       void apiRequest<LiberaFilePayload>(`/api/files?path=${encodeURIComponent(path)}`)

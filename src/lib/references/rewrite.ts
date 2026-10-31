@@ -153,7 +153,9 @@ function validateDrafts(notebook: string, drafts: unknown): Map<string, string> 
 async function candidateFiles(notebook: string, map: CitationRewriteMap) {
   const { byKey } = await refreshNotebookCitations(notebook, { includeArchive: true });
   const files = new Set<string>();
-  for (const from of map.keys()) for (const file of byKey[from] ?? []) files.add(file);
+  for (const from of map.keys()) {
+    for (const file of byKey[from] ?? []) if (getFileType(file.split("/").at(-1) ?? "") === "markdown") files.add(file);
+  }
   return files;
 }
 
@@ -261,7 +263,9 @@ export async function applyCitationRewrite(
   }
   const expectedHashes = expected as Record<string, string>;
   const candidates = await candidateFiles(notebook, map);
-  for (const file of Object.keys(expectedHashes)) if (file.startsWith(`${notebook}/`)) candidates.add(file);
+  for (const file of Object.keys(expectedHashes)) {
+    if (file.startsWith(`${notebook}/`) && getFileType(file.split("/").at(-1) ?? "") === "markdown") candidates.add(file);
+  }
 
   const changed: string[] = [];
   const skipped: RewriteSkip[] = [];

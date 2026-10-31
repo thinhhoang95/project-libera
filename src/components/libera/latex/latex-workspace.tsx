@@ -362,6 +362,17 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
     return () => cancelAnimationFrame(frame);
   }, [onSetViewState, revealLine]);
 
+  // Requests to select a range (a citation found from the References panel).
+  const revealRange = viewState?.revealRange;
+  useEffect(() => {
+    if (!revealRange) return;
+    const frame = requestAnimationFrame(() => {
+      editorRef.current?.revealRange(revealRange.start, revealRange.end, revealRange.snippet);
+      onSetViewState({ revealRange: undefined });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [onSetViewState, revealRange]);
+
   /* ---- Split ------------------------------------------------------------------ */
 
   function setSplit(value: number, persist = false) {

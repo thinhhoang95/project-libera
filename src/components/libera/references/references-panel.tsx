@@ -83,14 +83,19 @@ import {
 } from "@/components/libera/references/reference-display";
 import { ReferenceEditForm } from "@/components/libera/references/reference-edit-form";
 import {
+  citeActions,
+  CITE_UNAVAILABLE,
   MissingReferenceRow,
   REFERENCE_ROW_HEIGHT,
   ReferenceActionsMenu,
   openNativeReferenceActionsMenu,
   ReferenceRow,
+  type CiteSyntax,
+  type LatexCiteCommand,
   type ReferenceMenuAction,
 } from "@/components/libera/references/reference-row";
 import type { CitationSnippet } from "@/lib/references/occurrences";
+import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import {
   DeleteReferencesDialog,
   DuplicateGroupsList,
@@ -307,16 +312,20 @@ export type ReferencesPanelProps = {
   activeMarkdownDraft: string | null;
   /** Library path of the active document, when it is a saved file. */
   activeDocumentPath?: string | null;
-  /** Unsaved text of open Markdown tabs, for citation counts. */
+  /** Unsaved text of open Markdown and LaTeX tabs, for citation counts. */
   openDrafts: OpenReferenceDraft[];
-  /** A Markdown editor is active, so Cite at cursor can insert. */
+  /** LaTeX source of the active document, or null when no `.tex` document is active. */
+  activeLatexDraft?: string | null;
+  /** A Markdown or LaTeX editor is active, so Cite at cursor can insert. */
   canCite: boolean;
-  onCite: (key: string) => void;
-  /** Cite several works at the cursor as one citation, `[@a; @b]`. */
-  onCiteMany?: (keys: string[]) => void;
+  /** How the active editor cites: `[@key]`, or `\cite`/`\citep` in LaTeX. */
+  citeSyntax?: CiteSyntax;
+  onCite: (key: string, command?: LatexCiteCommand) => void;
+  /** Cite several works at the cursor as one citation, `[@a; @b]` or `\cite{a,b}`. */
+  onCiteMany?: (keys: string[], command?: LatexCiteCommand) => void;
   onOpenPath: (path: string) => void;
-  /** Open a Markdown document with a citation in it selected. */
-  onOpenCitation?: (path: string, range: { start: number; end: number; line: number }) => void;
+  /** Open a Markdown or LaTeX document with a citation in it selected. */
+  onOpenCitation?: (path: string, range: { start: number; end: number; line: number; snippet?: CitationSnippet }) => void;
   /** Insert a `:::bibliography` marker at the cursor of the active Markdown editor. */
   onInsertBibliography?: () => void;
   /** Upload OS files into the notebook root with the app's usual naming; resolves to the uploaded files. */
@@ -372,14 +381,14 @@ function notebookStyleFiles(tree: LiberaTree, notebook: string) {
   return files.sort();
 }
 
-/** Changes when a saved Markdown file of the notebook changes, so the citation index is refetched. */
-function savedMarkdownToken(tree: LiberaTree, notebook: string) {
+/** Changes when a saved citing document changes, so the citation index is refetched. */
+function savedCitationToken(tree: LiberaTree, notebook: string) {
   let count = 0;
   let latest = "";
   const walk = (nodes: LiberaTreeNode[]) => {
     for (const node of nodes) {
       if (node.kind === "folder") walk(node.children);
-      else if (node.fileType === "markdown") {
+      else if (node.fileType === "markdown" || isLatexCitingPath(node.path)) {
         count += 1;
         const stamp = `${node.updatedAt}|${node.size}`;
         if (stamp > latest) latest = stamp;
@@ -430,8 +439,10 @@ function ReferencesPanelBody({
   tree,
   activeMarkdownDraft,
   activeDocumentPath,
+  activeLatexDraft = null,
   openDrafts,
   canCite,
+  citeSyntax = "markdown",
   onCite,
   onCiteMany,
   onOpenPath,
@@ -445,10 +456,11 @@ function ReferencesPanelBody({
 }: ReferencesPanelProps) {
   const { library, error, reload } = useReferenceLibrary(notebook);
   const undo = useReferenceUndo(notebook, library);
-  const refreshToken = useMemo(() => savedMarkdownToken(tree, notebook), [tree, notebook]);
+  const refreshToken = useMemo(() => savedCitationToken(tree, notebook), [tree, notebook]);
   const citations = useReferenceCitations(notebook, openDrafts, refreshToken);
   // With the library, resolved narrative citations (`@key`) count too.
-  const activeKeys = useDocumentCitedKeys(activeMarkdownDraft, undefined, library);
+  // A LaTeX document counts its `\cite` commands.
+  const activeKeys = useDocumentCitedKeys(activeMarkdownDraft ?? activeLatexDraft, undefined, library, activeMarkdownDraft === null && activeLatexDraft !== null ? "latex" : "markdown");
 
   const [view, setViewState] = useState<PanelViewState>(() => initialView(notebook));
   const setView = useCallback((patch: Partial<PanelViewState>) => setViewState((current) => {
@@ -543,7 +555,7 @@ function ReferencesPanelBody({
     const walk = (nodes: LiberaTreeNode[]) => {
       for (const node of nodes) {
         if (node.kind === "folder") walk(node.children);
-        else if (node.fileType === "markdown") changed.set(node.path, node.updatedAt);
+        else if (node.fileType === "markdown" || isLatexCitingPath(node.path)) changed.set(node.path, node.updatedAt);
       }
     };
     walk(tree.notebooks.find((item) => item.name === notebook)?.children ?? []);
@@ -689,12 +701,12 @@ function ReferencesPanelBody({
     else if (top + REFERENCE_ROW_HEIGHT > container.scrollTop + height) container.scrollTop = top + REFERENCE_ROW_HEIGHT - height;
   }, [selectedId, openId, listed, offset]);
 
-  function cite(entry: ReferenceEntry) {
+  function cite(entry: ReferenceEntry, command?: LatexCiteCommand) {
     if (!canCite) {
-      setNotice({ tone: "error", text: "Open a Markdown document to cite into it." });
+      setNotice({ tone: "error", text: "Open a Markdown or LaTeX document to cite into it." });
       return;
     }
-    onCite(entry.key);
+    onCite(entry.key, command);
   }
 
   /** Selected entries in list order: the multi-selection, else the focused row. */
@@ -710,14 +722,14 @@ function ReferencesPanelBody({
     setBulkTags(false);
   }
 
-  function citeMany(group: ReferenceEntry[]) {
-    if (group.length === 1) return cite(group[0]);
+  function citeMany(group: ReferenceEntry[], command?: LatexCiteCommand) {
+    if (group.length === 1) return cite(group[0], command);
     if (!canCite) {
-      setNotice({ tone: "error", text: "Open a Markdown document to cite into it." });
+      setNotice({ tone: "error", text: "Open a Markdown or LaTeX document to cite into it." });
       return;
     }
-    if (onCiteMany) onCiteMany(group.map((entry) => entry.key));
-    else for (const entry of group) onCite(entry.key);
+    if (onCiteMany) onCiteMany(group.map((entry) => entry.key), command);
+    else for (const entry of group) onCite(entry.key, command);
   }
 
   function copyCitation(group: ReferenceEntry[], format: CitationCopyFormat) {
@@ -807,7 +819,8 @@ function ReferencesPanelBody({
   function menuAction(entry: ReferenceEntry, action: ReferenceMenuAction) {
     const attachment = (kind: "pdf" | "markdown") => entry.attachments.find((item) => item.kind === kind);
     switch (action) {
-      case "cite": return cite(entry);
+      case "cite": return cite(entry, citeSyntax === "latex" ? "cite" : undefined);
+      case "citep": return cite(entry, "citep");
       case "open-pdf": { const pdf = attachment("pdf"); if (pdf && pdf.kind !== "url") onOpenPath(pdf.path); return; }
       case "open-note": { const note = attachment("markdown"); if (note && note.kind !== "url") onOpenPath(note.path); return; }
       case "copy-key": return void copy(entry.key, "Key");
@@ -881,7 +894,8 @@ function ReferencesPanelBody({
       moveSelection(event.key === "ArrowDown" ? 1 : -1, event.shiftKey);
     } else if (event.key === "Enter" && focused) {
       event.preventDefault();
-      if (mod) citeMany(selection);
+      // In LaTeX, Shift picks \citep over \cite.
+      if (mod) citeMany(selection, citeSyntax === "latex" ? (event.shiftKey ? "citep" : "cite") : undefined);
       else {
         clearMulti();
         setOpenId(focused.id);
@@ -920,7 +934,12 @@ function ReferencesPanelBody({
     if (event.nativeEvent.isComposing) return;
     const mod = event.metaKey || event.ctrlKey;
     if (openEntry) {
-      if (mod && event.shiftKey && event.key === "Enter" && openEntry.status !== "confirmed") {
+      if (citeSyntax === "latex" && mod && event.key === "Enter" && !isEditableTarget(event.target)) {
+        event.preventDefault();
+        cite(openEntry, event.shiftKey ? "citep" : "cite");
+        return;
+      }
+      if (citeSyntax !== "latex" && mod && event.shiftKey && event.key === "Enter" && openEntry.status !== "confirmed") {
         event.preventDefault();
         void confirmAndNext();
         return;
@@ -993,7 +1012,7 @@ function ReferencesPanelBody({
   }
 
   function openCitation(path: string, snippet: CitationSnippet) {
-    if (onOpenCitation) onOpenCitation(path, { start: snippet.start, end: snippet.end, line: snippet.line });
+    if (onOpenCitation) onOpenCitation(path, { start: snippet.start, end: snippet.end, line: snippet.line, ...(isLatexCitingPath(path) ? { snippet } : {}) });
     else onOpenPath(path);
   }
 
@@ -1319,7 +1338,7 @@ function ReferencesPanelBody({
     if (!listed.length && !listedMissing.length) {
       return (
         <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-          {words.length ? "No references match." : reviewFilter ? "None of the new entries are left." : view.filter === "cited" ? (activeMarkdownDraft === null ? "Open a Markdown document to see what it cites." : "This document cites nothing yet.") : "Nothing here."}
+          {words.length ? "No references match." : reviewFilter ? "None of the new entries are left." : view.filter === "cited" ? (activeMarkdownDraft === null && activeLatexDraft === null ? "Open a Markdown or LaTeX document to see what it cites." : "This document cites nothing yet.") : "Nothing here."}
         </p>
       );
     }
@@ -1332,14 +1351,15 @@ function ReferencesPanelBody({
       citingCount: citingById.get(entry.id)?.length ?? 0,
       duplicate: duplicateIds.has(entry.id),
       canCite,
+      citeSyntax,
       onOpen: (modifiers: { range: boolean; toggle: boolean }) => openRow(entry, modifiers),
       onTag: showTag,
-      onCite: () => cite(entry),
+      onCite: (command?: LatexCiteCommand) => cite(entry, command),
       onOpenAttachment: onOpenPath,
       onMenu: async (point: { x: number; y: number }) => {
         if (!multi.has(entry.id)) clearMulti();
         setSelectedId(entry.id);
-        if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
+        if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax, citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
           setMenu({ entryId: entry.id, point });
         }
       },
@@ -1475,6 +1495,7 @@ function ReferencesPanelBody({
           library={library}
           citing={citingOf(openEntry)}
           canCite={canCite}
+          citeSyntax={citeSyntax}
           apply={run}
           onBack={closeCard}
           position={openIndex >= 0 ? { index: openIndex, total: listed.length } : undefined}
@@ -1487,7 +1508,7 @@ function ReferencesPanelBody({
           onTag={showTag}
           loadDocument={(path) => documentText(path, openDrafts)}
           onOpenCitation={openCitation}
-          onCite={() => cite(openEntry)}
+          onCite={(command) => cite(openEntry, command)}
           onCopy={(text, what) => void copy(text, what)}
           onCopyFormatted={() => void copyFormatted(openEntry)}
           onReresolve={() => setReresolving(openEntry)}
@@ -1573,11 +1594,12 @@ function ReferencesPanelBody({
             <BulkActionsBar
               count={multiSelection.length}
               canCite={canCite}
+              citeSyntax={citeSyntax}
               entries={multiSelection}
               knownTags={knownTags}
               tagsOpen={bulkTags}
               onTagsOpen={setBulkTags}
-              onCite={() => citeMany(multiSelection)}
+              onCite={(command) => citeMany(multiSelection, command)}
               onCopyCitation={(format) => copyCitation(multiSelection, format)}
               onCopyFormatted={() => void copyFormattedMany(multiSelection)}
               onTags={(add, remove) => changeTags(multiSelection, add, remove)}
@@ -1602,6 +1624,7 @@ function ReferencesPanelBody({
           entry={menuEntry}
           point={menu.point}
           canCite={canCite}
+          citeSyntax={citeSyntax}
           citing={citingOf(menuEntry)}
           onAction={(action) => menuAction(menuEntry, action)}
           onOpenPath={onOpenPath}
@@ -2042,14 +2065,15 @@ function PanelMenu({
 }
 
 /** Actions for several selected entries, above the list. */
-function BulkActionsBar({ count, canCite, entries, knownTags, tagsOpen, onTagsOpen, onCite, onCopyCitation, onCopyFormatted, onTags, onReading, onConfirm, onDelete, onClear }: {
+function BulkActionsBar({ count, canCite, citeSyntax, entries, knownTags, tagsOpen, onTagsOpen, onCite, onCopyCitation, onCopyFormatted, onTags, onReading, onConfirm, onDelete, onClear }: {
   count: number;
   canCite: boolean;
+  citeSyntax: CiteSyntax;
   entries: ReferenceEntry[];
   knownTags: string[];
   tagsOpen: boolean;
   onTagsOpen: (open: boolean) => void;
-  onCite: () => void;
+  onCite: (command?: LatexCiteCommand) => void;
   onCopyCitation: (format: CitationCopyFormat) => void;
   onCopyFormatted: () => void;
   onTags: (add: string[], remove: string[]) => void;
@@ -2076,7 +2100,11 @@ function BulkActionsBar({ count, canCite, entries, knownTags, tagsOpen, onTagsOp
     <div className="libera-panel-card mx-3 mb-2 space-y-1.5 p-1.5" role="toolbar" aria-label={`${count} selected references`}>
       <div className="flex flex-wrap items-center gap-0.5">
         <span className="mr-auto px-1 text-[11px] font-semibold">{count} selected</span>
-        <button type="button" className={button} aria-label="Cite the selection at the cursor" title={canCite ? "Cite all at the cursor as one citation (⌘/Ctrl+Enter)" : "Open a Markdown document to cite into it"} disabled={!canCite} onClick={onCite}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
+        {citeSyntax === "latex" ? citeActions("latex").map(({ command, label }) => (
+          <button key={command} type="button" className={`${button} w-auto px-1 font-mono text-[10.5px]`} aria-label={`${label.replace(" at cursor", "")} the selection at the cursor`} title={canCite ? `${label}, all as one citation (${command === "citep" ? "⌘/Ctrl+Shift+Enter" : "⌘/Ctrl+Enter"})` : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite(command)}>{`\\${command}`}</button>
+        )) : (
+          <button type="button" className={button} aria-label="Cite the selection at the cursor" title={canCite ? "Cite all at the cursor as one citation (⌘/Ctrl+Enter)" : CITE_UNAVAILABLE} disabled={!canCite} onClick={() => onCite()}><Quote aria-hidden className="h-3.5 w-3.5" /></button>
+        )}
         <button type="button" className={button} aria-label="Copy as one citation" title="Copy as [@a; @b]" onClick={() => onCopyCitation("pandoc")}><Copy aria-hidden className="h-3.5 w-3.5" /></button>
         <button type="button" className={button} aria-label="Copy as a LaTeX citation" title={"Copy as \\cite{a,b}"} onClick={() => onCopyCitation("latex")}><Braces aria-hidden className="h-3.5 w-3.5" /></button>
         <button type="button" className={button} aria-label="Copy formatted references" title="Copy formatted references (⌘/Ctrl+Shift+C)" onClick={onCopyFormatted}><ScrollText aria-hidden className="h-3.5 w-3.5" /></button>

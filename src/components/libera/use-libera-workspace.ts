@@ -5,6 +5,8 @@ import { shiftMarkdownListItems, type ListIndentDirection } from "@/lib/markdown
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isTextFileType } from "@/lib/types";
 import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
+import { isLatexCitingPath, latexCitation, type LatexCiteCommand } from "@/lib/references/latex-cite-syntax";
+import { getLatexEditor } from "@/components/libera/latex/latex-editor-registry";
 import type {
   LiberaFileMovePayload,
   LiberaFileNode,
@@ -1721,11 +1723,29 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     restoreMarkdownTextarea({ ...scrollState, ...selection });
   }
 
-  /** Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of the active Markdown editor, in the source or the visual editor. */
-  function insertCitation(key: string | string[]) {
-    if (!activeTab || activeTab.file.fileType !== "markdown") return false;
+  /**
+   * Cites `key` (or several keys, as one citation `[@a; @b]`) at the caret of
+   * the active Markdown editor, in the source or the visual editor; in a
+   * LaTeX source, as `\cite{a,b}` or `\citep{a,b}`, replacing the selection.
+   */
+  function insertCitation(key: string | string[], command: LatexCiteCommand = "cite") {
+    if (!activeTab) return false;
     const keys = typeof key === "string" ? [key] : key;
     if (!keys.length) return false;
+    if (activeTab.file.fileType === "latex" && isLatexCitingPath(activeTab.file.name)) {
+      const view = getLatexEditor(activeTab.id)?.view;
+      if (!view || view.state.readOnly) return false;
+      const citation = latexCitation(keys, command);
+      if (!citation) {
+        setWorkspaceError("These citation keys cannot be inserted into LaTeX. Rename keys containing spaces, commas, braces, backslashes or percent signs first.");
+        return false;
+      }
+      const { from, to } = view.state.selection.main;
+      view.dispatch({ changes: { from, to, insert: citation }, selection: { anchor: from + citation.length }, scrollIntoView: true, userEvent: "input" });
+      view.focus();
+      return true;
+    }
+    if (activeTab.file.fileType !== "markdown") return false;
     const citation = `[${keys.map((item) => `@${item}`).join("; ")}]`;
     const visual = (activeTab.viewState?.markdown?.editorMode ?? "visual") === "visual" && !isMarkdownSlidesPath(activeTab.file.path);
     if (visual) queueVisualInsertion(activeTab.id, citation, { inline: true });

@@ -1,5 +1,6 @@
 import type { FormEvent, RefObject } from "react";
 import type { SynctexTextHint } from "@/lib/latex/synctex-text";
+import type { CitationSnippet } from "@/lib/references/occurrences";
 import type { MathMarkerSettings } from "@/lib/math-markers";
 import type { PageKind } from "./page-tabs";
 import type {
@@ -107,6 +108,8 @@ export type LatexTabViewState = {
   selectionStart?: number;
   /** One-shot request from another view (SyncTeX, outline) to reveal a line. */
   revealLine?: { line: number; column?: number; hint?: SynctexTextHint; nonce: number };
+  /** One-shot request to select and reveal a source range (a citation found by the References panel). */
+  revealRange?: { start: number; end: number; snippet?: CitationSnippet; nonce: number };
 };
 
 export type ImageTabViewState = {
