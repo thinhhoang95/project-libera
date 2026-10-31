@@ -19,6 +19,7 @@ import { isTextFileType, type LiberaFileNode, type LiberaFilePayload } from "@/l
 import type { OpenTab } from "./types";
 import { readAgentEvents, readChatResponse } from "./chat-stream-client";
 import { AgentRunView } from "./agent-activity";
+import { AiPanelGlow } from "./ai-activity-ui";
 import { combinedMacroScope, macroScopeKey, type MarkdownMacroScope } from "@/lib/markdown-macros";
 import { PythonSetupStatus } from "./python-setup-status";
 import { ChatTokenUsage } from "./chat-token-usage";
@@ -1248,8 +1249,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
   if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
 
   return <aside style={{ "--chat-font-size": `${fontSize}px`, "--chat-small-font-size": `${fontSize * 12 / 14}px` } as CSSProperties} id="document-chat-panel" aria-label="Document chat" className="libera-glass-panel libera-chat-panel relative flex min-h-0 min-w-0 overflow-hidden border-l border-border bg-card" data-ai-active={pending}>
-    <div aria-hidden className="libera-chat-glow" data-active={pending} />
-    <div aria-hidden className="libera-chat-glow libera-chat-glow-bottom" data-active={pending} />
+    <AiPanelGlow active={pending} />
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="libera-chat-header libera-window-drag-region flex shrink-0 items-center gap-1 px-3">
         <span className="libera-ai-mark" aria-hidden><Sparkles size={22} /></span>

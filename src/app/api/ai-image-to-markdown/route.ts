@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
           },
         ],
       },
-    ], getAiFunctionOptions("imageToMarkdown"));
+    ], { ...getAiFunctionOptions("imageToMarkdown"), signal: request.signal });
 
     if (!markdown.trim()) {
       return jsonError("AI image conversion returned an empty response.", 502);

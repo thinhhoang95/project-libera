@@ -7,7 +7,6 @@ import {
   startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { beginAiActivity } from "@/lib/ai-activity";
 import {
   textareaEditSpec,
 } from "@/lib/markdown-codemirror/commands";
@@ -570,7 +569,6 @@ export function MarkdownCodeMirrorEditor({
   useLayoutEffect(() => { clearReviewSelectionRef.current = () => review?.clearSelection(); }, [review]);
 
   const aiWorking = formatting || imageConverting;
-  useEffect(() => (aiWorking ? beginAiActivity() : undefined), [aiWorking]);
 
   // Find and Replace ---------------------------------------------------------
 

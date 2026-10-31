@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       ? normalizeLatexOutput((await createOpenRouterCompletion([
         { role: "system", content: LATEX_FORMAT_PROMPT },
         { role: "user", content: text },
-      ], getAiFunctionOptions("formatting"))).content)
+      ], { ...getAiFunctionOptions("formatting"), signal: request.signal })).content)
       : await createOpenRouterMarkdownCompletion([
         {
           role: "system",
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
           role: "user",
           content: text,
         },
-      ], getAiFunctionOptions("formatting"));
+      ], { ...getAiFunctionOptions("formatting"), signal: request.signal });
 
     if (!formattedText.trim()) {
       return jsonError("AI formatting returned an empty response.", 502);

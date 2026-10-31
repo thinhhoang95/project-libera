@@ -59,6 +59,7 @@ import type { QuickPrompt } from "@/lib/quick-prompts";
 import { type LiberaFileNode, type LiberaFilePayload, type LiberaTreeNode } from "@/lib/types";
 import { dirtyDocumentCount } from "@/lib/collab/client/workspace";
 import { ReadAloudBar } from "@/components/libera/read-aloud";
+import { AiActivityCard } from "@/components/libera/ai-activity-ui";
 import { MeetingRecorderProvider } from "@/components/libera/recording/meeting-recorder";
 import { CommandPalette } from "@/components/libera/command-palette/command-palette";
 import { openCommandPalette, usePaletteCommands } from "@/components/libera/command-palette/commands";
@@ -897,6 +898,7 @@ export function LiberaApp({
       <ReviewPopover />
       <PdfQuoteCiteHost />
       <ReadAloudBar />
+      <AiActivityCard />
     </main>
     </MeetingRecorderProvider>
     </CollabProvider>

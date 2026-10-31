@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       return jsonError("Rewrite prompt is too long.", 413);
     }
 
-    const { output: rewrittenText, thread } = await runAiEdit("rewrite", body);
+    const { output: rewrittenText, thread } = await runAiEdit("rewrite", body, request.signal);
 
     if (!rewrittenText.trim()) {
       return jsonError("AI rewrite returned an empty response.", 502);

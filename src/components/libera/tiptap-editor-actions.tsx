@@ -1,6 +1,6 @@
 "use client";
 
-import { beginAiActivity } from "@/lib/ai-activity";
+import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -62,9 +62,9 @@ export function TiptapEditorActions({ editor, documentPath, onError, onPaste, sh
   const [writePrompt, setWritePrompt] = useState("");
   const [suggestText, setSuggestText] = useState("");
   const [working, setWorking] = useState<AiAction | null>(null);
-  useEffect(() => (working ? beginAiActivity() : undefined), [working]);
   const menuRef = useRef<HTMLDivElement>(null);
   const pendingRef = useRef<{ controller: AbortController; dispose: () => void } | null>(null);
+  useEffect(() => (working ? beginAiActivity({ label: AI_ACTION_LABELS[working], cancel: () => pendingRef.current?.controller.abort() }) : undefined), [working]);
   const hasHeadings = useEditorState({ editor, selector: ({ editor: current }) => hasTiptapHeadings(current.state.doc) });
   const headingNumbering = useHeadingNumbering(documentPath, () => {
     const { doc } = editor.state;

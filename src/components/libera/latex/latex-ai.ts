@@ -1,7 +1,7 @@
 "use client";
 
 import type { EditorView } from "@codemirror/view";
-import { beginAiActivity } from "@/lib/ai-activity";
+import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 import { apiRequest } from "@/components/libera/api-client";
 import { readIncludeDocumentContext } from "@/components/libera/ai-document-context-preference";
 import { aiEditThreadFor, recordAiEditTurn, type AiEditThreadResult } from "@/components/libera/ai-edit-thread";
@@ -50,7 +50,7 @@ export async function runLatexAi(view: EditorView, action: AiChangeSource, range
   const thread = action !== "format" ? aiEditThreadFor(documentPath, includeDocument) : undefined;
   const controller = new AbortController();
   controllers.set(view, controller);
-  const endActivity = beginAiActivity();
+  const endActivity = beginAiActivity({ label: AI_ACTION_LABELS[action], cancel: () => controller.abort() });
   onError("");
   view.dispatch({ effects: setPendingAiRequest.of({ id, from: target.from, to: target.to, kind: action }) });
 

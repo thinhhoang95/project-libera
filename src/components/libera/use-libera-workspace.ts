@@ -73,6 +73,7 @@ import type { ChatNotebookExport } from "./document-chat-export-dialog";
 import { removeWorkspaceGroup, saveWorkspaceGroup, toggleWorkspaceStar, type WorkspaceFileChange } from "@/lib/workspaces";
 import { replaceTextareaSelectionWithUndo } from "@/lib/textarea-editing";
 import { findMarkdownBlockInsertionOffset, insertMarkdownBlock } from "@/lib/ai-write";
+import { AI_ACTION_LABELS, beginAiActivity } from "@/lib/ai-activity";
 import { resolvePdfQuote, showPdfQuoteNotice } from "@/components/libera/references/pdf-quote-cite";
 import { parsePdfQuoteSource, PDF_QUOTE_CITE_EVENT, quoteBlockInsertion, type PdfQuoteCiteDetail, type PdfQuoteSource } from "@/lib/references/pdf-quote";
 import { MARKDOWN_TABLE_FIRST_HEADER, markdownTable } from "@/lib/markdown-table";
@@ -2532,14 +2533,18 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.format, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
       const payload = await apiRequest<{ formattedText: string }>("/api/ai-format", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({ text: selectedText }),
       });
+      if (controller.signal.aborted) return;
       const nextDraft = `${draft.slice(0, selection.start)}${payload.formattedText}${draft.slice(
         selection.end,
       )}`;
@@ -2563,12 +2568,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI formatting failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2590,6 +2596,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.rewrite, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2598,6 +2606,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
       const payload = await apiRequest<{ rewrittenText: string; thread?: AiEditThreadResult }>("/api/ai-rewrite", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           text: selectedText,
           prompt,
@@ -2607,6 +2616,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
           thread,
         }),
       });
+      if (controller.signal.aborted) return;
       recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const nextDraft = `${draft.slice(0, selection.start)}${payload.rewrittenText}${draft.slice(
         selection.end,
@@ -2630,12 +2640,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI rewrite failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2650,6 +2661,8 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
     const position = findMarkdownBlockInsertionOffset(draft, offset);
     const scrollState = getMarkdownTextareaScrollState();
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.write, cancel: () => controller.abort() });
     setAiFormatting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
@@ -2658,12 +2671,14 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       const thread = aiEditThreadFor(activeTab.file.path, includeDocument);
       const payload = await apiRequest<{ markdown: string; thread?: AiEditThreadResult }>("/api/ai-write", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           prompt,
           ...(includeDocument ? { before: draft.slice(0, position), after: draft.slice(position) } : {}),
           thread,
         }),
       });
+      if (controller.signal.aborted) return;
       recordAiEditTurn(activeTab.file.path, includeDocument, thread, payload.thread);
       const insertion = insertMarkdownBlock(draft, position, payload.markdown);
       const suggested = suggestSharedAi(tabId, draft, {
@@ -2689,12 +2704,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: suggested ? position : insertion.end,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "Write with AI failed.",
       }));
     } finally {
+      endActivity();
       setAiFormatting(false);
     }
   }
@@ -2713,18 +2729,22 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       return;
     }
 
+    const controller = new AbortController();
+    const endActivity = beginAiActivity({ label: AI_ACTION_LABELS.image, cancel: () => controller.abort() });
     setImageMarkdownConverting(true);
     updateTab(tabId, (tab) => ({ ...tab, error: undefined }));
 
     try {
       const payload = await apiRequest<{ markdown: string }>("/api/ai-image-to-markdown", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({
           documentPath: activeTab.file.path,
           imageSource: image.src,
           alt: image.alt,
         }),
       });
+      if (controller.signal.aborted) return;
       const nextDraft = `${draft.slice(0, image.start)}${payload.markdown}${draft.slice(
         image.end,
       )}`;
@@ -2764,12 +2784,13 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
         selectionEnd: nextSelectionEnd,
       });
     } catch (error) {
-      updateTab(tabId, (tab) => ({
+      if (!controller.signal.aborted) updateTab(tabId, (tab) => ({
         ...tab,
         status: "error",
         error: error instanceof Error ? error.message : "AI image conversion failed.",
       }));
     } finally {
+      endActivity();
       setImageMarkdownConverting(false);
     }
   }

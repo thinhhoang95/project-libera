@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     }
 
     // The response key predates LaTeX support; it holds LaTeX for LaTeX documents.
-    const { output: markdown, thread } = await runAiEdit("write", body);
+    const { output: markdown, thread } = await runAiEdit("write", body, request.signal);
 
     if (!markdown.trim()) {
       return jsonError("Write with AI returned an empty response.", 502);
