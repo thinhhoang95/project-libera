@@ -238,6 +238,7 @@ export function LeftPanel({
                 activeDocumentPath={references?.activeDocumentPath ?? null}
                 openDrafts={references?.openDrafts ?? NO_DRAFTS}
                 activeLatexDraft={references?.activeLatexDraft ?? null}
+                activeLatexPath={references?.activeLatexPath ?? null}
                 canCite={references?.canCite ?? false}
                 citeSyntax={references?.citeSyntax}
                 onCite={references?.onCite ?? (() => undefined)}

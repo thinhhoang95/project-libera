@@ -222,8 +222,8 @@ export function ReferenceCard({ notebook, entry, library, citing, canCite, citeS
           </div>
           <RetractionBadge status={entry.retraction} />
           <FormattedReference className="text-[12px] leading-relaxed text-muted-foreground" notebook={notebook} setting={library.style} entry={entry} />
-          <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <p className="min-w-0 whitespace-nowrap text-[11px] text-muted-foreground">{typeLabel(entry.csl.type)}</p>
             <ReadingToggle reading={entry.reading} onChange={(reading) => void run([{ op: "update", id: entry.id, reading }], reading ? `Mark ${entry.key} ${READING_LABELS[reading]}` : `Clear the reading flag of ${entry.key}`)} />
           </div>
           {reviewing ? (
@@ -500,9 +500,9 @@ function TagEditor({ tags, knownTags = [], onTag, onChange }: { tags: string[]; 
     <Section title="Tags">
       <div className="flex flex-wrap items-center gap-1" aria-label="Tags" role="group">
         {tags.map((tag) => (
-          <span key={tag} className="libera-reference-tag">
-            {onTag ? <button type="button" className="hover:underline" title={`Show references tagged ${tag}`} onClick={() => onTag(tag)}>{tag}</button> : tag}
-            <button type="button" aria-label={`Remove tag ${tag}`} onClick={() => onChange(tags.filter((current) => current !== tag))}><X aria-hidden className="h-3 w-3" /></button>
+          <span key={tag} className="libera-reference-tag" title={tag}>
+            {onTag ? <button type="button" className="min-w-0 truncate hover:underline" title={`Show references tagged ${tag}`} onClick={() => onTag(tag)}>{tag}</button> : <span className="min-w-0 truncate">{tag}</span>}
+            <button type="button" className="shrink-0" aria-label={`Remove tag ${tag}`} onClick={() => onChange(tags.filter((current) => current !== tag))}><X aria-hidden className="h-3 w-3" /></button>
           </span>
         ))}
         <input
@@ -536,7 +536,7 @@ function ReadingToggle({ reading, onChange }: { reading?: ReadingState; onChange
   const option = (value: ReadingState, icon: ReactNode) => (
     <button
       type="button"
-      className="libera-reference-reading-option inline-flex h-6 items-center gap-1 px-2 text-[11px]"
+      className="libera-reference-reading-option inline-flex h-6 items-center gap-1 whitespace-nowrap px-2 text-[11px]"
       aria-pressed={reading === value}
       title={reading === value ? `Clear “${READING_LABELS[value]}”` : `Mark as ${READING_LABELS[value]}`}
       onClick={() => onChange(reading === value ? null : value)}

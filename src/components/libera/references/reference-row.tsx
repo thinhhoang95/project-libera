@@ -17,6 +17,7 @@ import {
   Quote,
   RotateCw,
   ScrollText,
+  Search,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -43,6 +44,8 @@ import type { ReferenceEntry, ReferenceStatus } from "@/lib/references/types";
 export const REFERENCE_ROW_HEIGHT = 74;
 
 export const CITE_UNAVAILABLE = "Open a Markdown or LaTeX document and place the cursor to cite";
+export const FIND_IN_FILE_LABEL = "Find citation in current file";
+export const FIND_IN_FILE_UNAVAILABLE = "The open Markdown or LaTeX file does not cite this reference";
 
 /** How Cite at cursor writes a citation: `[@key]` in Markdown, a `\cite` or `\citep` command in LaTeX. */
 export type CiteSyntax = "markdown" | "latex";
@@ -148,7 +151,7 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
           <Highlighted text={authorYearLabel(entry.csl)} words={words} />
         </span>
         {citedByActive ? (
-          <span className="shrink-0 text-accent" title="Cited in the open document" aria-label="Cited in the open document">
+          <span className="shrink-0 text-muted-foreground" title="Cited in the open document" aria-label="Cited in the open document">
             <Link2 aria-hidden className="h-3.5 w-3.5" />
           </span>
         ) : null}
@@ -162,15 +165,15 @@ export function ReferenceRow({ entry, words, selected, inSelection, citedByActiv
         <Highlighted text={entryTitle(entry)} words={words} />
       </div>
       <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="min-w-0 truncate">
+        <span className="min-w-12 shrink-[3] truncate">
           {venue ? <><Highlighted text={venue} words={words} />{" · "}</> : null}
           <span className="font-mono"><Highlighted text={entry.key} words={words} /></span>
         </span>
         {tags.slice(0, ROW_TAGS).map((tag) => onTag ? (
-          <button key={tag} type="button" className="libera-reference-tag-link shrink-0" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
+          <button key={tag} type="button" className="libera-reference-tag-link" title={`Show references tagged ${tag}`} onClick={(event) => { event.stopPropagation(); onTag(tag); }}>
             #<Highlighted text={tag} words={words} />
           </button>
-        ) : <span key={tag} className="libera-reference-tag-link shrink-0">#{tag}</span>)}
+        ) : <span key={tag} className="libera-reference-tag-link">#{tag}</span>)}
         {tags.length > ROW_TAGS ? <span className="shrink-0" title={tags.slice(ROW_TAGS).join(", ")}>+{tags.length - ROW_TAGS}</span> : null}
         <span className="ml-auto flex shrink-0 items-center gap-0.5 group-hover:hidden group-focus-within:hidden" data-selected={selected || undefined}>
           <AttachmentIcons entry={entry} />
@@ -244,7 +247,7 @@ export function MissingReferenceRow({ citationKey, onAdd }: { citationKey: strin
 }
 
 export type ReferenceMenuAction =
-  | "cite" | "citep" | "open-pdf" | "open-note" | "copy-key" | "copy-citation" | "copy-latex" | "copy-formatted"
+  | "cite" | "citep" | "find-in-file" | "open-pdf" | "open-note" | "copy-key" | "copy-citation" | "copy-latex" | "copy-formatted"
   | "to-read" | "read" | "reresolve" | "edit" | "delete";
 
 /** Menu labels of the reading actions: they toggle the flag. */
@@ -258,16 +261,19 @@ type MenuProps = {
   point: { x: number; y: number };
   canCite: boolean;
   citeSyntax?: CiteSyntax;
+  /** The open Markdown or LaTeX file cites the entry, so Find citation in current file can go to it. */
+  canFind?: boolean;
   citing: string[];
   onAction: (action: ReferenceMenuAction) => void;
   onOpenPath: (path: string) => void;
   onClose: () => void;
 };
 
-export function openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
+export function openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
   const action = (id: ReferenceMenuAction, label: string, enabled = true): ReferenceMenuItem => ({ id, label, enabled, onSelect: () => onAction(id) });
   return popupReferenceMenu([
     ...citeActions(citeSyntax).map(({ command, label }) => action(command === "citep" ? "citep" : "cite", label, canCite)),
+    action("find-in-file", FIND_IN_FILE_LABEL, canFind),
     ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
     ...(entry.attachments.some((attachment) => attachment.kind === "markdown") ? [action("open-note", "Open note")] : []),
     action("copy-key", "Copy key"),
@@ -303,7 +309,7 @@ function MenuItem({ icon, label, onClick, disabled, title, tone }: { icon: React
 }
 
 /** The row's actions as a popover menu (hover button or right-click). */
-export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", citing, onAction, onOpenPath, onClose }: MenuProps) {
+export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath, onClose }: MenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showCiting, setShowCiting] = useState(false);
   const pdf = entry.attachments.find((attachment) => attachment.kind === "pdf");
@@ -339,6 +345,7 @@ export function ReferenceActionsMenu({ entry, point, canCite, citeSyntax = "mark
       {citeActions(citeSyntax).map(({ command, label }) => (
         <MenuItem key={label} icon={<Quote aria-hidden className="h-4 w-4" />} label={label} disabled={!canCite} title={canCite ? undefined : CITE_UNAVAILABLE} onClick={act(command === "citep" ? "citep" : "cite")} />
       ))}
+      <MenuItem icon={<Search aria-hidden className="h-4 w-4" />} label={FIND_IN_FILE_LABEL} disabled={!canFind} title={canFind ? undefined : FIND_IN_FILE_UNAVAILABLE} onClick={act("find-in-file")} />
       {pdf ? <MenuItem icon={<FileType2 aria-hidden className="h-4 w-4" />} label="Open PDF" onClick={act("open-pdf")} /> : null}
       {note ? <MenuItem icon={<NotebookPen aria-hidden className="h-4 w-4" />} label="Open note" onClick={act("open-note")} /> : null}
       <MenuItem icon={<Copy aria-hidden className="h-4 w-4" />} label="Copy key" onClick={act("copy-key")} />

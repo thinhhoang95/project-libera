@@ -1226,6 +1226,41 @@ test("the card attaches notebook files and links, removes attachments, and lists
   assert.deepEqual(server.patches().at(-1), [{ op: "detach", id: "ref_godel", attachment: { kind: "pdf", path: "Notes/papers/other.pdf" } }]);
 });
 
+test("Find citation in current file goes through each citation of the open Markdown or LaTeX file in turn", async () => {
+  fakeServer(sampleLibrary());
+  const opened: Array<{ path: string; start: number }> = [];
+  const markdown = "A [@godel1931] then [@uncited2019] and again [@godel1931, p. 2].";
+  const { host, update } = await renderPanel({
+    activeMarkdownDraft: markdown,
+    activeDocumentPath: "Notes/paper.md",
+    onOpenCitation: (path, { start }) => opened.push({ path, start }),
+  });
+  await settle(320);
+  const find = async (key: string) => {
+    await click(byLabel(host, `Actions for ${key}`));
+    return buttonByText(document.querySelector('[role="menu"]')!, "Find citation in current file") as HTMLButtonElement;
+  };
+  await click(await find("godel1931"));
+  await click(await find("godel1931"));
+  await click(await find("godel1931"));
+  const first = markdown.indexOf("[@godel1931]");
+  const second = markdown.lastIndexOf("[@godel1931");
+  assert.deepEqual(opened, [{ path: "Notes/paper.md", start: first }, { path: "Notes/paper.md", start: second }, { path: "Notes/paper.md", start: first }], "it wraps around after the last");
+  const knuth = await find("smith2020sparsea");
+  assert.equal(knuth.disabled, true, "disabled for a reference the file does not cite");
+  await key(document.body, "Escape");
+
+  const latex = "% \\cite{godel1931}\nShown \\citep{godel1931}.";
+  await update({ activeMarkdownDraft: null, activeDocumentPath: null, activeLatexDraft: latex, activeLatexPath: "Notes/paper.tex", citeSyntax: "latex" });
+  await settle(320);
+  opened.length = 0;
+  await click(await find("godel1931"));
+  assert.deepEqual(opened, [{ path: "Notes/paper.tex", start: latex.indexOf("\\citep") }], "the commented-out \\cite is skipped");
+  await key(document.body, "Escape");
+  await update({ activeLatexPath: null });
+  assert.equal((await find("godel1931")).disabled, true, "disabled for an unsaved file");
+});
+
 test("the card finds \\cite commands in a LaTeX source and opens them", async () => {
   const server = fakeServer(sampleLibrary());
   server.citations = { byFile: { "Notes/paper.tex": ["godel1931"] }, byKey: { godel1931: ["Notes/paper.tex"] } };

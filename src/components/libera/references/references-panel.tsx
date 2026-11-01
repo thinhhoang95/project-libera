@@ -94,7 +94,7 @@ import {
   type LatexCiteCommand,
   type ReferenceMenuAction,
 } from "@/components/libera/references/reference-row";
-import type { CitationSnippet } from "@/lib/references/occurrences";
+import { citationSnippets, citationSyntaxForPath, SNIPPET_CONTEXT, type CitationSnippet } from "@/lib/references/occurrences";
 import { isLatexCitingPath } from "@/lib/references/latex-cite-syntax";
 import {
   DeleteReferencesDialog,
@@ -316,6 +316,8 @@ export type ReferencesPanelProps = {
   openDrafts: OpenReferenceDraft[];
   /** LaTeX source of the active document, or null when no `.tex` document is active. */
   activeLatexDraft?: string | null;
+  /** Library path of the active `.tex` document, when it is a saved file. */
+  activeLatexPath?: string | null;
   /** A Markdown or LaTeX editor is active, so Cite at cursor can insert. */
   canCite: boolean;
   /** How the active editor cites: `[@key]`, or `\cite`/`\citep` in LaTeX. */
@@ -440,6 +442,7 @@ function ReferencesPanelBody({
   activeMarkdownDraft,
   activeDocumentPath,
   activeLatexDraft = null,
+  activeLatexPath = null,
   openDrafts,
   canCite,
   citeSyntax = "markdown",
@@ -598,6 +601,12 @@ function ReferencesPanelBody({
     }
     return { activeIds: ids, missingKeys: missing };
   }, [activeKeys, lookup]);
+  // The saved Markdown or LaTeX file whose citations Find citation in current file goes to.
+  const findPath = activeMarkdownDraft !== null ? activeDocumentPath ?? null : activeLatexDraft !== null ? activeLatexPath : null;
+  const findText = activeMarkdownDraft ?? activeLatexDraft;
+  const canFindIn = (entry: ReferenceEntry) => Boolean(findPath && onOpenCitation && activeIds.has(entry.id));
+  /** The citation Find citation in current file went to last, so the next use goes on to the following one. */
+  const lastFoundRef = useRef<{ entryId: string; path: string; start: number } | null>(null);
 
   const words = useMemo(() => searchWords(view.query), [view.query]);
   const listed = useMemo(() => {
@@ -821,6 +830,7 @@ function ReferencesPanelBody({
     switch (action) {
       case "cite": return cite(entry, citeSyntax === "latex" ? "cite" : undefined);
       case "citep": return cite(entry, "citep");
+      case "find-in-file": return findInFile(entry);
       case "open-pdf": { const pdf = attachment("pdf"); if (pdf && pdf.kind !== "url") onOpenPath(pdf.path); return; }
       case "open-note": { const note = attachment("markdown"); if (note && note.kind !== "url") onOpenPath(note.path); return; }
       case "copy-key": return void copy(entry.key, "Key");
@@ -1009,6 +1019,26 @@ function ReferencesPanelBody({
       closeCard();
       setNotice({ tone: "info", text: "Every reference in this list is confirmed.", undo: true });
     }
+  }
+
+  /** Selects the entry's next citation in the open file, wrapping around after the last. */
+  function findInFile(entry: ReferenceEntry) {
+    if (!findPath || findText === null || !canFindIn(entry)) {
+      setNotice({ tone: "error", text: `The open file does not cite ${entry.key}.` });
+      return;
+    }
+    const snippets = citationSnippets(findText, [entry.key, ...entry.aliases], SNIPPET_CONTEXT, citationSyntaxForPath(findPath));
+    if (!snippets.length) {
+      setNotice({ tone: "error", text: `No citation of ${entry.key} was found in ${fileBaseName(findPath)}.` });
+      return;
+    }
+    const last = lastFoundRef.current;
+    const following = last && last.entryId === entry.id && last.path === findPath ? snippets.findIndex((snippet) => snippet.start > last.start) : 0;
+    const index = following < 0 ? 0 : following;
+    const snippet = snippets[index];
+    lastFoundRef.current = { entryId: entry.id, path: findPath, start: snippet.start };
+    openCitation(findPath, snippet);
+    setNotice({ tone: "info", text: `Citation ${index + 1} of ${snippets.length} of ${entry.key} in ${fileBaseName(findPath)}.` });
   }
 
   function openCitation(path: string, snippet: CitationSnippet) {
@@ -1359,7 +1389,7 @@ function ReferencesPanelBody({
       onMenu: async (point: { x: number; y: number }) => {
         if (!multi.has(entry.id)) clearMulti();
         setSelectedId(entry.id);
-        if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax, citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
+        if (!await openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax, canFind: canFindIn(entry), citing: citingOf(entry), onAction: (action) => menuAction(entry, action), onOpenPath })) {
           setMenu({ entryId: entry.id, point });
         }
       },
@@ -1625,6 +1655,7 @@ function ReferencesPanelBody({
           point={menu.point}
           canCite={canCite}
           citeSyntax={citeSyntax}
+          canFind={canFindIn(menuEntry)}
           citing={citingOf(menuEntry)}
           onAction={(action) => menuAction(menuEntry, action)}
           onOpenPath={onOpenPath}

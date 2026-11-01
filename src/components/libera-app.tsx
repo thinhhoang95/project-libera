@@ -300,6 +300,7 @@ export function LiberaApp({
     activeDocumentPath: workspace.activeTab?.file.fileType === "markdown" && !workspace.activeTab.untitled ? workspace.activeTab.file.path : null,
     openDrafts: openReferenceDrafts,
     activeLatexDraft: activeLatexSource ? activeLatexSource.draft : null,
+    activeLatexPath: activeLatexSource && !activeLatexSource.untitled ? activeLatexSource.file.path : null,
     canCite: workspace.activeTab?.file.fileType === "markdown" || Boolean(activeLatexSource),
     citeSyntax: activeLatexSource ? "latex" : "markdown",
     onCite: (key, command) => { workspace.insertCitation(key, command); },
