@@ -158,7 +158,7 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       assert.equal(isFollower(alice, projectId), true);
     });
 
-    await t.test("signed out, a folder no other installation uses keeps its writer", async () => {
+    await t.test("signed out, even an apparently lone folder pauses disk imports and keeps explicit offline edits", async () => {
       const carolAuth = await register(server, "Carol");
       const carol = await makePeer(temp.dir, "carol", server, carolAuth, { leaseTtlMs: LEASE_TTL_MS });
       peers.push(carol);
@@ -169,9 +169,17 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       await carol.service.beforeAccountChange();
       carol.host.setAccount(null);
       await carol.service.accountChanged();
-      assert.equal(isFollower(carol, carolProject), false);
+      assert.equal(isFollower(carol, carolProject), true, "a local marker cannot prove that no other device can take over");
       writeFileSync(path.join(carol.library, "Diary", "day.md"), "alone, offline\n");
-      await until(() => sharedText(carol, "Diary/day.md") === "alone, offline\n", "the signed-out writer to keep taking in disk edits");
+      await sleepTicks(3);
+      assert.equal(sharedText(carol, "Diary/day.md"), "alone\n", "uncertain disk bytes are not turned into shared intent");
+      typeInto(carol, "Diary/day.md", "explicit offline edit: ");
+      assert.equal(sharedText(carol, "Diary/day.md"), "explicit offline edit: alone\n");
+      assert.equal(readText(path.join(carol.library, "Diary"), "day.md"), "alone, offline\n", "external bytes remain recoverable");
+      const resolved = carol.service.resolvePath("Diary/day.md")!;
+      const pending = carol.host.acquire(resolved.docId);
+      try { assert.ok(pending.pendingCount > 0, "the explicit edit is durable and waits for sign-in"); }
+      finally { carol.host.release(resolved.docId); }
     });
 
     await t.test("a takedown from the follower returns the folder to a local notebook at once", async () => {

@@ -203,6 +203,7 @@ export class CollabRuntime {
     const notebooks = factory({
       host,
       libraryRoot: this.options.libraryRoot,
+      lifecycleDir: path.join(this.options.collabDir, "notebook-lifecycle"),
       ...(this.options.galleryRoot ? { galleryRoot: this.options.galleryRoot } : {}),
       emit: (event) => {
         this.options.emit(event);

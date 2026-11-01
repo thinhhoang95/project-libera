@@ -97,6 +97,9 @@ export class OutboundQueue {
   private forming = false;
   private epoch = 0;
   private disposed = false;
+  private retryTimer: TimerHandle | null = null;
+  private retryAt: number | null = null;
+  private retryAttempt = 0;
 
   constructor(options: OutboundOptions) {
     this.docId = options.docId;
@@ -196,6 +199,38 @@ export class OutboundQueue {
     this.sent.clear();
     if (this.timer) this.clock.clearTimeout(this.timer);
     this.timer = null;
+    this.clearRetry();
+    this.retryAttempt = 0;
+  }
+
+  /** An explicit transient error must make progress even while pings succeed. */
+  retry(): void {
+    this.scheduleRetry(Math.min(30_000, 1000 * 2 ** Math.min(this.retryAttempt, 5)));
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== null) this.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryAt = null;
+  }
+
+  private scheduleRetry(delayMs = 15_000): void {
+    if (this.disposed || !this.transport || this.batches.length === 0) return;
+    const at = this.clock.now() + delayMs;
+    if (this.retryAt !== null && this.retryAt <= at) return;
+    this.clearRetry();
+    this.retryAt = at;
+    this.retryTimer = this.clock.setTimeout(() => {
+      this.retryTimer = null;
+      this.retryAt = null;
+      if (!this.transport || this.disposed) return;
+      this.retryAttempt += 1;
+      // The bytes and clientSeq remain persisted and unchanged. Resends are
+      // idempotent both after a lost ack and after a failed server commit.
+      this.sent.clear();
+      this.sendUnsent();
+      this.scheduleRetry(Math.min(30_000, 1000 * 2 ** Math.min(this.retryAttempt, 5)));
+    }, delayMs);
   }
 
   get active(): boolean {
@@ -288,6 +323,7 @@ export class OutboundQueue {
       ...(batch.provenance ? { provenance: batch.provenance } : {}),
     };
     if (this.transport.send(message)) this.sent.add(batch.clientSeq);
+    this.scheduleRetry();
   }
 
   /** The server acknowledged a batch. Returns the covered local_seqs, or null for a duplicate ack. */
@@ -296,6 +332,10 @@ export class OutboundQueue {
     const localSeqs = this.store.ackBatch(this.docId, clientSeq, serverSeq);
     if (index >= 0) this.batches.splice(index, 1);
     this.sent.delete(clientSeq);
+    if (this.batches.length === 0) {
+      this.clearRetry();
+      this.retryAttempt = 0;
+    }
     return localSeqs;
   }
 
@@ -304,6 +344,7 @@ export class OutboundQueue {
     for (const batch of this.batches) if (batch.subdoc === subdoc) this.sent.delete(batch.clientSeq);
     this.batches = this.batches.filter((batch) => batch.subdoc !== subdoc);
     this.unbatched.delete(subdoc);
+    if (this.batches.length === 0) this.clearRetry();
   }
 
   dispose(): void {

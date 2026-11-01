@@ -47,6 +47,8 @@ export interface ControlDeps {
   host: CollabHost;
   /** Master directory (`<LIBERA_DATA_DIR>/users/admin`); notebooks are its direct children. */
   libraryRoot: string;
+  /** Local-only lifecycle records shared with the Next storage guard. */
+  lifecycleDir?: string;
   /**
    * The gallery folder (`<LIBERA_DATA_DIR>/gallery`); shared albums are its
    * direct children. Defaults to the gallery beside `users/`.

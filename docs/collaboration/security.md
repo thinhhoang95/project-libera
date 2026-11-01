@@ -2,6 +2,10 @@
 
 Phase 4 review of the trust boundaries in [README.md §10](README.md#10-security-boundaries) and [source-plan.md §7](source-plan.md#7-electron-specifics). For each boundary: who is trusted, what is enforced and where, and what is still open.
 
+**Review update — 1 November 2026:** the queued-open membership race (G01) and stale live role metadata (G09) are fixed. Admission rechecks membership after queue waits, client update commits lock their validated role, and role events update open hubs/replicas. See the [sync review](../audits/2026-11-01-collaboration-sync-review.md) and [behavior matrix](../features/notebook-sync.md).
+
+**Follow-up fixes:** unreadable/conflicting markers keep ordinary storage writers guarded (G15). Confirmed lifecycle decisions live outside the cloud directory and remain authoritative over stale markers, while newer active identities stay protected (G19). The host and Next share these profile-local records. See the [follow-up review](../audits/2026-11-01-notebook-sync-follow-up.md) for all nine follow-up fixes and remaining test limits.
+
 ## Actors and assets
 
 | Actor | Trusted with |

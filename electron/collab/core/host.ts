@@ -20,6 +20,7 @@ import { DivergenceChecker, type DivergenceCheckerOptions } from "./divergence";
 import { DocHub, type RejectedEdit, type ReplicaConnection } from "./doc-hub";
 import { PendingCommands, type PendingCommandEvent } from "./pending-commands";
 import type { ReplicaPort } from "./ports";
+import type { Role } from "../../../src/lib/collab/protocol/roles";
 import { DocHubRegistry, type AcquireOptions } from "./registry";
 import { HostStore } from "./store";
 import {
@@ -550,5 +551,20 @@ export class CollabHost {
     const hub = this.registryInstance?.get(docId);
     if (hub) hub.clearReadOnly();
     else this.store.updateDocMeta(docId, { readOnlyReason: null });
+  }
+
+  setProjectRole(projectId: string, role: Role): void {
+    for (const hub of this.registry.hubs()) if (hub.getMeta().projectId === projectId) hub.setRole(role);
+    this.store.setProjectRole(projectId, role);
+  }
+
+  /** Rejoining is explicit authorization; stale unacknowledged edits stay in recovery. */
+  restoreProjectAccess(projectId: string, role: Role): void {
+    for (const docId of this.store.projectDocIds(projectId)) {
+      const hub = this.acquire(docId);
+      try { hub.restoreAccess(role); }
+      finally { this.release(docId); }
+    }
+    this.setProjectRole(projectId, role);
   }
 }

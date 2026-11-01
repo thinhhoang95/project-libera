@@ -19,6 +19,12 @@
         "--webpack"
       ],
       "port": 3000
+    },
+    {
+      "name": "isolated-test",
+      "runtimeExecutable": "/private/tmp/claude-501/-Volumes-CrucialX-project-libera/a01d1348-7cfd-41e8-932b-553007bb64cd/scratchpad/run.sh",
+      "runtimeArgs": [],
+      "port": 3100
     }
   ]
 }

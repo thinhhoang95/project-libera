@@ -15,7 +15,9 @@ import path from "node:path";
 
 import type { Reconciliation } from "../../../src/lib/collab/local-api";
 import type { DocKind, ManifestEntryKind, ProjectKind } from "../../../src/lib/collab/protocol/schema";
-import { SHARED_MARKER_FILE, SHARE_PENDING_FILE, STATE_DIRECTORY, readIfExists, writeFileAtomic } from "./fs-ops";
+import { manifestPathError } from "../../../src/lib/collab/protocol/schema";
+import { MAX_MARKER_BYTES, parseNotebookMarker } from "../../../src/lib/collab/local-notebook-state";
+import { SHARED_MARKER_FILE, SHARE_PENDING_FILE, STATE_DIRECTORY, checkWriteGuard, readIfExists, sha256, writeFileAtomic, type WriteGuard } from "./fs-ops";
 
 export interface SharedMarker {
   projectId: string;
@@ -92,6 +94,11 @@ export function isStaleCopy(record: LayoutRecord, hash: string, mtimeMs: number)
   return record.previous.some((item) => item.hash === hash && Math.abs(item.mtimeMs - mtimeMs) <= MTIME_SLACK_MS);
 }
 
+/** Older unexplained bytes (including equal/coarse mtimes) need user intent. */
+export function isUncertainCopy(record: LayoutRecord, hash: string, mtimeMs: number): boolean {
+  return record.hash !== undefined && hash !== record.hash && record.mtimeMs !== undefined && mtimeMs <= record.mtimeMs;
+}
+
 export interface ProjectState {
   version: 1;
   layout: Record<string, LayoutRecord>;
@@ -102,8 +109,8 @@ function stateDirectory(root: string): string {
   return path.join(root, ...STATE_DIRECTORY);
 }
 
-async function writeJson(target: string, value: unknown): Promise<void> {
-  await writeFileAtomic(target, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"));
+async function writeJson(target: string, value: unknown, guard?: WriteGuard): Promise<void> {
+  await writeFileAtomic(target, Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"), guard);
 }
 
 async function readJson<T>(target: string): Promise<T | null> {
@@ -117,13 +124,14 @@ async function readJson<T>(target: string): Promise<T | null> {
 }
 
 export async function readMarker(root: string): Promise<SharedMarker | null> {
-  const value = await readJson<SharedMarker>(path.join(root, SHARED_MARKER_FILE));
-  if (!value || typeof value.projectId !== "string" || typeof value.manifestDocId !== "string") return null;
-  return value;
+  const file = path.join(root, SHARED_MARKER_FILE);
+  const stats = await fs.lstat(file).catch(() => null);
+  if (!stats?.isFile() || stats.isSymbolicLink() || stats.size > MAX_MARKER_BYTES) return null;
+  return parseNotebookMarker(await readJson<unknown>(file));
 }
 
-export async function writeMarker(root: string, marker: SharedMarker): Promise<void> {
-  await writeJson(path.join(root, SHARED_MARKER_FILE), marker);
+export async function writeMarker(root: string, marker: SharedMarker, guard?: WriteGuard): Promise<void> {
+  await writeJson(path.join(root, SHARED_MARKER_FILE), marker, guard);
 }
 
 export async function deleteMarker(root: string): Promise<void> {
@@ -134,14 +142,49 @@ export function emptyState(): ProjectState {
   return { version: 1, layout: {}, reconciliations: [] };
 }
 
-export async function readState(root: string): Promise<ProjectState> {
-  const value = await readJson<ProjectState>(path.join(stateDirectory(root), "state.json"));
-  if (!value || value.version !== 1 || typeof value.layout !== "object") return emptyState();
-  return { version: 1, layout: value.layout ?? {}, reconciliations: Array.isArray(value.reconciliations) ? value.reconciliations : [] };
+export async function readState(root: string, guard?: WriteGuard): Promise<ProjectState> {
+  const file = path.join(stateDirectory(root), "state.json");
+  const bytes = await readIfExists(file);
+  if (!bytes) return emptyState();
+  let value: unknown;
+  try { value = JSON.parse(bytes.toString("utf8")); } catch { /* Preserve the unreadable input below. */ }
+  if (validState(value)) return value;
+  // Keep the exact bytes before rebuilding an uncertain baseline. Creating a
+  // sibling never recreates a missing root, and never overwrites an earlier copy.
+  if (guard) {
+    await checkWriteGuard(guard);
+    await fs.writeFile(`${file}.invalid-${sha256(bytes).slice(0, 16)}`, bytes, { flag: "wx" }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+  }
+  return emptyState();
 }
 
-export async function writeState(root: string, state: ProjectState): Promise<void> {
-  await writeJson(path.join(stateDirectory(root), "state.json"), state);
+const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const hashValue = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+function validState(value: unknown): value is ProjectState {
+  if (!plain(value) || value.version !== 1 || !plain(value.layout) || !Array.isArray(value.reconciliations)) return false;
+  const entries = Object.entries(value.layout);
+  if (entries.length > 50_000 || value.reconciliations.length > 50_000) return false;
+  for (const [fileId, record] of entries) {
+    if (!safeId(fileId) || !plain(record) || typeof record.path !== "string" || manifestPathError(record.path) !== null ||
+        !["doc", "blob", "folder"].includes(String(record.kind))) return false;
+    if (record.kind === "doc" && (!safeId(record.docId) || !["markdown", "latex", "text"].includes(String(record.docKind)))) return false;
+    if (record.hash !== undefined && !hashValue(record.hash)) return false;
+    for (const key of ["size", "mtimeMs"]) if (record[key] !== undefined && !finite(record[key])) return false;
+    if (record.previous !== undefined && (!Array.isArray(record.previous) || record.previous.length > MAX_PREVIOUS ||
+        !record.previous.every((item: unknown) => plain(item) && hashValue(item.hash) && finite(item.mtimeMs)))) return false;
+  }
+  return value.reconciliations.every((item: unknown) => plain(item) && safeId(item.id) && safeId(item.docId) &&
+    typeof item.path === "string" && manifestPathError(item.path) === null && finite(item.detectedAt) &&
+    [item.shared, item.disk, item.base].every((part) => typeof part === "string"));
+}
+
+export async function writeState(root: string, state: ProjectState, guard?: WriteGuard): Promise<void> {
+  await writeJson(path.join(stateDirectory(root), "state.json"), state, guard);
 }
 
 function baseFile(root: string, docId: string): string {
@@ -153,8 +196,8 @@ export async function readBase(root: string, docId: string): Promise<string | nu
   return bytes ? bytes.toString("utf8") : null;
 }
 
-export async function writeBase(root: string, docId: string, text: string): Promise<void> {
-  await writeFileAtomic(baseFile(root, docId), Buffer.from(text, "utf8"));
+export async function writeBase(root: string, docId: string, text: string, guard?: WriteGuard): Promise<void> {
+  await writeFileAtomic(baseFile(root, docId), Buffer.from(text, "utf8"), guard);
 }
 
 export async function deleteBase(root: string, docId: string): Promise<void> {

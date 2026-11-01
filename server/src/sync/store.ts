@@ -8,7 +8,7 @@ import type { Kysely } from "kysely";
 import * as Y from "yjs";
 
 import type { DB } from "../db/types.js";
-import type { Actor, DocKind, ProjectKind, Provenance, Subdoc } from "../protocol.js";
+import type { Actor, DocKind, ProjectKind, Provenance, Role, Subdoc } from "../protocol.js";
 
 export type DocumentKind = DocKind | "manifest";
 
@@ -109,6 +109,14 @@ export interface PersistInput {
   update: Uint8Array;
   /** File documents removed by this manifest update, tombstoned in the same transaction. */
   removedDocIds?: string[];
+  /** Client updates are validated for this role; lock it through commit. */
+  requiredAccess?: { projectId: string; role: Role };
+}
+
+export class UpdateAccessChangedError extends Error {
+  constructor() {
+    super("Your notebook access changed before the update could be saved.");
+  }
 }
 
 /**
@@ -119,6 +127,15 @@ export interface PersistInput {
  */
 export async function persistUpdate(db: Kysely<DB>, input: PersistInput): Promise<number | null> {
   return db.transaction().execute(async (trx) => {
+    if (input.requiredAccess) {
+      const member = await trx.selectFrom("memberships").select("role")
+        .where("project_id", "=", input.requiredAccess.projectId)
+        .where("account_id", "=", input.accountId!)
+        .forShare().executeTakeFirst();
+      // UPDATE/DELETE of this membership must wait for our transaction.
+      // A change that already committed is rejected before writing a seq.
+      if (member?.role !== input.requiredAccess.role) throw new UpdateAccessChangedError();
+    }
     const row = await trx
       .updateTable("documents")
       .set((eb) => ({ last_server_seq: eb("last_server_seq", "+", 1) }))

@@ -918,6 +918,14 @@ export class HostStore {
     };
   }
 
+  projectDocIds(projectId: string): string[] {
+    return this.all(`SELECT doc_id FROM doc_meta WHERE project_id = ?`, projectId).map((row) => String(row.doc_id));
+  }
+
+  setProjectRole(projectId: string, role: Role): void {
+    this.run(`UPDATE doc_meta SET role = ? WHERE project_id = ?`, role, projectId);
+  }
+
   updateDocMeta(
     docId: string,
     patch: Partial<Pick<DocMetaRow, "projectId" | "kind" | "schemaVersion" | "role" | "lastOpenedAt" | "readOnlyReason">>,

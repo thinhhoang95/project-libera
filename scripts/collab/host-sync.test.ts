@@ -640,6 +640,28 @@ test("awareness from replicas goes to the server and remote awareness to replica
   }
 });
 
+test("a missing acknowledgement retries identical bytes on a healthy connection", async () => {
+  const clock = new ManualClock();
+  const s = setup({ clock, pingIntervalMs: 1000 });
+  try {
+    await connected(s.client, s.hub);
+    s.server.dropNext = 1;
+    type(s.hub, "retry after a failed save");
+    clock.advance(50);
+    await settle();
+    assert.equal(s.server.updates().length, 1);
+    assert.equal(s.hub.pendingCount, 1);
+    for (let index = 0; index < 16; index += 1) { clock.advance(1000); await settle(); }
+    const messages = s.server.updates();
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1].clientSeq, messages[0].clientSeq);
+    assert.deepEqual(messages[1].update, messages[0].update);
+    assert.equal(s.hub.pendingCount, 0);
+    assert.equal(s.server.text("d1"), "retry after a failed save");
+    assert.equal(s.client.connected, true);
+  } finally { s.close(); }
+});
+
 test("updates are only sent once per connection even when reopened", async () => {
   const s = setup();
   try {
