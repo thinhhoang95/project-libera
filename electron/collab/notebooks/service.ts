@@ -546,7 +546,15 @@ export class NotebookServiceImpl implements NotebookService {
       if (error instanceof ApiClientError && (error.status === 404 || error.status === 403)) {
         const notebook = path.basename(root);
         this.unjoined.set(root, { notebook, projectId: marker.projectId, status: error.status });
-        this.logger.warn(`Shared notebook folder ${notebook} is for a notebook this account cannot open (${error.message}); it is left alone.`, root);
+        // 404: the project was taken down, or this account lost access, while
+        // the installation that writes the folder was away. Nothing would
+        // ever clear the marker then, so it is marked revoked like a lost
+        // share: the folder stays as a read-only copy that can be deleted.
+        const revoked = error.status === 404 && (await this.revokeOrphanMarker(root, marker));
+        this.logger.warn(
+          `Shared notebook folder ${notebook} is for a notebook this account cannot open (${error.message}); ${revoked ? "it is kept as a read-only copy" : "it is left alone"}.`,
+          root,
+        );
       }
       return;
     }
@@ -558,6 +566,19 @@ export class NotebookServiceImpl implements NotebookService {
     await this.run(handle);
     this.deps.emit({ t: "project-changed", projectId: project.id });
     this.deps.statusChanged?.();
+  }
+
+  /** Marks the marker of a project the server no longer has revoked, unless the folder holds another marker by now. */
+  private async revokeOrphanMarker(root: string, marker: SharedMarker): Promise<boolean> {
+    const current = await readMarker(root).catch(() => null);
+    if (!current || current.projectId !== marker.projectId || current.revoked) return false;
+    return writeMarker(root, { ...current, revoked: true, revokedAt: new Date().toISOString() }).then(
+      () => true,
+      (error: unknown) => {
+        this.logger.warn(`Could not mark the marker of ${path.basename(root)} revoked.`, error);
+        return false;
+      },
+    );
   }
 
   private context(): ProjectContext {
@@ -774,25 +795,28 @@ export class NotebookServiceImpl implements NotebookService {
           if (!gone) throw error;
         }
       }
-      await this.removeLocally(handle);
+      await this.removeLocally(handle, { takenDown: true });
     });
   }
 
   /**
    * After the project was deleted on the server: stops syncing and forgets
    * it. The writer returns the folder to a local notebook; a follower leaves
-   * the folder to its writer, which sees the deletion too.
+   * the folder to its writer, which sees the deletion too. A follower that
+   * took the project down removes the marker itself: the writer may be a
+   * device that is off, and until it returns the folder could not be
+   * changed or deleted anywhere.
    */
-  private async removeLocally(handle: ProjectHandle): Promise<void> {
+  private async removeLocally(handle: ProjectHandle, { takenDown = false } = {}): Promise<void> {
     const { projectId } = handle;
     await handle.runtime?.stop();
     handle.runtime = null;
-    if (handle.writer) {
-      await deleteSharePlan(handle.root);
+    if (handle.writer) await deleteSharePlan(handle.root);
+    if (handle.writer || takenDown) {
       // The folder may meanwhile hold another share's marker (shared again,
       // or synced in from another device); that one stays.
       const marker = await readMarker(handle.root).catch(() => null);
-      if (marker && this.ownsMarker(marker, projectId)) await deleteMarker(handle.root);
+      if (marker && marker.projectId === projectId && (takenDown || this.ownsMarker(marker, projectId))) await deleteMarker(handle.root);
     }
     this.deps.host.store.deleteProject(projectId);
     this.projects.delete(projectId);

@@ -93,15 +93,21 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       assert.equal(readMarkerFile(root).writer, alice.host.installationId);
     });
 
-    await t.test("folders this host cannot use are left alone, with a clear error", async () => {
-      // A marker for this account whose project the server will not open.
+    await t.test("folders this host cannot use are not adopted; a project the server no longer has leaves a read-only copy", async () => {
+      // A marker for this account whose project the server will not open
+      // (taken down, or access lost, while its writer was away).
       const ghost = path.join(library, "Ghost");
       mkdirSync(ghost);
       const ghostMarker: SharedMarker = { projectId: "prj_ghost", serverUrl: server.url, accountId: aliceAuth.account.id, manifestDocId: "doc_ghost", sharedAt: new Date().toISOString(), writer: "inst_elsewhere", folderId: "fld_ghost" };
       writeFileSync(path.join(ghost, MARKER), JSON.stringify(ghostMarker));
-      await until(() => twin.service.unjoinedFolders().some((folder) => folder.notebook === "Ghost" && folder.status === 404), "the ghost folder to be reported");
+      // Whichever installation looks first marks it; the other then skips a revoked marker.
+      await until(() => readMarkerFile(ghost).revoked === true, "the ghost marker to be marked revoked");
+      assert.ok([alice, twin].some((peer) => peer.service.unjoinedFolders().some((folder) => folder.notebook === "Ghost" && folder.status === 404)), "the ghost folder is reported");
+      assert.equal(alice.host.store.getProject("prj_ghost"), null);
       assert.equal(twin.host.store.getProject("prj_ghost"), null);
-      assert.deepEqual(JSON.parse(readFileSync(path.join(ghost, MARKER), "utf8")), ghostMarker);
+      const { revokedAt, ...rest } = readMarkerFile(ghost);
+      assert.deepEqual(rest, { ...ghostMarker, revoked: true });
+      assert.ok(revokedAt);
 
       // Another account on the same folder: not adopted, and writes say why.
       const bob = await makePeer(temp.dir, "bob", server, bobAuth, { library, leaseTtlMs: LEASE_TTL_MS });
@@ -168,7 +174,7 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       await until(() => sharedText(carol, "Diary/day.md") === "alone, offline\n", "the signed-out writer to keep taking in disk edits");
     });
 
-    await t.test("a takedown from the follower returns the writer's folder to a local notebook", async () => {
+    await t.test("a takedown from the follower returns the folder to a local notebook at once", async () => {
       await closePeer(alice);
       peers.splice(peers.indexOf(alice), 1);
       alice = await makePeer(temp.dir, "alice", server, aliceAuth, { library, leaseTtlMs: LEASE_TTL_MS });
@@ -177,8 +183,9 @@ test("a synced notebook folder is adopted, followed and handed over between inst
       const removed = await alice.router.call("DELETE", ControlRoutes.project(projectId));
       assert.equal(removed.status, 204, JSON.stringify(removed.body));
       assert.deepEqual(alice.service.localProjects(), []);
-      await until(() => !existsSync(path.join(root, MARKER)), "the writer to remove the marker");
-      assert.deepEqual(twin.service.localProjects(), [], "the writer forgets the project instead of keeping it revoked");
+      // Removed by the follower that took it down, without waiting for the writer (which may be a device that is off).
+      assert.equal(existsSync(path.join(root, MARKER)), false, "the marker is gone when the takedown returns");
+      await until(() => twin.service.localProjects().length === 0, "the writer to forget the project instead of keeping it revoked");
       assert.equal(twin.host.store.getProject(projectId), null);
       assert.equal(readText(root, "note.md"), "edited on disk after the handover\n", "the files stay");
     });
