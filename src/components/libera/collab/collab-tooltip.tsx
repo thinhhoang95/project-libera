@@ -59,7 +59,7 @@ export function CollabTooltip({
       {position && typeof document !== "undefined"
         ? createPortal(
             <div
-              className="pointer-events-none fixed z-[110] max-w-72 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed text-foreground shadow-lg"
+              className="pointer-events-none fixed z-[110] max-w-72 whitespace-normal break-words rounded-md border border-border bg-card px-2.5 py-1.5 text-xs leading-relaxed text-foreground shadow-lg"
               id={id}
               role="tooltip"
               style={position}

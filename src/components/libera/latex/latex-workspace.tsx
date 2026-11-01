@@ -520,6 +520,7 @@ export function LatexWorkspace({ tab, files, fontFamily, fontSizePx, lineHeight,
               onSnippetDialog={setSnippetDialog}
               missingInMainFile={missingInMainFile}
               onNotice={setNotice}
+              fontSizePx={fontSizePx}
             />
           </>
         ) : (

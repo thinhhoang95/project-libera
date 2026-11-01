@@ -17,6 +17,8 @@ import {
 import type { LatexEditorHandle } from "./latex-editor";
 import type { LatexSnippetDialogRequest } from "./latex-snippet-dialog";
 import { deleteLatexSnippet, useLatexSnippets } from "./latex-snippets-store";
+import { MarkdownDisplayZoom } from "../markdown-display-zoom";
+import { useMarkdownDisplayPreferences } from "../markdown-display-preferences";
 import { nativeMenuPointBelow, popupNativeMenu, type NativeMenuEntry } from "../native-menu";
 import { TABLE_GRID_MENU_WIDTH, TableGridPicker } from "../table-grid-picker";
 import { ToolbarMenu } from "../toolbar-menu";
@@ -37,12 +39,15 @@ type LatexInsertToolbarProps = {
   /** Of packages this file could not load (it has no preamble), those the main file lacks too. */
   missingInMainFile: (packages: string[]) => Promise<string[]>;
   onNotice: (message: string) => void;
+  /** The editor's text size, already scaled by the shared text zoom. */
+  fontSizePx: number;
 };
 
 /** Insert tools for .tex files, shown in the LaTeX toolbar after Recompile:
  * formatting, structure, math, floats, code, references, bibliography and
  * saved snippets. Their menus are native ones, except the table size grid. */
-export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice }: LatexInsertToolbarProps) {
+export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, missingInMainFile, onNotice, fontSizePx }: LatexInsertToolbarProps) {
+  const { preferences: { textScale }, updatePreferences } = useMarkdownDisplayPreferences();
   const [open, setOpen] = useState<MenuId | null>(null);
   const anchors = useRef(new Map<MenuId, HTMLButtonElement>());
   const anchorRef = useMemo(() => ({ get current() { return open ? anchors.current.get(open) ?? null : null; } }), [open]);
@@ -265,6 +270,11 @@ export function LatexInsertToolbar({ editorRef, projectFiles, onSnippetDialog, m
         {snippets.length ? <span className="rounded bg-muted px-1 text-[10px] tabular-nums">{snippets.length}</span> : null}
         <ChevronDown aria-hidden className="h-3 w-3 opacity-70" />
       </button>
+      {separator}
+      {/* Text size and line height share the Markdown zoom, as the editor already follows it. */}
+      <span className="px-1">
+        <MarkdownDisplayZoom compact markdownBaseFontSize={fontSizePx / (textScale / 100)} markdownZoom={textScale} onMarkdownZoomChange={(zoom) => updatePreferences({ textScale: zoom })} />
+      </span>
 
       {open === "table" ? (
         <ToolbarMenu anchorRef={anchorRef} label="Insert table" width={TABLE_GRID_MENU_WIDTH} onClose={close}>
