@@ -7,7 +7,7 @@ import Underline from "@tiptap/extension-underline";
 import Image from "@tiptap/extension-image";
 import { TextStyle, FontSize, LineHeight, Color } from "@tiptap/extension-text-style";
 import { TableKit } from "@tiptap/extension-table";
-import { TaskList, TaskItem } from "@tiptap/extension-list";
+import { ListItem, TaskList, TaskItem } from "@tiptap/extension-list";
 import Link from "@tiptap/extension-link";
 import { MARKDOWN_HIGHLIGHT_COLORS } from "./markdown-colors";
 import { markdownTextStyleAttributes } from "./markdown-text-styles";
@@ -159,6 +159,20 @@ const LiberaLink = Link.extend({
   },
 });
 
+// In a tight list, text that continues an item after display math (`- a:\n
+// \[x\]\n  b`) is a second text token. Tiptap reads only the first as the
+// item's paragraph and leaves the rest as bare text, which ProseMirror rejects
+// (a paste of it fell back to literal Markdown). Read every one as a paragraph.
+const LiberaListItem = ListItem.extend({
+  parseMarkdown(token, helpers) {
+    const children = token.tokens ?? [];
+    if (children.slice(1).some((child) => child.type === "text")) {
+      token = { ...token, tokens: children.map((child) => child.type === "text" ? { ...child, type: "paragraph", tokens: child.tokens ?? [{ type: "text", raw: child.raw, text: child.text }] } : child) };
+    }
+    return this.parent?.(token, helpers);
+  },
+});
+
 // Typing ```libera-macro (or any language with a hyphen or digit) starts a code block.
 const LiberaCodeBlock = CodeBlock.extend({
   addInputRules() {
@@ -181,7 +195,8 @@ export type MarkdownExtensionOptions = {
 
 export function createMarkdownExtensions(documentPath: string, options: MarkdownExtensionOptions = {}) {
   return [
-    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, codeBlock: false }),
+    StarterKit.configure({ link: false, trailingNode: false, underline: false, blockquote: false, codeBlock: false, listItem: false }),
+    LiberaListItem,
     // The language attribute keeps the whole info string (`html live`), so it round-trips.
     LiberaCodeBlock.extend(options.codeBlockNodeView ? { addNodeView: () => options.codeBlockNodeView! } : {}),
     LiberaLink.configure({ openOnClick: false }),

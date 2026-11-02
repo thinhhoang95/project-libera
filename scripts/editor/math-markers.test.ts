@@ -56,6 +56,24 @@ test('math works in lists, blockquotes and tables', () => {
   assert.equal(nodes(renderTree(source), 'math').length, 1);
 });
 
+test('text continuing a tight list item after display math stays in a paragraph', () => {
+  // An AI Chat reply: pasting it threw "Invalid content for node listItem".
+  const source = '- Pairs scale as:\n  \\[\n  P \\sim \\varepsilon^2\n  \\]\n  Similarly, triples scale as $\\varepsilon^3$.\n- Next';
+  const [InlineMath, BlockMath] = createMathExtensions(settings);
+  const editor = new Editor({ extensions: [...createMarkdownExtensions(''), InlineMath, BlockMath], content: 'x', contentType: 'markdown' });
+  try {
+    for (const json of [manager.parse(source), editor.markdown!.parse(source)]) {
+      const item = nodes(json, 'listItem')[0];
+      assert.deepEqual(item.content!.map(node => node.type), ['paragraph', 'blockMath', 'paragraph']);
+      assert.deepEqual(item.content![2].content!.map(node => node.type), ['text', 'inlineMath', 'text']);
+      editor.schema.nodeFromJSON(json).check();
+    }
+    assert.equal(editor.commands.insertContentAt(editor.state.doc.content.size, editor.markdown!.parse(source).content!), true);
+  } finally {
+    editor.destroy();
+  }
+});
+
 test('preferences survive JSON storage, reject invalid markers and allow disabling math', () => {
   assert.deepEqual(normalizeMarkdownPreferences(JSON.parse(JSON.stringify(settings))).inlineMathMarkers, settings.inlineMathMarkers);
   assert.throws(() => normalizeMarkdownPreferences({ inlineMathMarkers: 'one' }));
