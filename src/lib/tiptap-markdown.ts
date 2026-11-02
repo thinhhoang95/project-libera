@@ -169,7 +169,7 @@ const LiberaListItem = ListItem.extend({
     if (children.slice(1).some((child) => child.type === "text")) {
       token = { ...token, tokens: children.map((child) => child.type === "text" ? { ...child, type: "paragraph", tokens: child.tokens ?? [{ type: "text", raw: child.raw, text: child.text }] } : child) };
     }
-    return this.parent?.(token, helpers);
+    return ListItem.config.parseMarkdown?.(token, helpers) ?? [];
   },
 });
 
