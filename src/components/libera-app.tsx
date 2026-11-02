@@ -271,6 +271,7 @@ export function LiberaApp({
     readTabDraft: workspace.readOpenTabDraft,
     syncTabFromDisk: workspace.syncTabFromDisk,
     restoreTabAfterUndo: workspace.restoreTabAfterUndo,
+    replaceTabFromDisk: workspace.replaceTabFromDisk,
     refreshAfterChanges: workspace.refreshAfterAgentChanges,
     openFile: (path) => {
       const file = workspace.files.find((item) => item.path === path);

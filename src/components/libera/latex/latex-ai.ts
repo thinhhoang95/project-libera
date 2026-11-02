@@ -35,7 +35,7 @@ export function cancelLatexAi(view: EditorView) {
  * of applied hunks (plan M3.4): collaborators see it, and accepting it is a
  * server decision.
  */
-export async function runLatexAi(view: EditorView, action: AiChangeSource, range: { from: number; to: number }, prompt: string, onError: (message: string) => void, documentPath?: string) {
+export async function runLatexAi(view: EditorView, action: Exclude<AiChangeSource, "agent">, range: { from: number; to: number }, prompt: string, onError: (message: string) => void, documentPath?: string) {
   if (isLatexAiWorking(view)) return;
   const id = `latex-ai-${++requestCounter}`;
   const length = view.state.doc.length;

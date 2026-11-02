@@ -5,6 +5,7 @@ import { TiptapChanges } from "@/lib/tiptap-changes";
 import { TiptapChangeBar } from "./tiptap-change-bar";
 import { useTiptapDraft, TIPTAP_DRAFT_DELAY_MS } from "./use-tiptap-draft";
 import { useTiptapReview } from "./use-editor-review";
+import { useTiptapAgentReview } from "./use-tiptap-agent-review";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { MarkdownSelectionLinkOption, MarkdownTabViewState, PendingVisualInsertion } from "@/components/libera/types";
 import { convertClipboardHtmlToMarkdown, writeMarkdownClipboard } from "@/lib/markdown-clipboard";
@@ -399,6 +400,8 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const sharedSuggestions = useCallback(() => sharedRef.current?.suggestions ?? null, []);
   const { read: readMarkdown, replace: replaceMarkdown, pending: pendingDraftRef } = useTiptapDraft(editor, value, lastValue, onChange, onRegisterDraft, sharedDraft);
   useTiptapReview(editor, lastValue, readMarkdown, replaceMarkdown);
+  // Shared tabs review the agent's changes as suggestions instead.
+  useTiptapAgentReview(editor, collab || untitled ? null : documentPath, lastValue);
 
   useMarkdownHeadingIndex(value, (markdown, offsets) => {
     headingIndexRef.current = { markdown, offsets };

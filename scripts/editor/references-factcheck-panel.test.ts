@@ -52,7 +52,7 @@ test("a fact-check request opens the AI panel and starts an Agent run with the s
   const render = (collapsed: boolean) => root.render(createElement(DocumentChatPanel, {
     activeTab: draft, tabs: [draft], files: [draft.file], collapsed, mathMarkers: {},
     onCollapsedChange: (value: boolean) => { collapsedChanges.push(value); }, onCreateDraft: () => undefined,
-    agentWorkspace: { notebook: "Research", readTabDraft: () => null, syncTabFromDisk: async () => null, restoreTabAfterUndo: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined },
+    agentWorkspace: { notebook: "Research", readTabDraft: () => null, syncTabFromDisk: async () => null, restoreTabAfterUndo: () => undefined, replaceTabFromDisk: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined },
   }));
   try {
     // The panel is closed and in Chat mode with an earlier conversation.

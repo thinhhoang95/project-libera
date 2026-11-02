@@ -57,6 +57,7 @@ test("chats respond in parallel: a new chat runs while another streams, and file
     readTabDraft: () => "# Plan",
     syncTabFromDisk: async () => ({ content: "# Plan", keptDraft: false }),
     restoreTabAfterUndo: () => undefined,
+    replaceTabFromDisk: () => undefined,
     refreshAfterChanges: async () => undefined,
     openFile: () => undefined,
   };

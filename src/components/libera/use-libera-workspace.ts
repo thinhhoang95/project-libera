@@ -1454,6 +1454,21 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
   }
 
   /**
+   * Manual review rejected the agent's changes and wrote the file's baseline
+   * to disk. The baseline already holds the user's own edits made while
+   * reviewing, so the tab takes it as both draft and saved copy.
+   */
+  function replaceTabFromDisk(path: string, content: string, expectedDraft?: string | null) {
+    const tab = tabs.find((item) => item.id === path && !item.untitled);
+    if (!tab || !mayTakeContentFromDisk(tab.id, isSharedTab)) return;
+    const draft = readOpenTabDraft(path);
+    const follow = expectedDraft === undefined || draft === expectedDraft || draft === content;
+    if (follow) rememberTabDraft(path, content);
+    updateTab(path, (current) => ({ ...current, saved: content, draft: follow ? content : draft ?? current.draft,
+      status: (follow ? content : draft) === content ? "clean" : "dirty", error: undefined }));
+  }
+
+  /**
    * A citation key rewrite reaching an open tab (Update citations in the
    * References panel): the live draft gets the same rewrite, and the saved
    * copy too when the file on disk was rewritten. Returns the draft before and
@@ -4504,6 +4519,7 @@ export function useLiberaWorkspace(initialAuthenticated: boolean) {
       readOpenTabDraft,
       syncTabFromDisk,
       restoreTabAfterUndo,
+      replaceTabFromDisk,
       applyCitationRewriteToTab,
       revertCitationRewriteInTab,
       refreshAfterAgentChanges,

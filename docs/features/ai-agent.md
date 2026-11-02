@@ -25,6 +25,8 @@ In Agent mode, the picker next to the switch sets what the agent may change:
 
 Next to the picker, **Allow web search** lets the agent look things up on the web (see WebSearch below). It is off by default, remembered like the mode, and sent with each request; the line above the composer says "Web search on" while it is.
 
+Beside it, **Manual review** has you review the agent's changes one by one (see [Manual review](#manual-review)). It works the same way: off by default, remembered, sent with each request, and "Manual review on" in the line above the composer. It is unavailable in Read Only, which changes nothing, and in shared notebooks, where changes are always suggestions.
+
 The current notebook is the one holding the file you are viewing, or the notebook selected in the sidebar. The system prompt and the tools the model receives match the permission: in Read Only the agent has no editing tools at all, and every write is checked again on the server.
 
 Only Markdown, LaTeX and plain-text files can be written. Hidden folders, `_assets` and `_archive` are never written, and paths are resolved through symlinks so nothing outside the notebook can be reached.
@@ -173,6 +175,20 @@ Review comments are not part of a run's undo; delete or resolve them in the Comm
 
 Before the agent first changes a file in a run, Libera keeps the original in `users/admin/.libera/agent-runs/` (the 200 most recent runs, for up to 60 days). **Undo** restores one file or, with **Undo all**, the whole run; files the run created are removed. A file you edited after the agent is left alone and reported. Regenerating or editing an earlier message is blocked while later replies have changes that are not undone.
 
+## Manual review
+
+With **Manual review** on, the agent still edits files as it works, so it can read back and build on its own changes, but every change waits for you, Cursor style:
+
+- **Baseline.** Before the agent first writes a file in a run, Libera keeps the text it started from (your unsaved draft, if any) as the file's review baseline. The changes to review are the difference between the baseline and the file's text now. A later run that changes a file still under review keeps the first baseline, so its changes join the ones you have not reviewed yet.
+- **In the editor.** An open file shows each changed passage the way AI Rewrite does: removed text struck through above or before the new text, with **Accept** and **Reject**. A bar at the bottom moves between changes and has **Accept all** and **Reject all** (⌘/Ctrl+Shift+Enter and ⌘/Ctrl+Shift+Backspace). This works in the Visual and Source Markdown editors, the LaTeX editor and the plain-text editor. Rejecting puts the original back in the editor as an ordinary, undoable edit; save the tab as usual. Text the agent changes again while the file is open is compared with the baseline again.
+- **In the AI panel.** Above the message box, **N files to review** lists each file with lines added and removed (counted against an open tab's live text). Click a file to open it; the ✓ and ✕ beside it accept or reject all of its changes, and **Accept all** and **Reject all** do so for every file. Rejecting there writes the baseline to disk at once and updates an open tab; a file the agent created is removed.
+- **Your own edits.** Typing outside the agent's changes while reviewing moves the baseline along, so your edits are never shown or rejected as the agent's. Editing inside a change in the Visual editor accepts it.
+- **When a file is done.** A file leaves review when its text on disk is its baseline again (after rejecting and saving, or when every change is accepted) or when it is removed. The list hides a file whose open tab is back at its baseline; if you close it without saving, the file is listed again.
+- **Undo.** Undo and **Undo all** on a run still restore its files from the run's snapshots; files that end up at their baseline leave review.
+- **Concurrent changes.** Decisions check the review version and the text on disk. If another window or an agent write changed either, refresh and review the newer changes before deciding again. Failed baseline saves remain pending; whole-file rejection waits for them so it cannot discard your edits.
+
+The agent is told that manual review is on, so it keeps edits focused and avoids reformatting text it was not asked to change. Every way the agent writes a note goes through review: Edit, Write and the python-results skill's sidecar and figure updates (the figure images themselves are new files in `_assets`, not text). Review baselines are kept in the app's state folder (`users/admin/.libera/agent-review/`, one file per reviewed path), never in a notebook, and they survive restarts.
+
 ## Shared notebooks
 
 In a shared notebook every file is a working copy of a shared document, and the agent never edits it, directly or on disk. **Its Edit and Write become suggestions**: overlay suggestions on the shared document with an AI actor acting for you (`{kind: "ai", feature: "agent", onBehalfOf: you, model, runId}`), created through Libera's collaboration service. Collaborators see them at once as **AI · on behalf of you**, inline in their editors and in the Suggestions panel, and the text changes only when someone who may decide (an editor or owner) accepts them. Edits from one tool call are one group, accepted or rejected together.
@@ -210,6 +226,7 @@ Agent mode uses the chat model picker and reasoning effort. The model must suppo
 - `src/lib/agent/skills/`: the skill registry and each skill. `src/lib/agent/review-comments.ts` parses, maps and places `:::comment` blocks; `addReviewThreads` in `src/lib/storage/markdown-reviews.ts` saves them.
 - `src/lib/agent/subagents.ts` (child runs), `web-search.ts` (WebSearch) and `suggest-edit.ts` (SuggestEdit and its finish pass). Agent suggestions live in `ReviewDocument.agentSuggestions` (`src/lib/markdown-review.ts`, which also documents how they map onto the collaboration `SuggestionRecord`); `addAgentSuggestions` saves them, and the review route's `agent-decision` and `agent-revision` actions decide them.
 - `src/app/api/agent/route.ts` streams the run as NDJSON events; `src/app/api/agent/undo/route.ts` restores files.
+- Manual review: `src/lib/agent/review-store.ts` keeps baselines (recorded in `writeAgentFile`) and `src/app/api/agent/review/route.ts` lists, updates, accepts and rejects them. In the window, `src/lib/agent-review/store.ts` mirrors them; `src/lib/agent-review/codemirror.ts` (CodeMirror editors, on the hunks of `src/lib/latex/codemirror/review.ts`) and `src/components/libera/use-tiptap-agent-review.ts` (Visual, the `retrack` meta of `src/lib/tiptap-changes.ts`) show them; `agent-review-strip.tsx` is the list in the AI panel.
 - `src/components/libera/agent-activity.tsx` renders a run; `document-chat-panel.tsx` holds the mode switch.
 
 ## Checks

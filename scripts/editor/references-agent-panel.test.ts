@@ -57,7 +57,7 @@ test("Agent mode: the web search toggle persists and is sent; child runs and sug
   const plan = { id: "Research/plan.md", file: { name: "plan.md", path: "Research/plan.md", notebook: "Research", fileType: "markdown" }, draft: "# Plan", saved: "# Plan", status: "clean" } as OpenTab;
   const bridge: AgentWorkspaceBridge = {
     notebook: "Research", readTabDraft: () => "# Plan", syncTabFromDisk: async () => ({ content: "# Plan", keptDraft: false }),
-    restoreTabAfterUndo: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined,
+    restoreTabAfterUndo: () => undefined, replaceTabFromDisk: () => undefined, refreshAfterChanges: async () => undefined, openFile: () => undefined,
   };
   const host = document.getElementById("root")!;
   const root = createRoot(host);

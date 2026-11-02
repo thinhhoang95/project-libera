@@ -32,6 +32,7 @@ import type { SharedCodeMirrorSource } from "@/lib/collab/bindings/react-codemir
 import { relocateLatexCitation, type CitationSnippet } from "@/lib/references/occurrences";
 import { LatexAiMenu, type LatexAiMenuState } from "./latex-ai-menu";
 import { LatexChangeBar } from "./latex-change-bar";
+import { agentReviewCodeMirror } from "@/lib/agent-review/codemirror";
 import { getLatexSnippets } from "./latex-snippets-store";
 
 export type LatexEditorHandle = {
@@ -123,7 +124,7 @@ export function LatexEditor({
   const [menu, setMenu] = useState<LatexAiMenuState | null>(null);
   const [hunks, setHunks] = useState<ReviewHunk[]>([]);
   const [view, setView] = useState<EditorView | null>(null);
-  const initialRef = useRef({ value, initialViewState, fileName, collab });
+  const initialRef = useRef({ value, initialViewState, fileName, collab, documentPath });
   const shared = !!collab;
 
   const publishDraft = useCallback(() => {
@@ -206,6 +207,8 @@ export function LatexEditor({
         syncEnvironmentNames,
         latexProjectField,
         latexReviewExtension(),
+        // The agent's changes under manual review; shared tabs get suggestions instead.
+        ...(binding ? [] : [agentReviewCodeMirror(initialRef.current.documentPath, { outside: (transaction) => transaction.annotation(Transaction.remote) === true })]),
         latexSyncExtension(),
         ...(isTex ? [latexMathPreview()] : []),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...(binding ? [] : historyKeymap), ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab]),

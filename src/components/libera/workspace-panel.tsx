@@ -1869,6 +1869,7 @@ function WorkspacePanelContent({
           key={editorKey}
           collab={sharedCodeMirror ?? undefined}
           fileName={activeTab.file.name}
+          documentPath={activeTab.untitled ? undefined : activeTab.file.path}
           value={activeTab.draft}
           fontFamily={markdownEditorFontFamily}
           fontSizePx={markdownFontSizePx}

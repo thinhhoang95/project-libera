@@ -3034,17 +3034,18 @@ html.dark .libera-workspace-region[data-ai-active="true"] .libera-ai-glow { opac
 .libera-latex-editor .cm-latex-math-preview .katex-error { color: var(--destructive) !important; font-family: var(--latex-editor-font, var(--font-mono)); font-size: 12px; }
 .libera-latex-editor .cm-latex-math-preview-error { color: var(--muted-foreground); font-size: 12px; }
 
-/* AI edits under review: green = proposed, red = replaced. */
-.libera-latex-editor { --change-add: #16a34a; --change-del: #dc2626; }
-html.dark .libera-latex-editor { --change-add: #4ade80; --change-del: #f87171; }
-.libera-latex-editor .cm-ai-inserted { background: color-mix(in srgb, var(--change-add) 20%, transparent); border-radius: 2px; }
-.libera-latex-editor .cm-ai-inserted-line { background: color-mix(in srgb, var(--change-add) 12%, transparent); box-shadow: inset 3px 0 0 var(--change-add); }
-.libera-latex-editor .cm-ai-deleted { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: color-mix(in srgb, currentColor 65%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 70%, transparent); border-radius: 2px; white-space: pre-wrap; }
-.libera-latex-editor .cm-ai-deleted-block { display: block; padding-inline: 6px 20px; box-shadow: inset 3px 0 0 var(--change-del); border-radius: 0; }
-.libera-latex-editor .cm-ai-actions { margin-inline: .5em .2em; vertical-align: baseline; }
-.libera-latex-editor .cm-ai-actions button { font-family: var(--font-sans); }
-.libera-latex-editor .cm-ai-pending { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent) 10%, transparent)); background-size: 200% 100%; animation: libera-latex-pending 1.6s linear infinite; border-radius: 2px; }
-.libera-latex-editor .cm-ai-pending-caret { color: var(--accent); font-family: var(--font-sans); font-size: .85em; font-style: italic; animation: libera-latex-blink 1.2s ease-in-out infinite; }
+/* AI edits under review: green = proposed, red = replaced. .libera-ai-review
+ * is the agent's manual review in the other CodeMirror editors. */
+.libera-latex-editor, .libera-ai-review { --change-add: #16a34a; --change-del: #dc2626; }
+html.dark .libera-latex-editor, html.dark .libera-ai-review { --change-add: #4ade80; --change-del: #f87171; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-inserted { background: color-mix(in srgb, var(--change-add) 20%, transparent); border-radius: 2px; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-inserted-line { background: color-mix(in srgb, var(--change-add) 12%, transparent); box-shadow: inset 3px 0 0 var(--change-add); }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-deleted { background: color-mix(in srgb, var(--change-del) 14%, transparent); color: color-mix(in srgb, currentColor 65%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--change-del) 70%, transparent); border-radius: 2px; white-space: pre-wrap; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-deleted-block { display: block; padding-inline: 6px 20px; box-shadow: inset 3px 0 0 var(--change-del); border-radius: 0; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-actions { margin-inline: .5em .2em; vertical-align: baseline; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-actions button { font-family: var(--font-sans); }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-pending { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 26%, transparent), color-mix(in srgb, var(--accent) 10%, transparent)); background-size: 200% 100%; animation: libera-latex-pending 1.6s linear infinite; border-radius: 2px; }
+:is(.libera-latex-editor, .libera-ai-review) .cm-ai-pending-caret { color: var(--accent); font-family: var(--font-sans); font-size: .85em; font-style: italic; animation: libera-latex-blink 1.2s ease-in-out infinite; }
 @keyframes libera-latex-pending { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes libera-latex-blink { 50% { opacity: .35; } }
 
