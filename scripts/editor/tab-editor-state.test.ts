@@ -6,6 +6,7 @@ import type { Editor } from "@tiptap/core";
 import { createRoot } from "react-dom/client";
 import { emptyTree } from "../../src/components/libera/api-client";
 import { normalizeMarkdownPreferences } from "../../src/lib/markdown-preferences";
+import { resolveEditorThemes } from "../../electron/editor-themes.cjs";
 
 test("tabs independently retain editing mode and Visual scroll across tab and mode switches", async () => {
   const dom = new JSDOM("<!doctype html><body><div id='root'></div></body>", {
@@ -90,9 +91,9 @@ test("tabs independently retain editing mode and Visual scroll across tab and mo
     await act(async () => {
       root.render(createElement(StrictMode, null, createElement(LiberaApp, {
         initialAuthenticated: true,
-        markdownPreferences: normalizeMarkdownPreferences({
-          wysiwygEditorFontFamily: "Aptos",
-        }),
+        markdownPreferences: normalizeMarkdownPreferences({}),
+        // The Visual font comes from the editor themes (a legacy font setting migrates into them).
+        editorThemes: resolveEditorThemes(undefined, { textFont: "Aptos" }),
       })));
     });
     await settle();

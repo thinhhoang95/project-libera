@@ -23,6 +23,9 @@ import { smartPasteMarkdown } from "../../src/lib/markdown-smart-paste";
  * with a native-like `insertText`) and the CodeMirror path, and compares the
  * text and the selection. */
 
+// CodeMirror picks its Mac or PC bindings from Node's navigator when it is
+// imported, before jsdom's replaces it; the keys pressed below follow suit.
+const mac = /Mac/.test(globalThis.navigator?.platform ?? "");
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
 for (const key of ["window", "Window", "document", "navigator", "HTMLElement", "HTMLTextAreaElement", "Element", "Node", "MutationObserver", "Event"] as const) {
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
@@ -298,21 +301,22 @@ test("the source keymap keeps caret, word and document navigation, selection and
   try {
     press("ArrowRight");
     assert.equal(editor.textarea.selectionStart, 1);
-    press("ArrowRight", { ctrlKey: true });
+    const mod: KeyboardEventInit = mac ? { metaKey: true } : { ctrlKey: true };
+    press("ArrowRight", mac ? { altKey: true } : { ctrlKey: true });
     assert.equal(editor.textarea.selectionStart, 3);
     press("End");
     assert.equal(editor.textarea.selectionStart, 7);
     press("Home", { shiftKey: true });
     assert.deepEqual([editor.textarea.selectionStart, editor.textarea.selectionEnd], [0, 7]);
-    press("End", { ctrlKey: true });
+    press("End", mod);
     assert.equal(editor.textarea.selectionStart, 13);
-    press("a", { ctrlKey: true });
+    press("a", mod);
     assert.deepEqual([editor.textarea.selectionStart, editor.textarea.selectionEnd], [0, 13]);
     press("Backspace");
     assert.equal(editor.textarea.value, "");
-    press("z", { ctrlKey: true });
+    press("z", mod);
     assert.equal(editor.textarea.value, "one two\nthree");
-    press("y", { ctrlKey: true });
+    press(mac ? "z" : "y", mac ? { metaKey: true, shiftKey: true } : mod);
     assert.equal(editor.textarea.value, "");
   } finally {
     editor.destroy();

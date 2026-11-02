@@ -55,6 +55,10 @@ const LIBRARIES: Record<string, ReferenceLibrary> = {
 type Server = { citationIndex: Record<string, string[]> | null; requests: string[] };
 const server: Server = { citationIndex: null, requests: [] };
 let dom: JSDOM;
+/** Hold library responses so a test can see the pending state (act otherwise flushes the whole load). */
+let releaseLibrary: (() => void) | null = null;
+let libraryGate: Promise<void> | null = null;
+function holdLibrary() { libraryGate = new Promise((resolve) => { releaseLibrary = () => { libraryGate = null; resolve(); }; }); }
 
 before(() => {
   dom = new JSDOM("<!doctype html><div id='root'></div>", { url: "http://localhost/" });
@@ -68,6 +72,7 @@ before(() => {
     const url = new URL(String(input), "http://localhost/");
     server.requests.push(`${url.pathname}${url.search}`);
     if (url.pathname === "/api/references") {
+      await libraryGate;
       const value = LIBRARIES[url.searchParams.get("notebook") ?? ""];
       return value ? Response.json({ library: value }) : Response.json({ error: "Not found" }, { status: 404 });
     }
@@ -124,6 +129,7 @@ test("without a provider citations are raw chips in the contract's DOM, with no 
 });
 
 test("with a provider chips show formatted citations and the bibliography is appended at the end", async () => {
+  holdLibrary();
   const root = await mount(withProvider("Notes", createElement(MarkdownRenderer, {
     content: "Intro [@smith2020sparse, p. 3] and [@lee2019graphs; @nope].\n\nAgain [-@smith2020old] and [@missing].\n\nLast paragraph.",
     documentPath: "Notes/doc.md",
@@ -131,6 +137,7 @@ test("with a provider chips show formatted citations and the bibliography is app
   try {
     const renderer = document.querySelector<HTMLElement>(".markdown-renderer")!;
     assert.equal(renderer.getAttribute(REFERENCES_PENDING_ATTRIBUTE), "true", "Pending until the library, style and formatting are ready");
+    releaseLibrary!();
     await waitFor(() => formatted() === 4, "formatted chips");
     assert.equal(renderer.getAttribute(REFERENCES_PENDING_ATTRIBUTE), null);
     const [first, second, third, fourth] = chips();
@@ -365,12 +372,14 @@ test("slides number citations across the deck and place the bibliography only at
 });
 
 test("PDF export waits for the library, the style and formatting", async () => {
+  holdLibrary();
   const root = await mount(withProvider("Notes", createElement("article", { id: "export" }, createElement(MarkdownRenderer, { content: "Cited [@lee2019graphs]." }))));
   try {
     const article = document.getElementById("export")!;
     assert.ok(article.querySelector(`[${REFERENCES_PENDING_ATTRIBUTE}]`));
     let ready = false;
     const waiting = waitForReferencesReady(article).then(() => { ready = true; });
+    releaseLibrary!();
     await waitFor(() => ready, "ready");
     await waiting;
     assert.equal(chips()[0].textContent, "(Lee, 2019)");

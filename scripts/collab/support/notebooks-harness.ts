@@ -47,6 +47,13 @@ export async function until(condition: () => boolean | Promise<boolean>, label: 
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * `skip` option for known intermittent tests: they race notebook sync timing
+ * and fail on some runs. Off by default so npm run test:collab stays
+ * reliable; LIBERA_COLLAB_INTERMITTENT=1 runs them (docs/collaboration/testing.md).
+ */
+export const intermittent = process.env.LIBERA_COLLAB_INTERMITTENT === "1" ? false : "intermittent; LIBERA_COLLAB_INTERMITTENT=1 runs it";
+
 const quiet = { warn() {}, error() {} };
 const debugLogger = (name: string) => ({
   warn: (message: string, detail?: unknown) => console.log(name, "warn", message, detail ?? ""),

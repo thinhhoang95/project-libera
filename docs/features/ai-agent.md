@@ -23,7 +23,7 @@ In Agent mode, the picker next to the switch sets what the agent may change:
 | Modify opened files only | The whole library | Text files open in editor tabs. It cannot create files. |
 | Modify all files in Notebook/Folder | The whole library | Any text file in the current notebook or linked folder, including new ones. |
 
-Next to the picker, **Allow web search** lets the agent look things up on the web (see WebSearch below). It is off by default, remembered like the mode, and sent with each request; the line above the composer says "Web search on" while it is.
+Next to the picker, the **Web search** button (a globe) lets the agent look things up on the web (see WebSearch below). It is off by default, remembered like the mode, and sent with each request; the line above the composer says "Web search on" while it is.
 
 Beside it, **Manual review** has you review the agent's changes one by one (see [Manual review](#manual-review)). It works the same way: off by default, remembered, sent with each request, and "Manual review on" in the line above the composer. It is unavailable in Read Only, which changes nothing, and in shared notebooks, where changes are always suggestions.
 
@@ -52,7 +52,7 @@ The agent uses a small tool set modeled on Claude Code's:
 - **TaskCreate** and **TaskUpdate** keep a task list for multi-step jobs, shown in the reply.
 - **Skill** loads a skill (see below).
 - **References** looks works up in the current notebook's References library: by citation key or alias (exact), or by words in authors, year, title, venue and tags. It returns each entry's key and aliases, the formatted reference (in the library's style), identifiers, status, attached files and the start of its abstract. The library is a hidden file the other tools cannot read, so this is how the agent learns which keys exist. It is read-only and offered in every permission; its description is in the tool list, so the system prompt stays the same.
-- **WebSearch** (only when **Allow web search** is on) asks the model, in a separate OpenRouter request with the web plugin, to answer one question briefly and list its sources. The agent gets the answer and each cited page's title, URL and a snippet, labelled as web data. It uses the run's model; if that model's providers do not take the plugin, the chat default model searches instead, and if neither works the tool says so. Its tokens count toward the run.
+- **WebSearch** (only when **Web search** is on) asks the model, in a separate OpenRouter request with the web plugin, to answer one question briefly and list its sources. The agent gets the answer and each cited page's title, URL and a snippet, labelled as web data. It uses the run's model; if that model's providers do not take the plugin, the chat default model searches instead, and if neither works the tool says so. Its tokens count toward the run.
 
 ### PDFs
 

@@ -8,8 +8,8 @@ This page explains how to run the collaboration tests, what each one proves, and
 
 | Command | What it runs | Time |
 |---|---|---|
-| `npm run test:collab` | Every `scripts/collab/*.test.ts`: unit tests, host tests, the host/server integration test and the harness | about 2.5 min wall time (150–163 s measured, against 27 s before the harness) (the files run in parallel; the durability matrix is the longest) |
-| `node --require ./scripts/editor/setup.cjs --import tsx --test scripts/collab/harness-durability.test.ts` | One harness file on its own | see the table below |
+| `npm run test:collab` | Every `scripts/collab/*.test.ts`: unit tests, host tests, the host/server integration test and the harness. `scripts/collab/run-tests.mjs` runs most files in parallel on half the cores, then the files with timing budgets (`TIMED` in that script) one at a time, so the machine is quiet while they measure | about 3.7 min wall time (217–223 s measured on an 8-core M-series Mac: 67–75 s parallel, 147–150 s timed) |
+| `node scripts/collab/run-tests.mjs scripts/collab/harness-durability.test.ts` | One or more files, in a single `node --test` run | see the table below |
 | `LIBERA_COLLAB_HEAVY=1 npm run test:collab` | The same with the heavy cases turned on | about 10–15 min |
 | `node --import tsx scripts/collab/soak.ts --minutes 5` | The soak runner | as long as `--minutes`, plus about 30 s of setup |
 
@@ -25,6 +25,7 @@ The harness needs nothing beyond the repo's dependencies. There is no Docker and
 | `LIBERA_COLLAB_FUZZ_PATH` | unset | With the seed, jumps straight to the failing schedule (printed on failure) |
 | `LIBERA_COLLAB_FUZZ_SHRINK` | unset | `1` lets fast-check shrink a failing schedule (slow: each run takes seconds) |
 | `LIBERA_COLLAB_PERF_SLACK` | 3 | Multiplier on the §10 budgets in assertions, so a loaded CI machine does not flake. The measured numbers are always printed. |
+| `LIBERA_COLLAB_INTERMITTENT` | unset | `1` also runs the known intermittent tests, skipped by default because they race notebook sync timing and fail on some runs: "terminal text preservation keeps a late external edit…", "remote takedown preserves text newer than the debounced disk copy", "a legacy host's offline edits resume with its original client sequence identity" and "matching account IDs on separate servers do not reuse local sync authority" |
 | `LIBERA_HARNESS_DEBUG` | unset | `1` prints host warnings and every host event |
 
 Every measurement is printed as a line starting with `[collab-perf]`, so `npm run test:collab 2>&1 | grep collab-perf` shows them all.
