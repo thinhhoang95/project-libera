@@ -1,13 +1,13 @@
 // CollabRuntime: the host process's long-lived state behind the control API.
 //
 // It owns the account, the CollabHost and the NotebookService. The SQLite
-// file is per account (userData/collab/<accountId>.sqlite, or default.sqlite
-// while signed out), so signing in to a different account stops the host and
-// the notebook service and starts new ones on that account's database. The
-// shared-notebook routes live in their own Router, rebuilt for each service,
+// file is scoped to server and account (or default.sqlite while signed out).
+// A verified legacy account-only file keeps its pending work in place with
+// a durable authority record. Changing authority starts a separate host and
+// notebook service. Shared-notebook routes live in their own Router,
+// rebuilt for each service,
 // so they always reach the current one.
 
-import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -16,6 +16,8 @@ import { EventKind } from "../../../src/lib/collab/protocol/messages";
 import type { HostEvent, HostStatus, LocalProject } from "../../../src/lib/collab/local-api";
 import type { NotificationInfo } from "../../../src/lib/collab/protocol/api";
 import type { FetchLike } from "../core/api-client";
+import { sameAuthority, type AccountAuthority } from "../core/authority";
+import { databaseKey, databasePath } from "./databases";
 import type { Clock, Logger } from "../core/clock";
 import { consoleLogger } from "../core/clock";
 import { CollabHost, syncClientId, type CollabHostEvent, type CollabHostOptions } from "../core/host";
@@ -25,6 +27,8 @@ import { SharedSignIn } from "./shared-sign-in";
 import { Router } from "./router";
 import { HOST_VERSION, connectionDetail, hostConnection } from "./status";
 import type { ControlDeps, NotebookService } from "./types";
+
+export { databaseKey } from "./databases";
 
 export type NotebookServiceFactory = (deps: Omit<ControlDeps, "notebooks">) => NotebookService;
 
@@ -51,16 +55,10 @@ export interface CollabRuntimeOptions {
 
 interface Generation {
   key: string;
+  clientNamespace?: string;
   host: CollabHost;
   notebooks: NotebookService;
   unsubscribe: () => void;
-}
-
-/** Database file name for an account: server ids are short and safe, anything else is hashed. */
-export function databaseKey(accountId: string | null): string {
-  if (!accountId) return "default";
-  if (/^[A-Za-z0-9_-]{1,80}$/.test(accountId) && accountId !== "default") return accountId;
-  return `acct_${createHash("sha256").update(accountId).digest("hex").slice(0, 32)}`;
 }
 
 const PROJECT_EVENT_KINDS: ReadonlySet<string> = new Set([EventKind.RoleChanged, EventKind.MemberRemoved, EventKind.ProjectDeleted]);
@@ -114,7 +112,7 @@ export class CollabRuntime {
   /** The sync clientId of the signed-in account (actors carry it). */
   get clientId(): string | null {
     const account = this.accounts.account;
-    return account ? syncClientId(this.options.installationId, account.id) : null;
+    return account ? syncClientId(this.options.installationId, this.current?.clientNamespace ?? account.id) : null;
   }
 
   /** Runs account and database changes one at a time. */
@@ -128,13 +126,15 @@ export class CollabRuntime {
     return this.serial(async () => {
       await mkdir(this.options.collabDir, { recursive: true });
       await this.accounts.load();
-      await this.open(databaseKey(this.accounts.account?.id ?? null));
+      const account = this.accounts.account;
+      await this.open(account ? { accountId: account.id, serverUrl: account.serverUrl } : null);
       this.applyAccount();
       this.statusChanged();
     });
   }
 
   stop(): Promise<void> {
+    this.current?.host.api?.cancelPending();
     return this.serial(async () => {
       this.stopped = true;
       this.sharedSignIn.stop();
@@ -147,7 +147,7 @@ export class CollabRuntime {
     return this.serial(async () => {
       if (this.stopped || !canAdopt()) return;
       if (this.accounts.account) await this.notebooks.beforeAccountChange?.();
-      await this.open(databaseKey(auth.account.id));
+      await this.open({ accountId: auth.account.id, serverUrl });
       if (this.stopped || !canAdopt()) return;
       await this.accounts.signIn(serverUrl, auth);
       this.applyAccount();
@@ -161,6 +161,7 @@ export class CollabRuntime {
    * edits survive; signing in to the same account again picks them up.
    */
   signOut(): Promise<void> {
+    this.current?.host.api?.cancelPending();
     return this.serial(async () => {
       await this.notebooks.beforeAccountChange?.();
       await this.accounts.signOut();
@@ -185,23 +186,37 @@ export class CollabRuntime {
     this.host.setAccount(account && session ? { accountId: account.id, serverUrl: account.serverUrl, tokenProvider: session } : null);
   }
 
-  private async open(key: string): Promise<void> {
+  private async open(authority: AccountAuthority | null): Promise<void> {
+    const key = databaseKey(authority?.accountId ?? null, authority?.serverUrl);
     if (this.stopped) throw new Error("The collab host is stopping");
     if (this.current?.key === key) return;
     await this.closeCurrent();
+    const remembered = this.accounts.account;
+    const dbPath = await databasePath(this.options.collabDir, authority, remembered ? { accountId: remembered.id, serverUrl: remembered.serverUrl } : null, this.logger);
+    const clientNamespace = authority && path.basename(dbPath) !== `${databaseKey(authority.accountId)}.sqlite` ? key : undefined;
     const host = new CollabHost({
       logger: this.logger,
       fetch: this.options.fetch,
       clock: this.options.clock,
       ...this.options.host,
-      dbPath: path.join(this.options.collabDir, `${key}.sqlite`),
+      dbPath,
+      clientNamespace,
       appVersion: this.options.appVersion,
       installationId: this.options.installationId,
     });
     host.start();
+    if (authority) {
+      const saved = host.store.databaseAuthority();
+      if (saved === undefined) host.store.setDatabaseAuthority(authority);
+      else if (saved === null || !sameAuthority(saved, authority)) {
+        await host.stop();
+        throw new Error("This collaboration database belongs to another account or server; its data was preserved.");
+      }
+    }
     const factory = this.options.createNotebookService ?? createNotebookService;
     const notebooks = factory({
       host,
+      ...(authority ? { authority } : {}),
       libraryRoot: this.options.libraryRoot,
       lifecycleDir: path.join(this.options.collabDir, "notebook-lifecycle"),
       ...(this.options.galleryRoot ? { galleryRoot: this.options.galleryRoot } : {}),
@@ -215,7 +230,7 @@ export class CollabRuntime {
     this.notebookRoutes.clear();
     notebooks.registerRoutes(this.notebookRoutes);
     const unsubscribe = host.on((event) => this.onHostEvent(event));
-    this.current = { key, host, notebooks, unsubscribe };
+    this.current = { key, clientNamespace, host, notebooks, unsubscribe };
     try {
       await notebooks.start();
     } catch (error) {

@@ -57,6 +57,8 @@ export interface CollabHostOptions {
   appVersion: string;
   /** Stable per installation; combined with the account id into the sync clientId. */
   installationId: string;
+  /** Sequence identity for a scoped database; omitted for legacy stores. */
+  clientNamespace?: string;
   clock?: Clock;
   random?: () => number;
   logger?: Logger;
@@ -207,7 +209,7 @@ export class CollabHost {
     this.telemetryInstance = new TelemetryReporter({
       source: {
         api: () => this.apiClient,
-        clientId: () => (this.account ? syncClientId(this.options.installationId, this.account.accountId) : null),
+        clientId: () => (this.account ? syncClientId(this.options.installationId, this.options.clientNamespace ?? this.account.accountId) : null),
         gauges: () => this.telemetryGauges(),
       },
       journal: this.journal,
@@ -352,7 +354,7 @@ export class CollabHost {
   }
 
   private connectAccount(account: CollabAccount): void {
-    const clientId = syncClientId(this.options.installationId, account.accountId);
+    const clientId = syncClientId(this.options.installationId, this.options.clientNamespace ?? account.accountId);
     this.apiClient = new ApiClient({
       baseUrl: account.serverUrl,
       tokenProvider: account.tokenProvider,

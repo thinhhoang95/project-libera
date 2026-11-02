@@ -41,9 +41,10 @@ import {
 import { ApiClientError, type ApiClient } from "../core/api-client";
 import { consoleLogger, type Logger } from "../core/clock";
 import type { CollabHostEvent } from "../core/host";
+import { normalizedServerUrl, sameAuthority } from "../core/authority";
 import { ControlError, type ControlDeps, type ControlHandler, type ControlRouter, type NotebookService } from "../control/types";
 import { classifyFile, createSharedDocument, mimeForPath } from "./documents";
-import { ARCHIVE_DIRECTORY, PathRefusedError, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic } from "./fs-ops";
+import { ARCHIVE_DIRECTORY, SHARE_PENDING_FILE, SHARED_MARKER_FILE, PathRefusedError, WriteCancelledError, checkWriteGuard, contentGuard, randomId, readIfExists, sha256, statIfExists, walkNotebook, writeFileAtomic, type WriteGuard } from "./fs-ops";
 import { entryRecord } from "./layout";
 import { DEFAULT_TIMINGS, SharedProject, hubHasState, type IndexedDoc, type ProjectContext, type Timings } from "./project";
 import {
@@ -236,6 +237,7 @@ function toControlError(error: unknown): unknown {
     return new ControlError(error.status, error.code, error.message);
   }
   if (error instanceof PathRefusedError) return new ControlError(400, "bad-request", error.message);
+  if (error instanceof WriteCancelledError) return new ControlError(409, "notebook-changed", "The notebook or account changed while sharing. Its checkpoint was preserved for recovery.");
   return error;
 }
 
@@ -293,6 +295,7 @@ export class NotebookServiceImpl implements NotebookService {
     this.unsubscribeHost = null;
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = null;
+    this.deps.host.api?.cancelPending();
     await this.loading?.catch(() => undefined);
     await this.ticking?.catch(() => undefined);
     await Promise.all([...this.projects.values()].map((handle) => handle.runtime?.stop()));
@@ -377,6 +380,7 @@ export class NotebookServiceImpl implements NotebookService {
           this.deps.host.store.upsertProject({ ...row, localRoot: root });
           this.unjoined.delete(root);
         }
+        if (!this.markerAuthorityMatches(marker)) continue;
         if (await this.repairEndedMarker(root, marker) === "local") {
           this.deps.host.store.deleteProject(row.projectId);
           continue;
@@ -405,7 +409,7 @@ export class NotebookServiceImpl implements NotebookService {
 
   private async run(handle: ProjectHandle): Promise<void> {
     const marker = await readMarker(handle.root);
-    if (!this.matchesMarker(handle, marker)) throw new ControlError(409, "notebook-unavailable", "The notebook folder identity changed while it was opening.");
+    if (!this.matchesMarker(handle, marker) || !this.markerAuthorityMatches(marker)) throw new ControlError(409, "notebook-unavailable", "The notebook folder identity changed while it was opening.");
     recordNotebookBinding(this.lifecycleDirectory, handle.root, marker);
     const runtime = await SharedProject.open(this.context(), {
       projectId: handle.projectId,
@@ -492,7 +496,8 @@ export class NotebookServiceImpl implements NotebookService {
     if (!handle.folderId) return { outcome: "unavailable", contended: false };
     const requestedAt = performance.now();
     try {
-      const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs });
+      const lease = await api.acquireFolderLease(handle.projectId, { folderId: handle.folderId, holder: this.installationId, ttlMs: this.leaseTtlMs }, { timeoutMs: Math.min(5000, Math.max(100, Math.floor(this.leaseTtlMs / 3))) });
+      if (!this.started || this.releasing) return { outcome: "unavailable", contended: false };
       handle.leaseDeadline = lease.granted
         ? requestedAt + Math.max(0, Math.min(this.leaseTtlMs, Date.parse(lease.expiresAt ?? "") - Date.now()))
         : 0;
@@ -500,7 +505,7 @@ export class NotebookServiceImpl implements NotebookService {
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 404) {
         // The project is gone (revocation follows), or the server predates leases.
-        const exists = await api.getProject(handle.projectId).then(
+        const exists = await api.getProject(handle.projectId, { timeoutMs: 5000 }).then(
           () => true,
           () => false,
         );
@@ -540,6 +545,7 @@ export class NotebookServiceImpl implements NotebookService {
    */
   async beforeAccountChange(): Promise<void> {
     this.releasing = true;
+    this.deps.host.api?.cancelPending();
     await this.ticking?.catch(() => undefined);
     await Promise.all([...this.projects.values()].map((handle) => this.releaseLease(handle)));
   }
@@ -761,6 +767,12 @@ export class NotebookServiceImpl implements NotebookService {
   /** Whether this installation may rewrite or remove the marker: it is this project's, and no other installation keeps the folder. */
   private ownsMarker(marker: SharedMarker, projectId: string): boolean {
     return marker.projectId === projectId && (!marker.writer || marker.writer === this.installationId);
+  }
+
+  private markerAuthorityMatches(marker: SharedMarker): boolean {
+    if (this.deps.authority) return sameAuthority(marker, this.deps.authority);
+    const host = this.deps.host;
+    return !host.serverUrl || (normalizedServerUrl(marker.serverUrl) === normalizedServerUrl(host.serverUrl) && marker.accountId === host.accountId);
   }
 
   private matchesMarker(handle: ProjectHandle, marker: SharedMarker | null): marker is SharedMarker {
@@ -1153,16 +1165,67 @@ export class NotebookServiceImpl implements NotebookService {
   }
 
   private async doShare(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
+    this.pendingRoots.add(target.root);
+    try { return await this.shareAttempt(target, requestedName); }
+    catch (error) { throw toControlError(error); }
+    finally { this.pendingRoots.delete(target.root); }
+  }
+
+  private async shareAttempt(target: ShareTarget, requestedName: string | undefined): Promise<ShareResult> {
     const api = this.requireApi();
     const { root, notebook, album } = target;
-    if (await readMarker(root)) throw new ControlError(409, "already-shared", `${notebook} is already shared.`);
+    const originalRoot = await fs.lstat(root);
+    if (!originalRoot.isDirectory() || originalRoot.isSymbolicLink()) throw new WriteCancelledError();
+    if (await statIfExists(path.join(root, SHARED_MARKER_FILE))) throw new ControlError(409, "already-shared", `${notebook} already has a sharing marker.`);
     const accountId = await this.accountId();
+    const initialPlanBytes = await readIfExists(path.join(root, SHARE_PENDING_FILE));
 
     // The plan: every id chosen once and written down before anything is
     // uploaded, so a retry after a crash or network failure reuses them and
     // the server's idempotency (document replays, content-addressed blobs)
     // turns the repeat into no-ops.
     const existing = await readSharePlan(root);
+    if (initialPlanBytes && !existing) throw new ControlError(409, "invalid-checkpoint", "The share checkpoint is unreadable; it was preserved for recovery.");
+    if (existing?.operationId !== undefined && (typeof existing.operationId !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(existing.operationId))) {
+      throw new ControlError(409, "invalid-checkpoint", "The share checkpoint has an invalid operation identity; it was preserved for recovery.");
+    }
+    if (existing && requestedName?.trim() && requestedName.trim().slice(0, 200) !== existing.name) {
+      throw new ControlError(409, "checkpoint-name", "Resume this share with its saved project name. The checkpoint was left intact.");
+    }
+    if (existing && ((existing.accountId !== undefined || existing.serverUrl !== undefined) &&
+        (existing.accountId !== accountId || typeof existing.serverUrl !== "string" || normalizedServerUrl(existing.serverUrl) !== normalizedServerUrl(api.baseUrl)))) {
+      throw new ControlError(409, "checkpoint-authority", "This checkpoint belongs to another account or server. It was left intact.");
+    }
+    if (existing?.kind && existing.kind !== target.kind) throw new ControlError(409, "checkpoint-kind", "This checkpoint belongs to a different kind of share.");
+    if (existing && !existing.projectId && existing.files.some((file) => file.uploaded)) throw new ControlError(409, "invalid-checkpoint", "Uploaded entries have no recorded project identity; the checkpoint was preserved.");
+    const operationId = existing?.operationId ?? randomId("share");
+    let checkpointed = false;
+    let installedMarker: SharedMarker | null = null;
+    const guard: WriteGuard = { root, canCommit: async () => {
+      if (!this.started || this.releasing || this.deps.host.api !== api || this.deps.host.accountId !== accountId) return false;
+      const currentRoot = await statIfExists(root);
+      if (!currentRoot?.isDirectory() || currentRoot.isSymbolicLink() || currentRoot.dev !== originalRoot.dev ||
+          currentRoot.ino !== originalRoot.ino || currentRoot.birthtimeMs !== originalRoot.birthtimeMs) return false;
+      if (installedMarker) {
+        const current = await readMarker(root);
+        if (!current || current.revoked || !sameNotebookIdentity(installedMarker, current)) return false;
+      } else if (await statIfExists(path.join(root, SHARED_MARKER_FILE))) return false;
+      const currentPlan = await readIfExists(path.join(root, SHARE_PENDING_FILE));
+      if (!checkpointed) return initialPlanBytes === null ? currentPlan === null : currentPlan !== null && currentPlan.equals(initialPlanBytes);
+      try {
+        const value = JSON.parse(currentPlan?.toString("utf8") ?? "null") as SharePlan | null;
+        return value?.operationId === operationId && value.accountId === accountId && value.serverUrl === api.baseUrl;
+      } catch { return false; }
+    } };
+    const authorize = async (projectId: string, manifestDocId: string | undefined): Promise<ProjectSummary> => {
+      await checkWriteGuard(guard);
+      const project = await api.getProject(projectId);
+      if (project.ownerId !== accountId || project.role !== "owner" || project.manifestDocId !== manifestDocId ||
+          (project.kind ?? "notebook") !== target.kind) throw new ControlError(409, "checkpoint-project", "The checkpoint does not identify this account's current owned project.");
+      await checkWriteGuard(guard);
+      return project;
+    };
+    if (existing?.projectId) await authorize(existing.projectId, existing.manifestDocId);
     const name = (requestedName?.trim() || existing?.name || notebook).slice(0, 200);
     const previous = new Map((existing?.files ?? []).map((file) => [file.path, file]));
     const { entries: everything, skipped, complete } = await walkNotebook(root);
@@ -1186,7 +1249,7 @@ export class NotebookServiceImpl implements NotebookService {
         // copy on disk is the one the members get (the watcher compares hashes).
         const stripped = stripPhotoMetadata(bytes, albumImageType(item.relative) ?? "");
         if (stripped) {
-          await writeFileAtomic(absolute, stripped);
+          await writeFileAtomic(absolute, stripped, contentGuard(absolute, sha256(bytes), guard));
           bytes = stripped;
         }
       }
@@ -1221,25 +1284,35 @@ export class NotebookServiceImpl implements NotebookService {
     }
     const plan: SharePlan = {
       version: 1,
+      operationId, accountId, serverUrl: api.baseUrl, kind: target.kind,
       name,
       startedAt: existing?.startedAt ?? Date.now(),
       ...(existing?.projectId ? { projectId: existing.projectId, manifestDocId: existing.manifestDocId } : {}),
       files,
     };
-    await writeSharePlan(root, plan);
+    const recoveryFile = path.join(this.lifecycleDirectory, "share-attempts", `${operationId}.json`);
+    const savePlan = async () => {
+      // Recovery belongs to this profile, even if the cloud root disappears.
+      await writeFileAtomic(recoveryFile, Buffer.from(JSON.stringify({ root, plan })));
+      await writeSharePlan(root, plan, guard);
+      checkpointed = true;
+    };
+    await savePlan();
 
     try {
       this.progress(notebook, { phase: "creating-project", done: 0, total: 1 });
       if (!plan.projectId) {
-        const project =
-          (await this.orphanProject(api, accountId, name, plan.startedAt, target.kind)) ??
-          (await api.createProject(album ? { name, kind: "album" } : { name }));
+        const version = await api.version();
+        if (!version.projectCreationKeys) throw new ControlError(409, "update-required", "Update the collaboration server before starting a new share; durable project creation keys are required.");
+        await checkWriteGuard(guard);
+        const project = await api.createProject({ name, kind: target.kind, creationId: operationId });
+        if (project.creationId !== operationId) throw new ControlError(409, "update-required", "The server did not confirm the saved project creation key.");
         if (album && project.kind !== "album") {
           throw new ControlError(409, "update-required", "The collaboration server is too old for shared albums. Ask its administrator to update it.");
         }
         plan.projectId = project.id;
         plan.manifestDocId = project.manifestDocId;
-        await writeSharePlan(root, plan);
+        await savePlan();
       }
       const projectId = plan.projectId;
       const manifestDocId = plan.manifestDocId as string;
@@ -1249,10 +1322,11 @@ export class NotebookServiceImpl implements NotebookService {
       this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       for (const file of documents) {
         if (file.uploaded) continue;
+        await checkWriteGuard(guard);
         await createSharedDocument(api, projectId, { docId: file.docId as string, fileId: file.fileId }, file.docKind!, texts.get(file.path) ?? "");
         file.uploaded = true;
         done += 1;
-        await writeSharePlan(root, plan);
+        await savePlan();
         this.progress(notebook, { phase: "importing-documents", done, total: documents.length });
       }
 
@@ -1265,19 +1339,22 @@ export class NotebookServiceImpl implements NotebookService {
         if (!bytes || sha256(bytes) !== file.blobHash) {
           throw new ControlError(409, "conflict", `${file.path} changed while it was being shared. Share again to continue.`);
         }
+        await checkWriteGuard(guard);
         await api.uploadBlob(projectId, bytes, file.mime ?? "application/octet-stream");
-        if (album) await recordShareUpload(root, file);
+        if (album) await recordShareUpload(root, file, guard);
         file.uploaded = true;
         done += 1;
-        if (!album) await writeSharePlan(root, plan);
+        if (!album) await savePlan();
         this.progress(notebook, { phase: "uploading-files", done, total: blobs.length });
       }
 
+      await authorize(projectId, manifestDocId);
       // The manifest, through the manifest hub, in one transaction. Entries
       // are keyed by fileId with fixed timestamps, so writing them again on a
       // retry changes nothing that matters.
       this.progress(notebook, { phase: "writing-manifest", done: 0, total: 1 });
-      const folderId = randomId("fld");
+      // Copies/retries of one cloud checkpoint must contend for the same lease.
+      const folderId = `fld_${sha256(Buffer.from(operationId)).slice(0, 32)}`;
       const hub = this.deps.host.acquire(manifestDocId, { kind: "manifest", projectId });
       let synced = false;
       try {
@@ -1322,6 +1399,10 @@ export class NotebookServiceImpl implements NotebookService {
           { source: "import" },
         );
 
+        synced = await waitUntil(() => hub.isClosed || !!hub.readOnlyReason || this.deps.host.api !== api || !this.started ||
+          (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
+        if (hub.isClosed || hub.readOnlyReason) throw new ControlError(409, "access-changed", "Project access changed before sharing completed; the checkpoint was preserved.");
+        await checkWriteGuard(guard);
         // The layout as it is on disk now: the materializer starts from it and
         // treats anything that differs (edits during the share) as new edits.
         const state = emptyState();
@@ -1339,16 +1420,15 @@ export class NotebookServiceImpl implements NotebookService {
           };
           if (file.kind === "doc" && file.docId) {
             const text = texts.get(file.path);
-            if (text !== undefined && sha256(Buffer.from(text, "utf8")) === file.blobHash) await writeBase(root, file.docId, text);
+            if (text !== undefined && sha256(Buffer.from(text, "utf8")) === file.blobHash) await writeBase(root, file.docId, text, guard);
             this.deps.host.store.upsertDoc({ docId: file.docId, projectId, fileId: file.fileId, path: file.path, materializedHash: file.blobHash ?? null });
           }
           if (file.kind === "blob" && file.blobHash) {
             this.deps.host.store.putBlob({ hash: file.blobHash, localPath: path.join(root, ...file.path.split("/")), size: file.size ?? 0 });
           }
         }
-        await writeState(root, state);
-        this.pendingRoots.add(root);
-        await writeMarker(root, {
+        await writeState(root, state, guard);
+        const marker: SharedMarker = {
           projectId,
           serverUrl: api.baseUrl,
           accountId,
@@ -1357,10 +1437,11 @@ export class NotebookServiceImpl implements NotebookService {
           ...(album ? { kind: "album" as const } : {}),
           writer: this.installationId,
           folderId,
-        });
+        };
+        await writeMarker(root, marker, guard);
+        installedMarker = marker;
+        await checkWriteGuard(guard);
         this.deps.host.store.upsertProject({ projectId, name, localRoot: root, role: "owner" });
-        await deleteSharePlan(root);
-        synced = await waitUntil(() => hub.isClosed || (hub.pendingCount === 0 && hubHasState(this.deps.host, hub, "manifest") && hub.getStatus().state === "saved-remote"), this.shareSyncTimeoutMs);
       } finally {
         this.deps.host.release(manifestDocId);
       }
@@ -1382,9 +1463,11 @@ export class NotebookServiceImpl implements NotebookService {
         leaseSupported: true,
       };
       this.projects.set(projectId, handle);
-      this.pendingRoots.delete(root);
-      await this.lease(handle);
+      handle.writer = await this.claimRole(handle, installedMarker!);
+      await checkWriteGuard(guard);
       await this.run(handle);
+      await deleteSharePlan(root, guard);
+      await fs.rm(recoveryFile, { force: true });
       this.progress(notebook, { phase: "done", done: files.length, total: files.length });
       this.deps.emit({ t: "project-changed", projectId });
       return {
@@ -1400,29 +1483,7 @@ export class NotebookServiceImpl implements NotebookService {
       };
     } catch (error) {
       throw toControlError(error);
-    } finally {
-      this.pendingRoots.delete(root);
     }
-  }
-
-  /**
-   * A project an earlier attempt created but did not record (it died between
-   * the server's answer and writing the plan): ours, same name, created after
-   * the plan started, not used locally, and with an empty manifest.
-   */
-  private async orphanProject(api: ApiClient, accountId: string, name: string, startedAt: number, kind: ProjectKind): Promise<ProjectSummary | null> {
-    const projects = await api.listProjects();
-    for (const project of projects) {
-      if (project.ownerId !== accountId || project.name !== name || (project.kind ?? "notebook") !== kind) continue;
-      if (Date.parse(project.createdAt) < startedAt - 60_000) continue;
-      if (this.deps.host.store.getProject(project.id)) continue;
-      // Documents are only created after the plan records the project, so an
-      // orphan has none; an untouched manifest confirms nobody used it.
-      const manifest = await api.getDocument(project.manifestDocId).catch(() => null);
-      if (manifest && manifest.lastServerSeq > 0) continue;
-      return project;
-    }
-    return null;
   }
 
   // ------------------------------------------------------------ join

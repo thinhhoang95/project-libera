@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { MIGRATIONS_DIR } from "../src/db/migrate.js";
+import { openDatabase } from "../src/db/database.js";
+import { migrate, MIGRATIONS_DIR } from "../src/db/migrate.js";
 import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { json, startTestServer } from "./helpers.js";
 
@@ -19,12 +22,27 @@ test("server boots on PGlite, migrates, and reports its version", async () => {
       .execute();
     assert.deepEqual(
       tables.map((row) => row.name).sort(),
-      readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith(".sql")).sort(),
+      readdirSync(MIGRATIONS_DIR).filter((name) => !name.startsWith(".") && name.endsWith(".sql")).sort(),
     );
     assert.ok(tables.some((row) => row.name === "001_initial.sql"));
     const missing = await json(server.url, "/v1/nope");
     assert.equal(missing.status, 404);
   } finally {
     await server.close();
+  }
+});
+
+
+test("migration discovery ignores cloud/OS metadata files", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "libera-migration-discovery-"));
+  const database = await openDatabase("pglite://memory");
+  try {
+    writeFileSync(path.join(directory, "001_probe.sql"), "select 1;");
+    writeFileSync(path.join(directory, "._001_probe.sql"), Buffer.from([0, 5, 22, 7, 0, 0]));
+    assert.deepEqual(await migrate(database, directory), ["001_probe.sql"]);
+    assert.deepEqual(await migrate(database, directory), []);
+  } finally {
+    await database.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

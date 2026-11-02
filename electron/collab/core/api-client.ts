@@ -93,11 +93,14 @@ export interface ApiClientOptions {
   fetch?: FetchLike;
   /** Sent as X-Libera-Client, for server logs. */
   clientId?: string;
+  /** Entire request, including token acquisition and body consumption. */
+  timeoutMs?: number;
 }
 
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 interface RequestOptions {
+  timeoutMs?: number;
   body?: unknown;
   query?: Query;
   /** Skip the bearer token (auth routes, invitation preview, version). */
@@ -105,6 +108,7 @@ interface RequestOptions {
   raw?: { bytes: Uint8Array; contentType: string };
   /** Return the response bytes instead of JSON. */
   binary?: boolean;
+  signal?: AbortSignal;
 }
 
 export function sha256Hex(bytes: Uint8Array): string {
@@ -116,12 +120,15 @@ export class ApiClient {
   private readonly tokenProvider: TokenProvider;
   private readonly fetchImpl: FetchLike;
   private readonly clientId?: string;
+  private readonly timeoutMs: number;
+  private readonly requests = new Set<AbortController>();
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.tokenProvider = options.tokenProvider;
     this.fetchImpl = options.fetch ?? ((url, init) => fetch(url, init));
     this.clientId = options.clientId;
+    this.timeoutMs = options.timeoutMs ?? 60_000;
   }
 
   // ------------------------------------------------------------ plumbing
@@ -135,7 +142,38 @@ export class ApiClient {
     return `${this.baseUrl}${path}${text ? `?${text}` : ""}`;
   }
 
+  /** Abort superseded work without disabling subsequent lease releases. */
+  cancelPending(): void {
+    for (const controller of this.requests) controller.abort(new Error("The account or host lifecycle changed."));
+  }
+
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+    const controller = new AbortController();
+    const abort = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    const timer = setTimeout(() => controller.abort(new Error("The collaboration request timed out.")), options.timeoutMs ?? this.timeoutMs);
+    timer.unref?.();
+    this.requests.add(controller);
+    let rejectAbort: () => void = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = () => reject(new ApiClientError("network", 0, controller.signal.reason instanceof Error ? controller.signal.reason.message : "Request cancelled."));
+      controller.signal.addEventListener("abort", rejectAbort, { once: true });
+      if (controller.signal.aborted) rejectAbort();
+    });
+    try {
+      // Race also bounds adapters/token providers that fail to honor abort.
+      return await Promise.race([aborted, this.perform<T>(method, path, { ...options, signal: controller.signal })]);
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", rejectAbort);
+      this.requests.delete(controller);
+    }
+  }
+
+  private async perform<T>(method: string, path: string, options: RequestOptions): Promise<T> {
+    options.signal?.throwIfAborted();
     let token: string | null = null;
     if (!options.anonymous) {
       token = await this.tokenProvider.getAccessToken();
@@ -144,6 +182,7 @@ export class ApiClient {
     try {
       return await this.send<T>(method, path, options, token);
     } catch (error) {
+      options.signal?.throwIfAborted();
       if (options.anonymous || !(error instanceof ApiClientError) || error.status !== 401 || error.code !== "token-expired") {
         throw error;
       }
@@ -154,6 +193,7 @@ export class ApiClient {
   }
 
   private async send<T>(method: string, path: string, options: RequestOptions, token: string | null): Promise<T> {
+    options.signal?.throwIfAborted();
     const headers: Record<string, string> = { Accept: options.binary ? "application/octet-stream" : "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (this.clientId) headers["X-Libera-Client"] = this.clientId;
@@ -167,7 +207,7 @@ export class ApiClient {
     }
     let response: Response;
     try {
-      response = await this.fetchImpl(this.url(path, options.query), { method, headers, body });
+      response = await this.fetchImpl(this.url(path, options.query), { method, headers, body, signal: options.signal });
     } catch (error) {
       throw new ApiClientError("network", 0, error instanceof Error ? error.message : String(error));
     }
@@ -259,8 +299,8 @@ export class ApiClient {
     return this.request("POST", ApiRoutes.projects, { body });
   }
 
-  getProject(projectId: string): Promise<ProjectSummary> {
-    return this.request("GET", ApiRoutes.project(projectId));
+  getProject(projectId: string, options: RequestOptions = {}): Promise<ProjectSummary> {
+    return this.request("GET", ApiRoutes.project(projectId), options);
   }
 
   renameProject(projectId: string, body: RenameProjectRequest): Promise<ProjectSummary> {
@@ -272,13 +312,13 @@ export class ApiClient {
   }
 
   /** Takes or renews the writer lease of a synced folder (granted: false when another installation holds it). */
-  acquireFolderLease(projectId: string, body: FolderLeaseRequest): Promise<FolderLease> {
-    return this.request("POST", ApiRoutes.folderLease(projectId), { body });
+  acquireFolderLease(projectId: string, body: FolderLeaseRequest, options: RequestOptions = {}): Promise<FolderLease> {
+    return this.request("POST", ApiRoutes.folderLease(projectId), { ...options, body });
   }
 
   /** Gives the lease up, if `holder` still holds it. */
   releaseFolderLease(projectId: string, folderId: string, holder: string): Promise<void> {
-    return this.request("DELETE", ApiRoutes.folderLease(projectId), { query: { folderId, holder } });
+    return this.request("DELETE", ApiRoutes.folderLease(projectId), { query: { folderId, holder }, timeoutMs: 1000 });
   }
 
   listMembers(projectId: string): Promise<Member[]> {

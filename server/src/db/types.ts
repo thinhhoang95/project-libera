@@ -41,6 +41,15 @@ export interface ProjectsTable {
   deleted_at: NullableTime;
 }
 
+export interface ProjectCreationsTable {
+  account_id: string;
+  operation_id: string;
+  project_id: string;
+  name: string;
+  kind: ProjectKind;
+  created_at: CreatedAt;
+}
+
 export interface MembershipsTable {
   project_id: string;
   account_id: string;
@@ -282,6 +291,7 @@ export interface DB {
   accounts: AccountsTable;
   refresh_tokens: RefreshTokensTable;
   projects: ProjectsTable;
+  project_creations: ProjectCreationsTable;
   memberships: MembershipsTable;
   invitations: InvitationsTable;
   documents: DocumentsTable;

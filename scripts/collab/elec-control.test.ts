@@ -14,6 +14,7 @@ import test from "node:test";
 
 import * as Y from "yjs";
 
+import { databaseKey } from "../../electron/collab/control/runtime";
 import { startControlApp, type ControlApp } from "../../electron/collab/control";
 import type { SecretCodec } from "../../electron/collab/control/account";
 import { SHARED_SIGN_IN_FILE } from "../../electron/collab/control/shared-sign-in";
@@ -180,7 +181,7 @@ test("control API against the real collab server", { timeout: 180_000 }, async (
     await until(() => lastStatus(alice)?.connection === "connected", "alice to connect");
     const connectionsSeen = alice.events.filter((event) => event.t === "status").map((event) => (event as { status: HostStatus }).status.connection);
     assert.ok(connectionsSeen.includes("signed-out") && connectionsSeen.includes("connected"), connectionsSeen.join(","));
-    assert.ok(existsSync(path.join(alice.dir, `${aliceId}.sqlite`)), "the account's own database is open");
+    assert.ok(existsSync(path.join(alice.dir, `${databaseKey(aliceId, server.url)}.sqlite`)), "the account's own database is open");
 
     // Account file: public fields only. Session file: ciphertext only.
     const accountFile = readFileSync(path.join(alice.dir, "account.json"), "utf8");

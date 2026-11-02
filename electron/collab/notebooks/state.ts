@@ -220,6 +220,10 @@ export interface PlannedFile {
 
 export interface SharePlan {
   version: 1;
+  operationId?: string;
+  accountId?: string;
+  serverUrl?: string;
+  kind?: ProjectKind;
   name: string;
   startedAt: number;
   /** Set as soon as the server created the project. */
@@ -245,17 +249,20 @@ export async function readSharePlan(root: string): Promise<SharePlan | null> {
   return value;
 }
 
-export async function writeSharePlan(root: string, plan: SharePlan): Promise<void> {
-  await writeJson(path.join(root, SHARE_PENDING_FILE), plan);
+export async function writeSharePlan(root: string, plan: SharePlan, guard?: WriteGuard): Promise<void> {
+  await writeJson(path.join(root, SHARE_PENDING_FILE), plan, guard);
 }
 
 /** One small checkpoint per album photo, instead of rewriting every planned photo. */
-export async function recordShareUpload(root: string, file: PlannedFile): Promise<void> {
+export async function recordShareUpload(root: string, file: PlannedFile, guard?: WriteGuard): Promise<void> {
+  await checkWriteGuard(guard);
   // The leading newline separates a prior interrupted record from this one.
   await fs.appendFile(path.join(root, SHARE_UPLOADS_FILE), `\n${JSON.stringify({ fileId: file.fileId, blobHash: file.blobHash })}\n`);
 }
 
-export async function deleteSharePlan(root: string): Promise<void> {
+export async function deleteSharePlan(root: string, guard?: WriteGuard): Promise<void> {
+  await checkWriteGuard(guard);
   await fs.rm(path.join(root, SHARE_UPLOADS_FILE), { force: true });
+  await checkWriteGuard(guard);
   await fs.rm(path.join(root, SHARE_PENDING_FILE), { force: true });
 }

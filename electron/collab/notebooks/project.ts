@@ -39,6 +39,7 @@ import {
   WriteCancelledError,
   STATE_DIRECTORY,
   availableName,
+  contentGuard,
   decodeText,
   encodeText,
   ensureDirectory,
@@ -193,11 +194,14 @@ export class SharedProject {
   private dirtyPaths = new Set<string>();
   private verifyAll = false;
   private readonly verified = new Map<string, { ctimeMs: number | undefined; at: number }>();
+  private readonly retired: Set<string>;
+  private observedEntries = new Map<string, ManifestEntry>();
 
   private constructor(ctx: ProjectContext, info: ProjectInfo, state: ProjectState) {
     this.ctx = ctx;
     this.info = info;
     this.state = state;
+    this.retired = ctx.host.store.retiredPaths(info.projectId);
   }
 
   static async open(ctx: ProjectContext, info: ProjectInfo): Promise<SharedProject> {
@@ -261,6 +265,7 @@ export class SharedProject {
     this.started = true;
     const hub = this.ctx.host.acquire(this.info.manifestDocId, { kind: "manifest", projectId: this.info.projectId });
     this.manifestHub = hub;
+    this.observedEntries = this.readEntries();
     this.unsubscribe.push(
       hub.observe("manifest", (change) => {
         if (change.origin === "rebuilt") {
@@ -268,6 +273,11 @@ export class SharedProject {
           return;
         }
         if (change.origin === "server") this.manifestRebuilt = false;
+        const current = this.readEntries();
+        for (const entry of this.observedEntries.values()) {
+          if (current.get(entry.fileId)?.path !== entry.path) this.retirePath(entry.path);
+        }
+        this.observedEntries = current;
         this.scheduleManifest(30);
       }),
       hub.onStatus(() => {
@@ -332,18 +342,33 @@ export class SharedProject {
         const bytes = encodeText(text);
         const target = await resolveInside(this.info.root, record.path);
         const disk = await readIfExists(target);
+        let expected = disk === null ? null : sha256(disk);
         if (disk && sha256(disk) !== sha256(bytes) && sha256(disk) !== record.hash &&
             decodeText(disk) !== await readBase(this.info.root, record.docId)) {
-          await this.archive(record.path, guard);
+          await this.archive(record.path, contentGuard(target, expected, guard));
+          expected = null;
         }
-        const stats = await writeFileAtomic(target, bytes, guard);
+        const stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, guard));
         setMaterialized(record, sha256(bytes), stats.size, stats.mtimeMs);
         await writeBase(this.info.root, record.docId, text, guard);
       } catch (error) {
         // A local symlink or a disappearing/replaced root must not block
         // revocation, nor turn preservation into a write outside this copy.
         if (!(error instanceof PathRefusedError) && !(error instanceof WriteCancelledError) && !isNotFound(error)) throw error;
-        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} stays in the local collaboration log because its disk target is unavailable.`);
+        const runtime = record.docId ? this.docs.get(record.docId) : undefined;
+        let archived = false;
+        try {
+          if (error instanceof WriteCancelledError && runtime && await guard.canCommit()) {
+            const directory = path.join(this.info.root, ARCHIVE_DIRECTORY);
+            const name = await availableName(directory, `${path.posix.basename(record.path)}.${runtime.docId}.shared`);
+            const recovery = path.join(directory, name);
+            await writeFileAtomic(recovery, encodeText(runtime.hub.getText("content")), contentGuard(recovery, null, guard));
+            archived = true;
+          }
+        } catch (recoveryError) {
+          if (!(recoveryError instanceof PathRefusedError) && !(recoveryError instanceof WriteCancelledError) && !isNotFound(recoveryError)) throw recoveryError;
+        }
+        this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} stays in ${archived ? "the archive" : "the local collaboration log"} because its disk target is unavailable.`);
       }
     }
   }
@@ -460,6 +485,7 @@ export class SharedProject {
     // Removed entries: archive files (never delete user data outright).
     for (const [fileId, record] of Object.entries(previous)) {
       if (layout.paths.has(fileId)) continue;
+      this.retirePath(record.path);
       touched.add(record.path);
       vacated.add(record.kind === "folder" ? record.path : path.posix.dirname(record.path));
       if (record.docId) this.docs.get(record.docId)?.hub.markDeleted();
@@ -477,6 +503,7 @@ export class SharedProject {
     for (const [fileId, record] of Object.entries(previous)) {
       const desired = layout.paths.get(fileId);
       if (!desired || desired === record.path) continue;
+      this.retirePath(record.path);
       if (record.kind === "folder") {
         vacated.add(record.path);
         continue;
@@ -584,6 +611,7 @@ export class SharedProject {
       next[fileId] = entry.kind === "doc" ? { path: desired, kind: "doc", docId: entry.docId, docKind: entry.docKind } : { path: desired, kind: entry.kind };
     }
     for (const [fileId, record] of Object.entries(previous)) {
+      if (!next[fileId] || next[fileId].path !== record.path) this.retirePath(record.path);
       if (record.docId && next[fileId]?.docId !== record.docId) {
         this.docs.get(record.docId)?.hub.markDeleted();
         this.releaseDoc(record.docId);
@@ -616,44 +644,50 @@ export class SharedProject {
       this.refuse(record.path, error);
       return true;
     }
-    const existing = await readIfExists(target);
-    let preserveExternal = false;
-    if (existing) {
-      const existingHash = sha256(existing);
-      if (existingHash === hash) {
-        const stats = await statIfExists(target);
-        setMaterialized(record, hash, stats?.size, stats?.mtimeMs);
-        if (stats?.isFile()) this.baselineMissing.delete(entry.fileId);
-        return true;
-      }
-      // The local copy changed and the shared file was replaced too: keep the
-      // local bytes in the archive rather than overwrite them silently. An
-      // older copy we wrote ourselves is not worth keeping.
-      const existingStats = await statIfExists(target);
-      if (record.hash && existingHash !== record.hash && !(existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
-        preserveExternal = true;
-      }
-    }
-    const bytes = await this.blobBytes(hash);
+    // A valid local delivery needs no HTTP round trip. All destination
+    // decisions below still use a fresh read after any download has finished.
+    const delivered = await readIfExists(target);
+    const bytes = delivered && sha256(delivered) === hash ? delivered : await this.blobBytes(hash);
     if (!bytes) return false;
     const guard = this.diskGuard();
     const canCommit = guard.canCommit;
+    let expected: string | null;
     guard.canCommit = async () => {
       if (!(await canCommit()) || !this.manifestReady()) return false;
       const current = this.readEntries();
-      return current.get(entry.fileId)?.blobHash === hash && computeLayout(current.values()).paths.get(entry.fileId) === record.path;
+      if (current.get(entry.fileId)?.blobHash !== hash || computeLayout(current.values()).paths.get(entry.fileId) !== record.path) return false;
+      const disk = await readIfExists(target);
+      return (disk === null ? null : sha256(disk)) === expected;
     };
-    if (preserveExternal) {
-      // Fetch before moving the existing bytes. If the final write is refused,
-      // absence remains an incomplete materialization, never a user deletion.
-      this.baselineMissing.add(entry.fileId);
-      await this.archive(record.path, guard);
+    try {
+      // Network waits can outlive an external edit. Observe the destination
+      // after downloading, and verify that observation at each disk commit.
+      const existing = await readIfExists(target);
+      const existingHash = existing === null ? null : sha256(existing);
+      expected = existingHash;
+      const existingStats = await statIfExists(target);
+      if (expected === hash) {
+        if (!(await guard.canCommit())) return false;
+        setMaterialized(record, hash, existingStats?.size, existingStats?.mtimeMs);
+        this.baselineMissing.delete(entry.fileId);
+        return true;
+      }
+      if (existingHash !== null && existingHash !== record.hash && !(existingStats && isStaleCopy(record, existingHash, existingStats.mtimeMs))) {
+        this.baselineMissing.add(entry.fileId);
+        await this.archive(record.path, guard);
+        expected = null;
+      }
+      const stats = await writeFileAtomic(target, bytes, guard);
+      setMaterialized(record, hash, stats.size, stats.mtimeMs);
+      this.baselineMissing.delete(entry.fileId);
+      this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
+      return true;
+    } catch (error) {
+      // An archive may already have succeeded. Keep the missing-baseline
+      // fence until a retry places the current blob, never infer a delete.
+      if (!(error instanceof WriteCancelledError)) this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: could not place ${record.path}`, error);
+      return false;
     }
-    const stats = await writeFileAtomic(target, bytes, guard);
-    setMaterialized(record, hash, stats.size, stats.mtimeMs);
-    this.baselineMissing.delete(entry.fileId);
-    this.ctx.host.store.putBlob({ hash, localPath: target, size: bytes.byteLength });
-    return true;
   }
 
   private async blobBytes(hash: string): Promise<Uint8Array | null> {
@@ -909,6 +943,7 @@ export class SharedProject {
     const text = runtime.hub.getText("content");
     const hash = sha256(encodeText(text));
     const disk = await readIfExists(target);
+    let expected = disk === null ? null : sha256(disk);
     if (disk) {
       const diskHash = sha256(disk);
       if (record.hash && diskHash !== record.hash) {
@@ -920,7 +955,14 @@ export class SharedProject {
         await this.adopt(fileId, record, hash, text, target);
         return;
       }
-      if (!record.hash) await this.archive(record.path);
+      if (!record.hash) {
+        try { await this.archive(record.path, contentGuard(target, expected, this.diskGuard())); }
+        catch (error) {
+          if (!(error instanceof WriteCancelledError)) throw error;
+          this.scheduleScan(0); this.scheduleRetry(); return;
+        }
+        expected = null;
+      }
     } else if (record.hash && !this.baselineMissing.has(fileId)) {
       // Deleted on disk after our last write: that is the user's delete, which
       // the watcher turns into a manifest operation. Do not resurrect it.
@@ -928,7 +970,7 @@ export class SharedProject {
       this.scheduleScan(this.ctx.timings.settleMs);
       return;
     }
-    await this.writeDoc(runtime, record, target, text);
+    if (!(await this.writeDoc(runtime, record, target, text, expected))) return;
     // A collaborator's new document exists on disk only now; the tree-changed
     // sent when its manifest entry arrived came before the file did.
     if (!disk) {
@@ -937,16 +979,29 @@ export class SharedProject {
   }
 
   /** Writes `text` as the document's file and records it as materialized. */
-  private async writeDoc(runtime: DocRuntime, record: LayoutRecord, target: string, text: string): Promise<void> {
+  private async writeDoc(runtime: DocRuntime, record: LayoutRecord, target: string, text: string, expected: string | null): Promise<boolean> {
     const bytes = encodeText(text);
     const hash = sha256(bytes);
-    const stats = await writeFileAtomic(target, bytes, this.diskGuard());
+    const base = this.diskGuard();
+    const canCommit = base.canCommit;
+    base.canCommit = async () => {
+      if (!(await canCommit()) || !this.manifestReady()) return false;
+      const current = this.readEntries();
+      return current.get(runtime.fileId)?.docId === runtime.docId && computeLayout(current.values()).paths.get(runtime.fileId) === record.path;
+    };
+    let stats;
+    try { stats = await writeFileAtomic(target, bytes, contentGuard(target, expected, base)); }
+    catch (error) {
+      if (!(error instanceof WriteCancelledError)) throw error;
+      this.scheduleScan(0); this.scheduleRetry(); return false;
+    }
     setMaterialized(record, hash, stats.size, stats.mtimeMs);
     await writeBase(this.info.root, runtime.docId, text, this.diskGuard());
     this.baselineMissing.delete(runtime.fileId);
     this.ctx.host.store.upsertDoc({ docId: runtime.docId, projectId: this.info.projectId, fileId: runtime.fileId, path: record.path, materializedHash: hash });
     this.saveSoon();
     this.filesChanged([record.path]);
+    return true;
   }
 
   /** Records bytes already on disk as the materialized state of a document. */
@@ -976,7 +1031,7 @@ export class SharedProject {
       // An older version we wrote came back (a sync client restoring or
       // delivering a stale copy). Taking it in would undo newer edits.
       this.ctx.logger.warn(`Shared notebook ${this.info.notebook}: ${record.path} was replaced by an older copy; the current text was written again.`);
-      await this.writeDoc(runtime, record, target, shared);
+      await this.writeDoc(runtime, record, target, shared, diskHash);
       return;
     }
     if (!this.canEdit) {
@@ -1086,14 +1141,12 @@ export class SharedProject {
       const runtime = this.docs.get(item.docId);
       const found = this.recordFor(item.docId);
       if (!runtime || !found) throw new ControlError(409, "conflict", "The document is no longer in this notebook.");
-      this.applyText(runtime.hub, runtime.hub.getText("content"), text, { source: "reconcile" });
       const target = await resolveInside(this.info.root, found.record.path);
-      const bytes = encodeText(text);
-      const stats = await writeFileAtomic(target, bytes, this.diskGuard());
-      const hash = sha256(bytes);
-      setMaterialized(found.record, hash, stats.size, stats.mtimeMs);
-      await writeBase(this.info.root, item.docId, text, this.diskGuard());
-      this.ctx.host.store.upsertDoc({ docId: item.docId, projectId: this.info.projectId, fileId: found.fileId, path: found.record.path, materializedHash: hash });
+      const observed = await readIfExists(target);
+      this.applyText(runtime.hub, runtime.hub.getText("content"), text, { source: "reconcile" });
+      if (!(await this.writeDoc(runtime, found.record, target, text, observed === null ? null : sha256(observed)))) {
+        throw new ControlError(409, "conflict", "The disk changed during the merge. The merged shared text is saved; review the new disk version.");
+      }
       this.dropReconciliations(item.docId);
       this.saveSoon();
       this.ctx.emit({ t: "project-changed", projectId: this.info.projectId });
@@ -1169,11 +1222,11 @@ export class SharedProject {
     this.dirtyPaths = new Set();
     const verifyAll = this.verifyAll;
     this.verifyAll = false;
-    const known = new Set(Object.values(this.state.layout).map((record) => record.path));
+    const known = new Set([...Object.values(this.state.layout), ...this.readEntries().values()].map((record) => record.path));
     // Parents of known entries are known too: a folder implied by "a/b.md"
     // must not become a new folder entry on every machine that sees it.
-    for (const record of Object.values(this.state.layout)) {
-      const segments = record.path.split("/");
+    for (const relative of [...known]) {
+      const segments = relative.split("/");
       for (let index = 1; index < segments.length; index += 1) known.add(segments.slice(0, index).join("/"));
     }
     const now = Date.now();
@@ -1270,6 +1323,14 @@ export class SharedProject {
     const fresh: Array<{ entry: WalkEntry; bytes: Uint8Array; hash: string }> = [];
     for (const [relative, entry] of files) {
       if (known.has(relative)) continue;
+      if (this.pathRetired(relative)) {
+        const guard = this.diskGuard();
+        const canCommit = guard.canCommit;
+        guard.canCommit = async () => await canCommit() && this.pathFree(this.manifestDoc(), relative);
+        await this.archive(relative, guard);
+        touched.add(relative);
+        continue;
+      }
       const absolute = await resolveInside(this.info.root, relative).catch(() => null);
       const bytes = absolute ? await readIfExists(absolute) : null;
       if (bytes) fresh.push({ entry, bytes, hash: sha256(bytes) });
@@ -1287,12 +1348,20 @@ export class SharedProject {
       const entry = this.entries.get(fileId);
       if (!this.canEdit || !entry) continue;
       touched.add(record.path).add(match.entry.relative);
-      const updated: ManifestEntry = { ...entry, path: match.entry.relative, updatedAt: now };
-      operations.push((map) => map.set(fileId, entryRecord(updated)));
-      Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
-      if (record.docId) {
-        this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
-      }
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || current.kind !== entry.kind || current.docId !== entry.docId || current.path !== entry.path) {
+          // Keep an uncommitted local alias from becoming a fresh file on
+          // the next scan after the authoritative deletion/move is applied.
+          this.retirePath(match.entry.relative);
+          return;
+        }
+        if (!this.pathFree(doc, match.entry.relative, fileId)) return;
+        map.set(fileId, entryRecord({ ...current, path: match.entry.relative, updatedAt: now }));
+        this.retirePath(record.path);
+        Object.assign(record, { path: match.entry.relative, size: match.entry.size, mtimeMs: match.entry.mtimeMs });
+        if (record.docId) this.ctx.host.store.upsertDoc({ docId: record.docId, projectId: this.info.projectId, fileId, path: record.path, materializedHash: record.hash ?? null });
+      });
     }
 
     // Still missing after the grace period: deleted.
@@ -1305,11 +1374,18 @@ export class SharedProject {
       }
       if (!this.canEdit) continue;
       const record = this.state.layout[fileId];
-      operations.push((map) => map.delete(fileId));
-      touched.add(record.path);
-      if (record.docId) removedRecords.push(record);
-      delete this.state.layout[fileId];
-      this.missingSince.delete(fileId);
+      const entry = this.entries.get(fileId);
+      operations.push((map, doc) => {
+        const current = readManifest(doc).get(fileId);
+        if (!current || !entry || current.path !== entry.path || current.kind !== entry.kind ||
+            current.docId !== entry.docId || current.blobHash !== entry.blobHash) return;
+        this.retirePath(record.path);
+        map.delete(fileId);
+        touched.add(record.path);
+        if (record.docId) removedRecords.push(record);
+        delete this.state.layout[fileId];
+        this.missingSince.delete(fileId);
+      });
     }
 
     if (this.canEdit) {
@@ -1320,6 +1396,10 @@ export class SharedProject {
           continue;
         }
         operations.push((map, doc) => {
+          if (this.pathRetired(created.path) || !this.pathFree(doc, created.path)) {
+            delete this.state.layout[created.fileId];
+            return;
+          }
           map.set(created.fileId, entryRecord(created));
           if (this.info.album) {
             const photo: AlbumPhotoRecord = { fileId: created.fileId, addedBy: accountId, updatedAt: now };
@@ -1331,11 +1411,14 @@ export class SharedProject {
       }
       for (const [relative, entry] of directories) {
         if (this.info.album) break;
-        if (known.has(relative)) continue;
+        if (known.has(relative) || this.pathRetired(relative)) continue;
         const fileId = randomId("fil");
         const created: ManifestEntry = { fileId, path: relative, kind: "folder", createdBy: accountId, createdAt: now, updatedAt: now };
-        this.state.layout[fileId] = { path: relative, kind: "folder", mtimeMs: entry.mtimeMs };
-        operations.push((map) => map.set(fileId, entryRecord(created)));
+        operations.push((map, doc) => {
+          if (!this.pathFree(doc, relative, undefined, true) || this.pathRetired(relative)) return;
+          this.state.layout[fileId] = { path: relative, kind: "folder", mtimeMs: entry.mtimeMs };
+          map.set(fileId, entryRecord(created));
+        });
         touched.add(relative);
       }
     }
@@ -1368,6 +1451,30 @@ export class SharedProject {
     if (needsRetry) this.scheduleRetry();
   }
 
+  private retirePath(relative: string): void {
+    const key = manifestPathKey(relative);
+    if (this.retired.has(key)) return;
+    this.ctx.host.store.retirePath(this.info.projectId, key);
+    this.retired.add(key);
+  }
+
+  private pathRetired(relative: string): boolean {
+    const segments = manifestPathKey(relative).split("/");
+    for (let length = 1; length <= segments.length; length += 1) {
+      if (this.retired.has(segments.slice(0, length).join("/"))) return true;
+    }
+    return false;
+  }
+
+  private pathFree(doc: Y.Doc, relative: string, except?: string, folder = false): boolean {
+    const key = manifestPathKey(relative);
+    return [...readManifest(doc).values()].every((entry) => {
+      if (entry.fileId === except) return true;
+      const other = manifestPathKey(entry.path);
+      return other !== key && (folder || !other.startsWith(`${key}/`)) && (entry.kind === "folder" || !key.startsWith(`${other}/`));
+    });
+  }
+
   /** A new local file becomes a shared document or blob. Returns its manifest entry, or null to retry later. */
   private async createFromDisk(entry: WalkEntry, bytes: Uint8Array, hash: string, accountId: string, now: number): Promise<ManifestEntry | null> {
     const api = this.ctx.host.api;
@@ -1380,10 +1487,16 @@ export class SharedProject {
     }
     const fileId = randomId("fil");
     const classified = classifyFile(entry.relative, bytes);
+    const stillCurrent = async () => {
+      if (this.follower || !(await this.rootAvailable())) return false;
+      const current = await readIfExists(await resolveInside(this.info.root, entry.relative));
+      return current !== null && sha256(current) === hash;
+    };
     try {
       if (classified.kind === "doc") {
         const docId = randomId("doc");
         await createSharedDocument(api, this.info.projectId, { docId, fileId }, classified.docKind, classified.text);
+        if (!(await stillCurrent())) return null;
         this.state.layout[fileId] = { path: entry.relative, kind: "doc", docId, docKind: classified.docKind, hash, size: entry.size, mtimeMs: entry.mtimeMs };
         await writeBase(this.info.root, docId, classified.text, this.diskGuard());
         this.ctx.host.store.upsertDoc({ docId, projectId: this.info.projectId, fileId, path: entry.relative, materializedHash: hash });
@@ -1391,6 +1504,7 @@ export class SharedProject {
       }
       const mime = mimeForPath(entry.relative);
       await api.uploadBlob(this.info.projectId, bytes, mime);
+      if (!(await stillCurrent())) return null;
       this.state.layout[fileId] = { path: entry.relative, kind: "blob", hash, size: entry.size, mtimeMs: entry.mtimeMs };
       this.ctx.host.store.putBlob({ hash, localPath: path.join(this.info.root, ...entry.relative.split("/")), size: bytes.byteLength });
       return { fileId, path: entry.relative, kind: "blob", blobHash: hash, size: bytes.byteLength, mime, createdBy: accountId, createdAt: now, updatedAt: now };
@@ -1556,8 +1670,20 @@ export class SharedProject {
     }
     // A follower leaves the file to the writer.
     if (this.follower) return created;
-    // The bytes are known, so write the file now instead of waiting for the server echo.
-    const stats = await writeFileAtomic(target, bytes, this.diskGuard());
+    if (!this.pathFree(this.manifestDoc(), relative)) return created;
+    // The path was empty before HTTP; a cloud/editor arrival is separate work.
+    const guard = this.diskGuard();
+    const arrived = await readIfExists(target);
+    let stats;
+    try {
+      if (arrived) await this.archive(relative, contentGuard(target, sha256(arrived), guard));
+      stats = await writeFileAtomic(target, bytes, contentGuard(target, null, guard));
+    } catch (error) {
+      if (!(error instanceof WriteCancelledError) || !(await guard.canCommit())) throw error;
+      // The server already holds the submitted input. Publish its identity;
+      // normal materialization will preserve the newer disk arrival too.
+      return created;
+    }
     this.state.layout[fileId] = {
       path: relative,
       kind: created.kind,

@@ -133,6 +133,16 @@ export async function checkWriteGuard(guard?: WriteGuard): Promise<void> {
   if (guard && !(await guard.canCommit())) throw new WriteCancelledError();
 }
 
+/** Fence the exact destination observation across IO and busy-file retries. */
+export function contentGuard(absolute: string, expected: string | null, guard: WriteGuard): WriteGuard {
+  return { root: guard.root, canCommit: async () => {
+    if (!(await guard.canCommit())) return false;
+    await resolveInside(guard.root, toRelative(guard.root, absolute));
+    const bytes = await readIfExists(absolute);
+    return (bytes === null ? null : sha256(bytes)) === expected;
+  } };
+}
+
 /** Create descendants one level at a time, without recursively resurrecting a root. */
 export async function ensureDirectory(directory: string, guard?: WriteGuard): Promise<void> {
   await checkWriteGuard(guard);

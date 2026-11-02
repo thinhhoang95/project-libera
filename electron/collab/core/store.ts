@@ -13,6 +13,7 @@
 import { closeSync, openSync, readFileSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 
+import type { AccountAuthority } from "./authority";
 import type { Command } from "../../../src/lib/collab/protocol/api";
 import type { Provenance } from "../../../src/lib/collab/protocol/actor";
 import type { Role, Subdoc } from "../../../src/lib/collab/protocol/roles";
@@ -276,6 +277,21 @@ const MIGRATIONS: string[] = [
     text TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (doc_id, subdoc)
+  );
+  `,
+  `
+  -- Kept outside the cloud working copy: an old state.json cannot forget a
+  -- deletion and turn a late file delivery into a new shared document.
+  CREATE TABLE retired_paths (
+    project_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+  );
+  -- A null authority pins an ambiguous legacy file for manual recovery.
+  CREATE TABLE database_authority (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    account_id TEXT,
+    server_url TEXT
   );
   `,
 ];
@@ -1041,6 +1057,24 @@ export class HostStore {
   }
 
   // ------------------------------------------------------------ projects, docs, blobs
+
+  databaseAuthority(): AccountAuthority | null | undefined {
+    const row = this.get(`SELECT account_id, server_url FROM database_authority WHERE id = 1`);
+    if (!row) return undefined;
+    return typeof row.account_id === "string" && typeof row.server_url === "string" ? { accountId: row.account_id, serverUrl: row.server_url } : null;
+  }
+
+  setDatabaseAuthority(authority: AccountAuthority | null): void {
+    this.run(`INSERT INTO database_authority (id, account_id, server_url) VALUES (1, ?, ?)`, authority?.accountId ?? null, authority?.serverUrl ?? null);
+  }
+
+  retirePath(projectId: string, path: string): void {
+    this.run(`INSERT OR IGNORE INTO retired_paths (project_id, path) VALUES (?, ?)`, projectId, path);
+  }
+
+  retiredPaths(projectId: string): Set<string> {
+    return new Set(this.all(`SELECT path FROM retired_paths WHERE project_id = ?`, projectId).map((row) => String(row.path)));
+  }
 
   upsertProject(project: ProjectRow): void {
     this.run(

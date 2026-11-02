@@ -126,6 +126,8 @@ export interface ChangePasswordRequest {
 }
 
 export interface VersionResponse {
+  /** Server supports account-scoped, durable project creation keys. */
+  projectCreationKeys?: boolean;
   protocolVersion: number;
   minProtocolVersion: number;
   /** Lowest desktop app version that can sync, semver. */
@@ -136,6 +138,8 @@ export interface VersionResponse {
 // ---------------------------------------------------------------- projects
 
 export interface ProjectSummary {
+  /** Echoed by operation-keyed creation; absent on older servers. */
+  creationId?: string;
   id: string;
   name: string;
   role: Role;
@@ -173,6 +177,8 @@ export interface FolderLease {
 }
 
 export interface CreateProjectRequest {
+  /** Persist before sending; retries create exactly one project per account. */
+  creationId?: string;
   name: string;
   /** Defaults to "notebook". */
   kind?: ProjectKind;
