@@ -263,7 +263,7 @@ test("workspace API requires authentication and rejects invalid saved data", asy
 });
 
 test("workspace scope overrides library hides and removes empty groups", () => {
-  const grouped: LiberaTree = { ...tree, notebookGroups: [{ id: "g1", title: "Research", description: "", createdAt: date, updatedAt: date }, { id: "g2", title: "Empty", description: "", createdAt: date, updatedAt: date }], notebooks: tree.notebooks.map((node) => ({ ...node, groupId: "g1" })), notebookViewOptions: { hiddenGroupIds: ["g1"], hiddenNotebookNames: ["Notes"], showArchive: false } };
+  const grouped: LiberaTree = { ...tree, notebookGroups: [{ id: "g1", title: "Research", description: "", createdAt: date, updatedAt: date }, { id: "g2", title: "Empty", description: "", createdAt: date, updatedAt: date }], notebooks: tree.notebooks.map((node) => ({ ...node, groupId: "g1" })), notebookViewOptions: { hiddenGroupIds: ["g1"], hiddenNotebookNames: ["Notes"], showArchive: false, showFileDetails: true } };
   const filtered = filterWorkspaceTree(grouped, { mode: "include", paths: [a.path] });
   assert.deepEqual(filtered.notebookGroups.map((group) => group.id), ["g1"]);
   assert.deepEqual(filtered.notebookViewOptions.hiddenGroupIds, []);
@@ -553,7 +553,7 @@ test("sorting controls and group changes stay in their workspace across switches
     await act(async () => { workspace.openEditNotebookDialog(workspace.tree.notebooks.find((node) => node.name === "Created")!); });
     await act(async () => { await workspace.submitNotebookDialog({ name: "Renamed", color: "#7c6fba", emoji: "", groupId: localGroup.id }); });
     assert.equal(workspace.tree.notebooks.find((node) => node.name === "Renamed")?.groupId, localGroup.id);
-    await act(async () => { await workspace.updateNotebookViewOptions({ hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: true }); await workspace.refreshTree(); });
+    await act(async () => { await workspace.updateNotebookViewOptions({ hiddenGroupIds: [], hiddenNotebookNames: [], showArchive: true, showFileDetails: true }); await workspace.refreshTree(); });
     const oneView = structuredClone(workspace.workspaceManager.activeWorkspace!.view);
     await switchTo("w2");
     assert.deepEqual(workspace.workspaceManager.activeWorkspace?.view, initialView);

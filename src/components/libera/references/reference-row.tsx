@@ -269,9 +269,14 @@ type MenuProps = {
   onClose: () => void;
 };
 
-export function openNativeReferenceActionsMenu({ entry, point, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose">) {
+export function openNativeReferenceActionsMenu({ point, ...props }: Omit<MenuProps, "onClose">) {
+  return popupReferenceMenu(referenceActionsMenuItems(props), point);
+}
+
+/** A reference's actions, for its row's native menu and the macOS References menu. */
+export function referenceActionsMenuItems({ entry, canCite, citeSyntax = "markdown", canFind = false, citing, onAction, onOpenPath }: Omit<MenuProps, "onClose" | "point">): ReferenceMenuItem[] {
   const action = (id: ReferenceMenuAction, label: string, enabled = true): ReferenceMenuItem => ({ id, label, enabled, onSelect: () => onAction(id) });
-  return popupReferenceMenu([
+  return [
     ...citeActions(citeSyntax).map(({ command, label }) => action(command === "citep" ? "citep" : "cite", label, canCite)),
     action("find-in-file", FIND_IN_FILE_LABEL, canFind),
     ...(entry.attachments.some((attachment) => attachment.kind === "pdf") ? [action("open-pdf", "Open PDF")] : []),
@@ -289,7 +294,7 @@ export function openNativeReferenceActionsMenu({ entry, point, canCite, citeSynt
     action("reresolve", "Re-resolve…"),
     action("edit", "Edit…"),
     action("delete", "Delete…"),
-  ], point);
+  ];
 }
 
 function MenuItem({ icon, label, onClick, disabled, title, tone }: { icon: ReactNode; label: string; onClick: () => void; disabled?: boolean; title?: string; tone?: "destructive" }) {

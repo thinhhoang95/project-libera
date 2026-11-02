@@ -100,6 +100,11 @@ declare global {
     liberaMenu?: {
       popup: (input: LiberaNativeMenuInput) => Promise<string | null>;
     };
+    /** macOS only: the menu bar's document and app menus (app-menu.ts). */
+    liberaAppMenu?: {
+      update: (menus: Record<"file" | "format" | "insert" | "references" | "view" | "tab" | "ai", LiberaNativeMenuItem[]>) => void;
+      onSelect: (listener: (id: string) => void) => () => void;
+    };
     liberaFileExplorer?: {
       revealNotebook: (notebook: string) => Promise<void>;
       revealItem: (relativePath: string) => Promise<void>;

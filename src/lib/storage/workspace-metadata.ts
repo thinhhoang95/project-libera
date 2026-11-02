@@ -19,6 +19,7 @@ const DEFAULT_NOTEBOOK_VIEW_OPTIONS: LiberaNotebookViewOptions = {
   hiddenGroupIds: [],
   hiddenNotebookNames: [],
   showArchive: false,
+  showFileDetails: true,
 };
 
 const DEFAULT_WORKSPACE_METADATA: LiberaWorkspaceMetadata = {
@@ -135,6 +136,7 @@ export function normalizeNotebookViewOptions(
     hiddenGroupIds: normalizeStringArray(candidate.hiddenGroupIds),
     hiddenNotebookNames: normalizeStringArray(candidate.hiddenNotebookNames),
     showArchive: candidate.showArchive === true,
+    showFileDetails: candidate.showFileDetails !== false,
   };
 }
 

@@ -17,6 +17,7 @@ import { useMarkdownReview, type SharedReviewState } from "./markdown-review-con
 import { apiRequest } from "./api-client";
 import { ChatFileComposer } from "./chat-file-composer";
 import { usePaletteCommands } from "./command-palette/commands";
+import { useAppMenuItems } from "./app-menu";
 import type { ChatContext } from "@/lib/document-chat";
 import type { OpenTab } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
@@ -27,9 +28,25 @@ export function ReviewToggle() {
   if (!review) return null;
   return <button type="button" className="review-toggle inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted aria-pressed:bg-muted aria-pressed:text-accent" aria-label="Review mode" title="Review mode" aria-pressed={review.enabled} disabled={!!review.busy || !review.doc} onClick={() => void review.action("toggle", { enabled: !review.enabled })}><MessageSquarePlus size={16} /></button>;
 }
-/** Comment commands for the command palette; renders nothing. */
+/** Comment commands for the command palette and the macOS AI menu; renders nothing. */
 export function ReviewPaletteCommands() {
   const review = useMarkdownReview();
+  useAppMenuItems("ai", 1, () => {
+    if (!review) return [];
+    const addComment = () => {
+      const range = review.editorSelection();
+      if (range) review.select(range, window.innerWidth / 2, 160);
+      else review.reportError("Select a passage in the editor to comment on.");
+    };
+    return [
+      ...(review.doc ? [
+        { id: "review-mode", label: "Review Mode", type: "checkbox" as const, checked: review.enabled, enabled: !review.busy, onSelect: () => void review.action("toggle", { enabled: !review.enabled }) },
+        { id: "add-comment", label: "Add Comment on Selection", enabled: review.enabled && !review.busy, onSelect: addComment },
+      ] : []),
+      { id: "agentic-review", label: "Agentic Review", type: "checkbox", checked: review.chatReview, onSelect: () => review.setChatReview(!review.chatReview) },
+      { id: "show-comments", label: "Show Comments", onSelect: review.showComments },
+    ];
+  });
   usePaletteCommands(null, () => {
     if (!review?.doc) return [];
     const group = "Comments";

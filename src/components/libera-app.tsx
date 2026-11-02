@@ -29,6 +29,8 @@ import { LeftPanel, type LeftPanelReferences, type LeftPanelTab } from "@/compon
 import { useReferencesPanelRequests } from "@/components/libera/references/references-panel";
 import { PdfQuoteCiteHost } from "@/components/libera/references/pdf-quote-cite";
 import { useReferencePaletteCommands } from "@/components/libera/references/reference-palette-commands";
+import { closedReferencesMenuItems } from "@/components/libera/references/references-panel";
+import { useAppMenuReferences } from "@/components/libera/app-menu";
 import { ReferenceMoveNotice } from "@/components/libera/references/reference-move-notice";
 import { REFERENCES_REVEAL_EVENT, type ReferencesRevealDetail } from "@/lib/references/types";
 import { CollabProvider } from "@/components/libera/collab/collab-provider";
@@ -326,11 +328,17 @@ export function LiberaApp({
     onApplyCitationRewrite: workspace.applyCitationRewriteToTab,
     onRevertCitationRewrite: workspace.revertCitationRewriteInTab,
   };
+  const referenceNotebook = (workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file.notebook : "") || workspace.selectedNotebookName;
   useReferencePaletteCommands({
-    notebook: (workspace.activeTab && !workspace.activeTab.untitled ? workspace.activeTab.file.notebook : "") || workspace.selectedNotebookName,
+    notebook: referenceNotebook,
     canCite: references.canCite,
     onInsertBibliography: () => { workspace.insertBibliographyMarker(); },
   });
+  // macOS References menu while the panel is closed; the open panel offers its own.
+  useAppMenuReferences("fallback", () => closedReferencesMenuItems(referenceNotebook, () => {
+    changeLeftPanel("references");
+    setNotebooksCollapsed(false);
+  }));
 
   const canvas = workspace.canvas;
   // Leaving the gallery uncovers the canvas, so the photo opens where it can be seen.

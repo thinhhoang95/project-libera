@@ -49,6 +49,7 @@ import { NoteLinksButton } from "./note-links-dialog";
 import { TiptapCollabHistory } from "@/lib/collab/bindings/tiptap-history";
 import type { SharedVisualHandle, SharedVisualSource } from "@/lib/collab/bindings/react-visual";
 import { TableInsertButton } from "./table-grid-picker";
+import { tableSizeMenu, useAppMenuEditor } from "./app-menu";
 import { setTiptapHeadingNumbering, TiptapHeadingNumbering } from "@/lib/tiptap-heading-numbering";
 import { TiptapBoldLeadIns } from "@/lib/tiptap-bold-lead-ins";
 import type { EditorRange } from "@/lib/tiptap-editor-actions";
@@ -184,6 +185,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
   const [wildcardMatches, setWildcardMatches] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
   const toolbarRef = useHorizontalToolbarScroll();
+  const rootRef = useRef<HTMLDivElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const visualScrollFrameRef = useRef<number | null>(null);
@@ -734,6 +736,107 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     }
   }, [mathDraft]);
 
+  // The macOS menu bar's Format and Insert menus, running the toolbar's commands.
+  useAppMenuEditor(rootRef, () => {
+    if (!editor || !state) return {};
+    const listItem = () => editor.isActive("taskItem") ? "taskItem" : "listItem";
+    const setBox = (color: string | null) => {
+      const chain = editor.chain().focus();
+      if (editor.isActive("blockquote")) chain.updateAttributes("blockquote", { color }).run();
+      else chain.wrapIn("blockquote", { color }).run();
+    };
+    return {
+      format: [
+        { id: "bold", label: "Bold", type: "checkbox", checked: state.bold, onSelect: () => editor.chain().focus().toggleBold().run() },
+        { id: "italic", label: "Italic", type: "checkbox", checked: state.italic, onSelect: () => editor.chain().focus().toggleItalic().run() },
+        { id: "underline", label: "Underline", type: "checkbox", checked: state.underline, onSelect: () => editor.chain().focus().toggleUnderline().run() },
+        { id: "strikethrough", label: "Strikethrough", type: "checkbox", checked: state.strike, onSelect: () => editor.chain().focus().toggleStrike().run() },
+        { type: "separator" },
+        { id: "highlight", label: "Highlight", type: "checkbox", checked: state.highlightTool.active || state.highlight, onSelect: () => editor.chain().focus().toggleHighlightTool().run() },
+        {
+          id: "highlight-color",
+          label: "Highlight Color",
+          submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: color.label, type: "radio", checked: state.highlightTool.color === color.value, onSelect: () => editor.commands.setHighlightToolColor(color.value) })),
+        },
+        {
+          id: "text-color",
+          label: "Text Color",
+          submenu: [
+            { id: "text-color-default", label: "Default", type: "radio", checked: !state.color, onSelect: () => editor.chain().focus().unsetColor().run() },
+            { type: "separator" },
+            ...MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: color.label, type: "radio" as const, checked: state.color === color.value, onSelect: () => editor.chain().focus().setColor(color.value).run() })),
+          ],
+        },
+        {
+          id: "font-size",
+          label: "Font Size",
+          submenu: [
+            { id: "font-size-default", label: "Default", type: "radio", checked: !state.fontSize, onSelect: () => editor.chain().focus().unsetFontSize().run() },
+            { type: "separator" },
+            ...[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 96].map((size) => ({ id: `font-size-${size}`, label: `${size} px`, type: "radio" as const, checked: state.fontSize === `${size}px`, onSelect: () => editor.chain().focus().setFontSize(`${size}px`).run() })),
+          ],
+        },
+        { type: "separator" },
+        {
+          id: "text-style",
+          label: "Text Style",
+          submenu: [
+            { id: "paragraph", label: "Paragraph", type: "radio", checked: state.heading === "0", onSelect: () => editor.chain().focus().setParagraph().run() },
+            ...([1, 2, 3, 4, 5, 6] as const).map((level) => ({ id: `heading-${level}`, label: `Heading ${level}`, type: "radio" as const, checked: state.heading === String(level), onSelect: () => editor.chain().focus().setHeading({ level }).run() })),
+          ],
+        },
+        {
+          id: "list",
+          label: "List",
+          submenu: [
+            { id: "bulleted", label: "Bulleted List", type: "checkbox", checked: state.bulletList, onSelect: () => editor.chain().focus().toggleBulletList().run() },
+            { id: "numbered", label: "Numbered List", type: "checkbox", checked: state.orderedList, onSelect: () => editor.chain().focus().toggleOrderedList().run() },
+            { type: "separator" },
+            { id: "indent", label: "Indent List Item", enabled: state.canSinkListItem, onSelect: () => editor.chain().focus().sinkListItem(listItem()).run() },
+            { id: "outdent", label: "Outdent List Item", enabled: state.canLiftListItem, onSelect: () => editor.chain().focus().liftListItem(listItem()).run() },
+          ],
+        },
+        { id: "quote", label: "Quote", type: "checkbox", checked: state.blockquote, onSelect: () => editor.chain().focus().toggleBlockquote().run() },
+        {
+          id: "box",
+          label: "Box",
+          submenu: [
+            { id: "box-default", label: "Default Grey Box", type: "radio", checked: state.boxColor === "default", onSelect: () => setBox(null) },
+            ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: `${color.label} Box`, type: "radio" as const, checked: state.boxColor === color.shortcut, onSelect: () => setBox(color.shortcut) })),
+          ],
+        },
+        { id: "code-block", label: "Code Block", type: "checkbox", checked: state.codeBlock, onSelect: () => editor.chain().focus().toggleCodeBlock().run() },
+        { type: "separator" },
+        { id: "clear-formatting", label: "Clear Formatting", onSelect: () => editor.chain().focus().unsetAllMarks().clearNodes().run() },
+        { id: "fix-chatgpt-equations", label: "Fix ChatGPT Equations", onSelect: fixChatGptEquations },
+      ],
+      insert: [
+        { id: "link", label: "Link…", onSelect: () => setLinkDraft({ href: editor.getAttributes("link").href ?? "", from: editor.state.selection.from, to: editor.state.selection.to, markdown: readMarkdown(), selectionLinks: readSelectionLinks?.() }) },
+        {
+          id: "image",
+          label: "Image",
+          submenu: [
+            { id: "image-file", label: "From File…", onSelect: () => imageInput.current?.click() },
+            { id: "image-gallery", label: "From Gallery…", onSelect: () => setGalleryPickerOpen(true) },
+            ...(onStartScreenshotSnip ? [
+              { type: "separator" as const },
+              { id: "snip-image", label: "Snip from Image or PDF Tab", enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("image"); } },
+              { id: "snip-markdown", label: "Snip as Markdown", enabled: canStartScreenshotSnip, onSelect: () => { captureVisualState(); onStartScreenshotSnip("markdown"); } },
+            ] : []),
+          ],
+        },
+        tableSizeMenu((rows, cols) => editor.chain().focus().insertTable({ rows, cols, withHeaderRow: true }).run()),
+        { id: "equation", label: "Equation…", onSelect: openMath },
+        { id: "ink", label: "Ink Block", enabled: !untitled, onSelect: () => editor.chain().focus().insertContent([{ type: "image", attrs: { src: inkBlockSource(documentPath, createInkId()), alt: "Ink" } }, { type: "paragraph" }]).run() },
+        { type: "separator" },
+        { id: "chart", label: "Chart", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.chart).run() },
+        { id: "diagram", label: "Diagram", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.diagram).run() },
+        { id: "macro-block", label: "Macro Block", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.macro).run() },
+        { id: "interactive-html", label: "Interactive HTML", onSelect: () => editor.chain().focus().insertContent(LIVE_BLOCK_TEMPLATES.html).run() },
+      ],
+    };
+  });
+
   if (!editor || !state) return <div className="p-6 text-sm text-muted-foreground">Loading visual editor…</div>;
 
   function scrollToActiveFindMatch() {
@@ -881,7 +984,7 @@ export function TiptapMarkdownEditor({ files = [], mathMarkers, smartPaste = fal
     : 0;
 
   return (
-    <div className="libera-visual-editor flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
+    <div ref={rootRef} className="libera-visual-editor flex min-h-0 min-w-0 flex-1 flex-col bg-card" onKeyDownCapture={(event) => {
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "f") {
         event.preventDefault();
         openFind();

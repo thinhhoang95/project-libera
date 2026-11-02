@@ -64,6 +64,19 @@ contextBridge.exposeInMainWorld("liberaMenu", {
   popup: (input) => ipcRenderer.invoke("menu:popup", input),
 });
 
+// The menu bar's File actions and Format, Insert and References menus (app-menu.ts).
+// macOS only: Windows keeps its own menu, untouched.
+if (process.platform === "darwin") {
+  contextBridge.exposeInMainWorld("liberaAppMenu", {
+    update: (menus) => ipcRenderer.send("app-menu:update", menus),
+    onSelect: (listener) => {
+      const handler = (_event, id) => listener(id);
+      ipcRenderer.on("app-menu:select", handler);
+      return () => ipcRenderer.removeListener("app-menu:select", handler);
+    },
+  });
+}
+
 contextBridge.exposeInMainWorld("liberaFileExplorer", {
   revealNotebook: (notebook) => ipcRenderer.invoke("file-explorer:reveal-notebook", notebook),
   revealItem: (relativePath) => ipcRenderer.invoke("file-explorer:reveal-item", relativePath),

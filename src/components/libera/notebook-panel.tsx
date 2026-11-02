@@ -423,6 +423,7 @@ const NoteLinksContext = createContext<NoteLinks>({
 
 /** Tags per file path, shown in the file-name tooltip. */
 const FileTagsContext = createContext<Record<string, string[]>>({});
+const ShowFileDetailsContext = createContext(true);
 
 function lastEditedLabel(updatedAt: string) {
   const edited = relativeTimeLabel(updatedAt);
@@ -982,6 +983,7 @@ export function NotebookPanel({
 
         <NoteLinksContext.Provider value={noteLinks}>
         <FileTagsContext.Provider value={tree.fileTags}>
+        <ShowFileDetailsContext.Provider value={tree.notebookViewOptions.showFileDetails}>
         <div className="space-y-2">
           <StarredFilesSection
             activeTabId={activeTabId}
@@ -1072,6 +1074,7 @@ export function NotebookPanel({
             />
           ))}
         </div>
+        </ShowFileDetailsContext.Provider>
         </FileTagsContext.Provider>
         </NoteLinksContext.Provider>
       </div>
@@ -1756,6 +1759,7 @@ function TreeNodeRow({
 }) {
   const noteLinks = useContext(NoteLinksContext);
   const fileTags = useContext(FileTagsContext);
+  const showFileDetails = useContext(ShowFileDetailsContext);
 
   if (node.kind === "folder") {
     const isExpanded = expanded.has(node.path);
@@ -1877,17 +1881,20 @@ function TreeNodeRow({
   const isStarred = starredFilePaths.has(node.path);
   const isBacklink = noteLinks.backlinks.has(node.path);
   const isForwardLink = noteLinks.forwardLinks.has(node.path);
+  const tags = fileTags[node.path] ?? [];
+  // "3h ago" → "3h": the rail only has room for the bare age.
+  const edited = relativeTimeLabel(node.updatedAt).replace(/ ago$/, "").replace(/^just now$/, "now");
 
   return (
     <SidebarNameTooltipButton
-      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+      className={`block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
         activeTabId === node.path ? "bg-muted" : ""
       }`}
       data-backlink={isBacklink || undefined}
       data-forwardlink={isForwardLink || undefined}
       draggable
       fullName={node.name}
-      renderDetails={() => <FileTooltipDetails file={node} tags={fileTags[node.path] ?? []} />}
+      renderDetails={() => <FileTooltipDetails file={node} tags={tags} />}
       style={{ paddingLeft: `${8 + depth * 16}px` }}
       type="button"
       onClick={() => onOpenFile(node)}
@@ -1914,30 +1921,42 @@ function TreeNodeRow({
         onSetDragOverPath("");
       }}
     >
-      <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType, node.name)}>
-        <FileTypeIcon fileType={node.fileType} name={node.name} />
+      <span className="flex items-center gap-2">
+        <span className="libera-tree-file-icon" data-type={node.fileType} title={fileTypeLabel(node.fileType, node.name)}>
+          <FileTypeIcon fileType={node.fileType} name={node.name} />
+        </span>
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        {showNotebookName ? (
+          <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
+            {node.notebook}
+          </span>
+        ) : null}
+        {isBacklink ? (
+          <span className="shrink-0 text-accent" title="Links to the open file" aria-label="Links to the open file">
+            <Link2 aria-hidden className="h-3.5 w-3.5" />
+          </span>
+        ) : null}
+        {isForwardLink ? (
+          <span className="libera-forwardlink-icon shrink-0" title="Linked from the open file" aria-label="Linked from the open file">
+            <ArrowUpRight aria-hidden className="h-3.5 w-3.5" />
+          </span>
+        ) : null}
+        {isStarred ? (
+          <Star
+            aria-hidden
+            className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500"
+          />
+        ) : null}
       </span>
-      <span className="min-w-0 flex-1 truncate">{node.name}</span>
-      {showNotebookName ? (
-        <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">
-          {node.notebook}
+      {showFileDetails && (edited || tags.length > 0) ? (
+        <span className="libera-tree-file-tags">
+          {edited ? (
+            <span className="libera-tree-file-edited" title={`Edited ${fullDateLabel(node.updatedAt)}`}>
+              {tags.length > 0 ? `${edited} ·` : edited}
+            </span>
+          ) : null}
+          {tags.map((tag) => <TagChip key={tag} tag={tag} />)}
         </span>
-      ) : null}
-      {isBacklink ? (
-        <span className="shrink-0 text-accent" title="Links to the open file" aria-label="Links to the open file">
-          <Link2 aria-hidden className="h-3.5 w-3.5" />
-        </span>
-      ) : null}
-      {isForwardLink ? (
-        <span className="libera-forwardlink-icon shrink-0" title="Linked from the open file" aria-label="Linked from the open file">
-          <ArrowUpRight aria-hidden className="h-3.5 w-3.5" />
-        </span>
-      ) : null}
-      {isStarred ? (
-        <Star
-          aria-hidden
-          className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500"
-        />
       ) : null}
     </SidebarNameTooltipButton>
   );
@@ -1962,6 +1981,7 @@ function NotebookViewOptionsDialog({
   const [hiddenNotebookNames, setHiddenNotebookNames] = useState(
     () => new Set(tree.notebookViewOptions.hiddenNotebookNames),
   );
+  const [showFileDetails, setShowFileDetails] = useState(tree.notebookViewOptions.showFileDetails);
   const groupsById = new Map(tree.notebookGroups.map((group) => [group.id, group]));
   const topLevelNotebooks = tree.notebooks
     .filter((notebook) => !notebook.groupId || !groupsById.has(notebook.groupId))
@@ -2023,6 +2043,7 @@ function NotebookViewOptionsDialog({
       hiddenGroupIds: [...hiddenGroupIds],
       hiddenNotebookNames: [...hiddenNotebookNames],
       showArchive: tree.notebookViewOptions.showArchive,
+      showFileDetails,
     });
   }
 
@@ -2030,7 +2051,7 @@ function NotebookViewOptionsDialog({
     <ModalDialog
       open
       title="View Options"
-      description="Choose which notebooks and groups appear in the Notebook panel."
+      description="Choose what appears in the Notebook panel."
       panelClassName="max-w-lg"
       onClose={onClose}
       footer={
@@ -2054,6 +2075,26 @@ function NotebookViewOptionsDialog({
       }
     >
       <div className="max-h-[60vh] space-y-4 overflow-auto pr-1">
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Files
+          </h3>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2 hover:bg-muted">
+            <input
+              className="mt-0.5 h-4 w-4 rounded border-input"
+              type="checkbox"
+              checked={showFileDetails}
+              onChange={(event) => setShowFileDetails(event.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">Show edit time and tags</span>
+              <span className="block text-xs text-muted-foreground">
+                A second line under each file name, like “3h · tag”.
+              </span>
+            </span>
+          </label>
+        </div>
+
         {topLevelNotebooks.length ? (
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

@@ -173,6 +173,7 @@ function normalizeTreeViewOptions({
       notebookNames.has(notebookName),
     ),
     showArchive: viewOptions.showArchive,
+    showFileDetails: viewOptions.showFileDetails,
   };
 }
 

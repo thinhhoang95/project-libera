@@ -1812,6 +1812,7 @@ function installApplicationMenu() {
   applyApplicationIdentity();
 
   const isMac = process.platform === "darwin";
+  const rendererMenus = isMac ? buildRendererAppMenus() : { file: [], editor: [], view: [], app: [] };
   const configurationMenuItem = {
     accelerator: "CmdOrCtrl+,",
     click: () => void openConfigurationWindow(),
@@ -1901,6 +1902,7 @@ function installApplicationMenu() {
       submenu: [
         ...openMenuItems,
         ...(isMac ? [] : [configurationMenuItem, { type: "separator" }]),
+        ...(isMac ? rendererMenus.file : []),
         closeTabMenuItem,
         ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
       ],
@@ -1920,9 +1922,11 @@ function installApplicationMenu() {
         { role: "selectAll" },
       ],
     },
+    ...(isMac ? rendererMenus.editor : []),
     {
       label: "View",
       submenu: [
+        ...(isMac ? rendererMenus.view : []),
         { role: "reload" },
         { role: "forceReload" },
         { type: "separator" },
@@ -1933,6 +1937,7 @@ function installApplicationMenu() {
         { role: "togglefullscreen" },
       ],
     },
+    ...(isMac ? rendererMenus.app : []),
     ...(isMac
       ? [
           {
@@ -2075,6 +2080,84 @@ function buildNativeMenuTemplate(items, selectItem, depth = 0) {
   }
 
   return template;
+}
+
+// macOS: the focused window's document menus, sent by its renderer
+// (src/components/libera/app-menu.ts), keyed by webContents id.
+const rendererAppMenus = new Map();
+let rendererAppMenusInstalled = false;
+let applicationMenuTimer = null;
+
+function appMenuWebContents() {
+  const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
+
+  return window && !window.isDestroyed() ? window.webContents : null;
+}
+
+function scheduleApplicationMenu() {
+  if (applicationMenuTimer) return;
+  applicationMenuTimer = setTimeout(() => {
+    applicationMenuTimer = null;
+    installApplicationMenu();
+  }, 50);
+}
+
+/**
+ * The focused window's menus: File actions, Format, Insert and References
+ * (after Edit), View items (above its standard ones), then Tab and AI.
+ */
+function buildRendererAppMenus() {
+  const webContents = appMenuWebContents();
+  const menus = webContents ? rendererAppMenus.get(webContents.id) : null;
+
+  if (!menus) {
+    return { file: [], editor: [], view: [], app: [] };
+  }
+
+  const select = (id) => {
+    if (!webContents.isDestroyed()) webContents.send("app-menu:select", id);
+  };
+  const topLevel = (entries) => entries
+    .map(([label, items]) => ({ label, submenu: buildNativeMenuTemplate(items, select) }))
+    .filter((menu) => menu.submenu.length);
+  const withSeparator = (items) => items.length ? [...items, { type: "separator" }] : [];
+
+  return {
+    file: withSeparator(buildNativeMenuTemplate(menus.file, select)),
+    editor: topLevel([["Format", menus.format], ["Insert", menus.insert], ["References", menus.references]]),
+    view: withSeparator(buildNativeMenuTemplate(menus.view, select)),
+    app: topLevel([["Tab", menus.tab], ["AI", menus.ai]]),
+  };
+}
+
+function installRendererAppMenuHandlers() {
+  if (process.platform !== "darwin" || rendererAppMenusInstalled) return;
+  rendererAppMenusInstalled = true;
+
+  ipcMain.on("app-menu:update", (event, input) => {
+    const { sender } = event;
+    const id = sender.id;
+
+    if (!rendererAppMenus.has(id)) {
+      sender.once("destroyed", () => {
+        rendererAppMenus.delete(id);
+        scheduleApplicationMenu();
+      });
+    }
+
+    rendererAppMenus.set(id, {
+      file: input?.file,
+      format: input?.format,
+      insert: input?.insert,
+      references: input?.references,
+      view: input?.view,
+      tab: input?.tab,
+      ai: input?.ai,
+    });
+
+    if (appMenuWebContents() === sender) scheduleApplicationMenu();
+  });
+  app.on("browser-window-focus", scheduleApplicationMenu);
 }
 
 function installNativeMenuHandlers() {
@@ -2723,6 +2806,7 @@ async function bootstrap() {
     runningSessionSecret = config.sessionSecret;
     installExportHandlers();
     installNativeMenuHandlers();
+    installRendererAppMenuHandlers();
     installFileExplorerHandlers();
     installDirectoryModeHandlers();
     installWindowControlHandlers();

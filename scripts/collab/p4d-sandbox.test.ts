@@ -98,6 +98,8 @@ test("Electron: the real preload works the same in a sandboxed window", { skip: 
     assert.deepEqual(sandboxed.errors, []);
     assert.equal(sandboxed.pageHasNoNode, true);
     const expected = [
+      // The menu bar's document menus exist only in the macOS app.
+      ...(process.platform === "darwin" ? ["liberaAppMenu"] : []),
       "liberaClipboard", "liberaCollab", "liberaDirectory", "liberaExport", "liberaFileExplorer", "liberaMenu", "liberaPersistence",
       "liberaPlatform", "liberaPreferences", "liberaProfiles", "liberaReferences", "liberaSearch", "liberaSetup", "liberaUpdater", "liberaWindow", "liberaWorkspaces",
     ];

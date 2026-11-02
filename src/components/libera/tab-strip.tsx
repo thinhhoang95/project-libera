@@ -16,6 +16,7 @@ import { isMarkdownSlidesPath } from "@/lib/markdown-slides";
 import { DocumentHistoryHost, HISTORY_MENU_ID, historyMenuItems, openDocumentHistory } from "./collab/history";
 import { RequestReviewButton } from "./collab/reviews";
 import { pendingSaves, usePendingSavesVersion } from "./pending-saves";
+import { useAppMenuFileActions, useAppMenuItems, withMenuActions } from "./app-menu";
 
 type TabStripProps = {
   chatOpen: boolean;
@@ -49,7 +50,15 @@ type TabStripProps = {
   onCloseOtherCanvasPanels?: () => void;
 };
 
-type CanvasSplitZone = "right" | "bottom";
+type CanvasSplitZone = "right" | "bottom" | "left" | "top";
+
+/** The sides a panel can open on, for the macOS View menu. */
+const SPLIT_SIDES: Array<{ zone: CanvasSplitZone; label: string }> = [
+  { zone: "right", label: "To the Right" },
+  { zone: "left", label: "To the Left" },
+  { zone: "top", label: "Above" },
+  { zone: "bottom", label: "Below" },
+];
 type NativeMenuItems = Parameters<NonNullable<Window["liberaMenu"]>["popup"]>[0]["items"];
 
 type ActiveFileActionsProps = Pick<
@@ -159,6 +168,29 @@ export function TabStrip({
     setDragOverTabId("");
   }
 
+  /** A tab's context menu; the macOS Tab menu leaves out the split items, which are in View. */
+  function tabMenuItems(tab: OpenTab, splitItems = true): NativeMenuItems {
+    return [
+      // A recording in progress has no file for AI Chat or another window to open.
+      ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
+      ...(onOpenTabInSplit && splitItems
+        ? [
+            { id: "open-split-right", label: "Open to the Right" },
+            { id: "open-split-down", label: "Open Below" },
+            { type: "separator" as const },
+          ]
+        : []),
+      // Gallery photos have no notebook file for another window to open.
+      ...(isGalleryTab(tab) || isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
+      { id: "close-tab", label: "Close Tab" },
+      {
+        id: "close-others",
+        label: "Close Others",
+        enabled: tabs.length > 1,
+      },
+    ];
+  }
+
   async function openTabContextMenu(event: MouseEvent<HTMLButtonElement>, tab: OpenTab) {
     event.preventDefault();
     event.stopPropagation();
@@ -172,28 +204,14 @@ export function TabStrip({
     const selectedItemId = await menu
       .popup({
         ...nativeMenuPointFromMouseEvent(event),
-        items: [
-          // A recording in progress has no file for AI Chat or another window to open.
-          ...(isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "add-to-ai-chat", label: "Add to AI Chat" }, { type: "separator" as const }]),
-          ...(onOpenTabInSplit
-            ? [
-                { id: "open-split-right", label: "Open to the Right" },
-                { id: "open-split-down", label: "Open Below" },
-                { type: "separator" as const },
-              ]
-            : []),
-          // Gallery photos have no notebook file for another window to open.
-          ...(isGalleryTab(tab) || isRecordingTab(tab) || isPageTab(tab) ? [] : [{ id: "duplicate-markdown", label: "Duplicate Tab in new Window" }]),
-          { id: "close-tab", label: "Close Tab" },
-          {
-            id: "close-others",
-            label: "Close Others",
-            enabled: tabs.length > 1,
-          },
-        ],
+        items: tabMenuItems(tab),
       })
       .catch(() => null);
 
+    runTabMenuAction(tab, selectedItemId);
+  }
+
+  function runTabMenuAction(tab: OpenTab, selectedItemId: string | null) {
     if (selectedItemId === "add-to-ai-chat") {
       onAddToAiChat(tab);
     } else if (selectedItemId === "open-split-right") {
@@ -208,6 +226,49 @@ export function TabStrip({
       onCloseOtherTabs(tab.id);
     }
   }
+
+  function showTabAt(step: number) {
+    const index = tabs.findIndex((tab) => tab.id === activeTabId);
+    const next = tabs[(index + step + tabs.length) % tabs.length];
+    if (next) onActivateTab(next.id);
+  }
+
+  // The macOS Tab menu: new and switch tabs, then the active tab's context menu.
+  useAppMenuItems("tab", 0, () => [
+    { id: "new", label: "New Untitled Note", onSelect: onCreateUntitled },
+    { type: "separator" },
+    { id: "previous", label: "Show Previous Tab", enabled: tabs.length > 1, onSelect: () => showTabAt(-1) },
+    { id: "next", label: "Show Next Tab", enabled: tabs.length > 1, onSelect: () => showTabAt(1) },
+    {
+      id: "go-to",
+      label: "Go to Tab",
+      enabled: tabs.length > 0,
+      submenu: tabs.map((tab, index) => ({ id: `go-to:${index}`, label: tab.file.name, type: "radio", checked: tab.id === activeTabId, onSelect: () => onActivateTab(tab.id) })),
+    },
+    ...(activeTab ? [{ type: "separator" as const }, ...withMenuActions(tabMenuItems(activeTab, false), (id) => runTabMenuAction(activeTab, id))] : []),
+  ]);
+
+  // The macOS View menu's panel items: split the focused panel, or open another tab beside it.
+  const otherTabs = tabs.filter((tab) => tab.id !== activeTabId);
+  useAppMenuItems("view", 0, () => onSplitCanvas ? [
+    {
+      id: "split",
+      label: "Split Panel",
+      submenu: SPLIT_SIDES.map(({ zone, label }) => ({ id: `split:${zone}`, label, onSelect: () => onSplitCanvas(zone) })),
+    },
+    ...(onOpenTabInSplit ? [{
+      id: "open-in-panel",
+      label: "Open Tab in New Panel",
+      enabled: otherTabs.length > 0,
+      submenu: otherTabs.map((tab, index) => ({
+        id: `open:${index}`,
+        label: tab.file.name,
+        submenu: SPLIT_SIDES.map(({ zone, label }) => ({ id: `open:${index}:${zone}`, label, onSelect: () => onOpenTabInSplit(tab.id, zone) })),
+      })),
+    }] : []),
+    ...(onCloseCanvasPanel ? [{ id: "close-panel", label: "Close Panel", enabled: canvasPanelCount > 1, onSelect: onCloseCanvasPanel }] : []),
+    ...(onCloseOtherCanvasPanels ? [{ id: "close-other-panels", label: "Close Other Panels", enabled: canvasPanelCount > 1, onSelect: onCloseOtherCanvasPanels }] : []),
+  ] : []);
 
   return (
     <div className="libera-tab-strip libera-window-drag-region border-b border-border bg-card">
@@ -382,8 +443,22 @@ function ActiveFileActions({
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const canvasActions = { onSplitCanvas, onCloseCanvasPanel, onCloseOtherCanvasPanels };
   const canvasItems = canvasMenuItems(canvasPanelCount, canvasActions);
+  const fileTab = activeTab && !isRecordingTab(activeTab) && !isPageTab(activeTab) ? activeTab : undefined;
+  const isMarkdown = fileTab?.file.fileType === "markdown";
+  const isLatex = fileTab?.file.fileType === "latex";
+  const isPdf = fileTab?.file.fileType === "pdf";
+  const isImage = fileTab?.file.fileType === "image";
+  const isText = fileTab?.file.fileType === "text";
+  // Gallery photos are renamed, moved and deleted from the gallery itself.
+  const isGalleryPhoto = fileTab ? isGalleryTab(fileTab) : false;
+  const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(fileTab?.file.path ?? "");
 
-  if (!activeTab || isRecordingTab(activeTab) || isPageTab(activeTab)) {
+  // The macOS menu bar's File menu lists the same actions as this button's menu.
+  useAppMenuFileActions(async () => fileTab
+    ? withMenuActions(await actionMenuItems(fileTab), (id) => void runAction(fileTab, id))
+    : withMenuActions(canvasPanelCount < 2 ? [] : canvasItems, (id) => runCanvasMenuAction(id, canvasActions)));
+
+  if (!fileTab) {
     // An empty split panel, a recording in progress or an app page has no file, but its layout can still be changed.
     if (canvasPanelCount < 2 || !canvasItems.length) {
       return null;
@@ -409,131 +484,105 @@ function ActiveFileActions({
     );
   }
 
-  const isMarkdown = activeTab.file.fileType === "markdown";
-  const isLatex = activeTab.file.fileType === "latex";
-  const isPdf = activeTab.file.fileType === "pdf";
-  const isImage = activeTab.file.fileType === "image";
-  const isText = activeTab.file.fileType === "text";
-  // Gallery photos are renamed, moved and deleted from the gallery itself.
-  const isGalleryPhoto = isGalleryTab(activeTab);
-  const supportsEditorMode = isMarkdown && !isMarkdownSlidesPath(activeTab.file.path);
-  const downloadContent = isMarkdown || isLatex || isText ? activeTab.draft : undefined;
-
-  async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
-    if (!activeTab) {
-      return;
-    }
-
-    const menu = window.liberaMenu;
-
-    if (!menu) {
-      return;
-    }
-
-    const point = nativeMenuPointFromButton(event.currentTarget);
+  /** The file actions of `tab`, the active tab, then the canvas layout. */
+  async function actionMenuItems(tab: OpenTab): Promise<NativeMenuItems> {
     // Shared files have a version history.
-    const historyItems = historyMenuItems(activeTab.id);
+    const historyItems = historyMenuItems(tab.id);
     // PDFs and images: their unsaved annotations and ink (pending-saves.ts).
     const viewerSaveItem = {
       id: "save",
       label: "Save",
-      enabled: activeTab.status !== "saving" && pendingSaves.isDirty(activeTab.file.path),
+      enabled: tab.status !== "saving" && pendingSaves.isDirty(tab.file.path),
     };
 
-    setActionMenuOpen(true);
-
-    const selectedItemId = await menu
-      .popup({
-        ...point,
-        items: [
-          ...(isMarkdown
-            ? [
-                ...(supportsEditorMode
-                  ? [
+    return [
+      ...(isMarkdown
+        ? [
+            ...(supportsEditorMode
+              ? [
+                  {
+                    id: "editor-mode",
+                    label: "Editor Mode",
+                    submenu: [
                       {
-                        id: "editor-mode",
-                        label: "Editor Mode",
-                        submenu: [
-                          {
-                            id: "editor-visual",
-                            label: "Visual",
-                            type: "radio" as const,
-                            checked: markdownEditorMode === "visual",
-                          },
-                          {
-                            id: "editor-source",
-                            label: "Source",
-                            type: "radio" as const,
-                            checked: markdownEditorMode === "source",
-                          },
-                        ],
+                        id: "editor-visual",
+                        label: "Visual",
+                        type: "radio" as const,
+                        checked: markdownEditorMode === "visual",
                       },
-                      { type: "separator" as const },
-                    ]
-                  : []),
-                {
-                  id: "save",
-                  label: "Save",
-                  enabled:
-                    activeTab.status !== "saving" &&
-                    (activeTab.untitled || activeTab.status !== "clean"),
-                },
+                      {
+                        id: "editor-source",
+                        label: "Source",
+                        type: "radio" as const,
+                        checked: markdownEditorMode === "source",
+                      },
+                    ],
+                  },
+                  { type: "separator" as const },
+                ]
+              : []),
+            {
+              id: "save",
+              label: "Save",
+              enabled:
+                tab.status !== "saving" &&
+                (tab.untitled || tab.status !== "clean"),
+            },
+            {
+              id: "download",
+              label: "Download",
+              submenu: [
+                { id: "download-markdown", label: "Markdown file" },
+                { id: "download-pdf", label: "PDF file" },
+              ],
+            },
+          ]
+        : isLatex || isText
+          ? [
+              {
+                id: "save",
+                label: "Save",
+                enabled: tab.status !== "saving" && tab.status !== "clean",
+              },
+              { id: "download-markdown", label: "Download" },
+            ]
+          : isPdf
+            ? [
+                viewerSaveItem,
                 {
                   id: "download",
                   label: "Download",
                   submenu: [
-                    { id: "download-markdown", label: "Markdown file" },
-                    { id: "download-pdf", label: "PDF file" },
+                    { id: "download-pdf-annotated", label: "PDF with Annotations" },
+                    { id: "download-original", label: "Original PDF" },
                   ],
                 },
               ]
-            : isLatex || isText
-              ? [
-                  {
-                    id: "save",
-                    label: "Save",
-                    enabled: activeTab.status !== "saving" && activeTab.status !== "clean",
-                  },
-                  { id: "download-markdown", label: "Download" },
-                ]
-              : isPdf
-                ? [
-                    viewerSaveItem,
-                    {
-                      id: "download",
-                      label: "Download",
-                      submenu: [
-                        { id: "download-pdf-annotated", label: "PDF with Annotations" },
-                        { id: "download-original", label: "Original PDF" },
-                      ],
-                    },
-                  ]
-                : isImage
-                  ? [viewerSaveItem, { id: "save-image", label: "Save a Copy", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
-                  : [{ id: "download-original", label: "Download" }]),
-          ...(isGalleryPhoto
-            ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
-            : [
-                { type: "separator" as const },
-                ...(historyItems.length ? [...historyItems, { type: "separator" as const }] : []),
-                ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
-                { id: "rename", label: "Rename" },
-                { id: "move", label: "Move" },
-                { type: "separator" as const },
-                { id: "delete", label: "Delete" },
-              ]),
-        ],
-      })
-      .catch(() => null);
+            : isImage
+              ? [viewerSaveItem, { id: "save-image", label: "Save a Copy", submenu: await imageSaveMenuItems(isGalleryPhoto ? "notebook" : "gallery") }]
+              : [{ id: "download-original", label: "Download" }]),
+      ...(isGalleryPhoto
+        ? (canvasItems.length ? [{ type: "separator" as const }, ...canvasItems] : [])
+        : [
+            { type: "separator" as const },
+            ...(historyItems.length ? [...historyItems, { type: "separator" as const }] : []),
+            ...(canvasItems.length ? [...canvasItems, { type: "separator" as const }] : []),
+            { id: "rename", label: "Rename" },
+            { id: "move", label: "Move" },
+            { type: "separator" as const },
+            { id: "delete", label: "Delete" },
+          ]),
+    ];
+  }
 
-    setActionMenuOpen(false);
-
+  /** Runs a choice from actionMenuItems(tab). */
+  async function runAction(tab: OpenTab, selectedItemId: string | null) {
     if (runCanvasMenuAction(selectedItemId, canvasActions)) {
       return;
     }
 
     if (selectedItemId?.startsWith("save-image:")) {
-      const source = { name: activeTab.file.name, src: activeTab.rawUrl ?? "" };
+      const source = { name: tab.file.name, src: tab.rawUrl ?? "" };
       const message = source.src ? await runImageSaveMenuAction(selectedItemId, source) : null;
       if (message) announceImageSaved(source.src, message);
       return;
@@ -546,27 +595,44 @@ function ActiveFileActions({
     } else if (selectedItemId === "save") {
       await onSave();
     } else if (selectedItemId === "download-markdown") {
-      onDownloadFile(activeTab.file, downloadContent);
+      onDownloadFile(tab.file, tab.file.fileType === "markdown" || tab.file.fileType === "latex" || tab.file.fileType === "text" ? tab.draft : undefined);
     } else if (selectedItemId === "download-pdf") {
-      await onDownloadMarkdownPdf(activeTab);
+      await onDownloadMarkdownPdf(tab);
     } else if (selectedItemId === "download-pdf-annotated") {
-      await onDownloadAnnotatedPdf(activeTab);
+      await onDownloadAnnotatedPdf(tab);
     } else if (selectedItemId === "download-original") {
-      onDownloadFile(activeTab.file);
+      onDownloadFile(tab.file);
     } else if (selectedItemId === "rename") {
-      await onRenameFile(activeTab);
+      await onRenameFile(tab);
     } else if (selectedItemId === "move") {
-      await onMoveFile(activeTab);
+      await onMoveFile(tab);
     } else if (selectedItemId === "delete") {
-      await onDeleteFile(activeTab);
+      await onDeleteFile(tab);
     } else if (selectedItemId === HISTORY_MENU_ID) {
-      openDocumentHistory(activeTab.id);
+      openDocumentHistory(tab.id);
     }
+  }
+
+  async function openActionMenu(event: MouseEvent<HTMLButtonElement>) {
+    const menu = window.liberaMenu;
+
+    if (!fileTab || !menu) {
+      return;
+    }
+
+    const point = nativeMenuPointFromButton(event.currentTarget);
+
+    setActionMenuOpen(true);
+
+    const selectedItemId = await menu.popup({ ...point, items: await actionMenuItems(fileTab) }).catch(() => null);
+
+    setActionMenuOpen(false);
+    await runAction(fileTab, selectedItemId);
   }
 
   return (
     <div className="libera-file-actions libera-window-no-drag flex shrink-0 items-center gap-1">
-      {isMarkdown || isLatex ? <><ReviewToggle /><RequestReviewButton tabId={activeTab.id} /></> : null}
+      {isMarkdown || isLatex ? <><ReviewToggle /><RequestReviewButton tabId={fileTab.id} /></> : null}
       <FileActionsMenuButton open={actionMenuOpen} onClick={openActionMenu} bare />
       <DocumentHistoryHost />
     </div>

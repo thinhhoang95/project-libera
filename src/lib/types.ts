@@ -191,6 +191,8 @@ export type LiberaNotebookViewOptions = {
   hiddenGroupIds: string[];
   hiddenNotebookNames: string[];
   showArchive: boolean;
+  /** The edited-age and tag chips line under each file name. */
+  showFileDetails: boolean;
 };
 
 export type LiberaLinkedFolderInfo = {

@@ -54,6 +54,8 @@ import { transcriptContextText } from "@/lib/transcription/format";
 import type { TranscriptPayload } from "@/lib/transcription/types";
 import { loadPdfComments, pdfCommentsState, refreshPdfComments, usePdfComments } from "./pdf-comments-store";
 import { commentsContext, commentsContextCount, commentsContextSummary, pdfCommentChatThreads, reviewCommentThreads } from "@/lib/chat-comments";
+import { useAppMenuItems } from "./app-menu";
+import { mayHaveCitations } from "./markdown-toolbar";
 
 const AUDIO_FILE = /\.(m4a|mp3|wav|aac|ogg|oga|opus|flac|webm)$/i;
 
@@ -1155,6 +1157,14 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     }
   }
 
+  function startNewChat() {
+    if (!chat?.messages.length) return;
+    const next = createChat(defaultMode, defaultPermission);
+    setStore((current) => current && ({ chats: [next, ...current.chats], activeId: next.id }));
+    setError("");
+    setNotice("");
+  }
+
   function changeMode(next: ChatMode) {
     if (!chat || pending) return;
     setDefaultMode(next);
@@ -1280,6 +1290,39 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
     setError("");
   }
 
+  // The macOS AI menu's chat group. The panel stays mounted while collapsed, so these always work.
+  const factCheckPath = activeTab?.file.fileType === "markdown" && !activeTab.untitled && mayHaveCitations(activeTab.draft) ? activeTab.file.path : null;
+  useAppMenuItems("ai", 0, () => [
+    { id: "chat", label: "AI Chat", type: "checkbox", checked: !collapsed, onSelect: () => onCollapsedChange(!collapsed) },
+    {
+      id: "agent",
+      label: "AI Agent",
+      type: "checkbox",
+      checked: !collapsed && agentMode,
+      enabled: !!chat && !pending,
+      // Shows the panel in Agent mode, or returns an open Agent to Chat.
+      onSelect: () => {
+        const next: ChatMode = !collapsed && agentMode ? "chat" : "agent";
+        onCollapsedChange(false);
+        if (next !== mode) changeMode(next);
+      },
+    },
+    { id: "new-chat", label: "New Chat", enabled: !!chat?.messages.length, onSelect: () => { startNewChat(); onCollapsedChange(false); } },
+    { type: "separator" },
+    {
+      id: "add-selection",
+      label: "Add Selection to AI Chat",
+      // The ⌘⇧L shortcut on the focused element, which reads the selection of each kind of editor and of PDFs.
+      onSelect: () => (window.document.activeElement ?? window.document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "L", code: "KeyL", metaKey: true, shiftKey: true, bubbles: true, cancelable: true })),
+    },
+    {
+      id: "fact-check",
+      label: "Fact-Check Citations",
+      enabled: !!factCheckPath,
+      onSelect: () => { if (factCheckPath) window.dispatchEvent(new CustomEvent<FactCheckRequestDetail>(FACT_CHECK_REQUEST_EVENT, { detail: { path: factCheckPath } })); },
+    },
+  ]);
+
   // Keep chat state and selection shortcuts alive while removing all panel UI.
   if (collapsed) return null;
   if (review?.chatReview) return <ReviewChatPanel key={`${review.doc?.id ?? "no-document"}:${review.doc?.round ?? 1}`} files={files} tabs={tabs} />;
@@ -1304,7 +1347,7 @@ export function DocumentChatPanel({ viewedPhoto = null, files = [], tabs = [], a
           </select>
           <ChevronDown aria-hidden className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         </div>
-        <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={() => { if (!chat?.messages.length) return; const next = createChat(defaultMode, defaultPermission); setStore((current) => current && ({ chats: [next, ...current.chats], activeId: next.id })); setError(""); setNotice(""); }}><Plus size={16} /></button>
+        <button className={buttonClass} aria-label="New chat" title="New chat" disabled={!chat?.messages.length} onClick={startNewChat}><Plus size={16} /></button>
         <button ref={settingsButtonRef} type="button" className={buttonClass} aria-label="Chat settings" title="Chat settings" aria-haspopup="menu" disabled={!store || exporting} onClick={(event) => void openChatMenu(event.currentTarget)}><MoreHorizontal size={17} /></button>
         <button type="button" className={`${buttonClass} libera-window-no-drag`} aria-label="Close AI panel" title="Close AI panel" onClick={() => onCollapsedChange(true)}><X size={17} /></button>
       </header>

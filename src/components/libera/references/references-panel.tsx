@@ -1,6 +1,7 @@
 "use client";
 
-import { popupReferenceMenu } from "./native-reference-menu";
+import { popupReferenceMenu, type ReferenceMenuItem } from "./native-reference-menu";
+import { useAppMenuReferences } from "../app-menu";
 import { DocumentStylePicker } from "@/components/libera/references/document-style-picker";
 import { retractionTone } from "@/components/libera/references/retraction-badge";
 import {
@@ -89,6 +90,7 @@ import {
   REFERENCE_ROW_HEIGHT,
   ReferenceActionsMenu,
   openNativeReferenceActionsMenu,
+  referenceActionsMenuItems,
   ReferenceRow,
   type CiteSyntax,
   type LatexCiteCommand,
@@ -178,7 +180,9 @@ export type ReferencesPanelCommand =
   | { action: "export-list"; format: BibliographyFormat }
   | { action: "export-bibliography"; format: DocumentExportFormat }
   | { action: "style"; style: string }
-  | { action: "filter"; filter: ReferenceFilter };
+  | { action: "filter"; filter: ReferenceFilter }
+  /** Runs an item of the panel's "More" menu, by id (the macOS References menu while the panel is closed). */
+  | { action: "menu"; id: string };
 export type ReferencesCommandDetail = { notebook: string; command: ReferencesPanelCommand };
 
 /** Shows the References panel for `notebook` and runs `command` there. */
@@ -1315,6 +1319,12 @@ function ReferencesPanelBody({
           setOpenId(null);
           setView({ filter: command.filter });
           return;
+        case "menu": {
+          const found = findPanelMenuItem(panelMenuItems(panelMenuProps), command.id);
+          if (found?.enabled && found.item.onSelect) found.item.onSelect();
+          else setNotice({ tone: "info", text: unavailableMenuItemText(command.id) });
+          return;
+        }
       }
     };
   });
@@ -1323,6 +1333,38 @@ function ReferencesPanelBody({
     runCommandRef.current(commandRequest.command);
     onRequestHandled?.(commandRequest.id);
   }, [commandRequest, onRequestHandled]);
+
+  // The macOS References menu: the "More" menu, then the selected reference's actions.
+  const menuReference = entries.find((entry) => entry.id === (selectedId ?? openId));
+  useAppMenuReferences("panel", () => [
+    ...panelMenuItems(panelMenuProps),
+    ...(menuReference ? [
+      { type: "separator" as const },
+      {
+        id: "selected",
+        label: `Selected Reference (${menuReference.key})`,
+        submenu: referenceActionsMenuItems({
+          entry: menuReference,
+          canCite,
+          citeSyntax,
+          canFind: canFindIn(menuReference),
+          citing: citingOf(menuReference),
+          onAction: (action) => menuAction(menuReference, action),
+          onOpenPath,
+        }),
+      },
+    ] : []),
+  ]);
+
+  /** Why a "More" menu item cannot run now, for one chosen from the menu bar while the panel was closed. */
+  function unavailableMenuItemText(id: string) {
+    if (id === "undo") return "Nothing to undo.";
+    if (id === "generate") return "Entries are already being generated.";
+    if (id === "fact-check" && factCheckBlocker) return factCheckBlocker;
+    if (id === "insert-bibliography" && panelMenuProps.bibliographyBlocker) return panelMenuProps.bibliographyBlocker;
+    if ((id === "copy-document" || id.startsWith("export-document:")) && documentBlocker) return documentBlocker;
+    return "That menu item is not available right now.";
+  }
 
   async function openPanelMenu(button: HTMLButtonElement) {
     const rect = button.getBoundingClientRect();
@@ -1911,8 +1953,52 @@ type PanelMenuProps = {
 };
 
 function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: number }) {
+  return popupReferenceMenu(panelMenuItems(props), point);
+}
+
+/** The item with `id` in a menu, and whether it and its parents are enabled. */
+function findPanelMenuItem(items: ReferenceMenuItem[], id: string, parentEnabled = true): { item: Exclude<ReferenceMenuItem, { type: "separator" }>; enabled: boolean } | null {
+  for (const item of items) {
+    if (item.type === "separator") continue;
+    const enabled = parentEnabled && item.enabled !== false;
+    if (item.id === id) return { item, enabled };
+    const found = item.submenu ? findPanelMenuItem(item.submenu, id, enabled) : null;
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The macOS References menu while the panel is closed: the "More" menu without
+ * the panel's live state (checkmarks, what is available). Each item shows the
+ * panel for `notebook` and runs there, where unavailable ones say why.
+ */
+export function closedReferencesMenuItems(notebook: string, onShowPanel: () => void): ReferenceMenuItem[] {
+  if (!notebook) return [];
+  const none = () => undefined;
+  const items = panelMenuItems({
+    currentStyle: "", styleFiles: [], undoLabel: "last change", undoStale: false, onClose: none, onUndo: none, onStyle: none,
+    onExport: none, onImport: none, onManage: none, tether: null, onTether: none, onSyncTether: none, jobActive: false,
+    onGenerate: none, autoCreate: undefined, onAutoCreate: none, autoCreateDefault: null, factCheckBlocker: null, onFactCheck: none,
+    onCopyList: none, onExportList: none, documentBlocker: null, onCopyDocument: none, onExportDocument: none,
+    bibliographyBlocker: null, onInsertBibliography: none,
+  });
+  const relay = (entries: ReferenceMenuItem[]): ReferenceMenuItem[] => entries.map((item) => {
+    if (item.type === "separator") return item;
+    if (item.submenu) return { id: item.id, label: item.label, submenu: relay(item.submenu) };
+    return { id: item.id, label: item.label, onSelect: () => runReferencesCommand(notebook, { action: "menu", id: item.id }) };
+  });
+  return [
+    { id: "show-panel", label: "Show References Panel", onSelect: onShowPanel },
+    { type: "separator" },
+    ...relay(items),
+  ];
+}
+
+/** The panel's "More" menu, for its native menu and the macOS References menu. */
+function panelMenuItems(props: PanelMenuProps): ReferenceMenuItem[] {
   const styles = [...BUNDLED_CSL_STYLES, ...props.styleFiles.map((path) => ({ id: path, label: fileBaseName(path) }))];
-  return popupReferenceMenu([
+  return [
     { id: "undo", label: props.undoLabel ? `Undo ${props.undoLabel}` : "Nothing to undo", enabled: Boolean(props.undoLabel) && !props.undoStale, onSelect: props.onUndo },
     { type: "separator" },
     { id: "style", label: "Citation style", submenu: styles.map((style, index) => ({
@@ -1950,7 +2036,7 @@ function openNativePanelMenu(props: PanelMenuProps, point: { x: number; y: numbe
     { type: "separator" },
     { id: "import", label: "Import or paste…", onSelect: props.onImport },
     { id: "manage", label: "Manage references…", onSelect: props.onManage },
-  ], point);
+  ];
 }
 
 function PanelMenu({

@@ -54,6 +54,7 @@ import type { MarkdownSelectionLinkOption } from "./types";
 import type { LiberaFileNode } from "@/lib/types";
 import { FACT_CHECK_REQUEST_EVENT, type FactCheckRequestDetail } from "@/lib/references/types";
 import { usePaletteCommands } from "./command-palette/commands";
+import { tableSizeMenu, useAppMenuEditor } from "./app-menu";
 
 type MarkdownToolbarProps = {
   files: LiberaFileNode[];
@@ -142,6 +143,7 @@ const MARKDOWN_BLOCK_TEMPLATES = [
   {
     id: "chart",
     title: "Insert chart",
+    menuLabel: "Chart",
     icon: ChartColumn,
     keywords: "graph plot bar line pie",
     language: "chart",
@@ -150,6 +152,7 @@ const MARKDOWN_BLOCK_TEMPLATES = [
   {
     id: "diagram",
     title: "Insert diagram",
+    menuLabel: "Diagram",
     icon: Workflow,
     keywords: "mermaid flowchart",
     language: "mermaid",
@@ -158,6 +161,7 @@ const MARKDOWN_BLOCK_TEMPLATES = [
   {
     id: "macro-block",
     title: "Insert macro block",
+    menuLabel: "Macro Block",
     icon: Braces,
     keywords: "libera-macro latex newcommand counter",
     language: "libera-macro",
@@ -375,6 +379,97 @@ export function MarkdownToolbar({
       run: onNumberHeadings,
     },
   ]);
+
+  // The macOS menu bar's Format and Insert menus, for the Source editors (textarea and CodeMirror).
+  useAppMenuEditor(toolbarRootRef, () => ({
+    format: [
+      { id: "bold", label: "Bold", onSelect: () => onInsert("**", "**") },
+      { id: "italic", label: "Italic", onSelect: () => onInsert("_", "_") },
+      { id: "underline", label: "Underline", onSelect: () => onInsert("<u>", "</u>") },
+      { id: "strikethrough", label: "Strikethrough", onSelect: () => onInsert("~~", "~~") },
+      { id: "inline-code", label: "Inline Code", onSelect: () => onInsert("`", "`", "code") },
+      { type: "separator" },
+      {
+        id: "highlight",
+        label: "Highlight",
+        submenu: MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `highlight-${color.shortcut}`, label: color.label, onSelect: () => insertHighlight(color) })),
+      },
+      {
+        id: "text-color",
+        label: "Text Color",
+        submenu: MARKDOWN_TEXT_COLORS.map((color) => ({ id: `text-color-${color.value}`, label: color.label, onSelect: () => insertTextColor(color) })),
+      },
+      { type: "separator" },
+      {
+        id: "heading",
+        label: "Heading",
+        submenu: [1, 2, 3].map((level) => ({ id: `heading-${level}`, label: `Heading ${level}`, onSelect: () => onInsert(`${"#".repeat(level)} `, "", "Heading") })),
+      },
+      {
+        id: "list",
+        label: "List",
+        submenu: [
+          { id: "bulleted", label: "Bulleted List", onSelect: () => onInsert("- ", "", "List item") },
+          { id: "numbered", label: "Numbered List", onSelect: () => onInsert("1. ", "", "List item") },
+          ...(onShiftList ? [
+            { type: "separator" as const },
+            { id: "indent", label: "Indent List Item", onSelect: () => onShiftList("indent") },
+            { id: "outdent", label: "Outdent List Item", onSelect: () => onShiftList("outdent") },
+          ] : []),
+        ],
+      },
+      { id: "quote", label: "Quote", onSelect: () => onInsert("> ", "", "Quote") },
+      {
+        id: "box",
+        label: "Box",
+        submenu: [
+          { id: "box-default", label: "Default Grey Box", onSelect: () => onInsert("> ", "", "Box text") },
+          ...MARKDOWN_HIGHLIGHT_COLORS.map((color) => ({ id: `box-${color.shortcut}`, label: `${color.label} Box`, onSelect: () => onInsert(`${color.shortcut}> `, "", "Box text") })),
+        ],
+      },
+      { type: "separator" },
+      {
+        id: "heading-numbers",
+        label: "Heading Numbers",
+        submenu: [
+          { id: "number-all", label: "Number All Headings", onSelect: onNumberHeadings },
+          {
+            id: "remove-all",
+            label: "Remove Heading Numbers",
+            onSelect: () => {
+              saveDocumentHeadingNumbering(documentPath, false);
+              onRemoveHeadingNumbers();
+            },
+          },
+        ],
+      },
+      { id: "fix-chatgpt-equations", label: "Fix ChatGPT Equations", onSelect: onFixChatGptEquations },
+    ],
+    insert: [
+      { id: "link", label: "Link…", onSelect: () => setLinkDraft({ href: "", selectionLinks: readSelectionLinks?.() }) },
+      {
+        id: "image",
+        label: "Image",
+        submenu: [
+          { id: "image-file", label: "From File…", onSelect: () => imageInputRef.current?.click() },
+          { id: "image-existing", label: "From This Notebook…", onSelect: onInsertExistingImage },
+          ...(onInsertFromGallery ? [{ id: "image-gallery", label: "From Gallery…", onSelect: onInsertFromGallery }] : []),
+          { type: "separator" },
+          { id: "snip-image", label: "Snip from Image or PDF Tab", enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("image") },
+          { id: "snip-markdown", label: "Snip as Markdown", enabled: canStartScreenshotSnip, onSelect: () => onStartScreenshotSnip("markdown") },
+        ],
+      },
+      tableSizeMenu(onInsertTable),
+      { type: "separator" },
+      { id: "math-block", label: "Math Block", onSelect: () => onInsert("$$\n", "\n$$", "x = y") },
+      { id: "code-block", label: "Code Block", onSelect: () => onInsert("\n```\n", "\n```\n", "code") },
+      ...MARKDOWN_BLOCK_TEMPLATES.map((block) => ({
+        id: block.id,
+        label: block.menuLabel,
+        onSelect: () => onInsert(`\n\`\`\`${block.language}\n`, "\n```\n", block.placeholder),
+      })),
+    ],
+  }));
 
   function toggleHighlightMenu() {
     if (highlightMenuOpen) {
